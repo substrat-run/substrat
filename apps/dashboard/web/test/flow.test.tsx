@@ -98,7 +98,7 @@ describe('Flow view', () => {
   it('draws the map and the four panels from the flow read, and highlights on click', async () => {
     vi.spyOn(api, 'appFlow').mockResolvedValue(MOCK_FLOW_VIEW);
     vi.spyOn(api, 'appDeadLetters').mockResolvedValue({ entries: MOCK_DEAD_LETTERS, nextCursor: null });
-    await act(async () => root.render(<Flow app={app} />));
+    await act(async () => root.render(<Flow teamId="team-a" app={app} />));
 
     for (const title of ['Dead letters', 'Operation health', 'Connection usage', 'Declared vs observed']) {
       expect(container.querySelector(`section[aria-label="${title}"]`)).not.toBeNull();
@@ -126,7 +126,7 @@ describe('Flow view', () => {
   it('says a dead-letter list that failed to load is not a clean bill', async () => {
     vi.spyOn(api, 'appFlow').mockResolvedValue(MOCK_FLOW_VIEW);
     vi.spyOn(api, 'appDeadLetters').mockRejectedValue(new Error('down'));
-    await act(async () => root.render(<Flow app={app} />));
+    await act(async () => root.render(<Flow teamId="team-a" app={app} />));
     expect(container.textContent).toContain('not a statement that nothing gave up');
     expect(container.textContent).not.toContain('No delivery in this app has given up');
     // …and the map agrees: no consumer is ticked healthy over a list nobody could read.

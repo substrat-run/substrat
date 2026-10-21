@@ -1,15 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { builtinsAllowedBy, refusedBuiltins } from './worker-node-imports.mjs';
+const cliRule = new URL('../packages/cli/dist/worker-node-imports.js', import.meta.url);
+if (!existsSync(cliRule)) {
+  throw new Error('CLI build is missing; run `pnpm --filter @substrat-run/cli... build` before running these tests.');
+}
+const { builtinsAllowedBy, refusedBuiltins, workerNodeImportOffence } = await import(cliRule.href);
+
+test('root import gates rebuild the CLI rule and the pre-push hook runs the lint', () => {
+  const root = new URL('../', import.meta.url);
+  const scripts = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).scripts;
+  for (const name of ['lint:worker-node-imports', 'test:worker-node-imports']) {
+    assert.match(scripts[name], /^pnpm --filter @substrat-run\/cli\.\.\. build && node /);
+  }
+  assert.match(readFileSync(new URL('.githooks/pre-push', root), 'utf8'), /pnpm run lint:worker-node-imports/);
+});
 
 /** A worker entry on disk that imports `specifiers` statically (and `dynamic` through import()). */
 function entry(specifiers, dynamic = []) {
   const dir = mkdtempSync(join(tmpdir(), 'worker-node-imports-'));
   const lines = specifiers.map((s, i) => `import * as m${i} from ${JSON.stringify(s)}; void m${i};`);
-  lines.push(...dynamic.map((s) => `export const later = () => import(${JSON.stringify(s)});`));
+  lines.push(...dynamic.map((s, i) => `export const later${i} = () => import(${JSON.stringify(s)});`));
   lines.push(`export default { fetch: () => new Response('ok') };`);
   writeFileSync(join(dir, 'worker.js'), lines.join('\n'));
   return { path: join(dir, 'worker.js'), done: () => rmSync(dir, { recursive: true, force: true }) };
@@ -47,22 +60,105 @@ test('a flagless worker is refused any static builtin import, bare or prefixed, 
   try {
     const found = await refusedBuiltins(w.path, []);
     assert.deepEqual(found.refused.sort(), ['events', 'node:async_hooks']);
-    assert.equal(found.importedBy.length, 1);
+    assert.equal(found.importPaths.length, 2);
   } finally {
     w.done();
   }
 });
 
-test('a dynamic import of a builtin is not a static one', async () => {
+test('a dynamic import of a builtin is refused, including one behind a typeof guard', async () => {
   const w = entry([], ['node:crypto']);
   try {
+    const found = await refusedBuiltins(w.path, []);
+    assert.deepEqual(found.refused, ['node:crypto']);
+    assert.match(workerNodeImportOffence(w.path, [], found), /worker\.js -> node:crypto/);
+    assert.deepEqual((await refusedBuiltins(w.path, ['nodejs_compat'])).refused, []);
+  } finally {
+    w.done();
+  }
+});
+
+test('a guarded dynamic import is refused; a clean Worker passes', async () => {
+  const w = entry([]);
+  try {
+    writeFileSync(w.path, `export default { fetch: () => new Response('ok') };\nexport const probe = () => typeof process === 'undefined' ? undefined : import('node:async_hooks');`);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['node:async_hooks']);
+    writeFileSync(w.path, `export default { fetch: () => new Response('ok') };`);
     assert.deepEqual((await refusedBuiltins(w.path, [])).refused, []);
   } finally {
     w.done();
   }
 });
 
+test('a transitive dependency is named from entry through importer to builtin', async () => {
+  const w = entry([]);
+  try {
+    writeFileSync(w.path, `import './dependency.js'; export default { fetch: () => new Response('ok') };`);
+    writeFileSync(join(w.path, '..', 'dependency.js'), `import 'node:crypto';`);
+    const found = await refusedBuiltins(w.path, []);
+    assert.match(workerNodeImportOffence(w.path, [], found), /worker\.js -> .*dependency\.js -> node:crypto/);
+  } finally {
+    w.done();
+  }
+});
+
+test('a transitive CommonJS require of a builtin is refused without nodejs_compat', async () => {
+  const w = entry([]);
+  try {
+    writeFileSync(w.path, `import './dependency.cjs'; export default { fetch: () => new Response('ok') };`);
+    writeFileSync(join(w.path, '..', 'dependency.cjs'), `const crypto = require('node:crypto'); module.exports = crypto;`);
+    const found = await refusedBuiltins(w.path, []);
+    assert.deepEqual(found.refused, ['node:crypto']);
+    assert.match(workerNodeImportOffence(w.path, [], found), /worker\.js -> .*dependency\.cjs -> node:crypto/);
+    assert.match(workerNodeImportOffence(w.path, [], found), /Guarded imports have no general exception/);
+    assert.deepEqual((await refusedBuiltins(w.path, ['nodejs_compat'])).refused, []);
+  } finally {
+    w.done();
+  }
+});
+
+test('only the known guarded tweetnacl require-call is allowed', async () => {
+  const w = entry([]);
+  try {
+    const dependency = join(w.path, '..', 'node_modules', 'tweetnacl');
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: 'tweetnacl', main: 'nacl-fast.js' }));
+    writeFileSync(w.path, `import nacl from 'tweetnacl'; export default { fetch: () => new Response(String(nacl)) };`);
+    const file = join(dependency, 'nacl-fast.js');
+    const guarded = `var crypto = typeof self !== 'undefined' ? (self.crypto || self.msCrypto) : null;\nif (crypto && crypto.getRandomValues) {\n  // Worker PRNG\n} else if (typeof require !== 'undefined') {\n  // Node.js.\n  crypto = require('crypto');\n}\nmodule.exports = crypto;`;
+    writeFileSync(file, guarded);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, []);
+
+    writeFileSync(file, `var crypto = require('crypto'); module.exports = crypto;`);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['crypto']);
+
+    writeFileSync(file, guarded.replace("require('crypto')", "require('node:crypto')"));
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['node:crypto']);
+
+    writeFileSync(file, guarded + `\nmodule.exports.later = () => import('crypto');`);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['crypto']);
+
+    writeFileSync(file, guarded + `\nmodule.exports.other = () => require('fs');`);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['fs']);
+
+    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: 'other-package', main: 'nacl-fast.js' }));
+    writeFileSync(file, guarded);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['crypto']);
+  } finally {
+    w.done();
+  }
+});
+
+test('the installed tweetnacl file still has the exact Worker-first guard', async () => {
+  const file = new URL('../apps/dashboard/node_modules/tweetnacl/nacl-fast.js', import.meta.url);
+  const source = readFileSync(file, 'utf8');
+  assert.match(source, /var crypto = typeof self !== 'undefined' \? \(self\.crypto \|\| self\.msCrypto\) : null;\s*if \(crypto && crypto\.getRandomValues\) \{/);
+  assert.match(source, /} else if \(typeof require !== 'undefined'\) \{\s*\/\/ Node\.js\.\s*crypto = require\('crypto'\);/);
+  assert.equal(source.match(/\brequire\s*\(\s*['"]crypto['"]\s*\)/g)?.length, 1);
+  assert.deepEqual((await refusedBuiltins(file.pathname, [])).refused, []);
+});
+
 test('the shared IdentityDO bundles for a flagless OIDC worker', async () => {
   const path = new URL('../packages/vertical-auth/src/identity-do.ts', import.meta.url).pathname;
-  assert.deepEqual(await refusedBuiltins(path, []), { refused: [], importedBy: [] });
+  assert.deepEqual(await refusedBuiltins(path, []), { refused: [], importPaths: [] });
 });

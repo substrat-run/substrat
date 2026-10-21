@@ -2818,6 +2818,18 @@ export interface HostAdmin {
     expiresAt: string | null,
   ): Promise<void>;
 
+  /** Keep a preview alive only while the same copy move and scope state are pending.
+   * Returns false when another poll changed the expiry or the move was settled. Audited on change. */
+  keepAlivePendingScopeCopy(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    moveId: string,
+    status: Scope['status'],
+    expectedExpiresAt: string | null,
+    expiresAt: string | null,
+  ): Promise<boolean>;
+
   /**
    * Record a staff resolution of a kept copy (#1722, Codex #2008 r7) in the admin log. A kept
    * copy is one a carry's wipe refused because it took a write the carry never copied; the
@@ -2842,6 +2854,20 @@ export interface HostAdmin {
      *  recording move for `leaseMs` (default `SCOPE_COPY_LEASE_MS`). */
     opts?: { role?: ScopeCopyRole; loadStamp?: string | null; leaseMs?: number },
   ): Promise<void>;
+  /**
+   * Renew the lease of every entry `moveId` recorded for this scope (#2450), to `leaseMs` from now
+   * (default `SCOPE_COPY_LEASE_MS`): all of them, or none. Only while each is still pending,
+   * unclaimed and inside its lease, so a move a sweep could already be acting on is never revived.
+   * A lease only grows: an entry whose lease already ends later keeps that end.
+   * Answers when it renewed (`renewedAt`, which the move's restore fence is then computed from:
+   * `copyRestoreFence` at the renewal) and the end it asked for (`leaseUntil`, now + `leaseMs`,
+   * which an entry that already ran later outlasts), or `null` when nothing was renewed: the move
+   * must stop, since it can no longer be confirmed. For a copy that runs longer than one lease.
+   */
+  renewScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, moveId: string,
+    opts?: { leaseMs?: number },
+  ): Promise<{ renewedAt: number; leaseUntil: string } | null>;
   /**
    * Claim up to `limit` pending entries whose lease ran out before `now` (a move that crashed,
    * or a sweep that did), leasing each to `owner` until `leaseUntil`. An entry whose lease is

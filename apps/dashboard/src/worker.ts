@@ -4411,27 +4411,19 @@ const cpObservability = async <T>(read: () => Promise<T>): Promise<T> => {
   }
 };
 
-app.get('/api/observability/metrics', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function observabilityMetricsIn({ c, node }: TeamContext) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const hours = Number(c.req.query('hours') ?? '24');
   // `vertical` narrows to one owned vertical's versions (the per-app Observability
   // tab); an unowned slug answers [] in the authority without reaching the plane.
   const vertical = c.req.query('vertical') || undefined;
   const h = Number.isFinite(hours) ? hours : 24;
-  return c.json(
-    await telemetry(c, node.tenantId, 'metrics', { hours: h, vertical }, () =>
-      cpObservability(() => cp.observabilityMetrics(h, vertical)),
-    ),
+  return telemetry(c, node.tenantId, 'metrics', { hours: h, vertical }, () =>
+    cpObservability(() => cp.observabilityMetrics(h, vertical)),
   );
-});
+}
 
-app.get('/api/observability/logs', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function observabilityLogsIn({ c, node }: TeamContext) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   // `service` repeats — one per deployed version when the tab shows all of them.
   // Unowned refs are dropped by the authority, so this stays a request, not a claim.
@@ -4441,18 +4433,16 @@ app.get('/api/observability/logs', async (c) => {
   const limit = Number(c.req.query('limit') ?? '100');
   const level = c.req.query('level') || undefined;
   const search = c.req.query('search') || undefined;
-  return c.json(
-    await cpObservability(() =>
-      cp.observabilityLogs({
-        services,
-        level,
-        search,
-        hours: Number.isFinite(hours) ? hours : 1,
-        limit: Number.isFinite(limit) ? limit : 100,
-      }),
-    ),
+  return cpObservability(() =>
+    cp.observabilityLogs({
+      services,
+      level,
+      search,
+      hours: Number.isFinite(hours) ? hours : 1,
+      limit: Number.isFinite(limit) ? limit : 100,
+    }),
   );
-});
+}
 
 /**
  * ONE app's own traffic and logs — the tenant grain (observability.md §3 view 4).
@@ -4463,29 +4453,24 @@ app.get('/api/observability/logs', async (c) => {
  * ones that can, because an app running somebody else's vertical has no owned service ref
  * and reads as empty up there.
  *
- * Two narrowings stack, and neither is the client's to choose. The tenant is fixed from
- * the session by `controlPlaneFor`, so a request cannot name another. The scope is
+ * Two narrowings stack. The tenant is fixed by the checked team path through
+ * `controlPlaneFor`, so a request cannot reach another. The scope is
  * resolved through this tenant's own `list-apps` first, so a foreign scope id is a 404
  * rather than a filter that quietly matches nothing (K-3) — belt and braces, since the
  * tenant predicate alone would already have emptied it.
  */
-app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appObservabilityMetricsIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const hours = Number(c.req.query('hours') ?? '24');
   const h = Number.isFinite(hours) ? hours : 24;
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
-  return c.json(
-    await telemetry(c, node.tenantId, 'tenant-metrics', { scopeId: appRow.app_scope_id, hours: h, ...window }, () =>
-      cpObservability(() => cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: h, ...window })),
-    ),
+  return telemetry(c, node.tenantId, 'tenant-metrics', { scopeId: appRow.app_scope_id, hours: h, ...window }, () =>
+    cpObservability(() => cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: h, ...window })),
   );
-});
+}
 
 /**
  * Which of MY apps a tenant-grain series read covers. `scopeId` repeats; named scopes are
@@ -4508,31 +4493,23 @@ function seriesScopes(apps: DashboardAppRow[], asked: string[]): string[] {
  * unshaped, for a consumer that wants to fill and fold them itself. Team-level rather
  * than under `/apps/:scopeId` because "all my apps" is one read here, not one per app.
  */
-app.get('/api/observability/tenant-metrics-series', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function tenantMetricsSeriesIn({ c, host, node }: TeamContext) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
   // No apps at all is an honest empty series, not a question for the plane.
-  if (scopeIds.length === 0) return c.json([]);
+  if (scopeIds.length === 0) return [];
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const hours = Number(c.req.query('hours') ?? '24');
   const h = Number.isFinite(hours) ? hours : 24;
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
-  return c.json(
-    await telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours: h, ...window }, () =>
-      cpObservability(() => cp.tenantMetricsSeries({ scopeIds, hours: h, ...window })),
-    ),
+  return telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours: h, ...window }, () =>
+    cpObservability(() => cp.tenantMetricsSeries({ scopeIds, hours: h, ...window })),
   );
-});
+}
 
 /** Calls to connectors used by this tenant, on Pulse's time axis. */
-app.get('/api/observability/connector-calls', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function connectorCallsIn({ c, node }: TeamContext) {
   const hours = chartHours(c.req.query('hours'));
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -4542,8 +4519,8 @@ app.get('/api/observability/connector-calls', async (c) => {
       throw e;
     }),
   );
-  return c.json({ available: buckets !== null, buckets: buckets ?? [] });
-});
+  return { available: buckets !== null, buckets: buckets ?? [] };
+}
 
 /**
  * Business volumes on Pulse's clock (#1750): for each of MY apps, every move its running
@@ -4559,10 +4536,7 @@ app.get('/api/observability/connector-calls', async (c) => {
  * bounded window: never a read per event or per bucket. An app that cannot answer says why,
  * beside the rows of the apps that could.
  */
-app.get('/api/observability/business-volumes', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function businessVolumesIn({ c, host, node }: TeamContext) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
@@ -4612,8 +4586,8 @@ app.get('/api/observability/business-volumes', async (c) => {
     rows: answers.flatMap((a) => a.rows),
     apps: answers.map((a) => ({ scopeId: a.scopeId, unavailable: a.unavailable })),
   };
-  return c.json(answer);
-});
+  return answer;
+}
 
 /**
  * The team Observability page's chart (#1447): the same buckets, shaped into one
@@ -4628,10 +4602,7 @@ app.get('/api/observability/business-volumes', async (c) => {
  * No markers. A push is a fact about a vertical's code and this chart draws installations
  * of several verticals at once; per-app deploy markers are their own read.
  */
-app.get('/api/observability/traffic', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function teamTrafficIn({ c, host, node }: TeamContext) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
@@ -4639,7 +4610,7 @@ app.get('/api/observability/traffic', async (c) => {
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   const now = new Date();
   // No apps at all still shapes an answer — an empty chart with a real axis, not a 501.
-  if (scopeIds.length === 0) return c.json(deriveTeamSeries({ buckets: [], scopeIds, hours, now, window }));
+  if (scopeIds.length === 0) return deriveTeamSeries({ buckets: [], scopeIds, hours, now, window });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   // ONLY the plane's 501 is tolerated to null — that is the platform's shape for "no
   // bucketed reader is configured", and the chart says so. Everything else — a refused
@@ -4655,8 +4626,8 @@ app.get('/api/observability/traffic', async (c) => {
       throw e;
     }),
   );
-  return c.json(deriveTeamSeries({ buckets, scopeIds, hours, now, window }));
-});
+  return deriveTeamSeries({ buckets, scopeIds, hours, now, window });
+}
 
 /**
  * One traffic row per app — requests, errors, p95 — for the Apps table (#1767). The
@@ -4665,14 +4636,11 @@ app.get('/api/observability/traffic', async (c) => {
  * posture as the team series: only "no reader" becomes `available: false`, and anything
  * else is an outage that propagates.
  */
-app.get('/api/observability/app-metrics', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appMetricsIn({ c, host, node }: TeamContext) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
   const scopeIds = apps.map((a) => a.app_scope_id);
-  if (scopeIds.length === 0) return c.json(deriveAppMetrics({ rows: [], scopeIds, cap: TENANT_METRICS_LIMIT }));
+  if (scopeIds.length === 0) return deriveAppMetrics({ rows: [], scopeIds, cap: TENANT_METRICS_LIMIT });
   const hours = chartHours(c.req.query('hours'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const rows = await telemetry(c, node.tenantId, 'tenant-metrics', { grain: 'scope', hours }, () =>
@@ -4681,41 +4649,36 @@ app.get('/api/observability/app-metrics', async (c) => {
       throw e;
     }),
   );
-  return c.json(deriveAppMetrics({ rows, scopeIds, cap: TENANT_METRICS_LIMIT }));
-});
+  return deriveAppMetrics({ rows, scopeIds, cap: TENANT_METRICS_LIMIT });
+}
 
-app.get('/api/apps/:scopeId/observability/logs', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+async function appObservabilityLogsIn(ctx: TeamContext, app: string) {
+  const { c, node } = ctx;
+  const appRow = await appByScopeId(await teamScope(ctx), app);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const hours = Number(c.req.query('hours') ?? '24');
   const limit = Number(c.req.query('limit') ?? '100');
-  return c.json(
-    await cpObservability(() =>
-      cp.tenantLogs({
-        scopeId: appRow.app_scope_id,
-        level: c.req.query('level') || undefined,
-        search: c.req.query('search') || undefined,
-        // Raw, so an empty value reaches the plane and is refused there rather than
-        // being read as "no filter" (#1525).
-        invocationId: c.req.query('invocationId'),
-        // #1747: one pattern's lines. Raw like the id: an empty one is the plane's 400.
-        template: c.req.query('template'),
-        hours: Number.isFinite(hours) ? hours : 24,
-        // The chart's time cursor, passed on as the strings they arrived as: the plane
-        // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`
-        // carries), and a second reading of them here could only disagree with it.
-        since: c.req.query('since') || undefined,
-        until: c.req.query('until') || undefined,
-        limit: Number.isFinite(limit) ? limit : 100,
-      }),
-    ),
+  return cpObservability(() =>
+    cp.tenantLogs({
+      scopeId: appRow.app_scope_id,
+      level: c.req.query('level') || undefined,
+      search: c.req.query('search') || undefined,
+      // Raw, so an empty value reaches the plane and is refused there rather than
+      // being read as "no filter" (#1525).
+      invocationId: c.req.query('invocationId'),
+      // #1747: one pattern's lines. Raw like the id: an empty one is the plane's 400.
+      template: c.req.query('template'),
+      hours: Number.isFinite(hours) ? hours : 24,
+      // The chart's time cursor, passed on as the strings they arrived as: the plane
+      // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`
+      // carries), and a second reading of them here could only disagree with it.
+      since: c.req.query('since') || undefined,
+      until: c.req.query('until') || undefined,
+      limit: Number.isFinite(limit) ? limit : 100,
+    }),
   );
-});
+}
 
 /**
  * The query keys a request read may pass to the plane (#1746): the window, the facet
@@ -4732,41 +4695,33 @@ const REQUEST_READ_KEYS = [
 /**
  * ONE app's requests (#1746): `volume` is the level histogram, `facets` the facet counts,
  * `list` the requests themselves. The same two narrowings as the logs route above — the
- * tenant from the session, the scope from this team's own app rows, so a foreign scope is
+ * tenant from the path's membership, the scope from this team's own app rows, so a foreign scope is
  * a 404.
  */
-app.get('/api/apps/:scopeId/observability/requests/:kind', async (c) => {
-  const kind = c.req.param('kind');
-  if (kind !== 'volume' && kind !== 'facets' && kind !== 'list') throw new HTTPException(404, { message: 'not found' });
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+async function appRequestsIn(ctx: TeamContext, app: string, kind: 'volume' | 'facets' | 'list') {
+  const { c, node } = ctx;
+  const appRow = await appByScopeId(await teamScope(ctx), app);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const params = REQUEST_READ_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cpObservability(() => cp.tenantRequests(kind, appRow.app_scope_id, params)));
-});
+  return cpObservability(() => cp.tenantRequests(kind, appRow.app_scope_id, params));
+}
 
 /** The query keys the pattern read may pass on (#1747) — as for the request reads above. */
 const LOG_PATTERN_KEYS = ['hours', 'since', 'until', 'level', 'operation', 'buckets'] as const;
 
 /**
  * ONE app's `ctx.log` lines grouped by template (#1747). The same two narrowings as every
- * per-app read here: the tenant from the session, the scope from this team's app rows.
+ * per-app read here: the tenant from the path's membership, the scope from this team's app rows.
  */
-app.get('/api/apps/:scopeId/observability/log-patterns', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+async function appLogPatternsIn(ctx: TeamContext, app: string) {
+  const { c, node } = ctx;
+  const appRow = await appByScopeId(await teamScope(ctx), app);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const params = LOG_PATTERN_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cpObservability(() => cp.tenantLogPatterns(appRow.app_scope_id, params)));
-});
+  return cpObservability(() => cp.tenantLogPatterns(appRow.app_scope_id, params));
+}
 
 /**
  * A chart window from `?hours=`, in whole hours on [1, 72]. Rounded, not just clamped:
@@ -5490,6 +5445,19 @@ const routeHandlers = {
   },
   'dashboard/remove-member': async (ctx, { memberId }) => removeMemberIn(ctx, memberId),
   'dashboard/leave-team': async (ctx) => leaveTeamIn(ctx),
+  'dashboard/observability-metrics': async (ctx) => observabilityMetricsIn(ctx),
+  'dashboard/observability-logs': async (ctx) => observabilityLogsIn(ctx),
+  'dashboard/app-observability-metrics': async (ctx, { scopeId: app }) => appObservabilityMetricsIn(ctx, app),
+  'dashboard/tenant-metrics-series': async (ctx) => tenantMetricsSeriesIn(ctx),
+  'dashboard/connector-calls': async (ctx) => connectorCallsIn(ctx),
+  'dashboard/business-volumes': async (ctx) => businessVolumesIn(ctx),
+  'dashboard/team-traffic': async (ctx) => teamTrafficIn(ctx),
+  'dashboard/app-metrics': async (ctx) => appMetricsIn(ctx),
+  'dashboard/app-observability-logs': async (ctx, { scopeId: app }) => appObservabilityLogsIn(ctx, app),
+  'dashboard/app-request-volume': async (ctx, { scopeId: app }) => appRequestsIn(ctx, app, 'volume') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-request-volume']['output']>>,
+  'dashboard/app-request-facets': async (ctx, { scopeId: app }) => appRequestsIn(ctx, app, 'facets') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-request-facets']['output']>>,
+  'dashboard/app-requests': async (ctx, { scopeId: app }) => appRequestsIn(ctx, app, 'list') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-requests']['output']>>,
+  'dashboard/app-log-patterns': async (ctx, { scopeId: app }) => appLogPatternsIn(ctx, app) as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-patterns']['output']>>,
   'dashboard/list-deployments': async (ctx) => listDeploymentsFromCp(teamPlane(ctx)),
   'dashboard/promote-deployment': async (ctx, body) => promoteDeploymentIn(ctx, body),
   'dashboard/get-promotion-review': async (ctx, { slug, versionId }) => promotionReviewIn(ctx, slug, versionId),

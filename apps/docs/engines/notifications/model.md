@@ -18,7 +18,6 @@ intents. The delivery ledger contains no address or rendered message.
 
 ## Guarantees
 
-
 <CommunicationFlow kind="notifications" />
 
 - **One delivery record per occasion and recipient.** A delivery is unique on (dedupe key,
@@ -56,4 +55,3 @@ intents. The delivery ledger contains no address or rendered message.
   left to whoever reads the whole log.
 - **An address never rides an event.** It lives on the engine's recipient row, which a subject
   erasure deletes. The same erasure cancels a send that is still held.
-

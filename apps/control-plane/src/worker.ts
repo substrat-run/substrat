@@ -78,6 +78,7 @@ import {
   type LifecycleDelegation,
   analyticsEngineConnectorCallRecorder,
   type AnalyticsEngineDatasetLike,
+  defineCopyJobDO,
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
@@ -171,7 +172,11 @@ import {
   scopeDeployment,
   type ScopeDeployment,
   type ScopeDeploymentLadder,
+  advanceCopyJob,
+  copyJobThrewRetryMs,
+  type CopyJobRecord,
 } from '@substrat-run/control-plane-api';
+import { durableCopyJobs } from './copy-jobs.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -190,6 +195,7 @@ import {
   mailSendersFor,
   connectFlowsFor,
   connectorSweepersFor,
+  connectionBindersFor,
   type ConnectorEnv,
 } from './connectors.js';
 
@@ -206,6 +212,28 @@ export const ScopeDO = defineScopeDO([], {});
 export const CrossVerticalKickDO = defineKickCoalescerDO<Env>({
   run: (env, producer) => runCrossVerticalPass(env, producer),
   onError: (err) => console.error('cross-vertical kick: the pass failed; the sweep is the backstop', err),
+});
+
+/**
+ * #2450 step 2: one object per background preview copy, stepped by alarm. Each step renews the
+ * move's lease in the directory and moves pages between the two scripts the route resolved, by
+ * their names; the object itself decides only when the next step runs. A control plane with no
+ * dispatch namespace has nothing to copy through, so a job there fails rather than waits.
+ */
+export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
+  advance: async (env, job, step) => {
+    const clientForRef = resolveVerticalRefFor(env);
+    if (!clientForRef) {
+      return {
+        ...job, status: 'failed', nextDelayMs: 0, updatedAt: Date.now(),
+        error: { status: 501, message: 'this control plane has no dispatch namespace to copy a preview through' },
+      };
+    }
+    // A cancel or forget waiting on this step stops it at its next page (#2450).
+    return advanceCopyJob({ clientForRef, admin: hostFor(env).admin }, job, { stopped: step.stopped });
+  },
+  onError: (err) => console.warn('scope copy job: a step threw; it is retried', err),
+  threwRetryMs: copyJobThrewRetryMs,
 });
 
 /** One producer's outgoing edges, now: the kick's pass. The sweep's reach, gates and recorder. */
@@ -438,6 +466,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * Absent, every aggregate read counts its span live (and a long window can time out).
    */
   OBS_CACHE?: DurableObjectNamespace<ObservabilityCacheDO>;
+  /**
+   * #2450 step 2: where a preview's copy runs when it outlasts the request that started it, one
+   * object per job. Absent, every copy runs inside its request, as before.
+   */
+  COPY_JOBS?: DurableObjectNamespace;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -2246,6 +2279,13 @@ export default {
       // surface (the host's connectorDelegation). A connection whose secret cannot be
       // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly into report.errors.
       sweepers: connectorSweepersFor(env),
+      // #2316: each live connection is granted and bound from the landings its vertical's running
+      // version declares, before it is swept — so a company approved through a connect link lands
+      // without anyone running `substrat connection bind`.
+      connectionLandings: {
+        read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+        binders: connectionBindersFor(env),
+      },
       // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
       // never sink the pass it is recording (the ops-failure recorder's shape).
       recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
@@ -3032,6 +3072,7 @@ export default {
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
+        ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
         ensureScopeStores: ensureScopeStoresFor(env),

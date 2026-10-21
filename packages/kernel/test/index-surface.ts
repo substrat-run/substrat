@@ -43,6 +43,8 @@ export const INDEX_VALUE_EXPORTS = [
   'COPY_MARK_CLEARED_KEY',
   'COPY_MOVE_CONFIRM_SQL',
   'COPY_MOVE_LIVE_PREDICATE',
+  // #2450: a copy longer than one lease renews it, in the SQL both adapters' directories run.
+  'COPY_MOVE_RENEW_SQL',
   'COPY_ORIGIN_DDL',
   'COPY_RESTORE_FENCE_LAPSED',
   'CROSS_VERTICAL_CONSUMERS_PER_PASS',
@@ -110,6 +112,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2321: the migration replay `substrat push` calls through a vertical's own kernel, and its version.
   'MIGRATION_REPLAY_API',
   'MODEL_USAGE_RETENTION_DAYS',
+  // #2316: the text a connector sweep row carries when a connection has no binding.
+  'NO_BINDING',
   'NotListable',
   'NotSearchable',
   'OPS_FAILURE_RETENTION_DAYS',
@@ -123,6 +127,8 @@ export const INDEX_VALUE_EXPORTS = [
   'OUTBOX_MARK_SQL',
   'PEER_BINDINGS_DDL',
   'PEER_SWITCHES_DDL',
+  // #2464: one conditional preview expiry write in both directory adapters.
+  'PENDING_COPY_KEEP_ALIVE_SQL',
   'PLATFORM_REQUEST_COLUMNS',
   'PLATFORM_REQUEST_REDACTION_SQL',
   'PROVISIONED_VERSIONS_SQL',
@@ -277,6 +283,7 @@ export const INDEX_VALUE_EXPORTS = [
   'copyBackfillRefusal',
   'copyMoveConfirmParams',
   'copyMoveLiveParams',
+  'copyMoveRenewParams',
   'copyRestoreFence',
   'copyRestoreFenceLapsed',
   'countChecks',
@@ -464,6 +471,7 @@ export const INDEX_VALUE_EXPORTS = [
   'peerSeats',
   'peerSubjectRef',
   'peerVerticalSpellings',
+  'pendingCopyKeepAliveParams',
   'planExportBatch',
   'planMigrations',
   'platformIntentFailureMessage',

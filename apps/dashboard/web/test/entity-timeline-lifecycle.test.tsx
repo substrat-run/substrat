@@ -42,7 +42,7 @@ describe('EntityTimeline with a lifecycle', () => {
     );
 
   const render = async (props: Partial<Parameters<typeof EntityTimeline>[0]>) => {
-    await act(async () => root.render(<EntityTimeline scopeId="app-a" entityType="conversation" entityId="C1" onClose={vi.fn()} {...props} />));
+    await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="app-a" entityType="conversation" entityId="C1" onClose={vi.fn()} {...props} />));
     await act(async () => new Promise((r) => setTimeout(r, 0)));
   };
 

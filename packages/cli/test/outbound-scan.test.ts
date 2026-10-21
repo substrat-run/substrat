@@ -279,6 +279,6 @@ describe.runIf(existsSync(fileURLToPath(new URL('../dist/cli.js', import.meta.ur
       const clean = check(vertical(['wb.acme.com']), '--strict');
       expect(clean.status, clean.stderr).toBe(0);
       expect(clean.stdout).not.toContain('outbound refused');
-    });
+    }, 15_000);
   },
 );

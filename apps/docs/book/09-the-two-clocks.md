@@ -134,7 +134,8 @@ real recurring side effects. In a pass that runs both this phase and phase 3, a 
 schedules just enqueued intents is drained once more right after them, so a scheduled send does
 not wait a whole interval for phase 3 to come round again. No hosted pass does both today.
 The control plane's pass drains intents, but its host runs no schedules. A hosted vertical's
-schedules run on clock one, whose sends wait for the control plane's next pass.
+schedules run on clock one, which kicks that same per-scope drain after its pass enqueues
+intents. A failed kick leaves the control plane's next pass as the backstop.
 
 **6. Freshness expectations.** Record a verdict on event types that were expected to have
 been seen recently — the "nothing ran" signal, which is otherwise invisible because absence

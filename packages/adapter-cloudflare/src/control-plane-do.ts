@@ -168,7 +168,7 @@ import {
   type ServingPointer,
 } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3429,6 +3429,14 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId);
   }
 
+  /** One atomic compare-and-set across the preview row and every entry of its copy move. */
+  keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
+    expectedExpiresAt: string | null, expiresAt: string | null): boolean {
+    return this.sql.exec(PENDING_COPY_KEEP_ALIVE_SQL,
+      ...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
+        new Date().toISOString())).rowsWritten > 0;
+  }
+
   async listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]> {
     const where: string[] = ['vertical_slug = ?'];
     const params: (string | number)[] = [verticalSlug];
@@ -3564,6 +3572,16 @@ export class ControlPlaneDO extends DurableObject {
       this.recordAdmin({ ...audit, before: { erasureEpoch: scope!.erasure_epoch } });
       return 'recorded';
     });
+  }
+
+  /** #2450: renew every entry of a move at once, or none (`COPY_MOVE_RENEW_SQL`). */
+  renewScopeScriptCopy(tenantId: string, scopeId: string, moveId: string, leaseMs: number = SCOPE_COPY_LEASE_MS):
+    { renewedAt: number; leaseUntil: string } | null {
+    const renewedAt = Date.now();
+    const leaseUntil = new Date(renewedAt + leaseMs).toISOString();
+    const renewed = this.sql.exec(COPY_MOVE_RENEW_SQL,
+      ...copyMoveRenewParams(tenantId, scopeId, moveId, leaseUntil, new Date(renewedAt).toISOString())).rowsWritten > 0;
+    return renewed ? { renewedAt, leaseUntil } : null;
   }
 
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): ScopeScriptCopyRow[] {

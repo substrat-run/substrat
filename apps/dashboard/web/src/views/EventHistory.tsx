@@ -354,6 +354,7 @@ function Payload({ e, previous }: { e: HistoryEntry; previous?: HistoryEntry }) 
  * than its model's entity name would otherwise read as "nothing ever happened".
  */
 export function EntityTimeline({
+  teamId,
   scopeId,
   entityType,
   entityId,
@@ -362,6 +363,7 @@ export function EntityTimeline({
   medianMs,
   onClose,
 }: {
+  teamId: string;
   scopeId: string;
   entityType: string;
   entityId: string;
@@ -578,7 +580,7 @@ export function EntityTimeline({
                   {open.logs && e.invocationId !== null && (
                     <>
                       <span style={label}>Logs</span>
-                      <InvocationLogsStrip scopeId={scopeId} invocationId={e.invocationId} occurredAt={e.occurredAt} />
+                      <InvocationLogsStrip teamId={teamId} scopeId={scopeId} invocationId={e.invocationId} occurredAt={e.occurredAt} />
                     </>
                   )}
                 </div>

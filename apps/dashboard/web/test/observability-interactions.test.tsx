@@ -174,7 +174,7 @@ function UrlPage({ apps = [{ app_scope_id: 'app-a', name: 'App A' } as AppRow] }
   }, []);
   const q = readObsQuery(search);
   return (
-    <Observability
+    <Observability teamId="team-a"
       apps={apps}
       query={search}
       scopeId={q.app ?? null}
@@ -196,22 +196,22 @@ it('Logs reads the URL window and filters; refresh and URL replay preserve them,
   const initial = obsPath({ app: 'app-a', view: 'logs', from: windowRange.since, to: windowRange.until, level: 'error', search: 'failure' });
   window.history.replaceState(null, '', initial);
   await act(async () => root.render(<UrlPage />));
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
   // A narrower window — what a bar click on the app page links here with.
   await act(async () => {
     window.history.pushState(null, '', obsPath({ app: 'app-a', view: 'logs', from: next.since, to: next.until, level: 'error', search: 'failure' }));
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
   const calls = logs.mock.calls.length;
   await act(async () => click(button('Refresh')));
   expect(logs.mock.calls.length).toBe(calls + 1);
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
   await act(async () => {
     window.history.replaceState(null, '', initial);
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
   // The filters are chips, read back from the URL.
   expect(container.querySelector('[data-chip="message"]')!.textContent).toContain('failure');
   expect(container.querySelector('[data-chip="level"]')!.textContent).toContain('error');
@@ -235,13 +235,13 @@ it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear r
   };
   await type('timeout');
   expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', search: 'timeout' });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ search: 'timeout' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ search: 'timeout' }));
   await type('level:warn');
   expect(readObsQuery(window.location.search)).toMatchObject({ search: 'timeout', level: 'warn' });
   expect(container.querySelectorAll('[data-chip]')).toHaveLength(2);
   await act(async () => click(container.querySelector('[aria-label="Remove message filter"]')!));
   expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', level: 'warn' });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ level: 'warn', search: undefined }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ level: 'warn', search: undefined }));
   // A malformed filter is refused with its reason, and the URL does not move.
   await type('invocation:nope');
   expect(container.querySelector('[role="alert"]')!.textContent).toContain('ULID');
@@ -269,7 +269,7 @@ it('preserves URL event grouping and type through refresh without remounting con
   }).toString();
   await act(async () =>
     root.render(
-      <Observability
+      <Observability teamId="team-a"
         apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
         query={query}
         scopeId="app-a"
@@ -303,7 +303,7 @@ it('a drag across a Pulse sparkline narrows the whole card to that interval, wit
   const onNav = vi.fn();
   await act(async () =>
     root.render(
-      <Observability
+      <Observability teamId="team-a"
         apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
         query={new URLSearchParams({ from: windowRange.since, to: windowRange.until }).toString()}
         scopeId={null}
@@ -320,7 +320,7 @@ it('a drag across a Pulse sparkline narrows the whole card to that interval, wit
   expect(container.querySelector('[data-pulse-brush]')).not.toBeNull();
   pointer(target, 'pointerup', 300);
   click(target);
-  expect(traffic).toHaveBeenCalledWith({ hours: 24, ...windowRange });
+  expect(traffic).toHaveBeenCalledWith('team-a', { hours: 24, ...windowRange });
   expect(onNav).toHaveBeenCalledExactlyOnceWith({ from: '2026-09-01T10:15:00.000Z', to: '2026-09-01T10:45:00.000Z' });
   expect(container.querySelector('[data-pulse-brush]')).toBeNull();
 });
@@ -354,10 +354,10 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
     { app_scope_id: 'app-b', name: 'App B', vertical_slug: 'crm', status: 'active' },
   ] as AppRow[];
   await act(async () =>
-    root.render(<Observability apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={onNav} />),
+    root.render(<Observability teamId="team-a" apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={onNav} />),
   );
-  expect(metrics).toHaveBeenCalledWith(24);
-  expect(connectorCalls).toHaveBeenCalledWith({ hours: 24 });
+  expect(metrics).toHaveBeenCalledWith('team-a', 24);
+  expect(connectorCalls).toHaveBeenCalledWith('team-a', { hours: 24 });
   const rows = [...container.querySelectorAll<HTMLAnchorElement>('[data-pulse-card] a[role="row"]')];
   // Worst first — the failing app above the healthy one, whatever its traffic.
   expect(rows.map((r) => [...r.querySelectorAll('[role="cell"]')].map((c) => c.textContent))).toEqual([
@@ -398,9 +398,9 @@ it('Pulse draws the business outcomes by default — today, yesterday, the chang
     { app_scope_id: 'app-b', name: 'App B', vertical_slug: 'crm', status: 'active' },
   ] as AppRow[];
   await act(async () =>
-    root.render(<Observability apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={vi.fn()} />),
+    root.render(<Observability teamId="team-a" apps={apps} query="view=traffic" scopeId={null} view="traffic" focusEventType={null} cursor={null} onNav={vi.fn()} />),
   );
-  expect(business).toHaveBeenCalledWith({ hours: 24 });
+  expect(business).toHaveBeenCalledWith('team-a', { hours: 24 });
   const businessRows = () => [...container.querySelectorAll('[data-pulse-card] div[role="row"]')]
     .filter((r) => r.querySelector('[role="cell"]')?.textContent?.startsWith('order'));
   const cells = () => businessRows().map((r) => [...r.querySelectorAll('[role="cell"]')].slice(0, 4).map((c) => c.textContent));
@@ -434,14 +434,14 @@ it('relative presets retain hours-only requests for legacy readers and shared ca
   vi.spyOn(api, 'appSchedules').mockRejectedValue(new Error('unavailable'));
   const team = vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [], available: true, bucketMinutes: 60 });
   const props = { apps: [{ app_scope_id: 'app-a', name: 'App A' } as AppRow], view: 'traffic', focusEventType: null, cursor: null, onNav: vi.fn() };
-  await act(async () => root.render(<Observability {...props} query="app=app-a&hours=24" scopeId="app-a" />));
+  await act(async () => root.render(<Observability teamId="team-a" {...props} query="app=app-a&hours=24" scopeId="app-a" />));
   expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
   expect(overlays).toHaveBeenLastCalledWith('app-a', 24, undefined);
-  expect(metrics).toHaveBeenLastCalledWith(24);
+  expect(metrics).toHaveBeenLastCalledWith('team-a', 24);
   await act(async () => click(button('Refresh')));
   expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
-  await act(async () => root.render(<Observability {...props} query="hours=24" scopeId={null} />));
-  expect(team).toHaveBeenLastCalledWith({ hours: 24 });
+  await act(async () => root.render(<Observability teamId="team-a" {...props} query="hours=24" scopeId={null} />));
+  expect(team).toHaveBeenLastCalledWith('team-a', { hours: 24 });
 });
 
 it('partial-window marker stacks keep separate buckets independently visible', async () => {
@@ -462,7 +462,7 @@ describe('menu children (#1767)', () => {
     vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 } as Awaited<ReturnType<typeof api.appTraffic>>);
     await act(async () =>
       root.render(
-        <Observability
+        <Observability teamId="team-a"
           apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
           query={new URLSearchParams({ view, ...(scopeId ? { app: scopeId } : {}) }).toString()}
           scopeId={scopeId}
@@ -499,7 +499,7 @@ describe('menu children (#1767)', () => {
     const onNav = vi.fn();
     await act(async () =>
       root.render(
-        <Observability
+        <Observability teamId="team-a"
           apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
           query="view=patterns&app=app-a&level=error&search=boom&invocationId=01J8Z3KX0Q5R7T9V1W2Y4A6B8C"
           scopeId="app-a"
@@ -544,7 +544,7 @@ it('opens retained failure details without relying on the recent schedule histor
   const read = vi.spyOn(api, 'appFailures').mockResolvedValue({ entries: [{ id: 'failed-run', kind: 'sweep', at: windowRange.since, operation: 'widgets/queue-due', stage: 'schedule', message, code: null }], unavailableSources: [], incompleteSources: [] });
   const schedules = vi.spyOn(api, 'appSchedules');
   const onNav = vi.fn();
-  await act(async () => root.render(<Observability apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]} query={`app=app-a&view=failures&level=warn&tpl=unrelated&search=other&invocationId=old-call&from=${windowRange.since}&to=${windowRange.until}`} scopeId="app-a" view="failures" cursor={{ from: windowRange.since, to: windowRange.until }} focusEventType={null} onNav={onNav} />));
+  await act(async () => root.render(<Observability teamId="team-a" apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]} query={`app=app-a&view=failures&level=warn&tpl=unrelated&search=other&invocationId=old-call&from=${windowRange.since}&to=${windowRange.until}`} scopeId="app-a" view="failures" cursor={{ from: windowRange.since, to: windowRange.until }} focusEventType={null} onNav={onNav} />));
   expect(read).toHaveBeenCalledWith('app-a', windowRange);
   expect(schedules).not.toHaveBeenCalled();
   expect(container.querySelector('h1')?.textContent).toBe('Failures');
@@ -561,7 +561,7 @@ it('opens retained failure details without relying on the recent schedule histor
 
 it('shows a failure read error and does not claim that no failures exist', async () => {
   vi.spyOn(api, 'appFailures').mockRejectedValue(new Error('unavailable'));
-  await act(async () => root.render(<Observability apps={[]} query="app=app-a&view=failures" scopeId="app-a" view="failures" cursor={null} focusEventType={null} onNav={vi.fn()} />));
+  await act(async () => root.render(<Observability teamId="team-a" apps={[]} query="app=app-a&view=failures" scopeId="app-a" view="failures" cursor={null} focusEventType={null} onNav={vi.fn()} />));
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('unavailable');
   expect(container.textContent).not.toContain('No failures recorded');
 });

@@ -142,6 +142,10 @@ export {
   subjectErasureClaimParams,
   type SubjectErasureFence,
   COPY_EXPIRED_SQL,
+  COPY_MOVE_RENEW_SQL,
+  copyMoveRenewParams,
+  PENDING_COPY_KEEP_ALIVE_SQL,
+  pendingCopyKeepAliveParams,
   COPY_MOVE_CONFIRM_SQL,
   COPY_MOVE_LIVE_PREDICATE,
   SCOPE_SCRIPT_COPY_COLUMNS,
@@ -879,7 +883,10 @@ export {
   runCrossVerticalFrom,
   registryImportCandidates,
   crossVerticalHealth,
+  NO_BINDING,
 } from './platform-sweep.js';
+// #2316: a vertical's declared connection landings, granted and bound by the connector pass.
+export type { ConnectionBinder, ConnectionLandingOptionsInput, LandingOutcome } from './connection-landings.js';
 export { SCHEDULE_STATE_DDL, SCHEDULE_STATE_REBUILD, scheduleStateHasKind } from './schedule-state.js';
 export type { ScheduleSweepReport, ScheduleStateKind } from './schedule-state.js';
 export type {
@@ -890,6 +897,7 @@ export type {
   PlatformRequestUnsettleable,
   AccessLogSweepReport,
   ConnectorSweeper,
+  ConnectorSweepAnswer,
   MigrationSweepReport,
   PlatformSweepOptions,
   PlatformSweepReport,

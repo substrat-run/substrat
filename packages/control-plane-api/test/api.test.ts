@@ -4604,6 +4604,67 @@ describe('control-plane API — vertical registry', () => {
       expect((await get(`/verticals/fsm/versions/${id}/registry`)).status).toBe(200);
     });
 
+    it('verifies pushed registry keys against module declarations before storing a version (#2446)', async () => {
+      const declared = [
+        { key: 'fsm:job-read', description: 'Read a job' },
+        { key: 'fsm:job-run', description: 'Run a job', holder: 'system' as const },
+      ];
+      const rows = declared.map((p) => ({ ...p, declaredBy: ['fsm'] }));
+      const manifest = (id: string, permissions: typeof rows, modules?: unknown) => JSON.stringify({
+        version: id.toLowerCase(), entry: 'index.js', compatibilityDate: '2026-07-01',
+        registry: { permissions, roles: [], entityGrants: [] },
+        ...(modules === undefined ? {} : { modules }),
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      });
+      const modules = [{ id: 'fsm', permissions: declared }];
+      const good = ulid();
+      expect((await post(good, manifest(good, rows, modules))).status).toBe(201);
+      expect((await get(`/verticals/fsm/versions/${good}/registry`)).status).toBe(200);
+
+      for (const [permissions, key, disagreement] of [
+        [rows.map((p) => p.key === 'fsm:job-run' ? { ...p, holder: undefined } : p), 'fsm:job-run', 'registry holder disagrees'],
+        [rows.map((p) => p.key === 'fsm:job-read' ? { ...p, holder: 'system' } : p), 'fsm:job-read', 'registry holder disagrees'],
+        [[...rows, { key: 'fsm:extra', description: 'Extra', declaredBy: ['fsm'] }], 'fsm:extra', 'registry lists a key no module declares'],
+      ] as const) {
+        const id = ulid();
+        const res = await post(id, manifest(id, [...permissions] as typeof rows, modules));
+        expect(res.status).toBe(400);
+        expect(((await res.json()) as { error: string }).error).toContain(`${key}: ${disagreement}`);
+        expect((await get(`/verticals/fsm/versions/${id}/registry`)).status).toBe(404);
+      }
+      const old = ulid();
+      expect((await post(old, manifest(old, rows))).status).toBe(201);
+      const empty = ulid();
+      expect((await post(empty, manifest(empty, rows, []))).status).toBe(400);
+    });
+
+    it('requires a registry when module declarations are sent, while accepting a legacy manifest with neither', async () => {
+      const base = (id: string) => ({
+        version: id.toLowerCase(), entry: 'index.js', compatibilityDate: '2026-07-01',
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      });
+      const modules = [{ id: 'fsm', permissions: [{ key: 'fsm:job-run', description: 'Run a job', holder: 'system' }] }];
+      const missing = ulid();
+      const refused = await post(missing, JSON.stringify({ ...base(missing), modules }));
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({
+        code: 'validation_failed',
+        error: 'manifestJson is not a deploy manifest: registry: required when modules are present',
+      });
+      expect((await get(`/verticals/fsm/versions/${missing}/registry`)).status).toBe(404);
+
+      const legacy = ulid();
+      expect((await post(legacy, JSON.stringify(base(legacy)))).status).toBe(201);
+      const matched = ulid();
+      expect((await post(matched, JSON.stringify({
+        ...base(matched), modules,
+        registry: {
+          permissions: [{ ...modules[0]!.permissions[0]!, declaredBy: ['fsm'] }],
+          roles: [], entityGrants: [],
+        },
+      }))).status).toBe(201);
+    });
+
     it('stores the manifest as sent — a key the schema does not know survives', async () => {
       const id = ulid();
       const sent = JSON.stringify({

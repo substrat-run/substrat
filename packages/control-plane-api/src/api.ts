@@ -1,4 +1,5 @@
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
+import { connectionBindingOptions } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
 import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
@@ -183,7 +184,11 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { connectionGrantsForScope, transferScope, type StagedDump, type VerticalClient } from './vertical-client.js';
+import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import {
+  COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
+  type CopyJobRecord, type CopyJobs,
+} from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
@@ -209,6 +214,7 @@ import {
   deployManifest,
   storedDeployManifest,
   pushedOwnerGrantProblems,
+  pushedModuleRegistryProblems,
   pushedPermissionRegistry,
   deploymentRefFor,
   stableDeploymentRefFor,
@@ -418,6 +424,13 @@ export interface ControlPlaneApiOptions {
    * resolvers, which is only correct before any scope has adopted the serving script.
    */
   resolveVerticalRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+  /**
+   * #2450 step 2: where a preview's copy runs when it outlasts the request that started it (a
+   * Durable Object per job in the hosted control plane). Without it, or without
+   * `resolveVerticalRef` (a job reaches each end by its script), or for a caller that does not ask
+   * (`async`), every copy runs in the request, as before.
+   */
+  copyJobs?: CopyJobs;
   /**
    * Reserved scope-store operations, signed and sent to the store script (#2207).
    * The vertical is not asked: it holds neither the namespace nor the key.
@@ -1081,6 +1094,14 @@ const createPreviewBody = z.object({
   ttlHours: z.number().int().positive().max(720).nullable().optional(),
   surface: surfaceName.optional(),
   refresh: z.boolean().optional(),
+  // #2450 step 2: the caller can take a 202 and call again. A copy too large to finish in this
+  // request then moves in the background, and the 202 says how far it got; the same call, repeated,
+  // finishes the preview once it is done. A caller that does not say so is answered as before.
+  async: z.boolean().optional(),
+  // #2450: this call follows a 202 that named this call's own version, so it continues that copy and
+  // never starts one: it answers the copy's progress, finishes it once it is done, or says it is gone.
+  // A call after a 202 naming another push's copy (one being finished) is not a poll: it may start its own.
+  poll: z.boolean().optional(),
 });
 
 const listRolesQuery = z.object({
@@ -2835,23 +2856,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (target.status !== 'active' || !target.vertical || target.vertical !== row.vertical) {
       return refuseStatus(c, 409, 'connection and target must share an active vertical scope');
     }
-    const fields = {
+    const schema = connectionBindingOptions(row.provider).extend({
       operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/),
       permission: permissionKey,
-    };
-    const schema = row.provider === 'planima'
-      ? z.object({ ...fields,
-          organizationId: z.number().int().positive().nullable().optional(),
-          currency: z.string().regex(/^[A-Z]{3}$/).optional(),
-          window: z.object({ fromYear: z.number().int(), toYear: z.number().int() })
-            .refine((w) => w.toYear >= w.fromYear, 'window ends before it starts').nullable().optional(),
-          horizonYears: z.number().int().min(0).optional(),
-        }).strict()
-      : row.provider === 'microsoft365'
-        // #2101: the channel folder, by its drive path. The connector resolves it and holds the
-        // fence to it; this only bounds the input.
-        ? z.object({ ...fields, folder: z.string().trim().min(1).max(400) }).strict()
-        : z.object(fields).strict();
+    });
     const input = schema.parse(await c.req.json());
     const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
     if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {
@@ -3654,6 +3662,242 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     restoredStamp: string;
   };
 
+  /** #2450 step 2: what the preview route answers while a job copies: 202, and how far it got. */
+  type PreviewCopying = {
+    copying: true;
+    scopeId: ScopeId;
+    versionId: string;
+    progress: { pages: number; rows: number; attempt: number };
+    /** When to call again, seconds. */
+    retryAfter: number;
+  };
+  const COPY_POLL_SECONDS = 5;
+  const copyingAnswer = (job: CopyJobRecord): PreviewCopying => ({
+    copying: true,
+    scopeId: job.spec.scopeId,
+    versionId: job.spec.versionId,
+    progress: { pages: job.pages, rows: job.rows, attempt: job.attempt },
+    retryAfter: COPY_POLL_SECONDS,
+  });
+
+  /**
+   * #2450: a push older than the one a preview's job is copying for is refused, never allowed to
+   * replace it. Otherwise two CI runs for one preview would cancel each other's copy at every poll.
+   * Older by `versionOrderOf`: when the registry recorded each version, whatever its id. Only a job
+   * that can still land its push's data holds an older one off (`copyJobLive`): one that failed, was
+   * cancelled or was left unfinished past its lease is replaced like any other.
+   */
+  const supersededRefusal = (
+    job: CopyJobRecord,
+    mine: { versionId: string; order: string },
+    tag: string,
+  ): ControlPlaneError | null =>
+    mine.order < job.spec.versionOrder && copyJobLive(job, Date.now())
+      ? new ControlPlaneError(
+        409,
+        `a newer push (version ${job.spec.versionId}) to preview '${tag}' ` +
+          `${job.status === 'copying' ? 'is copying its data' : 'is finishing its copy'}, so this push ` +
+          `(version ${mine.versionId}) was superseded and did nothing`,
+      )
+      : null;
+
+  /**
+   * #2450: a create for an older version than one another call (a poll included) to the same preview
+   * marked within `PREVIEW_CREATE_BOUND_MS` (`CopyJobs.markNewest`). It covers the moments no job
+   * record names the newer push: a newer push forgets the fork job it replaces, then reaps that row
+   * and provisions its own; and the time after its copy has landed and its job is forgotten. Once the
+   * mark's hold has run out, and no newer push's job is copying, an older version (a deliberate
+   * re-preview) is taken like any other create.
+   */
+  const supersededByMark = (newest: string, mine: { versionId: string }, tag: string): ControlPlaneError => {
+    const minutes = PREVIEW_CREATE_BOUND_MS / 60_000;
+    return new ControlPlaneError(
+      409,
+      `a newer push (version ${versionIdOfOrder(newest)}) to preview '${tag}' called within the last ${minutes} min, ` +
+        `so this push (version ${mine.versionId}) was superseded and did nothing. An older version is taken again ` +
+        `${minutes} min after a newer push's last call, once no newer push's copy is running`,
+    );
+  };
+
+  /**
+   * How long a call that claimed a done job holds it to finish it (#2450): twice the copy lease. The
+   * holder renews the lease straight after claiming and can confirm the move only inside that lease,
+   * so by the time its claim runs out it can no longer finish. One that died leaves the claim to run
+   * out, and the next call then finds the lease gone, settles the move and frees the tag.
+   */
+  const copyClaimMs = 2 * copyLeaseMs;
+
+  /**
+   * Stop a preview's copy job and settle its move (#2450): a refresh, a delete, a newer push that
+   * replaces it, or the job's own failure. The move's entries settle `retained`, so reap and erasure
+   * reach both scripts; the stage it left is discarded best-effort, and goes with any later wipe.
+   * `unlessFinishing` (a newer push): a done job another call has claimed is that call's to finish or
+   * give up, so it is left alone, and the answer is false.
+   */
+  const settleJobMove = async (c: ReqCtx, job: CopyJobRecord, opts: { unlessFinishing?: boolean } = {}): Promise<boolean> => {
+    const jobs = options.copyJobs;
+    if (!jobs) return true;
+    // A step running right now writes nothing after this, and no call can claim the job after it:
+    // its host keeps a cancel over a step's answer, and a claim takes only a done job.
+    const latest = (await jobs.cancel(job.spec.id)) ?? job;
+    if (opts.unlessFinishing && copyJobHeld(latest, Date.now())) return false;
+    await settleJobEntries(c, job);
+    await discardJobStages(job, latest);
+    await jobs.forget(job.spec.id);
+    return true;
+  };
+
+  /** A job's move, every entry settled `retained` (#2450), best-effort: a sweep settles what this misses. */
+  const settleJobEntries = async (c: ReqCtx, job: CopyJobRecord): Promise<void> => {
+    const { spec } = job;
+    const actor = c.get('actor');
+    const refs = spec.kind === 'carry' ? [spec.sourceRef, spec.destRef] : [spec.destRef];
+    await Promise.allSettled(refs.map((ref) =>
+      c.var.admin.settleScopeScriptCopy(actor, spec.tenantId, spec.scopeId, ref, spec.moveId, 'retained')));
+  };
+
+  /**
+   * Drop every stage these records of one job name at its destination (#2450), best-effort: once the
+   * job is forgotten nothing else names them, and they would wait for a wipe of the scope there. A
+   * stage that was loaded is gone already, and its discard changes nothing.
+   */
+  const discardJobStages = async (...records: [CopyJobRecord, ...CopyJobRecord[]]): Promise<void> => {
+    const { spec } = records[0];
+    const staged = records.flatMap((r) => [r.state?.stageId, r.done && !Array.isArray(r.done.dump) ? r.done.dump.stageId : undefined]);
+    const dest = await options.resolveVerticalRef?.(spec.destRef).catch(() => undefined);
+    for (const stageId of new Set(staged.filter((id): id is string => id !== undefined))) {
+      await dest?.discardStagedScope(spec.scopeId, stageId).catch(() => undefined);
+    }
+  };
+
+  /**
+   * Run the whole finish of a job this call claimed (#2450), from the lease's renewal on. However it
+   * fails (a refusal, a fence that lapsed, a renewal or a resolve that threw outright), the job's move
+   * settles `retained` and the stage it was to load is discarded: its caller forgets the job next,
+   * after which nothing would, and a refused load keeps its stage.
+   */
+  const finishingJob = async <T>(c: ReqCtx, job: CopyJobRecord, finish: () => Promise<T>): Promise<T> => {
+    try {
+      return await finish();
+    } catch (e) {
+      await settleJobEntries(c, job);
+      await discardJobStages(job);
+      throw finishRefusal(c, job, e);
+    }
+  };
+
+  /**
+   * A finish of a claimed job that failed, as the route answers it (#2450). A refusal is answered as
+   * itself. A fault (a 5xx: a load or a bind that failed past its own retries) is answered 409 naming
+   * its status, as a job's own failure is (`refuseFailedJob`): the copy it finished is settled, and
+   * only a new create starts it over, so it is no status to retry. The fault lands its ops-failure
+   * row here, unless the step that met it recorded it.
+   */
+  const finishRefusal = (c: ReqCtx, job: CopyJobRecord, e: unknown): unknown => {
+    const { status, body } = mapError(e);
+    if (status < 500) return e;
+    if (!(typeof e === 'object' && e !== null && recordedCauses.has(e))) {
+      recordCopyFault(c, job, 'finish', status, messageOfThrow(e), { cause: e });
+    }
+    return new ControlPlaneError(409, `the background copy failed with ${status} while it was finished: ${body.detail ?? 'internal error'}`);
+  };
+
+  /**
+   * The ops-failure row of a fault a copy met (#2450), which the route answers 409 rather than as a
+   * 5xx the backstop would record (#559). A 501 is a capability statement, not a fault, and none.
+   */
+  const recordCopyFault = (
+    c: ReqCtx,
+    job: CopyJobRecord,
+    stage: 'copy' | 'finish',
+    status: number,
+    message: string,
+    opts: { cause?: unknown } = {},
+  ): void => {
+    if (status === 501) return;
+    const entry: OpsFailureInput = {
+      actor: c.get('actor'),
+      operation: 'preview.create',
+      stage,
+      tenantId: job.spec.tenantId,
+      scopeId: job.spec.scopeId,
+      vertical: job.spec.vertical,
+      version: job.spec.versionId,
+      status,
+      message,
+    };
+    // A job's own record carries no throw: no cause, rather than an `undefined` one (`recordFailure`).
+    if ('cause' in opts) recordFailure(entry, opts.cause);
+    else recordFailure(entry);
+  };
+
+  /**
+   * A preview's copy job (#2450), as of now (`copyJobAt`): one whose steps were lost past its
+   * deadline reads as failed by it, so the route settles and answers it instead of waiting forever.
+   */
+  const readCopyJob = async (id: string): Promise<CopyJobRecord | null> => {
+    const job = await options.copyJobs?.get(id);
+    return job ? copyJobAt(job, Date.now()) : null;
+  };
+
+  /**
+   * Every copy job a preview has (#2450), settled: before it is reaped or replaced. `by` is a create
+   * replacing it, which a newer push's live copy refuses (`supersededRefusal`) before anything is
+   * settled; a delete passes none, and removes whatever is there.
+   */
+  const cancelPreviewJobs = async (
+    c: ReqCtx,
+    preview: Scope,
+    by?: { mine: { versionId: string; order: string }; tag: string },
+  ): Promise<void> => {
+    if (!options.copyJobs) return;
+    const held: CopyJobRecord[] = [];
+    for (const kind of ['fork', 'carry'] as const) {
+      const job = await readCopyJob(copyJobId(kind, preview.id));
+      if (job) held.push(job);
+    }
+    if (by) {
+      for (const job of held) {
+        const superseded = supersededRefusal(job, by.mine, by.tag);
+        if (superseded) throw superseded;
+      }
+    }
+    for (const job of held) await settleJobMove(c, job);
+  };
+
+  /**
+   * Finish a carry a job copied (#2450): renew the move's lease, which the restore's fence then
+   * counts from, and run the same `carryFinish` an in-request carry runs. A move the job can no
+   * longer finish is refused. A finish that fails is settled (`finishingJob`) and forgets the job;
+   * one that lands leaves it claimed, for the caller to forget once its bind has landed or failed:
+   * until then the preview is still bound to the version this carry replaces, and a newer push that
+   * found no job would carry from there.
+   */
+  const finishCarryJob = async (c: ReqCtx, scope: Scope, versionId: string, job: CopyJobRecord): Promise<Carried> => {
+    const { spec } = job;
+    const done = job.done;
+    const actor = c.get('actor');
+    try {
+      return await finishingJob(c, job, async () => {
+        const lease = await c.var.admin.renewScopeScriptCopy(actor, spec.tenantId, spec.scopeId, spec.moveId, { leaseMs: copyLeaseMs });
+        const [source, dest] = await Promise.all([options.resolveVerticalRef?.(spec.sourceRef), options.resolveVerticalRef?.(spec.destRef)]);
+        if (!lease || !source || !dest || !done || !spec.expected) {
+          throw !lease
+            ? new ControlPlaneError(409, `the copy of scope ${spec.scopeId} was settled before it could be loaded; nothing was moved`)
+            : new ControlPlaneError(502, `the copy of scope ${spec.scopeId} could not reach both of its scripts to finish`);
+        }
+        const expected = spec.expected;
+        return carryWith(c, scope, versionId, {
+          moveId: spec.moveId, erasureEpoch: spec.erasureEpoch, from: spec.sourceRef, to: spec.destRef,
+          source, dest, restoredStamp: spec.restoredStamp, leasedAt: lease.renewedAt, expected,
+        }, async () => done);
+      });
+    } catch (e) {
+      await options.copyJobs?.forget(spec.id).catch(() => undefined);
+      throw e;
+    }
+  };
+
   /**
    * Carry a scope's data onto the script a version bind is about to route it to (#1710).
    * The caller binds only after this returns.
@@ -3707,6 +3951,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     versionId: string,
     opts: { dropServingRef?: boolean } = {},
   ): Promise<Carried | null> => {
+    const move = await carryBegin(c, scope, versionId, opts);
+    if (!move) return null;
+    // #2450: a page at a time into the destination's stage, so a scope of any size moves. The
+    // stage moves neither the destination's load stamp nor its write revision, so the marker
+    // `carryFinish` reads next still describes the store the restore commits into.
+    return carryWith(c, scope, versionId, move, () =>
+      transferScope(move.source, move.dest, { from: scope.id }, { retry: retryTransient }));
+  };
+
+  /** The two ends a carry moves between, resolved and checked (`carryOntoVersion`), or null when nothing moves. */
+  const carryEnds = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    opts: { dropServingRef?: boolean } = {},
+  ): Promise<{ source: VerticalClient; dest: VerticalClient; from: string; to: string } | null> => {
     const resolveVersion = options.resolveVerticalVersion;
     if (!scope.vertical) return null;
     const actor = c.get('actor');
@@ -3742,6 +4002,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `so the version was not bound (#1710)`,
       );
     }
+    return { source, dest, from, to };
+  };
+
+  /**
+   * A carry's move, recorded (#2450): what `carryBegin` ledgered, and what `carryFinish` needs to
+   * finish it, from this request or (a copy too large for one) a later one after a job moved it.
+   */
+  type CarryMove = {
+    moveId: string;
+    erasureEpoch: number;
+    from: string;
+    to: string;
+    source: VerticalClient;
+    dest: VerticalClient;
+    restoredStamp: string;
+    /** Epoch ms the move's lease was last recorded or renewed at: its restore fence counts from here. */
+    leasedAt: number;
+    /** The scope's binding and pin as the carry read them; the restore is refused if either moved. */
+    expected: { versionId: string | null; servingRef: string | null };
+  };
+
+  /** `carryOntoVersion`'s checks and its ledger entries, up to the copy (#2450): null when nothing moves. */
+  const carryBegin = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    opts: { dropServingRef?: boolean } = {},
+  ): Promise<CarryMove | null> => {
+    const ends = await carryEnds(c, scope, versionId, opts);
+    if (!ends) return null;
+    const { source, dest, from, to } = ends;
+    const actor = c.get('actor');
     // Before exporting or restoring anything, retain the script identity in the directory, so a
     // failed carry stays named for reap and erasure. Both entries are leased to this move: if this
     // request dies, a sweep settles them once the lease runs out, and the move can then no longer
@@ -3759,12 +4051,55 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId,
         { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
-      // #2450: a page at a time into the destination's stage, so a scope of any size moves. The
-      // stage moves neither the destination's load stamp nor its write revision, so the marker read
-      // next still describes the store the restore below commits into.
-      const { dump, loadStamp: sourceStamp, revision: sourceRevision, meta } = await transferScope(
-        source, dest, { from: scope.id }, { retry: retryTransient },
-      );
+      return {
+        moveId, erasureEpoch, from, to, source, dest, restoredStamp, leasedAt: recordedAt,
+        expected: { versionId: scope.verticalVersionId ?? null, servingRef: scope.servingRef ?? null },
+      };
+    } catch (error) {
+      await settleCarryRetained(c, scope, versionId, { moveId, from, to });
+      throw error;
+    }
+  };
+
+  /** Neither script of an unconfirmed move can be discarded: a retry or reap can still reach both. */
+  const settleCarryRetained = async (
+    c: ReqCtx, scope: Scope, versionId: string, move: { moveId: string; from: string; to: string },
+  ): Promise<void> => {
+    const actor = c.get('actor');
+    // A crash leaves them pending and blocks key finalization.
+    const settled = await Promise.allSettled([
+      c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, move.from, move.moveId, 'retained'),
+      c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, move.to, move.moveId, 'retained'),
+    ]);
+    for (const result of settled) {
+      if (result.status === 'rejected') recordCarryCleanup(c, scope, versionId, 'copy-ledger', result.reason);
+    }
+  };
+
+  /**
+   * Finish a carry whose data `transfer` moves (#2450): the copy, then the #1722 checks and the
+   * restore. Any failure settles both ends retained.
+   */
+  const carryWith = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    move: CarryMove,
+    transfer: () => Promise<TransferredScope>,
+  ): Promise<Carried> => {
+    try {
+      return await carryFinish(c, scope, move, await transfer());
+    } catch (error) {
+      await settleCarryRetained(c, scope, versionId, move);
+      throw error;
+    }
+  };
+
+  const carryFinish = async (c: ReqCtx, scope: Scope, move: CarryMove, transferred: TransferredScope): Promise<Carried> => {
+    const actor = c.get('actor');
+    const { moveId, erasureEpoch, from, to, source, dest, restoredStamp } = move;
+    const { dump, loadStamp: sourceStamp, revision: sourceRevision, meta } = transferred;
+    {
       // What the destination holds now, read before the binding is checked again. The restore
       // sends it back and is refused if the store moved since: another carry into the same script
       // loaded it, or it went live under another carry's bind and took a write. That is a CI retry
@@ -3773,8 +4108,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
       if (
         !now ||
-        (now.verticalVersionId ?? null) !== (scope.verticalVersionId ?? null) ||
-        (now.servingRef ?? null) !== (scope.servingRef ?? null)
+        (now.verticalVersionId ?? null) !== move.expected.versionId ||
+        (now.servingRef ?? null) !== move.expected.servingRef
       ) {
         throw new ControlPlaneError(
           412,
@@ -3795,7 +4130,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         loadStamp: restoredStamp,
         ...(destMarker === 'unfenced' ? {} : { expect: destMarker }),
         // The store refuses this load once the move's lease can have run out (#1722).
-        fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch),
+        fence: copyRestoreFence(moveId, move.leasedAt, copyLeaseMs, erasureEpoch),
       });
       return {
         moveId,
@@ -3810,17 +4145,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         sourceRevision,
         restoredStamp,
       };
-    } catch (error) {
-      // Neither script can be discarded based on this unconfirmed move. A retry or reap
-      // can still reach both. A crash leaves them pending and blocks key finalization.
-      const settled = await Promise.allSettled([
-        c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId, 'retained'),
-        c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId, 'retained'),
-      ]);
-      for (const result of settled) {
-        if (result.status === 'rejected') recordCarryCleanup(c, scope, versionId, 'copy-ledger', result.reason);
-      }
-      throw error;
     }
   };
 
@@ -7637,12 +7961,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         );
       const checked = storedDeployManifest.safeParse(raw);
       if (!checked.success) return refuseManifest(checked.error.issues[0]!);
+      if (checked.data.modules !== undefined && !checked.data.registry) {
+        return refuseManifest({ path: ['registry'], message: 'required when modules are present' });
+      }
       // #1869: a registry handed to this route now is NEW, so it answers to the push-time rule on
       // entity-grant shapes (no kernel namespace as an entity type), as `deployManifest` does.
-      // An absent registry stays accepted, as above.
+      // A legacy manifest with neither modules nor registry stays accepted, as above.
       if (checked.data.registry) {
         const registry = pushedPermissionRegistry.safeParse(checked.data.registry);
         if (!registry.success) return refuseManifest(registry.error.issues[0]!, ['registry']);
+        const moduleProblems = pushedModuleRegistryProblems(checked.data.modules, registry.data);
+        if (moduleProblems.length > 0) return refuseManifest({ path: ['registry', 'permissions'], message: moduleProblems.join('; ') });
       }
       // #2430: an owner grant is a person's, so it holds no key the registry reserves.
       const ownerGrants = pushedOwnerGrantProblems(checked.data);
@@ -8404,7 +8733,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const form = await c.req.formData();
     const raw = form.get('manifest');
     if (typeof raw !== 'string') return refuse(c, 'validation_failed', 'missing manifest part');
-    const manifest = deployManifest.parse(JSON.parse(raw));
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === 'object' && 'modules' in parsed && !('registry' in parsed)) {
+      return refuse(c, 'validation_failed', 'manifest registry: required when modules are present');
+    }
+    const manifest = deployManifest.parse(parsed);
+    const moduleProblems = pushedModuleRegistryProblems(manifest.modules, manifest.registry);
+    if (moduleProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.permissions: ${moduleProblems.join('; ')}`);
     // #2430: an owner grant is a person's, so it holds no key the registry reserves.
     const ownerGrants = pushedOwnerGrantProblems(manifest);
     if (ownerGrants.length > 0) return refuse(c, 'validation_failed', `manifest ownerGrants: ${ownerGrants.join('; ')}`);
@@ -9688,8 +10023,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     slug: string,
     // A FORK copies this scope's data; `null` provisions an empty clean-room scope (#509 (b)).
     source: Scope | null,
-    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean },
-  ): Promise<{
+    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean; async?: boolean; poll?: boolean },
+  ): Promise<PreviewCopying | {
     scopeId: ScopeId;
     hostname: string;
     url: string;
@@ -9702,6 +10037,34 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   }> => {
     const actor = c.get('actor');
     const surface = opts.surface ?? 'app';
+    // #2450 step 2: where a copy that outlasts this request may run — only for a caller that takes a
+    // 202 and calls again, and on a host whose jobs can reach each end by its script.
+    const jobs = opts.async && options.resolveVerticalRef ? options.copyJobs : undefined;
+    // #2450: a call that continues the copy an earlier call of this push started. It never starts a
+    // copy, reaps a row or forks one, so no answer lost or misread on the way back can turn into a
+    // copy started over: only a new create (a new push) does that.
+    const poll = jobs !== undefined && opts.poll === true;
+    /** What a poll is answered when the copy it was waiting on is no longer there. */
+    const copyGone = (): ControlPlaneError =>
+      new ControlPlaneError(
+        409,
+        `the copy for preview '${opts.tag}' (version ${opts.versionId}) is no longer running: it failed, a newer push ` +
+          `or a refresh replaced it, or the preview was deleted. Nothing was moved; a new create starts the copy over`,
+      );
+    /**
+     * A job's failure, as the route answers it. A refusal keeps the status and sentence the
+     * synchronous copy would have answered. A fault the copy met (a 5xx: its deadline, an end it
+     * could not reach, a stage it could not keep) is answered 409, naming that status: the call
+     * reporting it did not fail, the copy did, earlier. A 502–504 reads to every client as a
+     * gateway's, which it retries, though nothing about the copy will change. The fault is recorded
+     * here, since its answer is no 5xx for the backstop to see (#559).
+     */
+    const refuseFailedJob = (job: CopyJobRecord): ControlPlaneError => {
+      const error = job.error ?? { status: 409, message: `the copy of scope ${job.spec.scopeId} was cancelled before it finished; nothing was moved` };
+      if (error.status < 500) return new ControlPlaneError(error.status, error.message);
+      recordCopyFault(c, job, 'copy', error.status, error.message);
+      return new ControlPlaneError(409, `the background copy failed with ${error.status}: ${error.message}`);
+    };
     // #527 guard: a preview MUST serve the version it just bound. Routing resolves
     // `COALESCE(scope.servingRef, version.deploymentRef)` (control-plane-do `readRoute`),
     // so a preview that still carries an inherited `serving_ref` — or otherwise resolves away
@@ -9730,6 +10093,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // after its first creation no matter how alive it is (preview-and-snapshots.md §9).
     const expiresAt =
       opts.ttlHours === null ? null : new Date(Date.now() + (opts.ttlHours ?? 72) * 3_600_000).toISOString();
+    /**
+     * #2450: a preview whose copy a job is running keeps its deadline counted from the latest call,
+     * as a finished create's is, so a copy longer than the TTL is not met by the sweep's reap. Each
+     * write is audited, so it is written only once the stored deadline has fallen more than
+     * `PREVIEW_CREATE_BOUND_MS` behind this call's. Best-effort: the finish writes it again.
+     */
+    const keepAlive = async (row: Scope, moveId: string): Promise<void> => {
+      const due = expiresAt === null
+        ? row.expiresAt !== null
+        : row.expiresAt === null || Date.parse(row.expiresAt) < Date.parse(expiresAt) - PREVIEW_CREATE_BOUND_MS;
+      if (due) await c.var.admin.keepAlivePendingScopeCopy(
+        actor, tenantId, row.id, moveId, row.status, row.expiresAt, expiresAt,
+      ).catch(() => undefined);
+    };
     // Residency (K-7/K-32): forking pins the copy's EXECUTION to the preview deployment.
     // Anything tighter than `global` cannot be honoured until Regional Services, so refuse
     // it here rather than record a residency claim with no mechanism (same gate as export).
@@ -9747,9 +10124,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // every push is its own script, so the rebind first CARRIES the preview's data into
     // the new version's script (#1710). The preview's data then follows it from push to
     // push, and each push's migrations run forward over it (§4's rehearsal case).
-    const existing = (await c.var.admin.listScopes(actor, { tenantId, vertical: slug })).find(
+    let existing = (await c.var.admin.listScopes(actor, { tenantId, vertical: slug })).find(
       (s) => s.kind === 'preview' && s.slug === previewSlug(slug, opts.tag),
     );
+    // #2450 step 2: a fork a job is copying. While it copies, this call answers its progress, and
+    // once it is done, this call finishes the preview. A failed job frees the tag with its error, so
+    // a new create forks afresh; one a refresh or a newer push replaces is stopped, and its row
+    // expired, so the code below reaps it at once.
+    const forkJob = existing?.status === 'provisioning' ? await readCopyJob(copyJobId('fork', existing.id)) : null;
+    // #2450: where this push stands against another's, on a host that runs copies as jobs.
+    const incoming = options.copyJobs ? await c.var.admin.getVersion(actor, opts.versionId, slug) : undefined;
+    if (options.copyJobs && !incoming) throw new ControlPlaneError(404, `unknown version ${opts.versionId} for vertical '${slug}'`);
+    // Compared only where a job is found, which is only on such a host, where it was read.
+    const mine = { versionId: opts.versionId, order: incoming ? versionOrderOf(incoming) : '' };
+    // Every call marks its push the newest of this preview's, for as long as a create's request can
+    // run, before it acts: an older one meanwhile is refused, whatever the rows and jobs say then. A
+    // poll marks too, so the hold runs on past the push's last call however long its copy took.
+    if (options.copyJobs) {
+      const tagId = copyTagId(tenantId, previewSlug(slug, opts.tag));
+      const newest = await options.copyJobs.markNewest(tagId, mine.order, PREVIEW_CREATE_BOUND_MS);
+      if (newest > mine.order) throw supersededByMark(newest, mine, opts.tag);
+    }
+    // A poll goes on only to a fork job (below, where one for another version refuses it) or a live
+    // preview (the carry, below). Anything else is a copy gone: never reaped, never forked afresh.
+    // The row was listed before the job was read, so a call finishing the fork meanwhile (a poll
+    // retried beside it) may have activated it since: it is read again before the copy is called gone.
+    if (poll && !(existing && (forkJob || existing.status === 'active'))) {
+      const fresh = existing ? await c.var.admin.getScopeRecord(actor, tenantId, existing.id) : undefined;
+      if (fresh?.status !== 'active') throw copyGone();
+      existing = fresh;
+    }
+
     // A preview only HAS data once its two-phase create finished: the directory row lands
     // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
     // is the last step. So a row still at `provisioning` is a create that DIED mid-fork —
@@ -9767,7 +10172,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // what a create in flight looks like, and reaping it wipes the scope that create is
     // restoring into. So a young one, not marked dead by its own frame, is refused instead.
     // `refresh` is the explicit ask to replace whatever is there, and still reaps.
-    if (existing && !opts.refresh && existing.status === 'provisioning') {
+    if (existing && !forkJob && !opts.refresh && existing.status === 'provisioning') {
       const now = Date.now();
       const reclaimAt = previewReclaimAt(existing, now);
       if (now < reclaimAt) {
@@ -9839,6 +10244,180 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // convention (clean-room). Computed once so reuse and fresh mint the same URL.
     const baseHostname = await previewBaseHostname(actor, source, tenantId, slug, surface);
 
+    // The founding #559 case lands its durable row HERE, not in onError: the previews
+    // route answers a ControlPlaneError directly (its own catch, never the app-level
+    // recorder), and only this frame knows the preview's scopeId (`intoId`) — the key that lets
+    // the console explain the stranded `provisioning` row this throw leaves behind.
+    const restoreOrRecord = async (fn: () => Promise<unknown>, intoId: ScopeId): Promise<void> => {
+      try {
+        await retryTransient(fn);
+      } catch (e) {
+        if (e instanceof ControlPlaneError && e.status >= 500 && e.status !== 501) {
+          recordFailure({
+            actor,
+            operation: 'preview.create',
+            stage: 'restore',
+            tenantId,
+            scopeId: intoId,
+            vertical: slug,
+            version: opts.versionId,
+            status: e.status,
+            message: e.message,
+          }, e);
+        }
+        throw e;
+      }
+    };
+    /**
+     * #1722 for a fork (#2450): a source that a staff move carried to another script while the fork
+     * read it was wiped where it was read, and its pages then read as the tombstone it left. A fork
+     * never loads that, as a carry never does (`carryFinish`).
+     */
+    const refuseWipedSource = (meta: ScopeDumpTable[], sourceId: ScopeId): void => {
+      if (dumpMetaValue(meta, CARRIED_AWAY_KEY) !== null) {
+        throw new ControlPlaneError(
+          412,
+          `the source of preview '${opts.tag}' (scope ${sourceId}) was carried to another script and wiped while it ` +
+            `was copied, so nothing was moved. Run the create again`,
+        );
+      }
+    };
+    const abandonFork = async (previewId: ScopeId, fork: { moveId: string } | null, targetRef: string | null): Promise<void> => {
+      // The fork stays named for reap and erasure; if this request had died instead, the sweep
+      // would settle the entry once its lease ran out.
+      if (fork && targetRef) {
+        await c.var.admin.settleScopeScriptCopy(actor, tenantId, previewId, targetRef, fork.moveId, 'retained')
+          .catch(() => undefined);
+      }
+      // Expire the row this create left behind, so the next create reaps it at once rather
+      // than refusing it as in flight for the whole bound (#1920) — that next create is the
+      // CLI's retry after a known-dead attempt (#1918). The row stays until then, or until
+      // the GC sweep's next pass reaps it as expired; the #559 ops-failure row outlives both.
+      // Best-effort: if this write fails too, the age bound still frees the tag.
+      await c.var.admin
+        .setScopeExpiresAt(actor, tenantId, previewId, new Date().toISOString())
+        .catch(() => undefined);
+    };
+    type ForkLanding = {
+      previewId: ScopeId;
+      parent: Scope | null;
+      fork: { moveId: string } | null;
+      targetRef: string | null;
+      load: (() => Promise<unknown>) | null;
+    };
+    const completeFork = async (p: ForkLanding) => {
+      await landFork(p);
+      return servedFork(p);
+    };
+    /** A fork's data loaded, its row activated and the version bound: the fork has landed. */
+    const landFork = async (p: ForkLanding): Promise<void> => {
+      try {
+        if (p.load) await restoreOrRecord(p.load, p.previewId);
+        await c.var.admin.activateScope(actor, tenantId, p.previewId);
+        // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a
+        // preview scope also admits a pending version (#513), which is what a clean-room rehearsal
+        // of not-yet-admitted code needs. It routes the row onto the fork, so it confirms the move.
+        await c.var.admin.bindScopeVersion(actor, tenantId, p.previewId, opts.versionId,
+          p.fork ? { confirmMove: { moveId: p.fork.moveId, source: 'retained' } } : undefined);
+      } catch (e) {
+        // A bind that committed and lost only its answer has landed the fork: abandoning it would
+        // expire a row that serves this version. The carry draws the same line (`bindAfterCarry`'s caller).
+        const now = await c.var.admin.getScopeRecord(actor, tenantId, p.previewId).catch(() => undefined);
+        if (now?.status === 'active' && now.verticalVersionId === opts.versionId) return;
+        await abandonFork(p.previewId, p.fork, p.targetRef);
+        throw e;
+      }
+    };
+    /** What follows a landed fork: its hostname, the #527 guard and its login. A fault here leaves it served. */
+    const servedFork = async (p: ForkLanding) => {
+      const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, p.previewId, opts.tag, surface);
+      await assertServesBoundVersion(p.previewId);
+      const auth = await wireLogin(p.previewId, hostname, p.parent);
+      return {
+        scopeId: p.previewId,
+        hostname,
+        url: `https://${hostname}`,
+        versionId: opts.versionId,
+        reused: false as const,
+        auth,
+        notes: notesFor(p.parent),
+      };
+    };
+    /**
+     * Finish a fork a job copied (#2450): renew its lease, which the restore's fence then counts
+     * from, and load the staged dump into the preview as an in-request fork would have. However it
+     * fails before it has landed, its move is settled (`finishingJob`) and the row expired, so the
+     * next create reaps it.
+     */
+    const finishForkJob = async (preview: Scope, job: CopyJobRecord) => {
+      const { spec } = job;
+      const fork = { moveId: spec.moveId };
+      const done = job.done;
+      try {
+        // The copy's part of the finish ends once the fork has landed: a fault after that (its
+        // hostname, the guard, its login) is the served preview's, answered as itself.
+        const landed = await finishingJob(c, job, async (): Promise<ForkLanding> => {
+          let load: () => Promise<unknown>;
+          let parent: Scope | null;
+          try {
+            const lease = await c.var.admin.renewScopeScriptCopy(actor, tenantId, preview.id, spec.moveId, { leaseMs: copyLeaseMs });
+            if (!lease || !target || !done || !preview.forkedFrom) {
+              throw new ControlPlaneError(409, `the copy into preview '${opts.tag}' was settled before it could be loaded; nothing was moved`);
+            }
+            const forkedFrom = preview.forkedFrom;
+            refuseWipedSource(done.meta, forkedFrom);
+            parent = (await c.var.admin.getScopeRecord(actor, tenantId, forkedFrom)) ?? null;
+            const lineage = copyLineageOf({ kind: preview.kind ?? '', forkedFrom });
+            const fence = copyRestoreFence(spec.moveId, lease.renewedAt, copyLeaseMs, spec.erasureEpoch);
+            load = () => target.restoreScope(tenantId, preview.id, done.dump, {
+              sourceScopeId: forkedFrom, exact: true, ...(lineage ? { markCopy: lineage } : {}),
+              loadStamp: spec.restoredStamp, fence,
+            });
+          } catch (e) {
+            // Nothing was loaded: the row goes as a failed load leaves it (`landFork`).
+            await abandonFork(preview.id, fork, spec.destRef);
+            throw e;
+          }
+          const landing = { previewId: preview.id, parent, fork, targetRef: spec.destRef, load };
+          await landFork(landing);
+          return landing;
+        });
+        // Its row's deadline counts from this create, as every create's does: the copy may have
+        // outlasted the one its first call set.
+        await c.var.admin.setScopeExpiresAt(actor, tenantId, preview.id, expiresAt);
+        return await servedFork(landed);
+      } finally {
+        await options.copyJobs?.forget(spec.id).catch(() => undefined);
+      }
+    };
+
+    if (existing && forkJob) {
+      // A refresh too: it replaces whatever is there but a newer push's copy, as the mark holds it off.
+      const superseded = supersededRefusal(forkJob, mine, opts.tag);
+      if (superseded) throw superseded;
+      const replaced = opts.refresh || forkJob.spec.versionId !== opts.versionId;
+      // A poll's own fork is this one or none: it replaces nothing.
+      if (poll && replaced) throw copyGone();
+      const row = existing;
+      const inProgress = async (): Promise<PreviewCopying> => {
+        if (!jobs) throw new ControlPlaneError(409, `a create for preview '${opts.tag}' is in progress (its data is still being copied). Retry once it finishes`);
+        await keepAlive(row, forkJob.spec.moveId);
+        return copyingAnswer(forkJob);
+      };
+      if (!replaced && forkJob.status === 'copying') return inProgress();
+      if (!replaced && forkJob.status === 'done') {
+        // Only the call that claims a done job finishes it. Any other waits, and never renews,
+        // settles or expires what that call is finishing (or has just finished).
+        const claimed = await options.copyJobs?.claim(forkJob.spec.id, copyClaimMs);
+        return claimed ? finishForkJob(existing, claimed) : inProgress();
+      }
+      // A newer push leaves a finish another call has claimed to that call; a refresh replaces it.
+      if (!(await settleJobMove(c, forkJob, { unlessFinishing: !opts.refresh }))) return inProgress();
+      await c.var.admin.setScopeExpiresAt(actor, tenantId, existing.id, new Date().toISOString()).catch(() => undefined);
+      if (!replaced) throw refuseFailedJob(forkJob);
+      existing = (await c.var.admin.getScopeRecord(actor, tenantId, existing.id)) ?? existing;
+    }
+
     // Found above, before any remote read, so an in-flight refusal costs one directory read.
     const stale = existing !== undefined && (opts.refresh || existing.status !== 'active');
     if (existing && !stale) {
@@ -9847,9 +10426,104 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // its old script with its data, and records why, like a failed fork restore (#559).
       // `dropServingRef`: a preview provisioned before #527 inherited a serving_ref that is
       // cleared just below, so its route leaves the serving script too.
-      let carried: Awaited<ReturnType<typeof carryOntoVersion>>;
+      let carried: Awaited<ReturnType<typeof carryOntoVersion>> | undefined;
+      /** The job this call claimed and finished, if any: forgotten once the bind below is over. */
+      let finishedJob: CopyJobRecord | undefined;
+      const preview = existing;
+      /** The row the bind below expects: as listed, or as a poll read it again (it may be bound since). */
+      let carryScope: Scope = existing;
       try {
-        carried = await carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true });
+        // #2450 step 2: a carry a job is copying, for this push or an older one.
+        const held = await readCopyJob(copyJobId('carry', preview.id));
+        const inProgress = async (job: CopyJobRecord): Promise<PreviewCopying> => {
+          if (!jobs) throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);
+          await keepAlive(preview, job.spec.moveId);
+          return copyingAnswer(job);
+        };
+        if (held && held.spec.versionId !== opts.versionId) {
+          const superseded = supersededRefusal(held, mine, opts.tag);
+          if (superseded) throw superseded;
+          // A poll's own carry is not an older push's: it replaces nothing.
+          if (poll) throw copyGone();
+          // An older push's copy: this push replaces it, unless another call is finishing it.
+          if (!(await settleJobMove(c, held, { unlessFinishing: true }))) return inProgress(held);
+        } else if (held) {
+          if (held.status === 'copying') return inProgress(held);
+          if (held.status !== 'done') {
+            await settleJobMove(c, held);
+            throw refuseFailedJob(held);
+          }
+          if (preview.verticalVersionId === opts.versionId &&
+            (await carryEnds(c, preview, opts.versionId, { dropServingRef: true })) === null) {
+            // Its bind landed and only the job's forget was lost: the preview serves this version
+            // with nothing left to move, so the job goes and the preview is answered, never
+            // finished again. A stage a holder still has is that holder's to load or discard.
+            if (!copyJobHeld(held, Date.now())) await discardJobStages(held);
+            await options.copyJobs?.forget(held.spec.id).catch(() => undefined);
+            carried = null;
+          } else {
+            // Only the call that claims a done job finishes it; any other waits (see the fork's).
+            const claimed = await options.copyJobs?.claim(held.spec.id, copyClaimMs);
+            if (!claimed) return inProgress(held);
+            carried = await finishCarryJob(c, preview, opts.versionId, claimed);
+            finishedJob = claimed;
+          }
+        }
+        if (carried === undefined && poll) {
+          // A poll starts no carry. With no job left, either the one it waited on landed (the answer
+          // that said so was lost) and the preview serves this version with nothing left to move,
+          // which is answered again; or the copy is gone. Read on the row as it is now, not as it was
+          // listed: a call finishing the carry (a poll retried beside this one) may have bound it since.
+          const fresh = (await c.var.admin.getScopeRecord(actor, tenantId, preview.id)) ?? preview;
+          const served = fresh.verticalVersionId === opts.versionId &&
+            (await carryEnds(c, fresh, opts.versionId, { dropServingRef: true })) === null;
+          if (!served) throw copyGone();
+          carryScope = fresh;
+          carried = null;
+        }
+        if (carried === undefined && jobs) {
+          const move = await carryBegin(c, preview, opts.versionId, { dropServingRef: true });
+          if (!move) {
+            carried = null;
+          } else {
+            // The first page moves here; a carry that needs more moves in a job, and the preview
+            // keeps serving its data from the old script until a later call finishes it.
+            let begun: TransferProgress;
+            try {
+              begun = await beginTransfer({ source: move.source, dest: move.dest }, { from: preview.id },
+                { retry: retryTransient, alwaysStage: true });
+            } catch (e) {
+              await settleCarryRetained(c, preview, opts.versionId, move);
+              throw e;
+            }
+            if ('state' in begun) {
+              const job = await jobs.start({
+                id: copyJobId('carry', preview.id), kind: 'carry', tenantId, vertical: slug, scopeId: preview.id,
+                versionId: opts.versionId, versionOrder: mine.order,
+                moveId: move.moveId, sourceRef: move.from, destRef: move.to, actor, leaseMs: copyLeaseMs,
+                erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp, expected: move.expected,
+                startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
+              }, begun.state);
+              // Another call started this preview's job first: this call's move is not the job's, so
+              // its entries settle and the page it staged goes. A newer push's job refuses this one
+              // now, as its next call would; an older one's is replaced by that next call. A known
+              // limit: two calls of ONE version stage into one store, which keeps a single stage, so
+              // this call's page 0 has replaced the winner's, whose next step then fails (412) with
+              // the preview still serving its old data, and a rerun copies again. Closing it needs
+              // the job's slot taken before the first page is staged (#2461).
+              if (job.spec.moveId !== move.moveId) {
+                await settleCarryRetained(c, preview, opts.versionId, move);
+                await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
+                const superseded = supersededRefusal(job, mine, opts.tag);
+                if (superseded) throw superseded;
+              }
+              return copyingAnswer(job);
+            }
+            const done = begun.done;
+            carried = await carryWith(c, preview, opts.versionId, move, async () => done);
+          }
+        }
+        if (carried === undefined) carried = await carryOntoVersion(c, preview, opts.versionId, { dropServingRef: true });
       } catch (e) {
         if (e instanceof ControlPlaneError && e.status >= 500 && e.status !== 501) {
           recordFailure({
@@ -9871,10 +10545,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #527 has its inherited serving_ref cleared, so routing follows the bound version (its
       // per-version script) and not the prod serving script; the OFF positions are re-asserted
       // there (#1674); and the copy left in the old script is wiped.
-      await bindAfterCarry(c, existing, opts.versionId, carried, {
-        clearServingRef: true,
-        recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
-      });
+      try {
+        const scope = carryScope;
+        await bindAfterCarry(c, scope, opts.versionId, carried, {
+          clearServingRef: true,
+          recarry: () => carryOntoVersion(c, scope, opts.versionId, { dropServingRef: true }),
+        });
+      } catch (e) {
+        // A job's bind that failed is that copy's end, as its load's is (`finishRefusal`). A fault
+        // after the bind landed (re-asserting the switches, the source's settle) is the served
+        // preview's, answered as itself: a retry finds the preview serving this version.
+        if (!finishedJob) throw e;
+        const now = await c.var.admin.getScopeRecord(actor, tenantId, existing.id).catch(() => undefined);
+        throw now?.verticalVersionId === opts.versionId ? e : finishRefusal(c, finishedJob, e);
+      } finally {
+        // #2450: a job this call finished stays claimed until its bind has landed or failed, so a
+        // newer push polling meanwhile waits, rather than carry from the binding this one replaces.
+        if (finishedJob) await options.copyJobs?.forget(finishedJob.spec.id).catch(() => undefined);
+      }
       // Renew (or clear) the preview's GC deadline so a reused preview does not silently die.
       await c.var.admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, existing.id, opts.tag, surface);
@@ -9913,41 +10601,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A marked row is also the GC sweep's to reap (its `expiresAt` has passed), so the sweep
     // can get there between the lookup above and this reap. Gone is what the reap wanted.
     if (existing && stale) {
+      // #2450: a job still copying holds a live lease, which a reap waits on; stop it first. A newer
+      // push's copy is not this create's to stop, a refresh's included: it refuses instead.
+      await cancelPreviewJobs(c, existing, { mine, tag: opts.tag });
       await reapPreview(c, existing).catch((e: unknown) => {
         if (errorCodeOf(e) !== 'not_found') throw e;
       });
     }
 
     const previewId = scopeIdSchema.parse(ulid());
-    // The founding #559 case lands its durable row HERE, not in onError: the previews
-    // route answers a ControlPlaneError directly (its own catch, never the app-level
-    // recorder), and only this frame knows the preview's scopeId — the key that lets
-    // the console explain the stranded `provisioning` row this throw leaves behind.
-    const restoreOrRecord = async (fn: () => Promise<unknown>): Promise<void> => {
-      try {
-        await retryTransient(fn);
-      } catch (e) {
-        if (e instanceof ControlPlaneError && e.status >= 500 && e.status !== 501) {
-          recordFailure({
-            actor,
-            operation: 'preview.create',
-            stage: 'restore',
-            tenantId,
-            scopeId: previewId,
-            vertical: slug,
-            version: opts.versionId,
-            status: e.status,
-            message: e.message,
-          }, e);
-        }
-        throw e;
-      }
-    };
     let row: ProvisionScopeInput;
     /** `fenced`: the ledger stamp and lease of this fork's restore (#1722), when it has one. */
     let restore: ((fenced: { loadStamp?: string; fence?: CopyRestoreFence }, dump?: ScopeDumpTable[] | StagedDump) => Promise<unknown>) | null;
     /** #2450: the fork's data, moved into the preview's copy once the ledger names it. */
     let forkData: (() => Promise<ScopeDumpTable[] | StagedDump>) | null = null;
+    /** #2450 step 2: a source a job can page from, when this create may run in the background. */
+    let forkPaged: { source: VerticalClient; sourceRef: string; sourceScopeId: ScopeId } | null = null;
     /** #2009: the directory's classification of the row below, which every restore of it carries. */
     const markCopyOfRow = () => {
       const lineage = copyLineageOf({ kind: row.kind ?? '', forkedFrom: row.forkedFrom ?? null });
@@ -9961,6 +10630,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (!target) {
         throw new ControlPlaneError(501, 'preview needs dispatch resolution for the PR version');
       }
+      // #2450 step 2: what a job needs to move the fork's pages after this request, by reference.
+      if (sourceClient && jobs) {
+        const sourceRef = await routeOf(c, source);
+        if (sourceRef) forkPaged = { source: sourceClient, sourceRef, sourceScopeId: source.id };
+      }
       const canonical = await c.var.admin.exportScope(actor, tenantId, source.id);
       // #2450: from a vertical, the fork's data moves a page at a time into the preview's own stage
       // there, so a scope of any size forks. Unstamped, as the whole export was: a fork writes
@@ -9968,8 +10642,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // (K-31: no copied data without a record) and ahead of the restore's own retries, so a
       // restore blip reloads the same stage and an export fault is not recorded as a restore's.
       forkData = sourceClient
-        ? async () =>
-          (await transferScope(sourceClient, target, { from: source.id, to: previewId }, { retry: retryTransient, stamp: false })).dump
+        ? async () => {
+          const moved = await transferScope(sourceClient, target, { from: source.id, to: previewId }, { retry: retryTransient, stamp: false });
+          refuseWipedSource(moved.meta, source.id);
+          return moved.dump;
+        }
         : async () => canonical.tables;
       // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
       // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
@@ -10021,6 +10698,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ? ((await c.var.admin.getVersion(actor, opts.versionId, slug))?.deploymentRef ?? null)
       : null;
     let fork: { moveId: string } | null = null;
+    let load: (() => Promise<unknown>) | null = null;
     try {
       // Inside the try: a host writes the directory row FIRST and then migrates, projects and
       // seats, so a provision that throws can leave a `provisioning` row too. A provision
@@ -10029,6 +10707,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.host.provisionScope(actor, row);
       if (restore) {
         let fenced = {};
+        let move: { moveId: string; restoredStamp: string; erasureEpoch: number } | null = null;
         if (targetRef) {
           const moveId = ulid();
           const restoredStamp = ulid();
@@ -10037,48 +10716,46 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
           fork = { moveId };
           const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, previewId);
+          move = { moveId, restoredStamp, erasureEpoch };
           fenced = { loadStamp: restoredStamp, fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) };
         }
-        const load = restore;
-        const dump = forkData ? await forkData() : undefined;
-        await restoreOrRecord(() => load(fenced, dump));
+        const restoreWith = restore;
+        let dump: ScopeDumpTable[] | StagedDump | undefined;
+        if (forkPaged && jobs && move && targetRef && target) {
+          // #2450 step 2: the first page moves here. A fork that needs more moves in a job, and a
+          // later call to this route finishes it (`finishForkJob`); the row stays `provisioning`.
+          const begun = await beginTransfer(
+            { source: forkPaged.source, dest: target },
+            { from: forkPaged.sourceScopeId, to: previewId },
+            { retry: retryTransient, stamp: false, alwaysStage: true },
+          );
+          if ('state' in begun) {
+            const job = await jobs.start({
+              id: copyJobId('fork', previewId), kind: 'fork', tenantId, vertical: slug, scopeId: previewId,
+              versionId: opts.versionId, versionOrder: mine.order,
+              moveId: move.moveId, sourceRef: forkPaged.sourceRef, destRef: targetRef, actor, leaseMs: copyLeaseMs,
+              erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp,
+              startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
+            }, begun.state);
+            // A job id names the preview, which this create just minted, so no other call can
+            // hold it; a job answered for another move would be a defect, not a race.
+            if (job.spec.moveId !== move.moveId) {
+              throw new ControlPlaneError(500, `preview ${previewId} already had a copy job for another move`);
+            }
+            return copyingAnswer(job);
+          }
+          refuseWipedSource(begun.done.meta, forkPaged.sourceScopeId);
+          dump = begun.done.dump;
+        } else {
+          dump = forkData ? await forkData() : undefined;
+        }
+        load = () => restoreWith(fenced, dump);
       }
-      await c.var.admin.activateScope(actor, tenantId, previewId);
-      // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a
-      // preview scope also admits a pending version (#513), which is what a clean-room rehearsal
-      // of not-yet-admitted code needs. It routes the row onto the fork, so it confirms the move.
-      await c.var.admin.bindScopeVersion(actor, tenantId, previewId, opts.versionId,
-        fork ? { confirmMove: { moveId: fork.moveId, source: 'retained' } } : undefined);
     } catch (e) {
-      // The fork stays named for reap and erasure; if this request had died instead, the sweep
-      // would settle the entry once its lease ran out.
-      const unbound = fork;
-      if (unbound && targetRef) {
-        await c.var.admin.settleScopeScriptCopy(actor, tenantId, previewId, targetRef, unbound.moveId, 'retained')
-          .catch(() => undefined);
-      }
-      // Expire the row this create left behind, so the next create reaps it at once rather
-      // than refusing it as in flight for the whole bound (#1920) — that next create is the
-      // CLI's retry after a known-dead attempt (#1918). The row stays until then, or until
-      // the GC sweep's next pass reaps it as expired; the #559 ops-failure row outlives both.
-      // Best-effort: if this write fails too, the age bound still frees the tag.
-      await c.var.admin
-        .setScopeExpiresAt(actor, tenantId, previewId, new Date().toISOString())
-        .catch(() => undefined);
+      await abandonFork(previewId, fork, targetRef);
       throw e;
     }
-    const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, previewId, opts.tag, surface);
-    await assertServesBoundVersion(previewId);
-    const auth = await wireLogin(previewId, hostname, source);
-    return {
-      scopeId: previewId,
-      hostname,
-      url: `https://${hostname}`,
-      versionId: opts.versionId,
-      reused: false,
-      auth,
-      notes: notesFor(source),
-    };
+    return completeFork({ previewId, parent: source, fork, targetRef, load });
   };
 
   // The owning tenant of a builder's OWN vertical — the gate every preview route shares. A
@@ -10135,6 +10812,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     try {
       const out = await orchestratedPreview(c, tenantId, slug, source, body);
+      // #2450 step 2: the copy runs on; the same call, repeated, finishes the preview.
+      if ('copying' in out) {
+        c.header('Retry-After', String(out.retryAfter));
+        return c.json(out, 202);
+      }
       return c.json(out, out.reused ? 200 : 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) return relayRefusal(c, e);
@@ -10181,6 +10863,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // PR-close job never fails because the preview was already gone.
     if (!preview) return c.json({ deleted: null, note: `no preview '${tag}' for '${slug}'` });
     try {
+      // #2450: a copy still running holds a live lease, which the reap waits on; stop it first.
+      await cancelPreviewJobs(c, preview);
       // Storage-before-row, the same ordering as the fork hard-delete: wipe the DO in the
       // PR version's deployment, then deleteSnapshot (fork-only re-check, hostnames + row,
       // audit). A crash between the two converges on retry.

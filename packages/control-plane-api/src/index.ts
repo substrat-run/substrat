@@ -46,6 +46,21 @@ export type {
 // (`./browser`): a bundler resolving the root entry would pull the whole server.
 export * from './browser.js';
 export { VerticalClient, AUDITED_CALL_DEADLINE_MS, isRouteMiss } from './vertical-client.js';
+export {
+  advanceCopyJob,
+  copyJobId,
+  copyJobThrewRetryMs,
+  memoryCopyJobs,
+  newCopyJob,
+  COPY_JOB_MAX_FAULTS,
+  COPY_JOB_MAX_MS,
+  COPY_JOB_STEP_MS,
+  type CopyJobDeps,
+  type CopyJobRecord,
+  type CopyJobs,
+  type CopyJobSpec,
+  type CopyJobStatus,
+} from './copy-job.js';
 export { sweepScopeAttachments, type AttachmentSweepReach } from './attachment-sweep.js';
 export {
   assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
@@ -331,3 +346,6 @@ export type { PiiKind, Pseudonymizer } from './pseudonymize.js';
 
 export { resolveObservabilityWindow, observabilityBucketMinutes } from './observability-window.js';
 export type { ObservabilityWindow, ObservabilityWindowInput } from './observability-window.js';
+
+// #2316: the binding options a provider takes — the staff door and the connector pass validate with it.
+export { connectionBindingOptions } from './connection-binding-options.js';

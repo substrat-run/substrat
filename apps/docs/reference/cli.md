@@ -338,7 +338,17 @@ Runs everything a push does **locally** and stops there: the layer rules, then y
 permission surface — resolve `"substrat": { "permissions" }`, import the entry, derive the
 registry, print every key with the module that declares it and its description, every role,
 every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
-network call**, so it belongs in a pull-request job:
+registry request**, so it belongs in a pull-request job. A configured Wrangler build command
+still runs locally and may make its own network calls:
+
+It also bundles the Worker entry under workerd export conditions and refuses static, dynamic,
+or CommonJS imports of Node builtins that its compatibility flags do not provide. This includes
+imports in dependencies and imports behind a `typeof` guard. The error traces the path from the
+entry to the builtin. Remove the Node dependency, use a Worker-compatible API, or declare
+`nodejs_compat` when the Worker actually requires it. `nodejs_als` permits only
+`node:async_hooks`. A single tested Worker crypto fallback in `tweetnacl` has an exact-match
+allowance; there is no general guarded-import exception. `push` and `preview` apply the same
+check before upload.
 
 ```text
 permission surface — helpdesk: 19 key(s), 7 role(s), 1 entity-grant shape(s)
@@ -357,8 +367,9 @@ naming the pointer — which is the whole point of having the command: gate the 
 CLI, not with a second implementation of the derivation and not by importing the CLI's build
 output.
 
-`--json` prints `{ registry, digest }` and nothing else on stdout (the gate's notes move to
-stderr), so `substrat push --check --json > permissions.json` is a diffable artifact.
+`--json` prints `{ registry, digest }` and nothing else on stdout (the gate's notes and any
+configured build command's output move to stderr), so
+`substrat push --check --json > permissions.json` is a diffable artifact.
 
 `--check` (and `push`, and `preview`) also reads the worker entry and the modules it imports for
 `https://host` literals and `new URL('https://…')`, and warns about each host
@@ -451,7 +462,17 @@ per-version resolver, routing between distinct version deployments copies the da
 unchanged routing and co-located incoming versions need no copy. Migrations roll forward on the
 same data, but writes during a copy may be lost (see
 [what a push copies](/guide/environments-and-previews#previews-the-non-prod-primitive)).
-`--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
+A fork or a copy too large for one request runs in the background: `create` prints its progress
+and waits until the preview is ready, for up to six hours. A poll that fails as a gateway or the
+network fails, or with a `500` that names no reason, is polled again, up to ten in a row; past
+that, `create` stops waiting and says the copy may still be running. If the CLI stops waiting (its CI job is
+cancelled, say), the preview is left as it was: a new one is not ready, and one being updated keeps
+serving the previous push. Running `create` again pushes a new version, whose copy starts over and
+replaces the one left running. A copy that fails, or that a newer push, a refresh or a delete
+stops, ends `create` with the reason (a `409`), and `create` never starts the copy over by itself:
+only running it again does.
+`--refresh` starts from a clean fork, and stops a copy still running, though not a newer push's:
+a refresh of an older version is refused as superseded, as any create of one is. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's
 own overrides: `--skip-lint`, `--allow-unserved-ui` and `--allow-unswept-schedules` mean the same thing here as they do there.

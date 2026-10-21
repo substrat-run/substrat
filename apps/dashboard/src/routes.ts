@@ -373,6 +373,94 @@ export const trafficSeries = z.object({
   available: z.boolean(),
 });
 
+/** Read-only observability responses. Plane-owned labels stay strings across deploy skew. */
+const observabilityRow = z.object({
+  vertical: z.string(), version: z.string(), versionId: z.string().nullable(), service: z.string(),
+  requests: z.number(), errors: z.number(), subrequests: z.number(), cpuTimeP50: z.number(), cpuTimeP99: z.number(),
+});
+const observabilityLogEvent = z.object({
+  timestamp: z.number().nullable(), level: z.string().nullable(), message: z.string().nullable(),
+  service: z.string().nullable(), outcome: z.string().nullable(), trigger: z.string().nullable(),
+  invocation: z.string().nullable(), entrypoint: z.string().nullable(), requestId: z.string().nullable(),
+  invocationId: z.string().nullable().optional(), cpuTimeMs: z.number().nullable(), wallTimeMs: z.number().nullable(),
+  raw: z.unknown().optional(),
+});
+const tenantMetricsRow = z.object({
+  scopeId: z.string(), vertical: z.string().nullable(), surface: z.string().nullable(),
+  requests: z.number(), errors: z.number(), durationP50: z.number(), durationP95: z.number(),
+});
+const tenantMetricsBucket = z.object({
+  scopeId: z.string(), start: z.string(), bucketMinutes: z.number(), requests: z.number(), errors: z.number(),
+  class2xx: z.number().optional(), class3xx: z.number().optional(), class4xx: z.number().optional(),
+  durationP50: z.number(), durationP95: z.number().optional(),
+});
+const connectorCallsView = z.object({
+  available: z.boolean(),
+  buckets: z.array(z.object({
+    provider: z.string(), start: z.string(), bucketMinutes: z.number(), calls: z.number(), errors: z.number(),
+    ok: z.number(), class4xx: z.number(), class5xx: z.number(), timeouts: z.number(), failed: z.number(),
+    durationP50: z.number(), durationP95: z.number(),
+  })),
+});
+const businessVolumesView = z.object({
+  window: z.object({ since: z.string(), until: z.string() }), bucketMinutes: z.number(),
+  rows: z.array(z.object({
+    scopeId: z.string(), entityType: z.string(), state: z.string(), terminal: z.boolean(), fromInitial: z.boolean(),
+    operations: z.array(z.string()), today: z.number(), yesterday: z.number(),
+    buckets: z.array(z.object({ start: z.string(), count: z.number() })),
+  })),
+  apps: z.array(z.object({ scopeId: z.string(), unavailable: z.enum(['no-version', 'no-moves', 'not-yet-available']).nullable() })),
+});
+const teamTrafficSeries = z.object({
+  window: z.object({ since: z.string(), until: z.string() }).optional(),
+  series: z.array(z.object({ scopeId: z.string(), buckets: z.array(trafficBucket) })),
+  bucketMinutes: z.number(), available: z.boolean(),
+});
+const appMetricsView = z.object({
+  available: z.boolean(), cap: z.number().nullable(),
+  rows: z.array(z.object({ scopeId: z.string(), requests: z.number().nullable(), errors: z.number().nullable(), p95: z.number().nullable() })),
+});
+const requestVolumeView = z.object({
+  bucketMs: z.number(),
+  buckets: z.array(z.object({ start: z.string(), info: z.number(), warn: z.number(), error: z.number(), unrecorded: z.number() })),
+  estimated: z.boolean(),
+});
+const requestFacetsView = z.object({
+  total: z.number(), facets: z.record(z.string(), z.array(z.object({ value: z.union([z.string(), z.number()]), count: z.number() }))),
+  estimated: z.boolean(),
+});
+const requestRecordView = z.object({
+  timestamp: z.number().nullable(), invocationId: z.string().nullable(), scopeId: z.string().nullable(),
+  vertical: z.string().nullable(), surface: z.string().nullable(), method: z.string().nullable(),
+  path: z.string().nullable(), status: z.number().nullable(), threw: z.boolean(), durationMs: z.number().nullable(),
+  level: z.string().nullable(), operation: z.string().nullable(), problemCode: z.string().nullable(),
+  principalKind: z.string().nullable(), eventCount: z.number().nullable(), eventTypes: z.array(z.string()),
+  entities: z.array(z.string()), versionId: z.string().nullable(), kind: z.string().optional(),
+  outcome: z.string().nullable().optional(), eventType: z.string().nullable().optional(),
+  eventId: z.string().nullable().optional(), attempt: z.number().nullable().optional(),
+  latenessMs: z.number().nullable().optional(),
+  outboundCalls: z.array(z.object({
+    host: z.string(), path: z.string(), method: z.string(), status: z.number().nullable(),
+    outcome: z.string(), durationMs: z.number(), atMs: z.number(), reason: z.string().optional(),
+  })).optional(),
+  outboundCallsDropped: z.number().optional(),
+});
+const appRequestInput = z.object({
+  scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(),
+  level: z.string().optional(), operation: z.string().optional(), principalKind: z.string().optional(),
+  problemCode: z.string().optional(), surface: z.string().optional(), status: z.string().optional(),
+  kind: z.string().optional(), buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
+});
+const logPatternsView = z.object({
+  total: z.number(), bucketMs: z.number(),
+  patterns: z.array(z.object({
+    template: z.string(), count: z.number(), share: z.number(),
+    levels: z.object({ debug: z.number(), info: z.number(), warn: z.number(), error: z.number() }),
+    dominant: z.string(), buckets: z.array(z.object({ start: z.string(), count: z.number() })),
+  })),
+  truncated: z.boolean(), estimated: z.boolean(),
+});
+
 /** One install still bound to a vertical (#1592). */
 export const boundScopeRow = z.object({
   id: z.string(),
@@ -622,6 +710,89 @@ export const dashboardRoutes = defineRoutes({
     summary: 'Leave this team: your roster row is revoked and your login detached from it',
     output: z.object({ left: z.literal(true) }),
     http: { method: 'POST', path: '/leave' },
+  },
+
+  // -- observability (#2170) --------------------------------------------------
+  // These are the existing read-only plane reads, now resolved from the team in the path.
+  // Repeated service/scopeId filters are read from the request by their handlers because
+  // mountRoutes' scalar query parser only exposes the first value of each key.
+  'dashboard/observability-metrics': {
+    summary: "Metrics for this team's published verticals",
+    input: z.object({ hours: z.string().optional(), vertical: z.string().optional() }),
+    output: z.array(observabilityRow),
+    http: { method: 'GET', path: '/observability/metrics' },
+  },
+  'dashboard/observability-logs': {
+    summary: "Logs for this team's published service versions",
+    input: z.object({ service: z.string().optional(), hours: z.string().optional(), limit: z.string().optional(), level: z.string().optional(), search: z.string().optional() }),
+    output: z.array(observabilityLogEvent),
+    http: { method: 'GET', path: '/observability/logs' },
+  },
+  'dashboard/app-observability-metrics': {
+    summary: "One installed app's traffic at this team's tenant grain",
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: z.array(tenantMetricsRow),
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/metrics' },
+  },
+  'dashboard/tenant-metrics-series': {
+    summary: "Bucketed traffic for this team's installed apps",
+    input: z.object({ scopeId: z.string().optional(), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: z.array(tenantMetricsBucket),
+    http: { method: 'GET', path: '/observability/tenant-metrics-series' },
+  },
+  'dashboard/connector-calls': {
+    summary: "Connector calls for this team on Pulse's time axis",
+    input: z.object({ hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: connectorCallsView,
+    http: { method: 'GET', path: '/observability/connector-calls' },
+  },
+  'dashboard/business-volumes': {
+    summary: "Lifecycle move volumes for this team's installed apps",
+    input: z.object({ scopeId: z.string().optional(), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: businessVolumesView,
+    http: { method: 'GET', path: '/observability/business-volumes' },
+  },
+  'dashboard/team-traffic': {
+    summary: "Zero-filled traffic series for this team's installed apps",
+    input: z.object({ scopeId: z.string().optional(), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: teamTrafficSeries,
+    http: { method: 'GET', path: '/observability/traffic' },
+  },
+  'dashboard/app-metrics': {
+    summary: "One traffic summary row per installed app for this team's Apps table",
+    input: z.object({ hours: z.string().optional() }),
+    output: appMetricsView,
+    http: { method: 'GET', path: '/observability/app-metrics' },
+  },
+  'dashboard/app-observability-logs': {
+    summary: "Log lines for one of this team's installed apps",
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), limit: z.string().optional(), level: z.string().optional(), search: z.string().optional(), invocationId: z.string().optional(), template: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: z.array(observabilityLogEvent),
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/logs' },
+  },
+  'dashboard/app-request-volume': {
+    summary: "Request histogram for one of this team's installed apps",
+    input: appRequestInput,
+    output: requestVolumeView,
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/requests/volume' },
+  },
+  'dashboard/app-request-facets': {
+    summary: "Request facet counts for one of this team's installed apps",
+    input: appRequestInput,
+    output: requestFacetsView,
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/requests/facets' },
+  },
+  'dashboard/app-requests': {
+    summary: "Request records for one of this team's installed apps",
+    input: appRequestInput,
+    output: z.array(requestRecordView),
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/requests/list' },
+  },
+  'dashboard/app-log-patterns': {
+    summary: "Log templates for one of this team's installed apps",
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(), level: z.string().optional(), operation: z.string().optional(), buckets: z.string().optional() }),
+    output: logPatternsView,
+    http: { method: 'GET', path: '/apps/{scopeId}/observability/log-patterns' },
   },
 
   // -- deployments & previews (#2170) -----------------------------------------

@@ -38,7 +38,7 @@ import { MIGRATIONS_DIGEST_BINDING, migrationSetDigest } from '@substrat-run/ker
 // The manifest schema itself lives in @substrat-run/contracts (deploy.ts there) so the
 // CLI validates the exact shape this server parses — re-exported here so hosts keep
 // importing it from the transport package.
-export { deployManifest, pushedOwnerGrantProblems, pushedPermissionRegistry, storedDeployManifest } from '@substrat-run/contracts';
+export { deployManifest, pushedModuleRegistryProblems, pushedOwnerGrantProblems, pushedPermissionRegistry, storedDeployManifest } from '@substrat-run/contracts';
 export type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**

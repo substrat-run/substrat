@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts/wire-headers';
 import type { ScopeId, TenantId, SweepRunsPayload } from '@substrat-run/contracts';
 import type {
   ExecutorDrainReport,
@@ -50,8 +51,8 @@ export interface ScopeSweepReport {
   drainTotals: ExecutorDrainReport;
   /**
    * The recurring-schedule outcomes summed across the roster (#383/#461). Its `platformRequests`
-   * (#2431) are requests the schedules enqueued that wait for the platform's next drain sweep:
-   * the router kicks a drain for a request it routed, and nothing routes this alarm.
+   * (#2431) are requests the schedules enqueued. A configured drain kick asks the platform
+   * to run them after this pass; its periodic sweep remains the backstop.
    */
   schedules: ScheduleSweepReport;
   /** Present when this deployment opted into driving resumable jobs. */
@@ -366,6 +367,7 @@ export function defineScopeSweeperDO<Env>(
             }
           }
           let touched = false;
+          let needsPlatformDrain = false;
           // #1232: the pass's outcomes, batched for ONE intent per scope — a pass every
           // couple of minutes times N schedules cannot be one intent each against the
           // journal cap. Stamped with pass time here; the drain runs a window later.
@@ -378,10 +380,9 @@ export function defineScopeSweeperDO<Env>(
               report.schedules.fired += r.fired;
               report.schedules.skipped += r.skipped;
               report.schedules.failed += r.failed;
-              // #2431: this sweeper has no channel to the platform's drain (D-40), so what the
-              // schedules enqueued waits for the drain's next sweep. Counted, so the wait shows.
               if (r.platformRequests) {
                 report.schedules.platformRequests = (report.schedules.platformRequests ?? 0) + r.platformRequests;
+                needsPlatformDrain = true;
               }
               for (const e of r.errors) {
                 report.errors.push({
@@ -445,6 +446,11 @@ export function defineScopeSweeperDO<Env>(
               // Telemetry never sinks a pass — a failed report is the next pass's to retry.
             }
           }
+          // One kick per scope per pass, after every schedule has run. A failed kick affects
+          // latency only: the intents are durable and the platform's sweep will find them.
+          if (needsPlatformDrain) {
+            this.ctx.waitUntil(Promise.resolve().then(() => kickPlatformDrain(this.env, tenantId, scopeId)).catch(() => {}));
+          }
         }
       };
       await Promise.all(
@@ -456,3 +462,14 @@ export function defineScopeSweeperDO<Env>(
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** The router's existing per-scope drain call, also used after an unattended pass. */
+async function kickPlatformDrain<Env>(env: Env, tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+  const platform = env as { CONTROL_PLANE_URL?: string; PLATFORM_SECRET?: string };
+  if (!platform.CONTROL_PLANE_URL || !platform.PLATFORM_SECRET) return;
+  await fetch(new URL('/internal/drain-scope', platform.CONTROL_PLANE_URL), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: platform.PLATFORM_SECRET },
+    body: JSON.stringify({ tenantId, scopeId, platformRequests: true, exports: false }),
+  });
+}

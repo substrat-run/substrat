@@ -69,12 +69,12 @@ drain. That covers:
 - a server whose platform intents nobody drains, as in Handlebar's dev server, where every pass
   then finds no room.
 
-On the hosted platform a scheduled pass gets no immediate drain kick, unlike an operation a
-request ran, so its sends wait for the control plane's 15-minute sweep; the scope sweeper's pass
-report counts them (`schedules.platformRequests`). A sweep that both runs schedules and drains
-platform intents (`runPlatformSweep` with `drainPlatformRequestsFn`, on a self-host) drains the
-scope again right after its schedules, so there the sends go out in the same pass (#2431). A hold
-whose person's oldest message is two days old logs a warning.
+On the hosted platform the scope sweeper counts what a scheduled pass enqueued
+(`schedules.platformRequests`) and kicks the platform's per-scope drain once after the pass.
+The control plane's 15-minute sweep remains the backstop if that kick fails. A sweep that both
+runs schedules and drains platform intents (`runPlatformSweep` with `drainPlatformRequestsFn`, on a
+self-host) drains the scope again right after its schedules (#2431). A hold whose person's oldest
+message is two days old logs a warning.
 
 What it holds:
 

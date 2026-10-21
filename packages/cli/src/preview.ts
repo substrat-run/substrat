@@ -31,6 +31,32 @@ export interface PreviewCreated {
   notes?: string[];
 }
 
+/**
+ * A create whose data is still being copied (#2450 step 2): the control plane answered 202, and
+ * the same call, repeated, finishes the preview once the copy is done.
+ */
+interface PreviewCopying {
+  copying: true;
+  scopeId: string;
+  versionId: string;
+  progress: { pages: number; rows: number; attempt: number };
+  /** Seconds to wait before calling again. */
+  retryAfter: number;
+}
+
+const isCopying = (out: PreviewCreated | PreviewCopying): out is PreviewCopying =>
+  (out as PreviewCopying).copying === true;
+
+/** How long `preview create` waits for a copy before giving up, ms: the control plane's own job limit. */
+export const PREVIEW_COPY_WAIT_MS = 6 * 3_600_000;
+
+/**
+ * How many polls in a row may fail as a gateway or the network fails before `preview create` gives
+ * up waiting (#2450). Each one is already retried twice inside `request`, so ten ride out a couple of
+ * minutes of a control plane that cannot be reached.
+ */
+export const PREVIEW_POLL_FAULTS = 10;
+
 export interface PreviewRow {
   scopeId: string;
   tag: string | null;
@@ -123,7 +149,11 @@ async function request<T>(
         await backoff(action, attempt, attempts, `${res.status}${ref ? `, reference = ${ref}` : ''}`);
         continue;
       }
-      throw new Error(failureMessage(action, res.status, body) + retriedInFlight(opts.retry, attempt, res.status, body));
+      throw new PreviewCallFailed(
+        failureMessage(action, res.status, body) + retriedInFlight(opts.retry, attempt, res.status, body),
+        res.status,
+        unexplained500(res.status, body),
+      );
     }
     return parseJsonBody<T>(body, url);
   }
@@ -132,7 +162,7 @@ async function request<T>(
 /**
  * How sure a caller needs to be that the failed attempt is OVER before it sends another.
  * - `idempotent`: the call is safe to repeat even while the first is still running (read,
- *   delete) — any transient status will do.
+ *   delete, a poll of a background copy) — any transient status will do.
  * - `after-handler-ended`: repeating while the first is still running is NOT useful. A create
  *   whose retry finds its row `provisioning` re-forks only once that create is over — its
  *   own frame marked it failed, or it is past the age bound (#1920) — and otherwise answers
@@ -168,6 +198,43 @@ function retriedInFlight(retry: Retry | undefined, attempt: number, status: numb
 
 /** The statuses `explainPlatformFault` calls momentary: the gateway or upstream, not the request. */
 const TRANSIENT_STATUS: ReadonlySet<number> = new Set([502, 503, 504]);
+
+/** A preview call the control plane answered with a status this client does not take. */
+class PreviewCallFailed extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    /** A 500 that names no reason (`unexplained500`). */
+    readonly unexplained = false,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Whether a 500 says only that something threw (#2450): the control plane's generic answer to a
+ * throw it does not map (no `detail`, `error: 'internal error'`), or Cloudflare's redacted fault.
+ * A 500 that names its reason is a definite answer.
+ */
+function unexplained500(status: number, body: string): boolean {
+  if (status !== 500) return false;
+  if (/\binternal error; reference\s*=\s*[a-z0-9]+/i.test(body)) return true;
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown; error?: unknown };
+    return !parsed.detail && parsed.error === 'internal error';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a poll failed the way a gateway or the network fails (#2450): a 502–504, no response at
+ * all (`fetch` rejects with a `TypeError` for a dropped connection, before or during the body), or a
+ * 500 that names no reason. A poll starts nothing, and the next one may find the copy done or the
+ * preview served (a fault after a finish's bind is answered as itself).
+ */
+const pollFaultIsTransient = (e: unknown): boolean =>
+  e instanceof PreviewCallFailed ? TRANSIENT_STATUS.has(e.status) || e.unexplained : e instanceof TypeError;
 /** The wait before each further attempt — two extra attempts, bounded. */
 const RETRY_BACKOFF_MS = [1_000, 3_000] as const;
 
@@ -191,6 +258,10 @@ const previewPlane = (opts: { controlPlaneUrl: string; header: Record<string, st
  * control plane copies the fork's data into that version's deployment first (#1710), so the
  * PR's successive pushes roll their migrations forward on the same data (§4). It says so in
  * a `notes` line. `refresh` forces a clean fork from prod instead.
+ *
+ * A scope too large to copy in one request is copied in the background (#2450): the control plane
+ * answers 202 with how far it got, and this calls again, printing that progress, until the
+ * preview is ready.
  */
 export async function createPreview(opts: {
   controlPlaneUrl: string;
@@ -203,29 +274,88 @@ export async function createPreview(opts: {
   ttlHours?: number | null;
   surface?: string;
   refresh?: boolean;
+  /** How long to wait for a copy that runs in the background (#2450), ms. */
+  waitMs?: number;
+  /** Default `setTimeout`; a test passes its own. */
+  sleep?: (ms: number) => Promise<void>;
 }): Promise<PreviewCreated> {
-  return request<PreviewCreated>(
-    'preview create failed',
-    previewPlane(opts),
-    `/verticals/${encodeURIComponent(opts.slug)}/previews`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        tag: opts.tag,
-        versionId: opts.versionId,
-        ...(opts.empty ? { empty: true } : {}),
-        ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
-        // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
-        ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
-        ...(opts.surface ? { surface: opts.surface } : {}),
-        ...(opts.refresh ? { refresh: true } : {}),
-      }),
-    },
-    // Converges on the tag: a second call rebinds the same fork, and a create that died
-    // half-built is reaped and re-forked, never duplicated. One still being built answers
-    // 409 (#1920), so only retry once the first handler has ended.
-    { retry: 'after-handler-ended' },
-  );
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const waitMs = opts.waitMs ?? PREVIEW_COPY_WAIT_MS;
+  const giveUpAt = Date.now() + waitMs;
+  /** Why this stopped waiting, and what running it again does: every way the wait ends unfinished. */
+  const gaveUp = (why: string, cause?: unknown): Error =>
+    new Error(
+      `preview create failed: ${why}. Running this command again pushes a new version, whose copy starts over and replaces this one.`,
+      cause === undefined ? undefined : { cause },
+    );
+  let pollMs = 5_000;
+  let faults = 0;
+  let pages = 0;
+  // Whether the last 202 named this create's own version: the call after it continues that copy (a
+  // poll), which the control plane never answers by starting another. A 202 naming another push's
+  // copy (one being finished) leaves the next call free to start this push's own.
+  let polling = false;
+  for (let call = 1; ; call++) {
+    let out: PreviewCreated | PreviewCopying;
+    try {
+      out = await request<PreviewCreated | PreviewCopying>(
+        'preview create failed',
+        previewPlane(opts),
+        `/verticals/${encodeURIComponent(opts.slug)}/previews`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            tag: opts.tag,
+            versionId: opts.versionId,
+            ...(opts.empty ? { empty: true } : {}),
+            ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
+            // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
+            ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
+            ...(opts.surface ? { surface: opts.surface } : {}),
+            // The first call only: on a later one it would stop the copy this call started.
+            ...(opts.refresh && call === 1 ? { refresh: true } : {}),
+            // #2450 step 2: this client takes a 202 and calls again, so a copy too large for one
+            // request runs in the background. A control plane that predates it ignores the field.
+            async: true,
+            ...(polling ? { poll: true } : {}),
+          }),
+        },
+        // A call that may start a copy converges on the tag: a second call rebinds the same fork,
+        // and a create that died half-built is reaped and re-forked, never duplicated. One still
+        // being built answers 409 (#1920), so it is retried only once the first handler has ended.
+        // A poll (#2450) reads its own job, waits on the call finishing it, or is told the copy is
+        // gone, and starts nothing, so it is safe to repeat while another is still running.
+        { retry: polling ? 'idempotent' : 'after-handler-ended' },
+      );
+    } catch (e) {
+      // A poll that still fails the way a gateway or the network fails is polled again, inside
+      // the wait: one blip among thousands of polls must not end a six-hour copy. A definite
+      // answer (a 4xx, a 500 that names its reason) ends it, as does a control plane that stays
+      // unreachable.
+      if (!polling || !pollFaultIsTransient(e)) throw e;
+      const why = e instanceof PreviewCallFailed ? String(e.status) : `network error: ${e instanceof Error ? e.message : String(e)}`;
+      if (++faults > PREVIEW_POLL_FAULTS) {
+        throw gaveUp(`polling the copy failed ${faults} times in a row (the last: ${why}), so this stopped waiting; the copy may still be running`, e);
+      }
+      if (Date.now() >= giveUpAt) {
+        throw gaveUp(`the preview's data was still being copied after ${Math.round(waitMs / 60_000)} min (${pages} pages when last polled), and the last poll failed (${why})`, e);
+      }
+      console.warn(`preview create: polling the copy failed (${why}); polling again in ${pollMs / 1000}s (${faults} of ${PREVIEW_POLL_FAULTS})`);
+      await sleep(pollMs);
+      continue;
+    }
+    faults = 0;
+    if (!isCopying(out)) return out;
+    polling = out.versionId === opts.versionId;
+    pages = out.progress.pages;
+    if (Date.now() >= giveUpAt) {
+      throw gaveUp(`the preview's data was still being copied after ${Math.round(waitMs / 60_000)} min (${pages} pages so far)`);
+    }
+    const attempt = out.progress.attempt > 1 ? `, attempt ${out.progress.attempt}: the source changed while it was read` : '';
+    console.warn(`preview create: copying the preview's data (${out.progress.pages} pages, ${out.progress.rows} rows so far${attempt})`);
+    pollMs = Math.max(1, out.retryAfter) * 1000;
+    await sleep(pollMs);
+  }
 }
 
 /** Reap a preview by tag. Idempotent: an already-gone preview is a no-op success, so a

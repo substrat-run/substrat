@@ -8,7 +8,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 
 /**
- * `GET /api/apps/:scopeId/observability/requests/:kind` (#1746).
+ * `GET /api/teams/:teamId/apps/:scopeId/observability/requests/:kind` (#1746, #2170).
  *
  * Driven through the WORKER because the facts under test are what a route forwards and
  * what it refuses to: the facet filters and window go through, and the tenant and scope
@@ -116,7 +116,10 @@ describe('the app request reads (#1746)', () => {
             reads.push(u);
             if (u.searchParams.get('hours') === '501') return Response.json({ error: 'not configured' }, { status: 501 });
             // The log read answers a page of events; the aggregate reads an object.
-            return Response.json(path === '/observability/tenant-logs' ? [] : { ok: path });
+            if (path === '/observability/tenant-logs' || path === '/observability/tenant-requests') return Response.json([]);
+            if (path === '/observability/tenant-request-volume') return Response.json({ bucketMs: 60000, buckets: [], estimated: false });
+            if (path === '/observability/tenant-request-facets') return Response.json({ total: 0, facets: {}, estimated: false });
+            return Response.json({ total: 0, bucketMs: 60000, patterns: [], truncated: false, estimated: false });
           }
           return Response.json({ error: `unexpected ${path}` }, { status: 500 });
         },
@@ -130,7 +133,7 @@ describe('the app request reads (#1746)', () => {
   });
 
   const read = (scope: string, kind: string, query = '') =>
-    app.request(`/api/apps/${scope}/observability/requests/${kind}${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    app.request(`/api/teams/${tenant}/apps/${scope}/observability/requests/${kind}${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
 
   it('reaches each plane read, with the facet filters and window as they arrived', async () => {
     const q = '?hours=3&level=warn&level=error&operation=acme%2Fcreate&status=409&buckets=120&facet=level';
@@ -171,10 +174,39 @@ describe('the app request reads (#1746)', () => {
     expect((await read(appScope, 'volume', '?hours=501')).status).toBe(501);
   });
 
+  it('keeps two tabs on their path teams even when each carries the other team cookie', async () => {
+    const otherTenant = tenantId.parse(ulid());
+    const otherScope = scopeId.parse(ulid());
+    const otherApp = scopeId.parse(ulid());
+    const otherOwner = principalId.parse(ulid());
+    const node = await provisionDashboard(host, { tenantId: otherTenant, scopeId: otherScope, owner: otherOwner, slug: 'other-requests', name: 'Other' });
+    await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-owner', principal: otherOwner, tenantId: otherTenant, scopeId: otherScope });
+    await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/provision-app', { appScopeId: otherApp, verticalSlug: 'acme/other', name: 'Other' });
+    const a = await app.request(`/api/teams/${tenant}/apps/${appScope}/observability/requests/volume`, { headers: { cookie: `sb_session=sub-owner; sb_team=${otherTenant}` } }, env);
+    const b = await app.request(`/api/teams/${otherTenant}/apps/${otherApp}/observability/log-patterns`, { headers: { cookie: `sb_session=sub-owner; sb_team=${tenant}` } }, env);
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(reads.map((u) => [u.searchParams.get('tenantId'), u.searchParams.get('scopeId')])).toEqual([[tenant, appScope], [otherTenant, otherApp]]);
+  });
+
+  it('refuses a nonmember path before any plane read and removes the cookie-only paths', async () => {
+    const foreign = tenantId.parse(ulid());
+    const headers = { cookie: `sb_session=sub-owner; sb_team=${tenant}` };
+    for (const tail of [
+      `apps/${appScope}/observability/logs`, `apps/${appScope}/observability/log-patterns`,
+      ...['volume', 'facets', 'list'].map((kind) => `apps/${appScope}/observability/requests/${kind}`),
+    ]) {
+      expect((await app.request(`/api/teams/${foreign}/${tail}`, { headers }, env)).status, tail).toBe(404);
+      expect((await app.request(`/api/${tail}`, { headers }, env)).status, tail).toBe(404);
+    }
+    expect(reads).toEqual([]);
+    expect((await read(appScope, 'list')).status).toBe(200);
+  });
+
   // #1747: the pattern read, and one pattern's lines.
   it('reaches the pattern read with its filters, the tenant and scope pinned', async () => {
     const res = await app.request(
-      `/api/apps/${appScope}/observability/log-patterns?hours=3&level=debug&level=error&operation=acme%2Freply&buckets=30&tenantId=${tenantId.parse(ulid())}`,
+      `/api/teams/${tenant}/apps/${appScope}/observability/log-patterns?hours=3&level=debug&level=error&operation=acme%2Freply&buckets=30&tenantId=${tenantId.parse(ulid())}`,
       { headers: { cookie: 'sb_session=sub-owner' } },
       env,
     );
@@ -185,13 +217,13 @@ describe('the app request reads (#1746)', () => {
     expect(ask.searchParams.get('buckets')).toBe('30');
     expect(ask.searchParams.getAll('tenantId')).toEqual([tenant]);
     expect(ask.searchParams.getAll('scopeId')).toEqual([appScope]);
-    expect((await app.request(`/api/apps/${scopeId.parse(ulid())}/observability/log-patterns`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+    expect((await app.request(`/api/teams/${tenant}/apps/${scopeId.parse(ulid())}/observability/log-patterns`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
   });
 
   it('passes a template to the log read', async () => {
     const template = 'reply to {ticketId} bounced';
     const res = await app.request(
-      `/api/apps/${appScope}/observability/logs?hours=24&template=${encodeURIComponent(template)}`,
+      `/api/teams/${tenant}/apps/${appScope}/observability/logs?hours=24&template=${encodeURIComponent(template)}`,
       { headers: { cookie: 'sb_session=sub-owner' } },
       env,
     );

@@ -1,5 +1,31 @@
 # @substrat-run/adapter-sqlite
 
+## 0.155.0
+
+### Minor Changes
+
+- 6933146: A vertical can now declare how a provider's connections land in it: `connections: [{ provider, operation, permission, options? }]` in a module manifest. The declaration is part of the permission registry, so `PERMISSIONS.md` renders it and the permission digest moves with it. On each connector pass the platform grants every live connection of the provider the declared key on each primary, active install, and binds it through the connector's own checked bind. It writes only what is missing or different. Connections created by Connect, a connect link or the dashboard door now land with no operator step.
+
+  A connector sweep's row now reports what happened instead of `ok` whenever the sweeper returned: `skipped` when the connection has no binding, and `failed`, naming each scope, when a scope could not be landed in or a declared landing could not be granted or bound.
+
+  Fortnox sweeps open the bound company's own connection. A Fortnox binding records the connection's `externalAccountRef`, so a bureau with several companies connected to one vertical no longer fails every company's sweep with "multiple live 'fortnox' connections". The probe and credential summary open the named company too.
+
+### Patch Changes
+
+- 10b7e03: Fixes to the same-pass second drain (#2431):
+
+  - **No intent is tried twice in one pass.** `drainPlatformRequestsFn` now takes options. The sweep always passes them, and on the second drain of a scope it passes `skip`: the ids the first drain reported as `attempted`. `drainScopePlatformRequests` takes the same two as options. It leaves skipped intents alone, so they are neither run nor settled, and it fills `attempted` with the ids it dispatches. Before, an intent a first drain left pending was tried again by the second drain, spending two of its 100 attempts in one pass. `attempted` is required in what a `drainPlatformRequestsFn` returns (`[]` when it tried nothing), so a fn that leaves it out fails to compile instead of having its intents tried twice.
+  - **Totals count each intent once.** A second drain now reports only new intents, so its `drained`, `done`, `failed` and `pending` add to the first drain's. Only `unsettleable`, which every listing reports in full, is replaced.
+  - **`unreachable` again counts scopes no drain reached.** A second drain that reached no deployment changes no count. It lands in `errors`, saying that what the schedules enqueued waits for the next pass. `tallyPlatformDrain` is the one place a drain's answer is read, and it filters the per-scope unsettleable list only for a second drain.
+  - **Purge-horizon runs report their requests.** On Cloudflare, they report the deliveries their events route to the platform, as an invoke's tail does. On the node host, they report what each purge enqueued.
+  - **The supplied scope sweeper is quiet on routine passes.** It again logs only a pass that failed. A pass whose schedules merely enqueued platform requests is routine, and its count stays in the pass report.
+
+- Updated dependencies [6933146]
+- Updated dependencies [35bdba2]
+- Updated dependencies [10b7e03]
+  - @substrat-run/contracts@0.155.0
+  - @substrat-run/kernel@0.155.0
+
 ## 0.154.0
 
 ### Minor Changes
@@ -6694,7 +6720,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

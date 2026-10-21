@@ -1,6 +1,5 @@
 # Composing & extending
 
-
 <CommunicationFlow kind="assistant" />
 
 The engine never calls a model. A host runs the loop and writes the result through the engine:
@@ -15,7 +14,6 @@ The engine never calls a model. A host runs the loop and writes the result throu
    An approval after the expiry, or under a newer deploy, is refused; a denial always works.
 6. The host takes the lease again, calls `claimExecution` with the operation and input it is
    about to run, and runs the operation only if that returns.
-
 
 ## Registering the engine
 

@@ -33,8 +33,10 @@ import {
   exportsOfManifestJson,
   assertNoBindingShapeBreak,
   importsOfManifestJson,
+  connectionLandingsOfManifestJson,
   type ExportBreak,
   type ManifestImports,
+  type ManifestConnectionLandings,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -841,7 +843,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -5225,6 +5227,13 @@ export class SqliteScopeHost implements ScopeHost {
     const manifest = this.manifestJsonOf(versionId, slug);
     if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
     return importsOfManifestJson(manifest);
+  }
+
+  /** #2316: what one version of `slug` declares about connection landings; `not_found` for a version it does not know. */
+  async versionConnectionLandings(slug: string, versionId: string): Promise<ManifestConnectionLandings> {
+    const manifest = this.manifestJsonOf(versionId, slug);
+    if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+    return connectionLandingsOfManifestJson(manifest);
   }
 
   /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */
@@ -10024,6 +10033,13 @@ export class SqliteScopeHost implements ScopeHost {
           return 'recorded';
         })();
       },
+      renewScopeScriptCopy: async (_actor, tenantId, scopeId, moveId, opts) => {
+        const renewedAt = Date.now();
+        const leaseUntil = new Date(renewedAt + (opts?.leaseMs ?? SCOPE_COPY_LEASE_MS)).toISOString();
+        const renewed = this.directory.prepare(COPY_MOVE_RENEW_SQL)
+          .run(...copyMoveRenewParams(tenantId, scopeId, moveId, leaseUntil, new Date(renewedAt).toISOString())).changes > 0;
+        return renewed ? { renewedAt, leaseUntil } : null;
+      },
       claimExpiredScopeScriptCopies: async (_actor, input) => {
         const limit = assertRowLimit('limit', input.limit);
         return this.directory.transaction(() => {
@@ -10233,6 +10249,14 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt: scope.expires_at },
           { expiresAt },
         );
+      },
+      keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
+        const changed = this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)
+          .run(...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
+            new Date().toISOString())).changes > 0;
+        if (changed) this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+          { expiresAt: expectedExpiresAt }, { expiresAt });
+        return changed;
       },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         // The COMMITTED outbox (#1624). On the shared connection this read saw an in-flight

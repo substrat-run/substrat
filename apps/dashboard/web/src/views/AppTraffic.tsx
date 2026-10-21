@@ -40,10 +40,12 @@ const PLOT_HEIGHT = 130;
  * to evidence — "Open logs for this window" — is a real link that carries the window.
  */
 export function AppTraffic({
+  teamId,
   scopeId,
   surfaces,
   metrics24,
 }: {
+  teamId: string;
   scopeId: string;
   surfaces: Array<{ surface: string | null; label: string | null; hostname: string }>;
   /**
@@ -116,14 +118,14 @@ export function AppTraffic({
     // The default day is the read the parent already made; only a zoom asks anew.
     if (!(shareDay && !asked)) {
       api
-        .appTenantMetrics(scopeId, 24, asked)
+        .appTenantMetrics(teamId, scopeId, 24, asked)
         .then((r) => live && setMetrics(r))
         .catch((e) => live && setMetrics(e instanceof ApiError && e.status === 501 ? 'absent' : 'error'));
     }
     return () => {
       live = false;
     };
-  }, [scopeId, asked?.since, asked?.until, nonce, shareDay]);
+  }, [teamId, scopeId, asked?.since, asked?.until, nonce, shareDay]);
 
   const prefs = useOverlayPrefs();
   const ready = series !== undefined && series !== 'error' && series.available && series.buckets.length > 0 ? series : null;

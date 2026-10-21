@@ -50,8 +50,13 @@ way the lint does:
 
 The registry a push ships marks each reserved key, and each system-held role, with
 `holder: 'system'`. The platform refuses a push whose registry rows mark a key that a role, a
-shape or the owner grants hold. A registry from a CLI too old to write the marks carries none,
-and the platform refuses it nothing.
+shape or the owner grants hold. The deploy manifest also carries each loaded module's permission
+declarations (`modules: [{ id, permissions, ownerGrants? }]`). At publish, the platform derives
+the key rows from those declarations and refuses a registry that disagrees about its keys,
+descriptions, declaring modules or `holder` marks. A CLI too old to send `modules` remains
+accepted without this consistency check; its registry is still checked by the older row rules.
+This check compares two claims shipped by the same builder. The next step of #2446 will verify
+known engine manifests against a platform catalog; third-party modules remain author-asserted.
 
 At runtime, a host reads the reservations off the modules it registers and the modules its
 `permissions` lists, and refuses at these doors:
@@ -607,6 +612,42 @@ peers: [
 
 On the pure host, `@substrat-run/adapter-sqlite/vertical-broker` runs two apps side by side
 under the same rules, for tests and local development.
+
+## A provider's connections: connection landings
+
+A poll-only connector ([Fortnox](/connectors/fortnox), [Planima](/connectors/planima)) reads a
+provider on a timer and lands what it finds through one of your operations, as the connection.
+Your app says which operation and which key, in its module manifest:
+
+```ts
+connections: [
+  { provider: 'fortnox', operation: 'ledger/record-period', permission: 'ledger:record' },
+  { provider: 'planima', operation: 'maintenance/record-plan', permission: 'plan:record',
+    options: { organizationId: null, horizonYears: 50 } },
+],
+```
+
+- **The platform grants and binds it.** Every live connection of that provider in a tenant where
+  your app is installed is granted the key on each install and bound to it, on the connector pass
+  after the connection appears. A company that approves a connect link is landing data within the
+  next pass, with nobody running `substrat connection bind`. A bureau with ten Fortnox companies
+  gets ten bindings into the same install.
+- **It is reviewed like any other grant.** The declaration is part of the permission registry:
+  `PERMISSIONS.md` shows it in its own section, and it moves the permission digest, so a version
+  that changes what a connection may do is acknowledged at promote.
+- **The key must be yours to give.** It must be a key a module declares, and not one reserved to a
+  system principal: a connection acts for whoever holds the provider's token. One landing per
+  provider.
+- **It follows the running version.** A pass grants and binds from the version each install
+  runs. A changed operation, key or declared option is re-bound; an option you do not declare is
+  left as an operator set it. A version that stops declaring a landing does not unbind anything:
+  the connection keeps its binding, and the connection's row in Health › Connections reports any
+  landing that now fails.
+- **Revoking the connection ends it.** The revoke takes the connection's keys and bindings
+  together, and the pass never seats them again.
+- **Nothing lands silently.** A connection with no binding reads *nothing polls this connection*;
+  a scope the connector could not land in, or a declaration the provider refuses (an option it
+  does not take), fails the connection's row and names the scope.
 
 ## Assigning a role: `ctx.canAssign`
 

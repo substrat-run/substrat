@@ -70,7 +70,7 @@ interface Detail {
   lifecycles: Record<string, EmittedLifecycle>;
 }
 
-function useRequestDetail(scopeId: string, invocationId: string, atMs: number): Detail {
+function useRequestDetail(teamId: string, scopeId: string, invocationId: string, atMs: number): Detail {
   const [d, setD] = useState<Detail>({ logs: loading, record: null, events: loading, followUps: loading, followUpsError: null, transitions: loading, related: loading, lifecycles: {} });
   useEffect(() => {
     let live = true;
@@ -94,7 +94,7 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
     const window = Date.now() - atMs > REQUEST_WINDOW_MS ? null : callLogsWindow(new Date(atMs).toISOString());
     // The lines first: the request itself is one of them, and what it touched is on it.
     const logsRead = window
-      ? api.appTenantLogs(scopeId, { invocationId, since: window.since, until: window.until, limit: 200 })
+      ? api.appTenantLogs(teamId, scopeId, { invocationId, since: window.since, until: window.until, limit: 200 })
       : Promise.reject(new Error('no usable time within the 72-hour log window'));
     // #2192: the related list reads the request's own line too, for the request that called it.
     const recordRead = logsRead.then(recordFromLogs).catch(() => null);
@@ -151,17 +151,19 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
     return () => {
       live = false;
     };
-  }, [scopeId, invocationId, atMs]);
+  }, [teamId, scopeId, invocationId, atMs]);
   return d;
 }
 
 export function RequestSlideOver({
+  teamId,
   scopeId,
   invocationId,
   atMs,
   onClose,
   teamApps = [],
 }: {
+  teamId: string;
   scopeId: string;
   /**
    * #2192: the team's app scope ids, so a related request in ANOTHER of the team's apps (a peer
@@ -173,7 +175,7 @@ export function RequestSlideOver({
   atMs: number;
   onClose: () => void;
 }) {
-  const d = useRequestDetail(scopeId, invocationId, atMs);
+  const d = useRequestDetail(teamId, scopeId, invocationId, atMs);
   const panel = useRef<HTMLDivElement>(null);
   const [history, setHistory] = useState<CausedTransition | null>(null);
   // Focus once on open; Escape closes this panel only while it is the topmost layer.
@@ -254,6 +256,7 @@ export function RequestSlideOver({
           <Transitions part={d.transitions} scopeId={scopeId} onHistory={setHistory} />
           {history && (
             <EntityTimeline
+              teamId={teamId}
               scopeId={scopeId}
               entityType={history.entityType}
               entityId={history.entityId}

@@ -42,6 +42,8 @@ export {
   type KickProducer,
 } from './kick-coalescer-do.js';
 export type { PlatformSweeperDoConfig, PlatformSweepOutcome } from './platform-sweeper-do.js';
+// #2450 step 2: one object per background scope copy, stepped by alarm.
+export { defineCopyJobDO, type CopyJobDo, type CopyJobDoConfig, type CopyJobDoRecord, type CopyJobStep } from './copy-job-do.js';
 export { defineScopeSweeperDO, SCOPE_SWEEPER_NAME } from './scope-sweeper-do.js';
 export type {
   ScopeSweeperDo,

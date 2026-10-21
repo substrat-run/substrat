@@ -38,6 +38,7 @@ type Mode = 'health' | 'grid';
  * grid or list, filtered by search + status.
  */
 export function Apps({
+  teamId,
   apps,
   loading,
   onCreate,
@@ -49,6 +50,7 @@ export function Apps({
   loadingMore,
   onLoadMore,
 }: {
+  teamId: string;
   apps: AppRow[];
   loading?: boolean;
   onCreate: () => void;
@@ -126,7 +128,7 @@ export function Apps({
       ) : (
         // The search box and status filter narrow the table as they narrow the cards.
         <>
-          <FleetHealth apps={apps.filter((a) => filtered.some((c) => c.scopeId === a.app_scope_id))} onOpen={onOpen} onRetry={onRetry} />
+          <FleetHealth teamId={teamId} apps={apps.filter((a) => filtered.some((c) => c.scopeId === a.app_scope_id))} onOpen={onOpen} onRetry={onRetry} />
           {walking && (
             <span role="status" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
               Loading the rest of the fleet — {apps.length} apps so far, ordered among themselves.

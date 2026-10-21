@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dashboard",
-  "version": "0.43.14",
+  "version": "0.43.15",
   "private": true,
   "substrat": {
     "permissions": "src/provision.ts",
@@ -66,6 +66,8 @@
     "@substrat-run/demo-meridian": "workspace:^",
     "@substrat-run/engine-absence": "workspace:^",
     "@types/node": "catalog:",
+    "esbuild": "^0.28.2",
+    "miniflare": "^4.20260310.0",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

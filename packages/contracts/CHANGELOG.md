@@ -1,5 +1,28 @@
 # @substrat-run/contracts
 
+## 0.155.0
+
+### Minor Changes
+
+- 6933146: A vertical can now declare how a provider's connections land in it: `connections: [{ provider, operation, permission, options? }]` in a module manifest. The declaration is part of the permission registry, so `PERMISSIONS.md` renders it and the permission digest moves with it. On each connector pass the platform grants every live connection of the provider the declared key on each primary, active install, and binds it through the connector's own checked bind. It writes only what is missing or different. Connections created by Connect, a connect link or the dashboard door now land with no operator step.
+
+  A connector sweep's row now reports what happened instead of `ok` whenever the sweeper returned: `skipped` when the connection has no binding, and `failed`, naming each scope, when a scope could not be landed in or a declared landing could not be granted or bound.
+
+  Fortnox sweeps open the bound company's own connection. A Fortnox binding records the connection's `externalAccountRef`, so a bureau with several companies connected to one vertical no longer fails every company's sweep with "multiple live 'fortnox' connections". The probe and credential summary open the named company too.
+
+- 35bdba2: `defineOperations` refuses an unpaged list read whatever wraps the array, and refuses an output it cannot read (#2436). The paged-list gate (#811) used to look only at a top-level `z.array(...)`, so an array under `.optional()`, `.nullable()`, `.default()`, `.readonly()`, `z.lazy()` or a union was never refused, and nor was a `z.custom()` output, which can hold anything.
+
+  **What is refused now.** An operation with no `paged` whose output is:
+
+  - an array under any of `.optional()`, `.nullable()`, `.nullish()`, `.default()`, `.prefault()`, `.nonoptional()`, `.catch()`, `.readonly()`, `z.promise()`, `z.lazy()`, a pipe's out side, an option of a union (`array.or(z.null())`), a side of an intersection or an element of a fixed tuple. The refusal names the wrapper.
+  - a `z.record()`, `z.map()`, `z.set()`, a tuple with a rest element or an object with a `catchall` (a record by another spelling; `looseObject` and `strictObject` are not one): a container whose size the caller does not bound.
+  - an output the gate cannot read: `z.custom()` (and `z.instanceof()`), `z.any()`, `z.unknown()`, or a transform (`.transform()`). A pipe is judged at its out side, which is what the handler returns: `array.pipe(object)` is accepted, `array.transform(fn)` is not.
+  - a `z.lazy()` whose getter throws, or a schema nested too deep to judge.
+
+  A module that declares such an output stops loading, with the operation's name in the error. The remedy is the same as for a bare array: declare the entry schema as `output` and add `paged`.
+
+  **What is not.** An object with an array inside it, and a wrapped object, are untouched.
+
 ## 0.154.0
 
 ### Minor Changes
@@ -6968,7 +6991,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

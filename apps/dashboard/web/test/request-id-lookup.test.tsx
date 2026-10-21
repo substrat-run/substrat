@@ -201,7 +201,7 @@ describe('the request-finding surfaces', () => {
     const onOpenCall = vi.fn();
     await act(async () =>
       root.render(
-        <RequestsMode scopeId="app-a" q={{}} window={{ from: '2026-09-29T00:00:00.000Z', to: '2026-09-30T00:00:00.000Z' }} nonce={0} onFilters={vi.fn()} onRange={vi.fn()} onOpenCall={onOpenCall} />,
+        <RequestsMode teamId="team-a" scopeId="app-a" q={{}} window={{ from: '2026-09-29T00:00:00.000Z', to: '2026-09-30T00:00:00.000Z' }} nonce={0} onFilters={vi.fn()} onRange={vi.fn()} onOpenCall={onOpenCall} />,
       ),
     );
     await settle();
@@ -230,7 +230,7 @@ describe('the request-finding surfaces', () => {
   });
 
   const renderPanel = async (id: string, at: number) => {
-    await act(async () => root.render(<RequestSlideOver scopeId="app-a" invocationId={id} atMs={at} onClose={vi.fn()} />));
+    await act(async () => root.render(<RequestSlideOver teamId="team-a" scopeId="app-a" invocationId={id} atMs={at} onClose={vi.fn()} />));
     await settle();
   };
 
@@ -278,7 +278,7 @@ describe('the request-finding surfaces', () => {
     const parentLine = [{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: parent, method: 'GET', path: '/api/board' } } }] as never;
     const openButton = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Open');
     const render = async (id: string, scope: string, teamApps: string[]) => {
-      await act(async () => root.render(<RequestSlideOver scopeId={scope} invocationId={id} atMs={at} onClose={vi.fn()} teamApps={teamApps} />));
+      await act(async () => root.render(<RequestSlideOver teamId="team-a" scopeId={scope} invocationId={id} atMs={at} onClose={vi.fn()} teamApps={teamApps} />));
       await settle();
     };
     afterEach(() => window.history.replaceState(null, '', '/'));
@@ -286,7 +286,7 @@ describe('the request-finding surfaces', () => {
     it('links the caller in its own app, and that app’s read finds the parent’s line', async () => {
       // The plane, as the dashboard worker narrows it: a read is per app, so the parent's line is
       // found only under the calling app's scope.
-      const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (scope, q) => {
+      const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (_team, scope, q) => {
         const id = (q as { invocationId?: string }).invocationId;
         if (scope === 'app-a' && id === child) return childLine({ parentScopeId: callerApp });
         if (scope === callerApp && id === parent) return parentLine;
@@ -300,13 +300,13 @@ describe('the request-finding surfaces', () => {
       expect([url.searchParams.get('req'), url.searchParams.get('reqScope')]).toEqual([parent, callerApp]);
       // What the page then renders for that address: the panel in the calling app.
       await render(parent, url.searchParams.get('reqScope')!, ['app-a', callerApp]);
-      expect(logs.mock.calls.at(-1)).toEqual([callerApp, expect.objectContaining({ invocationId: parent })]);
+      expect(logs.mock.calls.at(-1)).toEqual(['team-a', callerApp, expect.objectContaining({ invocationId: parent })]);
       expect(container.textContent).toContain('/api/board');
       expect(container.textContent).not.toContain('was found in this app within the log window');
     });
 
     it('shows the caller without a link when the team does not hold its app, and reads nothing there', async () => {
-      const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (scope, q) =>
+      const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (_team, scope, q) =>
         scope === 'app-a' && (q as { invocationId?: string }).invocationId === child ? childLine({ parentScopeId: callerApp }) : [],
       );
       vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
@@ -314,11 +314,11 @@ describe('the request-finding surfaces', () => {
       expect(container.textContent).toContain('Caused by');
       expect(container.textContent).toContain('peer call');
       expect(openButton()).toBeUndefined();
-      expect(logs.mock.calls.every(([scope]) => scope === 'app-a')).toBe(true);
+      expect(logs.mock.calls.every(([, scope]) => scope === 'app-a')).toBe(true);
     });
 
     it('shows the caller without a link when the line names no scope for it (written before the field)', async () => {
-      vi.spyOn(api, 'appTenantLogs').mockImplementation(async (_scope, q) =>
+      vi.spyOn(api, 'appTenantLogs').mockImplementation(async (_team, _scope, q) =>
         (q as { invocationId?: string }).invocationId === child ? childLine({}) : [],
       );
       vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);

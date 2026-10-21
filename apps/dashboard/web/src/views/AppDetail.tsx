@@ -193,6 +193,7 @@ export function AppDetail({
     <Page style={{ gap: 16 }}>
       {openRecord && (
         <RecordPanel
+          teamId={teamId}
           key={`${openRecord.entityType}:${openRecord.entityId}`}
           scopeId={openRecord.scopeId ?? app.app_scope_id}
           entityType={openRecord.entityType}
@@ -203,6 +204,7 @@ export function AppDetail({
       {openRequest && (
         <RequestSlideOver
           key={openRequest.invocationId}
+          teamId={teamId}
           scopeId={openRequest.scopeId ?? app.app_scope_id}
           invocationId={openRequest.invocationId}
           atMs={openRequest.atMs}
@@ -230,7 +232,7 @@ export function AppDetail({
         onChange={onTab}
       />
 
-      {main === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} />}
+      {main === 'overview' && <Overview teamId={teamId} app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} />}
       {main === 'data' && (
         <Data
           teamId={teamId}
@@ -406,9 +408,9 @@ function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versi
   return <OwnerSeatCard scopeId={scopeId} seat={seat} onClaimed={read} />;
 }
 
-function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
+function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls }: { teamId: string; app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
-  const metrics24 = useTenantMetrics(app.app_scope_id);
+  const metrics24 = useTenantMetrics(teamId, app.app_scope_id);
   const schedules = useAppSchedules(app.app_scope_id);
   // The app's REAL audit trail (created / active / failed+reason / deleted), one page
   // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
@@ -542,7 +544,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       {/* What arrived at the app, by status class, with the shared overlays (#1767) —
           full width because it is a time axis, and the Overview's sparkline it replaced
           answered the same question in less space and with no way in. */}
-      <AppTraffic scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
+      <AppTraffic teamId={teamId} scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
       <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
       <SchedulesAbsent scopeId={app.app_scope_id} schedules={schedules} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>
@@ -2227,7 +2229,7 @@ const DATA_PAGE = 50;
  * `_substrat_*` spine grouped apart). Right: a paged view of the selected table.
  * Read-only by design — raw writes would bypass the event log and forge invariants.
  */
-function DataBrowser({ app }: { app: AppRow }) {
+function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
   const [scopes, setScopes] = useState<AppScope[] | null>(null);
   const [activeScope, setActiveScope] = useState<string>(app.app_scope_id);
   const [tables, setTables] = useState<ScopeTable[] | null>(null);
@@ -2433,6 +2435,7 @@ function DataBrowser({ app }: { app: AppRow }) {
       </div>
       {history && (
         <EntityTimeline
+          teamId={teamId}
           scopeId={history.scopeId}
           entityType={history.entityType}
           entityId={history.entityId}
@@ -3112,7 +3115,7 @@ export function Data({ teamId, app, section, onSection }: { teamId: string; app:
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={DATA_SECTIONS} value={section} onChange={onSection} />
-      {section === 'tables' && <DataBrowser app={app} />}
+      {section === 'tables' && <DataBrowser teamId={teamId} app={app} />}
       {section === 'schema' && (
         <div style={{ display: 'grid', gap: 16 }}>
           <FieldCoverage app={app} />

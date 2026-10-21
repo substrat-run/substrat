@@ -226,6 +226,14 @@ function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams 
 export const AUDITED_CALL_DEADLINE_MS = 60_000;
 
 /**
+ * How long one call of a paged copy may run (#2450): a page read, a page staged, a stage dropped.
+ * A page is at most `SCOPE_DUMP_PAGE_MAX_BYTES`, seconds of work, so a call past this has stalled.
+ * Answered 504, it ends the job step it held up as a transient fault: a cancel or forget, which
+ * waits for the step in flight, then waits this long at most past the step's own budget.
+ */
+export const PAGE_CALL_DEADLINE_MS = 60_000;
+
+/**
  * Run the WHOLE exchange `run` under one deadline (#2064): the request, its status, and the
  * body, whether that body is the answer or a refusal. A vertical that answers its headers in
  * time and then stalls the body is held to the same bound as one that never answers. On expiry,
@@ -1397,11 +1405,13 @@ export class VerticalClient {
     const query =
       `scopeId=${encodeURIComponent(scopeId)}${opts.stamp ? '&stamp=1' : ''}` +
       (cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`);
-    const answer = await this.routeAnswer('export-page', FENCED, () =>
-      this.options.fetch(`${base}/internal/export-page?${query}`, {
-        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-      }),
-    );
+    const answer = await withDeadline('export-page', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('export-page', FENCED, () =>
+        this.options.fetch(`${base}/internal/export-page?${query}`, {
+          headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          signal,
+        }),
+      ));
     if (answer === PREDATES) return 'predates';
     const page = scopeDumpPage.safeParse(answer);
     if (!page.success) throw new ControlPlaneError(502, 'export-page: the vertical answered something that is not a dump page');
@@ -1419,23 +1429,26 @@ export class VerticalClient {
     seq: number,
     tables: ScopeDumpTable[],
   ): Promise<{ staged: boolean } | 'predates'> {
-    const answer = await this.routeAnswer('stage', FENCED, () => this.postRaw('/internal/stage', { scopeId, stageId, seq, tables }));
+    const answer = await withDeadline('stage', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('stage', FENCED, () => this.postRaw('/internal/stage', { scopeId, stageId, seq, tables }, signal)));
     if (answer === PREDATES) return 'predates';
     return { staged: (answer as { staged?: unknown } | null)?.staged === true };
   }
 
   /** Drop a stage a carry gave up on (#2450). Best effort: the next stage replaces it anyway. */
   async discardStagedScope(scopeId: ScopeId, stageId: string): Promise<void> {
-    await this.routeAnswer('stage-discard', FENCED, () => this.postRaw('/internal/stage/discard', { scopeId, stageId }));
+    await withDeadline('stage-discard', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('stage-discard', FENCED, () => this.postRaw('/internal/stage/discard', { scopeId, stageId }, signal)));
   }
 
   /** A platform-authenticated JSON POST, its response unread, for `routeAnswer`. */
-  private postRaw(path: string, body: unknown): Promise<Response> {
+  private postRaw(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     return this.options.fetch(`${base}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
   }
 
@@ -2141,6 +2154,51 @@ export interface TransferredScope {
 export const TRANSFER_ATTEMPTS = 3;
 
 /**
+ * A paged copy in flight (#2450): everything needed to resume it from another request or from a
+ * background job, and nothing that is the scope's data. JSON, so a job can store it.
+ *
+ * `cursor` is the source's next page, `null` once every page is staged. `seq` is the last page the
+ * destination staged under `stageId`. `revision` is the source's write revision as the first page
+ * read it: the copy is one copy only while every later page reads the same.
+ */
+export interface TransferState {
+  from: ScopeId;
+  into: ScopeId;
+  stamp: boolean;
+  stageId: string;
+  seq: number;
+  cursor: string | null;
+  revision: string | null;
+  loadStamp: string | null;
+  attempt: number;
+  pages: number;
+  rows: number;
+  /** The `_substrat_meta` rows read so far, for `dumpMetaValue` once the copy is done. */
+  meta: ScopeDumpTable[];
+}
+
+/** A copy finished (`done`), or one still to move (`state`). */
+export type TransferProgress = { done: TransferredScope } | { state: TransferState };
+
+/** The two ends a copy reads and writes, as `transferScope` and the job use them. */
+export type TransferEnds = {
+  source: Pick<VerticalClient, 'exportScope' | 'exportScopeStamped' | 'exportScopePage'>;
+  dest: Pick<VerticalClient, 'stageScopePage' | 'discardStagedScope'>;
+};
+
+export interface TransferOptions {
+  retry?: <T>(run: () => Promise<T>) => Promise<T>;
+  attempts?: number;
+  /** A carry's export: the source mints its load stamp (`exportScopeStamped`). A fork's is not. */
+  stamp?: boolean;
+  /**
+   * Stage even a scope that fits one page (#2450). A copy that a job finishes in another isolate
+   * must leave its data at the destination, never in this one's memory.
+   */
+  alwaysStage?: boolean;
+}
+
+/**
  * Move a scope's data out of `source` and into `dest`'s stage, a page at a time (#2450), so no
  * single call carries the whole scope: a Durable Object RPC message holds 32 MiB, and an isolate
  * 128 MB. Nothing here holds more than one page, and the destination commits from its stage in
@@ -2154,96 +2212,139 @@ export const TRANSFER_ATTEMPTS = 3;
  * consistent read only while the source's write revision stays where the first page read it. When
  * it moves the copy starts again, up to `TRANSFER_ATTEMPTS` times, and is then refused (409) with
  * nothing moved: a carry's later fences assume a copy that was true at one moment.
+ *
+ * `beginTransfer` and `transferStep` are the same copy in resumable steps, for one that outlasts a
+ * request; this runs them to the end.
  */
 export async function transferScope(
-  source: Pick<VerticalClient, 'exportScope' | 'exportScopeStamped' | 'exportScopePage'>,
-  dest: Pick<VerticalClient, 'stageScopePage' | 'discardStagedScope'>,
+  source: TransferEnds['source'],
+  dest: TransferEnds['dest'],
   /** The scope read at `source`, and (a fork, #2450) the scope `dest` stages into, when another. */
   scope: { from: ScopeId; to?: ScopeId },
-  opts: {
-    retry?: <T>(run: () => Promise<T>) => Promise<T>;
-    attempts?: number;
-    /** A carry's export: the source mints its load stamp (`exportScopeStamped`). A fork's is not. */
-    stamp?: boolean;
-  } = {},
+  opts: TransferOptions = {},
 ): Promise<TransferredScope> {
+  let progress = await beginTransfer({ source, dest }, scope, opts);
+  while ('state' in progress) progress = await transferStep({ source, dest }, progress.state, opts);
+  return progress.done;
+}
+
+/**
+ * Start a copy (#2450): read the source's first page and stage it. Finished at once when the scope
+ * fits that page (unless `alwaysStage`), when the source predates the paged verbs, or when the
+ * destination does (its pages are then merged here, as the whole dump it takes).
+ */
+export async function beginTransfer(
+  { source, dest }: TransferEnds,
+  scope: { from: ScopeId; to?: ScopeId },
+  opts: TransferOptions & { attempt?: number } = {},
+): Promise<TransferProgress> {
   const retry = opts.retry ?? (<T>(run: () => Promise<T>) => run());
-  const attempts = opts.attempts ?? TRANSFER_ATTEMPTS;
   const stamp = opts.stamp ?? true;
-  const scopeId = scope.from;
+  const from = scope.from;
   const into = scope.to ?? scope.from;
   // A client without the paged verbs (one a caller assembled from part of this one) is read as a
   // deployment that predates them.
-  const pageAt = (cursor: string | null) =>
-    typeof source.exportScopePage === 'function'
-      ? retry(() => source.exportScopePage(scopeId, cursor, { stamp }))
-      : Promise.resolve('predates' as const);
-  const stagePage = (seq: number, tables: ScopeDumpTable[]) =>
-    typeof dest.stageScopePage === 'function'
-      ? retry(() => dest.stageScopePage(into, stageId, seq, tables))
-      : Promise.resolve('predates' as const);
-  let stageId = '';
-  for (let attempt = 1; ; attempt++) {
-    const first = await pageAt(null);
-    if (first === 'predates') {
-      if (!stamp) {
-        const tables = await retry(() => source.exportScope(scopeId));
-        return { dump: tables, loadStamp: null, revision: null, meta: metaOf([tables]) };
-      }
-      const whole = await retry(() => source.exportScopeStamped(scopeId));
-      return { dump: whole.tables, loadStamp: whole.loadStamp, revision: whole.revision, meta: metaOf([whole.tables]) };
+  const first = typeof source.exportScopePage === 'function'
+    ? await retry(() => source.exportScopePage(from, null, { stamp }))
+    : ('predates' as const);
+  if (first === 'predates') {
+    if (!stamp) {
+      const tables = await retry(() => source.exportScope(from));
+      return { done: { dump: tables, loadStamp: null, revision: null, meta: metaOf([tables]) } };
     }
-    if (first.next === null) {
-      return { dump: first.tables, loadStamp: first.loadStamp, revision: first.revision, meta: metaOf([first.tables]) };
-    }
-    stageId = ulid();
-    const opened = await stagePage(0, first.tables);
-    // A destination that cannot stage takes the dump whole, so the pages are held here instead.
-    const held: ScopeDumpTable[][] | null = opened === 'predates' ? [first.tables] : null;
-    const meta: ScopeDumpTable[][] = [first.tables];
-    let cursor: string | null = first.next;
-    let seq = 0;
-    let torn = false;
-    while (cursor !== null) {
-      const at: string = cursor;
-      const page = await pageAt(at);
-      if (page === 'predates') {
-        throw new ControlPlaneError(502, `the source of scope ${scopeId} stopped answering dump pages part way; nothing was moved`);
-      }
-      if (page.revision !== first.revision) {
-        torn = true;
-        break;
-      }
-      meta.push(page.tables);
-      if (held) {
-        held.push(page.tables);
-      } else {
-        const staged = await stagePage(++seq, page.tables);
-        if (staged === 'predates') {
-          throw new ControlPlaneError(502, `the destination of scope ${scopeId} stopped staging part way; nothing was moved`);
-        }
-      }
-      cursor = page.next;
-    }
-    if (!torn) {
-      return {
-        dump: held ? mergeDumpPages(held) : { stageId },
-        loadStamp: first.loadStamp,
-        revision: first.revision,
-        meta: metaOf(meta),
-      };
-    }
-    // Best effort: a stage nothing commits is replaced by the next one, and goes with a wipe.
-    if (!held) await dest.discardStagedScope(into, stageId).catch(() => undefined);
-    if (attempt >= attempts) {
-      throw new ControlPlaneError(
-        409,
-        `scope ${scopeId} took writes while each of ${attempts} attempts was copying it, so no copy was true at ` +
-          'one moment and nothing was moved (#2450). Retry when it is quieter.',
-      );
-    }
+    const whole = await retry(() => source.exportScopeStamped(from));
+    return { done: { dump: whole.tables, loadStamp: whole.loadStamp, revision: whole.revision, meta: metaOf([whole.tables]) } };
   }
+  if (first.next === null && !opts.alwaysStage) {
+    return { done: { dump: first.tables, loadStamp: first.loadStamp, revision: first.revision, meta: metaOf([first.tables]) } };
+  }
+  const stageId = ulid();
+  const opened = typeof dest.stageScopePage === 'function'
+    ? await retry(() => dest.stageScopePage(into, stageId, 0, first.tables))
+    : ('predates' as const);
+  const state: TransferState = {
+    from, into, stamp, stageId, seq: 0, cursor: first.next,
+    revision: first.revision, loadStamp: first.loadStamp,
+    attempt: opts.attempt ?? 1, pages: 1, rows: rowsIn(first.tables), meta: metaOf([first.tables]),
+  };
+  if (opened !== 'predates') return state.cursor === null ? { done: doneOf(state) } : { state };
+  // A destination that cannot stage takes the dump whole, so the pages are held here instead.
+  const held: ScopeDumpTable[][] = [first.tables];
+  for (let cursor = first.next; cursor !== null;) {
+    const at: string = cursor;
+    const page = await retry(() => source.exportScopePage(from, at, { stamp }));
+    if (page === 'predates') throw stoppedPaging(from);
+    if (page.revision !== first.revision) return restart({ source, dest }, state, opts, false);
+    held.push(page.tables);
+    cursor = page.next;
+  }
+  return { done: { dump: mergeDumpPages(held), loadStamp: first.loadStamp, revision: first.revision, meta: metaOf(held) } };
 }
+
+/**
+ * Move the next pages of a copy (#2450), until it is staged whole or `until` says to stop (a job's
+ * time budget); always at least one page. A source written since the first page starts the copy
+ * again under a new stage, the old one discarded.
+ *
+ * `stopped` (a job being cancelled or forgotten): the copy starts nothing new. A torn copy then
+ * discards its stage and answers where it was, opening no other: whoever stopped it settles it.
+ */
+export async function transferStep(
+  { source, dest }: TransferEnds,
+  state: TransferState,
+  opts: TransferOptions & { until?: () => boolean; stopped?: () => boolean } = {},
+): Promise<TransferProgress> {
+  const retry = opts.retry ?? (<T>(run: () => Promise<T>) => run());
+  let next: TransferState = state;
+  while (next.cursor !== null) {
+    const at: string = next.cursor;
+    const page = await retry(() => source.exportScopePage(next.from, at, { stamp: next.stamp }));
+    if (page === 'predates') throw stoppedPaging(next.from);
+    if (page.revision !== next.revision) return restart({ source, dest }, next, opts, true);
+    const seq = next.seq + 1;
+    const staged = await retry(() => dest.stageScopePage(next.into, next.stageId, seq, page.tables));
+    if (staged === 'predates') {
+      throw new ControlPlaneError(502, `the destination of scope ${next.into} stopped staging part way; nothing was moved`);
+    }
+    next = {
+      ...next,
+      seq,
+      cursor: page.next,
+      pages: next.pages + 1,
+      rows: next.rows + rowsIn(page.tables),
+      meta: mergeDumpPages([next.meta, metaOf([page.tables])]),
+    };
+    if (next.cursor !== null && opts.until?.()) return { state: next };
+  }
+  return { done: doneOf(next) };
+}
+
+/** A torn copy: discard its stage and begin again, or refuse once the attempts are spent. */
+async function restart(
+  ends: TransferEnds, state: TransferState, opts: TransferOptions & { stopped?: () => boolean }, staged: boolean,
+): Promise<TransferProgress> {
+  // Best effort: a stage nothing commits is replaced by the next one, and goes with a wipe.
+  if (staged) await ends.dest.discardStagedScope(state.into, state.stageId).catch(() => undefined);
+  // Stopped: a new stage would outlast whoever stopped this copy, so none is opened.
+  if (opts.stopped?.()) return { state };
+  const attempts = opts.attempts ?? TRANSFER_ATTEMPTS;
+  if (state.attempt >= attempts) {
+    throw new ControlPlaneError(
+      409,
+      `scope ${state.from} took writes while each of ${attempts} attempts was copying it, so no copy was true at ` +
+        'one moment and nothing was moved (#2450). Retry when it is quieter.',
+    );
+  }
+  return beginTransfer(ends, { from: state.from, to: state.into }, { ...opts, stamp: state.stamp, attempt: state.attempt + 1 });
+}
+
+const doneOf = (state: TransferState): TransferredScope =>
+  ({ dump: { stageId: state.stageId }, loadStamp: state.loadStamp, revision: state.revision, meta: state.meta });
+
+const rowsIn = (tables: readonly ScopeDumpTable[]): number => tables.reduce((n, t) => n + t.rows.length, 0);
+
+const stoppedPaging = (scopeId: ScopeId) =>
+  new ControlPlaneError(502, `the source of scope ${scopeId} stopped answering dump pages part way; nothing was moved`);
 
 /** The `_substrat_meta` fragments of some dump pages, merged. */
 const metaOf = (pages: readonly (readonly ScopeDumpTable[])[]): ScopeDumpTable[] =>

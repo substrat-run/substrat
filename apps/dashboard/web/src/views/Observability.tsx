@@ -135,10 +135,10 @@ export function Observability({
   const slideOver = (
     <>
       {rec && (rec.scopeId ?? scopeId) && (
-        <RecordPanel key={`${rec.entityType}:${rec.entityId}`} scopeId={(rec.scopeId ?? scopeId)!} entityType={rec.entityType} entityId={rec.entityId} onClose={closeRecordInUrl} />
+        <RecordPanel key={`${rec.entityType}:${rec.entityId}`} teamId={teamId} scopeId={(rec.scopeId ?? scopeId)!} entityType={rec.entityType} entityId={rec.entityId} onClose={closeRecordInUrl} />
       )}
       {open && (open.scopeId ?? scopeId) && (
-        <RequestSlideOver key={open.invocationId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} teamApps={apps.map((a) => a.app_scope_id)} />
+        <RequestSlideOver key={open.invocationId} teamId={teamId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} teamApps={apps.map((a) => a.app_scope_id)} />
       )}
     </>
   );
@@ -181,6 +181,7 @@ export function Observability({
     return (
       <>
       <Pulse
+        teamId={teamId}
         apps={apps}
         scopeId={scopeId}
         hours={hours}
@@ -248,9 +249,10 @@ export function Observability({
         {!app ? (
           <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: sub })} />
         ) : sub === 'flow' ? (
-          <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />
+          <Flow key={`${app.app_scope_id}:${nonce}`} teamId={teamId} app={app} />
         ) : (
           <ProcessMap
+            teamId={teamId}
             app={app}
             entity={q.entity}
             period={period}
@@ -305,10 +307,11 @@ export function Observability({
         // cursor comes along: "what was happening at 09:13" is one question asked of both.
         <LogStream mode={logMode} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
           {logMode === 'logs' && (
-            <LinesMode scopeId={scopeId} q={q} hours={hours} nonce={nonce} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
+            <LinesMode teamId={teamId} scopeId={scopeId} q={q} hours={hours} nonce={nonce} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
           )}
           {logMode === 'requests' && (
             <RequestsMode
+              teamId={teamId}
               scopeId={scopeId}
               q={q}
               window={panelWindow}
@@ -321,6 +324,7 @@ export function Observability({
           )}
           {logMode === 'patterns' && (
             <PatternsMode
+              teamId={teamId}
               scopeId={scopeId}
               window={panelWindow}
               nonce={nonce}
@@ -363,6 +367,7 @@ export function Observability({
  * cursor, since under one the panel withholds the hint anyway.
  */
 function LinesMode({
+  teamId,
   scopeId,
   q,
   hours,
@@ -372,6 +377,7 @@ function LinesMode({
   onFilters,
   onOpenRequest,
 }: {
+  teamId: string;
   scopeId: string;
   q: ObsQuery;
   hours: number;
@@ -390,14 +396,15 @@ function LinesMode({
       setMetrics(MOCK_APP_METRICS);
       return;
     }
-    api.appMetrics(hours).then((m) => live && setMetrics(m)).catch(() => {});
+    api.appMetrics(teamId, hours).then((m) => live && setMetrics(m)).catch(() => {});
     return () => {
       live = false;
     };
-  }, [hours, nonce, cursor === null]);
+  }, [teamId, hours, nonce, cursor === null]);
   const requests = metrics?.available ? metrics.rows.find((r) => r.scopeId === scopeId)?.requests : undefined;
   return (
     <TenantLogs
+      teamId={teamId}
       embedded
       scopeId={scopeId}
       filters={q}

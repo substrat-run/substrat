@@ -60,6 +60,7 @@ function change(now: number, before: number | undefined): string | null {
 }
 
 export interface ProcessMapProps {
+  teamId: string;
   app: AppRow;
   entity?: string;
   period: ProcessPeriod;
@@ -69,7 +70,7 @@ export interface ProcessMapProps {
   onChange: (next: { entity?: string; period?: ProcessPeriod; sel?: string | undefined; compare?: boolean }) => void;
 }
 
-export function ProcessMap({ app, entity, period, sel, compare, nonce, onChange }: ProcessMapProps) {
+export function ProcessMap({ teamId, app, entity, period, sel, compare, nonce, onChange }: ProcessMapProps) {
   const [view, setView] = useState<ProcessMapView | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [history, setHistory] = useState<string | null>(null);
@@ -175,6 +176,7 @@ export function ProcessMap({ app, entity, period, sel, compare, nonce, onChange 
       </div>
       {history && (
         <EntityTimeline
+          teamId={teamId}
           scopeId={app.app_scope_id}
           entityType={view.entity}
           entityId={history}

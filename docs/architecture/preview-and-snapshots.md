@@ -69,9 +69,60 @@ Two adapter implementations behind one interface, mirroring the whole platform:
   "*Clean* because the DO is single-threaded" now holds per page only, since each page is read
   in one turn. The pages are one consistent read only while the source's write revision stays
   where the first page read it. A copy that it moves under is started again, and refused after
-  three attempts. Two steps remain open in #2450:
-  - running the copy as a durable job outside the request;
-  - an online copy with catch-up, for a busy scope at GB scale.
+  three attempts.
+
+  A preview's copy that needs more than one page runs as a job (#2450, step 2):
+  - The request reads and stages the first page and records the move in the copy ledger as
+    before, then hands the rest to a Durable Object per job (`ScopeCopyJobDO`). It answers 202.
+  - Each step of the job, one per alarm, renews the move's lease
+    (`HostAdmin.renewScopeScriptCopy`) and then moves pages for up to 20 s. The ledger keeps
+    naming a live move, so no sweep, reap or erasure can act on it while it runs. A step, and the
+    wait before a retry, each stay inside a quarter of the lease. A job that passes six hours fails
+    and stops renewing; a job that fails discards its stage. One still copying whose last step is
+    more than a lease old, or that is more than a lease past its deadline, has lost its steps, and
+    the next call that reads it fails it (`copyJobAt`).
+  - The same create call, repeated, finds the job. While it copies, the call answers its progress.
+    Once it is done, the call claims it (`CopyJobs.claim`, one call at a time), renews the lease and
+    runs the in-request path's own restore and bind, with the fence counted from that renewal. A
+    call that finds the job claimed answers its progress instead, and touches nothing. A carry's
+    claim is held until its bind is over, so a newer push cannot start from the binding it
+    replaces. The preview's deadline counts from the latest call, as every create's does: the
+    calls during a copy keep it alive only while every entry of that move remains pending,
+    unclaimed and inside its lease, and the deadline is still the one the call read; overlapping
+    polls extend and audit it once. The finish
+    applies the deadline again. A finish that fails,
+    however it fails, settles the move and discards the stage it
+    would have loaded, and a fork, like a carry, refuses a source that was carried away and wiped
+    while it was read.
+  - A refresh, a delete or a newer push to the preview cancels the job, settles its move
+    `retained`, and discards its stage. The cancel stops a step still running and waits for it, so
+    nothing the step does follows the settle or the reap. Each page call has a 60 s deadline
+    (`PAGE_CALL_DEADLINE_MS`), so that wait is bounded. A newer push waits for a claimed job to be
+    finished rather than tear it down. A refresh is held to the same rule as any create: it never
+    stops a newer push's live copy, and one for an older version is refused as superseded.
+  - A call that follows a 202 naming its own version is a poll (`poll: true`). A poll continues
+    that copy and never starts one: it answers 202 while the copy runs, finishes it once it is
+    done, answers the preview again if it already serves the poll's version, and otherwise refuses
+    with 409 (the copy failed, a newer push or a refresh replaced it, or the preview was deleted).
+    Only a new create starts a copy over, so an answer lost on the way back cannot. A call after a
+    202 naming another push's copy is no poll: once that copy is finished, it starts its own.
+  - Of two pushes to one preview, the newer is the one the registry recorded later. A create for
+    an older version is refused (409, superseded) while a newer push's job is copying or being
+    finished (`copyJobLive`: a job that failed, was cancelled or was left unfinished past its
+    lease holds nothing off), and for 15 minutes after that push's last call: every call, a poll
+    included, marks its push the newest of its preview for that long (`CopyJobs.markNewest`, kept
+    under the preview's tag rather than its row). The mark covers the moments no job record names
+    the newer push: when it has forgotten the fork job it replaces and is reaping that row to
+    provision its own, and once its copy has landed and its job is forgotten. After that, an older
+    version (a deliberate re-preview) is taken like any other create.
+  - A copy's failure is answered with the status a refusal had, and with 409 naming the fault
+    when the copy met a 5xx (its deadline, an end it could not reach, a load or a bind that failed
+    while the job was finished): the copy is settled by then, and only a new create starts it over,
+    so it is never a status a client retries as a gateway's. The fault still lands an ops-failure
+    row.
+
+  Only previews run this way; a rebind or adopt of a live scope still copies in its request. One
+  step remains open in #2450: an online copy with catch-up, for a busy scope at GB scale.
 
 Once a cloud export lands in a local file it's a real SQLite again — `cp`, `VACUUM INTO`,
 Datasette, a step debugger all return. **Pull once (logical, governed); branch freely after.**

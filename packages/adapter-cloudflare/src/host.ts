@@ -21,10 +21,12 @@ import {
   type ImportResult,
   type ImportState,
   importsOfManifestJson,
+  connectionLandingsOfManifestJson,
   exportsOfManifestJson,
   assertNoBindingShapeBreak,
   type ExportBreak,
   type ManifestImports,
+  type ManifestConnectionLandings,
   importCursorMove,
   importCursorMoveAt,
   importCursorMoved,
@@ -904,6 +906,7 @@ interface ControlPlaneStub {
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
+  renewScopeScriptCopy(tenantId: string, scopeId: string, moveId: string, leaseMs?: number): Promise<{ renewedAt: number; leaseUntil: string } | null>;
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
     after?: { scriptRef: string; moveId: string } }): Promise<ScopeScriptCopyRow[]>;
   markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean, boundShapes?: string[]): Promise<void>;
@@ -913,6 +916,8 @@ interface ControlPlaneStub {
   ): Promise<void>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
+  keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
+    expectedExpiresAt: string | null, expiresAt: string | null): Promise<boolean>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   moveChannel(from: string | null, history: ChannelHistoryRow): Promise<boolean>;
@@ -8532,6 +8537,8 @@ export class CloudflareScopeHost implements ScopeHost {
           opts?.claimedBy),
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) =>
         this.cp.touchScopeScriptCopy(tenantId, scopeId, scriptRef, moveId),
+      renewScopeScriptCopy: async (_actor, tenantId, scopeId, moveId, opts) =>
+        this.cp.renewScopeScriptCopy(tenantId, scopeId, moveId, ...(opts?.leaseMs !== undefined ? [opts.leaseMs] : [])),
       listScopeScriptCopies: async (_actor, filter) => (await this.cp.listScopeScriptCopies(filter)).map(scopeScriptCopyOf),
       /**
        * Record that this scope's provision has now run against `versionId` (#1172).
@@ -8657,6 +8664,14 @@ export class CloudflareScopeHost implements ScopeHost {
           { expiresAt: scope.expires_at ?? null },
           { expiresAt },
         );
+      },
+      keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
+        const changed = await this.cp.keepAlivePendingScopeCopy(
+          tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt,
+        );
+        if (changed) await this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+          { expiresAt: expectedExpiresAt }, { expiresAt });
+        return changed;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
@@ -12493,6 +12508,19 @@ export class CloudflareScopeHost implements ScopeHost {
       throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
     }
     return importsOfManifestJson(v.manifest_json);
+  }
+
+  /**
+   * What one pushed version declares about connection landings (#2316), from its stored manifest:
+   * the connector pass reads it for each install's running version. Unaudited for the reason
+   * {@link versionImports} is: it is the platform's own code metadata, read every pass.
+   */
+  async versionConnectionLandings(verticalSlug: string, versionId: string): Promise<ManifestConnectionLandings> {
+    const v = await this.cp.readVersion(versionId);
+    if (!v || v.vertical_slug !== verticalSlug) {
+      throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+    }
+    return connectionLandingsOfManifestJson(v.manifest_json);
   }
 }
 

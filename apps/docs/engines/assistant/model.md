@@ -13,7 +13,6 @@ An event is bounded to 64 KiB and a user message to 32 KiB, measured in UTF-8 by
 
 ## Guarantees
 
-
 - **The record is append-only and numbered.** The number is the cursor a client resumes after,
   so a dropped connection picks up exactly where it stopped.
 - **One run writes at a time.** A run replaced while still running cannot write.
@@ -27,4 +26,3 @@ An event is bounded to 64 KiB and a user message to 32 KiB, measured in UTF-8 by
   never a write.
 - **Erasing a person erases their threads.** The events the engine emits carry no text, and an
   erasure clears them too.
-
