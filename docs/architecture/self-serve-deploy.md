@@ -75,7 +75,7 @@ supply-chain and resource surface, just moved out of production into a disposabl
 
 **B — Opaque bundle + WfP sandbox + mandatory human admission.** The builder pushes a *built*
 bundle; we do not inspect it. Safety rests on two things instead of static analysis: WfP's
-runtime isolation (per-script, CPU/subrequest limits, no ambient authority), and **every
+runtime isolation (per-script, CPU/subrequest limits), and **every
 version requiring an explicit human admission** — a person decides to trust this builder's
 upload. Lighter to build; admission is a trust decision, not a verification. Digests are
 whatever the pusher claims, so the permission/migration checkpoint is advisory here.
@@ -135,7 +135,7 @@ Every refusal names the offending binding and its type and points here.
 | any other / unrecognized type | **Rejected** | Not on the allowlist ⇒ refused, by construction. |
 | `CONTROL_PLANE` (by **name**, any type) | **Rejected** | The platform's directory binding, refused by name whatever type it claims — masquerading as a permitted type must not slip it through. |
 
-**D1 ownership caveat (model B).** A static shared `d1` binding names a `database_id`, and the
+**D1 ownership caveat.** A static shared `d1` binding names a `database_id`, and the
 check does **not** prove the vertical *owns* that id rather than pointing at another tenant's DB.
 The structural check does not close that gap. D-36 self-admits private pushes; the
 staff admission rule for listed versions records a human vouch, not independent proof
@@ -296,8 +296,8 @@ The §6.3 open question ("allowlist, none, or metered") is answered **allowlist 
 metered**, and the allowlist is the vertical's own declaration, not a staff grant:
 
 > **Decision (D-46): a hosted vertical declares the third-party hosts its worker fetches;
-> the dispatch egress worker enforces the declaration per subrequest and meters every
-> verdict. Anything not declared is refused; anything platform-bound keeps riding the
+> the dispatch egress worker enforces the declaration per worker-context subrequest and
+> meters every verdict. Undeclared hosts on that path are refused; platform-bound calls ride the
 > router.**
 
 **The declaration.** `package.json` `substrat.outbound` — a list of lowercase hostnames
