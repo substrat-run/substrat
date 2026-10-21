@@ -77,7 +77,10 @@ it('normalizes unknown projection holders to person while preserving legacy abse
     applyProjection(tenantId: string, roles: { role_key: string; permissions: string; source: string; holder?: string | null }[], tuples: unknown[]): Promise<unknown>;
   };
   const tenant = ulid();
-  const row = (holder?: string | null) => ({ role_key: 'runner', permissions: '["rsv:run"]', source: 'vertical', holder });
+  const row = (holder?: string | null) => ({
+    role_key: 'runner', permissions: '["rsv:run"]', source: 'vertical',
+    ...(holder === undefined ? {} : { holder }),
+  });
   const stored = () => runInDurableObject(stub as never, (_instance, state) =>
     createLocalControlPlaneReader(state.storage.sql).getRole(tenant, 'runner'));
   for (const [incoming, expected, refused] of [
@@ -94,7 +97,7 @@ it('normalizes unknown projection holders to person while preserving legacy abse
   }
 });
 
-it('keeps the holder on CP-less provision and role repair projections', async () => {
+it('defaults omitted code-defined holders to person on CP-less provision and role repair', async () => {
   const host = new CloudflareScopeHost({ scope: env.SCOPE });
   const wireHolders: (string | null | undefined)[] = [];
   const hostStub = host as unknown as { scopeStub(scopeId: string): { applyProjectionReply(...args: unknown[]): Promise<unknown> } };
@@ -120,23 +123,39 @@ it('keeps the holder on CP-less provision and role repair projections', async ()
     owner,
     roles: [
       { key: 'owner', permissions: [permissionKey.parse('perm:use')], source: 'vertical', holder: 'person' },
-      { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
+      { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical' },
+      { key: 'unknown', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
+      { key: 'system', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
     ],
     ownerRoleKey: 'owner',
   });
   const holders = () => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
     state.storage.sql.exec('SELECT role_key, holder FROM _substrat_roles WHERE tenant_id = ? ORDER BY role_key', tenant).toArray());
-  expect(await holders()).toEqual([{ role_key: 'owner', holder: 'person' }, { role_key: 'runner', holder: 'person' }]);
-  expect(wireHolders).toEqual(['person', 'person']);
+  const roleDoor = async (key: string) => {
+    const role = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+      createLocalControlPlaneReader(state.storage.sql).getRole(tenant, key));
+    return reservedRoleRefusal(role!, new Set(['rsv:run']), 'platform');
+  };
+  expect(await holders()).toEqual([
+    { role_key: 'owner', holder: 'person' }, { role_key: 'runner', holder: 'person' },
+    { role_key: 'system', holder: 'system' }, { role_key: 'unknown', holder: 'person' },
+  ]);
+  expect(wireHolders).toEqual(['person', 'person', 'person', 'system']);
+  expect(await roleDoor('runner')).toMatch(/must declare holder: 'system'/);
+  expect(await roleDoor('unknown')).toMatch(/must declare holder: 'system'/);
+  expect(await roleDoor('system')).toBeNull();
 
   await host.projectRolesLocal(tenant, scope, [
-    { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
+    { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical' },
+    { key: 'unknown', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
+    { key: 'system', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
   ]);
-  expect(await holders()).toEqual([{ role_key: 'runner', holder: 'person' }]);
-  expect(wireHolders.at(-1)).toBe('person');
-  await host.projectRolesLocal(tenant, scope, [
-    { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
+  expect(await holders()).toEqual([
+    { role_key: 'runner', holder: 'person' }, { role_key: 'system', holder: 'system' },
+    { role_key: 'unknown', holder: 'person' },
   ]);
-  expect(await holders()).toEqual([{ role_key: 'runner', holder: 'system' }]);
-  expect(wireHolders.at(-1)).toBe('system');
+  expect(wireHolders.slice(-3)).toEqual(['person', 'person', 'system']);
+  expect(await roleDoor('runner')).toMatch(/must declare holder: 'system'/);
+  expect(await roleDoor('unknown')).toMatch(/must declare holder: 'system'/);
+  expect(await roleDoor('system')).toBeNull();
 });

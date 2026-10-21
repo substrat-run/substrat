@@ -4000,7 +4000,7 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<void> {
     unwrapReply(await this.scopeStub(scopeId).applyProjectionReply(
       tenantId,
-      roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : r.holder == null ? null : 'person' })),
+      roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' })),
       [],
     ));
   }
@@ -11681,7 +11681,7 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
     const switchedOff = unwrapReply(await stub.applyProjectionReply(
       input.tenantId,
-      input.roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : r.holder == null ? null : 'person' })),
+      input.roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' })),
       [], // no tenant-level tuples — a CP-less vertical grants at scope level only
       // Only PROJECT (and thereby switch on strict enforcement) when the platform actually
       // supplies entitlements. Omitting them leaves the scope un-projected and trusting-
