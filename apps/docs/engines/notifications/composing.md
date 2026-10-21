@@ -7,18 +7,20 @@ import { notificationsModule, notify } from '@substrat-run/engine-notifications'
 host.registerModule(notificationsModule);
 
 // Your own consumer of a domain event:
-'workorder.assigned': async (ctx, event) => {
-  const { orderId, technician } = assignedPayload.parse(event.payload);
-  notify(ctx, {
-    topic: 'repair-assigned',
-    description: 'A repair was assigned to you',
-    dedupeKey: event.id,
-    recipients: [technician],
-    vars: { orderId },
-    about: event.entity,
-    template: { subject: 'New repair: {{orderId}}', text: 'You have repair {{orderId}}.' },
-  });
-},
+const consumers = {
+  'workorder.assigned': async (ctx, event) => {
+    const { orderId, technician } = assignedPayload.parse(event.payload);
+    notify(ctx, {
+      topic: 'repair-assigned',
+      description: 'A repair was assigned to you',
+      dedupeKey: event.id,
+      recipients: [technician],
+      vars: { orderId },
+      about: event.entity,
+      template: { subject: 'New repair: {{orderId}}', text: 'You have repair {{orderId}}.' },
+    });
+  },
+};
 ```
 
 The template is your vocabulary, so it stays in your code. `dedupeKey` names the occasion: from a

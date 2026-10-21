@@ -5,9 +5,9 @@
 | Operation | Permission | Does |
 |---|---|---|
 | `assistant/create-thread` | `assistant:use` | Open a thread for the caller |
-| `assistant/list-threads` | `assistant:use` | The caller's threads, most recently active first (another principal's, with audit) |
-| `assistant/get-thread` | `assistant:use` | One thread |
-| `assistant/read-events` | `assistant:use` | A thread's events after a cursor — how a client resumes |
+| `assistant/list-threads` | `assistant:use`; also `assistant:audit` for cross-owner reads | The caller's threads, most recently active first (another principal's, with audit) |
+| `assistant/get-thread` | `assistant:use`; also `assistant:audit` for cross-owner reads | One thread |
+| `assistant/read-events` | `assistant:use`; also `assistant:audit` for cross-owner reads | A thread's events after a cursor — how a client resumes |
 | `assistant/send-message` | `assistant:use` | Say something in a thread, which begins a turn |
 | `assistant/resolve-approval` | `assistant:use` | Approve or deny a gated tool call, bound to the input shown |
 | `assistant/close-thread` | `assistant:use` | Close a thread; nothing more is appended |
@@ -26,8 +26,10 @@ Engines declare no HTTP paths. A composing vertical binds operations with
 `claimExecution` are exported for composition inside the caller's transaction.
 
 The caller checks permissions before invoking them. In particular, `getThread` and
-`readEvents` do not decide visibility: use `assertThreadVisible` and check
-`assistant:use` at the boundary. `listThreads` returns an unpaged array; the registered
+`readEvents` do not decide visibility: check `assistant:use` at the boundary and
+call `assertThreadVisible`, which requires `assistant:audit` when the caller is not
+the owner. For `listThreads`, check `assistant:audit` as well as `assistant:use`
+before supplying another owner's subject. Own-thread reads require only `assistant:use`. `listThreads` returns an unpaged array; the registered
 operation returns a page, ordered by most recent activity. `readEvents` returns
 `{ events, lastSeq }` after the supplied sequence cursor.
 

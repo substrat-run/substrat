@@ -25,6 +25,7 @@ An event is bounded to 64 KiB and a user message to 32 KiB, measured in UTF-8 by
   principal, never to a person's role, and writes only while a turn the person started is open.
 - **A person's thread is theirs.** Anyone else is told it does not exist. Audit widens a read,
   never a write.
-- **Erasing a person erases their threads.** The events the engine emits carry no text, and an
-  erasure clears them too.
+- **Erasing a person erases their threads.** Stream events in `assistant_events` can
+  contain text deltas and tool results; erasure deletes those rows. The milestone/outbox
+  events carry no text, and erasure redacts their payloads too.
 
