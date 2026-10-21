@@ -843,7 +843,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -10249,6 +10249,14 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt: scope.expires_at },
           { expiresAt },
         );
+      },
+      keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
+        const changed = this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)
+          .run(...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
+            new Date().toISOString())).changes > 0;
+        if (changed) this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+          { expiresAt: expectedExpiresAt }, { expiresAt });
+        return changed;
       },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         // The COMMITTED outbox (#1624). On the shared connection this read saw an in-flight

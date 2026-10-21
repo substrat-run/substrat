@@ -2818,6 +2818,18 @@ export interface HostAdmin {
     expiresAt: string | null,
   ): Promise<void>;
 
+  /** Keep a preview alive only while the same copy move and scope state are pending.
+   * Returns false when another poll changed the expiry or the move was settled. Audited on change. */
+  keepAlivePendingScopeCopy(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    moveId: string,
+    status: Scope['status'],
+    expectedExpiresAt: string | null,
+    expiresAt: string | null,
+  ): Promise<boolean>;
+
   /**
    * Record a staff resolution of a kept copy (#1722, Codex #2008 r7) in the admin log. A kept
    * copy is one a carry's wipe refused because it took a write the carry never copied; the

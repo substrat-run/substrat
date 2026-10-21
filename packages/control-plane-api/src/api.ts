@@ -10099,11 +10099,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
      * write is audited, so it is written only once the stored deadline has fallen more than
      * `PREVIEW_CREATE_BOUND_MS` behind this call's. Best-effort: the finish writes it again.
      */
-    const keepAlive = async (row: Scope): Promise<void> => {
+    const keepAlive = async (row: Scope, moveId: string): Promise<void> => {
       const due = expiresAt === null
         ? row.expiresAt !== null
         : row.expiresAt === null || Date.parse(row.expiresAt) < Date.parse(expiresAt) - PREVIEW_CREATE_BOUND_MS;
-      if (due) await c.var.admin.setScopeExpiresAt(actor, tenantId, row.id, expiresAt).catch(() => undefined);
+      if (due) await c.var.admin.keepAlivePendingScopeCopy(
+        actor, tenantId, row.id, moveId, row.status, row.expiresAt, expiresAt,
+      ).catch(() => undefined);
     };
     // Residency (K-7/K-32): forking pins the copy's EXECUTION to the preview deployment.
     // Anything tighter than `global` cannot be honoured until Regional Services, so refuse
@@ -10399,7 +10401,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const row = existing;
       const inProgress = async (): Promise<PreviewCopying> => {
         if (!jobs) throw new ControlPlaneError(409, `a create for preview '${opts.tag}' is in progress (its data is still being copied). Retry once it finishes`);
-        await keepAlive(row);
+        await keepAlive(row, forkJob.spec.moveId);
         return copyingAnswer(forkJob);
       };
       if (!replaced && forkJob.status === 'copying') return inProgress();
@@ -10435,7 +10437,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const held = await readCopyJob(copyJobId('carry', preview.id));
         const inProgress = async (job: CopyJobRecord): Promise<PreviewCopying> => {
           if (!jobs) throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);
-          await keepAlive(preview);
+          await keepAlive(preview, job.spec.moveId);
           return copyingAnswer(job);
         };
         if (held && held.spec.versionId !== opts.versionId) {

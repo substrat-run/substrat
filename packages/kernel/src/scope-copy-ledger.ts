@@ -76,6 +76,17 @@ export const copyMoveRenewParams = (
   tenantId: string, scopeId: string, moveId: string, leaseUntil: string, now: string,
 ): string[] => [leaseUntil, tenantId, scopeId, moveId, now];
 
+/** A preview poll's deadline compare-and-set. The whole move must still be live at write time. */
+export const PENDING_COPY_KEEP_ALIVE_SQL = `
+  UPDATE scopes SET expires_at = ?
+  WHERE tenant_id = ? AND scope_id = ? AND status = ? AND expires_at IS ?
+    AND reap_claimed_at IS NULL
+    ${COPY_MOVE_LIVE_PREDICATE}`;
+
+export const pendingCopyKeepAliveParams = (expiresAt: string | null, tenantId: string, scopeId: string,
+  status: string, expectedExpiresAt: string | null, moveId: string, now: string): (string | null)[] =>
+  [expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId, moveId, now];
+
 /** Pending entries whose lease ran out before `?` (or that never had one), oldest first, `LIMIT ?`. */
 export const COPY_EXPIRED_SQL = `
   SELECT tenant_id, scope_id, script_ref, move_id FROM scope_script_copies
