@@ -142,7 +142,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
 
   it('a declared refusal, rendered from its own declaration, carries the request id (#2192)', async () => {
     const res = await app.request(
-      '/api/teams/delete',
+      `/api/teams/${tenant}/delete`,
       { method: 'POST', headers: { 'content-type': 'application/json', cookie: `sb_session=${MANAGER_SUB}` }, body: JSON.stringify({ confirm: TEAM_NAME }) },
       env,
     );

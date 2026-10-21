@@ -1014,63 +1014,6 @@ app.post('/api/teams/switch', async (c) => {
 });
 
 /**
- * Delete the organization — the Settings danger zone. OWNER-ONLY (the in-scope op
- * checks the roster) and confirmed by retyping the organization name, re-verified
- * here so the UI gate is never the only gate. Tombstone-shaped end to end: every
- * app is deprovisioned (scope archived, hostname off), the roster revoked, the
- * tenant flipped to `deleting` (never hard-deleted — the audit trail stays), and
- * every member's identity link severed so the team drops out of all switchers.
- */
-app.post('/api/teams/delete', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const body = z.object({ confirm: z.string() }).parse(await c.req.json().catch(() => ({})));
-  const team = await host.admin.getTenant(STAFF, node.tenantId);
-  if (!team || body.confirm.trim().toLowerCase() !== team.name.trim().toLowerCase()) {
-    throw new HTTPException(400, { message: 'type the organization name to confirm deletion' });
-  }
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  // Owner check + roster revocation, in-scope, BEFORE any platform effect.
-  const { members } = (await dash.invoke('dashboard/delete-team', {})) as {
-    members: Array<{ principal: string; roleKey: string }>;
-  };
-  // Deprovision every app — the same per-app path as deleting one by hand, so
-  // shared-plane scopes archive and hostnames stop resolving. Best-effort per app:
-  // one stuck app must not leave the rest running.
-  const apps = await allApps(dash);
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  // Every app's issuer, resolved while the auth-servers are still among the apps (#1619).
-  const issuers = await teamIssuersFor(host, cp, apps);
-  for (const a of apps) {
-    try {
-      const mcpIssuerScopeId = await mcpIssuerOf(dash, a.app_scope_id, issuers);
-      await deprovisionApp(host, {
-        node,
-        appScopeId: scopeId.parse(a.app_scope_id),
-        controlPlane: cp,
-        ...(mcpIssuerScopeId ? { mcpIssuerScopeId } : {}),
-      });
-    } catch {
-      // recorded on the app's own trail; the org delete proceeds
-    }
-  }
-  await host.admin.setTenantStatus(STAFF, node.tenantId, 'deleting');
-  for (const m of members) {
-    try {
-      await host.admin.unlinkIdentity(STAFF, node.tenantId, principalId.parse(m.principal));
-      // The shared plane's mirrored link goes with it (best-effort).
-      await cp.unlinkIdentity(principalId.parse(m.principal));
-    } catch {
-      // an already-unlinked member (e.g. left earlier) is fine
-    }
-  }
-  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
-  deleteCookie(c, TEAM_COOKIE, { path: '/' });
-  return c.body(null, 204);
-});
-
-/**
  * Every GET list below shares the platform-wide pagination convention (contracts
  * pagination.ts): `?limit&cursor` in (default 20), `{ entries, nextCursor }` out,
  * keyset on the list's own sort key. The module's list reads page the same way (#2426); a caller
@@ -4987,6 +4930,56 @@ function teamScope({ host, node }: TeamContext) {
 }
 
 /**
+ * Delete the path's team — the Settings danger zone. The in-scope operation checks
+ * ownership and revokes the roster; confirmation is checked against this team's name.
+ * Apps are deprovisioned, the tenant is tombstoned, and identity links are severed.
+ */
+async function deleteTeamIn({ c, host, node }: TeamContext, confirm: string): Promise<{ deleted: true }> {
+  const team = await host.admin.getTenant(STAFF, node.tenantId);
+  if (!team || confirm.trim().toLowerCase() !== team.name.trim().toLowerCase()) {
+    throw new HTTPException(400, { message: 'type the organization name to confirm deletion' });
+  }
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  // Owner check + roster revocation, in-scope, BEFORE any platform effect.
+  const { members } = (await dash.invoke('dashboard/delete-team', {})) as {
+    members: Array<{ principal: string; roleKey: string }>;
+  };
+  // Deprovision every app — the same per-app path as deleting one by hand, so
+  // shared-plane scopes archive and hostnames stop resolving. Best-effort per app:
+  // one stuck app must not leave the rest running.
+  const apps = await allApps(dash);
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  // Every app's issuer, resolved while the auth-servers are still among the apps (#1619).
+  const issuers = await teamIssuersFor(host, cp, apps);
+  for (const a of apps) {
+    try {
+      const mcpIssuerScopeId = await mcpIssuerOf(dash, a.app_scope_id, issuers);
+      await deprovisionApp(host, {
+        node,
+        appScopeId: scopeId.parse(a.app_scope_id),
+        controlPlane: cp,
+        ...(mcpIssuerScopeId ? { mcpIssuerScopeId } : {}),
+      });
+    } catch {
+      // recorded on the app's own trail; the org delete proceeds
+    }
+  }
+  await host.admin.setTenantStatus(STAFF, node.tenantId, 'deleting');
+  for (const m of members) {
+    try {
+      await host.admin.unlinkIdentity(STAFF, node.tenantId, principalId.parse(m.principal));
+      // The shared plane's mirrored link goes with it (best-effort).
+      await cp.unlinkIdentity(principalId.parse(m.principal));
+    } catch {
+      // an already-unlinked member (e.g. left earlier) is fine
+    }
+  }
+  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
+  deleteCookie(c, TEAM_COOKIE, { path: '/' });
+  return { deleted: true };
+}
+
+/**
  * The team's roster — active members + outstanding invites, one page newest-first
  * (`{ entries, nextCursor }`, keyset on the roster row id). Org-bounded small, but the
  * envelope is the ONE list-read shape (contracts pagination.ts).
@@ -5445,6 +5438,7 @@ const routeHandlers = {
   },
   'dashboard/remove-member': async (ctx, { memberId }) => removeMemberIn(ctx, memberId),
   'dashboard/leave-team': async (ctx) => leaveTeamIn(ctx),
+  'dashboard/delete-team': async (ctx, { confirm }) => deleteTeamIn(ctx, confirm),
   'dashboard/observability-metrics': async (ctx) => observabilityMetricsIn(ctx),
   'dashboard/observability-logs': async (ctx) => observabilityLogsIn(ctx),
   'dashboard/app-observability-metrics': async (ctx, { scopeId: app }) => appObservabilityMetricsIn(ctx, app),

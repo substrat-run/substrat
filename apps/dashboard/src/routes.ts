@@ -712,6 +712,14 @@ export const dashboardRoutes = defineRoutes({
     http: { method: 'POST', path: '/leave' },
   },
 
+  // -- settings danger zone (#2170) ------------------------------------------
+  'dashboard/delete-team': {
+    summary: 'Delete this team after its owner types its name: deprovision apps, revoke members and tombstone the tenant',
+    input: z.object({ confirm: z.string() }),
+    output: z.object({ deleted: z.literal(true) }),
+    http: { method: 'POST', path: '/delete' },
+  },
+
   // -- observability (#2170) --------------------------------------------------
   // These are the existing read-only plane reads, now resolved from the team in the path.
   // Repeated service/scopeId filters are read from the request by their handlers because
