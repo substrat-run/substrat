@@ -1,5 +1,14 @@
 # @substrat-run/connector-microsoft365
 
+## 0.0.18
+
+### Patch Changes
+
+- Updated dependencies [d0af665]
+- Updated dependencies [156febd]
+  - @substrat-run/contracts@0.157.0
+  - @substrat-run/kernel@0.157.0
+
 ## 0.0.17
 
 ### Patch Changes

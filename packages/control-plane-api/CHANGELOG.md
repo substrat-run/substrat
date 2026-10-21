@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.157.0
+
+### Minor Changes
+
+- d0af665: Let a vertical's owning team enable or disable transactional email in the dashboard under Settings → Permissions. Check app-management access before changes and registry ownership at the control plane; retain staff overrides and keep deploys from changing the grant. Explain the dashboard action when email delivery is refused.
+
+### Patch Changes
+
+- Updated dependencies [d0af665]
+- Updated dependencies [156febd]
+  - @substrat-run/contracts@0.157.0
+  - @substrat-run/control-plane-client@0.3.8
+  - @substrat-run/kernel@0.157.0
+
 ## 0.156.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @substrat-run/docs
 
+## 0.1.34
+
+### Patch Changes
+
+- d0af665: Let a vertical's owning team enable or disable transactional email in the dashboard under Settings → Permissions. Check app-management access before changes and registry ownership at the control plane; retain staff overrides and keep deploys from changing the grant. Explain the dashboard action when email delivery is refused.
+
 ## 0.1.33
 
 ### Patch Changes

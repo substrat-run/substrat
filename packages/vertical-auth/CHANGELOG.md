@@ -1,5 +1,18 @@
 # @substrat-run/vertical-auth
 
+## 0.27.0
+
+### Minor Changes
+
+- 156febd: Discover the per-instance sign-in issuer through the standard auth route by default when mounting MCP. Publish protected-resource metadata and challenge unauthenticated clients with its URL, so team-auth-server clients can register themselves without per-vertical discovery wiring. Existing deployments must update both host and auth packages and redeploy. Explicit issuer overrides, audience validation, and operation permissions are preserved.
+
+### Patch Changes
+
+- Updated dependencies [d0af665]
+- Updated dependencies [156febd]
+  - @substrat-run/contracts@0.157.0
+  - @substrat-run/kernel@0.157.0
+
 ## 0.26.1
 
 ### Patch Changes
