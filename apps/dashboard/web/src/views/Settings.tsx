@@ -2,12 +2,12 @@ import { useState } from 'react';
 import { Button, Dialog, Input, Tabs } from '@substrat-run/ui';
 import { Page } from '../components/layout';
 import { card } from '../components/ui';
-import { api, ApiError } from '../lib/api';
+import { ApiError, teamApi } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { APP_SHA, APP_VERSION } from '../lib/version';
 
 /** Account settings — Organization tab (screen 1v). The danger zone is REAL. */
-export function Settings({ org }: { org: string }) {
+export function Settings({ org, teamId }: { org: string; teamId: string }) {
   const [tab, setTab] = useState('organization');
   const [name, setName] = useState(org);
   return (
@@ -44,7 +44,7 @@ export function Settings({ org }: { org: string }) {
               <Button>Save</Button>
             </div>
           </div>
-          <DeleteOrgCard org={org} />
+          <DeleteOrgCard org={org} teamId={teamId} />
         </>
       )}
 
@@ -58,7 +58,7 @@ export function Settings({ org }: { org: string }) {
 
       {tab === 'about' && <AboutCard />}
 
-      {tab === 'danger' && <DeleteOrgCard org={org} />}
+      {tab === 'danger' && <DeleteOrgCard org={org} teamId={teamId} />}
     </Page>
   );
 }
@@ -92,7 +92,7 @@ function AboutCard() {
  * and severs every member's link; on success the app reloads into another team or
  * onboarding.
  */
-function DeleteOrgCard({ org }: { org: string }) {
+function DeleteOrgCard({ org, teamId }: { org: string; teamId: string }) {
   const [open, setOpen] = useState(false);
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
@@ -102,7 +102,7 @@ function DeleteOrgCard({ org }: { org: string }) {
     setBusy(true);
     setError(null);
     try {
-      if (!DEV_MOCK) await api.deleteTeam(confirm);
+      if (!DEV_MOCK) await teamApi(teamId).deleteTeam({ confirm });
       // The team is gone — a full navigation to root re-boots the portal (onboarding
       // or the next team).
       location.href = '/';
