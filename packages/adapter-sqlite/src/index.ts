@@ -9867,16 +9867,16 @@ export class SqliteScopeHost implements ScopeHost {
           if (prev && prev.migrationDigest !== incoming.migrationDigest) {
             await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
           }
-          this.directory
+          this.directoryWriteAndAudit(() => this.directory
             .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
-            .run(versionId, verticalSlug, s.scope_id);
-          this.recordAdmin(
-            actor,
-            'bindScopeVersion',
-            { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
-            prev ? { versionId: prev.id, version: prev.version } : null,
-            { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
-          );
+            .run(versionId, verticalSlug, s.scope_id).changes > 0,
+            () => this.recordAdmin(
+              actor,
+              'bindScopeVersion',
+              { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
+              prev ? { versionId: prev.id, version: prev.version } : null,
+              { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
+            ));
         }
 
         // The acknowledgement is recorded, not just enforced: that is what turns
@@ -9987,9 +9987,19 @@ export class SqliteScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
+        const audit = () => this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId },
+          servingRef === undefined ? null : { servingRef: scope.serving_ref }, {
+            versionId,
+            vertical: v.verticalSlug,
+            version: v.version,
+            ...(servingRef !== undefined ? { servingRef } : {}),
+            ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
+            ...(opts?.expectedServing ? { expectedServing: opts.expectedServing } : {}),
+            ...(ack.exportBreak ? { acknowledged: ack } : {}),
+          });
         const moved = servingRef === undefined
-          ? this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, v.verticalSlug], tenantId, scopeId, opts)
-          : this.moveScopeRow('vertical_version_id = ?, vertical = ?, serving_ref = ?', [versionId, v.verticalSlug, servingRef], tenantId, scopeId, opts);
+          ? this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, v.verticalSlug], tenantId, scopeId, opts, audit)
+          : this.moveScopeRow('vertical_version_id = ?, vertical = ?, serving_ref = ?', [versionId, v.verticalSlug, servingRef], tenantId, scopeId, opts, audit);
         if (!moved) {
           // The erasure and copy-move conditions keep their own refusal: only a moved binding or a
           // moved serving version is the race a rebind's review answers.
@@ -9999,15 +10009,6 @@ export class SqliteScopeHost implements ScopeHost {
             || (opts?.expectedServing !== undefined && !this.servesNow(opts.expectedServing));
           throw raced ? lost() : substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
-        this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, servingRef === undefined ? null : { servingRef: scope.serving_ref }, {
-          versionId,
-          vertical: v.verticalSlug,
-          version: v.version,
-          ...(servingRef !== undefined ? { servingRef } : {}),
-          ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
-          ...(opts?.expectedServing ? { expectedServing: opts.expectedServing } : {}),
-          ...(ack.exportBreak ? { acknowledged: ack } : {}),
-        });
       },
       recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, opts) => {
         if (!scriptRef || !moveId) throw substratError('conflict', 'copy script and move must name a real script');
@@ -10128,14 +10129,14 @@ export class SqliteScopeHost implements ScopeHost {
         // this receipt names, and a receipt written without that answer clears them.
         const finished = versionId !== null && outcome?.retirementsFinished === true ? versionId : null;
         // #2184: and the binding shapes it reported bound, paired with this receipt's version.
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ?, bound_shapes = ? WHERE scope_id = ?')
-          .run(versionId, finished, boundShapesColumn(versionId, outcome?.boundShapes), scopeId);
-        this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
-          versionId,
-          ...(finished ? { retirementsFinished: true } : {}),
-          ...(versionId !== null && outcome?.boundShapes ? { boundShapes: outcome.boundShapes } : {}),
-        });
+          .run(versionId, finished, boundShapesColumn(versionId, outcome?.boundShapes), scopeId).changes > 0,
+          () => this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
+            versionId,
+            ...(finished ? { retirementsFinished: true } : {}),
+            ...(versionId !== null && outcome?.boundShapes ? { boundShapes: outcome.boundShapes } : {}),
+          }));
       },
       verticalServing: async (actor, verticalSlug: string) => {
         const r = this.directory
@@ -10209,16 +10210,12 @@ export class SqliteScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        if (!this.moveScopeRow('serving_ref = ?', [servingRef], tenantId, scopeId, opts)) {
+        if (!this.moveScopeRow('serving_ref = ?', [servingRef], tenantId, scopeId, opts,
+          () => this.recordAdmin(actor, 'setScopeServingRef', { tenantId, scopeId },
+            { servingRef: scope.serving_ref },
+            { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) }))) {
           throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
         }
-        this.recordAdmin(
-          actor,
-          'setScopeServingRef',
-          { tenantId, scopeId },
-          { servingRef: scope.serving_ref },
-          { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
-        );
       },
       recordKeptCopyResolution: async (actor, tenantId, scopeId, r) => {
         const scope = this.directory
@@ -10242,24 +10239,18 @@ export class SqliteScopeHost implements ScopeHost {
         if (!scope || scope.tenant_id !== tenantId) {
           throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         }
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE scopes SET expires_at = ? WHERE scope_id = ?')
-          .run(expiresAt, scopeId);
-        this.recordAdmin(
-          actor,
-          'setScopeExpiresAt',
-          { tenantId, scopeId },
-          { expiresAt: scope.expires_at },
-          { expiresAt },
-        );
+          .run(expiresAt, scopeId).changes > 0,
+          () => this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+            { expiresAt: scope.expires_at }, { expiresAt }));
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
-        const changed = this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)
+        return this.directoryWriteAndAudit(() => this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)
           .run(...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
-            new Date().toISOString())).changes > 0;
-        if (changed) this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
-          { expiresAt: expectedExpiresAt }, { expiresAt });
-        return changed;
+            new Date().toISOString())).changes > 0,
+          () => this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+            { expiresAt: expectedExpiresAt }, { expiresAt }));
       },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         // The COMMITTED outbox (#1624). On the shared connection this read saw an in-flight
@@ -13039,10 +13030,10 @@ export class SqliteScopeHost implements ScopeHost {
     cond?: {
       expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation;
       expectedServing?: ExpectedServing;
-    },
+    }, audit?: () => void,
   ): boolean {
     const now = new Date().toISOString();
-    return this.directory.transaction(() => {
+    return this.directoryWriteAndAudit(() => {
       const moved = this.directory.prepare(
         `UPDATE scopes SET ${set} WHERE scope_id = ?
          ${cond?.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
@@ -13060,6 +13051,15 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory.prepare(COPY_BACKFILL_SUPERSEDE_SQL).run(tenantId, scopeId);
       }
       return true;
+    }, audit);
+  }
+
+  /** The directory effect and its admin row either both commit or both roll back. */
+  private directoryWriteAndAudit(write: () => boolean, audit?: () => void): boolean {
+    return this.directory.transaction(() => {
+      const changed = write();
+      if (changed) audit?.();
+      return changed;
     })();
   }
 

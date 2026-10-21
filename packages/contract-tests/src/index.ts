@@ -1,5 +1,5 @@
 export { testOperations, type RawDerivedMaps } from './test-operations.js';
-export { scopeHostContractSuite } from './scope-host-suite.js';
+export { scopeHostContractSuite, scopeAdminAuditTransactionSuite } from './scope-host-suite.js';
 export { derivedDigestOf, heldMigrations, heldVersion } from './held-migrations.js';
 export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite.js';
 export { permissionContractSuite } from './permission-suite.js';
@@ -76,7 +76,7 @@ export {
   type VerticalEventsFixture,
 } from './vertical-events-suite.js';
 export { peerContractSuite, verticalResolutionContractSuite } from './peer-suite.js';
-export { adminRowFaultSql, switchRecordFaultSql } from './switch-audit-fault.js';
+export { adminRowFaultSql, adminActionFaultSql, switchRecordFaultSql } from './switch-audit-fault.js';
 export type { AdminRowFault } from './switch-audit-fault.js';
 export { inputParseContractSuite } from './input-parse-suite.js';
 export { spineGuardContractSuite } from './spine-guard-suite.js';

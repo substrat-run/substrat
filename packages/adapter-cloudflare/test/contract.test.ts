@@ -71,6 +71,8 @@ import {
   jobRunContractSuite,
   systemSwitchContractSuite,
   adminRowFaultSql,
+  adminActionFaultSql,
+  scopeAdminAuditTransactionSuite,
   switchRecordFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
@@ -124,6 +126,22 @@ beforeAll(() => warmSwitchHolds(env.SCOPE));
 // ctx.check). Runtime module registration is unsupported on CF — the ScopeDO
 // closes over a code-time module set — so that one late-registration test is
 // skipped; every other test is shared unchanged (D-14).
+scopeAdminAuditTransactionSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  return {
+    host,
+    refuseAdminAction: async (scope: string, action: string) => {
+      const { create, drop } = adminActionFaultSql(scope, action);
+      await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
+        (_, state) => { state.storage.sql.exec(create); });
+      return async () => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
+        (_, state) => { state.storage.sql.exec(drop); });
+    },
+    cleanup: async () => host.close(),
+  };
+});
+
 scopeHostContractSuite(
   'adapter-cloudflare',
   async () => {
