@@ -71,7 +71,7 @@ describe('engine-notifications on workerd', () => {
     });
     await host.admin.assignRole(staff, { principalId: techId, roleKey: 'tech', node: { tenantId: t, scopeId: s } });
     await host.admin.assignRole(staff, { principalId: adminId, roleKey: 'office', node: { tenantId: t, scopeId: s } });
-    await host.admin.defineRole(staff, t, { key: 'digests', permissions: [NOTIFICATIONS_PERM.sendDigests], source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'digests', permissions: [NOTIFICATIONS_PERM.sendDigests], source: 'vertical', holder: 'system' });
     await host.admin.assignRole(staff, { principalId: systemId, roleKey: 'digests', node: { tenantId: t, scopeId: s } });
     tech = await host.getScope(techId, t, s);
     admin = await host.getScope(adminId, t, s);
