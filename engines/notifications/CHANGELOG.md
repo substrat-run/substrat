@@ -1,5 +1,17 @@
 # @substrat-run/engine-notifications
 
+## 0.3.1
+
+### Patch Changes
+
+- 0676bc7: Enable public npm publication of the notifications engine so projects outside the Substrat workspace can install it. Add the standard pnpm publish guard so the published package carries registry-compatible dependency ranges.
+- Updated dependencies [8bbf7e9]
+- Updated dependencies [c5052f9]
+- Updated dependencies [55a4dae]
+- Updated dependencies [1344288]
+  - @substrat-run/kernel@0.156.0
+  - @substrat-run/contracts@0.156.0
+
 ## 0.3.0
 
 ### Minor Changes
