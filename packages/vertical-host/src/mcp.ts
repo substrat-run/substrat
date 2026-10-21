@@ -78,6 +78,7 @@ import {
   LIST_PAGE_DEFAULT,
   LIST_PAGE_MAX,
   LIST_SORT_PARAM,
+  MCP_AUTHORIZATION_SERVERS_PATH,
   mcpEndpointPath,
   mcpResourceOf,
   errorCodeOf,
@@ -394,10 +395,10 @@ function serverNameOf(tools: McpTool[]): string {
  * `WWW-Authenticate` challenge, fetches the document it names, learns which
  * authorization server issues for this resource, and runs its own flow.
  *
- * **It cannot be derived, which is why it is a parameter.** The only thing that knows
- * a vertical's issuer is its auth composition, and on a hosted install the issuer is
+ * A vertical's auth composition knows its issuer. On a hosted install the issuer is
  * per-scope configuration rather than a constant — one script serving many issuers.
- * So the endpoint stays zero-config; DISCOVERY costs the one line that passes this.
+ * The default reads the issuer through the local vertical-auth route. Explicit options
+ * override that composition for hosts with a different authentication implementation.
  * `authorizationServersOf` in `@substrat-run/vertical-auth` builds it from an
  * instance's resolved configuration.
  *
@@ -433,7 +434,7 @@ export interface ProtectedResourceOptions {
 export interface MountMcpOptions {
   /** Where to mount. Defaults to `${basePath}/mcp` — i.e. `/api/mcp` on the fleet's convention. */
   readonly path?: string;
-  /** OAuth 2.0 protected-resource metadata (RFC 9728). Omit ⇒ bearer, configured out of band. */
+  /** RFC 9728 metadata. Defaults to discovery through the local vertical-auth route. */
   readonly protectedResource?: ProtectedResourceOptions;
   /**
    * What the handshake reports. The name defaults to the module prefix the operations
@@ -844,7 +845,27 @@ export function mountMcp(
     }
   };
 
-  const pr = options.protectedResource;
+  const pr: ProtectedResourceOptions = options.protectedResource ?? {
+    // Dispatch inside this app, never over the network. The ordinary auth route resolves
+    // the issuer from the same per-instance wiring as login. Preserve router assertions
+    // and env, but send no user's bearer/cookie to a configuration-only request.
+    authorizationServers: async (c: Context): Promise<string[]> => {
+      const url = new URL(MCP_AUTHORIZATION_SERVERS_PATH, c.req.url);
+      const headers = new Headers(c.req.raw.headers);
+      headers.delete('authorization');
+      headers.delete('cookie');
+      headers.delete('content-type');
+      headers.delete('content-length');
+      // A node test has no execution context; workerd middleware may need waitUntil.
+      let executionCtx;
+      try { executionCtx = c.executionCtx; } catch { /* node/self-hosted app.request */ }
+      const response = await app.fetch(new Request(url, { headers, signal: c.req.raw.signal }), c.env, executionCtx);
+      if (response.status !== 200 || !response.headers.get('content-type')?.includes('application/json')) return [];
+      const document = await response.json().catch(() => null) as { authorization_servers?: unknown } | null;
+      const servers = document?.authorization_servers;
+      return Array.isArray(servers) && servers.every((s) => typeof s === 'string') ? servers : [];
+    },
+  };
 
   /**
    * This endpoint's resource identifier, as a client reached it. It is ONE computation for
@@ -853,43 +874,38 @@ export function mountMcp(
    * computed per request because a vertical answering on several hostnames is a different
    * resource on each.
    */
-  const resourceFor = (c: Context): string => pr?.resource ?? mcpResourceOf(new URL(c.req.url).origin, path);
+  const resourceFor = (c: Context): string => pr.resource ?? mcpResourceOf(new URL(c.req.url).origin, path);
 
   /**
    * The `WWW-Authenticate` challenge a 401 from this endpoint carries.
    *
-   * Emitted whether or not metadata is configured: a bare `Bearer` still tells a client
-   * the scheme, and silence tells it nothing. `resource_metadata` is added only when we
-   * actually serve the document, because a challenge pointing at a 404 is worse than a
-   * challenge pointing nowhere.
+   * Every default mount serves metadata, including one whose auth is not configured yet.
    */
   const challengeFor = (c: Context, ...params: string[]): string => {
-    const all = [...(pr ? [`resource_metadata="${new URL(c.req.url).origin}${wellKnown}"`] : []), ...params];
-    return all.length > 0 ? `Bearer ${all.join(', ')}` : 'Bearer';
+    return `Bearer ${[`resource_metadata="${new URL(c.req.url).origin}${wellKnown}"`, ...params].join(', ')}`;
   };
 
-  if (pr) {
-    const document = async (c: Context) => {
-      const servers =
-        typeof pr.authorizationServers === 'function'
-          ? await pr.authorizationServers(c)
-          : pr.authorizationServers;
-      return c.json({
-        resource: resourceFor(c),
-        // Omitted rather than empty when nothing is configured: a client reads an empty
-        // list as "this resource has no issuer", which is a different claim from "this
-        // install has not been configured yet" and sends it down a wrong path.
-        ...(servers.length > 0 ? { authorization_servers: [...servers] } : {}),
-        bearer_methods_supported: ['header'],
-        ...(pr.scopesSupported ? { scopes_supported: [...pr.scopesSupported] } : {}),
-      });
-    };
-    // RFC 9728 inserts the resource's path into the well-known URL, so a host serving
-    // several protected resources describes each one separately. The root form is
-    // served too, because clients that predate the path-insertion rule ask for it.
-    app.get(wellKnown, document);
-    app.get('/.well-known/oauth-protected-resource', document);
-  }
+  const document = async (c: Context) => {
+    const servers =
+      typeof pr.authorizationServers === 'function'
+        ? await pr.authorizationServers(c)
+        : pr.authorizationServers;
+    c.header('Cache-Control', 'no-store');
+    return c.json({
+      resource: resourceFor(c),
+      // Omitted rather than empty when nothing is configured: a client reads an empty
+      // list as "this resource has no issuer", which is a different claim from "this
+      // install has not been configured yet" and sends it down a wrong path.
+      ...(servers.length > 0 ? { authorization_servers: [...servers] } : {}),
+      bearer_methods_supported: ['header'],
+      ...(pr.scopesSupported ? { scopes_supported: [...pr.scopesSupported] } : {}),
+    });
+  };
+  // RFC 9728 inserts the resource's path into the well-known URL, so a host serving
+  // several protected resources describes each one separately. The root form is
+  // served too, because clients that predate the path-insertion rule ask for it.
+  app.get(wellKnown, document);
+  app.get('/.well-known/oauth-protected-resource', document);
 
   app.post(path, async (c) => {
     let body: unknown;
