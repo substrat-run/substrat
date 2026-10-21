@@ -896,7 +896,7 @@ interface ControlPlaneStub {
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string, expectedServing?: ExpectedServing): Promise<boolean>;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string, expectedServing?: ExpectedServing, audit?: AdminEntry): Promise<boolean>;
   servesNow(expected: ExpectedServing): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, fence: SubjectErasureFence): Promise<boolean>;
@@ -909,15 +909,15 @@ interface ControlPlaneStub {
   renewScopeScriptCopy(tenantId: string, scopeId: string, moveId: string, leaseMs?: number): Promise<{ renewedAt: number; leaseUntil: string } | null>;
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
     after?: { scriptRef: string; moveId: string } }): Promise<ScopeScriptCopyRow[]>;
-  markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean, boundShapes?: string[]): Promise<void>;
+  markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean, boundShapes?: string[], audit?: AdminEntry): Promise<void>;
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
   ): Promise<void>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
-  setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
+  setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
-    expectedExpiresAt: string | null, expiresAt: string | null): Promise<boolean>;
+    expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   moveChannel(from: string | null, history: ChannelHistoryRow): Promise<boolean>;
@@ -8495,8 +8495,16 @@ export class CloudflareScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
+        const audit = this.adminEntry(actor, 'bindScopeVersion', { tenantId, scopeId },
+          servingRef === undefined ? null : { servingRef: scope.serving_ref ?? null }, {
+            versionId, vertical: v.vertical_slug, version: v.version,
+            ...(servingRef !== undefined ? { servingRef } : {}),
+            ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
+            ...(opts?.expectedServing ? { expectedServing: opts.expectedServing } : {}),
+            ...(ack.exportBreak ? { acknowledged: ack } : {}),
+          });
         if (!await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch,
-          opts?.confirmMove, servingRef, opts?.expectedServing)) {
+          opts?.confirmMove, servingRef, opts?.expectedServing, audit)) {
           // The erasure and copy-move conditions keep their own refusal: only a moved binding or a
           // moved serving version is the race a rebind's review answers.
           const now = await this.cp.getScopeRecord(tenantId, scopeId);
@@ -8504,13 +8512,6 @@ export class CloudflareScopeHost implements ScopeHost {
             || (opts?.expectedServing !== undefined && !await this.cp.servesNow(opts.expectedServing));
           throw raced ? lost() : substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
-        await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, servingRef === undefined ? null : { servingRef: scope.serving_ref ?? null }, {
-          versionId, vertical: v.vertical_slug, version: v.version,
-          ...(servingRef !== undefined ? { servingRef } : {}),
-          ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
-          ...(opts?.expectedServing ? { expectedServing: opts.expectedServing } : {}),
-          ...(ack.exportBreak ? { acknowledged: ack } : {}),
-        });
       },
       recordScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId, opts) => {
         const result = await this.cp.recordScopeScriptCopy(tenantId, scopeId, scriptRef, moveId, opts?.role ?? null, opts?.loadStamp ?? null,
@@ -8552,12 +8553,12 @@ export class CloudflareScopeHost implements ScopeHost {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
         const finished = versionId !== null && outcome?.retirementsFinished === true;
-        await this.cp.markScopeProvisioned(scopeId, versionId, finished, outcome?.boundShapes);
-        await this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
-          versionId,
-          ...(finished ? { retirementsFinished: true } : {}),
-          ...(versionId !== null && outcome?.boundShapes ? { boundShapes: outcome.boundShapes } : {}),
-        });
+        await this.cp.markScopeProvisioned(scopeId, versionId, finished, outcome?.boundShapes,
+          this.adminEntry(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
+            versionId,
+            ...(finished ? { retirementsFinished: true } : {}),
+            ...(versionId !== null && outcome?.boundShapes ? { boundShapes: outcome.boundShapes } : {}),
+          }));
       },
       verticalServing: async (actor, verticalSlug: string) => {
         const r = await this.cp.readVertical(verticalSlug);
@@ -8656,22 +8657,16 @@ export class CloudflareScopeHost implements ScopeHost {
       setScopeExpiresAt: async (actor, tenantId, scopeId, expiresAt) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
-        await this.cp.setScopeExpiresAt(scopeId, expiresAt);
-        await this.recordAdmin(
-          actor,
-          'setScopeExpiresAt',
-          { tenantId, scopeId },
-          { expiresAt: scope.expires_at ?? null },
-          { expiresAt },
-        );
+        await this.cp.setScopeExpiresAt(scopeId, expiresAt,
+          this.adminEntry(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+            { expiresAt: scope.expires_at ?? null }, { expiresAt }));
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
-        const changed = await this.cp.keepAlivePendingScopeCopy(
+        return this.cp.keepAlivePendingScopeCopy(
           tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt,
+          this.adminEntry(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+            { expiresAt: expectedExpiresAt }, { expiresAt }),
         );
-        if (changed) await this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
-          { expiresAt: expectedExpiresAt }, { expiresAt });
-        return changed;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);

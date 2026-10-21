@@ -25,6 +25,17 @@ export function adminRowFaultSql(scopeId: string, phase: string): { create: stri
   };
 }
 
+/** Refuse one HostAdmin action after its state statement, on this scope only. */
+export function adminActionFaultSql(scopeId: string, action: string): { create: string; drop: string } {
+  const name = `test_refuse_action_${scopeId.toLowerCase()}`;
+  return {
+    create: `CREATE TRIGGER ${name} BEFORE INSERT ON _substrat_admin_log
+      WHEN NEW.scope_id = '${scopeId}' AND NEW.action = '${action}'
+      BEGIN SELECT RAISE(ABORT, 'the admin log refused the ${action} row (test fault)'); END`,
+    drop: `DROP TRIGGER IF EXISTS ${name}`,
+  };
+}
+
 /** Reject a switch's directory write before the scope moves, to drive its `failed` outcome. */
 export function switchRecordFaultSql(scopeId: string, kind: 'system' | 'peer'): { create: string[]; drop: string[] } {
   const table = kind === 'system' ? '_substrat_system_switches' : '_substrat_peer_switches';

@@ -3425,16 +3425,16 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** Move a fork's GC deadline forward, or pin it (`null`) — preview-and-snapshots.md §9. */
-  setScopeExpiresAt(scopeId: string, expiresAt: string | null): void {
-    this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId);
+  setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId).rowsWritten > 0, audit);
   }
 
   /** One atomic compare-and-set across the preview row and every entry of its copy move. */
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
-    expectedExpiresAt: string | null, expiresAt: string | null): boolean {
-    return this.sql.exec(PENDING_COPY_KEEP_ALIVE_SQL,
+    expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntryInput): boolean {
+    return this.writeAndAudit(() => this.sql.exec(PENDING_COPY_KEEP_ALIVE_SQL,
       ...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
-        new Date().toISOString())).rowsWritten > 0;
+        new Date().toISOString())).rowsWritten > 0, audit);
   }
 
   async listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]> {
@@ -3477,12 +3477,12 @@ export class ControlPlaneDO extends DurableObject {
    */
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null,
     expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string,
-    expectedServing?: ExpectedServing): boolean {
+    expectedServing?: ExpectedServing, audit?: AdminEntryInput): boolean {
     return servingRef === undefined
       ? this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, verticalSlug], scopeId,
-        { expectedVersionId, expectedErasureEpoch, confirmMove, expectedServing })
+        { expectedVersionId, expectedErasureEpoch, confirmMove, expectedServing }, audit)
       : this.moveScopeRow('vertical_version_id = ?, vertical = ?, serving_ref = ?', [versionId, verticalSlug, servingRef], scopeId,
-        { expectedVersionId, expectedErasureEpoch, confirmMove, expectedServing });
+        { expectedVersionId, expectedErasureEpoch, confirmMove, expectedServing }, audit);
   }
 
   /** #2347: whether a lineage's serving script still runs the version a rebind was judged against. */
@@ -3501,10 +3501,10 @@ export class ControlPlaneDO extends DurableObject {
     cond: {
       expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation;
       expectedServing?: ExpectedServing;
-    },
+    }, audit?: AdminEntryInput,
   ): boolean {
     const now = new Date().toISOString();
-    return this.ctx.storage.transactionSync(() => {
+    return this.writeAndAudit(() => {
       const moved = this.sql.exec(
         `UPDATE scopes SET ${set} WHERE scope_id = ?
          ${cond.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
@@ -3524,6 +3524,15 @@ export class ControlPlaneDO extends DurableObject {
         this.sql.exec(COPY_BACKFILL_SUPERSEDE_SQL, tenant_id, scopeId);
       }
       return true;
+    }, audit);
+  }
+
+  /** The directory effect and its admin row either both commit or both roll back. */
+  private writeAndAudit(write: () => boolean, audit?: AdminEntryInput): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const changed = write();
+      if (changed && audit) this.recordAdmin(audit);
+      return changed;
     });
   }
 
@@ -3673,17 +3682,18 @@ export class ControlPlaneDO extends DurableObject {
    * the field is that it is a receipt. Marked optimistically it would silence the sweep
    * for a repair that failed, which is the one outcome that must keep being retried.
    */
-  markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean, boundShapes?: string[]): void {
+  markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean, boundShapes?: string[],
+    audit?: AdminEntryInput): void {
     // #2045: a scope owed a switch re-assert keeps no receipt, so the sweep reconciles it again
     // until its re-assert has settled every mark — including a mark written while this
     // reconcile ran, after its re-assert had read none.
     if (versionId !== null && scopeOwesSwitch(this.kernelSql, scopeId)) versionId = null;
     // #2185: in the same write, the version whose retirements finished — this receipt's, or none.
     // #2184: and the binding shapes it reported bound, paired with this receipt's version.
-    this.sql.exec(
+    this.writeAndAudit(() => this.sql.exec(
       'UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ?, bound_shapes = ? WHERE scope_id = ?',
       versionId, versionId !== null && retirementsFinished === true ? versionId : null, boundShapesColumn(versionId, boundShapes), scopeId,
-    );
+    ).rowsWritten > 0, audit);
   }
 
   /**

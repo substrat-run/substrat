@@ -90,6 +90,78 @@ export interface ScopeHostFixture {
   cleanup(): Promise<void>;
 }
 
+/** The adapter fixture installs a directory trigger, so failures exercise the real audit insert. */
+export function scopeAdminAuditTransactionSuite(
+  adapterName: string,
+  makeFixture: () => Promise<ScopeHostFixture & {
+    refuseAdminAction(scope: string, action: string): Promise<() => Promise<void>>;
+  }>,
+): void {
+  describe(`HostAdmin directory audit transaction: ${adapterName}`, () => {
+    it.each(['setScopeExpiresAt', 'bindScopeVersion', 'markScopeProvisioned', 'keepAlivePendingScopeCopy'] as const)(
+      '%s rolls back on audit failure and writes one row on retry', async (operation) => {
+        const fixture = await makeFixture();
+        const { host } = fixture;
+        const staff = platformActorId.parse(ulid());
+        const tenant = tenantId.parse(ulid());
+        const scope = scopeId.parse(ulid());
+        const slug = `audit-${ulid().toLowerCase()}`;
+        const version = ulid();
+        let lift: (() => Promise<void>) | undefined;
+        try {
+          await host.admin.createTenant(staff, { id: tenant, slug, name: 'Audit transaction test' });
+          await host.admin.registerVertical(staff, { slug, name: 'Audit test', source: 'builtin' });
+          await host.admin.publishVersion(staff, { id: version, verticalSlug: slug,
+            version: `1.0.${version.toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+            migrationDigest: 'g', deploymentRef: null });
+          await host.admin.admitVersion(staff, version);
+          const oldExpiry = new Date(Date.now() + 60_000).toISOString();
+          await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: slug,
+            ...(operation === 'keepAlivePendingScopeCopy' ? { kind: 'preview' as const, expiresAt: oldExpiry } : {}) });
+          await host.admin.activateScope(staff, tenant, scope);
+          const nextExpiry = new Date(Date.now() + 3_600_000).toISOString();
+          const move = ulid();
+          if (operation === 'keepAlivePendingScopeCopy') {
+            await host.admin.recordScopeScriptCopy(staff, tenant, scope, `version-${ulid().toLowerCase()}`, move,
+              { role: 'destination', leaseMs: 60_000 });
+          }
+          const action = operation === 'keepAlivePendingScopeCopy' ? 'setScopeExpiresAt' : operation;
+          const call = () => {
+            switch (operation) {
+              case 'setScopeExpiresAt': return host.admin.setScopeExpiresAt(staff, tenant, scope, nextExpiry);
+              case 'bindScopeVersion': return host.admin.bindScopeVersion(staff, tenant, scope, version);
+              case 'markScopeProvisioned': return host.admin.markScopeProvisioned(staff, tenant, scope, version);
+              case 'keepAlivePendingScopeCopy':
+                return host.admin.keepAlivePendingScopeCopy(staff, tenant, scope, move, 'provisioning', oldExpiry, nextExpiry);
+            }
+          };
+          const state = async () => {
+            const row = (await host.admin.getScopeRecord(staff, tenant, scope))!;
+            return [row.expiresAt, row.verticalVersionId, row.provisionedVersionId];
+          };
+          const before = await state();
+          const rows = () => host.admin.auditLog(staff, { scopeId: scope, action });
+          expect(await rows()).toEqual([]);
+          lift = await fixture.refuseAdminAction(scope, action);
+          await expect(call()).rejects.toThrow();
+          expect(await state()).toEqual(before);
+          expect(await rows()).toEqual([]);
+          await lift();
+          lift = undefined;
+          expect(await call()).not.toBe(false);
+          const after = await state();
+          const column = operation === 'bindScopeVersion' ? 1 : operation === 'markScopeProvisioned' ? 2 : 0;
+          expect(after[column]).toBe(operation === 'bindScopeVersion' || operation === 'markScopeProvisioned' ? version : nextExpiry);
+          expect(await rows()).toHaveLength(1);
+        } finally {
+          if (lift) await lift();
+          await fixture.cleanup();
+        }
+      },
+    );
+  });
+}
+
 interface OutboxRow {
   id: string;
   type: string;
