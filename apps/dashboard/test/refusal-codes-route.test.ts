@@ -187,7 +187,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
   });
 
   it('only the owner may delete the organization: a manager is refused 403', async () => {
-    expect(await send('POST', '/teams/delete', { confirm: TEAM_NAME }, MANAGER_SUB)).toEqual({
+    expect(await send('POST', `/teams/${tenant}/delete`, { confirm: TEAM_NAME }, MANAGER_SUB)).toEqual({
       status: 403,
       detail: 'permission denied: only the owner can delete the organization',
     });
