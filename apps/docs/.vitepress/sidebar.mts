@@ -196,9 +196,8 @@ export function guideSidebar() {
         engineSidebar('invites', 'Invites'),
         engineSidebar('absence', 'Absence'),
         engineSidebar('metering', 'Metering'),
-        // One page until it is published: the five-page set documents an installable package.
-        { text: 'Notifications', link: '/engines/notifications/' },
-        { text: 'Assistant', link: '/engines/assistant/' },
+        engineSidebar('notifications', 'Notifications'),
+        engineSidebar('assistant', 'Assistant'),
       ],
     },
     {
