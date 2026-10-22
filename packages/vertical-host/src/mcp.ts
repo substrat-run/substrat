@@ -70,6 +70,8 @@
  *    old to know `act` and taking it for the user. Read without the signature, like the
  *    audience check below, which is safe for the same reason: it can only refuse.
  */
+import { recordAuthCheck } from '@substrat-run/contracts/auth-diagnostics';
+
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
@@ -908,6 +910,8 @@ export function mountMcp(
   app.get('/.well-known/oauth-protected-resource', document);
 
   app.post(path, async (c) => {
+    const record = (c as { get?: (k: string) => unknown }).get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined
+      ?? invocationStampOf(c.req.raw)?.record;
     let body: unknown;
     try {
       body = await c.req.json();
@@ -955,6 +959,8 @@ export function mountMcp(
      */
     const refusal = audienceRefusal(c.req.header('authorization'), resourceFor(c));
     if (refusal) {
+      recordAuthCheck({ stage: 'mcp-audience', outcome: 'refused', reason: 'resource-mismatch' });
+      if (record) record.problemCode = 'unauthenticated';
       const res = problemResponse(c, new HTTPException(401, { message: refusal }));
       const challenged = new Response(res.body, res);
       challenged.headers.set(
@@ -984,6 +990,14 @@ export function mountMcp(
       let stub: ScopeStub;
       try {
         stub = await resolveStub(c);
+        recordAuthCheck({ stage: 'mcp-caller', outcome: 'accepted', reason: 'caller-resolved' });
+      } catch (error) {
+        const status = statusOf(error);
+        const refused = status === 401 || status === 403;
+        recordAuthCheck({ stage: 'mcp-caller', outcome: refused ? 'refused' : 'error', reason: refused ? 'caller-refused' : 'caller-error' });
+        const code = errorCodeOf(error) ?? (status === 401 ? 'unauthenticated' : status === 403 ? 'forbidden' : undefined);
+        if (record && code) record.problemCode = code;
+        throw error;
       } finally {
         set(MCP_CHANNEL_KEY, undefined);
       }

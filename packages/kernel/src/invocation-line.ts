@@ -13,6 +13,8 @@
  * every deployed vertical through the `./invocation-line` subpath, and a runtime import of
  * the contracts root would put every schema in the vocabulary — and zod — into that bundle.
  */
+import type { AuthRecording } from '@substrat-run/contracts/auth-diagnostics';
+
 import type { InvocationLevel } from '@substrat-run/contracts/invocation-record';
 import type { EmittedReport } from './scope-host.js';
 
@@ -39,7 +41,7 @@ export interface OutputFieldsReport {
  * Renaming a key here silently empties a view, because a filter on a key that does not
  * exist returns `success: true` with zero events. Add fields; never rename one.
  */
-export interface InvocationLogLine {
+export interface InvocationLogLine extends AuthRecording {
   /** Discriminator — what lets a reader tell this line from a vertical's own output. */
   substrat: 'invocation';
   /**
@@ -233,7 +235,7 @@ export type AsyncOutcome =
  * writer both build through {@link invocationLine}, so a field added to one is a field added
  * to both, in one order.
  */
-export interface InvocationLineFields {
+export interface InvocationLineFields extends AuthRecording {
   kind?: AsyncInvocationKind;
   tenantId: string;
   scopeId: string | null;
@@ -312,6 +314,8 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     ...(f.storeCallsDropped ? { storeCallsDropped: f.storeCallsDropped } : {}),
     ...(f.outboundCalls && f.outboundCalls.length > 0 ? { outboundCalls: f.outboundCalls } : {}),
     ...(f.outboundCallsDropped ? { outboundCallsDropped: f.outboundCallsDropped } : {}),
+    ...(f.authChecks?.length ? { authChecks: f.authChecks } : {}),
+    ...(f.authChecksDropped ? { authChecksDropped: f.authChecksDropped } : {}),
     ...(f.parentInvocationId
       ? { parentInvocationId: f.parentInvocationId, ...(f.parentScopeId ? { parentScopeId: f.parentScopeId } : {}) }
       : {}),

@@ -37,6 +37,10 @@
       "types": "./dist/assistant-stream.d.ts",
       "default": "./dist/assistant-stream.js"
     },
+    "./auth-diagnostics": {
+      "types": "./dist/auth-diagnostics.d.ts",
+      "default": "./dist/auth-diagnostics.js"
+    },
     "./trace-sink": {
       "types": "./dist/trace-sink.d.ts",
       "default": "./dist/trace-sink.js"

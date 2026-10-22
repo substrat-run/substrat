@@ -44,6 +44,26 @@ describe('RequestSlideOver', () => {
     return onClose;
   };
 
+  it('shows authentication decisions from the raw invocation, with no extra fields', async () => {
+    vi.spyOn(api, 'appTenantLogs').mockResolvedValue([{
+      ...stampedLine,
+      raw: { timestamp: END, source: {
+        substrat: 'invocation', invocationId: 'CALL1', status: 403, durationMs: 100,
+        authChecks: [
+          { stage: 'bearer', outcome: 'accepted', reason: 'verified', token: 'must-not-render' },
+          { stage: 'mcp-caller', outcome: 'refused', reason: 'caller-refused' },
+        ], authChecksDropped: 2,
+      } },
+    }]);
+    vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
+    await render();
+    expect(container.textContent).toContain('Authentication');
+    expect(container.textContent).toContain('verified');
+    expect(container.textContent).toContain('caller-refused');
+    expect(container.textContent).toContain('2 additional checks were not recorded.');
+    expect(container.textContent).not.toContain('must-not-render');
+  });
+
   it('keeps the events, and the consumers that could be read, when one effects read fails', async () => {
     vi.spyOn(api, 'appTenantLogs').mockResolvedValue([stampedLine]);
     vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [event('E1', 'acme.assigned'), event('E2', 'acme.noted')], truncated: false } as InvocationEvents);

@@ -1065,6 +1065,18 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect(requests.map((r) => r.kind)).toEqual(['request']);
   });
 
+  it('reads bounded authentication checks without passing through arbitrary credential fields', async () => {
+    const check = { stage: 'bearer', outcome: 'refused', reason: 'issuer-invalid' };
+    const { reader } = readerOver(() => [
+      invocation({ invocationId: 'with-auth', authChecks: [{ ...check, token: 'must-not-escape' }, { ...check, reason: 'unknown-value' }], authChecksDropped: 2 }, '01RQ'),
+      invocation({ invocationId: 'old-line' }, '01RR'),
+    ]);
+    const rows = await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10_000, limit: 10 });
+    expect(rows.find((r) => r.invocationId === 'with-auth')).toMatchObject({ authChecks: [check], authChecksDropped: 2 });
+    expect(rows.find((r) => r.invocationId === 'old-line')).toMatchObject({ authChecks: [], authChecksDropped: 0 });
+    expect(JSON.stringify(rows)).not.toContain('must-not-escape');
+  });
+
   it('#2192: a request row carries the outbound calls its line names, and only entries of the line’s shape', async () => {
     const refused = { host: 'undeclared.example.com', path: '/oauth2/token', method: 'POST', status: 403, outcome: 'refused', durationMs: 7, atMs: 3 };
     const failed = { host: 'api.example.com', path: '/v1', method: 'GET', status: null, outcome: 'failed', durationMs: 1, atMs: 9, reason: 'TypeError' };

@@ -31,7 +31,7 @@ import {
   type Problem,
 } from '@substrat-run/contracts';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { requestIdOf } from './invocation-log.js';
+import { requestIdOf, INVOCATION_RECORD_KEY, invocationStampOf, type InvocationRecord } from './invocation-log.js';
 
 /** A classified failure: the status it deserves and the message to relay. */
 export interface ErrorClassification {
@@ -305,6 +305,9 @@ function serveProblem(
   body: Problem,
   headers: Readonly<Record<string, string>> = {},
 ): Response {
+  const record = (c as { get?: (key: string) => unknown }).get?.(INVOCATION_RECORD_KEY) as InvocationRecord | undefined
+    ?? invocationStampOf(c.req.raw)?.record;
+  if (record && body.code) record.problemCode = body.code;
   return c.body(JSON.stringify(withRequestIdMember(body, c)), status, {
     ...headers,
     'content-type': PROBLEM_CONTENT_TYPE,

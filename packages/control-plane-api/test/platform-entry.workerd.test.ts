@@ -27,12 +27,15 @@ const routed = {
 /** The vertical: two store calls, then answers with the record the platform's stamp holds. */
 const VERTICAL = `
 import { observeStoreCall } from ${JSON.stringify(fileURLToPath(new URL('../../kernel/src/scope-store.ts', import.meta.url)))};
+import { recordAuthCheck } from ${JSON.stringify(fileURLToPath(new URL('../../contracts/src/auth-diagnostics.ts', import.meta.url)))};
 export default {
   async fetch(request) {
     await observeStoreCall('GRAPH', 'increment', async () => 1);
     await observeStoreCall('GRAPH', 'read', async () => 1);
+    recordAuthCheck({ stage: 'bearer', outcome: 'accepted', reason: 'verified' });
+    recordAuthCheck({ stage: 'mcp-caller', outcome: 'refused', reason: 'caller-refused' });
     const stamp = globalThis[Symbol.for('substrat.invocation-stamp')]?.get(request);
-    return Response.json({ storeCalls: stamp?.record.storeCalls ?? null });
+    return Response.json({ storeCalls: stamp?.record.storeCalls ?? null, authChecks: stamp?.record.authChecks ?? null });
   },
 };`;
 
@@ -82,7 +85,7 @@ async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_
   runtimes.push(mf);
   expect(uploaded.entry).toBe(PLATFORM_ENTRY_MODULE);
   const res = await mf.dispatchFetch(`https://acme.example${path}`, { headers: routed });
-  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null; outboundCalls?: unknown };
+  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null; outboundCalls?: unknown; authChecks?: unknown };
   return { flags: uploaded.compatibilityFlags, status: res.status, body, lines };
 }
 
@@ -103,6 +106,12 @@ describe('the platform entry, uploaded and run on workerd (#2245)', () => {
     expect(run.body.storeCalls).toEqual(NAMED);
     // And the line the entry writes for the request carries them.
     await expect.poll(() => lineOf(run.lines)?.storeCalls).toEqual(NAMED);
+    const checks = [
+      { stage: 'bearer', outcome: 'accepted', reason: 'verified' },
+      { stage: 'mcp-caller', outcome: 'refused', reason: 'caller-refused' },
+    ];
+    expect(run.body.authChecks).toEqual(checks);
+    expect(lineOf(run.lines)?.authChecks).toEqual(checks);
   });
 
   it('nodejs_als needs no particular compatibility date', async () => {
@@ -128,6 +137,7 @@ describe('the platform entry, uploaded and run on workerd (#2245)', () => {
     expect(run.flags).toEqual(['no_nodejs_als']);
     expect(run.status).toBe(200);
     expect(run.body.storeCalls).toBeNull();
+    expect(run.body.authChecks).toBeNull();
   });
 
   it('an opt-out beside nodejs_compat still names its calls, through process.getBuiltinModule', async () => {
