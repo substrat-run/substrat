@@ -1,5 +1,16 @@
 # @substrat-run/kernel
 
+## 0.159.0
+
+### Patch Changes
+
+- 6aad0fb: Record bounded, credential-free authentication checks on request invocation logs. Bearer verification distinguishes invalid issuer/audience, expiry, signature, discovery/key failures and app/delegation policy refusals; MCP records caller-resolution outcomes and early refusal problem codes. Request details show these checks, including a verified token followed by a caller refusal. Authentication responses and admission policy are unchanged.
+
+  Upgrade and re-push a vertical with the updated auth and host packages to produce the diagnostics. Older lines remain readable and do not imply authentication succeeded.
+
+- Updated dependencies [6aad0fb]
+  - @substrat-run/contracts@0.159.0
+
 ## 0.158.0
 
 ### Patch Changes
@@ -6810,7 +6821,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
