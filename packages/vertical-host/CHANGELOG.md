@@ -1,5 +1,17 @@
 # @substrat-run/vertical-host
 
+## 0.158.0
+
+### Minor Changes
+
+- 3ca238f: Serve `/api/docs` automatically when mounting operations, with a self-hosted renderer under `/api/docs/renderer.js`. The reference reads the app's `/openapi.json` using its existing session and explains authentication failures or unavailable specifications. Apps can retain a previously registered reference or opt out with `docs: false`; no asset build changes are needed.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.158.0
+- @substrat-run/kernel@0.158.0
+- @substrat-run/model-providers@0.5.48
+
 ## 0.157.0
 
 ### Minor Changes

@@ -1,5 +1,18 @@
 # @substrat-run/control-plane
 
+## 0.15.21
+
+### Patch Changes
+
+- @substrat-run/adapter-cloudflare@0.158.0
+- @substrat-run/control-plane-api@0.158.0
+- @substrat-run/contracts@0.158.0
+- @substrat-run/kernel@0.158.0
+- @substrat-run/connector-fortnox@0.4.60
+- @substrat-run/connector-microsoft365@0.0.19
+- @substrat-run/connector-planima@0.2.55
+- @substrat-run/connector-scrive@0.14.64
+
 ## 0.15.20
 
 ### Patch Changes

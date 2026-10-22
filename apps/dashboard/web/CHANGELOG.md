@@ -1,5 +1,13 @@
 # @substrat-run/dashboard-web
 
+## 0.19.1
+
+### Patch Changes
+
+- bdd04fd: Keep apps, app selectors, and fleet health rows in alphabetical name order as health and traffic data load. Use natural number ordering and a stable scope ID tie-breaker.
+  - @substrat-run/contracts@0.158.0
+  - @substrat-run/model-view@0.6.5
+
 ## 0.19.0
 
 ### Minor Changes

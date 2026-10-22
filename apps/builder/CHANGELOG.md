@@ -1,5 +1,16 @@
 # @substrat-run/builder
 
+## 0.7.13
+
+### Patch Changes
+
+- @substrat-run/adapter-cloudflare@0.158.0
+- @substrat-run/control-plane-api@0.158.0
+- @substrat-run/contracts@0.158.0
+- @substrat-run/kernel@0.158.0
+- @substrat-run/engine-metering@0.6.42
+- @substrat-run/model-providers@0.5.48
+
 ## 0.7.12
 
 ### Patch Changes
