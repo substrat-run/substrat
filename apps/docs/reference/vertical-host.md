@@ -153,6 +153,20 @@ headers and their semantics are specified in API design —
 [§7 writes are safe to retry](/concepts/api-design#_7-writes-are-safe-to-retry) and
 [§7b a read-modify-write says what it is writing over](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over).
 
+### It also serves the API reference
+
+`mountOperations` registers `GET /api/docs` and its self-hosted renderer at
+`/api/docs/renderer.js` automatically. The page reads the app's `/openapi.json`
+with the browser's existing session; try-it calls stay on the app's origin.
+No CDN, asset build step, or per-app docs route is needed. The specification
+retains the app's authentication rules. A signed-out visitor sees a sign-in
+prompt, and a missing or invalid specification produces an explanation.
+
+The app must still serve `/openapi.json` from its declared operations. An existing
+`GET /api/docs` registered before `mountOperations` takes precedence; use
+`docs: false` to disable the platform page when supplying your own reference.
+As with the other mounted routes, call `mountOperations` before an API catch-all.
+
 ### It also mounts the MCP surface
 
 The same call renders those operations a second way: an

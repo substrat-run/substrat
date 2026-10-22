@@ -23,6 +23,7 @@
  * and every failure — a permission denial foremost — came back as a bare 500
  * with no seam to correct it (#791).
  */
+import { mountApiDocs } from './api-docs.js';
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
@@ -220,6 +221,8 @@ export interface MountOperationsOptions {
    * `false` turns it off. An object configures it (`path`, `serverInfo`).
    */
   readonly mcp?: false | MountMcpOptions;
+  /** Serve the platform reference at /api/docs over the app's /openapi.json. On by default. */
+  readonly docs?: false;
 }
 
 /** A request body, or the 400 it deserves. */
@@ -397,6 +400,8 @@ export function mountOperations(
       );
     }
   }
+
+  if (options.docs !== false) mountApiDocs(app);
 
   for (const [name, op] of declared) {
     const { method, path } = op.http;
