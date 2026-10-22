@@ -7,7 +7,7 @@ import { VERDICTS, compact, duration, errorRate, fleetRows, type FleetRow, type 
 
 /**
  * Fleet health as the Apps table (#1767, the redesign's round-2 placement of #1238):
- * one row per app, worst first, with the verdict, the sentence behind it, and traffic.
+ * one row per app, ordered by name, with the verdict, the sentence behind it, and traffic.
  * Chips above filter to one verdict and carry its count.
  *
  * `silent` stays as loud as `failing` here, as it was in the rollup this replaces: an

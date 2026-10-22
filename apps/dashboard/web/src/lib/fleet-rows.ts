@@ -1,7 +1,8 @@
+import { compareNamed } from './name-order';
 import type { AppHealthRow, AppMetricsView, AppRow } from './api';
 
 /**
- * The Apps table's rows (#1767): every app the team has, worst first, each with its
+ * The Apps table's rows (#1767): every app the team has, alphabetically, each with its
  * health verdict, the sentence behind it, and its traffic.
  *
  * The verdict is the fleet-health read's (#1238). An app that is not running yet, or
@@ -55,8 +56,8 @@ export function fleetRows(input: { apps: AppRow[]; health: AppHealthRow[] | null
       unread: traffic && t && t.requests === null ? unreadWhy(input.metrics!.cap) : null,
     };
   });
-  // Worst first; within a verdict, the busier app first — it is the one more people feel.
-  return rows.sort((x, y) => VERDICTS[x.verdict].rank - VERDICTS[y.verdict].rank || (y.requests ?? 0) - (x.requests ?? 0));
+  // Health and traffic arrive independently; neither should move a row.
+  return rows.sort(compareNamed);
 }
 
 /**
