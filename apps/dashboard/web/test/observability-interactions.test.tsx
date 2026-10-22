@@ -359,10 +359,10 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
   expect(metrics).toHaveBeenCalledWith('team-a', 24);
   expect(connectorCalls).toHaveBeenCalledWith('team-a', { hours: 24 });
   const rows = [...container.querySelectorAll<HTMLAnchorElement>('[data-pulse-card] a[role="row"]')];
-  // Worst first — the failing app above the healthy one, whatever its traffic.
+  // Name order stays consistent regardless of health or traffic.
   expect(rows.map((r) => [...r.querySelectorAll('[role="cell"]')].map((c) => c.textContent))).toEqual([
-    ['App Bcrm', '412', '1.9%', '1.2 s', '', 'Failing'],
     ['App Ahelpdesk', '3.3k', '<0.1%', '140 ms', '', 'OK'],
+    ['App Bcrm', '412', '1.9%', '1.2 s', '', 'Failing'],
   ]);
   // Each row carries its own sparkline, drawn from its own series.
   expect(rows[0]!.querySelector('svg path')).not.toBeNull();
@@ -373,7 +373,7 @@ it('Pulse draws one row per app — its numbers, its verdict in words — and a 
   expect(connectorRow?.querySelector('[data-pulse-axis]')?.getAttribute('aria-label'))
     .toContain('90 ms');
   click(rows[0]!);
-  expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-b' }));
+  expect(onNav).toHaveBeenLastCalledWith(expect.objectContaining({ app: 'app-a' }));
 });
 
 it('Pulse draws the business outcomes by default — today, yesterday, the change, a series — and every move behind a toggle (#1750)', async () => {

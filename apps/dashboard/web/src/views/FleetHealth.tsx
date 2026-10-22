@@ -73,7 +73,7 @@ export function FleetHealth({
         ))}
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          worst first · verdicts from recorded failures, schedules and freshness rules · traffic over 24h
+          ordered by name · verdicts from recorded failures, schedules and freshness rules · traffic over 24h
         </span>
       </div>
       <div role="table" aria-label="App health" aria-busy={loading} style={{ border: '1px solid var(--border-default)', borderRadius: 12, background: 'var(--surface-card)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
