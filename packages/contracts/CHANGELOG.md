@@ -1,5 +1,15 @@
 # @substrat-run/contracts
 
+## 0.157.0
+
+### Minor Changes
+
+- 156febd: Discover the per-instance sign-in issuer through the standard auth route by default when mounting MCP. Publish protected-resource metadata and challenge unauthenticated clients with its URL, so team-auth-server clients can register themselves without per-vertical discovery wiring. Existing deployments must update both host and auth packages and redeploy. Explicit issuer overrides, audience validation, and operation permissions are preserved.
+
+### Patch Changes
+
+- d0af665: Let a vertical's owning team enable or disable transactional email in the dashboard under Settings → Permissions. Check app-management access before changes and registry ownership at the control plane; retain staff overrides and keep deploys from changing the grant. Explain the dashboard action when email delivery is refused.
+
 ## 0.156.0
 
 ### Minor Changes
@@ -7003,7 +7013,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
