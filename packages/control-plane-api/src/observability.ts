@@ -13,6 +13,8 @@
  * consumers. Absent ⇒ the observability routes 501, the platform's standard shape
  * for an unconfigured capability.
  */
+import type { AuthRecording } from '@substrat-run/contracts/auth-diagnostics';
+
 
 /** One service's invocation aggregates over the queried window. */
 export interface ServiceMetricsRow {
@@ -365,7 +367,7 @@ export const REQUEST_FACET_TOP = 10;
  * One request, as the Requests view lists it: the stamped invocation line's fields, and
  * when it was written. `null` is "not recorded", exactly as on the line.
  */
-export interface RequestRecord {
+export interface RequestRecord extends AuthRecording {
   timestamp: number | null;
   invocationId: string | null;
   scopeId: string | null;

@@ -1,3 +1,4 @@
+import { recordAuthCheck } from '@substrat-run/contracts/auth-diagnostics';
 import {
   beginLogin,
   completeLogin,
@@ -289,8 +290,10 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
   }
 
   async function resolve(headers: Headers, url?: string, options?: ResolveOptions): Promise<AuthSubject | null> {
-    const envelope = await verifySessionEnvelope(env, readCookie(headers.get('cookie'), SESSION_COOKIE));
+    const cookie = readCookie(headers.get('cookie'), SESSION_COOKIE);
+    const envelope = await verifySessionEnvelope(env, cookie);
     if (envelope) {
+      recordAuthCheck({ stage: 'session', outcome: 'accepted', reason: 'verified' });
       const session = envelope.user;
       return {
         sub: session.id,
@@ -302,6 +305,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
         expiresAt: envelope.expiresAt,
       };
     }
+    if (cookie) recordAuthCheck({ stage: 'session', outcome: 'refused', reason: 'session-invalid' });
     // No cookie session — an API client presenting the issuer's own token directly. On a
     // shared issuer it must be one minted for THIS app (#1683); `url` names our resource.
     // `options` carries the MCP endpoint's channel, which only a bearer can use (#1824).

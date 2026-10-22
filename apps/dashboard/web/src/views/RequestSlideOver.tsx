@@ -266,6 +266,18 @@ export function RequestSlideOver({
             />
           )}
 
+          {r && (r.authChecks?.length || r.authChecksDropped) ? (
+            <Section title="Authentication">
+              <table>
+                <thead><tr><th>Check</th><th>Outcome</th><th>Reason</th></tr></thead>
+                <tbody>{r.authChecks?.map((check, index) => (
+                  <tr key={index}><td>{check.stage}</td><td>{check.outcome}</td><td><code>{check.reason}</code></td></tr>
+                ))}</tbody>
+              </table>
+              {r.authChecksDropped ? <Quiet>{r.authChecksDropped} additional checks were not recorded.</Quiet> : null}
+            </Section>
+          ) : null}
+
           <Section title="Timeline" hint="lines and events where they happened">
             {timeline ? <Timeline t={timeline} failed={failed} /> : <Quiet>{d.logs.state === 'loading' ? 'Reading…' : 'No duration was recorded, so there is no axis to draw.'}</Quiet>}
             <Quiet>Outbound calls are on the axis; database and model calls are not recorded as spans yet.</Quiet>

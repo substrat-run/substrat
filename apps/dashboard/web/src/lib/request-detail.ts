@@ -1,3 +1,4 @@
+import { authChecksOf, type AuthRecording } from '@substrat-run/contracts/auth-diagnostics';
 import type { CauseChain, EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
 import { outboundCallsOf, type OutboundCall } from '@substrat-run/control-plane-api/browser';
 import { ulidTime } from './palette.js';
@@ -13,7 +14,7 @@ export interface LogLine {
 }
 
 /** The stamped request line, as the Requests view lists it (#1746). Defined here, re-exported by the client. */
-export interface RequestRecord {
+export interface RequestRecord extends AuthRecording {
   timestamp: number | null;
   invocationId: string | null;
   scopeId: string | null;
@@ -136,6 +137,8 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
       eventId: str(source['eventId']),
       attempt: num(source['attempt']),
       latenessMs: num(source['latenessMs']),
+      authChecks: authChecksOf(source['authChecks']),
+      authChecksDropped: num(source['authChecksDropped']) ?? 0,
       outboundCalls: outboundCallsOf(source['outboundCalls']),
       outboundCallsDropped: num(source['outboundCallsDropped']) ?? 0,
       parentInvocationId: parentOf(source['parentInvocationId']),

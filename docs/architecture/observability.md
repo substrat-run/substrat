@@ -580,3 +580,41 @@ Live tail is a cheap follow-on to 2 (the API has first-class endpoints for it).
 3. **AE pricing at GA** — limits verified July 2026. View 4 is built and reads this
    dataset per page view, so the pricing page is now a live cost question rather than a
    pre-build one.
+
+
+## Authentication diagnostics
+
+A request's invocation line may carry `authChecks`, an ordered list of checks with
+`stage`, `outcome`, and `reason`. These are fixed vocabularies from
+`@substrat-run/contracts/auth-diagnostics`; no token, cookie, subject, email, issuer or
+audience value, exception message, or stack is recorded. The list keeps the first 16
+checks; `authChecksDropped` counts later checks. Dashboard request details show the
+same list. Local traces include the checks as summary log steps at request completion.
+
+The stages report what the shared code actually knows:
+
+- `bearer`: signature/claims verification and the app's bearer/delegation policy.
+  `issuer-invalid`, `audience-invalid`, `token-expired`, `signature-invalid`, and
+  `token-not-for-app` identify distinct refusals. Discovery and key-resolution failures
+  have outcome `error`, since they do not establish that the credential was invalid.
+- `session`: a verified session, or `session-invalid` when a presented cookie could not
+  be verified before falling back to bearer authentication.
+- `mcp-audience`: the endpoint's resource precheck refused the bearer. This precheck
+  precedes signature verification; it never proves a token's authenticity.
+- `mcp-caller`: the app's resolver returned a scope stub, refused with 401/403, or failed.
+  A preceding accepted `bearer` followed by `caller-refused` locates a rejection after
+  credential verification. It does **not** infer whether the app's custom policy refused
+  an unmapped identity, missing membership, or another rule. A typed refusal also fills
+  the existing `problemCode`; an untyped MCP resolver 401/403 is classified as
+  `unauthenticated`/`forbidden`.
+
+An absent list means **not recorded**, not accepted. Providers record into the active
+request's host-installed sink, shared by registered symbol across bundled package copies.
+The host uses its existing AsyncLocalStorage context; no request-local context means no
+recording. A provider cached across requests never captures the first request's record.
+Diagnostic failures cannot change authentication, and diagnostics are not sent in the
+public response or used to admit a caller.
+
+Rollout needs the updated `vertical-auth` in the vertical and `vertical-host` in its
+invocation wrapper, then a re-push. Updating the dashboard only adds a reader; it cannot
+recover reasons from old deployments. Deploy the updated dashboard to show the checks.

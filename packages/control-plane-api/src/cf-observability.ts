@@ -24,6 +24,8 @@ import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, INVOCATION_KINDS, invocationK
  * Not `[A-Z]+`: the writer records `Request.method` verbatim, and `M-SEARCH` and `X1` are
  * methods too.
  */
+import { authChecksOf } from '@substrat-run/contracts/auth-diagnostics';
+
 export const HTTP_METHOD_PATTERN = "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$";
 
 /**
@@ -208,6 +210,8 @@ function requestRecordOf(e: Record<string, unknown>): RequestRecord {
     eventId: str(source['eventId']),
     attempt: num(source['attempt']),
     latenessMs: num(source['latenessMs']),
+    authChecks: authChecksOf(source['authChecks']),
+    authChecksDropped: num(source['authChecksDropped']) ?? 0,
     outboundCalls: outboundCallsOf(source['outboundCalls']),
     outboundCallsDropped: num(source['outboundCallsDropped']) ?? 0,
   };

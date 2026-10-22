@@ -54,6 +54,8 @@
  * verification the vertical does for its own routing happens here, with the same secret
  * and the same dev opt-out, and a failed one writes nothing at all.
  */
+import { AUTH_DIAGNOSTICS_KEY, tallyAuthCheck, type AuthDiagnosticsSink, type AuthRecording } from '@substrat-run/contracts/auth-diagnostics';
+
 // The subpath, not the root: this module is bundled into every vertical's upload (the
 // platform entry, #1893), and the root carries every schema in the vocabulary.
 // The same holds for the kernel, whose two zero-import subpaths this reaches it through.
@@ -105,7 +107,7 @@ export const INVOCATION_RECORD_KEY = 'substratInvocationRecord';
  * Every field is optional, and an unfilled one is written as `null`: a custom route that
  * never reaches an operation is still logged, it just has nothing to say about these.
  */
-export interface InvocationRecord extends StoreCallTally, OutboundRecording {
+export interface InvocationRecord extends StoreCallTally, OutboundRecording, AuthRecording {
   /** The operation name `mountOperations` dispatched to. */
   operation?: string;
   /** The `errorCode` a failed call was classified with, when the kernel's vocabulary names it. */
@@ -154,7 +156,7 @@ export interface AsyncLocalStorageLike<T> {
 export type AsyncLocalStorageClass = new <T>() => AsyncLocalStorageLike<T>;
 
 /** What the request's `AsyncLocalStorage` holds: the record its calls are tallied on. */
-type RecordingTally = StoreCallTally & OutboundRecording;
+type RecordingTally = StoreCallTally & OutboundRecording & AuthRecording;
 
 /**
  * The slot a request's store calls are reached through, plus the `run` that fills it.
@@ -233,6 +235,19 @@ function currentRecording(): OutboundRecording | undefined {
 function runRecording<R>(stamp: InvocationStamp, started: number, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
   const slot = storeCallSlot(provided);
   if (!slot) return fn();
+  // Resolve the current record at each check: providers may be cached and requests overlap.
+  // Read the shared slot rather than closing over this invocation or this package copy.
+  try {
+    const authSink: AuthDiagnosticsSink = {
+      record(check) {
+        const record = currentRecording() as RecordingTally | undefined;
+        if (record) tallyAuthCheck(record, check);
+      },
+    };
+    (globalThis as Record<symbol, unknown>)[AUTH_DIAGNOSTICS_KEY] = authSink;
+  } catch {
+    // An unavailable diagnostic slot must not prevent the request from running.
+  }
   markRequestStart(stamp.record, started);
   installOutboundRecorder(currentRecording);
   return slot.run(stamp.record, fn, stamp.invocationId);
@@ -597,6 +612,11 @@ function traceRequest<Env>(stamp: InvocationStamp, done: Finished<Env>): void {
         ...(call.reason ? { reason: call.reason } : {}),
       });
     }
+    // Summary observations emitted at completion, not timed authentication spans.
+    for (const check of record.authChecks ?? []) {
+      sink.step(invocationId, { type: 'log', atMs: durationMs, level: check.outcome === 'refused' || check.outcome === 'error' ? 'warn' : 'info', message: `auth ${check.stage}: ${check.outcome} (${check.reason})` });
+    }
+    if (record.authChecksDropped) sink.head(invocationId, { stepsDropped: record.authChecksDropped });
     sink.end(invocationId);
     forgetTraceStart(invocationId);
   } catch {
@@ -631,6 +651,8 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     ...(record.storeCallsDropped ? { storeCallsDropped: record.storeCallsDropped } : {}),
     ...(record.outboundCalls && record.outboundCalls.length > 0 ? { outboundCalls: record.outboundCalls } : {}),
     ...(record.outboundCallsDropped ? { outboundCallsDropped: record.outboundCallsDropped } : {}),
+    ...(record.authChecks?.length ? { authChecks: record.authChecks } : {}),
+    ...(record.authChecksDropped ? { authChecksDropped: record.authChecksDropped } : {}),
   });
   console.log(JSON.stringify(line));
 }

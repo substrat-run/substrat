@@ -1,3 +1,5 @@
+import { recordAuthCheck } from '@substrat-run/contracts/auth-diagnostics';
+import { bearerRefused, verificationReason } from './auth-diagnostics.js';
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
 import { discoverIssuer, isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
@@ -304,17 +306,26 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
     if (cfg.delegation && cfg.resourceOf && cfg.audience && typeof channel === 'string' && channel !== cfg.audience) {
       warnAudienceRefusesDelegation(cfg.issuer, cfg.audience);
     }
+    let discovering = true;
+    let resolvingKey = false;
     try {
-      const { payload } = await jwtVerify(token, await getKeys(), {
+      const keys = await getKeys();
+      discovering = false;
+      const { payload } = await jwtVerify(token, async (header, token) => {
+        resolvingKey = true;
+        const key = await keys(header, token);
+        resolvingKey = false;
+        return key;
+      }, {
         issuer: cfg.issuer,
         ...(cfg.audience ? { audience: cfg.audience } : {}),
       });
-      if (!payload.sub) return null;
+      if (!payload.sub) return bearerRefused('subject-missing');
       // A delegation ASSERTION — the first step of the exchange, which a `substrat_delegation`
       // claim with no `act` marks — is a bearer at no app, on every configuration: it is a
       // credential for the exchange, and only the exchange takes it. `may_act` alone decides
       // nothing here: RFC 8693 §4.4 lets any issuer put it on an ordinary subject token.
-      if (payload['substrat_delegation'] !== undefined && payload['act'] === undefined) return null;
+      if (payload['substrat_delegation'] !== undefined && payload['act'] === undefined) return bearerRefused('assertion-not-access-token');
       // A token carrying `act` is a delegation, on every configuration: admitted only through
       // the opt-in, and never by the rules below, which would take it as the user's own.
       let delegation: AuthSubject['delegation'];
@@ -323,11 +334,11 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
         const now = Math.floor(Date.now() / 1000);
         const admitted =
           cfg.delegation && cfg.resourceOf ? delegationOf(payload, cfg.delegation, options?.delegated, url, now) : null;
-        if (!admitted) return null;
+        if (!admitted) return bearerRefused('delegation-refused');
         delegation = admitted;
       } else if (!cfg.audience && cfg.clientId) {
         const resources = cfg.resourceOf ? ownResources(headers, url, cfg.resourceOf) : [];
-        if (!isOwnToken(payload, cfg.clientId, resources, cfg.resourceOf)) return null;
+        if (!isOwnToken(payload, cfg.clientId, resources, cfg.resourceOf)) return bearerRefused('token-not-for-app');
       }
       const meta = payload as Record<string, unknown>;
       // `email_verified`, read exactly as `@substrat-run/oidc-rp` reads it on the
@@ -337,7 +348,7 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       // Written out here rather than imported so this subpath keeps a small dependency
       // set (jose + oidc-rp's discovery, no login flow) and a bearer-only consumer needs no hono.
       const verified = meta['email_verified'];
-      return {
+      const subject: AuthSubject = {
         sub: String(payload.sub),
         email: typeof meta['email'] === 'string' ? (meta['email'] as string) : null,
         emailVerified:
@@ -357,8 +368,14 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
         ...(typeof payload.exp === 'number' ? { expiresAt: new Date(payload.exp * 1000).toISOString() } : {}),
         ...(delegation ? { delegation } : {}),
       };
-    } catch {
-      return null; // bad signature / expired / wrong issuer — resolve to nobody, fail closed
+      recordAuthCheck({ stage: 'bearer', outcome: 'accepted', reason: 'verified' });
+      return subject;
+    } catch (error) {
+      // Never copy an exception message, payload or claim value into diagnostics.
+      // Key resolution runs inside jose, so track that boundary independently of its errors.
+      const reason = discovering ? 'discovery-failed'
+        : verificationReason(error) ?? (resolvingKey ? 'key-resolution-failed' : 'verification-failed');
+      return bearerRefused(reason, ['discovery-failed', 'key-resolution-failed', 'verification-failed'].includes(reason) ? 'error' : 'refused');
     }
   }
 
@@ -374,7 +391,9 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
     },
     async resolve(headers, url, options) {
       const token = bearerFrom(headers);
-      return token ? verify(token, headers, url, options) : null;
+      if (token) return verify(token, headers, url, options);
+      recordAuthCheck({ stage: 'bearer', outcome: 'absent', reason: 'credential-missing' });
+      return null;
     },
   };
 }
