@@ -7,7 +7,7 @@ import { VERDICTS, compact, duration, errorRate, fleetRows, type FleetRow, type 
 
 /**
  * Fleet health as the Apps table (#1767, the redesign's round-2 placement of #1238):
- * one row per app, worst first, with the verdict, the sentence behind it, and traffic.
+ * one row per app, ordered by name, with the verdict, the sentence behind it, and traffic.
  * Chips above filter to one verdict and carry its count.
  *
  * `silent` stays as loud as `failing` here, as it was in the rollup this replaces: an
@@ -73,7 +73,7 @@ export function FleetHealth({
         ))}
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-          worst first · verdicts from recorded failures, schedules and freshness rules · traffic over 24h
+          ordered by name · verdicts from recorded failures, schedules and freshness rules · traffic over 24h
         </span>
       </div>
       <div role="table" aria-label="App health" aria-busy={loading} style={{ border: '1px solid var(--border-default)', borderRadius: 12, background: 'var(--surface-card)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>

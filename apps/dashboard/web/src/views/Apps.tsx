@@ -1,3 +1,4 @@
+import { compareNamed } from '../lib/name-order';
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import type { AppRow, InstallStep } from '../lib/api';
@@ -68,7 +69,7 @@ export function Apps({
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('All statuses');
 
-  const cards = useMemo(() => apps.map(toCard), [apps]);
+  const cards = useMemo(() => apps.map(toCard).sort(compareNamed), [apps]);
   const filtered = useMemo(
     () =>
       cards.filter((c) => {
@@ -79,7 +80,7 @@ export function Apps({
     [cards, q, status],
   );
 
-  // The table claims one row per app, worst first — true only of the WHOLE fleet, and the
+  // The table claims one row per app, in name order across the WHOLE fleet, and the
   // list arrives a page (20) at a time, newest first. So while it is shown the pages are
   // walked to exhaustion, the way App.tsx walks them for the team views; the grid keeps
   // its "Load more". Keyed on the row count, not on `loadingMore`: a page that lands
@@ -97,7 +98,7 @@ export function Apps({
   return (
     <Page style={{ gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16 }}>
-        <PageTitle title="Apps" subtitle={mode === 'health' ? 'Fleet health · one row per app, worst first. Open a row for its traffic, schedules and releases.' : 'The tools your team runs — each app is its own isolated scope.'} />
+        <PageTitle title="Apps" subtitle={mode === 'health' ? 'Fleet health · one row per app, ordered by name. Open a row for its traffic, schedules and releases.' : 'The tools your team runs — each app is its own isolated scope.'} />
         <div style={{ flex: 1 }} />
         <Button icon={<Ic name="plus" />} onClick={onCreate}>Create App</Button>
       </div>

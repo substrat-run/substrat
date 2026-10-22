@@ -11,13 +11,15 @@ const health = (scopeId: string, state: AppHealthRow['state']) =>
   ({ scopeId, name: `App ${scopeId}`, vertical: 'todo', state, reason: `${state} reason`, failures: 0, sweepFailures: 0, stale: 0, lastSweepAt: null }) as AppHealthRow;
 
 describe('fleetRows (#1767)', () => {
-  it('sorts worst first, busier first within a verdict', () => {
+  it('keeps name order before and after health and traffic load', () => {
     const rows = fleetRows({
       apps: [app('ok'), app('silent'), app('failing'), app('failing2')],
       health: [health('ok', 'ok'), health('silent', 'silent'), health('failing', 'failing'), health('failing2', 'failing')],
       metrics: { available: true, cap: null, rows: [{ scopeId: 'failing', requests: 5, errors: 1, p95: 10 }, { scopeId: 'failing2', requests: 50, errors: 1, p95: 20 }] },
     });
-    expect(rows.map((r) => r.scopeId)).toEqual(['failing2', 'failing', 'silent', 'ok']);
+    expect(rows.map((r) => r.scopeId)).toEqual(['failing', 'failing2', 'ok', 'silent']);
+    const initial = fleetRows({ apps: [app('silent'), app('ok'), app('failing2'), app('failing')], health: null, metrics: null });
+    expect(initial.map((r) => r.scopeId)).toEqual(rows.map((r) => r.scopeId));
   });
 
   it('judges an app that is not running by its install state, not by sweeps', () => {
@@ -72,6 +74,22 @@ describe('FleetHealth table', () => {
     expect(names()).toEqual(['App b']);
     await act(async () => container.querySelectorAll('[role="row"]')[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(onOpen).toHaveBeenCalledWith('b');
+  });
+
+  it('keeps row positions as health and traffic resolve independently', async () => {
+    let resolveHealth!: (value: Awaited<ReturnType<typeof api.fleetHealth>>) => void;
+    let resolveMetrics!: (value: Awaited<ReturnType<typeof api.appMetrics>>) => void;
+    vi.spyOn(api, 'fleetHealth').mockReturnValue(new Promise(resolve => { resolveHealth = resolve; }));
+    vi.spyOn(api, 'appMetrics').mockReturnValue(new Promise(resolve => { resolveMetrics = resolve; }));
+    const apps = [app('b'), app('a')];
+    await act(async () => root.render(<FleetHealth apps={apps} onOpen={() => {}} />));
+    expect(names()).toEqual(['App a', 'App b']);
+    await act(async () => resolveHealth({ rows: [health('a', 'ok'), health('b', 'failing')] }));
+    expect(names()).toEqual(['App a', 'App b']);
+    await act(async () => resolveMetrics({ available: true, cap: null, rows: [{ scopeId: 'b', requests: 999, errors: 10, p95: 20 }] }));
+    expect(names()).toEqual(['App a', 'App b']);
+    await act(async () => root.render(<FleetHealth apps={[...apps].reverse()} onOpen={() => {}} />));
+    expect(names()).toEqual(['App a', 'App b']);
   });
 
   it('opens failure details from the Failing badge without triggering the app row', async () => {

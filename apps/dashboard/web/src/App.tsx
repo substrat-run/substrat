@@ -1,3 +1,4 @@
+import { sortApps } from './lib/name-order';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, teamApi, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
@@ -121,7 +122,8 @@ export function App() {
   const [newTeamOpen, setNewTeamOpen] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
   const [creatingTeam, setCreatingTeam] = useState(false);
-  const [apps, setApps] = useState<AppRow[]>([]);
+  const [appRows, setApps] = useState<AppRow[]>([]);
+  const apps = useMemo(() => sortApps(appRows), [appRows]);
   // True until the FIRST listApps() lands. `apps` starting as [] is indistinguishable
   // from "no apps yet", and rendering on that guess flashed the "Create your first
   // app" onboarding at everyone (and a 404 at app deep-links) on every load. In the
