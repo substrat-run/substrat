@@ -1,5 +1,18 @@
 # @substrat-run/demo-shop
 
+## 0.2.70
+
+### Patch Changes
+
+- Updated dependencies [3ca238f]
+  - @substrat-run/vertical-host@0.158.0
+  - @substrat-run/contracts@0.158.0
+  - @substrat-run/kernel@0.158.0
+  - @substrat-run/adapter-sqlite@0.158.0
+  - @substrat-run/engine-invoicing@0.11.42
+  - @substrat-run/dev-issuer@0.2.40
+  - @substrat-run/attachment-extractors@0.2.19
+
 ## 0.2.69
 
 ### Patch Changes

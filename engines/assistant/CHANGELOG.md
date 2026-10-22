@@ -1,5 +1,12 @@
 # @substrat-run/engine-assistant
 
+## 0.1.10
+
+### Patch Changes
+
+- @substrat-run/contracts@0.158.0
+- @substrat-run/kernel@0.158.0
+
 ## 0.1.9
 
 ### Patch Changes
