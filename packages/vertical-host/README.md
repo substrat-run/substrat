@@ -45,6 +45,14 @@ mountPlatformSurface(app, {
 export default app;
 ```
 
+## Automatic API reference
+
+`mountOperations` also serves `/api/docs` and its self-hosted renderer. Keep serving
+`/openapi.json` from your operation declarations; the page uses the app's current
+session and makes try-it requests on the same origin. No app asset build changes
+are required. Register operations before a catch-all route. Set `docs: false` when
+supplying your own reference, or register that reference before mounting operations.
+
 ## What it owns vs. what you supply
 
 - **Generic routes** (`export`, `restore`, `bookmarks`, `rewind`, `snapshot`,

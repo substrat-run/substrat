@@ -78,3 +78,6 @@ apps/*/wrangler.generated.jsonc
 # the platform's entry and sweeper modules, written for the workerd suite to run. Outside
 # node_modules, because the workers pool does not transform imports made from in there.
 .workerd-uploaded/
+
+# Build input from the pinned Scalar distribution; emitted into the published dist.
+/packages/vertical-host/src/docs-renderer.generated.ts

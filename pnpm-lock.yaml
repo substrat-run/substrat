@@ -2393,6 +2393,9 @@ importers:
         specifier: ^4.0.0
         version: 4.0.0(@ai-sdk/provider@4.0.28)(ai@7.0.142(zod@4.6.5))
     devDependencies:
+      '@scalar/api-reference':
+        specifier: 1.75.0
+        version: 1.75.0(qrcode@1.5.4)(tailwindcss@4.3.3)(typescript@7.0.2)(zod@4.4.3)
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../adapter-sqlite

@@ -471,7 +471,7 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     // The twin: with the endpoint off no tool is derived, so the same operations mount.
     const off = new Hono();
     expect(() => mountOperations(off, clashing, stub, { mcp: false })).not.toThrow();
-    expect(off.routes.map((r) => r.path)).toEqual(['/api/one', '/api/two']);
+    expect(off.routes.map((r) => r.path)).toEqual(['/api/docs', '/api/docs/renderer.js', '/api/one', '/api/two']);
   });
 
   it('reads a basePath() prefix exactly as Hono applies it when it registers a route', () => {
