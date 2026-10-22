@@ -615,6 +615,6 @@ recording. A provider cached across requests never captures the first request's 
 Diagnostic failures cannot change authentication, and diagnostics are not sent in the
 public response or used to admit a caller.
 
-Rollout needs the updated `vertical-auth` in the vertical and `vertical-host` in its
-invocation wrapper, then a re-push. Updating the dashboard only adds a reader; it cannot
+Rollout needs the control plane deployed with the regenerated platform entry, the
+updated `vertical-auth` and `vertical-host` in the vertical, then a re-push. Updating the dashboard only adds a reader; it cannot
 recover reasons from old deployments. Deploy the updated dashboard to show the checks.
