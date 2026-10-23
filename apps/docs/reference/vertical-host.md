@@ -65,12 +65,15 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   [`HostAdmin.recordDelegatedRead`](/reference/kernel)). `migrations` is delegated the
   same way but is schema metadata, and leaves no access row.
 - **Connector write-back routes** — `connector-invoke`, `connector-attachment`,
-  `connector-attachment/:attachmentId`, `connector-grant` — the far end of the shared
-  control plane running this vertical's connectors (#574, #711): the connection directory
-  and its sealed secrets live platform-side, so what comes *back* over these verbs carries
-  no credential — an operation invoked as the connection, provider bytes in (multipart:
-  a `meta` JSON field beside the `body` file) or out (the raw bytes, with the record in
-  a header), and the `connection:<id>` grant tuple the first two are checked against.
+  `connector-attachment-stream`, `connector-attachment/:attachmentId`, `connector-grant` —
+  the far end of the shared control plane running this vertical's connectors (#574, #711):
+  the connection directory and its sealed secrets live platform-side, so what comes *back*
+  over these verbs carries no credential — an operation invoked as the connection, provider
+  bytes in (multipart: a `meta` JSON field beside the `body` file; or, for a file too large
+  to hold, `connector-attachment-stream`, whose body is the file itself, read into the
+  bucket as it arrives, with the metadata and declared size in a header, #2498) or out (the
+  raw bytes, with the record in a header), and the `connection:<id>` grant tuple the first
+  three are checked against.
   Each is authorized in the scope's own DO like any other caller, and the grant has no
   revoke mirror because every delegated call re-passes the platform's live-connection
   gate first. Generic in the same sense as the group above: owned by the package,

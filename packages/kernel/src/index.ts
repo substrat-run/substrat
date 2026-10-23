@@ -155,15 +155,28 @@ export {
   type ScopeScriptCopyRow,
 } from './scope-copy-ledger.js';
 export {
+  isSizedByteStream,
+  knownLengthInit,
+  knownLengthStream,
+  type ByteBody,
+  type ByteStream,
+  type ByteStreamRead,
+  type ByteStreamReader,
+  type IncrementalSha256,
+  type SizedByteStream,
+} from './byte-stream.js';
+export {
   SCOPE_COPY_LEASE_MS,
   assertRedrainWindow,
   attachmentBlobKey,
   attachmentSha256,
+  putAttachmentBytes,
   consumersFor,
   entitlementDenial,
   requiredEntitlementFor,
   backoffAt,
   globalFetch,
+  fetchLikeOf,
   executorOutcomeOf,
   parseValidationRecords,
   resolveRetryPolicy,
