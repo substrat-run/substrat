@@ -362,7 +362,10 @@ describe('dual, a call to the internal surface', () => {
   });
 
   it('the same call with no valid legacy credential beside it is the fixed 503, and the vertical never runs', async () => {
-    for (const legacy of [{}, { [PLATFORM_SECRET_HEADER]: 'wrong' }]) {
+    for (const [legacy, credential] of [
+      [{}, 'absent'],
+      [{ [PLATFORM_SECRET_HEADER]: 'wrong' }, 'invalid'],
+    ] as const) {
       const g = gated();
       const body = JSON.stringify({ scopeId: SCOPE });
       const headers = { ...legacy, ...(await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE })) };
@@ -370,7 +373,7 @@ describe('dual, a call to the internal surface', () => {
       expect(res.status).toBe(503);
       expect(await res.text()).toBe(WIRE_FAULT_BODY);
       expect(g.seen).toEqual([]);
-      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store' });
+      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: credential });
     }
   });
 
