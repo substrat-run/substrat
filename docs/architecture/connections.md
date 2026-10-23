@@ -1080,6 +1080,24 @@ a new file source holds the same four invariants:
 - **A delete lands only on an answer about that item**: its own deleted facet, or its own
   read answering gone or outside the folder (a `moved-out` delete). Never from a deleted parent, the held tree, or a re-read's silence.
 
+**The vocabulary a vertical sees is provider-neutral** ([#2499](https://github.com/substrat-run/substrat/issues/2499)).
+The two shapes that cross to the vertical live in `@substrat-run/contracts` (`file-source.ts`),
+so a vertical codes against these names and a second provider lands on the same words:
+
+| Neutral name | What it is | Microsoft 365 name (the same schema object) |
+|---|---|---|
+| `fileSourceChange` | the change a sync lands through the vertical's operation — `upsert`, `content` or `delete` with a reason, keyed by `itemId` | `microsoft365ChannelChange` |
+| `fileSourceWriteRequest` | the payload of the event a vertical emits to write files, with its explicit `conflict` | `microsoft365FilesRequested` |
+| `fileSourceConflict` | `replace` \| `rename` \| `fail` | — |
+| `fileSourceUpsertAnswer` | what the landing operation answers to an upsert whose bytes follow: `{ entity }` | — |
+| `FILE_SOURCE_MAX_FILES_PER_WRITE` · `…_MAX_FILE_BYTES` · `…_MAX_WRITE_BYTES` | the caps | `MAX_FILES_PER_EVENT` · `MAX_FILE_BYTES` · `MAX_EVENT_BYTES` |
+
+The connector re-exports them under its old names, so an existing consumer is unchanged. What is
+still the provider's is the **event type** a write travels under
+(`microsoft365.channel-files-requested`): it is what routes a delivery to that provider's connector,
+so a neutral type could not say which provider to run. The four invariants above are carried by
+these schemas; they are the contract a second provider is held to.
+
 The shared `FileSource` facet and where a walk runs (the RFC's Q1) are decided when a second
 file-bearing provider is committed, when a vertical needs the freshness of its own mirror, or
 when the Microsoft 365 check against a large library shows the current approach cannot finish
