@@ -946,6 +946,9 @@ describe('wireEndpoint: which envelope an endpoint accepts', () => {
     ['a trailing slash', '/internal/'],
     ['upper case', '/INTERNAL/provision'],
     ['mixed case', '/Internal'],
+    // decodeURI throws on the whole path, so only the run-by-run fallback sees the escaped letter.
+    ['an escaped letter beside an undecodable escape', '/%69nternal/provision/%ff'],
+    ['an escaped letter beside an undecodable last segment', '/%69nternal/%ff'],
   ])('a path a router could read as internal is a call: %s (%s)', (_, path) => {
     expect(wireEndpoint(path)).toEqual({ kind: 'call', issuers: ['platform'] });
   });

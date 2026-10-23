@@ -831,6 +831,8 @@ describe('a request is judged as the vertical’s router will route it', () => {
     '/internal/',
     '/INTERNAL/provision',
     '/Internal',
+    '/%69nternal/provision/%ff',
+    '/%69nternal/%ff',
     '/internal/vertical-invoke',
     '/api/things',
     '/api/%69nternal/x',
@@ -844,6 +846,12 @@ describe('a request is judged as the vertical’s router will route it', () => {
     if (await honoRoutesInternal(url)) expect(kind).toBe('call');
     // Its twin: an ordinary route stays a route, whatever its query names.
     if (['/api/things', '/api/%69nternal/x', '/internals', '/docs/internal'].includes(path)) expect(kind).toBe('route');
+  });
+
+  it.each(['/%69nternal/provision/%ff', '/%69nternal/%ff'])('a path decodeURI cannot decode whole still reaches the internal surface, and is a call: %s', async (path) => {
+    const url = `https://vertical${path}`;
+    expect(await honoRoutesInternal(url)).toBe(true);
+    expect(wireEndpoint(new URL(url).pathname)).toEqual({ kind: 'call', issuers: ['platform'] });
   });
 
   it('an escaped internal path is judged as a call: a route envelope for it is refused, a call envelope verified', async () => {
