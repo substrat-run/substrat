@@ -59,6 +59,7 @@ import {
   type ScopeSweepReport,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
+import type { IdentityDO } from '@substrat-run/vertical-auth';
 import { createLegacyInvite, type RegistrySql } from '@substrat-run/vertical-auth/member-directory';
 import { classifyError } from '@substrat-run/vertical-host';
 import { addBusinessMs, businessMsBetween, instantOf } from '../../src/business-time.js';
@@ -77,7 +78,7 @@ import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex, sorts, type Sh
  * the accept branch, and what a member's removal does around them.
  */
 const legacyInvite = (
-  directory: Parameters<typeof runInDurableObject>[0],
+  directory: DurableObjectStub<IdentityDO>,
   scope: ScopeId,
   principal: PrincipalId,
   roleKey: string,

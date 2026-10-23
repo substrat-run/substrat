@@ -437,17 +437,18 @@ describe('member invite link as a become capability (#1686)', () => {
   it('the real directory refuses a hash-only invite (#2496) — and takes the same row once it names a capability', async () => {
     const principal = principalId.parse(ulid());
     const before = await identity().legacyInviteCount(s);
+    const hash = await sha256Hex('01'.repeat(32));
     // The type forbids a missing capability id; an RPC from untyped code is what the DO's own check is for.
     for (const none of [null, undefined, '']) {
-      await expect(() =>
-        identity().createInvite(s, principal, 'agent', null, await sha256Hex('01'.repeat(32)), none as unknown as string),
-      ).rejects.toThrow(/hash-only/);
+      await expect(() => identity().createInvite(s, principal, 'agent', null, hash, none as unknown as string)).rejects.toThrow(
+        /hash-only/,
+      );
     }
     expect(await identity().legacyInviteCount(s)).toBe(before);
-    expect(await identity().inviteExists(s, await sha256Hex('01'.repeat(32)))).toBe(false);
+    expect(await identity().inviteExists(s, hash)).toBe(false);
     // Twin: with a capability id the row is written, and it is no legacy row.
-    await identity().createInvite(s, principal, 'agent', null, await sha256Hex('01'.repeat(32)), ulid());
-    expect(await identity().inviteExists(s, await sha256Hex('01'.repeat(32)))).toBe(true);
+    await identity().createInvite(s, principal, 'agent', null, hash, ulid());
+    expect(await identity().inviteExists(s, hash)).toBe(true);
     expect(await identity().legacyInviteCount(s)).toBe(before);
     // And the explicit legacy seam is the only way to a hash-only row.
     await legacyInvite(principalId.parse(ulid()), await sha256Hex('02'.repeat(32)));
