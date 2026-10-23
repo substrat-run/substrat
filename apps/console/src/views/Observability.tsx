@@ -22,6 +22,23 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 const ms = (us: number) => (us >= 100_000 ? `${Math.round(us / 1000)} ms` : `${(us / 1000).toFixed(1)} ms`);
 const pct = (part: number, whole: number) => (whole === 0 ? '—' : `${((part / whole) * 100).toFixed(2)}%`);
 
+/**
+ * Said above the logs table when the plane marked the page it answered as possibly incomplete
+ * (`x-substrat-logs-incomplete`, #2520): the read stopped before it could vouch for the whole
+ * window, so a short page is not "nothing more". A complete page shows nothing.
+ */
+export function LogsIncompleteNotice({ incomplete }: { incomplete: boolean }) {
+  if (!incomplete) return null;
+  return (
+    <div
+      role="status"
+      style={{ padding: '10px 16px', fontSize: 12.5, background: 'var(--status-warning-bg)', color: 'var(--status-warning-fg)' }}
+    >
+      This page may be incomplete or missing newer lines.
+    </div>
+  );
+}
+
 export interface ObservabilityProps {
   api: Api;
 }
@@ -33,6 +50,7 @@ export function Observability({ api }: ObservabilityProps) {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<string>();
   const [logs, setLogs] = useState<RecentLogEvent[]>([]);
+  const [logsIncomplete, setLogsIncomplete] = useState(false);
   const [logState, setLogState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [logError, setLogError] = useState('');
   const [errorsOnly, setErrorsOnly] = useState(false);
@@ -64,11 +82,12 @@ export function Observability({ api }: ObservabilityProps) {
     if (!selected) return;
     let live = true;
     setLogState('loading');
+    setLogsIncomplete(false);
     void (async () => {
       try {
         // Logs are capped to the last 24h even on the 3-day metrics range — Workers
         // Logs retention is short and a narrower window keeps the query cheap.
-        const events = await api.recentLogs({
+        const { events, incomplete } = await api.recentLogsRead({
           service: selected,
           hours: Math.min(Number(hours), 24),
           limit: 100,
@@ -76,6 +95,7 @@ export function Observability({ api }: ObservabilityProps) {
         });
         if (!live) return;
         setLogs(events);
+        setLogsIncomplete(incomplete);
         setLogState('ready');
       } catch (e) {
         if (!live) return;
@@ -234,6 +254,7 @@ export function Observability({ api }: ObservabilityProps) {
               Close
             </Button>
           </div>
+          {logState === 'ready' && <LogsIncompleteNotice incomplete={logsIncomplete} />}
           {logState === 'error' ? (
             <div style={{ padding: 16, fontSize: 13, color: 'var(--status-danger-fg)' }}>Log query failed: {logError}</div>
           ) : (

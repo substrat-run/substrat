@@ -23,6 +23,7 @@ import {
   reviewedEntityGrants,
   stableDeploymentRefFor,
   type RecentLogEvent,
+  ControlPlaneStaffClient,
 } from '../src/index.js';
 
 /**
@@ -6411,6 +6412,24 @@ describe('control-plane API — observability proxy', () => {
       const whole = await app.request('/observability/logs?service=my-worker', { headers: asStaff });
       expect(whole.headers.has(LOGS_INCOMPLETE_HEADER)).toBe(false);
       expect(await whole.json()).toEqual([event]);
+    } finally {
+      logsAnswer = { events: [], incomplete: false };
+    }
+  });
+
+  it('reaches the staff client exactly when the route sets it — the client reads the real producer', async () => {
+    const app = appWith(reader);
+    const client = new ControlPlaneStaffClient({
+      baseUrl: 'http://cp.local',
+      actor: staff,
+      fetch: ((input: RequestInfo | URL, init?: RequestInit) => app.request(String(input), init)) as typeof fetch,
+    });
+    const event = { timestamp: 1, message: 'a line' } as RecentLogEvent;
+    try {
+      logsAnswer = { events: [event], incomplete: true };
+      expect(await client.recentLogsRead({ service: 'my-worker' })).toEqual({ events: [event], incomplete: true });
+      logsAnswer = { events: [event], incomplete: false };
+      expect(await client.recentLogsRead({ service: 'my-worker' })).toEqual({ events: [event], incomplete: false });
     } finally {
       logsAnswer = { events: [], incomplete: false };
     }
