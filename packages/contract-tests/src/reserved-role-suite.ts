@@ -43,9 +43,9 @@ export function reservedRoleContractSuite(
     const s1 = scopeId.parse(ulid());
     const staff = platformActorId.parse(ulid());
     const alice = principalId.parse(ulid()); // holds rsv:use tenant-wide, and rsv:run through a reserved-only role
-    const legacy = principalId.parse(ulid());
+    const legacy = principalId.parse(ulid()); // seated in `mixed` before rsv:run was reserved here (#2447)
     /** A key no module here declares: a host admits it (fail-open), so it fills out a role's list. */
-    const RSV_EXTRA = 'rsv:extra' as PermissionKey; // seated in `mixed` before rsv:run was reserved here (#2447)
+    const RSV_EXTRA = 'rsv:extra' as PermissionKey;
     const person = () => principalId.parse(ulid());
     const entity = () => ({ entityType: 'rsvdoc', entityId: ulid() });
     const RSV = moduleId.parse('@test/reserved-role');
