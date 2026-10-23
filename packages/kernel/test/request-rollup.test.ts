@@ -3,6 +3,7 @@ import { platformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, type PlatformSweepOptions, type RequestRollupSweepOptions } from '../src/platform-sweep.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
+  REQUEST_ROLLUP_MAX_LOOKBACK_DAYS,
   REQUEST_ROLLUP_PRUNE_BATCH,
   RequestRollupSaturated,
   requestRollupDueDays,
@@ -388,5 +389,22 @@ describe('the request-rollup phase', () => {
     await expect(sweep(host, { read, pruneBatch: 0 })).rejects.toThrow(/requestRollup\.pruneBatch/);
     await expect(sweep(host, { read, retentionMonths: 0 })).rejects.toThrow(/requestRollup\.retentionMonths/);
     await expect(sweep(host, { read, retentionMonths: null, batch: 0 })).resolves.toMatchObject({ errors: [] });
+    // A lookback past what Analytics Engine keeps would record aged-out days as days without
+    // traffic; a negative settle would read and freeze the open day.
+    for (const lookbackDays of [0, -1, 2.5, REQUEST_ROLLUP_MAX_LOOKBACK_DAYS + 1, Number.NaN]) {
+      await expect(sweep(host, { read, lookbackDays })).rejects.toThrow(/requestRollup\.lookbackDays/);
+    }
+    for (const ms of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(sweep(host, { read, settleMs: ms })).rejects.toThrow(/requestRollup\.settleMs/);
+      await expect(sweep(host, { read, retryMs: ms })).rejects.toThrow(/requestRollup\.retryMs/);
+    }
+    for (const readTimeoutMs of [0, -5, Number.NaN]) {
+      await expect(sweep(host, { read, readTimeoutMs })).rejects.toThrow(/requestRollup\.readTimeoutMs/);
+    }
+    // Their positive twins: the edges that are allowed run.
+    await expect(
+      sweep(host, { read, lookbackDays: REQUEST_ROLLUP_MAX_LOOKBACK_DAYS, settleMs: 0, retryMs: 0, readTimeoutMs: 1, batch: 0 }),
+    ).resolves.toMatchObject({ errors: [] });
+    await expect(sweep(host, { read, lookbackDays: 1, batch: 0 })).resolves.toMatchObject({ errors: [] });
   });
 });

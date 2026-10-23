@@ -28,6 +28,7 @@ import { BILLING_ROLLUP_RETENTION_MONTHS } from './billing-retention.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
   REQUEST_ROLLUP_LOOKBACK_DAYS,
+  REQUEST_ROLLUP_MAX_LOOKBACK_DAYS,
   REQUEST_ROLLUP_PRUNE_BATCH,
   REQUEST_ROLLUP_READ_TIMEOUT_MS,
   REQUEST_ROLLUP_RETRY_MS,
@@ -744,11 +745,11 @@ export interface RequestRollupSweepOptions {
   read: (day: string) => Promise<readonly RequestDayCount[]>;
   /** The most days read in one pass. Default `REQUEST_ROLLUP_DAYS_PER_PASS`. `0` pauses reading; the prune still runs. */
   batch?: number;
-  /** How many days back a day may be read. Default `REQUEST_ROLLUP_LOOKBACK_DAYS`. */
+  /** How many days back a day may be read: 1 to `REQUEST_ROLLUP_MAX_LOOKBACK_DAYS`. Default `REQUEST_ROLLUP_LOOKBACK_DAYS`. */
   lookbackDays?: number;
-  /** How long after its end a day may be read. Default `REQUEST_ROLLUP_SETTLE_MS`. */
+  /** How long after its end a day may be read, at least 0. Default `REQUEST_ROLLUP_SETTLE_MS`. */
   settleMs?: number;
-  /** How long a failed day waits before it is tried again. Default `REQUEST_ROLLUP_RETRY_MS`. */
+  /** How long a failed day waits before it is tried again, at least 0. Default `REQUEST_ROLLUP_RETRY_MS`. */
   retryMs?: number;
   /**
    * How long one day's read may take, in ms. Past it the day counts as failed, like any other
@@ -1197,6 +1198,26 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
     } catch (err) {
       throw substratError('validation_failed', `requestRollup.retentionMonths: ${message(err)}`);
     }
+  }
+  // Each of these corrupts the kept history silently rather than failing: a lookback past what
+  // Analytics Engine keeps records aged-out days as days without traffic, and a negative settle
+  // reads the open day and freezes it. So they are refused here, before anything is read.
+  const lookback = rollup?.lookbackDays;
+  if (lookback !== undefined && !(Number.isInteger(lookback) && lookback >= 1 && lookback <= REQUEST_ROLLUP_MAX_LOOKBACK_DAYS)) {
+    throw substratError(
+      'validation_failed',
+      `requestRollup.lookbackDays must be a whole number of days from 1 to ${REQUEST_ROLLUP_MAX_LOOKBACK_DAYS}, got ${String(lookback)}`,
+    );
+  }
+  for (const name of ['settleMs', 'retryMs'] as const) {
+    const ms = rollup?.[name];
+    if (ms !== undefined && !(Number.isFinite(ms) && ms >= 0)) {
+      throw substratError('validation_failed', `requestRollup.${name} must be a non-negative number of ms, got ${String(ms)}`);
+    }
+  }
+  const timeout = rollup?.readTimeoutMs;
+  if (timeout !== undefined && !(Number.isFinite(timeout) && timeout > 0)) {
+    throw substratError('validation_failed', `requestRollup.readTimeoutMs must be a positive number of ms, got ${String(timeout)}`);
   }
   const orphans = options.orphanAttachments;
   if (orphans?.batch !== undefined && !(Number.isInteger(orphans.batch) && orphans.batch >= 0)) {
