@@ -788,6 +788,7 @@ import {
   idempotencyOptedOutMessage,
   replayFor,
   globalFetch,
+  fetchLikeOf,
   createUlid,
   type UlidMint,
   type IdempotencyRow,
@@ -2175,7 +2176,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.wrapBlobStore = options.wrapBlobStore ?? ((store) => store);
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
-    this.fetchImpl = options.fetch ?? globalFetch;
+    // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
+    this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;

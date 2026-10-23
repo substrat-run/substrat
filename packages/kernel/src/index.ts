@@ -176,6 +176,7 @@ export {
   requiredEntitlementFor,
   backoffAt,
   globalFetch,
+  fetchLikeOf,
   executorOutcomeOf,
   parseValidationRecords,
   resolveRetryPolicy,

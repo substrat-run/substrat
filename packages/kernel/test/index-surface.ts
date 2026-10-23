@@ -335,6 +335,8 @@ export const INDEX_VALUE_EXPORTS = [
   'facetEvents',
   'fenceAttachmentSweep',
   'fencedTables',
+  // #2498: a runtime fetch as a FetchLike, converting a sized stream body; both hosts wrap their injected fetch.
+  'fetchLikeOf',
   'findingOfOpsFailure',
   'findingOfSweepRun',
   'finishStoreDriverRolloutIn',

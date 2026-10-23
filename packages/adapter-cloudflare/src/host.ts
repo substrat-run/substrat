@@ -416,6 +416,7 @@ import {
   type LegacySubjectRedactionCounts,
   type SubjectTextTarget,
   globalFetch,
+  fetchLikeOf,
   assertRedrainWindow,
   platformRequestOf,
   type PlatformRequestRawRow,
@@ -2979,7 +2980,8 @@ export class CloudflareScopeHost implements ScopeHost {
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
-    this.fetchImpl = options.fetch ?? globalFetch;
+    // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
+    this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;

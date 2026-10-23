@@ -1472,15 +1472,27 @@ export interface FetchLike {
  * callback shipped green and failed every hosted round that way (#1291). Closing
  * over the global here means the receiver is never in play, anywhere downstream.
  *
- * A `SizedByteStream` body (#2498) is the one field the runtime cannot take as it is, so it is
- * turned into the runtime's own stream of that length here (`knownLengthInit`).
+ * A `SizedByteStream` body (#2498) is converted by `fetchLikeOf`, which this is built from.
  */
-export const globalFetch: FetchLike = (input, init) =>
+export const globalFetch: FetchLike = fetchLikeOf((input, init) =>
   // Called on the global, never through a variable: workerd refuses any other receiver.
-  (globalThis as unknown as { fetch: (input: string, init?: unknown) => Promise<ConnectorResponse> }).fetch(
-    input,
-    isSizedByteStream(init?.body) ? knownLengthInit({ ...init, body: init.body }) : init,
-  );
+  (globalThis as unknown as { fetch: (input: string, init?: unknown) => Promise<ConnectorResponse> }).fetch(input, init),
+);
+
+/**
+ * A runtime `fetch` (the global, a service binding's, a test's stand-in) as a `FetchLike`
+ * (#2498): the one place a `SizedByteStream` body becomes a request the runtime can send, as
+ * `knownLengthInit` builds it. The runtime takes no such value: handed one as it is, a `fetch`
+ * sends its string form, `"[object Object]"`, and answers as if nothing were wrong. So
+ * `globalFetch` is built from this, and both hosts pass the `fetch` they are given through it,
+ * as `runPlatformSweep` does, so a sized body reaches no runtime `fetch` unconverted whichever
+ * one was injected. Wrapping a `FetchLike` that is already one is harmless: a converted body is
+ * no longer a `SizedByteStream`.
+ */
+export function fetchLikeOf(runtimeFetch: (input: string, init?: never) => Promise<ConnectorResponse>): FetchLike {
+  const send = runtimeFetch as (input: string, init?: unknown) => Promise<ConnectorResponse>;
+  return (input, init) => send(input, isSizedByteStream(init?.body) ? knownLengthInit({ ...init, body: init.body }) : init);
+}
 
 /**
  * The host's clock (#812) — what `ctx.now()` reads.
