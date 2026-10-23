@@ -113,6 +113,8 @@ import {
   type ImportState,
   type VerticalCaller,
   substratError,
+  CONNECTOR_ATTACHMENT_META_HEADER,
+  CONNECTOR_ATTACHMENT_META_MAX_BYTES,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   PLATFORM_SECRET_HEADER,
@@ -121,7 +123,7 @@ import {
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { ulid, undrainedEventsOf } from '@substrat-run/kernel';
+import { isSizedByteStream, knownLengthInit, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -849,6 +851,9 @@ export class VerticalClient {
    * Land provider bytes in the vertical's deployment as a CONNECTION (#574) — the bytes
    * leg (a sealed signed PDF cannot ride the JSON invoke). Multipart: `meta` carries the
    * JSON envelope, `body` the blob; fetch stamps the boundary content-type itself.
+   *
+   * A streamed body (#2498) goes to `/internal/connector-attachment-stream` instead, so it is
+   * never held here. A buffer keeps the multipart route, which every deployment has.
    */
   async connectorUploadAttachment(input: {
     connectionId: ConnectionId;
@@ -858,9 +863,10 @@ export class VerticalClient {
     filename: string;
     contentType: string;
     visibility: Visibility;
-    body: Uint8Array;
+    body: ByteBody;
   }): Promise<AttachmentRecord> {
     const { body, ...meta } = input;
+    if (isSizedByteStream(body)) return this.connectorStreamAttachment(meta, body);
     const form = new FormData();
     form.append('meta', JSON.stringify(meta));
     form.append('body', new Blob([body as BlobPart], { type: input.contentType }), input.filename);
@@ -875,6 +881,60 @@ export class VerticalClient {
     );
     if (!res.ok) throw await this.refusal('connector-attachment', res);
     return this.parseInternal<AttachmentRecord>('connector-attachment', '/internal/connector-attachment', res);
+  }
+
+  /**
+   * The bytes leg for a streamed body (#2498): the request body IS the file, sent at its
+   * declared length as it is read, and the metadata rides `CONNECTOR_ATTACHMENT_META_HEADER`.
+   * Its own route rather than a second shape on the multipart one, so a deployment that
+   * predates it answers a route miss, and that becomes a 501 saying to re-push it, rather than
+   * an error from a parser that was handed a file.
+   */
+  private async connectorStreamAttachment(
+    meta: Omit<Parameters<VerticalClient['connectorUploadAttachment']>[0], 'body'>,
+    body: SizedByteStream,
+  ): Promise<AttachmentRecord> {
+    const verb = 'connector-attachment-stream';
+    const path = '/internal/connector-attachment-stream';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    // The metadata is the only header a caller's strings reach. Its characters are always safe:
+    // JSON escapes a control character or a lone surrogate, and URI encoding everything else.
+    // Its SIZE is not, since it grows with the filename, so it is held to a named bound here and
+    // refused before a byte is sent rather than answered with a server's bare 431. (The
+    // multipart route carries the same metadata in its body and has no such bound.) The file's
+    // own type rides inside it (the route reads `contentType` from there), so the request's own
+    // `content-type` is the plain octet-stream it is.
+    const encodedMeta = encodeURIComponent(JSON.stringify({ ...meta, size: body.length }));
+    if (encodedMeta.length > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
+      throw new ControlPlaneError(
+        400,
+        `${verb}: the attachment's metadata is ${encodedMeta.length} bytes once encoded, over the ` +
+          `${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound a streamed upload carries it in a header — ` +
+          `shorten the filename. Nothing was sent.`,
+      );
+    }
+    const init = knownLengthInit({
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
+        [CONNECTOR_ATTACHMENT_META_HEADER]: encodedMeta,
+      },
+      body,
+    });
+    const res = await this.reach(verb, () => this.options.fetch(`${base}${path}`, init as unknown as RequestInit));
+    if (!res.ok) {
+      const refused = await this.refusal(verb, res);
+      if (isRouteMiss(refused)) {
+        throw new ControlPlaneError(
+          501,
+          `the deployment serving scope ${meta.scopeId} predates streamed connector uploads (#2498) — ` +
+            `re-push the deployment, then retry. Nothing was stored.`,
+        );
+      }
+      throw refused;
+    }
+    return this.parseInternal<AttachmentRecord>(verb, path, res);
   }
 
   /**

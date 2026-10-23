@@ -1222,6 +1222,10 @@ are honestly computable *honest*, and display them.
     closed day up into the directory, one row per (tenant, vertical, scope), before the
     datapoints age out (§5.3). An exact counter at the router comes only when pricing uses
     requests as a unit.
+  - **Still pending** ([#2501](https://github.com/substrat-run/substrat/issues/2501), the part
+    after the request rollup): meters 1 and 2 kept over time (a reading is recomputed per call and
+    stored nowhere), attachment bytes beside the storage gauge, a history of vertical ownership,
+    and one retention horizon for billing-relevant rollups. None of it prices anything.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 

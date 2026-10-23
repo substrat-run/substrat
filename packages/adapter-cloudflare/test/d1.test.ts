@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ConnectorResponse, FetchLike } from '@substrat-run/kernel';
+import type { ConnectorRequestInit, ConnectorResponse, FetchLike } from '@substrat-run/kernel';
 import { createD1TenantStores, tenantStoreDatabaseName } from '../src/d1.js';
 
 /**
@@ -18,7 +18,7 @@ describe('createD1TenantStores', () => {
     arrayBuffer: async () => new ArrayBuffer(0),
   });
 
-  const scripted = (handlers: ((url: string, init?: { method?: string; body?: string | Uint8Array }) => ConnectorResponse | undefined)[]) => {
+  const scripted = (handlers: ((url: string, init?: ConnectorRequestInit) => ConnectorResponse | undefined)[]) => {
     const calls: { url: string; method: string; body?: string }[] = [];
     const fetchImpl: FetchLike = async (url, init) => {
       calls.push({ url, method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? init.body : undefined });

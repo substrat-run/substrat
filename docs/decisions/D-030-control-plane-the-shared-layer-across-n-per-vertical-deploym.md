@@ -15,7 +15,8 @@ tracking: []
 > longer true of meter 3. Storage is a stored daily gauge (#1524), model usage is a drained ledger
 > (D-59 amends this record for it), and every row shipped to the lake carries its `bytes`, so lake
 > bytes can be summed per tenant, though no route reads them yet. Exact API-call counts are still not computable: reads emit nothing on the spine,
-> and the router's request datapoints are sampled. "Meter, don't bill" holds, and pricing,
+> and the router's request datapoints are sampled; a daily per-tenant estimate of them is kept
+> (control-plane.md §5.3, #2501). "Meter, don't bill" holds, and pricing,
 > dunning and the payment rail wait for a commercial decision. The current state is
 > [control-plane.md §5](../architecture/control-plane.md#5-billing-meter-do-not-bill).
 

@@ -8,7 +8,7 @@ import {
   scopeId,
   tenantId,
 } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { isSizedByteStream, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost, type ConnectorDelegation } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -249,7 +249,7 @@ describe('connector write-back (#574)', () => {
           entity: a.upload.entity,
           filename: a.upload.filename,
           contentType: a.upload.contentType,
-          size: a.upload.body.byteLength,
+          size: isSizedByteStream(a.upload.body) ? a.upload.body.length : a.upload.body.byteLength,
           sha256: 'x'.repeat(64),
           visibility: a.upload.visibility,
           createdBy: a.connectionId,

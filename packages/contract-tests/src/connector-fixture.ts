@@ -1,4 +1,4 @@
-import type { FetchLike } from '@substrat-run/kernel';
+import type { ConnectorRequestInit, FetchLike } from '@substrat-run/kernel';
 
 /**
  * An in-memory provider, so a connector can be exercised end to end without any
@@ -17,7 +17,7 @@ export interface ConnectorCall {
   url: string;
   method: string | undefined;
   auth: string | undefined;
-  body: string | Uint8Array | undefined;
+  body: ConnectorRequestInit['body'];
 }
 
 export const connectorCalls: ConnectorCall[] = [];

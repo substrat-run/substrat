@@ -192,10 +192,25 @@ import type {
   EntityGrantShape,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
+import {
+  isSizedByteStream,
+  knownLengthInit,
+  witnessedStream,
+  type ByteBody,
+  type ByteStream,
+  type IncrementalSha256,
+  type SizedByteStream,
+} from './byte-stream.js';
 import type { CapabilityVerbs } from './capability.js';
 import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
-import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
+import {
+  attachmentRecordFields,
+  permissionKey,
+  substratError,
+  type AttachmentRecordFields,
+  type EntityStateName,
+} from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
@@ -1459,9 +1474,28 @@ export interface FetchLike {
  * installs, so no suite in this repo sees the difference; the Fortnox consent
  * callback shipped green and failed every hosted round that way (#1291). Closing
  * over the global here means the receiver is never in play, anywhere downstream.
+ *
+ * A `SizedByteStream` body (#2498) is converted by `fetchLikeOf`, which this is built from.
  */
-export const globalFetch: FetchLike = (input, init) =>
-  (globalThis as unknown as { fetch: FetchLike }).fetch(input, init);
+export const globalFetch: FetchLike = fetchLikeOf((input, init) =>
+  // Called on the global, never through a variable: workerd refuses any other receiver.
+  (globalThis as unknown as { fetch: (input: string, init?: unknown) => Promise<ConnectorResponse> }).fetch(input, init),
+);
+
+/**
+ * A runtime `fetch` (the global, a service binding's, a test's stand-in) as a `FetchLike`
+ * (#2498): the one place a `SizedByteStream` body becomes a request the runtime can send, as
+ * `knownLengthInit` builds it. The runtime takes no such value: handed one as it is, a `fetch`
+ * sends its string form, `"[object Object]"`, and answers as if nothing were wrong. So
+ * `globalFetch` is built from this, and both hosts pass the `fetch` they are given through it,
+ * as `runPlatformSweep` does, so a sized body reaches no runtime `fetch` unconverted whichever
+ * one was injected. Wrapping a `FetchLike` that is already one is harmless: a converted body is
+ * no longer a `SizedByteStream`.
+ */
+export function fetchLikeOf(runtimeFetch: (input: string, init?: never) => Promise<ConnectorResponse>): FetchLike {
+  const send = runtimeFetch as (input: string, init?: unknown) => Promise<ConnectorResponse>;
+  return (input, init) => send(input, isSizedByteStream(init?.body) ? knownLengthInit({ ...init, body: init.body }) : init);
+}
 
 /**
  * The host's clock (#812) — what `ctx.now()` reads.
@@ -1502,8 +1536,15 @@ export interface ConnectorRequestInit {
    * string cannot carry without corrupting the file. Web `fetch` accepts both, so
    * this only widens the declared surface — the adapter passes it straight
    * through.
+   *
+   * A {@link SizedByteStream} as well (#2498), for a body too large to hold in memory. The
+   * length is part of the value because a provider wants a `Content-Length`, and a stream
+   * carries none. The runtime cannot take one as it is, so it is converted by `fetchLikeOf`:
+   * `globalFetch` is built from it, and both hosts and `runPlatformSweep` pass the `fetch` they
+   * are given through it. A runtime `fetch` handed straight to a connector is made a
+   * `FetchLike` with `fetchLikeOf` too, never by a cast.
    */
-  body?: string | Uint8Array;
+  body?: string | Uint8Array | SizedByteStream;
   signal?: unknown;
 }
 export interface ConnectorResponse {
@@ -1518,6 +1559,28 @@ export interface ConnectorResponse {
    * only widens the structural surface the adapter passes straight through.
    */
   arrayBuffer(): Promise<ArrayBuffer>;
+  /**
+   * The body as a stream (#2498), for a provider file too large to hold: read it chunk by chunk,
+   * or hand it on to `upload` as a `SizedByteStream`. `null` for a response with no body, as on
+   * a web `Response`, which every adapter's `fetch` returns.
+   *
+   * The stream carries the body as `fetch` delivers it: DECODED. A response sent with a
+   * `Content-Encoding` (gzip, br) is decompressed on the way, while its `Content-Length` still
+   * counts the compressed bytes, so that header is the stream's length only when the response
+   * has no `Content-Encoding`. Otherwise take the length from the provider's own record of the
+   * file (its item metadata); a stream sized by the wrong number is refused, not landed.
+   *
+   * The stream is read under the call's timeout. A connection's `fetch` sets the connector's
+   * `timeoutMs` (default 30 s) as the request's signal, and that signal also errors a body still
+   * being read, so streaming bounds memory, not time: the whole file must arrive within the
+   * timeout. A file that does not errors the stream (`TimeoutError`), and an upload reading it
+   * lands no object and no row. A connector that moves large files declares a larger `timeoutMs`.
+   *
+   * OPTIONAL for the reason `headers` is: a hand-built stand-in is an object literal, and most
+   * connectors never read a stream. A caller that needs one falls back to `arrayBuffer()` when it
+   * is absent. Read a body once, by one of these.
+   */
+  readonly body?: ByteStream | null;
   /**
    * The response headers, when the runtime behind this seam has them.
    *
@@ -1681,7 +1744,11 @@ export type ConnectorHandler = (ctx: ConnectorContext, event: DomainEvent) => vo
 
 /** Tuning for one connector's egress. */
 export interface ConnectorOptions extends ExecutorRetryPolicy {
-  /** Per-request timeout. Default 30s. */
+  /**
+   * Per-request timeout. Default 30s. It bounds the whole call, reading a streamed response
+   * body included (#2498): a provider file read through `ConnectorResponse.body` must arrive
+   * within it.
+   */
   timeoutMs?: number;
   /**
    * The provider slug this connector operates (#574 phase 3) — the routing key a
@@ -4078,9 +4145,12 @@ export interface HostAdmin {
    * suspension is an outage, not revenue), and expiry is evaluated at the reading's
    * instant so a lapsed grant reads as lapsed rather than as never-granted.
    *
-   * Computes nothing that needs a data pipeline. Meters 3 and 4 are absent because
-   * they are uncomputable by construction, not because this is a first slice — the
-   * per-scope outbox has no cross-tenant fan-in, and reads emit nothing at all.
+   * Computes nothing that needs a data pipeline, so it carries meters 1 and 2 only.
+   * Meter 4 has no number: it needs the cross-tenant order flow. Meter 3 is not
+   * folded into this reading; its parts are read elsewhere: the storage gauge, the
+   * model usage ledger, and the estimated daily request rollup at `/meters/requests`.
+   * Lake rows carry their bytes, but no reader sums them yet. Exact API counts are
+   * not computable: reads emit nothing on the spine. See control-plane.md §5.
    *
    * Nothing is stored: a reading is recomputed per call. D-30 is meter, do not bill,
    * and a persisted running total is the first half of a billing ledger.
@@ -4799,7 +4869,12 @@ export interface BlobStoreProvisionInput {
  * is what turns "scope/<id>/ is a convention" into "cross-scope keys are unwritable".
  */
 export interface TenantBlobStore {
-  put(key: string, body: Uint8Array, opts?: { contentType?: string }): Promise<void>;
+  /**
+   * Write `body` under `key`. A `SizedByteStream` (#2498) is written as it is read, never
+   * collected first, and refused if it carries other than its declared length. The put
+   * resolves only once the whole stream has been read.
+   */
+  put(key: string, body: ByteBody, opts?: { contentType?: string }): Promise<void>;
   get(key: string): Promise<{ body: Uint8Array; contentType?: string } | null>;
   delete(key: string): Promise<void>;
   /** Keys under `prefix` — the GC/ops walk. */
@@ -4842,6 +4917,44 @@ declare const crypto: { subtle: { digest(algorithm: string, data: Uint8Array): P
 export async function attachmentSha256(body: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', body);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Write an upload's bytes to the blob store and answer the record they make (#2498) — the "bytes
+ * first" half of every attachment write, one path for both adapters. The record's fields are
+ * judged before a byte moves, so a record the surface would refuse lands no object. A buffer is
+ * then hashed and written, as before. A stream is hashed and counted while the store reads it, so
+ * it is never held whole; `sha256` is the adapter's running digest, since the kernel has none of
+ * its own. The caller writes the row.
+ *
+ * A streamed write that fails, or whose store answers without reading the stream to its end, has
+ * its object deleted and is refused: no record may witness bytes nobody saw.
+ */
+export async function putAttachmentBytes(
+  store: TenantBlobStore,
+  key: string,
+  fields: AttachmentRecordFields,
+  body: ByteBody,
+  sha256: () => IncrementalSha256,
+): Promise<AttachmentRecord> {
+  const judged = attachmentRecordFields.parse(fields);
+  const opts = { contentType: judged.contentType };
+  if (!isSizedByteStream(body)) {
+    const record = { ...judged, size: body.byteLength, sha256: await attachmentSha256(body) };
+    await store.put(key, body, opts);
+    return record;
+  }
+  const witnessed = witnessedStream(body, sha256());
+  try {
+    await store.put(key, witnessed.body, opts);
+    return { ...judged, ...witnessed.witness() };
+  } catch (err) {
+    // Deleted whether the put failed or answered early: a store can commit the declared bytes
+    // and still reject when the stream errors behind them (R2 does, for a body longer than it
+    // declared). The key is fresh and no row names it yet, so the delete is always safe.
+    await store.delete(key).catch(() => {});
+    throw err;
+  }
 }
 
 /**
@@ -4981,7 +5094,13 @@ export interface AttachmentUploadInput {
   filename: string;
   contentType: string;
   visibility: Visibility;
-  body: Uint8Array;
+  /**
+   * The bytes: a buffer, or a `SizedByteStream` for a file too large to hold (#2498). A stream
+   * goes to the blob store as it is read; its sha256 and size are taken on the way through, and
+   * the row is written after the object, as for a buffer. Its declared length is the record's
+   * `size`, and a stream that carries a different number of bytes lands nothing.
+   */
+  body: ByteBody;
 }
 
 /**
