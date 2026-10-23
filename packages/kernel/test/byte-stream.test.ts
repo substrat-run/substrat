@@ -332,6 +332,22 @@ describe('globalFetch with a sized stream body (#2498)', () => {
     }
   });
 
+  it("fetchLikeOf keeps the caller's signal when it converts a sized body: the connection's timeout rides on it", async () => {
+    const signal = AbortSignal.abort(new Error('the caller gave up'));
+    const handed: unknown[] = [];
+    const recording = fetchLikeOf(async (_input: string, init?: { signal?: unknown }) => {
+      handed.push(init?.signal);
+      return { ok: true, status: 200 } as never;
+    });
+    await recording('https://provider.invalid/upload', { method: 'PUT', signal, body: { stream: producer(1).stream, length: CHUNK } });
+    expect(handed).toEqual([signal]);
+    // And a real fetch, handed it through the conversion, is cancelled by it.
+    const real = fetchLikeOf(globalThis.fetch.bind(globalThis));
+    await expect(
+      real('http://127.0.0.1:9/upload', { method: 'PUT', signal, body: { stream: producer(1).stream, length: CHUNK } }),
+    ).rejects.toThrow(/gave up/);
+  });
+
   it("a compressed response's body stream carries the decoded bytes, which its Content-Length does not count", async () => {
     const plain = new Uint8Array(64 * 1024).fill(7);
     const zipped = gzipSync(plain);
