@@ -322,7 +322,7 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, run
         <Card
           title="Metered"
           description="What this tenant contributes to §5's two computable meters. Nothing here is billed — the platform meters and does not invoice."
-          footer={`read at ${new Date(meter.readAt).toLocaleString()} · storage is read on demand below · meter 4 is uncomputable by construction`}
+          footer={`read at ${new Date(meter.readAt).toLocaleString()} · storage is read on demand below · meter 4 has no data source yet`}
         >
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
             <Stat
