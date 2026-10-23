@@ -46,8 +46,8 @@ rides the wildcard and skips issuance. Registrable-suffix (PSL) isolation is enf
 bind (`@substrat-run/psl`), so a custom domain that is a bare public suffix is refused.
 The `verifying` state and the `custom_hostname_id` / `validation_records` columns are
 the issuance record. §5's two computable meters are now read and rendered
-([#38](https://github.com/substrat-run/substrat/issues/38)); the other two remain
-uncomputable by construction, which §5 now states as a decision rather than a gap.
+([#38](https://github.com/substrat-run/substrat/issues/38)); §5 says which parts of meter 3
+are computable now (all but exact API counts) and why meter 4 is not.
 Also still unbuilt: **capability-grant enumeration** — a grant is a tuple in the
 scope's own database, so listing them needs §5.4's admin-query RPC, unlike roles which are
 directory-local (this is the sharpest remaining consequence of §7's "no back door into scope
@@ -1195,20 +1195,28 @@ are honestly computable *honest*, and display them.
   `status` actually transitions — which §4.2 delivers. Free. Ship it as a number.
 - **Meter 2 (per-engine licensing)** becomes computable the moment §4.3's entitlement store
   exists: entitlement flags *are* the SKUs (§9). Also free.
-- **Meter 3 (usage: Tier-2 events retained, storage GB, API calls)** is **not** computable.
-  `_substrat_outbox` is per-scope-database, so any cross-tenant aggregate needs the Tier-2
-  fan-in sink that does not exist yet; reads emit nothing, so API-call volume is unmeterable
-  from the spine *by construction*; and `drained_at` is declared but written nowhere in the
-  repo, so a metering consumer has no cursor to resume from. *Storage* has since become
-  measurable for scope databases only (§5.2): readable on demand per tenant, and kept as a
-  stored daily gauge that `/meters` serves without waking a scope.
+- **Meter 3 (usage: Tier-2 events retained, storage GB, API calls)** is computable for
+  everything but exact API counts (amending D-30's "uncomputable",
+  [#39](https://github.com/substrat-run/substrat/issues/39)):
+  - **Storage** of scope databases (§5.2): readable on demand per tenant, and kept as a stored
+    daily gauge, thirteen months of day rows, that `/meters` serves without waking a scope.
+    Attachment files, per-tenant D1 databases and lake history are not in it.
+  - **Model usage** (D-59): the `_substrat_model_usage` ledger, drained from `model-usage`
+    platform intents and kept 400 days, read at `/model-usage`. The vertical reports its own
+    lines, so the ledger is as complete as what verticals report.
+  - **Events retained**: every row shipped to the lake carries a `bytes` column, so lake bytes
+    can be summed per tenant (after removing rows shipped twice; the query is in
+    `pipelines-sink.ts`). No route reads them yet, and a lake row names no vertical.
+  - **API calls are not computable exactly.** Reads emit nothing on the spine, and the router's
+    request datapoints in Analytics Engine are sampled and kept three months, so any count
+    taken from them is an estimate.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
 The rule: **a meter you cannot compute is not a pricing decision, it is a data-pipeline
-project.** §9's four meters are a commercial design, correctly made in advance; three of
-them sit downstream of infrastructure still on the roadmap. Build the two that fall out of
-work you are doing anyway, show the numbers, and let the first invoice wait until someone is
+project.** §9's four meters are a commercial design, correctly made in advance; meter 4 and
+the exact half of meter 3 sit downstream of infrastructure still on the roadmap. Build what
+falls out of work you are doing anyway, show the numbers, and let the first invoice wait until someone is
 actually paying — at which point the pricing conversation will have facts in it.
 
 ### 5.1 What the meter counts ([#38](https://github.com/substrat-run/substrat/issues/38))
@@ -1238,11 +1246,13 @@ Meter 2 groups by `(entitlementKey, plan)`: the flags *are* the SKUs (§9) and `
 what makes a tier data instead of operator convention, so "how many tenants are on `pro`
 of this engine" is a read rather than a re-derivation.
 
-**Meters 3 and 4 have no route, no field, and no placeholder**, and the console says so
-where an operator would go looking for the number. That is the point of writing it here:
-their absence is a property of the architecture (per-scope outbox with no cross-tenant
-fan-in; reads emit nothing; no cross-tenant order flow), not a slice that was skipped. If
-a Tier-2 sink ever lands, meter 3 becomes a new question — not a resumption of this one.
+**Meter 4 has no route, no field, and no placeholder**, and the console says so where an
+operator would go looking for the number. Its absence is a property of the architecture (no
+cross-tenant order flow), not a slice that was skipped. **Meter 3 is not one reading on
+`/meters`**: its computable parts are read where they are kept (storage on `/meters` and
+`/meters/storage`, model usage on `/model-usage`). Lake bytes have no reader yet; the console's
+Meters view says the same. Exact API counts stay absent because reads emit nothing on the
+spine.
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 

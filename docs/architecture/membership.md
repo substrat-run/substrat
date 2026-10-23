@@ -429,7 +429,8 @@ D-30 is explicit: meters 1 (active scopes) and 2 (entitlements) fall out free; *
 are uncomputable by construction** — the outbox is per-scope-database and cannot aggregate,
 reads emit nothing, `drained_at` is written nowhere. Meter 3 needs the Tier-2 fan-in sink;
 meter 4 needs cross-tenant orders. *"A meter you cannot compute is not a pricing decision,
-it is a data-pipeline project."*
+it is a data-pipeline project."* (Since 2026-10-23, meter 3 is computable except for exact API
+counts; see the note on D-30 and [control-plane.md §5](control-plane.md#5-billing-meter-do-not-bill).)
 
 So metering is the one item here that **fails the two-consumers test**: no vertical meters
 anything today. It stays deferred (#38, #39) until one does. Entitlements-as-plan (#33) is

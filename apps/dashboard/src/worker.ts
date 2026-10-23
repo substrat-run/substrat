@@ -913,7 +913,7 @@ app.get('/api/catalog', async (c) => {
 app.get('/api/me', async (c) => {
   const host = hostFor(c.env);
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) return c.json({ error: 'unauthorized' }, 401);
+  if (!user) return problem(c, 401, 'unauthorized');
   const memo = resolveMemoFor(c.env.CONTROL_PLANE);
   const memberships = await loginMemberships(host, STAFF, memo, user.id);
   const tenants = memberships.map((m) => m.tenant.id);
@@ -924,7 +924,7 @@ app.get('/api/me', async (c) => {
   // the answer behind for the handlers the page fires next.
   const node = await resolveNode(host, STAFF, memo, memberships, getCookie(c, TEAM_COOKIE));
   rememberNode(memo, user.id, getCookie(c, TEAM_COOKIE), node, Date.now());
-  if (!node) return c.json({ error: 'unauthorized' }, 401);
+  if (!node) return problem(c, 401, 'unauthorized');
   // Re-mirror this login's links into the shared plane's directory off the hot
   // path — the backfill for teams created before the mirror existed, and the
   // self-heal when a best-effort mirror was missed (see mirrorBuilderIdentity).
@@ -966,7 +966,7 @@ app.get('/api/support/identity', async (c) => {
   // No desk configured is not an error — it is a deployment without one.
   if (!desk || !secret) return c.json({ desk: null });
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
-  if (!user) return c.json({ error: 'unauthorized' }, 401);
+  if (!user) return problem(c, 401, 'unauthorized');
   const { email } = identifyEmail(c.env, user);
   if (!email) return c.json({ desk: null });
   c.header('cache-control', 'no-store');
