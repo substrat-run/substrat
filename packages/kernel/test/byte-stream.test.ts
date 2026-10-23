@@ -51,7 +51,12 @@ function producer(chunks: number) {
   return { flow, stream };
 }
 
-/** Read a stream to its end, counting into `flow`; the bytes' sha256 and size. */
+/**
+ * Read a stream to its end, counting into `flow`; the bytes' sha256 and size. With a `flow` the
+ * reader is slow, yielding a macrotask after each chunk as a network sink would, so a step that
+ * pulls ahead of its reader (an unbounded queue) builds a lead the bound can see. In memory with
+ * no yield, an eager producer and its reader keep pace and no queue ever forms.
+ */
 async function drain(stream: { getReader(): ReadableStreamDefaultReader<Uint8Array> } | SizedByteStream['stream'], flow?: Flow) {
   const reader = stream.getReader();
   const hash = createHash('sha256');
@@ -61,8 +66,11 @@ async function drain(stream: { getReader(): ReadableStreamDefaultReader<Uint8Arr
     if (done) break;
     if (!value) continue;
     size += value.byteLength;
-    if (flow) flow.consumed = size;
     hash.update(value);
+    if (flow) {
+      flow.consumed = size;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
   return { sha256: hash.digest('hex'), size };
 }
