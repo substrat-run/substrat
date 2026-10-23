@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_PENDING_PLATFORM_REQUESTS,
   declaredSurfaceOf,
   errorCodeOf,
   operationInputsOf,
@@ -20,6 +21,8 @@ import {
   purgeDueOf,
   registerTrashTargets,
   runPurgePass,
+  PlatformRequestBackpressureError,
+  assertPlatformRequestRoom,
   SCHEDULE_STATE_DDL,
   type PurgeGateFacts,
 } from '../src/index.js';
@@ -405,14 +408,18 @@ describe('the purge lap (#2096)', () => {
     for (let i = 0; i < count; i++) bin(`b${String(i).padStart(3, '0')}`, i);
     const plans = new Map(entityStatePlans('m', [horizon]).map((p) => [p.entityType, p]));
     const targets = new Map([['b/delete', purgeTarget]]);
-    /** One pass: entities in `failing` throw, every other one is deleted. */
-    const pass = async (failing: ReadonlySet<string>, limit: number) => {
+    /**
+     * One pass: entities in `failing` throw, entities in `capped` meet the scope's full platform-request
+     * queue (#2506), every other one is deleted.
+     */
+    const pass = async (failing: ReadonlySet<string>, limit: number, capped: ReadonlySet<string> = new Set()) => {
       const due = purgeDueOf(sql, plans, targets, 'b/delete', 'box', NOW, limit);
       const p = await runPurgePass(
         'b/delete',
         due,
         async (id) => {
           if (failing.has(id)) throw new Error(`stuck ${id}`);
+          if (capped.has(id)) throw new PlatformRequestBackpressureError(MAX_PENDING_PLATFORM_REQUESTS);
           db.prepare('DELETE FROM boxes WHERE id = ?').run(id);
         },
         (write) => write(sql),
@@ -497,5 +504,87 @@ describe('the purge lap (#2096)', () => {
     expect(sql.query("SELECT last_run_at, last_status FROM _substrat_schedule_state WHERE schedule_op = 'b/delete'")).toEqual([
       { last_run_at: '2020-01-01T00:00:00.000Z', last_status: 'ok' },
     ]);
+  });
+
+  describe('the platform-request cap (#2506)', () => {
+    it('defers the purge that meets a full queue: the lap resumes AT it, and nothing is reported failed', async () => {
+      const { sql, pass, left } = setup(6);
+      const first = await pass(new Set(), 6, new Set(['b003']));
+      // b003 and everything behind it were not tried; the three before it purged.
+      expect(first.pass).toEqual({ purged: 3, skipped: 0, errors: [], more: true, lapFailed: 0 });
+      expect(purgeStillDue(first.pass)).toBe(true);
+      expect(purgeReportOf('b/delete', 'box', first.pass).failure).toBeUndefined();
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: { at: DUE(2), id: 'b002' }, failed: 0 });
+      expect(left()).toEqual(['b003', 'b004', 'b005']);
+      // The drain ran: the next pass starts at the deferred entity and closes the lap.
+      const second = await pass(new Set(), 6);
+      expect(second.due.ids).toEqual(['b003', 'b004', 'b005']);
+      expect(second.pass).toMatchObject({ purged: 3, errors: [], more: false, lapFailed: 0 });
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: null, failed: 0 });
+      expect(left()).toEqual([]);
+    });
+
+    it('keeps the lap\'s earlier failures across a deferral', async () => {
+      const { sql, pass } = setup(6);
+      const first = await pass(new Set(['b000']), 6, new Set(['b004']));
+      expect(first.pass).toMatchObject({ purged: 3, more: true, lapFailed: 0 });
+      expect(first.pass.errors.map((e) => e.entityId)).toEqual(['b000']);
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: { at: DUE(3), id: 'b003' }, failed: 1 });
+    });
+
+    it('a pass that purges nothing closes the lap with one error, so the schedule waits its cadence', async () => {
+      const { sql, pass, left } = setup(3);
+      const stuck = await pass(new Set(), 3, new Set(['b000']));
+      expect(stuck.pass).toMatchObject({ purged: 0, more: false, lapFailed: 0 });
+      expect(stuck.pass.errors).toEqual([{ entityId: 'b000', error: expect.stringMatching(/too many pending platform requests \(32\)/) }]);
+      expect(purgeStillDue(stuck.pass)).toBe(false);
+      expect(purgeReportOf('b/delete', 'box', stuck.pass).failure).toBeDefined();
+      expect(readPurgeLap(sql, 'b/delete').after).toBeNull();
+      expect(left()).toEqual(['b000', 'b001', 'b002']);
+    });
+
+    it('a stuck pass in the middle of a lap closes it, carrying the failures the lap already had', async () => {
+      const { sql, pass } = setup(6);
+      await pass(new Set(['b000']), 3);
+      const stuck = await pass(new Set(), 3, new Set(['b003']));
+      expect(stuck.pass).toMatchObject({ purged: 0, more: false, lapFailed: 1 });
+      expect(stuck.pass.errors.map((e) => e.entityId)).toEqual(['b003']);
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: null, failed: 0 });
+      expect(purgeReportOf('b/delete', 'box', stuck.pass).failure?.message).toMatch(/1 failed earlier in this lap/);
+    });
+
+    it('twin: an ordinary failure still moves the lap past the entity', async () => {
+      const { sql, pass } = setup(4);
+      const first = await pass(new Set(['b001']), 4);
+      expect(first.pass.errors.map((e) => e.entityId)).toEqual(['b001']);
+      expect(first.pass).toMatchObject({ purged: 3, more: false, lapFailed: 0 });
+      expect(readPurgeLap(sql, 'b/delete').after).toBeNull();
+    });
+
+    it('a caller that matched the old plain Error still matches', async () => {
+      const refusal = new PlatformRequestBackpressureError(MAX_PENDING_PLATFORM_REQUESTS);
+      expect(refusal).toBeInstanceOf(Error);
+      expect(refusal.name).toBe('Error');
+      expect(refusal.message).toBe(`too many pending platform requests (${MAX_PENDING_PLATFORM_REQUESTS}); retry once some have drained`);
+      expect(refusal.pending).toBe(MAX_PENDING_PLATFORM_REQUESTS);
+      expect(errorCodeOf(refusal)).toBe(errorCodeOf(new Error(refusal.message)));
+      expect(() => assertPlatformRequestRoom(MAX_PENDING_PLATFORM_REQUESTS)).toThrow(/too many pending platform requests \(32\)/);
+      // Twin: one below the cap has room.
+      expect(() => assertPlatformRequestRoom(MAX_PENDING_PLATFORM_REQUESTS - 1)).not.toThrow();
+    });
+
+    it('a pass handed no walk positions cannot resume mid-batch, so the refusal stays an ordinary failure', async () => {
+      const due: PurgeDue = { cutoff: 'c', idFrom: 'boxId', ids: ['a', 'b'], lap: { after: null, failed: 0 }, next: null };
+      const pass = await runPurgePass(
+        'b/delete',
+        due,
+        async (id) => {
+          if (id === 'a') throw new PlatformRequestBackpressureError(MAX_PENDING_PLATFORM_REQUESTS);
+        },
+        () => undefined,
+      );
+      expect(pass).toMatchObject({ purged: 1, more: false });
+      expect(pass.errors.map((e) => e.entityId)).toEqual(['a']);
+    });
   });
 });

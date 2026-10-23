@@ -49,7 +49,6 @@ import {
   meterReading,
   platformRequestInput,
   platformRequestId,
-  MAX_PENDING_PLATFORM_REQUESTS,
   identityLink,
   identityPool,
   instant,
@@ -283,6 +282,7 @@ import {
   watchUpdatedStamps,
   entityStateMigrations,
   assertNoCallerPurge,
+  assertPlatformRequestRoom,
   isUnreachableParent,
   heldPurgePass,
   purgeDueOf,
@@ -13769,9 +13769,7 @@ export class SqliteScopeHost implements ScopeHost {
             .prepare(`SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending'`)
             .get() as { c: number }
         ).c;
-        if (pending >= MAX_PENDING_PLATFORM_REQUESTS) {
-          throw new Error(`too many pending platform requests (${pending}); retry once some have drained`);
-        }
+        assertPlatformRequestRoom(pending);
         const id = platformRequestId.parse(ulid());
         const requestedBy = overrideActor ?? actorOf(subject);
         rt.db

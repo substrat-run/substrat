@@ -33,10 +33,18 @@ import {
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
 import { readStateRow, type EntityStatePlan, type StateCheck } from './entity-state.js';
+import { PlatformRequestBackpressureError } from './platform-request-cap.js';
 import type { ScopedSql } from './scope-host.js';
 import type { SystemScheduleState } from './system-switch.js';
 
-/** How many entities one purge pass deletes per entity type. A full batch leaves the schedule due. */
+/**
+ * How many entities one purge pass deletes per entity type. A full batch leaves the schedule due.
+ *
+ * A CEILING, not a promise: a purge that enqueues a platform request is held to the scope's
+ * `MAX_PENDING_PLATFORM_REQUESTS` as well, which is smaller. The two are not reconciled by a
+ * second number — the cap is the one authority, and a pass that meets its refusal stops there
+ * and continues after the drain (`runPurgePass`, #2506).
+ */
 export const PURGE_BATCH = 50;
 
 /**
@@ -275,6 +283,12 @@ export interface PurgeDue {
   readonly idFrom: string;
   /** The ids this pass tries, in the walk's order. */
   readonly ids: string[];
+  /**
+   * #2506: the walk position of each of `ids`, in the same order — what lets a pass that stops
+   * part-way resume after the last entity it actually tried. Absent from a hand-built `PurgeDue`,
+   * which a pass then cannot cut short (see `runPurgePass`).
+   */
+  readonly keys?: readonly PurgeKey[];
   /** The lap as this pass found it. */
   readonly lap: PurgeLap;
   /** Where the next pass resumes when more is due after these ids — or null: this pass closes the lap. */
@@ -309,6 +323,7 @@ export function purgeDueOf(
     cutoff,
     idFrom: target.idFrom,
     ids: batch.map((k) => k.id),
+    keys: batch,
     lap,
     next: keys.length > limit ? batch.at(-1)! : null,
   };
@@ -391,6 +406,10 @@ export function heldPurgePass(held: string): PurgePass {
  * batch with its failures added while more is due, or close the lap. After the pass, so a pass cut
  * short repeats its batch rather than skipping it. `inScope` runs the write against the scope's
  * spine, in the turn the adapter's storage needs.
+ *
+ * The one exception to "whatever its purges did" is the scope's platform-request cap (#2506): a
+ * purge refused with `PlatformRequestBackpressureError` is deferred rather than failed, and the lap
+ * resumes at it.
  */
 export async function runPurgePass(
   operation: string,
@@ -398,13 +417,30 @@ export async function runPurgePass(
   purgeOne: (entityId: string) => Promise<void>,
   inScope: (write: (sql: ScopedSql) => void) => unknown,
 ): Promise<PurgePass> {
-  const more = due.next !== null;
-  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more, lapFailed: more ? 0 : due.lap.failed };
-  for (const entityId of due.ids) {
+  // Where the lap resumes: after this batch's last entity, or null when the batch closes the lap.
+  let next = due.next;
+  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more: false };
+  for (const [i, entityId] of due.ids.entries()) {
     try {
       await purgeOne(entityId);
       pass.purged += 1;
     } catch (err) {
+      // #2506: the scope's queue of platform requests is full, so this purge rolled back whole, and
+      // so would every one behind it until the drain runs. That is the cap saying "not yet", not
+      // this entity failing: the batch stops here and the lap resumes AT it, after the last entity
+      // actually tried — the next pass finds it still due. A pass that made no progress at all
+      // means the drain is not keeping up, so it closes the lap with one reported error and waits
+      // its cadence instead of retrying on every sweep tick. Without `keys` there is no position
+      // to resume from, so it stays an ordinary failure.
+      if (err instanceof PlatformRequestBackpressureError && due.keys) {
+        if (i > 0) {
+          next = due.keys[i - 1]!;
+        } else {
+          pass.errors.push({ entityId, error: err.message });
+          next = null;
+        }
+        break;
+      }
       const code = errorCodeOf(err);
       const reason = (err as { extensions?: { reason?: unknown } }).extensions?.reason;
       if (code === 'not_found' || (code === 'conflict' && (reason === 'purge_not_due' || reason === 'purge_held'))) {
@@ -414,10 +450,12 @@ export async function runPurgePass(
       pass.errors.push({ entityId, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  pass.more = next !== null;
+  pass.lapFailed = pass.more ? 0 : due.lap.failed;
   // A lap that began at the oldest and closes in this pass leaves the cursor NULL, as it found it.
-  if (more || due.lap.after !== null) {
-    const next = due.next ? { after: due.next, failed: due.lap.failed + pass.errors.length } : null;
-    await inScope((sql) => writePurgeLap(sql, operation, next));
+  if (pass.more || due.lap.after !== null) {
+    const resume = next ? { after: next, failed: due.lap.failed + pass.errors.length } : null;
+    await inScope((sql) => writePurgeLap(sql, operation, resume));
   }
   return pass;
 }

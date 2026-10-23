@@ -382,6 +382,7 @@ import {
   lifecycleRefusal,
   purgeHeldBy,
   type PurgeGateFacts,
+  assertPlatformRequestRoom,
   purgeDueOf,
   purgeOnlyKeysOf,
   runPurgePass,
@@ -8548,9 +8549,7 @@ export function defineScopeDO(
                 .toArray()[0] as { c: number }
             ).c,
           );
-          if (pending >= MAX_PENDING_PLATFORM_REQUESTS) {
-            throw new Error(`too many pending platform requests (${pending}); retry once some have drained`);
-          }
+          assertPlatformRequestRoom(pending);
           const id = platformRequestId.parse(ulid());
           const requestedBy = systemActor ?? derivedActor;
           sql.exec(

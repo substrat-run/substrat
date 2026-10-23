@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  MAX_PENDING_PLATFORM_REQUESTS,
   isPlatformRequest,
   moduleId,
   permissionKey,
@@ -101,17 +102,49 @@ export function schedulePlatformRequestsContractSuite(
         await host.admin.activateScope(staff, t, fresh);
         return fresh;
       };
-      /** `names.length` rows, binned and aged past the horizon, so one pass purges them all. */
-      const dueRows = async (fresh: ScopeId, names: string[]): Promise<void> => {
+      /**
+       * `names.length` rows, binned and aged past the horizon, so one pass purges them all. Returns
+       * their ids, oldest first: aged by one minute each, so the purge walk takes them in this order.
+       */
+      const dueRows = async (fresh: ScopeId, names: string[]): Promise<string[]> => {
         const stub = await host.getScope(alice, t, fresh);
-        const at = new Date(Date.now() - (PURGE_REQUEST_DAYS + 1) * DAY).toISOString();
+        const base = Date.now() - (PURGE_REQUEST_DAYS + 1) * DAY;
+        const ids: string[] = [];
         for (const [n, name] of names.entries()) {
-          const id = `row-${n}-${ulid()}`;
+          const id = `row-${String(n).padStart(3, '0')}-${ulid()}`;
+          const at = new Date(base + n * 60_000).toISOString();
           await stub.invoke('purgereq/add', { id, name });
           await stub.invoke('purgereq/trash', { rowId: id });
           await raw!(t, fresh, `INSERT INTO _substrat_state_moves (entity_type, entity_id) VALUES (?, ?)`, ['preq', id]);
           await raw!(t, fresh, `UPDATE purgereq_rows SET _substrat_trashed_at = ? WHERE id = ?`, [at, id]);
           await raw!(t, fresh, `DELETE FROM _substrat_state_moves WHERE entity_type = ? AND entity_id = ?`, ['preq', id]);
+          ids.push(id);
+        }
+        return ids;
+      };
+      /** Which of `ids` the purge deleted: re-adding a row that still exists is refused by its primary key. */
+      const purged = async (fresh: ScopeId, ids: string[]): Promise<string[]> => {
+        const stub = await host.getScope(alice, t, fresh);
+        const out: string[] = [];
+        for (const id of ids) {
+          try {
+            await stub.invoke('purgereq/add', { id, name: 'again' });
+            out.push(id);
+          } catch {
+            // still there
+          }
+        }
+        return out;
+      };
+      /** The row ids the purges requested for, in no particular order. */
+      const requestedRows = async (fresh: ScopeId): Promise<string[]> =>
+        (await host.listPlatformRequestHistory(t, fresh, { kind: PURGE_REQUEST_KIND, limit: 200 }))
+          .filter(isPlatformRequest)
+          .map((r) => (r.payload as { rowId: string }).rowId);
+      /** The platform's drain, as far as a test needs it: every pending request settles `done`. */
+      const drainAll = async (fresh: ScopeId): Promise<void> => {
+        for (const r of (await host.listPlatformRequests(t, fresh)).filter(isPlatformRequest)) {
+          await host.settlePlatformRequest(t, fresh, r.id, { status: 'done' });
         }
       };
       const purgeRequests = async (fresh: ScopeId) =>
@@ -141,6 +174,59 @@ export function schedulePlatformRequestsContractSuite(
         expect(report).toMatchObject({ fired: 1, failed: 0 });
         expect(report.platformRequests).toBeUndefined();
         expect(await purgeRequests(fresh)).toHaveLength(0);
+      });
+
+      // #2506: a batch (PURGE_BATCH, 50) can hold more due entities than the scope's queue has room
+      // for (MAX_PENDING_PLATFORM_REQUESTS, 32). The cap is a "not yet", never a failure of the entity.
+      describe('a batch larger than the pending cap (#2506)', () => {
+        const OVER = MAX_PENDING_PLATFORM_REQUESTS + 8;
+        const names = (n: number, name = 'row') => Array.from({ length: n }, () => name);
+
+        it('stops at the cap without failing, and the next pass after the drain finishes the lap', async () => {
+          const fresh = await freshScope();
+          const ids = await dueRows(fresh, names(OVER));
+          const first = await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+          // The pass filled the queue, purged what fit, and reported no failure: the rest is still due.
+          expect(first).toMatchObject({ fired: 1, failed: 0, errors: [], platformRequests: MAX_PENDING_PLATFORM_REQUESTS });
+          expect(await purgeRequests(fresh)).toHaveLength(MAX_PENDING_PLATFORM_REQUESTS);
+          // Oldest first, and exactly the ones that fit: nothing past the cap was purged.
+          expect(await purged(fresh, ids)).toEqual(ids.slice(0, MAX_PENDING_PLATFORM_REQUESTS));
+          await drainAll(fresh);
+          // The schedule stayed due (no cadence wait), and the lap resumes at the first deferred row.
+          const second = await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+          expect(second).toMatchObject({ fired: 1, failed: 0, errors: [], platformRequests: OVER - MAX_PENDING_PLATFORM_REQUESTS });
+          expect([...(await requestedRows(fresh))].sort()).toEqual([...ids].sort());
+          // The lap closed: every row is gone (the first ones were re-added above; the rest here).
+          expect(await purged(fresh, ids.slice(MAX_PENDING_PLATFORM_REQUESTS))).toEqual(ids.slice(MAX_PENDING_PLATFORM_REQUESTS));
+        });
+
+        it('a pass that cannot purge anything reports the full queue once and waits its cadence', async () => {
+          const fresh = await freshScope();
+          const ids = await dueRows(fresh, names(OVER));
+          await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+          // No drain: the second pass meets a full queue on its very first entity.
+          const stuck = await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+          expect(stuck).toMatchObject({ fired: 0, failed: 1 });
+          expect(stuck.errors).toEqual([
+            { operation: expect.stringContaining('purgereq/purge'), error: expect.stringMatching(/too many pending platform requests \(\d+\)/) },
+          ]);
+          expect(stuck.platformRequests).toBeUndefined();
+          expect(await purgeRequests(fresh)).toHaveLength(MAX_PENDING_PLATFORM_REQUESTS);
+          // Backed off: it does not retry on every sweep tick, and nothing past the cap was lost.
+          await drainAll(fresh);
+          const waiting = await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+          expect(waiting).toMatchObject({ fired: 0, failed: 0 });
+          expect(await purged(fresh, ids.slice(MAX_PENDING_PLATFORM_REQUESTS))).toEqual([]);
+        });
+
+        it('twin: purges that enqueue nothing are not held to the cap, however many are due', async () => {
+          const fresh = await freshScope();
+          const ids = await dueRows(fresh, names(OVER, QUIET_PURGE_ROW));
+          const report = await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+          expect(report).toMatchObject({ fired: 1, failed: 0, errors: [] });
+          expect(report.platformRequests).toBeUndefined();
+          expect(await purged(fresh, ids)).toEqual(ids);
+        });
       });
     });
   });

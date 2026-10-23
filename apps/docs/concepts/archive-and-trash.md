@@ -136,6 +136,14 @@ any other schedule.
 
 Purging is your delete, run on a timer. It is not erasure: the events about the entity stay.
 
+A pass purges at most 50 entities, oldest first, and the next pass carries on from where it
+stopped. If your purge operation calls `ctx.requestPlatform`, the scope's cap on pending requests
+(32) bounds a pass too. The purge that meets a full queue rolls back whole, is not counted as a
+failure, and the pass stops there; once the platform has drained the queue the next pass resumes
+at that entity. A pass that cannot purge even its first entity because the queue is still full
+reports that once and waits for its next cadence window. Have a purge enqueue at most one
+request per entity: a purge that needs several can fail on the last one even though the first fit.
+
 The purge operation is also the entity's permanent delete, so by default a person holding its
 key can empty the bin at any time. If the purge operation must only ever run on what has sat in
 the bin for the whole horizon, declare `trash: { permission, purgeAfterDays, purgeEarly: false }`.
