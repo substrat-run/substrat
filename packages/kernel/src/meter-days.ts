@@ -69,9 +69,12 @@ export const METER_DAYS_DDL = `
 `;
 
 /**
- * How long one snapshot may take before the pass stops waiting and counts the attempt failed. A
- * directory transaction over the fleet answers in well under a second; this is the bound that keeps
- * a stalled one from holding the pass.
+ * How long one snapshot may take before the pass counts the attempt failed. A directory transaction
+ * over the fleet answers in well under a second. The deadline decides what the pass reports, not
+ * when the directory finishes: on the hosted directory the snapshot is one synchronous transaction
+ * in the directory's Durable Object, and the failure record written after the deadline waits behind
+ * it, so the pass is held until it ends. A snapshot that commits late still stands; its attempt has
+ * then been reported as failed once, and the next pass finds the day taken.
  */
 export const METER_SNAPSHOT_TIMEOUT_MS = 30_000;
 

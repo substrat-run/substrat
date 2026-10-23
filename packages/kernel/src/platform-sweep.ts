@@ -833,9 +833,11 @@ export interface RequestRollupSweepReport {
  */
 export interface MeterSnapshotSweepOptions {
   /**
-   * How long the snapshot may take, in ms. Past it the attempt counts as failed and the pass moves
-   * on; a snapshot that commits after that still stands, and the next pass finds the day taken.
-   * Default `METER_SNAPSHOT_TIMEOUT_MS`.
+   * How long the snapshot may take, in ms. Past it the attempt counts as failed. It decides what the
+   * pass reports, not when the directory finishes: on the hosted directory the failure record waits
+   * behind the snapshot's transaction in the same Durable Object, so the pass is held until that
+   * ends. A snapshot that commits late still stands, is reported as failed once, and the next pass
+   * finds the day taken. Default `METER_SNAPSHOT_TIMEOUT_MS`.
    */
   timeoutMs?: number;
   /** How many months of snapshot rows are kept; null keeps them all. Default `BILLING_ROLLUP_RETENTION_MONTHS`. */
