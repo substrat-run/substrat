@@ -2461,7 +2461,9 @@ export function mountPlatformSurface<Env extends object>(
       // is not "nothing written", so it is a 500, which the platform audits as `failed`.
       const message =
         `scope ${body.scopeId}: the owner record names ${body.to}, but the owner role cannot be seated in a person: ` +
-        `${seatRefusal}. Nothing was seated or revoked; abandon the hand-over once it can no longer finish.`;
+        `${seatRefusal}. Nothing was seated or revoked. The hand-over stays open and finishes on a resend once the owner ` +
+        `role can be seated in a person again (a release whose owner role carries no key reserved to a system principal). ` +
+        `It cannot be abandoned while ${body.to} still holds a role here; take that role back first to abandon it.`;
       throw new HTTPException(record.outcome === 'already' ? 409 : 500, { message });
     }
     await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey, 'person');

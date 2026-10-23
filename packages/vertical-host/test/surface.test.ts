@@ -2621,8 +2621,12 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const { error } = (await resend.json()) as { error: string };
     expect(error).toMatch(/the owner record names .*, but the owner role cannot be seated in a person: .*Nothing was seated or revoked/);
     expect(error).not.toMatch(/Nothing was moved/);
+    // It names the ways out that work in this state, not an abandon this state refuses (round 2).
+    expect(error).toMatch(/finishes on a resend once the owner role can be seated in a person again/);
+    expect(error).toMatch(/cannot be abandoned while .* still holds a role here/);
     expect(w.steps).toEqual(['record']);
     expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'pending' } });
+    expect((await send({ ...REF, from: A, to: B, abandon: true })).status).toBe(409); // `healthy`, as the message says
   });
 
   it('a repeat of a finished hand-over is a 200 that seats and revokes nothing', async () => {
