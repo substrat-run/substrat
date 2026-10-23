@@ -517,6 +517,7 @@ import {
   reservedRoleRefusal,
   reservedRoleSetRefusal,
   reservedShapeRefusal,
+  SEAT_HOLDING_SCOPE_STATUSES,
   type DeclaredPermissions,
   type PurgePass,
   type AsyncLinePass,
@@ -11835,7 +11836,8 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     role: RoleDefinition,
   ): Promise<{ reservation: { reserved: string[]; declared: string[] }; seatedInScopes: boolean }> {
-    const scopes = await this.cp.listScopes({ tenantId, status: ['provisioning', 'active', 'suspended'] });
+    // Every scope not reaped (`SEAT_HOLDING_SCOPE_STATUSES`): an archived scope's seats come back on unarchive.
+    const scopes = await this.cp.listScopes({ tenantId, status: [...SEAT_HOLDING_SCOPE_STATUSES] });
     const reservation = { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
     if (scopes.length > 0) {
       const here = await this.scopeStub(scopes[0]!.scope_id as ScopeId).reservationHere();

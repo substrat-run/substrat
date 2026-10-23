@@ -210,6 +210,13 @@ export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostRe
 export const SCOPE_SEATED_ROLES_SQL =
   "SELECT DISTINCT substr(relation, 6) AS role_key FROM _substrat_tuples WHERE relation LIKE 'role:%' AND subject NOT LIKE 'system:%' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)";
 
+/**
+ * #2447: the scope statuses whose seats count as held when a role definition is judged: every one
+ * but `reaped` (whose storage is gone). An archived scope comes back on unarchive with its seats, so
+ * a definition judged without them would relabel those seats; both adapters read this one list.
+ */
+export const SEAT_HOLDING_SCOPE_STATUSES = ['provisioning', 'active', 'suspended', 'archiving', 'archived'] as const;
+
 /** #2447: `SCOPE_SEATED_ROLES_SQL` for a tenant's tenant-level tuples. Parameters: tenantId, now. */
 export const TENANT_SEATED_ROLES_SQL =
   "SELECT DISTINCT substr(relation, 6) AS role_key FROM _substrat_tenant_tuples WHERE tenant_id = ? AND relation LIKE 'role:%' AND subject NOT LIKE 'system:%' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)";

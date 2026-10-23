@@ -604,6 +604,7 @@ export {
   reservedRoleSetRefusal,
   reservedShapeRefusal,
   SCOPE_SEATED_ROLES_SQL,
+  SEAT_HOLDING_SCOPE_STATUSES,
   TENANT_SEATED_ROLES_SQL,
   type DeclaredPermissions,
   type HostReservations,

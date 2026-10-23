@@ -156,6 +156,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2447: the role keys a scope seats anyone but a system principal in — a role set is judged against it.
   'SCOPE_SEATED_ROLES_SQL',
   'SCOPE_STORAGE_DDL',
+  // #2447: the scope statuses whose seats a role definition is judged against, on both adapters.
+  'SEAT_HOLDING_SCOPE_STATUSES',
   'SECURE_DELETE_MIN_SQLITE',
   'SERVES_NOW_CONDITION',
   'SERVES_NOW_PREDICATE',

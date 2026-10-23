@@ -406,6 +406,24 @@ export function reservedRoleContractSuite(
         await host.admin.defineRole(staff, t1, { key: 'ghost', permissions: [RSV_USE], source: 'vertical' });
       });
 
+      it('counts the seats of an archived scope, which unarchive brings back (round 2)', async () => {
+        const shelf = scopeId.parse(ulid());
+        const bob = person();
+        await host.provisionScope(staff, { tenantId: t1, scopeId: shelf, vertical: 'rsv-vertical' });
+        await host.admin.activateScope(staff, t1, shelf);
+        await host.admin.defineRole(staff, t1, { key: 'shelved', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: bob, roleKey: 'shelved', node: { tenantId: t1, scopeId: shelf } });
+        await host.admin.archiveScope(staff, t1, shelf);
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'shelved', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'shelved' is held by someone who is not a system principal/,
+        );
+        await host.admin.unarchiveScope(staff, t1, shelf);
+        expect(await host.listScopeRoleHolders(t1, shelf, bob)).toEqual([{ principal: bob, roleKey: 'shelved' }]);
+        expect(await stored('shelved')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
+      });
+
       it('twin: the same change to a role nobody holds is judged as a first definition, and admitted', async () => {
         await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_USE], source: 'vertical' });
         await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
