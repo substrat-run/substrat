@@ -32,6 +32,7 @@ import {
   REQUEST_ROLLUP_READ_TIMEOUT_MS,
   REQUEST_ROLLUP_RETRY_MS,
   REQUEST_ROLLUP_SETTLE_MS,
+  isRequestRollupSaturated,
   requestRollupDueDays,
   requestRollupHorizon,
   type RequestDayCount,
@@ -777,6 +778,8 @@ export interface RequestRollupSweepReport {
    * the pass its streak began. Cleared by the next read that succeeds.
    */
   repeated: number;
+  /** Days found saturated (`RequestRollupSaturated`): recorded as such, not read again, and not a reason to stop. */
+  saturated: number;
   /** Rows the read days wrote. */
   recorded: number;
   /** Day rows past retention deleted. */
@@ -2883,7 +2886,16 @@ async function sweepRequestRollup(
   rollup: RequestRollupSweepOptions,
   report: PlatformSweepReport,
 ): Promise<RequestRollupSweepReport> {
-  const out: RequestRollupSweepReport = { due: 0, deferred: 0, read: 0, failed: 0, repeated: 0, recorded: 0, pruned: 0 };
+  const out: RequestRollupSweepReport = {
+    due: 0,
+    deferred: 0,
+    read: 0,
+    failed: 0,
+    repeated: 0,
+    saturated: 0,
+    recorded: 0,
+    pruned: 0,
+  };
   const batch = rollup.batch ?? REQUEST_ROLLUP_DAYS_PER_PASS;
   const months = rollup.retentionMonths === undefined ? BILLING_ROLLUP_RETENTION_MONTHS : rollup.retentionMonths;
   const now = rollup.now ?? (() => new Date().toISOString());
@@ -2892,10 +2904,11 @@ async function sweepRequestRollup(
     if (batch > 0) {
       const reads = await admin.listRequestRollupDays!(actor);
       // The error of the newest attempt before this pass, null when it succeeded or none was made.
+      // A saturated day is a state of that day, not a failure of the read, so it is not a streak.
       let previousError: string | null = null;
       let newest = '';
       for (const r of reads) {
-        if (r.attemptedAt > newest) {
+        if (!r.saturated && r.attemptedAt > newest) {
           newest = r.attemptedAt;
           previousError = r.error;
         }
@@ -2913,6 +2926,7 @@ async function sweepRequestRollup(
       out.deferred = due.length - take.length;
       // One day at a time: each is one Analytics Engine query, and the account's query budget
       // is shared with every observability read.
+      const saturated: string[] = [];
       for (const day of take) {
         try {
           const counts = await withinDeadline(
@@ -2925,6 +2939,14 @@ async function sweepRequestRollup(
           previousError = null;
         } catch (err) {
           const error = message(err);
+          if (isRequestRollupSaturated(err)) {
+            // A standing state of this day, not a failed read: kept visible on the day's record,
+            // never read again, and no reason to stop, so the days after it are still rolled up.
+            out.saturated += 1;
+            saturated.push(day);
+            await admin.recordRequestDay!(actor, { day, attemptedAt: now(), error, saturated: true }).catch(() => undefined);
+            continue;
+          }
           out.failed += 1;
           // A standing failure goes into the failure digest when its streak begins, not on every
           // pass it lasts. Its days still record each attempt, so the ledger shows it throughout.
@@ -2937,6 +2959,14 @@ async function sweepRequestRollup(
           // against the account's shared budget: one failure ends the pass's reads.
           break;
         }
+      }
+      // Each saturated day reaches the digest once, on the pass that found it: it is not read again.
+      if (saturated.length > 0) {
+        report.errors.push({
+          kind: 'request-rollup',
+          id: 'saturated',
+          error: `${saturated.length} day(s) hold more groups than one read answers and are kept unread: ${saturated.join(', ')}`,
+        });
       }
     }
     if (typeof admin.pruneRequestDays === 'function') {

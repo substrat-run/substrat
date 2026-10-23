@@ -4,6 +4,7 @@ import { runPlatformSweep, type PlatformSweepOptions, type RequestRollupSweepOpt
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
   REQUEST_ROLLUP_PRUNE_BATCH,
+  RequestRollupSaturated,
   requestRollupDueDays,
   requestRollupHorizon,
   type RequestDayCount,
@@ -24,7 +25,11 @@ const HOUR = 3_600_000;
 const at = (iso: string) => Date.parse(iso);
 
 describe('the days a pass reads', () => {
-  const due = (nowIso: string, reads: { day: string; attemptedAt: string; readAt: string | null }[] = [], horizon: string | null = null) =>
+  const due = (
+    nowIso: string,
+    reads: { day: string; attemptedAt: string; readAt: string | null; saturated?: boolean }[] = [],
+    horizon: string | null = null,
+  ) =>
     requestRollupDueDays({ nowMs: at(nowIso), reads, lookbackDays: 3, settleMs: HOUR, retryMs: HOUR, horizon });
 
   it('reads every closed day in the lookback, oldest first, once it has settled', () => {
@@ -37,6 +42,17 @@ describe('the days a pass reads', () => {
   it('never reads a day again once a read succeeded', () => {
     const reads = [{ day: '2026-10-21', attemptedAt: '2026-10-22T02:00:00.000Z', readAt: '2026-10-22T02:00:00.000Z' }];
     expect(due('2026-10-23T12:00:00.000Z', reads)).toEqual(['2026-10-20', '2026-10-22']);
+  });
+
+  it('never reads a saturated day again, however long ago it was tried', () => {
+    const saturated = [{ day: '2026-10-21', attemptedAt: '2026-10-22T02:00:00.000Z', readAt: null, saturated: true }];
+    expect(due('2026-10-23T12:00:00.000Z', saturated)).toEqual(['2026-10-20', '2026-10-22']);
+    // Its twin: the same attempt, failed but not saturated, is due again.
+    expect(due('2026-10-23T12:00:00.000Z', [{ ...saturated[0]!, saturated: false }])).toEqual([
+      '2026-10-20',
+      '2026-10-21',
+      '2026-10-22',
+    ]);
   });
 
   it('retries a failed day an hour after its last attempt, not before', () => {
@@ -78,6 +94,7 @@ interface ReadRow {
   readAt: string | null;
   rows: number | null;
   error: string | null;
+  saturated: boolean;
 }
 
 /** A directory that keeps the rollup's ledger in memory, as `recordRequestDayRows` would. */
@@ -101,10 +118,24 @@ function rollupHost(opts: { rollup?: boolean; failRecord?: boolean; order?: stri
       recorded.push(input);
       const prior = reads.get(input.day);
       if ('error' in input) {
-        reads.set(input.day, { day: input.day, attemptedAt: input.attemptedAt, readAt: prior?.readAt ?? null, rows: prior?.rows ?? null, error: input.error });
+        reads.set(input.day, {
+          day: input.day,
+          attemptedAt: input.attemptedAt,
+          readAt: prior?.readAt ?? null,
+          rows: prior?.rows ?? null,
+          error: input.error,
+          saturated: input.saturated === true,
+        });
         return { recorded: 0 };
       }
-      reads.set(input.day, { day: input.day, attemptedAt: input.attemptedAt, readAt: input.attemptedAt, rows: input.counts.length, error: null });
+      reads.set(input.day, {
+        day: input.day,
+        attemptedAt: input.attemptedAt,
+        readAt: input.attemptedAt,
+        rows: input.counts.length,
+        error: null,
+        saturated: false,
+      });
       return { recorded: input.counts.length };
     };
     admin.pruneRequestDays = async (_a: unknown, limit: number, months: number | null) => {
@@ -141,7 +172,7 @@ describe('the request-rollup phase', () => {
 
     const first = await sweep(host, options);
     expect(asked).toEqual(['2026-10-19', '2026-10-20']);
-    expect(first.requestRollup).toEqual({ due: 4, deferred: 2, read: 2, failed: 0, repeated: 0, recorded: 2, pruned: 0 });
+    expect(first.requestRollup).toEqual({ due: 4, deferred: 2, read: 2, failed: 0, repeated: 0, saturated: 0, recorded: 2, pruned: 0 });
     expect(first.errors).toEqual([]);
 
     const second = await sweep(host, options);
@@ -221,6 +252,52 @@ describe('the request-rollup phase', () => {
     const again = await sweep(host, { read, now: () => at(13) });
     expect(again.errors).toEqual([{ kind: 'request-rollup', id: expect.any(String), error: expect.stringMatching(/HTTP 403/) }]);
     expect(again.requestRollup).toMatchObject({ failed: 1, repeated: 0 });
+  });
+
+  it('records a saturated day as such and goes on: it never freezes the days after it, and is not read again', async () => {
+    const { host, reads } = rollupHost();
+    const asked: string[] = [];
+    const read = async (day: string) => {
+      asked.push(day);
+      if (day === '2026-10-20' || day === '2026-10-21') throw new RequestRollupSaturated(`more than 50000 groups for ${day}`);
+      return [count(1)];
+    };
+    const at = (pass: number) => new Date(Date.parse(NOW) + pass * 2 * 3_600_000).toISOString();
+
+    const first = await sweep(host, { read, lookbackDays: 4, now: () => at(0) });
+    // Both saturated days are passed over, and the days around them are rolled up.
+    expect(asked).toEqual(['2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22']);
+    expect(first.requestRollup).toMatchObject({ read: 2, failed: 0, saturated: 2 });
+    // Visible: on each day's record, and in the digest once, as one entry for the pass.
+    expect(reads.get('2026-10-20')).toMatchObject({ readAt: null, saturated: true, error: expect.stringMatching(/more than 50000/) });
+    expect(first.errors).toEqual([
+      {
+        kind: 'request-rollup',
+        id: 'saturated',
+        error: '2 day(s) hold more groups than one read answers and are kept unread: 2026-10-20, 2026-10-21',
+      },
+    ]);
+
+    // Two hours on, long past the retry: the saturated days are not asked again, the new day is.
+    const next = await sweep(host, { read, lookbackDays: 4, now: () => at(12) });
+    expect(asked.slice(4)).toEqual(['2026-10-23']);
+    expect(next.errors).toEqual([]);
+  });
+
+  it('does not count a saturated day as the streak of an ordinary failure', async () => {
+    const { host } = rollupHost();
+    const read = async (day: string) => {
+      if (day === '2026-10-21') throw new RequestRollupSaturated('more than 50000 groups');
+      throw new Error('HTTP 403');
+    };
+    const at = (pass: number) => new Date(Date.parse(NOW) + pass * 15 * 60_000).toISOString();
+    // Pass one: the 403 starts a streak and is reported.
+    expect((await sweep(host, { read, lookbackDays: 3, now: () => at(0) })).errors).toHaveLength(1);
+    // Pass two finds the saturated day before the 403 again: the saturation is reported, and the
+    // 403 is still the same streak, so it is not.
+    const second = await sweep(host, { read, lookbackDays: 3, now: () => at(1) });
+    expect(second.errors.map((e) => e.id)).toEqual(['saturated']);
+    expect(second.requestRollup).toMatchObject({ saturated: 1, failed: 1, repeated: 1 });
   });
 
   it('reports a different failure as a new streak', async () => {

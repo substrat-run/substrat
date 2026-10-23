@@ -993,6 +993,7 @@ export {
   REQUEST_ROLLUP_DDL,
   REQUEST_ROLLUP_LIMIT_DEFAULT,
   REQUEST_ROLLUP_LIMIT_MAX,
+  RequestRollupSaturated,
   listRequestDayRows,
   listRequestRollupDayRows,
   pruneRequestDayRows,

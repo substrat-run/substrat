@@ -10977,7 +10977,7 @@ export function scopeHostContractSuite(
           [a.tenant, 41],
         ]);
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
-          { day, attemptedAt: at(day, '23:30:00'), readAt: at(day, '23:30:00'), rows: 1, error: null },
+          { day, attemptedAt: at(day, '23:30:00'), readAt: at(day, '23:30:00'), rows: 1, error: null, saturated: false },
         ]);
         // K-24: both reads are attributable.
         const reads = await host.admin.accessLog(staff, { method: 'listRequestDays' });
@@ -10992,7 +10992,7 @@ export function scopeHostContractSuite(
           recorded: 0,
         });
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
-          { day, attemptedAt: at(day, '01:00:00'), readAt: null, rows: null, error: 'HTTP 503' },
+          { day, attemptedAt: at(day, '01:00:00'), readAt: null, rows: null, error: 'HTTP 503', saturated: false },
         ]);
         expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([]);
 
@@ -11005,9 +11005,37 @@ export function scopeHostContractSuite(
         // A later failure records the attempt and leaves the day's rows and its successful read.
         await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '03:00:00'), error: 'HTTP 503' });
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
-          { day, attemptedAt: at(day, '03:00:00'), readAt: at(day, '02:00:00'), rows: 1, error: 'HTTP 503' },
+          { day, attemptedAt: at(day, '03:00:00'), readAt: at(day, '02:00:00'), rows: 1, error: 'HTTP 503', saturated: false },
         ]);
         expect((await host.admin.listRequestDays!(staff, { since: day, until: day })).map((r) => r.requests)).toEqual([9]);
+      });
+
+      it('records a saturated day as a standing state on its record, and a later read clears it', async () => {
+        const day = dayAgo(8);
+        const t = ids();
+        await host.admin.recordRequestDay!(staff, {
+          day,
+          attemptedAt: at(day, '01:00:00'),
+          error: 'more than 50000 groups',
+          saturated: true,
+        });
+        expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
+          { day, attemptedAt: at(day, '01:00:00'), readAt: null, rows: null, error: 'more than 50000 groups', saturated: true },
+        ]);
+        // Its twin: an ordinary failure of the same day is not saturated.
+        await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '02:00:00'), error: 'HTTP 503' });
+        expect((await host.admin.listRequestRollupDays!(staff, { since: day, until: day }))[0]).toMatchObject({ saturated: false });
+        await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '03:00:00'), error: 'too many', saturated: true });
+        await host.admin.recordRequestDay!(staff, {
+          day,
+          attemptedAt: at(day, '04:00:00'),
+          counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 2, sampled: false }],
+        });
+        expect((await host.admin.listRequestRollupDays!(staff, { since: day, until: day }))[0]).toMatchObject({
+          readAt: at(day, '04:00:00'),
+          error: null,
+          saturated: false,
+        });
       });
 
       it('refuses a malformed count whole, writing none of the day; the same day well formed is written', async () => {

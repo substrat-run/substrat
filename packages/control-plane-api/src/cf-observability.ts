@@ -5,7 +5,7 @@ import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
 import { FIELD_COVERAGE_ID_FIELD, ROUTER_REQUEST_POINT, ROUTER_SCRIPT_NAMES, utcDay } from '@substrat-run/contracts';
-import type { RequestDayCount } from '@substrat-run/kernel';
+import { RequestRollupSaturated, type RequestDayCount } from '@substrat-run/kernel';
 import { readFieldCoverage } from './field-coverage-read.js';
 import type {
   ObservabilityReader,
@@ -2005,8 +2005,9 @@ async function analyticsEngineQuery(
 
 /**
  * The most rows one day's rollup query may answer (#2501): one per (tenant, vertical, scope) that
- * served a request that day. A full answer may be a prefix of the day, so the read refuses it
- * rather than letting the rollup keep part of a day as the whole.
+ * served a request that day. A day with more is refused as `RequestRollupSaturated`, never kept as
+ * a part of the day standing for the whole. The rollup records such a day as saturated and goes on
+ * with the days after it; reading it would need a paged read, which this is not yet.
  */
 export const REQUEST_ROLLUP_ROW_LIMIT = 50_000;
 
@@ -2049,12 +2050,14 @@ export function createRouterRequestDayReader(opts: {
         AND timestamp < toDateTime(${from + 86_400})
       GROUP BY tenantId, vertical, scopeId
       ORDER BY tenantId, vertical, scopeId
-      LIMIT ${REQUEST_ROLLUP_ROW_LIMIT}
+      LIMIT ${REQUEST_ROLLUP_ROW_LIMIT + 1}
       FORMAT JSON`;
     const rows = await analyticsEngineQuery(opts, sql);
-    if (rows.length >= REQUEST_ROLLUP_ROW_LIMIT) {
-      throw new Error(
-        `Cloudflare Analytics Engine request rollup saturated at ${REQUEST_ROLLUP_ROW_LIMIT} rows for ${day}: the counts would be partial`,
+    // One row past the ceiling says the day holds more than one answer carries. An answer of
+    // exactly the ceiling is the whole day.
+    if (rows.length > REQUEST_ROLLUP_ROW_LIMIT) {
+      throw new RequestRollupSaturated(
+        `Cloudflare Analytics Engine request rollup holds more than ${REQUEST_ROLLUP_ROW_LIMIT} groups for ${day}: the counts would be partial`,
       );
     }
     return rows.map((r) => ({

@@ -154,19 +154,27 @@ describe('the request rollup reader (#2501)', () => {
     expect(sqls[0]).not.toMatch(/count\(/i);
   });
 
-  it('refuses a saturated answer rather than handing back part of the day', async () => {
-    const full = Array.from({ length: REQUEST_ROLLUP_ROW_LIMIT }, (_, i) => ({
+  it('refuses a day with more groups than one answer carries, as saturated, rather than handing back part of it', async () => {
+    const over = Array.from({ length: REQUEST_ROLLUP_ROW_LIMIT + 1 }, (_, i) => ({
       tenantId: A,
       vertical: 'acme-crm',
       scopeId: String(i),
       requests: '1',
       maxInterval: 1,
     }));
-    analyticsEngine(() => [], () => full);
-    await expect(reader()('2026-10-21')).rejects.toThrow(/saturated at 50000 rows for 2026-10-21/);
-    // Its positive twin: one row fewer is a whole day, and every row of it comes back.
-    analyticsEngine(() => [], () => full.slice(1));
-    await expect(reader()('2026-10-21')).resolves.toHaveLength(REQUEST_ROLLUP_ROW_LIMIT - 1);
+    const sqls = analyticsEngine(() => [], () => over);
+    const refused = await reader()('2026-10-21').then(
+      () => null,
+      (e: unknown) => e as Error & { saturated?: boolean },
+    );
+    expect(refused?.message).toMatch(/more than 50000 groups for 2026-10-21/);
+    // Saturated, not an ordinary failure: the sweep records the day as such and goes on.
+    expect(refused?.saturated).toBe(true);
+    // One row past the ceiling is asked for, so the ceiling itself is not mistaken for saturation.
+    expect(sqls[0]).toContain(`LIMIT ${REQUEST_ROLLUP_ROW_LIMIT + 1}`);
+    // Its positive twin: an answer of exactly the ceiling is the whole day, and all of it comes back.
+    analyticsEngine(() => [], () => over.slice(1));
+    await expect(reader()('2026-10-21')).resolves.toHaveLength(REQUEST_ROLLUP_ROW_LIMIT);
   });
 
   it('throws on a failed query, a day that is not a day, and a dataset that is not a bare name', async () => {
@@ -244,9 +252,9 @@ describe('the rollup end to end, and GET /meters/requests (#2501)', () => {
       ].sort((x, y) => (x.day + x.tenantId < y.day + y.tenantId ? -1 : 1)),
       // The first day had no traffic, and says so by being read with no rows.
       days: [
-        { day: '2026-10-20', attemptedAt: NOW, readAt: NOW, rows: 0, error: null },
-        { day: '2026-10-21', attemptedAt: NOW, readAt: NOW, rows: 1, error: null },
-        { day: '2026-10-22', attemptedAt: NOW, readAt: NOW, rows: 2, error: null },
+        { day: '2026-10-20', attemptedAt: NOW, readAt: NOW, rows: 0, error: null, saturated: false },
+        { day: '2026-10-21', attemptedAt: NOW, readAt: NOW, rows: 1, error: null, saturated: false },
+        { day: '2026-10-22', attemptedAt: NOW, readAt: NOW, rows: 2, error: null, saturated: false },
       ],
     });
   });

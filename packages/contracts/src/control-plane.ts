@@ -1944,6 +1944,11 @@ export const requestRollupDay = z.object({
   rows: z.number().int().nonnegative().nullable(),
   /** Why the last attempt failed; null when it succeeded. */
   error: z.string().nullable(),
+  /**
+   * The day held more (tenant, vertical, scope) groups than one read may answer, so no read of it
+   * is complete. A standing state: the day is not read again, and the days after it are.
+   */
+  saturated: z.boolean(),
 });
 export type RequestRollupDay = z.infer<typeof requestRollupDay>;
 

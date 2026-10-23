@@ -46,9 +46,26 @@ export const REQUEST_ROLLUP_DDL = `
     attempted_at TEXT NOT NULL,
     read_at TEXT,
     row_count INTEGER,
-    error TEXT
+    error TEXT,
+    saturated INTEGER NOT NULL DEFAULT 0
   );
 `;
+
+/**
+ * What a reader throws when a day holds more (tenant, vertical, scope) groups than one query may
+ * answer: the answer would be part of the day, so it is refused. A saturated day is a standing
+ * state rather than a failure. It is recorded as such (`saturated` on the day's record), is not
+ * read again, and does not end the pass's reads, so the days after it are still rolled up.
+ * Recognised by its `saturated` flag rather than `instanceof`, so a copy of the kernel bundled
+ * elsewhere still matches.
+ */
+export class RequestRollupSaturated extends Error {
+  readonly saturated = true as const;
+}
+
+/** Whether `err` is a `RequestRollupSaturated`. */
+export const isRequestRollupSaturated = (err: unknown): boolean =>
+  typeof err === 'object' && err !== null && (err as { saturated?: unknown }).saturated === true;
 
 /**
  * How many days back the rollup reaches: inside Analytics Engine's three months, with a margin,
@@ -91,10 +108,13 @@ export interface RequestDayCount {
   sampled: boolean;
 }
 
-/** One attempt to roll up a day: what was read, or why the read failed. Exactly one of the two. */
+/**
+ * One attempt to roll up a day: what was read, or why the read failed. Exactly one of the two.
+ * `saturated` marks a failure as the day holding more groups than a read may answer.
+ */
 export type RequestDayReadInput =
   | { day: string; attemptedAt: string; counts: readonly RequestDayCount[] }
-  | { day: string; attemptedAt: string; error: string };
+  | { day: string; attemptedAt: string; error: string; saturated?: boolean };
 
 /** Filter for `listRequestDays`: inclusive UTC days, at most `limit` rows, ordered by (day, tenant, vertical, scope). */
 export interface RequestDayFilter {
@@ -136,10 +156,11 @@ export function recordRequestDayRows(sql: RedactionSql, input: RequestDayReadInp
   const attemptedAt = new Date(input.attemptedAt).toISOString();
   if ('error' in input) {
     sql(
-      `INSERT INTO _substrat_request_day_reads (day, attempted_at, read_at, row_count, error)
-       VALUES (?, ?, NULL, NULL, ?)
-       ON CONFLICT (day) DO UPDATE SET attempted_at = excluded.attempted_at, error = excluded.error`,
-      [day, attemptedAt, input.error || 'the read failed'],
+      `INSERT INTO _substrat_request_day_reads (day, attempted_at, read_at, row_count, error, saturated)
+       VALUES (?, ?, NULL, NULL, ?, ?)
+       ON CONFLICT (day) DO UPDATE SET
+         attempted_at = excluded.attempted_at, error = excluded.error, saturated = excluded.saturated`,
+      [day, attemptedAt, input.error || 'the read failed', input.saturated ? 1 : 0],
     );
     return 0;
   }
@@ -168,10 +189,11 @@ export function recordRequestDayRows(sql: RedactionSql, input: RequestDayReadInp
   }
   const written = (sql('SELECT COUNT(*) AS n FROM _substrat_request_days WHERE day = ?', [day]) as { n: number }[])[0]?.n ?? 0;
   sql(
-    `INSERT INTO _substrat_request_day_reads (day, attempted_at, read_at, row_count, error)
-     VALUES (?, ?, ?, ?, NULL)
+    `INSERT INTO _substrat_request_day_reads (day, attempted_at, read_at, row_count, error, saturated)
+     VALUES (?, ?, ?, ?, NULL, 0)
      ON CONFLICT (day) DO UPDATE SET
-       attempted_at = excluded.attempted_at, read_at = excluded.read_at, row_count = excluded.row_count, error = NULL`,
+       attempted_at = excluded.attempted_at, read_at = excluded.read_at, row_count = excluded.row_count,
+       error = NULL, saturated = 0`,
     [day, attemptedAt, attemptedAt, written],
   );
   return written;
@@ -244,13 +266,27 @@ export function listRequestRollupDayRows(sql: RedactionSql, filter: RequestRollu
     params.push(assertDay('until', filter.until));
   }
   const rows = sql(
-    `SELECT day, attempted_at, read_at, row_count, error FROM _substrat_request_day_reads
+    `SELECT day, attempted_at, read_at, row_count, error, saturated FROM _substrat_request_day_reads
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY day`,
     params,
-  ) as { day: string; attempted_at: string; read_at: string | null; row_count: number | null; error: string | null }[];
+  ) as {
+    day: string;
+    attempted_at: string;
+    read_at: string | null;
+    row_count: number | null;
+    error: string | null;
+    saturated: number;
+  }[];
   return rows.map((r) =>
-    requestRollupDay.parse({ day: r.day, attemptedAt: r.attempted_at, readAt: r.read_at, rows: r.row_count, error: r.error }),
+    requestRollupDay.parse({
+      day: r.day,
+      attemptedAt: r.attempted_at,
+      readAt: r.read_at,
+      rows: r.row_count,
+      error: r.error,
+      saturated: r.saturated === 1,
+    }),
   );
 }
 
@@ -287,14 +323,14 @@ export function pruneRequestDayRows(sql: RedactionSql, nowMs: number, limit: num
 
 /**
  * The days the rollup should read now, oldest first: every day from `lookbackDays` ago to the
- * last day that ended at least `settleMs` ago, without a successful read, and either never tried
- * or last tried at least `retryMs` ago. A day before `horizon` (the retention's first kept day)
+ * last day that ended at least `settleMs` ago, without a successful read, not saturated, and either
+ * never tried or last tried at least `retryMs` ago. A day before `horizon` (the retention's first kept day)
  * is not read, so a prune and a rollup never take turns on the same day. Oldest first, because the
  * oldest day is the next one Analytics Engine ages out.
  */
 export function requestRollupDueDays(input: {
   nowMs: number;
-  reads: readonly { day: string; attemptedAt: string; readAt: string | null }[];
+  reads: readonly { day: string; attemptedAt: string; readAt: string | null; saturated?: boolean }[];
   lookbackDays: number;
   settleMs: number;
   retryMs: number;
@@ -310,6 +346,9 @@ export function requestRollupDueDays(input: {
     const day = utcDayOf(ms);
     const read = byDay.get(day);
     if (read?.readAt) continue;
+    // Saturated is a standing state: the day's group count will not shrink, so reading it again
+    // would spend a query on the same refusal.
+    if (read?.saturated) continue;
     if (read && read.attemptedAt > retryBefore) continue;
     due.push(day);
   }
