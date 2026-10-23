@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-118 decisions · 63 plan · 55 kernel
+120 decisions · 63 plan · 57 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -130,3 +130,5 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-53](decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md) | 2026-10-15 | kernel | A tenant-level store is a named instance that a tenant's verticals connect to explicitly <br>*amends K-49* | #2207, #2303 |
 | [K-54](decisions/K-054-a-mutation-can-mint-a-single-use-upload-link-that-takes-a-file-with-no-session.md) | 2026-10-16 | kernel | A mutation can mint a single-use upload link that takes a file with no session | #2311, #2323, #2314, #2315 |
 | [K-55](decisions/K-055-a-platform-host-s-standing-principal-holds-a-system-only-key-through-a-role-declared-holder-system.md) | 2026-10-18 | kernel | A platform host's standing principal holds a system-only key through a role declared holder: system <br>*awaiting ratification* | #2283 |
+| [K-56](decisions/K-056-a-runtime-installed-extension-acts-only-as-a-capability-the-vertical-mints-for-it.md) | 2026-10-23 | kernel | A runtime-installed extension acts only as a capability the vertical mints for it | #1671, #1672 |
+| [K-57](decisions/K-057-a-semantic-index-is-scope-local-a-semantic-read-is-declared-eventual-an-external-index-only-as-a-store-driver.md) | 2026-10-23 | kernel | A semantic index is scope-local; a semantic read is declared eventual; an external index only as a scope-store driver | #1576 |
