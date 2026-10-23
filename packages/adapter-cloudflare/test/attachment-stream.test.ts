@@ -135,7 +135,9 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
     expect(head?.size).toBe(CHUNKS * MiB);
     expect(head?.httpMetadata?.contentType).toBe('application/pdf');
     expect((await att.list(item)).map((r) => r.id)).toEqual([rec.id]);
-  });
+    // Moving and hashing 144 MiB through the local R2 takes seconds, past the 5 s default on a
+    // loaded CI runner; the time is the body's size, not a hang, so it gets its own allowance.
+  }, 120_000);
 
   it('the positive twin: a buffer of the same bytes gets the same witness, through the same bucket', async () => {
     const CHUNKS = 4;
@@ -150,7 +152,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
     expect(streamed.size).toBe(buffered.size);
     const opened = await att.open(streamed.id);
     expect(opened!.body.byteLength).toBe(CHUNKS * MiB);
-  });
+  }, 30_000);
 
   it('a stream carrying more than it declared lands no object and no row', async () => {
     const { host, t, s, editor } = await world(2 * MiB);
