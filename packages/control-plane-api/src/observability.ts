@@ -81,6 +81,9 @@ export interface RecentLogs {
    * `true` when the read stopped before it could tell that no line the window holds is missing
    * from `events` (a backend bound on its queries was reached), so a short page is not "the window
    * held no more". `false` means `events` is the newest of the window, up to `limit`.
+   * An incomplete answer is not guaranteed to be a prefix of the window: it means only that there
+   * may be more or newer lines, since a service the read stopped on can hold lines newer than some
+   * it returned.
    */
   incomplete: boolean;
 }
