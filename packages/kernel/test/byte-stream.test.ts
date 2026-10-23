@@ -268,6 +268,9 @@ describe('globalFetch with a sized stream body (#2498)', () => {
       expect(s.seen[0]!.headers['transfer-encoding']).toBeUndefined();
       expect(s.seen[0]!.headers['x-a']).toBe('b');
       expect({ sha256: s.seen[0]!.sha256, size: s.seen[0]!.size }).toEqual(expected(64));
+      // The response's body is there as a stream, the seam's `ConnectorResponse.body`.
+      expect(res.body).toBeTruthy();
+      expect(await drain(res.body!)).toEqual({ sha256: createHash('sha256').update('ok').digest('hex'), size: 2 });
     } finally {
       await s.close();
     }
