@@ -61,7 +61,7 @@ import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 
 import type { ClientProvisionScopeInput, RebindReview } from '@substrat-run/control-plane-client';
 import type { DoNamespaceRecord } from './do-namespaces.js';
-import { LOGS_INCOMPLETE_HEADER, type ConnectorCallsBucket } from './observability.js';
+import { logsIncompleteOf, type ConnectorCallsBucket } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 
@@ -755,7 +755,7 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
     const res = await this.send(`/observability/logs${query({ ...q })}`);
     return {
       events: (await res.json()) as RecentLogEvent[],
-      incomplete: res.headers.get(LOGS_INCOMPLETE_HEADER) === '1',
+      incomplete: logsIncompleteOf(res.headers),
     };
   };
   /** The bare list of `recentLogsRead`, for a caller that does not render `incomplete`. */

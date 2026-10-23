@@ -92,6 +92,13 @@ export interface RecentLogs {
 export const LOGS_INCOMPLETE_HEADER = 'x-substrat-logs-incomplete';
 
 /**
+ * Whether a response's headers say the list behind its body is `incomplete` (#2520): the header
+ * is present with the value `1`. Any other value is not the plane saying so. One reading, for the
+ * staff client, the dashboard's authority and the dashboard's web client alike.
+ */
+export const logsIncompleteOf = (headers: Headers): boolean => headers.get(LOGS_INCOMPLETE_HEADER) === '1';
+
+/**
  * One destination a service was OBSERVED reaching (#859, D-46).
  *
  * The counterpart to a version's DECLARED `substrat.outbound`: the declaration says

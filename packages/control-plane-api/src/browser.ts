@@ -37,7 +37,7 @@ export type {
 // #2192: one reading of a request line's outbound calls, for the control plane's request list
 // and the dashboard's slide-over alike. `observability.ts` imports nothing.
 // #2520: and the header the logs read sets when its page may be incomplete, which a browser client reads.
-export { LOGS_INCOMPLETE_HEADER, outboundCallsOf } from './observability.js';
+export { LOGS_INCOMPLETE_HEADER, logsIncompleteOf, outboundCallsOf } from './observability.js';
 export type { OutboundCall } from './observability.js';
 // The client package's whole surface, so a caller of either entry reaches it from here and
 // no existing import moved (#971). `test/reexports.test.ts` pins that nothing is missing.

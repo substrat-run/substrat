@@ -1,6 +1,6 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
-import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api/browser';
+import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
 import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
@@ -1650,7 +1650,7 @@ async function observabilityLogsRead(
   const { body, headers } = await callWithHeaders<ObservabilityLogEvent[]>(
     `/teams/${encodeURIComponent(teamId)}/observability/logs?${p.toString()}`,
   );
-  return { events: body, incomplete: headers.get(LOGS_INCOMPLETE_HEADER) === '1' };
+  return { events: body, incomplete: logsIncompleteOf(headers) };
 }
 
 /** One provider's routes on one app, or one connection's when a fleet row is addressed. */
