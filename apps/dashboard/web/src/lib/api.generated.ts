@@ -130,6 +130,15 @@ export interface DeploymentRow {
   channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[];
 }
 
+/** `explanationView` — a published schema, not a stored row. */
+export interface ExplanationView {
+  available: boolean;
+  reason: string | null;
+  disclosure: { vendor: string; location: string; sent: string } | null;
+  explanation: { text: string; provenance: { writtenAt: string; model: string; since: string; until: string; sources: ({ kind: "finding" | "ops-failures" | "sweep-runs" | "deploy" | "lifecycle-flow"; count: number | null; href: string | null })[]; summary: string }; writtenAt: string; current: boolean } | null;
+  budget: { person: { used: number; limit: number }; team: { used: number; limit: number } } | null;
+}
+
 /** `failureGroupRow` — a published schema, not a stored row. */
 export interface FailureGroupRow {
   fingerprint: string;
@@ -451,6 +460,20 @@ export interface DashboardClient {
   getDeploymentTraffic(input: { slug: string; hours?: number }): Promise<TrafficSeries>;
 
   /**
+   * The newest AI explanation of one of this team's findings, and today's budget
+   *
+   * `GET /findings/{id}/explanation` — `dashboard/get-finding-explanation`
+   */
+  getFindingExplanation(input: { id: string }): Promise<ExplanationView>;
+
+  /**
+   * The newest AI note under one app's process map, and today's budget
+   *
+   * `GET /apps/{scopeId}/processes/note` — `dashboard/get-process-note`
+   */
+  getProcessNote(input: { scopeId: string; entity: string; period: "24h" | "7d" | "30d" }): Promise<ExplanationView>;
+
+  /**
    * What promoting a version to prod would change in the permission surface and the SQL, read before the acknowledgement is given
    *
    * `GET /deployments/{slug}/promote-review` — `dashboard/get-promotion-review`
@@ -729,6 +752,20 @@ export interface DashboardClient {
    * `POST /domains/{hostname}/verify` — `dashboard/verify-domain`
    */
   verifyDomain(input: { hostname: string }): Promise<{ hostname: string; status: string; statusNote?: string | null; validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[] }>;
+
+  /**
+   * Write an AI explanation of one of this team's findings from its evidence
+   *
+   * `POST /findings/{id}/explanation` — `dashboard/write-finding-explanation`
+   */
+  writeFindingExplanation(input: { id: string }): Promise<ExplanationView>;
+
+  /**
+   * Write an AI note under one app's process map from its replayed counts
+   *
+   * `POST /apps/{scopeId}/processes/note` — `dashboard/write-process-note`
+   */
+  writeProcessNote(input: { scopeId: string; entity: string; period: "24h" | "7d" | "30d" }): Promise<ExplanationView>;
 }
 
 /**
@@ -832,6 +869,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/releases`, "GET", undefined, omit(input, ["slug"])),
     getDeploymentTraffic: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/traffic`, "GET", undefined, omit(input, ["slug"])),
+    getFindingExplanation: (input: Args) =>
+      send(`/findings/${encodeURIComponent(String(input.id))}/explanation`, "GET", undefined, omit(input, ["id"])),
+    getProcessNote: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/processes/note`, "GET", undefined, omit(input, ["scopeId"])),
     getPromotionReview: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/promote-review`, "GET", undefined, omit(input, ["slug"])),
     installApp: (input: Args) =>
@@ -912,5 +953,9 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/observability/tenant-metrics-series", "GET", undefined, input),
     verifyDomain: (input: Args) =>
       send(`/domains/${encodeURIComponent(String(input.hostname))}/verify`, "POST", omit(input, ["hostname"]), undefined),
+    writeFindingExplanation: (input: Args) =>
+      send(`/findings/${encodeURIComponent(String(input.id))}/explanation`, "POST", omit(input, ["id"]), undefined),
+    writeProcessNote: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/processes/note`, "POST", omit(input, ["scopeId"]), undefined),
   } as unknown as DashboardClient;
 }

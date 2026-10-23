@@ -64,3 +64,41 @@ export const memberRow = z.object({
   invited_at: z.string(),
   joined_at: z.string().nullable(),
 });
+
+/**
+ * Where an AI-written text came from (#1749): computed by the dashboard from the records it
+ * read, never by the model. The page renders it under the text, so a reader checks the
+ * paragraph against the sources rather than taking it on trust.
+ */
+export const explanationSource = z.object({
+  kind: z.enum(['finding', 'ops-failures', 'sweep-runs', 'deploy', 'lifecycle-flow']),
+  /** Records read from it, where it is a list; null for a single record. */
+  count: z.number().int().nonnegative().nullable(),
+  /** A page inside the team where the source is read, or null where there is none. */
+  href: z.string().nullable(),
+});
+
+export const explanationProvenance = z.object({
+  writtenAt: z.string(),
+  /** `provider/modelId`: what wrote the paragraph. */
+  model: z.string(),
+  /** The window the records were read over. */
+  since: z.string(),
+  until: z.string(),
+  sources: z.array(explanationSource),
+  /** "212 failure records, 2 versions": the counts the provenance line leads with. */
+  summary: z.string(),
+});
+
+/** One AI-written text as the team's scope files it: what it says, about what, and from which facts. */
+export const explanationRow = z.object({
+  id: z.string(),
+  /** `finding:<id>` or `process:<scopeId>:<entity>:<period>`. */
+  subject: z.string(),
+  /** The digest of the facts it was written from; a different digest now means newer data. */
+  digest: z.string(),
+  text: z.string(),
+  provenance: explanationProvenance,
+  written_by: z.string(),
+  written_at: z.string(),
+});

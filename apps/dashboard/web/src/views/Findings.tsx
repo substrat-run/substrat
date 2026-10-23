@@ -3,6 +3,7 @@ import { Badge, Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
 import { ApiError, type FindingEntry, type FindingRuleEntry } from '../lib/api.generated';
 import { relativeTime, untilTime } from '../lib/format';
 import { card } from '../components/ui';
+import { AiText } from '../components/AiText';
 import {
   EXPIRY_CHOICES,
   FINDING_TABS,
@@ -230,6 +231,7 @@ export function Findings({
               busy={busy.has(f.id)}
               onMove={(to) => void move(f, to)}
               onSuppress={() => { setActionError(''); setSuppressing(f); }}
+              client={client}
             />
           ))
         )}
@@ -301,14 +303,20 @@ function FindingRow({
   busy,
   onMove,
   onSuppress,
+  client,
 }: {
   f: FindingEntry;
   canManage: boolean;
   busy: boolean;
   onMove: (to: FindingMove) => void;
   onSuppress: () => void;
+  client: FindingsClient;
 }) {
   const moves = movesFrom(f.status);
+  // #1749: closed until asked, so a page of findings reads no evidence it does not show.
+  const [explaining, setExplaining] = useState(false);
+  const loadExplanation = useCallback(() => client.getFindingExplanation({ id: f.id }), [client, f.id]);
+  const writeExplanation = useCallback(() => client.writeFindingExplanation({ id: f.id }), [client, f.id]);
   return (
     <div
       role="group"
@@ -335,6 +343,12 @@ function FindingRow({
         {f.status === 'suppressed' && f.ruleId && (
           <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Held by a suppress rule; revoke the rule below to let it open again.</div>
         )}
+        <div>
+          <Button variant="ghost" size="sm" onClick={() => setExplaining((x) => !x)}>
+            {explaining ? 'Hide AI explanation' : 'AI explanation'}
+          </Button>
+        </div>
+        {explaining && <AiText load={loadExplanation} write={writeExplanation} writeLabel="Explain this finding" />}
       </div>
       {canManage && (moves.length > 0 || canSuppress(f.status)) && (
         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>

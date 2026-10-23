@@ -294,6 +294,32 @@ The list is paged by status. A partial or cut list is labelled as such, so a cou
 loaded rows is not presented as the team's total. A platform that cannot provide Findings
 shows an unavailable state, rather than an empty inbox.
 
+### AI explanations and process notes {#ai-explanations}
+
+A finding can be explained in a few sentences: open **AI explanation** on its row and choose
+**Explain this finding**. The process map has the same thing under its diagram, **AI note**,
+which describes where records go and wait in the period shown. Every paragraph a model wrote
+carries an **AI** marker and a provenance line, for example *Written 15:58 from 212 failure
+records, 2 versions · 3 sources*. The dashboard counts that line from the records it read, not
+the model, and each source links to the page where you can check it.
+
+Nothing is sent until you choose to write. Opening the block only reads the text already filed
+for that finding or map, so loading a page costs nothing. When the evidence has moved since a
+text was written (a new occurrence, a changed count), the text is marked as written against
+older data and offers **Rewrite**.
+
+What reaches the model is a fixed list of fields: the finding's kind, severity, codes, counts,
+timestamps, versions and likely cause; for a failure, who refused it and up to three error
+messages; for a process map, its counts and declared state names. Error messages pass a
+redaction step first, which removes what looks like a key, a token, a password, a URL's
+credentials, an email address or a phone number. Tenant, scope and person ids are never sent,
+and neither are the ids of the records in a state. The block names the provider beside the
+button. The platform pays for these calls, so each person can write 20 a day and each team 100,
+counted in UTC days. Texts are kept for 90 days.
+
+Whether a deployment offers this is the `AI_EXPLANATIONS` setting. It is on in the test
+environment.
+
 ## Status
 
 Built and connected — self-service sign-up bootstraps a tenant, the catalog offers real

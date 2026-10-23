@@ -464,7 +464,9 @@ describe('Findings view', () => {
 
   it('offers a suppressed finding no move', async () => {
     await mount(fake(entries), 'suppressed');
-    expect(row('s').querySelectorAll('button')).toHaveLength(0);
+    // The AI explanation toggle (#1749) reads; it is not a move.
+    const moves = [...row('s').querySelectorAll('button')].filter((b) => b.textContent?.trim() !== 'AI explanation');
+    expect(moves).toHaveLength(0);
   });
 
   it('draws no actions when the caller may not manage — and the twin draws them', async () => {

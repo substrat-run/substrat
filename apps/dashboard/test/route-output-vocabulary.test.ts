@@ -15,6 +15,8 @@ import { dashboardRoutes } from '../src/routes.js';
  */
 const OWN_APP_ROW = 'an app row of the dashboard scope’s own table';
 const ACK = 'a literal the handler writes itself';
+const EXPLANATION_SOURCE = 'the source kinds `explain.ts` writes into the provenance it computes, filed in the team’s own scope (#1749)';
+
 const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/list-apps entries[].status': OWN_APP_ROW,
   'dashboard/install-app status': OWN_APP_ROW,
@@ -32,6 +34,10 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/get-deployment-traffic markers[].kind': 'derived in this worker from the push and go-live instants',
   'dashboard/business-volumes apps[].unavailable': 'the worker’s own labels for absent versions, moves or a supported read',
   'dashboard/move-scopes refusal.reason': 'read from the plane’s refusal by `rebindReviewReasonIn`, which drops a reason it does not know',
+  'dashboard/get-finding-explanation explanation.provenance.sources[].kind': EXPLANATION_SOURCE,
+  'dashboard/write-finding-explanation explanation.provenance.sources[].kind': EXPLANATION_SOURCE,
+  'dashboard/get-process-note explanation.provenance.sources[].kind': EXPLANATION_SOURCE,
+  'dashboard/write-process-note explanation.provenance.sources[].kind': EXPLANATION_SOURCE,
 };
 
 interface Def {

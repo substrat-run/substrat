@@ -150,6 +150,18 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     await call(own, 'dashboard/restore-connect-link', { linkId: link.id });
     await call(own, 'dashboard/revoke-connect-link', { linkId: link.id });
 
+    // -- AI-written text (#1749)
+    await call(own, 'dashboard/explanation-budget');
+    await call(own, 'dashboard/record-explanation', {
+      subject: 'finding:one',
+      digest: 'a'.repeat(64),
+      text: 'Written.',
+      provenance: { writtenAt: '2026-10-23T00:00:00.000Z', model: 'm', since: 's', until: 'u', sources: [{ kind: 'finding', count: null, href: null }], summary: '1 failure record' },
+      model: 'cloudflare:@cf/x',
+      usage: { inputTokens: 1, outputTokens: 1, listUsd: null },
+    });
+    await call(own, 'dashboard/get-explanation', { subject: 'finding:one' });
+
     // -- last, since they empty the roster
     await call(own, 'dashboard/delete-team');
     await call(own, 'dashboard/leave-self');
