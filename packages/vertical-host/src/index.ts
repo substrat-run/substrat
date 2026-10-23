@@ -2422,9 +2422,14 @@ export function mountPlatformSurface<Env extends object>(
     // an open hand-over first so a refusal names the real state; a refusal writes nothing.
     // #2447: the successor is a person, so the owner role is seated through the person's door — asked
     // before the record moves, so a refusal (a role carrying a key reserved to a system principal)
-    // writes nothing and the owner of record stays who it was.
+    // writes nothing and the owner of record stays who it was. A 409, the status the platform audits
+    // as "refused, nothing written". When the record already names `to` (a finished hand-over's
+    // repeat, or a resend of an open one), the record's own answer decides first, below.
     const seatRefusal = (await host.scopeRoleRefusal?.(body.scopeId, deps.ownerRoleKey, 'person')) ?? null;
-    if (seatRefusal) return refuseStatus(c, 403, `scope ${body.scopeId}: the owner role cannot be handed to a person: ${seatRefusal}. Nothing was moved.`);
+    const recorded = seatRefusal && deps.resolveOwner ? await deps.resolveOwner(c.env, ref) : null;
+    if (seatRefusal && recorded !== body.to) {
+      throw new HTTPException(409, { message: `scope ${body.scopeId}: the owner role cannot be handed to a person: ${seatRefusal}. Nothing was moved.` });
+    }
     const toHoldsRole = await host.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to);
     const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, { ...pair, toHoldsRole }));
     if (record.outcome === 'refused') {
@@ -2437,6 +2442,15 @@ export function mountPlatformSurface<Env extends object>(
     }
     const answer = { scopeId: body.scopeId, from: body.from, owner: body.to, outcome: record.outcome };
     if (record.outcome === 'done') return c.json({ ...answer, fromRevoked: false } satisfies OwnerTransferResult);
+    if (seatRefusal) {
+      // The record names `to` already and the seat is refused, so nothing more is written. An open
+      // hand-over's resend is a refusal (409); a record this call moved (a race with the read above)
+      // is not "nothing written", so it is a 500, which the platform audits as `failed`.
+      const message =
+        `scope ${body.scopeId}: the owner record names ${body.to}, but the owner role cannot be seated in a person: ` +
+        `${seatRefusal}. Nothing was seated or revoked; abandon the hand-over once it can no longer finish.`;
+      throw new HTTPException(record.outcome === 'already' ? 409 : 500, { message });
+    }
     await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey, 'person');
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
     if (!(await deps.completeOwnerTransfer(c.env, ref, pair))) {
