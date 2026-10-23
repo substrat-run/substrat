@@ -169,21 +169,43 @@ export function witnessedStream(body: SizedByteStream, digest: IncrementalSha256
 /** The runtime's fixed-length stream, where it has one (workerd). */
 type FixedLengthStreamCtor = new (length: number) => { readable: unknown; writable: unknown };
 
+/** The runtime's own `FixedLengthStream`, where it has one (workerd). */
+function fixedLengthStream(): FixedLengthStreamCtor | undefined {
+  return (globalThis as { FixedLengthStream?: FixedLengthStreamCtor }).FixedLengthStream;
+}
+
 /**
- * `body` as the runtime takes a stream of known length, plus the request fields a `fetch` needs
- * with it. On workerd that is a `FixedLengthStream`, which a `fetch` sends with a
- * `Content-Length` rather than chunked, and which R2's `put` accepts (it refuses a stream of
- * unknown length). Elsewhere (Node's fetch) it is the stream itself with `duplex: 'half'` and the
- * length as a header. Either way the declared length is held: a stream that carries more or
- * fewer bytes errors the request or the write.
+ * `body` as a stream of known length that the runtime takes, held to its declared length: a
+ * stream that carries more or fewer bytes errors whatever reads it. On workerd that is a
+ * `FixedLengthStream`, which a `fetch` sends with a `Content-Length` rather than chunked and
+ * which R2's `put` accepts (it refuses a stream of unknown length); the runtime enforces the
+ * length there, so a web stream is piped straight in. Elsewhere it is the stream passed through
+ * a relay that enforces the length.
  */
-export function knownLengthBody(body: SizedByteStream): {
-  body: unknown;
-  headers: Record<string, string>;
-  duplex?: 'half';
-} {
-  const stream = relay(body.stream, body.length) as unknown as { pipeThrough(pair: unknown): unknown };
-  const Fixed = (globalThis as { FixedLengthStream?: FixedLengthStreamCtor }).FixedLengthStream;
-  if (Fixed) return { body: stream.pipeThrough(new Fixed(body.length)), headers: {} };
-  return { body: stream, headers: { 'content-length': String(body.length) }, duplex: 'half' };
+export function knownLengthStream(body: SizedByteStream): ByteStream {
+  const Fixed = fixedLengthStream();
+  if (!Fixed) return relay(body.stream, body.length);
+  assertDeclaredLength(body.length);
+  const piped = body.stream as unknown as { pipeThrough?: (pair: unknown) => ByteStream };
+  const source = typeof piped.pipeThrough === 'function' ? piped : (relay(body.stream, body.length) as unknown as typeof piped);
+  return source.pipeThrough!(new Fixed(body.length));
+}
+
+/**
+ * A request init whose body is a sized stream, as the runtime's `fetch` takes it: the body
+ * as {@link knownLengthStream}, and off workerd the `Content-Length` header and `duplex: 'half'`
+ * a streamed request body needs there. `globalFetch` sends through it; a `FetchLike` of its own
+ * passes its init through it too.
+ */
+export function knownLengthInit<Init extends { headers?: Record<string, string>; body: SizedByteStream }>(
+  init: Init,
+): Omit<Init, 'body'> & { body: ByteStream; headers: Record<string, string>; duplex?: 'half' } {
+  const length = init.body.length;
+  const onWorkerd = fixedLengthStream() !== undefined;
+  return {
+    ...init,
+    body: knownLengthStream(init.body),
+    headers: { ...init.headers, ...(onWorkerd ? {} : { 'content-length': String(length) }) },
+    ...(onWorkerd ? {} : { duplex: 'half' as const }),
+  };
 }

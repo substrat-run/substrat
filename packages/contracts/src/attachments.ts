@@ -47,6 +47,8 @@ export type AttachmentRecord = z.infer<typeof attachmentRecord>;
  * writes a byte, and a streamed body's `size` and `sha256` are known only once it has been read.
  */
 export const attachmentRecordFields = attachmentRecord.omit({ size: true, sha256: true });
+/** The fields as a caller hands them over, before they are judged. */
+export type AttachmentRecordFields = z.input<typeof attachmentRecordFields>;
 
 /**
  * The spine events attachment mutations emit (#473) — kernel-emitted, fat payload (the

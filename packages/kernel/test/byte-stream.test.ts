@@ -6,11 +6,11 @@ import {
   attachmentSha256,
   globalFetch,
   isSizedByteStream,
-  knownLengthBody,
+  knownLengthInit,
+  knownLengthStream,
   putAttachmentBytes,
-  type ByteBody,
+  type ByteStream,
   type IncrementalSha256,
-  type SizedByteStream,
   type TenantBlobStore,
 } from '../src/index.js';
 import { witnessedStream } from '../src/byte-stream.js';
@@ -32,7 +32,7 @@ interface Flow {
   maxLead: number;
 }
 
-/** `chunks` chunks, each made only when asked for, plus `extra` bytes the length does not count. */
+/** `chunks` chunks, each made only when asked for, measuring the lead over `flow.consumed`. */
 function producer(chunks: number) {
   const flow: Flow = { produced: 0, consumed: 0, maxLead: 0 };
   let i = 0;
@@ -57,7 +57,7 @@ function producer(chunks: number) {
  * pulls ahead of its reader (an unbounded queue) builds a lead the bound can see. In memory with
  * no yield, an eager producer and its reader keep pace and no queue ever forms.
  */
-async function drain(stream: { getReader(): ReadableStreamDefaultReader<Uint8Array> } | SizedByteStream['stream'], flow?: Flow) {
+async function drain(stream: ByteStream, flow?: Flow) {
   const reader = stream.getReader();
   const hash = createHash('sha256');
   let size = 0;
@@ -79,6 +79,17 @@ const expected = (chunks: number) => {
   const hash = createHash('sha256');
   for (let i = 0; i < chunks; i++) hash.update(chunkOf(i));
   return { sha256: hash.digest('hex'), size: chunks * CHUNK };
+};
+
+/** The fields of the record an upload makes, as an adapter hands them over. */
+const FIELDS = {
+  id: 'att1',
+  entity: { entityType: 'doc', entityId: 'd1' },
+  filename: 'drawing-set.pdf',
+  contentType: 'application/pdf',
+  visibility: 'internal' as const,
+  createdBy: 'p1',
+  createdAt: '2026-10-23T00:00:00.000Z',
 };
 
 const nodeSha256 = (): IncrementalSha256 => {
@@ -158,8 +169,8 @@ describe('putAttachmentBytes (#2498)', () => {
   it('a stream reaches the store as it is read, and the witness is what the store read', async () => {
     const { flow, stream } = producer(64);
     const { store, objects } = memoryStore(flow);
-    const witness = await putAttachmentBytes(store, 'k', { stream, length: 64 * CHUNK }, 'application/pdf', nodeSha256);
-    expect(witness).toEqual(expected(64));
+    const record = await putAttachmentBytes(store, 'k', FIELDS, { stream, length: 64 * CHUNK }, nodeSha256);
+    expect(record).toEqual({ ...FIELDS, ...expected(64) });
     expect(objects.get('k')).toEqual({ ...expected(64), streamed: true });
     expect(flow.maxLead).toBeLessThanOrEqual(2 * CHUNK);
   });
@@ -167,8 +178,8 @@ describe('putAttachmentBytes (#2498)', () => {
   it('the positive twin: a buffer is hashed, then written whole, as before', async () => {
     const { store, objects } = memoryStore();
     const body = new TextEncoder().encode('the sealed pdf bytes');
-    const witness = await putAttachmentBytes(store, 'k', body, 'application/pdf', nodeSha256);
-    expect(witness).toEqual({ sha256: await attachmentSha256(body), size: body.byteLength });
+    const record = await putAttachmentBytes(store, 'k', FIELDS, body, nodeSha256);
+    expect(record).toEqual({ ...FIELDS, sha256: await attachmentSha256(body), size: body.byteLength });
     expect(objects.get('k')?.streamed).toBe(false);
   });
 
@@ -177,7 +188,7 @@ describe('putAttachmentBytes (#2498)', () => {
     store.put = async () => {};
     const { stream } = producer(2);
     await expect(
-      putAttachmentBytes(store, 'k', { stream, length: 2 * CHUNK }, 'application/pdf', nodeSha256),
+      putAttachmentBytes(store, 'k', FIELDS, { stream, length: 2 * CHUNK }, nodeSha256),
     ).rejects.toThrow(/not read to its end/);
     expect(deleted).toEqual(['k']);
   });
@@ -191,32 +202,44 @@ describe('putAttachmentBytes (#2498)', () => {
     };
     const { stream } = producer(2);
     await expect(
-      putAttachmentBytes(store, 'k', { stream, length: 2 * CHUNK }, 'application/pdf', nodeSha256),
+      putAttachmentBytes(store, 'k', FIELDS, { stream, length: 2 * CHUNK }, nodeSha256),
     ).rejects.toThrow(/after commit/);
     expect(deleted).toEqual(['k']);
     expect(objects.has('k')).toBe(false);
+  });
+
+  it('fields a record cannot have are refused before a byte is read', async () => {
+    const { flow, stream } = producer(2);
+    const { store, objects } = memoryStore(flow);
+    await expect(
+      putAttachmentBytes(store, 'k', { ...FIELDS, filename: '' }, { stream, length: 2 * CHUNK }, nodeSha256),
+    ).rejects.toThrow();
+    expect(flow.produced).toBe(0);
+    expect(objects.size).toBe(0);
   });
 
   it('a stream carrying another length than it declared is refused by the store write', async () => {
     const { store } = memoryStore();
     const { stream } = producer(3);
     await expect(
-      putAttachmentBytes(store, 'k', { stream, length: 2 * CHUNK }, 'application/pdf', nodeSha256),
+      putAttachmentBytes(store, 'k', FIELDS, { stream, length: 2 * CHUNK }, nodeSha256),
     ).rejects.toThrow(/more than/);
   });
 });
 
-describe('knownLengthBody (#2498)', () => {
+describe('knownLengthStream and knownLengthInit (#2498)', () => {
   afterEach(() => {
     delete (globalThis as { FixedLengthStream?: unknown }).FixedLengthStream;
   });
 
-  it("off workerd: the stream itself, half-duplex, with the length as Content-Length", async () => {
+  it('off workerd: the stream held to its length, half-duplex, with the length as Content-Length', async () => {
     const { stream } = producer(2);
-    const sent = knownLengthBody({ stream, length: 2 * CHUNK });
-    expect(sent.headers).toEqual({ 'content-length': String(2 * CHUNK) });
+    const sent = knownLengthInit({ method: 'PUT', headers: { 'x-a': 'b' }, body: { stream, length: 2 * CHUNK } });
+    expect(sent.method).toBe('PUT');
+    expect(sent.headers).toEqual({ 'x-a': 'b', 'content-length': String(2 * CHUNK) });
     expect(sent.duplex).toBe('half');
-    expect(await drain(sent.body as ReadableStream<Uint8Array>)).toEqual(expected(2));
+    expect(await drain(sent.body)).toEqual(expected(2));
+    await expect(drain(knownLengthStream({ stream: producer(3).stream, length: 2 * CHUNK }))).rejects.toThrow(/more than/);
   });
 
   it("on workerd: piped through the runtime's FixedLengthStream at the declared length", async () => {
@@ -228,11 +251,11 @@ describe('knownLengthBody (#2498)', () => {
       }
     };
     const { stream } = producer(2);
-    const sent = knownLengthBody({ stream, length: 2 * CHUNK });
+    const sent = knownLengthInit({ headers: { 'x-a': 'b' }, body: { stream, length: 2 * CHUNK } });
     expect(lengths).toEqual([2 * CHUNK]);
-    expect(sent.headers).toEqual({});
+    expect(sent.headers).toEqual({ 'x-a': 'b' });
     expect(sent.duplex).toBeUndefined();
-    expect(await drain(sent.body as ReadableStream<Uint8Array>)).toEqual(expected(2));
+    expect(await drain(sent.body)).toEqual(expected(2));
   });
 });
 
@@ -279,7 +302,7 @@ describe('globalFetch with a sized stream body (#2498)', () => {
   it('the positive twin: a string or byte body goes to the runtime untouched', async () => {
     const s = await server();
     try {
-      const bytes: ByteBody = new TextEncoder().encode('plain bytes');
+      const bytes = new TextEncoder().encode('plain bytes');
       await globalFetch(s.url, { method: 'POST', body: 'a string body' });
       await globalFetch(s.url, { method: 'POST', body: bytes });
       expect(s.seen.map((r) => r.size)).toEqual([13, 11]);

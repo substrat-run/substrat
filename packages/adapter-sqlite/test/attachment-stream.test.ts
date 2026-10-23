@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  moduleManifest,
   permissionKey,
   platformActorId,
   principalId,
@@ -13,6 +12,7 @@ import {
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { isSizedByteStream, ulid, webCryptoSecretBox, type SizedByteStream, type TenantBlobStore } from '@substrat-run/kernel';
+import { permMod } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -29,29 +29,9 @@ describe('streamed attachment upload (pure adapter)', () => {
     dir = undefined;
   });
 
-  const DOC_READ = permissionKey.parse('doc:read');
-  const DOC_WRITE = permissionKey.parse('doc:write');
-  const docMod = {
-    manifest: moduleManifest.parse({
-      id: '@test/doc',
-      version: '1.0.0',
-      kernelContract: '^0.0.1',
-      permissions: [
-        { key: 'doc:read', description: 'read a doc and its attachments' },
-        { key: 'doc:write', description: 'attach to / detach from a doc' },
-      ],
-      events: {
-        emits: [
-          { type: 'attachment.added', schemaVersion: 1 },
-          { type: 'attachment.removed', schemaVersion: 1 },
-        ],
-        consumes: [],
-      },
-      migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
-      attachmentTargets: [{ entityType: 'doc', readPermission: 'doc:read', writePermission: 'doc:write' }],
-      entitlementKey: 'doc',
-    }),
-  };
+  // The baked-in `permMod`'s attachment target on `item` (read=perm:read, write=perm:use).
+  const PERM_READ = permissionKey.parse('perm:read');
+  const PERM_USE = permissionKey.parse('perm:use');
 
   const CHUNK = 64 * 1024;
   const chunkOf = (i: number): Uint8Array => new Uint8Array(CHUNK).fill(i % 251);
@@ -105,18 +85,18 @@ describe('streamed attachment upload (pure adapter)', () => {
       secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(5)),
       wrapBlobStore: slowReader,
     });
-    host.registerModule(docMod);
+    host.registerModule(permMod);
     const staff = platformActorId.parse(ulid());
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());
     const editor: PrincipalId = principalId.parse(ulid());
     const reader: PrincipalId = principalId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
-    await host.admin.grantEntitlement(staff, t, 'doc');
+    await host.admin.grantEntitlement(staff, t, 'perm');
     await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
     await host.admin.activateScope(staff, t, s);
-    await host.admin.defineRole(staff, t, { key: 'editor', permissions: [DOC_READ, DOC_WRITE], source: 'vertical' });
-    await host.admin.defineRole(staff, t, { key: 'viewer', permissions: [DOC_READ], source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'editor', permissions: [PERM_READ, PERM_USE], source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'viewer', permissions: [PERM_READ], source: 'vertical' });
     await host.admin.assignRole(staff, { principalId: editor, roleKey: 'editor', node: { tenantId: t, scopeId: s } });
     await host.admin.assignRole(staff, { principalId: reader, roleKey: 'viewer', node: { tenantId: t, scopeId: s } });
     await host.provisionBlobStore(staff, { tenantId: t, vertical: 'docs', binding: 'ATTACHMENTS' });
@@ -127,9 +107,9 @@ describe('streamed attachment upload (pure adapter)', () => {
   const objectFiles = (): string[] =>
     (readdirSync(dir!, { recursive: true }) as string[]).filter((f) => f.includes('/att/') && !f.endsWith('.meta'));
 
-  const doc = { entityType: 'doc', entityId: 'd1' };
+  const item = { entityType: 'item', entityId: 'i1' };
   const upload = (body: Uint8Array | SizedByteStream) => ({
-    entity: doc,
+    entity: item,
     filename: 'drawing-set.pdf',
     contentType: 'application/pdf',
     visibility: 'internal' as const,
@@ -152,14 +132,14 @@ describe('streamed attachment upload (pure adapter)', () => {
 
     const opened = await att.open(streamed.id);
     expect(Buffer.from(opened!.body).equals(Buffer.from(whole))).toBe(true);
-    expect((await att.list(doc)).map((r) => r.id).sort()).toEqual([streamed.id, buffered.id].sort());
+    expect((await att.list(item)).map((r) => r.id).sort()).toEqual([streamed.id, buffered.id].sort());
   });
 
   it('a stream carrying more than it declared lands no object and no row', async () => {
     const { host, t, s, editor } = await world();
     const att = await host.attachments(editor, t, s);
     await expect(att.upload(upload({ stream: producer(3), length: 2 * CHUNK }))).rejects.toThrow(/more than/);
-    expect(await att.list(doc)).toEqual([]);
+    expect(await att.list(item)).toEqual([]);
     expect(objectFiles()).toEqual([]);
   });
 
@@ -167,7 +147,7 @@ describe('streamed attachment upload (pure adapter)', () => {
     const { host, t, s, editor } = await world();
     const att = await host.attachments(editor, t, s);
     await expect(att.upload(upload({ stream: producer(2), length: 3 * CHUNK }))).rejects.toThrow(/ended after/);
-    expect(await att.list(doc)).toEqual([]);
+    expect(await att.list(item)).toEqual([]);
     expect(objectFiles()).toEqual([]);
   });
 

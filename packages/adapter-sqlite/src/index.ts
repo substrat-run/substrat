@@ -19,8 +19,6 @@ import {
   modelUsageEntry,
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
-  attachmentRecord,
-  attachmentRecordFields,
   type AttachmentRecord,
   type UploadLinkPolicy,
   type UploadLinkView,
@@ -334,6 +332,7 @@ import {
   attachmentBlobKey,
   attachmentSha256,
   isSizedByteStream,
+  knownLengthStream,
   putAttachmentBytes,
   type IncrementalSha256,
   type SizedByteStream,
@@ -893,9 +892,13 @@ function nodeSha256(): IncrementalSha256 {
   };
 }
 
-/** Write a sized stream to `path` one chunk at a time (#2498), so the file is never held whole. */
+/**
+ * Write a sized stream to `path` one chunk at a time (#2498), so the file is never held whole,
+ * held to its declared length as the store contract says: a stream that carries more or fewer
+ * bytes leaves no file.
+ */
 async function writeStreamToFile(path: string, body: SizedByteStream): Promise<void> {
-  const reader = body.stream.getReader();
+  const reader = knownLengthStream(body).getReader();
   const fd = openSync(path, 'w');
   try {
     for (;;) {
@@ -904,11 +907,11 @@ async function writeStreamToFile(path: string, body: SizedByteStream): Promise<v
       if (value) writeSync(fd, value);
     }
   } catch (err) {
-    closeSync(fd);
     rmSync(path, { force: true });
     throw err;
+  } finally {
+    closeSync(fd);
   }
-  closeSync(fd);
 }
 
 function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
@@ -4055,14 +4058,11 @@ export class SqliteScopeHost implements ScopeHost {
           createdBy: creator.id,
           createdAt: new Date().toISOString(),
         };
-        // Judged before a byte moves, so a record this surface would refuse lands no object.
-        attachmentRecordFields.parse(fields);
         // Bytes first, row second: a crash between the two leaves an orphaned object that no
         // row points at (#2314). A refused check compensates the object away below; a drain
         // fault after the commit is not a refusal (`serialized` keeps it from becoming one).
         // A streamed body is hashed and counted as it is written (#2498).
-        const witness = await putAttachmentBytes(store, key, input.body, input.contentType, nodeSha256);
-        const record = attachmentRecord.parse({ ...fields, ...witness });
+        const record = await putAttachmentBytes(store, key, fields, input.body, nodeSha256);
         try {
           return await guarded('attachments.upload', async (ctx) => {
             assertAllowed(await ctx.check(gate.write, input.entity));

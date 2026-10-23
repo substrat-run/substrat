@@ -401,7 +401,8 @@ export const INDEX_VALUE_EXPORTS = [
   'jobRunOf',
   'kernelJobFor',
   // #2498: a sized stream as the runtime's fetch and R2 take it; the R2 store and the vertical client use it.
-  'knownLengthBody',
+  'knownLengthInit',
+  'knownLengthStream',
   'legacyStoreDriverConflict',
   'legacyStoreDriverRenames',
   'licensedOrphanIds',

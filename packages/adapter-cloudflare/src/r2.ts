@@ -1,7 +1,7 @@
 import {
   globalFetch,
   isSizedByteStream,
-  knownLengthBody,
+  knownLengthStream,
   type ConnectorResponse,
   type FetchLike,
   type IncrementalSha256,
@@ -187,7 +187,7 @@ export function r2TenantBlobStore(bucket: unknown): TenantBlobStore {
   return {
     put: async (key, body, opts) => {
       // #2498: a stream goes in as it is read, at the length it declared.
-      const value = isSizedByteStream(body) ? (knownLengthBody(body).body as ReadableStream) : body;
+      const value = isSizedByteStream(body) ? (knownLengthStream(body) as unknown as ReadableStream) : body;
       await r2.put(key, value, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
     },
     get: async (key) => {

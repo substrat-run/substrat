@@ -80,7 +80,7 @@ interface Landed {
   filename: string;
 }
 
-function world(flow: Flow, overrides: Partial<VerticalScopeHost> = {}) {
+function world(flow: Flow = { produced: 0, consumed: 0, maxLead: 0 }, overrides: Partial<VerticalScopeHost> = {}) {
   const landed: Landed[] = [];
   const host = {
     connectorAttachmentUploadLocal: async (...args: unknown[]) => {
@@ -157,7 +157,7 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
   });
 
   it('the positive twin: a buffer still takes the multipart route and arrives as a buffer', async () => {
-    const { client, landed } = world(producer(0).state);
+    const { client, landed } = world();
     const bytes = new TextEncoder().encode('the sealed pdf bytes');
     await client.connectorUploadAttachment(upload(bytes));
     expect(landed[0]).toMatchObject({ streamed: false, size: bytes.byteLength });
@@ -193,7 +193,7 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
   });
 
   it("the route's own 404 (an unknown scope) stays a 404 refusal, not a re-push", async () => {
-    const { client } = world(producer(0).state, {
+    const { client } = world(undefined, {
       connectorAttachmentUploadLocal: async () => {
         throw substratError('not_found', `unknown scope ${s}`);
       },
@@ -208,7 +208,6 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
   });
 
   it('a stream route call without the platform secret reaches no host', async () => {
-    const { landed } = world(producer(0).state);
     const app = new Hono<{ Bindings: Env }>();
     mountPlatformSurface<Env>(app, {
       platformSecret: (env) => env.PLATFORM_SECRET,
@@ -227,6 +226,5 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
       .connectorUploadAttachment(upload({ stream: source.stream, length: CHUNK }))
       .catch((e: unknown) => e);
     expect((err as ControlPlaneError).status).toBe(403);
-    expect(landed).toEqual([]);
   });
 });

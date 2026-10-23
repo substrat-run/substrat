@@ -4,7 +4,7 @@ import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '
 import { attachmentBlobKey, ulid, webCryptoSecretBox, type SizedByteStream } from '@substrat-run/kernel';
 import { permMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from './test-host.js';
-import type { R2BlobStores } from '../src/r2.js';
+import { workerdSha256, type R2BlobStores } from '../src/r2.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
@@ -46,12 +46,11 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
     );
   };
 
+  /** The sha256 of the generated body, through the same running digest the host uses. */
   async function sha256Of(chunks: number): Promise<string> {
-    const digest = new crypto.DigestStream('SHA-256');
-    const writer = digest.getWriter();
-    for (let i = 0; i < chunks; i++) await writer.write(chunkOf(i));
-    await writer.close();
-    return [...new Uint8Array(await digest.digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const digest = workerdSha256();
+    for (let i = 0; i < chunks; i++) await digest.update(chunkOf(i));
+    return digest.hex();
   }
 
   /**
@@ -59,7 +58,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
    * over is known-length; once it passes the counter it is not, so it is given its length again
    * (`declared`), as the host did.
    */
-  const countingBucket = (declared: () => number) => ({
+  const countingBucket = (declared: number) => ({
     put: (key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView, options?: R2PutOptions) => {
       if (!(value instanceof ReadableStream)) return env.STREAM_BUCKET.put(key, value, options);
       const counted = value.pipeThrough(
@@ -70,7 +69,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
           },
         }),
       );
-      return env.STREAM_BUCKET.put(key, counted.pipeThrough(new FixedLengthStream(declared())), options);
+      return env.STREAM_BUCKET.put(key, counted.pipeThrough(new FixedLengthStream(declared)), options);
     },
     get: (key: string) => env.STREAM_BUCKET.get(key),
     head: (key: string) => env.STREAM_BUCKET.head(key),
@@ -80,7 +79,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
 
   const fakeR2: R2BlobStores = { create: async (name) => name, remove: async () => {} };
 
-  const world = async (declared: () => number) => {
+  const world = async (declared: number) => {
     Object.assign(flow, { produced: 0, reached: 0, maxLead: 0 });
     const host = new CloudflareScopeHost({
       scope: env.SCOPE,
@@ -122,7 +121,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
 
   it('lands a 144 MiB body as it is read, witnessed by sha256 and size, never held whole', async () => {
     const CHUNKS = 144;
-    const { host, t, s, editor } = await world(() => CHUNKS * MiB);
+    const { host, t, s, editor } = await world(CHUNKS * MiB);
     const att = await host.attachments(editor, t, s);
     const rec = await att.upload(upload({ stream: producer(CHUNKS), length: CHUNKS * MiB }));
 
@@ -140,7 +139,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
 
   it('the positive twin: a buffer of the same bytes gets the same witness, through the same bucket', async () => {
     const CHUNKS = 4;
-    const { host, t, s, editor } = await world(() => CHUNKS * MiB);
+    const { host, t, s, editor } = await world(CHUNKS * MiB);
     const att = await host.attachments(editor, t, s);
     const whole = new Uint8Array(CHUNKS * MiB);
     for (let i = 0; i < CHUNKS; i++) whole.set(chunkOf(i), i * MiB);
@@ -154,7 +153,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
   });
 
   it('a stream carrying more than it declared lands no object and no row', async () => {
-    const { host, t, s, editor } = await world(() => 2 * MiB);
+    const { host, t, s, editor } = await world(2 * MiB);
     const att = await host.attachments(editor, t, s);
     await expect(att.upload(upload({ stream: producer(3), length: 2 * MiB }))).rejects.toThrow();
     expect(await att.list(item)).toEqual([]);
@@ -165,7 +164,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
   // the stream it is reading errors. It is that service's, not this worker's: the rejection setup
   // file does not count it, and it is logged with the bucket put going straight to R2 too.
   it('a stream ending short of what it declared lands no object and no row', async () => {
-    const { host, t, s, editor } = await world(() => 2 * MiB);
+    const { host, t, s, editor } = await world(2 * MiB);
     const att = await host.attachments(editor, t, s);
     await expect(att.upload(upload({ stream: producer(1), length: 2 * MiB }))).rejects.toThrow();
     expect(await att.list(item)).toEqual([]);
@@ -173,7 +172,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
   });
 
   it('a refused write lands the object first, then deletes it', async () => {
-    const { host, t, s, reader } = await world(() => 2 * MiB);
+    const { host, t, s, reader } = await world(2 * MiB);
     const att = await host.attachments(reader, t, s);
     await expect(att.upload(upload({ stream: producer(2), length: 2 * MiB }))).rejects.toThrow();
     expect(flow.reached).toBe(2 * MiB);

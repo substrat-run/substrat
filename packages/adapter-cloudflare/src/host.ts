@@ -49,8 +49,6 @@ import {
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunsPayload,
   modelUsageEntry,
-  attachmentRecord,
-  attachmentRecordFields,
   type AttachmentRecord,
   type UploadLinkView,
   type BlobStoreHandle,
@@ -4734,22 +4732,17 @@ export class CloudflareScopeHost implements ScopeHost {
       const filename = view.filename ?? input.filename;
       // Recorded as it is judged: the essence, never a parameter or a stray space.
       const contentType = normalizeUploadMediaType(input.contentType);
-      const record = attachmentRecord.parse({
-        id,
-        entity: view.entity,
-        filename,
-        contentType,
-        size: input.body.byteLength,
-        sha256: await attachmentSha256(input.body),
-        visibility: view.visibility,
-        createdBy: mintedBy,
-        createdAt: new Date().toISOString(),
-      });
       // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
       // someone else spent first) compensates the object away, and the link is unspent with it.
       // A lost reply keeps the bytes (`compensatingRefusal`), and a retry carrying the same
       // `Idempotency-Key` is answered as a replay (#2315).
-      await store.put(key, input.body, { contentType });
+      const record = await putAttachmentBytes(
+        store,
+        key,
+        { id, entity: view.entity, filename, contentType, visibility: view.visibility, createdBy: mintedBy, createdAt: new Date().toISOString() },
+        input.body,
+        workerdSha256,
+      );
       return unwrapReply(await compensatingRefusal(store, key, () =>
         stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId, input.idempotencyKey),
       ));
@@ -4935,13 +4928,10 @@ export class CloudflareScopeHost implements ScopeHost {
           createdBy,
           createdAt: new Date().toISOString(),
         };
-        // Judged before a byte moves, so a record this surface would refuse lands no object.
-        attachmentRecordFields.parse(fields);
         // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
         // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
         // A streamed body is hashed and counted as R2 reads it (#2498).
-        const witness = await putAttachmentBytes(store, key, input.body, input.contentType, workerdSha256);
-        const record = attachmentRecord.parse({ ...fields, ...witness });
+        const record = await putAttachmentBytes(store, key, fields, input.body, workerdSha256);
         return unwrapReply(await compensatingRefusal(store, key, () =>
           stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
         ));

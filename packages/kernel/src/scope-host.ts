@@ -191,19 +191,24 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import {
-  knownLengthBody,
   isSizedByteStream,
+  knownLengthInit,
   witnessedStream,
   type ByteBody,
   type ByteStream,
   type IncrementalSha256,
   type SizedByteStream,
-  type StreamWitness,
 } from './byte-stream.js';
 import type { CapabilityVerbs } from './capability.js';
 import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
-import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
+import {
+  attachmentRecordFields,
+  permissionKey,
+  substratError,
+  type AttachmentRecordFields,
+  type EntityStateName,
+} from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
@@ -1468,20 +1473,14 @@ export interface FetchLike {
  * over the global here means the receiver is never in play, anywhere downstream.
  *
  * A `SizedByteStream` body (#2498) is the one field the runtime cannot take as it is, so it is
- * turned into the runtime's own stream of that length here (`knownLengthBody`).
+ * turned into the runtime's own stream of that length here (`knownLengthInit`).
  */
-export const globalFetch: FetchLike = (input, init) => {
-  if (!isSizedByteStream(init?.body)) return (globalThis as unknown as { fetch: FetchLike }).fetch(input, init);
-  const streamed = knownLengthBody(init.body);
-  const runtimeInit = {
-    ...init,
-    body: streamed.body,
-    headers: { ...init.headers, ...streamed.headers },
-    ...(streamed.duplex ? { duplex: streamed.duplex } : {}),
-  };
+export const globalFetch: FetchLike = (input, init) =>
   // Called on the global, never through a variable: workerd refuses any other receiver.
-  return (globalThis as unknown as { fetch: (input: string, init: unknown) => Promise<ConnectorResponse> }).fetch(input, runtimeInit);
-};
+  (globalThis as unknown as { fetch: (input: string, init?: unknown) => Promise<ConnectorResponse> }).fetch(
+    input,
+    isSizedByteStream(init?.body) ? knownLengthInit({ ...init, body: init.body }) : init,
+  );
 
 /**
  * The host's clock (#812) — what `ctx.now()` reads.
@@ -1526,7 +1525,7 @@ export interface ConnectorRequestInit {
    * A {@link SizedByteStream} as well (#2498), for a body too large to hold: an upload of a
    * provider file of any size. The length is part of the value because a provider wants a
    * `Content-Length`, and a stream carries none. `globalFetch` hands it to the runtime as a
-   * stream of that length; a `FetchLike` of its own must do the same (`knownLengthBody`).
+   * stream of that length; a `FetchLike` of its own must do the same (`knownLengthInit`).
    */
   body?: string | Uint8Array | SizedByteStream;
   signal?: unknown;
@@ -4866,10 +4865,12 @@ export async function attachmentSha256(body: Uint8Array): Promise<string> {
 }
 
 /**
- * Write an upload's bytes to the blob store and say what they were (#2498) — the "bytes first"
- * half of every attachment write, one path for both adapters. A buffer is hashed and then
- * written, as before. A stream is hashed and counted while the store reads it, so it is never
- * held whole; `sha256` is the adapter's running digest, since the kernel has none of its own.
+ * Write an upload's bytes to the blob store and answer the record they make (#2498) — the "bytes
+ * first" half of every attachment write, one path for both adapters. The record's fields are
+ * judged before a byte moves, so a record the surface would refuse lands no object. A buffer is
+ * then hashed and written, as before. A stream is hashed and counted while the store reads it, so
+ * it is never held whole; `sha256` is the adapter's running digest, since the kernel has none of
+ * its own. The caller writes the row.
  *
  * A streamed write that fails, or whose store answers without reading the stream to its end, has
  * its object deleted and is refused: no record may witness bytes nobody saw.
@@ -4877,19 +4878,21 @@ export async function attachmentSha256(body: Uint8Array): Promise<string> {
 export async function putAttachmentBytes(
   store: TenantBlobStore,
   key: string,
+  fields: AttachmentRecordFields,
   body: ByteBody,
-  contentType: string,
   sha256: () => IncrementalSha256,
-): Promise<StreamWitness> {
+): Promise<AttachmentRecord> {
+  const judged = attachmentRecordFields.parse(fields);
+  const opts = { contentType: judged.contentType };
   if (!isSizedByteStream(body)) {
-    const witness = { sha256: await attachmentSha256(body), size: body.byteLength };
-    await store.put(key, body, { contentType });
-    return witness;
+    const record = { ...judged, size: body.byteLength, sha256: await attachmentSha256(body) };
+    await store.put(key, body, opts);
+    return record;
   }
   const witnessed = witnessedStream(body, sha256());
   try {
-    await store.put(key, witnessed.body, { contentType });
-    return witnessed.witness();
+    await store.put(key, witnessed.body, opts);
+    return { ...judged, ...witnessed.witness() };
   } catch (err) {
     // Deleted whether the put failed or answered early: a store can commit the declared bytes
     // and still reject when the stream errors behind them (R2 does, for a body longer than it

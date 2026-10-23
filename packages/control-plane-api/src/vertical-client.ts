@@ -122,7 +122,7 @@ import {
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { isSizedByteStream, knownLengthBody, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
+import { isSizedByteStream, knownLengthInit, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -896,20 +896,16 @@ export class VerticalClient {
     const verb = 'connector-attachment-stream';
     const path = '/internal/connector-attachment-stream';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const sent = knownLengthBody(body);
-    const res = await this.reach(verb, () =>
-      this.options.fetch(`${base}${path}`, {
-        method: 'POST',
-        headers: {
-          'content-type': meta.contentType,
-          [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
-          [CONNECTOR_ATTACHMENT_META_HEADER]: encodeURIComponent(JSON.stringify({ ...meta, size: body.length })),
-          ...sent.headers,
-        },
-        body: sent.body as BodyInit,
-        ...(sent.duplex ? { duplex: sent.duplex } : {}),
-      } as RequestInit),
-    );
+    const init = knownLengthInit({
+      method: 'POST',
+      headers: {
+        'content-type': meta.contentType,
+        [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
+        [CONNECTOR_ATTACHMENT_META_HEADER]: encodeURIComponent(JSON.stringify({ ...meta, size: body.length })),
+      },
+      body,
+    });
+    const res = await this.reach(verb, () => this.options.fetch(`${base}${path}`, init as unknown as RequestInit));
     if (!res.ok) {
       const refused = await this.refusal(verb, res);
       if (isRouteMiss(refused)) {
