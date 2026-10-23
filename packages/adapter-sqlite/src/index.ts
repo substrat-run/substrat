@@ -10899,15 +10899,9 @@ export class SqliteScopeHost implements ScopeHost {
         return scopes;
       },
       listScopesReadable: async (actor, filter?: ScopeFilter): Promise<ScopeListing> => {
-        const listing = readableScopes(scopeRows(filter), mapScope);
-        this.recordAccess(
-          actor,
-          'listScopesReadable',
-          { tenantId: filter?.tenantId ?? null },
-          filter,
-          listing.scopes.length + listing.unreadable.length,
-        );
-        return listing;
+        const rows = scopeRows(filter);
+        this.recordAccess(actor, 'listScopesReadable', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
+        return readableScopes(rows, mapScope);
       },
       listTenantStores: async (
         actor,

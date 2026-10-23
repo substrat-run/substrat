@@ -127,21 +127,23 @@ inertScopeContractSuite('adapter-sqlite', async () => {
 });
 
 // One directory row that does not read as a scope never stops a fleet-wide pass.
-unreadableScopeRowContractSuite('adapter-sqlite', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'substrat-unreadable-row-'));
-  const host = new SqliteScopeHost({ dir });
-  const directory = (host as unknown as { directory: { prepare(q: string): { run(...a: unknown[]): unknown } } }).directory;
-  return {
-    host,
-    writeVertical: async (scope, vertical) => {
-      directory.prepare('UPDATE scopes SET vertical = ? WHERE scope_id = ?').run(vertical, scope);
-    },
-    cleanup: async () => {
-      await host.close();
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-});
+unreadableScopeRowContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-unreadable-row-'));
+    const host = new SqliteScopeHost({ dir });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (host, sql) => {
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+  },
+);
 
 // connections.md §3.5.4: a vertical's mailed connect link, in the directory.
 connectLinkContractSuite(

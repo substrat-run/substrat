@@ -1258,30 +1258,30 @@ type ScopeReader = (filter?: ScopeFilter) => Promise<Scope[]>;
  * predates `listScopesReadable` is read through `listScopes`, strict as before.
  */
 function scopeReaderFor(admin: HostAdmin, actor: PlatformActorId, report: Pick<PlatformSweepReport, 'errors'>): ScopeReader {
+  const readable = admin.listScopesReadable?.bind(admin);
+  if (!readable) return (filter) => admin.listScopes(actor, filter);
   const named = new Set<string>();
   let capped = false;
   return async (filter) => {
-    if (typeof admin.listScopesReadable !== 'function') return admin.listScopes(actor, filter);
-    const { scopes, unreadable } = await admin.listScopesReadable(actor, filter);
+    const { scopes, unreadable } = await readable(actor, filter);
     for (const row of unreadable) {
+      if (capped) break;
       if (named.has(row.scopeId)) continue;
-      if (named.size >= UNREADABLE_SCOPE_ROWS_NAMED) {
-        if (!capped) {
-          capped = true;
-          report.errors.push({
-            kind: 'scope-row',
-            id: '*',
-            error: `more than ${UNREADABLE_SCOPE_ROWS_NAMED} directory rows do not read as a scope; only the first ${UNREADABLE_SCOPE_ROWS_NAMED} are named this pass`,
-          });
-        }
-        continue;
+      if (named.size < UNREADABLE_SCOPE_ROWS_NAMED) {
+        named.add(row.scopeId);
+        report.errors.push({
+          kind: 'scope-row',
+          id: row.scopeId,
+          error: `the directory row of tenant ${row.tenantId} does not read as a scope (${row.fields.join(', ')}); stepped over this pass`,
+        });
+      } else {
+        capped = true;
+        report.errors.push({
+          kind: 'scope-row',
+          id: '*',
+          error: `more than ${UNREADABLE_SCOPE_ROWS_NAMED} directory rows do not read as a scope; only the first ${UNREADABLE_SCOPE_ROWS_NAMED} are named this pass`,
+        });
       }
-      named.add(row.scopeId);
-      report.errors.push({
-        kind: 'scope-row',
-        id: row.scopeId,
-        error: `the directory row of tenant ${row.tenantId} does not read as a scope (${row.fields.join(', ')}); stepped over this pass`,
-      });
     }
     return scopes;
   };

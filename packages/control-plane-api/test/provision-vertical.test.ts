@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,6 +28,10 @@ describe('POST /scopes — the vertical is a vertical slug', () => {
     await host.admin.createTenant(staff, { id: tenant, slug: 'acme', name: 'Acme' });
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   afterAll(async () => {
     await host.close();
     rmSync(dir, { recursive: true, force: true });
@@ -36,18 +40,14 @@ describe('POST /scopes — the vertical is a vertical slug', () => {
   it.each(['', '   ', 'Housing', 'a/b/c', 'housing/'])('refuses %j with a validation_failed problem naming the field', async (vertical) => {
     const scope = scopeId.parse(ulid());
     const provision = vi.spyOn(host, 'provisionScope');
-    try {
-      const res = await post({ tenantId: tenant, scopeId: scope, vertical });
-      expect(res.status).toBe(400);
-      const body = (await res.json()) as { code?: string; errors?: { path: string }[] };
-      expect(body.code).toBe('validation_failed');
-      expect(body.errors?.map((e) => e.path)).toContain('vertical');
-      // Refused by the body parse, before the host is asked. The kernel holds the same rule and
-      // answers the same problem, so the call count is what tells the two layers apart.
-      expect(provision).not.toHaveBeenCalled();
-    } finally {
-      provision.mockRestore();
-    }
+    const res = await post({ tenantId: tenant, scopeId: scope, vertical });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code?: string; errors?: { path: string }[] };
+    expect(body.code).toBe('validation_failed');
+    expect(body.errors?.map((e) => e.path)).toContain('vertical');
+    // Refused by the body parse, before the host is asked. The kernel holds the same rule and
+    // answers the same problem, so the call count is what tells the two layers apart.
+    expect(provision).not.toHaveBeenCalled();
     expect(await host.admin.getScopeRecord(staff, tenant, scope)).toBeUndefined();
   });
 

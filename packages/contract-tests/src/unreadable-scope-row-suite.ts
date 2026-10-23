@@ -1,16 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type FetchLike, type HostAdmin, type ScopeHost } from '@substrat-run/kernel';
+import type { DirectoryExec } from './findings-atomic-suite.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-
-/** A fixture that can write a directory row's `vertical` past the provisioning boundary. */
-export interface UnreadableScopeRowFixture extends ScopeHostFixture {
-  /**
-   * Set the stored `vertical` of one scope's directory row as given, with no parse: how a row
-   * that provisioning now refuses is reached at all (one stored before the refusal, or a restore).
-   */
-  writeVertical(scopeId: ScopeId, vertical: string | null): Promise<void>;
-}
 
 const FETCH: FetchLike = async () => new Response(null, { status: 599 });
 
@@ -22,11 +14,17 @@ const FETCH: FetchLike = async () => new Response(null, { status: 599 });
  *
  * The pass is narrowed to this suite's own scopes: an adapter's directory may hold other suites'
  * scopes, and a whole-fleet pass over them would reap and drain things this suite does not own.
- * Every planted row is written back before the suite ends, for the same reason.
+ * Every planted row is written back before the suite ends, for the same reason. `exec` writes
+ * the directory past the provisioning boundary, which is how such a row is reached at all (one
+ * stored before the refusal, or a restore).
  */
-export function unreadableScopeRowContractSuite(adapterName: string, makeFixture: () => Promise<UnreadableScopeRowFixture>): void {
+export function unreadableScopeRowContractSuite(
+  adapterName: string,
+  makeFixture: () => Promise<ScopeHostFixture>,
+  exec: DirectoryExec,
+): void {
   describe(`an unreadable scope row in a fleet-wide pass: ${adapterName}`, () => {
-    let fixture: UnreadableScopeRowFixture;
+    let fixture: ScopeHostFixture;
     let host: ScopeHost;
     const staff = platformActorId.parse(ulid());
     const t = tenantId.parse(ulid());
@@ -36,6 +34,10 @@ export function unreadableScopeRowContractSuite(adapterName: string, makeFixture
     let archived: ScopeId;
     let blank: ScopeId;
     let second: ScopeId;
+
+    /** The stored `vertical` of one row, written as given. Both values are literals of this suite. */
+    const writeVertical = (scope: ScopeId, vertical: 'todo' | '') =>
+      exec(host, `UPDATE scopes SET vertical = '${vertical}' WHERE scope_id = '${scope}'`);
 
     const provision = async (extra: Record<string, unknown> = {}): Promise<ScopeId> => {
       const s = scopeId.parse(ulid());
@@ -58,8 +60,8 @@ export function unreadableScopeRowContractSuite(adapterName: string, makeFixture
     });
 
     afterAll(async () => {
-      await fixture.writeVertical(blank, 'todo');
-      await fixture.writeVertical(second, 'todo');
+      await writeVertical(blank, 'todo');
+      await writeVertical(second, 'todo');
       await fixture.cleanup();
     });
 
@@ -73,8 +75,8 @@ export function unreadableScopeRowContractSuite(adapterName: string, makeFixture
       beforeAll(async () => {
         // The stored shape provisioning used to accept, which the `scope` schema reads back as a
         // parse error. Two of them, so "named once" is about phases and not about there being one.
-        await fixture.writeVertical(blank, '');
-        await fixture.writeVertical(second, '');
+        await writeVertical(blank, '');
+        await writeVertical(second, '');
       });
 
       it('leaves listScopes strict', async () => {
@@ -142,8 +144,7 @@ function narrowedTo(host: ScopeHost, mine: ReadonlySet<string>, drained: string[
         };
       }
       if (p === 'listConnections') return async () => [];
-      const v = Reflect.get(target, p) as unknown;
-      return typeof v === 'function' ? v.bind(target) : v;
+      return forward(target, p);
     },
   });
   return new Proxy(host, {
@@ -152,8 +153,13 @@ function narrowedTo(host: ScopeHost, mine: ReadonlySet<string>, drained: string[
       if (p === 'drainDue') {
         return async (_t: string, s: string) => (drained.push(s), { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 });
       }
-      const v = Reflect.get(target, p) as unknown;
-      return typeof v === 'function' ? v.bind(target) : v;
+      return forward(target, p);
     },
   });
+}
+
+/** Everything a narrowed view does not answer itself, from the object it wraps. */
+function forward(target: object, p: string | symbol): unknown {
+  const v = Reflect.get(target, p) as unknown;
+  return typeof v === 'function' ? v.bind(target) : v;
 }
