@@ -113,7 +113,8 @@ export interface HostReservations {
  *   would make them a system principal's. Taking the seats back first, or defining a new key, is the
  *   way. A role stored before the
  *   holder was recorded (#2480: no holder) and made only of reserved keys — K-55's shape, which the
- *   platform's door admitted — may still be declared `holder: 'system'`.
+ *   platform's door admitted — may still be declared `holder: 'system'`, with no key it did not
+ *   already hold.
  *
  * **A key the host knows nothing about is admitted, deliberately (fail-open).** A host judges only
  * the reservations of modules it knows and of the tenant's system-held roles. Refusing every key it
@@ -141,8 +142,12 @@ export function reservedRoleDefinitionRefusal(
     // Judged against the seats of the key, whether or not a definition is stored: a projection can
     // drop a role's row and leave its seats live, and a later definition must not relabel them.
     if (stored?.holder !== 'system' && seated) {
+      // #2480's upgrade, and only that: the same keys (or fewer), with the holder now recorded.
       const legacyShape =
-        !!stored && stored.holder === undefined && stored.permissions.every((p) => host.reserved.has(p) || bySystemRole.has(p));
+        !!stored &&
+        stored.holder === undefined &&
+        stored.permissions.every((p) => host.reserved.has(p) || bySystemRole.has(p)) &&
+        role.permissions.every((p) => stored.permissions.includes(p));
       if (!legacyShape) {
         return (
           `role '${role.key}' is held by someone who is not a system principal (${stored ? 'stored as a person\'s role' : 'with no definition stored'}), ` +
