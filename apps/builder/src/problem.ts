@@ -63,3 +63,27 @@ export function problemResponse(problem: Problem): Response {
 export function refuse(status: number, detail: string): Response {
 	return problemResponse(refusalProblem(status, detail));
 }
+
+/**
+ * The answer to a throw no route caught, in every runtime: the node server's handler
+ * catch, the worker's `app.onError` and the agent DO's `fetch`. The throw is logged
+ * and the document discloses nothing of it.
+ */
+export function unhandledProblem(err: unknown): Problem {
+	console.error('[builder] unhandled request failure', err);
+	return internalProblem();
+}
+
+/** `unhandledProblem` as a `Response` — the worker's `app.onError` handler. */
+export function unhandledResponse(err: unknown): Response {
+	return problemResponse(unhandledProblem(err));
+}
+
+/** `handle`'s answer, or the unhandled 500 when it throws — the agent DO's catch-all. */
+export async function orUnhandled(handle: () => Promise<Response>): Promise<Response> {
+	try {
+		return await handle();
+	} catch (err) {
+		return unhandledResponse(err);
+	}
+}

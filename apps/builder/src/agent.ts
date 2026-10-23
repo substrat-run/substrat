@@ -43,7 +43,7 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { problemResponse, providerRefusal, refuse } from './problem.js';
+import { orUnhandled, problemResponse, providerRefusal, refuse } from './problem.js';
 import type { BuildPhase } from './phase.js';
 import {
 	buildWriteGuard,
@@ -568,6 +568,10 @@ export class BuilderAgent extends DurableObject<Env> {
 	// ── routes ────────────────────────────────────────────────────────────────
 
 	override async fetch(req: Request): Promise<Response> {
+		return orUnhandled(() => this.#route(req));
+	}
+
+	async #route(req: Request): Promise<Response> {
 		const url = new URL(req.url);
 		const route = `${req.method} ${url.pathname}`;
 

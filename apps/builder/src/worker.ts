@@ -36,7 +36,7 @@ import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { meteringModule } from '@substrat-run/engine-metering';
 import { studioUsage } from './metering.js';
-import { refuse } from './problem.js';
+import { refuse, unhandledResponse } from './problem.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
 import { teamsFor, type Team } from './teams.js';
@@ -129,6 +129,11 @@ function deniedPage(detail: string): string {
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// A throw no route caught — the agent DO's included, since the dispatch below awaits
+// the stub — answers the same problem document the node server does, not Hono's
+// text/plain default.
+app.onError(unhandledResponse);
 
 // Login/callback/logout — the one anonymous surface.
 mountOidcRoutes(app, { onSuccess: '/', onError: '/api/auth/denied' });

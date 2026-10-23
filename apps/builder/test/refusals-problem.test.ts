@@ -11,7 +11,15 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemDetail } from '@substrat-run/contracts';
-import { internalProblem, providerRefusal, refuse, refusalProblem } from '../src/problem.js';
+import { Hono } from 'hono';
+import {
+	internalProblem,
+	orUnhandled,
+	providerRefusal,
+	refuse,
+	refusalProblem,
+	unhandledResponse,
+} from '../src/problem.js';
 
 /** [status, a sentence one of the routes really answers, the taxonomy code or undefined for about:blank] */
 const SITES = [
@@ -68,6 +76,73 @@ describe('unreviewed throws are not relayed', () => {
 		expect(doc.status).toBe(422);
 		expect(JSON.stringify(doc)).not.toContain('ECONNREFUSED');
 		expect(log).toHaveBeenCalledOnce();
+	});
+});
+
+/**
+ * A throw no route caught (#113 review). The worker had no `app.onError` and the agent DO's
+ * `fetch` no catch, so on the hosted path such a throw answered Hono's text/plain
+ * `Internal Server Error`. Neither module loads under node (their graph reaches
+ * `cloudflare:workers`), so the handlers are driven here — the worker's in a Hono app
+ * wired the way `worker.ts` wires it — and the wiring is read off the source below.
+ */
+describe('an unhandled throw answers the 500 problem document on the hosted path', () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	const SECRET = 'bundle restore failed: r2://projects/acme/repo.bundle';
+
+	async function expectInternal(res: Response): Promise<void> {
+		expect(res.status).toBe(500);
+		expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+		const text = await res.text();
+		expect(text).not.toContain('bundle restore');
+		const doc = JSON.parse(text);
+		expect(problem.safeParse(doc).success).toBe(true);
+		expect(doc).toMatchObject({ status: 500, code: 'internal' });
+		expect(doc.detail).toBeUndefined();
+	}
+
+	it("the worker's onError: a route that throws", async () => {
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const app = new Hono();
+		app.onError(unhandledResponse);
+		app.post('/api/gates', () => {
+			throw new Error(SECRET);
+		});
+		await expectInternal(await app.request('/api/gates', { method: 'POST' }));
+		expect(log).toHaveBeenCalledOnce();
+	});
+
+	it("the worker's onError: the dispatched stub's fetch rejecting", async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const app = new Hono();
+		app.onError(unhandledResponse);
+		app.all('/api/*', async () => await Promise.reject(new Error(SECRET)));
+		await expectInternal(await app.request('/api/session'));
+	});
+
+	it("the agent DO's catch-all", async () => {
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		await expectInternal(
+			await orUnhandled(async () => {
+				throw new Error(SECRET);
+			}),
+		);
+		expect(log).toHaveBeenCalledOnce();
+	});
+
+	it("passes the route's own answer through untouched", async () => {
+		const res = await orUnhandled(async () => refuse(404, 'no snapshot yet'));
+		expect(res.status).toBe(404);
+	});
+
+	it('worker.ts registers the handler, and the DO routes through the catch-all', () => {
+		const worker = readFileSync(fileURLToPath(new URL('../src/worker.ts', import.meta.url)), 'utf8');
+		expect(worker).toMatch(/^app\.onError\(unhandledResponse\);$/m);
+		const agent = readFileSync(fileURLToPath(new URL('../src/agent.ts', import.meta.url)), 'utf8');
+		expect(agent.replace(/\s+/g, ' ')).toContain(
+			'override async fetch(req: Request): Promise<Response> { return orUnhandled(() => this.#route(req)); }',
+		);
 	});
 });
 

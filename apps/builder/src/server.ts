@@ -42,7 +42,7 @@ import {
 	type GateSpec,
 } from '@substrat-run/builder-workspace';
 import { PROBLEM_CONTENT_TYPE, type Problem } from '@substrat-run/contracts';
-import { internalProblem, providerRefusal, refusalProblem } from './problem.js';
+import { providerRefusal, refusalProblem, unhandledProblem } from './problem.js';
 import { devStatus, startDev, stopDev } from './devserver.js';
 import { loadEnvFiles } from './env.js';
 import { providerCatalog } from './hosting.js';
@@ -609,10 +609,7 @@ const server = createServer((req, res) => {
 	};
 
 	handler().catch((err: unknown) => {
-		if (!res.headersSent) {
-			console.error('[builder] unhandled request failure', err);
-			sendProblem(res, internalProblem());
-		}
+		if (!res.headersSent) sendProblem(res, unhandledProblem(err));
 		else res.end();
 	});
 });
