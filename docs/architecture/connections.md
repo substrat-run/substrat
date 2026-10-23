@@ -1080,8 +1080,10 @@ a new file source holds the same four invariants:
 - **A delete lands only on an answer about that item**: its own deleted facet, or its own
   read answering gone. Never from a deleted parent, the held tree, or a re-read's silence.
 
-The shared `FileSource` facet and where a walk runs (the RFC's Q1) are extracted when a second
-file-bearing provider is committed, from the two implementations rather than from one.
+The shared `FileSource` facet and where a walk runs (the RFC's Q1) are decided when a second
+file-bearing provider is committed, when a vertical needs the freshness of its own mirror, or
+when the Microsoft 365 check against a large library shows the current approach cannot finish
+a first sync. The facet is extracted from two implementations rather than from one.
 
 ---
 
