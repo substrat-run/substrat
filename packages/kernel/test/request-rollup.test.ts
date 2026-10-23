@@ -7,11 +7,10 @@ import {
   REQUEST_ROLLUP_PRUNE_BATCH,
   RequestRollupSaturated,
   requestRollupDueDays,
-  requestRollupHorizon,
   type RequestDayCount,
   type RequestDayReadInput,
 } from '../src/request-rollup.js';
-import { BILLING_ROLLUP_RETENTION_MONTHS, utcDayMonthsBefore } from '../src/billing-retention.js';
+import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon, utcDayMonthsBefore } from '../src/billing-retention.js';
 import type { FetchLike, ScopeHost } from '../src/scope-host.js';
 
 /**
@@ -84,20 +83,20 @@ describe('the days a pass reads', () => {
 describe('the billing retention horizon', () => {
   it('keeps everything by default, until a horizon is set', () => {
     expect(BILLING_ROLLUP_RETENTION_MONTHS).toBeNull();
-    expect(requestRollupHorizon(at('2026-10-23T12:00:00.000Z'), null)).toBeNull();
+    expect(billingRollupHorizon(at('2026-10-23T12:00:00.000Z'), null)).toBeNull();
   });
 
   it('counts whole calendar months back, clamping to the shorter month', () => {
-    expect(requestRollupHorizon(at('2026-10-23T12:00:00.000Z'), 13)).toBe('2025-09-23');
+    expect(billingRollupHorizon(at('2026-10-23T12:00:00.000Z'), 13)).toBe('2025-09-23');
     expect(utcDayMonthsBefore(at('2026-03-31T00:00:00.000Z'), 1)).toBe('2026-02-28');
     expect(utcDayMonthsBefore(at('2028-03-31T00:00:00.000Z'), 1)).toBe('2028-02-29');
   });
 
   it('refuses a horizon that is not a whole number of months, at least one', () => {
     for (const bad of [0, -1, 1.5, Number.NaN]) {
-      expect(() => requestRollupHorizon(0, bad)).toThrow(/whole number of months/);
+      expect(() => billingRollupHorizon(0, bad)).toThrow(/whole number of months/);
     }
-    expect(requestRollupHorizon(0, 1)).toBe('1969-12-01');
+    expect(billingRollupHorizon(0, 1)).toBe('1969-12-01');
   });
 });
 

@@ -24,7 +24,7 @@ import type {
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
-import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon } from './billing-retention.js';
+import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon, utcDayOf } from './billing-retention.js';
 import { METER_DAYS_PRUNE_BATCH, METER_SNAPSHOT_TIMEOUT_MS } from './meter-days.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
@@ -36,7 +36,6 @@ import {
   REQUEST_ROLLUP_SETTLE_MS,
   isRequestRollupSaturated,
   requestRollupDueDays,
-  requestRollupHorizon,
   type RequestDayCount,
 } from './request-rollup.js';
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
@@ -778,6 +777,17 @@ export interface RequestRollupSweepOptions {
   now?: () => string;
 }
 
+/**
+ * A run of identical failures of a billing phase (#2501): the error, when the run began, and how
+ * many attempts it holds. A run reaches the failure digest once, when it begins; this is how a
+ * standing failure stays visible after that.
+ */
+export interface FailingRun {
+  error: string;
+  since: string;
+  failures: number;
+}
+
 /** What the request-rollup phase did in one pass (#2501). */
 export interface RequestRollupSweepReport {
   /** Days due this pass. */
@@ -800,7 +810,7 @@ export interface RequestRollupSweepReport {
    * Null once a read succeeds, and when no attempt has failed. So a standing failure stays visible
    * on every pass it lasts, after its one digest.
    */
-  streak: { error: string; since: string; failures: number } | null;
+  streak: FailingRun | null;
   /** Days found saturated (`RequestRollupSaturated`): recorded as such, not read again, and not a reason to stop. */
   saturated: number;
   /** Which days those were. */
@@ -853,7 +863,7 @@ export interface MeterSnapshotSweepReport {
    * standing failure is on the report of every pass it lasts, though it reaches the digest only on
    * the pass its run began. Null once a snapshot is taken, and when no attempt has failed.
    */
-  streak: { error: string; since: string; failures: number } | null;
+  streak: FailingRun | null;
   /** Snapshot rows past retention deleted. */
   pruned: number;
 }
@@ -1263,13 +1273,7 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   if (rollup?.batch !== undefined && !(Number.isInteger(rollup.batch) && rollup.batch >= 0)) {
     throw substratError('validation_failed', `requestRollup.batch must be a non-negative integer, got ${String(rollup.batch)}`);
   }
-  if (rollup?.retentionMonths !== undefined) {
-    try {
-      requestRollupHorizon(0, rollup.retentionMonths);
-    } catch (err) {
-      throw substratError('validation_failed', `requestRollup.retentionMonths: ${message(err)}`);
-    }
-  }
+  if (rollup?.retentionMonths !== undefined) assertBillingRetention('requestRollup.retentionMonths', rollup.retentionMonths);
   // Each of these corrupts the kept history silently rather than failing: a lookback past what
   // Analytics Engine keeps records aged-out days as days without traffic, and a negative settle
   // reads the open day and freezes it. So they are refused here, before anything is read.
@@ -1286,29 +1290,33 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
       throw substratError('validation_failed', `requestRollup.${name} must be a non-negative number of ms, got ${String(ms)}`);
     }
   }
-  const timeout = rollup?.readTimeoutMs;
-  if (timeout !== undefined && !(Number.isFinite(timeout) && timeout > 0)) {
-    throw substratError('validation_failed', `requestRollup.readTimeoutMs must be a positive number of ms, got ${String(timeout)}`);
-  }
+  if (rollup?.readTimeoutMs !== undefined) assertPositiveMs('requestRollup.readTimeoutMs', rollup.readTimeoutMs);
   const snapshot = options.meterSnapshot;
   if (snapshot?.pruneBatch !== undefined) assertRowLimit('meterSnapshot.pruneBatch', snapshot.pruneBatch);
-  if (snapshot?.retentionMonths !== undefined) {
-    try {
-      billingRollupHorizon(0, snapshot.retentionMonths);
-    } catch (err) {
-      throw substratError('validation_failed', `meterSnapshot.retentionMonths: ${message(err)}`);
-    }
-  }
-  const snapshotTimeout = snapshot?.timeoutMs;
-  if (snapshotTimeout !== undefined && !(Number.isFinite(snapshotTimeout) && snapshotTimeout > 0)) {
-    throw substratError('validation_failed', `meterSnapshot.timeoutMs must be a positive number of ms, got ${String(snapshotTimeout)}`);
-  }
+  if (snapshot?.retentionMonths !== undefined) assertBillingRetention('meterSnapshot.retentionMonths', snapshot.retentionMonths);
+  if (snapshot?.timeoutMs !== undefined) assertPositiveMs('meterSnapshot.timeoutMs', snapshot.timeoutMs);
   const orphans = options.orphanAttachments;
   if (orphans?.batch !== undefined && !(Number.isInteger(orphans.batch) && orphans.batch >= 0)) {
     throw substratError('validation_failed', `orphanAttachments.batch must be a non-negative integer, got ${String(orphans.batch)}`);
   }
   if (orphans && orphans.mode !== 'dry-run' && orphans.mode !== 'delete') {
     throw substratError('validation_failed', `orphanAttachments.mode must be 'dry-run' or 'delete', got ${String(orphans.mode)}`);
+  }
+}
+
+/** A billing retention option, refused unless `billingRollupHorizon` takes it. */
+function assertBillingRetention(name: string, months: number | null): void {
+  try {
+    billingRollupHorizon(0, months);
+  } catch (err) {
+    throw substratError('validation_failed', `${name}: ${message(err)}`);
+  }
+}
+
+/** A deadline option, refused unless it is a positive, finite number of ms. */
+function assertPositiveMs(name: string, ms: number): void {
+  if (!(Number.isFinite(ms) && ms > 0)) {
+    throw substratError('validation_failed', `${name} must be a positive number of ms, got ${String(ms)}`);
   }
 }
 
@@ -2992,6 +3000,38 @@ async function sweepStorageGauge(
   return out;
 }
 
+/** The newest attempt on record, as the run it leaves: `error` is null when it succeeded or none was made. */
+interface PreviousAttempt {
+  error: string | null;
+  since: string | null;
+  failures: number;
+}
+
+const NO_ATTEMPT: PreviousAttempt = { error: null, since: null, failures: 0 };
+
+/** The newest of a ledger's attempts (#2501), and the run of identical failures it belongs to when it failed. */
+function previousAttempt(
+  attempts: readonly { attemptedAt: string; error: string | null; failingSince: string | null; failingCount: number | null }[],
+): PreviousAttempt {
+  let newest: (typeof attempts)[number] | undefined;
+  for (const a of attempts) if (newest === undefined || a.attemptedAt > newest.attemptedAt) newest = a;
+  return newest ? { error: newest.error, since: newest.failingSince ?? newest.attemptedAt, failures: newest.failingCount ?? 1 } : NO_ATTEMPT;
+}
+
+/**
+ * A failure's run (#2501): the previous attempt's run carried on when this failure repeats its error,
+ * a new run begun `at` otherwise. A repeated failure is a standing one, which reached the failure
+ * digest when its run began; the run keeps its start and length on the ledger and in the report,
+ * where the pass's log line shows them.
+ */
+function extendRun(previous: PreviousAttempt, error: string, at: string): { run: FailingRun; repeated: boolean } {
+  const repeated = error === previous.error;
+  return {
+    repeated,
+    run: { error, since: repeated && previous.since ? previous.since : at, failures: repeated ? previous.failures + 1 : 1 },
+  };
+}
+
 /**
  * One pass of the request-rollup phase (#2501): read the oldest due days one at a time, record
  * each day's counts or its failure, then prune past retention. A failed day writes nothing of the
@@ -3024,24 +3064,15 @@ async function sweepRequestRollup(
     const nowMs = Date.parse(now());
     if (batch > 0) {
       const reads = await admin.listRequestRollupDays!(actor);
-      // The newest attempt before this pass: its error (null when it succeeded or none was made),
-      // and, when it failed, the run of identical failures it belongs to. A saturated day is a
-      // state of that day, not a failure of the read, so it belongs to no run.
-      let previous: { error: string | null; since: string | null; failures: number } = { error: null, since: null, failures: 0 };
-      let newest = '';
-      for (const r of reads) {
-        if (!r.saturated && r.attemptedAt > newest) {
-          newest = r.attemptedAt;
-          previous = { error: r.error, since: r.failingSince ?? r.attemptedAt, failures: r.failingCount ?? 1 };
-        }
-      }
+      // A saturated day is a state of that day, not a failure of the read, so it belongs to no run.
+      let previous = previousAttempt(reads.filter((r) => !r.saturated));
       const due = requestRollupDueDays({
         nowMs,
         reads,
         lookbackDays: rollup.lookbackDays ?? REQUEST_ROLLUP_LOOKBACK_DAYS,
         settleMs: rollup.settleMs ?? REQUEST_ROLLUP_SETTLE_MS,
         retryMs: rollup.retryMs ?? REQUEST_ROLLUP_RETRY_MS,
-        horizon: requestRollupHorizon(nowMs, months),
+        horizon: billingRollupHorizon(nowMs, months),
       });
       const take = due.slice(0, batch);
       out.due = due.length;
@@ -3059,7 +3090,7 @@ async function sweepRequestRollup(
           out.recorded += (await admin.recordRequestDay!(actor, { day, attemptedAt: now(), counts })).recorded;
           out.read += 1;
           // A read that succeeds ends any run, so a failure later in this pass starts a new one.
-          previous = { error: null, since: null, failures: 0 };
+          previous = NO_ATTEMPT;
         } catch (err) {
           const error = message(err);
           const attemptedAt = now();
@@ -3072,22 +3103,14 @@ async function sweepRequestRollup(
             continue;
           }
           out.failed += 1;
-          // A standing failure goes into the failure digest when its run begins, not on every pass
-          // it lasts. Each attempt carries the run on, so its start and length stay on the ledger
-          // and in `streak`, where the pass's log line shows them.
-          const repeated = error === previous.error;
-          const streak = {
-            error,
-            since: repeated && previous.since ? previous.since : attemptedAt,
-            failures: repeated ? previous.failures + 1 : 1,
-          };
-          out.streak = streak;
+          const { run, repeated } = extendRun(previous, error, attemptedAt);
+          out.streak = run;
           if (repeated) out.repeated += 1;
           else report.errors.push({ kind: 'request-rollup', id: day, error });
           // The failure is the day's attempt, so the day waits `retryMs` rather than taking a slot
           // on every pass. If even this write fails, the day is simply due again next pass.
           await admin
-            .recordRequestDay!(actor, { day, attemptedAt, error, failingSince: streak.since, failingCount: streak.failures })
+            .recordRequestDay!(actor, { day, attemptedAt, error, failingSince: run.since, failingCount: run.failures })
             .catch(() => undefined);
           // The next day would most likely fail the same way, and each read is a fleet-wide query
           // against the account's shared budget: one failure ends the pass's reads.
@@ -3145,16 +3168,7 @@ async function sweepMeterSnapshot(
     out.day = day;
     // The attempt before this pass is today's, or yesterday's when today has none: one a day at the
     // least while the phase runs, so two days hold it.
-    const yesterday = new Date(Date.parse(`${day}T00:00:00.000Z`) - DAY_MS).toISOString().slice(0, 10);
-    const takes = await admin.listMeterDayTakes!(actor, { since: yesterday, until: day });
-    let previous: { error: string | null; since: string | null; failures: number } = { error: null, since: null, failures: 0 };
-    let newest = '';
-    for (const t of takes) {
-      if (t.attemptedAt > newest) {
-        newest = t.attemptedAt;
-        previous = { error: t.error, since: t.failingSince ?? t.attemptedAt, failures: t.failingCount ?? 1 };
-      }
-    }
+    const takes = await admin.listMeterDayTakes!(actor, { since: utcDayOf(Date.parse(at) - DAY_MS), until: day });
     // A day already taken is not tried again, so a later pass of the day can never report a failure
     // about a snapshot that stands. The directory checks again inside its own transaction, which is
     // what settles two passes racing for the same day.
@@ -3170,21 +3184,14 @@ async function sweepMeterSnapshot(
       } catch (err) {
         const error = message(err);
         out.failed = 1;
-        // A standing failure reaches the digest when its run begins. Each attempt carries the run
-        // on, so its start and length stay on the day's record and on every pass's report.
-        const repeated = error === previous.error;
-        const streak = {
-          error,
-          since: repeated && previous.since ? previous.since : at,
-          failures: repeated ? previous.failures + 1 : 1,
-        };
-        out.streak = streak;
+        const { run, repeated } = extendRun(previousAttempt(takes), error, at);
+        out.streak = run;
         if (repeated) out.repeated = 1;
         else report.errors.push({ kind: 'meter-snapshot', id: day, error });
         // The attempt's own instant, so its record lands on its day even when the deadline ran past
         // midnight. If even this write fails, the next pass simply tries again.
         await admin
-          .recordMeterDay!(actor, { at, error, failingSince: streak.since, failingCount: streak.failures })
+          .recordMeterDay!(actor, { at, error, failingSince: run.since, failingCount: run.failures })
           .catch(() => undefined);
       }
     }

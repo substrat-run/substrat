@@ -61,6 +61,7 @@ import {
   type RequestRollupSweepOptions,
   type RequestRollupSweepReport,
   type MeterSnapshotSweepReport,
+  type FailingRun,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -954,7 +955,7 @@ export function requestRollupFor(
 export function requestRollupLogOf(rollup: RequestRollupSweepReport | null | undefined): {
   read: number;
   recorded: number;
-  failing?: { error: string; since: string; failures: number };
+  failing?: FailingRun;
   saturatedDays?: string[];
 } | null {
   if (!rollup || (rollup.read === 0 && rollup.failed === 0 && rollup.saturated === 0 && rollup.streak === null)) return null;
@@ -975,7 +976,7 @@ export function requestRollupLogOf(rollup: RequestRollupSweepReport | null | und
 export function meterSnapshotLogOf(snapshot: MeterSnapshotSweepReport | null | undefined): {
   day: string | null;
   tenants?: number;
-  failing?: { error: string; since: string; failures: number };
+  failing?: FailingRun;
 } | null {
   if (!snapshot || (!snapshot.taken && snapshot.streak === null)) return null;
   return {

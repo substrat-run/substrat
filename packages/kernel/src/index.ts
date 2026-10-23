@@ -910,6 +910,7 @@ export type {
   RequestRollupSweepReport,
   MeterSnapshotSweepOptions,
   MeterSnapshotSweepReport,
+  FailingRun,
   CandidatesHint,
   CrossVerticalEdge,
   CrossVerticalOptions,

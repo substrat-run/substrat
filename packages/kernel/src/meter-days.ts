@@ -1,19 +1,28 @@
 import {
   meterDay,
   meterDayTake,
-  utcDay,
   type Instant,
   type MeterDay,
+  type MeterDayGrant,
   type MeterDayTake,
-  type MeterDayVertical,
+  type MeterScopeCounts,
   type ScopeStatus,
   type TenantId,
   type TenantStatus,
 } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
-import { assertRowLimit, boundedRetentionDelete } from './scope-host.js';
-import { billingRollupHorizon } from './billing-retention.js';
-import { foldMeterReading, isLive, type MeterEntitlementInput, type MeterScopeInput, type MeterTenantInput } from './meters.js';
+import { assertRowLimit } from './scope-host.js';
+import { pruneBillingDays, pushDayWindow } from './billing-retention.js';
+import {
+  countScope,
+  emptyScopeCounts,
+  foldMeterReading,
+  isLive,
+  skuOrder,
+  type MeterEntitlementInput,
+  type MeterScopeInput,
+  type MeterTenantInput,
+} from './meters.js';
 
 /**
  * The daily meter snapshot (#2501), as statements both adapters run against their directory: the
@@ -104,13 +113,6 @@ export interface MeterDayTakeFilter {
   until?: string;
 }
 
-function assertDay(name: string, day: string): string {
-  if (!utcDay.safeParse(day).success) throw new Error(`${name} must be a UTC day (YYYY-MM-DD), got ${JSON.stringify(day)}`);
-  return day;
-}
-
-const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
-
 /**
  * The day's rows, one per tenant that is not reaped, folded at `readAt`. A reaped tenant is a
  * tombstone: it holds no scope and bills nothing, and a row per day for every one of them would
@@ -118,57 +120,46 @@ const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
  */
 export function meterDayRowsAt(
   readAt: Instant,
-  input: {
-    tenants: readonly MeterTenantInput[];
-    scopes: readonly (MeterScopeInput & { vertical: string | null })[];
-    entitlements: readonly MeterEntitlementInput[];
-  },
+  input: { tenants: MeterTenantInput[]; scopes: (MeterScopeInput & { vertical: string | null })[]; entitlements: MeterEntitlementInput[] },
 ): MeterDay[] {
-  const day = readAt.slice(0, 10);
   const tenants = input.tenants.filter((t) => t.status !== 'reaped');
-  const reading = foldMeterReading({ readAt, tenants: [...tenants], scopes: [...input.scopes], entitlements: [...input.entitlements] });
+  const reading = foldMeterReading({ readAt, tenants, scopes: input.scopes, entitlements: input.entitlements });
 
-  // The split by vertical is the same fold over each vertical's scopes, so a vertical's counts
+  // Each scope counted by vertical with the fold's own rule (`countScope`), so a vertical's counts
   // follow the billable rule the tenant's do, and sum to them.
-  const byVertical = new Map<string, (MeterScopeInput & { vertical: string | null })[]>();
+  const status = new Map(tenants.map((t) => [t.tenantId, t.status]));
+  const verticals = new Map<TenantId, Map<string | null, MeterScopeCounts>>();
   for (const s of input.scopes) {
-    const key = s.vertical ?? '';
-    const list = byVertical.get(key);
-    if (list) list.push(s);
-    else byVertical.set(key, [s]);
-  }
-  const verticals = new Map<TenantId, MeterDayVertical[]>();
-  for (const key of [...byVertical.keys()].sort(cmp)) {
-    const scopes = byVertical.get(key)!;
-    const holding = new Set(scopes.map((s) => s.tenantId));
-    const folded = foldMeterReading({ readAt, tenants: tenants.filter((t) => holding.has(t.tenantId)), scopes, entitlements: [] });
-    for (const row of folded.perTenant) {
-      const list = verticals.get(row.tenantId) ?? [];
-      list.push({ vertical: key === '' ? null : key, ...row.scopes });
-      verticals.set(row.tenantId, list);
-    }
+    const tenantStatus = status.get(s.tenantId);
+    if (tenantStatus === undefined) continue; // not a tenant this day meters
+    const byVertical = verticals.get(s.tenantId) ?? new Map<string | null, MeterScopeCounts>();
+    verticals.set(s.tenantId, byVertical);
+    const counts = byVertical.get(s.vertical) ?? emptyScopeCounts();
+    byVertical.set(s.vertical, counts);
+    countScope(counts, s, tenantStatus);
   }
 
-  const grants = new Map<TenantId, MeterEntitlementInput[]>();
+  // Parsed with the row below, which is where `expiresAt` is held to an instant.
+  const grants = new Map<TenantId, (Omit<MeterDayGrant, 'expiresAt'> & { expiresAt: string | null })[]>();
   for (const g of input.entitlements) {
     const list = grants.get(g.tenantId) ?? [];
-    list.push(g);
     grants.set(g.tenantId, list);
+    list.push({ entitlementKey: g.entitlementKey, plan: g.plan, expiresAt: g.expiresAt, live: isLive(g, readAt) });
   }
 
   return reading.perTenant.map((t) =>
     meterDay.parse({
-      day,
+      day: readAt.slice(0, 10),
       tenantId: t.tenantId,
       readAt,
       status: t.status,
       billable: t.billable,
       scopes: t.scopes,
-      verticals: verticals.get(t.tenantId) ?? [],
-      entitlements: (grants.get(t.tenantId) ?? [])
-        .map((g) => ({ entitlementKey: g.entitlementKey, plan: g.plan, expiresAt: g.expiresAt, live: isLive(g, readAt) }))
-        // Null plan first: the ungrouped flag is the base row a tier hangs off, as meter 2 orders it.
-        .sort((a, b) => cmp(a.entitlementKey, b.entitlementKey) || cmp(a.plan ?? '', b.plan ?? '')),
+      // Null first: a vertical is a non-empty slug, so it sorts after the empty string.
+      verticals: [...(verticals.get(t.tenantId) ?? [])]
+        .map(([vertical, counts]) => ({ vertical, ...counts }))
+        .sort((a, b) => ((a.vertical ?? '') < (b.vertical ?? '') ? -1 : 1)),
+      entitlements: (grants.get(t.tenantId) ?? []).sort(skuOrder),
     }),
   );
 }
@@ -288,14 +279,7 @@ export function listMeterDayRows(sql: RedactionSql, filter: MeterDayFilter = {})
     where.push('tenant_id = ?');
     params.push(filter.tenantId);
   }
-  if (filter.since !== undefined) {
-    where.push('day >= ?');
-    params.push(assertDay('since', filter.since));
-  }
-  if (filter.until !== undefined) {
-    where.push('day <= ?');
-    params.push(assertDay('until', filter.until));
-  }
+  pushDayWindow(filter, where, params);
   const limit = Math.min(assertRowLimit('limit', filter.limit ?? METER_DAYS_LIMIT_DEFAULT), METER_DAYS_LIMIT_MAX);
   params.push(limit);
   const rows = sql(
@@ -322,15 +306,8 @@ export function listMeterDayRows(sql: RedactionSql, filter: MeterDayFilter = {})
 /** The record of each day a pass tried to snapshot, in day order — see `MeterDayTakeFilter`. */
 export function listMeterDayTakeRows(sql: RedactionSql, filter: MeterDayTakeFilter = {}): MeterDayTake[] {
   const where: string[] = [];
-  const params: string[] = [];
-  if (filter.since !== undefined) {
-    where.push('day >= ?');
-    params.push(assertDay('since', filter.since));
-  }
-  if (filter.until !== undefined) {
-    where.push('day <= ?');
-    params.push(assertDay('until', filter.until));
-  }
+  const params: (string | number)[] = [];
+  pushDayWindow(filter, where, params);
   const rows = sql(
     `SELECT day, attempted_at, taken_at, tenant_count, error, failing_since, failing_count
        FROM _substrat_meter_day_takes
@@ -361,19 +338,10 @@ export function listMeterDayTakeRows(sql: RedactionSql, filter: MeterDayTakeFilt
 
 /**
  * Delete at most `limit` snapshot rows older than a retention of `months`, oldest first, then the
- * records of the days that are gone. `months` null deletes nothing (`BILLING_ROLLUP_RETENTION_MONTHS`).
- * Returns how many snapshot rows went.
+ * records of the days that are gone (`pruneBillingDays`). `months` null deletes nothing
+ * (`BILLING_ROLLUP_RETENTION_MONTHS`). A record outlives a day still being pruned, so that day stays
+ * marked taken. Returns how many snapshot rows went.
  */
 export function pruneMeterDayRows(sql: RedactionSql, nowMs: number, limit: number, months: number | null): number {
-  const capped = assertRowLimit('limit', limit);
-  const horizon = billingRollupHorizon(nowMs, months);
-  if (horizon === null) return 0;
-  const pruned = sql(boundedRetentionDelete('_substrat_meter_days', 'day'), [horizon, capped]).length;
-  // A record goes only once its day holds no row, so a day still being pruned stays marked taken.
-  sql(
-    `DELETE FROM _substrat_meter_day_takes
-      WHERE day < ? AND NOT EXISTS (SELECT 1 FROM _substrat_meter_days d WHERE d.day = _substrat_meter_day_takes.day)`,
-    [horizon],
-  );
-  return pruned;
+  return pruneBillingDays(sql, { rows: '_substrat_meter_days', records: '_substrat_meter_day_takes' }, nowMs, limit, months);
 }
