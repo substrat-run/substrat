@@ -78,13 +78,14 @@ interface Landed {
   sha256: string;
   maxLead: number;
   filename: string;
+  contentType: string;
 }
 
 function world(flow: Flow = { produced: 0, consumed: 0, maxLead: 0 }, overrides: Partial<VerticalScopeHost> = {}) {
   const landed: Landed[] = [];
   const host = {
     connectorAttachmentUploadLocal: async (...args: unknown[]) => {
-      const upload = args[3] as { filename: string; body: ByteBody };
+      const upload = args[3] as { filename: string; contentType: string; body: ByteBody };
       const hash = createHash('sha256');
       let size = 0;
       if (isSizedByteStream(upload.body)) {
@@ -110,6 +111,7 @@ function world(flow: Flow = { produced: 0, consumed: 0, maxLead: 0 }, overrides:
         sha256: hash.digest('hex'),
         maxLead: flow.maxLead,
         filename: upload.filename,
+        contentType: upload.contentType,
       });
       return { id: 'att1', filename: upload.filename, size };
     },
@@ -129,13 +131,13 @@ function world(flow: Flow = { produced: 0, consumed: 0, maxLead: 0 }, overrides:
   return { client, landed };
 }
 
-const upload = (body: ByteBody, filename = 'drawing-set.pdf') => ({
+const upload = (body: ByteBody, filename = 'drawing-set.pdf', contentType = 'application/pdf') => ({
   connectionId: conn,
   tenantId: t,
   scopeId: s,
   entity: { entityType: 'document', entityId: 'd1' },
   filename,
-  contentType: 'application/pdf',
+  contentType,
   visibility: 'internal' as const,
   body,
 });
@@ -169,6 +171,34 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
     const { client, landed } = world(source.state);
     await client.connectorUploadAttachment(upload({ stream: source.stream, length: CHUNK }, 'Årsredovisning – utkast.pdf'));
     expect(landed[0]!.filename).toBe('Årsredovisning – utkast.pdf');
+  });
+
+  it('a content type no header could carry still reaches the far host, inside the metadata', async () => {
+    const source = producer(1);
+    const { client, landed } = world(source.state);
+    // The multipart route takes the same value; the stream route must not fail it in a header.
+    await client.connectorUploadAttachment(upload({ stream: source.stream, length: CHUNK }, 'a.pdf', 'application/pdf\r\nx-evil: 1'));
+    expect(landed[0]!.contentType).toBe('application/pdf\r\nx-evil: 1');
+  });
+
+  it('a filename no header could carry as it is (a lone surrogate) still reaches the far host', async () => {
+    const source = producer(1);
+    const { client, landed } = world(source.state);
+    await client.connectorUploadAttachment(upload({ stream: source.stream, length: CHUNK }, 'lone-\uD800-surrogate.pdf'));
+    expect(landed[0]!.filename).toBe('lone-\uD800-surrogate.pdf');
+  });
+
+  it("the request's own content-type is octet-stream: the file's type travels only in the metadata", async () => {
+    const seen: (string | null)[] = [];
+    const client = new VerticalClient({
+      fetch: (async (_input: RequestInfo, init?: RequestInit) => {
+        seen.push(new Headers(init?.headers).get('content-type'));
+        return new Response('{}', { status: 201 });
+      }) as typeof fetch,
+      platformSecret: SECRET,
+    });
+    await client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }));
+    expect(seen).toEqual(['application/octet-stream']);
   });
 
   it('a stream carrying more than it declared is refused, and nothing lands', async () => {

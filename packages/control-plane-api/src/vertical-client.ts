@@ -896,10 +896,15 @@ export class VerticalClient {
     const verb = 'connector-attachment-stream';
     const path = '/internal/connector-attachment-stream';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    // The metadata is the only header a caller's strings reach, and it is always ASCII: JSON
+    // escapes a control character or a lone surrogate, and URI encoding everything else. The
+    // file's own type rides inside it (the route reads `contentType` from there), so the request's
+    // own `content-type` is the plain octet-stream it is, and no filename or content type can
+    // make the request unsendable.
     const init = knownLengthInit({
       method: 'POST',
       headers: {
-        'content-type': meta.contentType,
+        'content-type': 'application/octet-stream',
         [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
         [CONNECTOR_ATTACHMENT_META_HEADER]: encodeURIComponent(JSON.stringify({ ...meta, size: body.length })),
       },
