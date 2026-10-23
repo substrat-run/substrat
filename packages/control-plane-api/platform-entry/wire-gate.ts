@@ -73,10 +73,11 @@ export interface WireGateOptions<Env> {
    * Where a call that changes state spends its nonce: the scope object's store (RFC §4, Q4), a
    * follow-on. Until one is given, such a call cannot be verified, and is counted as the
    * `no-nonce-store` fault. It is reached only when the nonce is claimed, after every other check
-   * has passed, and for the scope the verified envelope names; a throw, or an answer that is not a
-   * store, is the store's failure.
+   * has passed, and for the scope the verified envelope names. An answer of `undefined` says this
+   * version has no store for it: the same static fault as no seam at all (RFC §3.4). A throw is the
+   * store's failure.
    */
-  readonly nonceCache?: (env: Env, scopeId: string) => WireNonceCache;
+  readonly nonceCache?: (env: Env, scopeId: string) => WireNonceCache | undefined;
   /** Milliseconds since the epoch. The wall clock unless a test injects one. */
   readonly clock?: () => number;
   /** How long a nonce claim may take before it counts as the store's failure. */
@@ -125,16 +126,25 @@ class GateFault extends Error {
 /**
  * The store a call claims through, reached only when the verifier claims: a claim is its last
  * check, after the signature and the scope pin, so nothing is asked of the store for an envelope
- * refused for anything else. Bounded in time, with a throw (reaching the store included), an answer
- * that is not a store, or a timeout read as the store's failure.
+ * refused for anything else. A seam that answers with no store is the static `no-nonce-store`
+ * (RFC §3.4): this version has none, which is a fact about it, not a failure of the request. A store
+ * that exists is bounded in time, and a throw (reaching it included) or a timeout is its failure.
  */
-function claimedThrough(reach: () => WireNonceCache, timeoutMs: number): WireNonceCache {
+function claimedThrough(reach: () => WireNonceCache | undefined, timeoutMs: number): WireNonceCache {
   return {
     async claim(nonce, until) {
+      let cache: WireNonceCache | undefined;
+      try {
+        cache = reach();
+      } catch {
+        throw new GateFault('nonce-store');
+      }
+      // `== null`: an untyped `null` says the same as `undefined`, as it did when the seam was read up front.
+      if (cache == null) throw new GateFault('no-nonce-store');
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         return await Promise.race([
-          reach().claim(nonce, until),
+          cache.claim(nonce, until),
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new Error('the nonce store did not answer in time')), timeoutMs);
           }),
@@ -319,6 +329,8 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       : { iss: 'router', kind: 'route', aud, method, target };
 
     let reason: WireRefusalReason | null = null;
+    /** The seam answered, at the claim, that this version has no store. */
+    let noStore = !store;
     try {
       const verdict = await verifyWireEnvelope({
         headers: request.headers,
@@ -332,12 +344,22 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       });
       if (verdict.ok) claims = verdict.claims;
     } catch (error) {
-      // A store that exists and fails is the platform's failure in every state.
-      return faulted(error instanceof GateFault ? error.fault : 'verifier', legacy.credential);
+      if (error instanceof GateFault && error.fault === 'no-nonce-store') {
+        // The seam answered that this version has no store. It is asked only at the claim, the
+        // verifier's last check, so the envelope passed every other: its decoded claims (the same
+        // header the verifier decoded) are the verified ones, and the fault is the static one below.
+        claims = claimed;
+        noStore = true;
+      } else {
+        // A store that exists and fails is the platform's failure in every state.
+        return faulted(error instanceof GateFault ? error.fault : 'verifier', legacy.credential);
+      }
     }
     // An envelope that passed everything else, on a call that keeps nonces with no store to keep
     // them in: a static fault, reached only now, as a claim is always the last check.
-    if (claims && keepsNonces && !store) return staticFault('no-nonce-store', servedAs(legacy.identity ?? claims));
+    if (claims && keepsNonces && noStore) {
+      return staticFault('no-nonce-store', servedAs(legacy.identity ?? claims));
+    }
 
     // Two valid credentials naming different requests: a router defect to count in every state (Q9),
     // whichever of them decides what is served.

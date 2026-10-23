@@ -316,8 +316,10 @@ already holds a call to it: a call that keeps nonces and names a scope claims it
 scope, through a seam the store will fill, bounded at a second. The seam is reached only when the
 nonce is claimed, which is the verifier's last check: after the signature, the body and the scope
 pin, so only for the scope the verified envelope names, and never for an envelope refused for
-anything else. A throw from reaching it is the store's failure (§3.4). With the seam empty, or no
-scope named, such a call meets §3.4's statically absent store.
+anything else. With the seam empty, no scope named, or a seam that answers it has no store for that
+scope, such a call meets §3.4's statically absent store: counted, and in `dual` handed on as it came.
+Only a store that exists and throws (reaching it included), or does not answer within the second, is
+the store's failure, the 5xx in every state.
 
 ## 5. Verifier states
 

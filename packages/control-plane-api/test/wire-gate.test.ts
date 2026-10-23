@@ -576,22 +576,51 @@ describe('dual, a call to the internal surface', () => {
       expect(WIRE_CLAIM_TIMEOUT_MS).toBe(1000);
     });
 
-    it.each([
-      [
-        'cannot even be reached',
-        () => {
-          throw new Error('no binding');
-        },
-      ],
-      ['answers with no store', () => undefined as unknown as WireNonceCache],
-    ])('a store that %s, for an envelope that passed every other check, is the store’s failure, counted and answered as one', async (_, nonceCache) => {
+    it('a store that cannot even be reached, for an envelope that passed every other check, is the store’s failure in every state', async () => {
       for (const state of ['dual', 'signed-only']) {
-        const { res, g } = await scopedCall(envOf(state), { nonceCache });
+        const { res, g } = await scopedCall(envOf(state), {
+          nonceCache: () => {
+            throw new Error('no binding');
+          },
+        });
         expect(res.status).toBe(503);
         expect(await res.text()).toBe(WIRE_FAULT_BODY);
         expect(g.seen).toEqual([]);
         expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
       }
+    });
+
+    it.each([
+      ['undefined', undefined],
+      ['null', null],
+    ])('a seam that answers %s says this version has no store: the static fault, which dual serves through the legacy credential', async (_, answer) => {
+      const nonceCache = vi.fn(() => answer as unknown as WireNonceCache | undefined);
+      const dual = await scopedCall(envOf('dual'), { nonceCache });
+      expect(dual.res.status).toBe(200);
+      expect(await bodyOf(dual.res)).toBe('{"x":1}');
+      // Asked once, for the scope the envelope named, and counted as the version's own static fault.
+      expect(nonceCache).toHaveBeenCalledTimes(1);
+      expect(nonceCache).toHaveBeenCalledWith(expect.anything(), SCOPE);
+      expect(dual.g.wire()).toEqual([
+        expect.objectContaining({ outcome: 'fault', fault: 'no-nonce-store', reason: null, legacy: 'valid', issuer: 'platform', tenantId: TENANT, scopeId: SCOPE }),
+      ]);
+      // Its twin: signed-only has no legacy path to hand it to, so the fault is answered.
+      const signedOnly = await scopedCall(envOf('signed-only'), { nonceCache });
+      expect(signedOnly.res.status).toBe(503);
+      expect(await signedOnly.res.text()).toBe(WIRE_FAULT_BODY);
+      expect(signedOnly.g.seen).toEqual([]);
+      expect(signedOnly.g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store' });
+    });
+
+    it('a seam with no store, beside no valid legacy credential, hands the call on as it came, to the vertical’s own gate', async () => {
+      const g = gated({ nonceCache: () => undefined });
+      const body = '{"x":1}';
+      const headers = { [PLATFORM_SECRET_HEADER]: 'wrong', ...(await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE })) };
+      const request = new Request(PROVISION, { method: 'POST', headers, body });
+      const res = await g.fetch(request, envOf('dual'));
+      expect(res.status).toBe(403);
+      expect(await res.text()).toBe('not a platform call');
+      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'invalid' });
     });
   });
 
