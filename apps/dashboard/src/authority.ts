@@ -67,7 +67,7 @@ import type {
   MemberRemoval,
   ScopeMembers,
 } from '@substrat-run/contracts';
-import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api';
+import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
 import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
@@ -306,11 +306,16 @@ export class TenantNarrowedControlPlane {
    * tolerance, and a lenient read of a 2xx. The connect `probe` (#605) arrives on the
    * transport's own `ControlPlaneError`.
    */
-  private async call<T>(
+  private async call<T>(path: string, init: RequestInit & { idempotent?: boolean } = {}): Promise<T> {
+    return (await this.callWithHeaders<T>(path, init)).body;
+  }
+
+  /** `call`, plus the headers of the answer — for the one read whose answer says something its body cannot. */
+  private async callWithHeaders<T>(
     path: string,
-    init: RequestInit & { idempotent?: boolean; onResponse?: (headers: Headers) => void } = {},
-  ): Promise<T> {
-    const { idempotent, onResponse, ...request } = init;
+    init: RequestInit & { idempotent?: boolean } = {},
+  ): Promise<{ body: T; headers: Headers }> {
+    const { idempotent, ...request } = init;
     // A credential the provider cannot resolve is thrown as it is, before anything is sent:
     // it is a different failure with its own answer (the worker's 503 naming what is
     // unconfigured), and burying it under a transport message would lose that.
@@ -337,12 +342,13 @@ export class TenantNarrowedControlPlane {
     } catch (e) {
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
-      if (idempotent && e instanceof ControlPlaneError && (e.status === 409 || e.status === 422)) return undefined as T;
+      if (idempotent && e instanceof ControlPlaneError && (e.status === 409 || e.status === 422)) {
+        return { body: undefined as T, headers: new Headers() };
+      }
       throw e;
     }
-    // For the one read whose answer says something its body cannot (a header the plane sets beside it).
-    onResponse?.(res.headers);
-    return res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
+    const body = res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
+    return { body, headers: res.headers };
   }
 
   private post<T>(path: string, body?: unknown, idempotent = false): Promise<T> {
@@ -1388,29 +1394,24 @@ export class TenantNarrowedControlPlane {
     if (input.search) q.set('search', input.search);
     if (input.hours) q.set('hours', String(input.hours));
     if (input.limit) q.set('limit', String(input.limit));
-    let incomplete = false;
-    const events =
-      (await this.call<
-        Array<{
-          timestamp?: unknown;
-          level?: unknown;
-          message?: unknown;
-          service?: unknown;
-          outcome?: unknown;
-          trigger?: unknown;
-          invocation?: unknown;
-          entrypoint?: unknown;
-          requestId?: unknown;
-          invocationId?: unknown;
-          cpuTimeMs?: unknown;
-          wallTimeMs?: unknown;
-          raw?: unknown;
-        }>
-      >(`/observability/logs?${q.toString()}`, {
-        onResponse: (headers) => {
-          incomplete = headers.get(LOGS_INCOMPLETE_HEADER) === '1';
-        },
-      })) ?? [];
+    const { body, headers } = await this.callWithHeaders<
+      Array<{
+        timestamp?: unknown;
+        level?: unknown;
+        message?: unknown;
+        service?: unknown;
+        outcome?: unknown;
+        trigger?: unknown;
+        invocation?: unknown;
+        entrypoint?: unknown;
+        requestId?: unknown;
+        invocationId?: unknown;
+        cpuTimeMs?: unknown;
+        wallTimeMs?: unknown;
+        raw?: unknown;
+      }>
+    >(`/observability/logs?${q.toString()}`);
+    const events = body ?? [];
     // A builder only ever reaches an OWNED service here (checked above), so the event —
     // `raw` included — is already this tenant's own telemetry: passing the whole thing
     // through is a deliberate widening (the drill-down the per-app tab renders), not a
@@ -1433,7 +1434,7 @@ export class TenantNarrowedControlPlane {
         wallTimeMs: num(e.wallTimeMs),
         raw: e.raw,
       })),
-      incomplete,
+      incomplete: logsIncompleteOf(headers),
     };
   }
 
