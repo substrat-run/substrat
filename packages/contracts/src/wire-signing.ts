@@ -468,8 +468,9 @@ interface WireExpectationOf<K extends WireKind> {
 
 /**
  * A call's body, read on demand: the verifier calls it only when the body is the next check, after
- * the signature and every cheaper check have passed, so an envelope refused before that never costs
- * a read. It answers `null` when the body could not be read, which is refused as `body`.
+ * the signature, the audience, the lifetime, the clock, the method and the target have passed, so an
+ * envelope refused for any of those never costs a read. The tenant and scope pins, and a nonce claim,
+ * come after it, in the order §3.4 of the RFC fixes. It answers `null` when the body could not be read, which is refused as `body`.
  */
 export type WireBodyReader = () => WireBytes | null | Promise<WireBytes | null>;
 

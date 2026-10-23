@@ -273,8 +273,8 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     }
 
     // A call binds its exact body (RFC §3.6). It is read whole, and only when the verifier reaches
-    // it, after the signature and every cheaper check: a call that carries no envelope, or one
-    // refused before that, is handed on with its body unread. One that is read hands the vertical
+    // it, after the signature, the audience, the time, the method and the target: a call that
+    // carries no envelope, or one refused for any of those, is handed on with its body unread. One that is read hands the vertical
     // the same bytes.
     const readBody = async (): Promise<ArrayBuffer | string | null> => {
       if (request.body === null) return '';

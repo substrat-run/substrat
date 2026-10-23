@@ -295,8 +295,10 @@ payload (Q7).
 - **A signer mints a fresh envelope for every attempt.** A retry that resends the same headers
   carries a spent nonce and is refused as `replay`, which would read as noise in `dual` and fail
   outright in `signed-only`. So the router's bounded retry and every platform retry re-sign.
-- **A call that names no scope** has no scope object to hold a cache. Such a call must be a read
-  or idempotent (`replay: 'none'`). Any that is not is named in the PR that wires it.
+- **A call that names no scope** has no scope object to hold a cache. It keeps no nonce only if its
+  endpoint changes nothing and is on the table below; a call that changes state names the scope its
+  nonce is spent in, or it is its deployment's fault. Version 1 has no place for an unscoped write
+  that is merely idempotent: its signer names a scope, or it waits for a store that needs none.
 - **The policy is the endpoint's, in a table, and never inferred** (`wireReplayOf`): a call with a
   safe method (`GET`, `HEAD`, `OPTIONS`), or to one of the endpoints `WIRE_REPLAY_FREE_CALLS` lists
   as taking a body and changing nothing, keeps no nonce. Step 1 lists `/internal/query`,
@@ -305,6 +307,9 @@ payload (Q7).
   nonces, a new endpoint included, whatever its envelope names: one that names no scope has no store
   to spend a nonce in, and is its deployment's fault (§3.4), never `'none'`. So a signer that leaves
   the scope off a call that changes state fails closed rather than losing its replay protection.
+  Until the store exists, an unscoped call and a version with no store are both counted as
+  `no-nonce-store`; follow-on 5 counts the first under a kind of its own, so the two can be told
+  apart once stores exist.
 
 The primitives define the cache interface only. Its storage is a follow-on. The entry (step 1)
 already holds a call to it: a call that keeps nonces and names a scope claims its nonce in that
@@ -558,10 +563,15 @@ never rebuilt keeps the up-calls it was built with.
    break-glass path), and on withdrawing the shared credentials (both of §7's tests). The signers'
    release gate on `sign` off and on non-signing builds goes into each signer's deploy workflow.
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
-   verifier already calls (§4). Until it is live in a version, that version counts every scoped
-   call that changes state as the `no-nonce-store` fault (§3.4), served through the legacy
-   credential in `dual`, so step 2's check reads those calls as faults, not refusals, and no
-   environment can pass the gate to `signed-only`.
+   verifier already calls (§4). Until it is live in a version, that version counts every call that
+   keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step
+   2's check reads those calls as faults, not refusals, and no environment can pass the gate to
+   `signed-only`. Its PR decides two things more:
+   - the store a claim goes through is reached only after the envelope's signature verifies, and
+     for the scope the verified envelope names, never for a scope read from the unverified one;
+   - a call that names a scope whose own object may not exist (a preview client's, or a configure
+     call naming a preview or its parent) needs an explicit answer for where its nonce is spent.
+   It also counts an unscoped call that keeps nonces under a fault kind of its own (§4).
 6. **The up-channel removals**, one PR each (§9, step 6). On the critical path: they can start
    now, in parallel with 1 to 5, and the credential cannot be withdrawn until all are merged and
    live.
