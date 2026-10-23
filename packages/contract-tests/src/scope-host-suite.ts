@@ -11128,10 +11128,20 @@ export function scopeHostContractSuite(
         expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([]);
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([]);
 
-        // Two counts for one key are summed, every column of them, never one dropped.
-        const refused = served(4, { class2xx: 1, class4xx: 3, rateLimited: 3 });
+        // Two counts for one key are summed, every column of them, never one dropped. Each column
+        // is non-zero on both sides and differs between them, so a column taken from one side
+        // instead of summed cannot pass for the sum.
+        const one = served(4, { class2xx: 1, class3xx: 1, class4xx: 1, class5xx: 1, rateLimited: 1 });
+        const other = served(10, { class2xx: 2, class3xx: 3, class4xx: 2, class5xx: 3, rateLimited: 2 });
         expect(
-          await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '05:00:00'), counts: [good, { ...good, ...refused, sampled: true }] }),
+          await host.admin.recordRequestDay!(staff, {
+            day,
+            attemptedAt: at(day, '05:00:00'),
+            counts: [
+              { ...good, ...one },
+              { ...good, ...other, sampled: true },
+            ],
+          }),
         ).toEqual({ recorded: 1 });
         expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([
           {
@@ -11139,7 +11149,7 @@ export function scopeHostContractSuite(
             tenantId: t.tenant,
             vertical: 'acme-crm',
             scopeId: t.scope,
-            ...served(7, { class2xx: 4, class4xx: 3, rateLimited: 3 }),
+            ...served(14, { class2xx: 3, class3xx: 4, class4xx: 3, class5xx: 4, rateLimited: 3 }),
             sampled: true,
             estimated: true,
           },

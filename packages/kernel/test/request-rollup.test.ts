@@ -349,6 +349,44 @@ describe('the request-rollup phase', () => {
     expect(second.requestRollup).toMatchObject({ saturated: 1, failed: 1, repeated: 1 });
   });
 
+  it('a read that succeeds inside a pass ends the run, so the same error after it is a new run, and reported', async () => {
+    const { host } = rollupHost();
+    const asked: string[] = [];
+    const read = async (day: string) => {
+      asked.push(day);
+      // Pass one fails its only day; pass two reads one day, then meets the same error again.
+      if (asked.length === 1 || asked.length === 3) throw new Error('HTTP 403');
+      return [count(1)];
+    };
+    const at = (pass: number) => new Date(Date.parse(NOW) + pass * 15 * 60_000).toISOString();
+    expect((await sweep(host, { read, lookbackDays: 3, now: () => at(0) })).errors).toHaveLength(1);
+    const second = await sweep(host, { read, lookbackDays: 3, now: () => at(1) });
+    expect(asked).toHaveLength(3);
+    expect(second.errors).toEqual([{ kind: 'request-rollup', id: asked[2], error: 'HTTP 403' }]);
+    expect(second.requestRollup).toMatchObject({ read: 1, failed: 1, repeated: 0, streak: { since: at(1), failures: 1 } });
+  });
+
+  it('a saturated day that is the newest attempt from an earlier pass does not break the run of failures', async () => {
+    const { host } = rollupHost();
+    const asked: string[] = [];
+    const read = async (day: string) => {
+      asked.push(day);
+      if (asked.length === 2) throw new RequestRollupSaturated('more than 50000 groups');
+      throw new Error('HTTP 403');
+    };
+    const at = (pass: number) => new Date(Date.parse(NOW) + pass * 15 * 60_000).toISOString();
+    // Pass one: the 403 starts a run. Pass two reads one day only, which is saturated, so the
+    // newest attempt on record is now that saturated day.
+    expect((await sweep(host, { read, lookbackDays: 3, now: () => at(0) })).errors).toHaveLength(1);
+    expect((await sweep(host, { read, lookbackDays: 3, batch: 1, now: () => at(1) })).requestRollup).toMatchObject({ saturated: 1 });
+    // Pass three meets the 403 again: the same run, so it is counted, not mailed again, and its
+    // start is still pass one's.
+    const third = await sweep(host, { read, lookbackDays: 3, now: () => at(2) });
+    expect(asked).toHaveLength(3);
+    expect(third.errors).toEqual([]);
+    expect(third.requestRollup).toMatchObject({ failed: 1, repeated: 1, streak: { since: at(0), failures: 2 } });
+  });
+
   it('reports a different failure as a new streak', async () => {
     const { host } = rollupHost();
     let error = 'HTTP 403';
