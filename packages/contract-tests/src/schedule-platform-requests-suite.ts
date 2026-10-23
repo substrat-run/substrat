@@ -92,7 +92,8 @@ export function schedulePlatformRequestsContractSuite(
       expect(await queued()).toEqual([1, 2]);
     });
 
-    describe.skipIf(raw === undefined)('a purge horizon (#2440; skipped: no `raw` SQL door was passed)', () => {
+    // Skipped when the host passes no `raw` SQL door: the rows cannot be aged past the horizon.
+    describe.skipIf(raw === undefined)('a purge horizon (#2440)', () => {
       /** A new primary scope, so the schedule's cadence row starts empty. */
       const freshScope = async (): Promise<ScopeId> => {
         const fresh = scopeId.parse(ulid());
