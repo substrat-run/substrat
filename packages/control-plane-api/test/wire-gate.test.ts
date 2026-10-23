@@ -520,6 +520,20 @@ describe('signed-only: the envelope alone decides', () => {
     const twin = await unscoped.fetch(new Request(PROVISION, { method: 'POST', headers: await callEnvelope(PROVISION, body), body }), envOf('signed-only'));
     expect(twin.status).toBe(200);
   });
+
+  it('a valid legacy credential does not carry a call past a missing nonce store: only dual serves it', async () => {
+    const PROVISION = 'https://vertical/internal/provision';
+    const body = '{}';
+    const answers: number[] = [];
+    for (const state of ['signed-only', 'dual']) {
+      const g = gated();
+      const headers = { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE })) };
+      const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body }), envOf(state));
+      answers.push(res.status);
+      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid' });
+    }
+    expect(answers).toEqual([503, 200]);
+  });
 });
 
 describe('the deployment’s own faults', () => {
