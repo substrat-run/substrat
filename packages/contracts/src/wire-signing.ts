@@ -1,8 +1,8 @@
 /**
  * The signed envelope the router and the control plane are to put on a call to a vertical
- * (RFC wire-signing, K-58 proposed). **Primitives only**: nothing in the repo signs or
- * verifies one yet, and the shared-secret checks in `wire-auth.ts` and vertical-host's
- * `readRoutedNode` are unchanged.
+ * (RFC wire-signing, K-58 proposed). Nothing in the repo signs one yet. The platform's entry
+ * module verifies one, inert until a deployment is given key lists (RFC §9, step 1), and the
+ * shared-secret checks in `wire-auth.ts` and vertical-host's `readRoutedNode` are unchanged.
  *
  * Ed25519 over a canonical encoding, the scheme the scope-store envelope already uses (K-52),
  * with its conventions reused rather than restated: the key id, the raw public key lists, the
@@ -597,4 +597,79 @@ export async function verifyWireEnvelope(input: {
     if ((await replay.claim(claims.nonce, until)) !== true) return refuse('replay');
   }
   return { ok: true, claims };
+}
+
+/*
+ * What a deployment is given at upload (RFC §5, §6) and what its entry writes per request (§8).
+ * Named here, beside the envelope, so the entry that reads them and the uploader and readiness
+ * report that will write and read them spell them one way.
+ */
+
+/** The router's public keys, a comma-separated list. Plain configuration: public keys are not secret. */
+export const WIRE_ROUTER_KEYS_VAR = 'SUBSTRAT_WIRE_ROUTER_KEYS';
+/** The control plane's public keys, a comma-separated list. */
+export const WIRE_PLATFORM_KEYS_VAR = 'SUBSTRAT_WIRE_PLATFORM_KEYS';
+/** The deployment's own dispatch name, which an envelope's `aud` must equal. */
+export const WIRE_AUDIENCE_VAR = 'SUBSTRAT_WIRE_AUDIENCE';
+/** The environment's down-channel state, one of {@link WIRE_STATES}. */
+export const WIRE_STATE_VAR = 'SUBSTRAT_WIRE_STATE';
+
+/** What a deployment accepts on a call down (RFC §5). */
+export const WIRE_STATES = ['legacy-only', 'dual', 'signed-only'] as const;
+export type WireState = (typeof WIRE_STATES)[number];
+
+/**
+ * A deployment's state from what its upload carries (RFC §5, Q3). No key list at all is
+ * `legacy-only` whatever the setting says, so a deployment no upload gave keys behaves as it
+ * did before the verifier existed. With keys, an explicit `legacy-only` or `signed-only` is
+ * taken as said, and anything else (missing, unknown) reads as `dual`: a wrong value fails
+ * toward accepting what is accepted today.
+ */
+export function wireStateOf(config: { readonly routerKeys?: unknown; readonly platformKeys?: unknown; readonly state?: unknown }): WireState {
+  const listed = (value: unknown) => typeof value === 'string' && value.trim() !== '';
+  if (!listed(config.routerKeys) && !listed(config.platformKeys)) return 'legacy-only';
+  return config.state === 'legacy-only' || config.state === 'signed-only' ? config.state : 'dual';
+}
+
+/**
+ * How one request fared (RFC §8). `legacy-accepted` is an envelope refused beside a legacy
+ * credential that was valid, and carries the refusal's reason; `refused` is an envelope refused
+ * with no valid legacy credential beside it.
+ */
+export const WIRE_OUTCOMES = ['signed-accepted', 'legacy-accepted', 'dual-mismatch', 'refused', 'fault'] as const;
+export type WireOutcome = (typeof WIRE_OUTCOMES)[number];
+
+/**
+ * Which of the deployment's own faults a `fault` was: its key lists could not be loaded, it has
+ * no nonce store for a call that needs one, its nonce store threw or did not answer in time, or
+ * the verifier threw for any other reason.
+ */
+export const WIRE_FAULTS = ['keys', 'no-nonce-store', 'nonce-store', 'verifier'] as const;
+export type WireFault = (typeof WIRE_FAULTS)[number];
+
+/** The legacy credential beside the envelope: present and valid, present and not, or not sent. */
+export type WireLegacyCredential = 'valid' | 'invalid' | 'absent';
+
+/**
+ * The line an entry writes for every request it judged (RFC §8), beside the invocation line and
+ * sharing its request id. Never written in `legacy-only`. Names, ids and outcomes only: never a
+ * header, a credential, a body or an error's text. Add fields; never rename one.
+ */
+export interface WireVerificationLine {
+  readonly substrat: 'wire';
+  readonly state: Exclude<WireState, 'legacy-only'>;
+  /** The issuer and kind the request was judged as. */
+  readonly issuer: WireIssuer;
+  readonly kind: WireKind;
+  readonly outcome: WireOutcome;
+  /** Why the envelope was refused, beside `legacy-accepted` and `refused`; otherwise null. */
+  readonly reason: WireRefusalReason | null;
+  /** Beside `fault`; otherwise null. */
+  readonly fault: WireFault | null;
+  readonly legacy: WireLegacyCredential;
+  /** The tenant and scope the request was served as, when a credential proved one. */
+  readonly tenantId: string | null;
+  readonly scopeId: string | null;
+  /** The platform's `SUBSTRAT_VERSION_ID`, as on the invocation line. */
+  readonly versionId: string | null;
 }
