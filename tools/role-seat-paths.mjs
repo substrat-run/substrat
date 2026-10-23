@@ -73,7 +73,7 @@ export const ALLOWED = {
   'packages/adapter-cloudflare/src/host.ts#fanOut':
     "a fan-out of the directory's stored definitions, each judged when `defineRole` wrote it; re-judged here, a stored role would be dropped and its seats revoked (#2447)",
   'packages/adapter-cloudflare/src/scope-do.ts#projectRole':
-    "the ScopeDO's write of a definition its coordinator sends, judged where the coordinator defines it (`defineRole`, `provisionScopeLocal`, `projectRolesLocal`)",
+    "the ScopeDO's one-role projection RPC: no shipped caller (tests seed a scope's role rows through it), so it writes what it is handed unjudged, a named residual of #2447",
   'packages/adapter-cloudflare/src/scope-do.ts#applyProjectionReply': '`applyProjection` with its refusal answered as data: the same write, judged where its caller defines the roles',
   'packages/adapter-cloudflare/src/scope-do.ts#applyProjection':
     "the ScopeDO's write of the role set and seats its coordinator sends, judged where the coordinator defines them (`provisionScopeLocal`, `projectRolesLocal`); a directory fan-out is not re-judged (#2447)",
