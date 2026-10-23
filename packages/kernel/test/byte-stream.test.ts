@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   attachmentSha256,
@@ -328,6 +329,26 @@ describe('globalFetch with a sized stream body (#2498)', () => {
       expect(s.seen[1]!.size).toBe('[object Object]'.length);
     } finally {
       await s.close();
+    }
+  });
+
+  it("a compressed response's body stream carries the decoded bytes, which its Content-Length does not count", async () => {
+    const plain = new Uint8Array(64 * 1024).fill(7);
+    const zipped = gzipSync(plain);
+    const srv = createServer((_req, res) => {
+      res.writeHead(200, { 'content-encoding': 'gzip', 'content-length': String(zipped.byteLength) });
+      res.end(zipped);
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    try {
+      const res = await globalFetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/file`);
+      expect(res.headers?.get('content-length')).toBe(String(zipped.byteLength));
+      const read = await drain(res.body!);
+      // What the doc on `ConnectorResponse.body` warns of: the stream is the file, decoded.
+      expect(read.size).toBe(plain.byteLength);
+      expect(read.size).not.toBe(zipped.byteLength);
+    } finally {
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
     }
   });
 

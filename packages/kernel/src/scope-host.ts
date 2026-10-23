@@ -1556,9 +1556,14 @@ export interface ConnectorResponse {
   arrayBuffer(): Promise<ArrayBuffer>;
   /**
    * The body as a stream (#2498), for a provider file too large to hold: read it chunk by chunk,
-   * or hand it on to `upload` as a `SizedByteStream` with the length the provider declared.
-   * `null` for a response with no body, as on a web `Response`, which every adapter's `fetch`
-   * returns.
+   * or hand it on to `upload` as a `SizedByteStream`. `null` for a response with no body, as on
+   * a web `Response`, which every adapter's `fetch` returns.
+   *
+   * The stream carries the body as `fetch` delivers it: DECODED. A response sent with a
+   * `Content-Encoding` (gzip, br) is decompressed on the way, while its `Content-Length` still
+   * counts the compressed bytes, so that header is the stream's length only when the response
+   * has no `Content-Encoding`. Otherwise take the length from the provider's own record of the
+   * file (its item metadata); a stream sized by the wrong number is refused, not landed.
    *
    * OPTIONAL for the reason `headers` is: a hand-built stand-in is an object literal, and most
    * connectors never read a stream. A caller that needs one falls back to `arrayBuffer()` when it
