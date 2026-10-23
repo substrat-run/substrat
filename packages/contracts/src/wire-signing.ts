@@ -130,8 +130,12 @@ export interface WireClaims {
 const LINES = 15;
 /** The ULID grammar the router asserts and vertical-host's `ROUTED_ID` reads. */
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-/** An HTTP method token (RFC 9110 `tchar`) with its letters upper-cased, as `wireRequestBinding` gives it. */
-const METHOD = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
+/**
+ * An HTTP method token (RFC 9110 `tchar`) with its letters upper-cased, as `wireRequestBinding` gives
+ * it. At most 32 characters: the longest registered method, UPDATEREDIRECTREF, is 17, and the bound
+ * only keeps an unregistered token from making the line unbounded.
+ */
+const METHOD = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,32}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 // At most 15 digits, no sign and no leading zero: the text `String(n)` gives for an integer below 10^15.
 const SECONDS = /^(0|[1-9]\d{0,14})$/;
@@ -334,7 +338,8 @@ export async function signWireEnvelope(key: WireSigningKey, input: WireEnvelopeI
   // A pair the table does not admit fails in the encoder below, as malformed.
   const body = wireEnvelopeShape(input.iss, input.kind)?.body;
   if (body === 'absent' && input.body !== undefined) throw new Error(`a ${input.kind} envelope binds no body`);
-  if (body === 'required' && input.body === undefined) throw new Error(`a ${input.kind} envelope binds its body: pass it, empty or not`);
+  // `== null`, as the verifier reads it: a null body is a read that failed, never the empty body.
+  if (body === 'required' && input.body == null) throw new Error(`a ${input.kind} envelope binds its body: pass it, empty or not`);
   const iat = input.iat ?? Math.floor(Date.now() / 1000);
   const exp = input.exp ?? iat + WIRE_ENVELOPE_LIFETIME_SECONDS;
   if (!lifetimeAdmitted(iat, exp)) throw new Error('a wire envelope lives for at most the maximum lifetime, and ends after it starts');
@@ -467,6 +472,7 @@ export const WIRE_REFUSAL_REASONS = [
   'target',
   'body',
   'scope',
+  'claim-after-until',
   'replay',
 ] as const;
 export type WireRefusalReason = (typeof WIRE_REFUSAL_REASONS)[number];
@@ -506,8 +512,10 @@ export async function verifyWireEnvelope(input: {
   /** When the request arrived: what the envelope's window is judged against. */
   readonly nowSeconds: number;
   /**
-   * The time now, read again just before a nonce is claimed, after the body has been read. A claim
-   * that would come after the cache may have forgotten the nonce is refused. Defaults to the wall clock.
+   * The time now, read again just before a nonce is claimed, after the body has been read: the same
+   * clock `nowSeconds` was read from. Required when the replay policy is a cache (it throws otherwise,
+   * before anything is read). A claim that would come after the cache may have forgotten the nonce is
+   * refused as `claim-after-until`.
    */
   readonly clockSeconds?: () => number;
   /** Whatever it returns is ignored; a promise it returns is awaited by nobody and its rejection caught. */
@@ -529,8 +537,14 @@ export async function verifyWireEnvelope(input: {
   if (replay !== 'none' && typeof (replay as Partial<WireNonceCache> | undefined)?.claim !== 'function') {
     throw new TypeError("a call's expectation states its replay policy: 'none' or a nonce cache");
   }
-  if (replay !== 'none' && expected.scopeId === undefined) {
+  // `== null`: an untyped `scopeId: null` pins nothing, so it is the same fault as leaving it out.
+  if (replay !== 'none' && expected.scopeId == null) {
     throw new TypeError('a call that keeps nonces pins the scope whose object holds them');
+  }
+  // The claim clock is the deployment's, like `nowSeconds`; a default would mix an injected clock
+  // with the wall clock, so a call that keeps nonces must hand it over, and it is checked here.
+  if (replay !== 'none' && typeof input.clockSeconds !== 'function') {
+    throw new TypeError('a call that keeps nonces takes a clockSeconds function to time its claim');
   }
   const header = input.headers.get(WIRE_ENVELOPE_HEADER);
   const signature = input.headers.get(WIRE_SIGNATURE_HEADER);
@@ -567,9 +581,10 @@ export async function verifyWireEnvelope(input: {
   if (expected.scopeId !== undefined && claims.scopeId !== expected.scopeId) return refuse('scope');
   if (replay !== 'none') {
     const until = claims.exp + WIRE_CLOCK_SKEW_SECONDS;
-    const claimedAt = (input.clockSeconds ?? (() => Date.now() / 1000))();
-    // A cache may forget the nonce after `until`, so a claim made later could not see a replay.
-    if (!(claimedAt <= until)) return refuse('replay');
+    const claimedAt = input.clockSeconds!();
+    // A cache may forget the nonce after `until`, so a claim made later could not see a replay. Its
+    // own reason, so a slow body is not counted as one.
+    if (!(claimedAt <= until)) return refuse('claim-after-until');
     if ((await replay.claim(claims.nonce, until)) !== true) return refuse('replay');
   }
   return { ok: true, claims };
