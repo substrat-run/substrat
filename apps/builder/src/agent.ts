@@ -43,6 +43,14 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
+import {
+	orUnhandled,
+	problemResponse,
+	providerMessage,
+	providerRefusal,
+	refuse,
+	turnFailure,
+} from './problem.js';
 import type { BuildPhase } from './phase.js';
 import {
 	buildWriteGuard,
@@ -57,7 +65,6 @@ import {
 } from './phase.js';
 import { explainProviderFailure } from '@substrat-run/model-providers';
 import {
-	HostedProviderError,
 	hostedProviderCatalog,
 	listModelsHosted,
 	resolveModelHosted,
@@ -370,9 +377,9 @@ export class BuilderAgent extends DurableObject<Env> {
 	// ── the turn (the local server's handleTurn, ported) ──────────────────────
 
 	async #turn(req: Request): Promise<Response> {
-		if (this.#busy) return json(409, { error: 'a turn is already running' });
+		if (this.#busy) return refuse(409, 'a turn is already running');
 		const { message } = (await req.json().catch(() => ({}))) as { message?: string };
-		if (!message?.trim()) return json(400, { error: 'message required' });
+		if (!message?.trim()) return refuse(400, 'message required');
 
 		const { reg, entry } = await this.#current();
 		const state = await this.#state(entry.id);
@@ -391,7 +398,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			// Auto specs validate via their strong member (same provider/credential).
 			resolveModelHosted(this.env, resolveAutoSpec(modelSpec, 'iterate'));
 		} catch (err) {
-			return json(422, { error: err instanceof HostedProviderError ? err.message : String(err) });
+			return problemResponse(providerRefusal(err));
 		}
 
 		this.#busy = true;
@@ -540,11 +547,7 @@ export class BuilderAgent extends DurableObject<Env> {
 
 				state.history.push(...transcript);
 			} catch (err) {
-				emit({
-					type: 'error',
-					message: err instanceof Error ? err.message : String(err),
-					fatal: true,
-				});
+				emit({ type: 'error', message: turnFailure(err), fatal: true });
 			} finally {
 				clearInterval(heartbeat);
 				await this.ctx.storage.put(`state:${entry.id}`, state);
@@ -567,6 +570,10 @@ export class BuilderAgent extends DurableObject<Env> {
 	// ── routes ────────────────────────────────────────────────────────────────
 
 	override async fetch(req: Request): Promise<Response> {
+		return orUnhandled(() => this.#route(req));
+	}
+
+	async #route(req: Request): Promise<Response> {
 		const url = new URL(req.url);
 		const route = `${req.method} ${url.pathname}`;
 
@@ -582,7 +589,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				try {
 					endpoint = resolveModelHosted(this.env, modelSpec).endpoint;
 				} catch (err) {
-					modelError = err instanceof Error ? err.message : String(err);
+					modelError = providerMessage(err);
 				}
 				return json(200, {
 					root: REPO,
@@ -636,10 +643,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				const pair = this.#sandboxPair(entry.id);
 				await this.#restoreProject(pair, entry).catch(() => undefined);
 				const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${REPO}/${entry.dir}/.git`)}`);
-				if (probe.exitCode !== 0) return json(404, { error: 'no snapshot yet' });
+				if (probe.exitCode !== 0) return refuse(404, 'no snapshot yet');
 				await this.#saveSnapshot(pair.sb, entry);
 				const built = await this.env.PROJECT_REPOS.get(this.#snapshotKey(entry));
-				if (!built) return json(404, { error: 'no snapshot yet' });
+				if (!built) return refuse(404, 'no snapshot yet');
 				return new Response(built.body, { headers: { 'content-type': 'application/json' } });
 			}
 			case 'GET /api/files': {
@@ -649,7 +656,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				// is deployed: a read was jailed only to the REPO, so the file pane served
 				// any file in the checkout — the sandbox's own secrets included (#1225).
 				const rel = underProject(path, entry.dir);
-				if (rel === null) return json(403, { error: `reads are limited to ${entry.dir}/` });
+				if (rel === null) return refuse(403, `reads are limited to ${entry.dir}/`);
 				const pair = this.#sandboxPair(entry.id);
 				await this.#restoreProject(pair, entry).catch(() => undefined);
 				// Through the PROJECT-rooted workspace, so the read is confined twice. NOTE
@@ -662,22 +669,22 @@ export class BuilderAgent extends DurableObject<Env> {
 				try {
 					return json(200, { path, entries: await projectWs.listFiles(rel) });
 				} catch {
-					return json(404, { error: `no such directory: ${path}` });
+					return refuse(404, `no such directory: ${path}`);
 				}
 			}
 			case 'GET /api/file': {
 				const { entry } = await this.#current();
 				const path = url.searchParams.get('path');
-				if (!path) return json(400, { error: 'path required' });
+				if (!path) return refuse(400, 'path required');
 				const rel = underProject(path, entry.dir);
-				if (rel === null) return json(403, { error: `reads are limited to ${entry.dir}/` });
+				if (rel === null) return refuse(403, `reads are limited to ${entry.dir}/`);
 				try {
 					return json(200, {
 						path,
 						content: await this.#projectWs(this.#sandbox(entry.id), entry.dir).readFile(rel),
 					});
 				} catch {
-					return json(404, { error: `no such file: ${path}` });
+					return refuse(404, `no such file: ${path}`);
 				}
 			}
 			case 'PUT /api/file': {
@@ -687,14 +694,14 @@ export class BuilderAgent extends DurableObject<Env> {
 					content?: string;
 				};
 				if (!path || content === undefined)
-					return json(400, { error: 'path and content required' });
+					return refuse(400, 'path and content required');
 				// The same containment the local server applies, and this is the half that
 				// is deployed: judged on the NORMALISED path, never the text. A `..` segment
 				// after the project prefix passes a `startsWith` test and still names a file
 				// anywhere in the repo — which the repo-rooted workspace writes happily,
 				// because its own jail only refuses paths that leave the REPO (#1225).
 				const rel = withinProject(path, entry.dir);
-				if (rel === null) return json(403, { error: `writes are limited to ${entry.dir}/` });
+				if (rel === null) return refuse(403, `writes are limited to ${entry.dir}/`);
 				// Through the PROJECT-rooted workspace, so the write is confined twice: once
 				// by the check above, and again by that workspace's own jail, which is also
 				// what judges a symlink pointing out of the project.
@@ -721,27 +728,23 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, hostedProviderCatalog(this.env));
 			case 'GET /api/models': {
 				const provider = url.searchParams.get('provider');
-				if (!provider) return json(400, { error: 'provider required' });
+				if (!provider) return refuse(400, 'provider required');
 				try {
 					return json(200, { models: await listModelsHosted(this.env, provider) });
 				} catch (err) {
-					return json(422, {
-						error: err instanceof HostedProviderError ? err.message : String(err),
-					});
+					return problemResponse(providerRefusal(err));
 				}
 			}
 			case 'POST /api/model': {
-				if (this.#busy) return json(409, { error: 'cannot switch model mid-turn' });
+				if (this.#busy) return refuse(409, 'cannot switch model mid-turn');
 				const { spec } = (await req.json().catch(() => ({}))) as { spec?: string };
-				if (!spec) return json(400, { error: 'spec required (provider:model)' });
+				if (!spec) return refuse(400, 'spec required (provider:model)');
 				try {
 					const r = resolveModelHosted(this.env, spec);
 					await this.ctx.storage.put('modelSpec', spec);
 					return json(200, { spec, endpoint: r.endpoint, endpointSource: 'worker secret' });
 				} catch (err) {
-					return json(422, {
-						error: err instanceof HostedProviderError ? err.message : String(err),
-					});
+					return problemResponse(providerRefusal(err));
 				}
 			}
 			case 'GET /api/history': {
@@ -775,14 +778,14 @@ export class BuilderAgent extends DurableObject<Env> {
 				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
 				const reg = await this.#registry();
 				const entry = reg.projects.find((p) => p.id === id);
-				if (!entry) return json(404, { error: `no project ${id}` });
+				if (!entry) return refuse(404, `no project ${id}`);
 				reg.currentId = entry.id;
 				await this.#save(reg);
 				return json(200, entry);
 			}
 			case 'PUT /api/project': {
 				const { name } = (await req.json().catch(() => ({}))) as { name?: string };
-				if (!name?.trim()) return json(400, { error: 'name required' });
+				if (!name?.trim()) return refuse(400, 'name required');
 				const { reg, entry } = await this.#current();
 				entry.name = name.trim();
 				entry.nameSource = 'user';
@@ -791,10 +794,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, entry);
 			}
 			default:
-				return json(503, {
-					error:
-						'not hosted yet: /api/dev (preview processes) lands with the #626 follow-ups',
-				});
+				return refuse(503, 'not hosted yet: /api/dev (preview processes) lands with the #626 follow-ups');
 		}
 	}
 }

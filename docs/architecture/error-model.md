@@ -360,8 +360,20 @@ already answer their expected refusal as a value.
      excluded relay, email and connection routes (`/internal/drain-scope`, `/internal/email/*`,
      `/internal/connections/*`, the connector callbacks, `relay-caller.ts`, the dashboard's connection probe), and
      the CLI broker's browser-facing `GET` (a `text/plain` page for a person, not an API answer).
-   - **Still open, surface by surface:** those excluded relay, email and connection routes, the
-     builder, `dev-issuer`; a `requestId` on the control plane's
+   - **`apps/builder` — built.** The node server (`server.ts`) and the worker plus the agent DO
+     (`worker.ts`, `agent.ts`) refuse through `src/problem.ts`: `validation_failed`, `unauthenticated`,
+     `forbidden`, `not_found` and `conflict` where the status fits the taxonomy, `about:blank` for the
+     422, 500 and 503. Statuses and sentences are unchanged and `error` rides beside `detail`, so
+     `web/src/api.ts` still reads them. A throw no route caught answers the same 500 in all three — the
+     server's handler catch, the worker's `app.onError` and the DO's `fetch` catch-all — with no `detail`
+     (the message is logged, not sent) and control-plane-api's `error: 'internal error'`; the one
+     exception is the node server's malformed request body, which keeps its pre-#113 500 and the parser's
+     sentence. A throw's message reaches the client only for the provider error class: on the 422,
+     `/api/session`'s `modelError` and a turn's fatal `error` event alike, any other answering a stable
+     sentence. `test/refusals-problem.test.ts` holds the documents, the node writer's media type, and the
+     three files to writing no bare `{ error` and reading no throw's `.message` again.
+   - **Still open, surface by surface:** those excluded relay, email and connection routes,
+     `dev-issuer`; a `requestId` on the control plane's
      problems (#2192). A repo-wide source gate waits until a second surface is converted.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
      `problemDetail` (#971) and every surface answers `detail`. The members carried beside
