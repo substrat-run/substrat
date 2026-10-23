@@ -328,12 +328,14 @@ scheduleEntitlementContractSuite('adapter-sqlite', async () => {
 
 // #2431: a scheduled pass reports the platform requests it enqueued. The DEFAULT checker, so
 // the schedules act on the system grant they were seated.
+let schedRequestHost: SqliteScopeHost | undefined;
 schedulePlatformRequestsContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-request-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
+  schedRequestHost = host;
   return {
     host,
     cleanup: async () => {
@@ -341,6 +343,11 @@ schedulePlatformRequestsContractSuite('adapter-sqlite', async () => {
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}, async (tenant, scope, sql, params = []) => {
+  const internals = schedRequestHost as unknown as {
+    runtime(t: typeof tenant, s: typeof scope): { db: { prepare(q: string): { run(...a: unknown[]): unknown } } };
+  };
+  internals.runtime(tenant, scope).db.prepare(sql).run(...params);
 });
 
 // #1577: the resumable-run driver. The DEFAULT checker, for the same reason the

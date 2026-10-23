@@ -5648,8 +5648,11 @@ export function defineScopeDO(
         new Date().toISOString(),
         PURGE_BATCH,
       );
-      return runPurgePass(operation, due, async (entityId) => {
-        await this.#invokeOrThrow(
+      // #2440: what each committed purge enqueued, from the same envelope an ordinary invoke's
+      // caller reads. A purge that threw rolled back, and its intents with it.
+      let platformRequests = 0;
+      const pass = await runPurgePass(operation, due, async (entityId) => {
+        const envelope = await this.#invokeOrThrow(
           operation,
           { [due.idFrom]: entityId },
           schedule.moduleId as unknown as PrincipalId,
@@ -5665,7 +5668,9 @@ export function defineScopeDO(
           systemDoorInstance,
           true,
         );
+        platformRequests += envelope.platformRequests;
       }, (write) => write(doSpineSql(this.sql)));
+      return platformRequests > 0 ? { ...pass, platformRequests } : pass;
     }
 
     /**
