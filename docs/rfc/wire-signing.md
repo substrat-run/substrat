@@ -30,8 +30,8 @@ holder at once.
 2. **Up: the vertical asks by writing, and the platform pulls.** What a vertical needs from the
    control plane goes to its own outbox, the way provisioning and platform requests already flow
    (K-31). The few direct calls a vertical makes up to the control plane are replaced one by one.
-3. **Then nothing a deployment holds is accepted by any platform worker,** and the shared
-   secrets are retired. The down-channel can be signed-only before that, but the shared
+3. **Then nothing a deployment holds is accepted by any platform worker,** save Q10's bounded
+   exception while a never-rebuilt version is live, and the shared secrets are retired. The down-channel can be signed-only before that, but the shared
    credential stays injected until the up-channel is gone, so the up-channel work is on the
    critical path (§9).
 
@@ -45,7 +45,7 @@ format and the key tooling are K-52's.
 anything relies on one (`dual`). The signers then add signatures beside the legacy headers,
 which stay. The control plane records which deployed versions can verify, and an environment's
 down-channel becomes `signed-only` only when every live version can, the counters show no legacy
-acceptance, and a human flips it. The shared credential is withdrawn only after the up-channel
+acceptance, mismatch or fault, and a human flips it. The shared credential is withdrawn only after the up-channel
 is gone. Every step reverts on its own.
 
 **This pull request** adds this RFC, the K-58 draft and the primitives, with tests and vectors.
@@ -301,8 +301,12 @@ step 6, withdraws the credential.
   disagree (the router's legacy headers name a different tenant, scope or surface from the
   envelope), the request is **not** refused: it is answered through the legacy headers, as today,
   counted as `dual-mismatch` and surfaced (Q9). A non-zero count is a router defect, and it blocks
-  the move to `signed-only` (§7). Only in `signed-only`, where the envelope alone decides, can a
-  disagreement refuse anything, and there the legacy headers are no longer read.
+  the move to `signed-only` (§7). Only in `signed-only`, where the envelope alone decides admission,
+  can a disagreement refuse anything. A version built with the verifier then reads its routed
+  identity from the verified envelope (Q2), not the legacy headers. A version built against an older
+  vertical-host still reads the router's legacy headers for that identity at steps 5 and 6, which
+  is safe only because the router still sends both and `dual-mismatch` was zero at the flip; after
+  step 7 such a version needs Q10's values or blocks the withdrawal.
 - **The state is injected at upload, with two derived safeties.** A deployment with no key lists is
   `legacy-only` whatever the setting says, so a new verifier under an old control plane, which
   injects no keys, behaves exactly as today. A deployment with key lists and a missing or unknown

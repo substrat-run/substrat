@@ -739,6 +739,30 @@ describe('wire envelope: replay', () => {
     expect(asked).toEqual([until]);
   });
 
+  it('a claim clock that reads something other than a time is the deployment\'s fault: it throws, never asks the cache, and no reason is heard', async () => {
+    const asked: number[] = [];
+    const cache: WireNonceCache = { claim: (_n, u) => (asked.push(u), true) };
+    for (const reading of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, '1700000000', null, Promise.resolve(CALL.input.iat)]) {
+      const heard: WireRefusalReason[] = [];
+      await expect(
+        verifyWireEnvelope({
+          headers: headersOf(CALL.header, CALL.signature),
+          keys: await keysOf(),
+          expected: { ...expectationOf(CALL), replay: cache, scopeId: CALL.input.scopeId! } as WireExpectation,
+          nowSeconds: CALL.input.iat,
+          clockSeconds: () => reading as unknown as number,
+          onRefusal: (r) => heard.push(r),
+        }),
+        String(reading),
+      ).rejects.toThrow(/clockSeconds read/);
+      expect(heard, String(reading)).toEqual([]);
+    }
+    expect(asked).toEqual([]);
+    // The twin: zero, the earliest time, is a reading and asks the cache.
+    expect((await check({ vector: CALL, nonces: cache, claimAt: 0 })).verdict).toMatchObject({ ok: true });
+    expect(asked).toHaveLength(1);
+  });
+
   it('a call that keeps nonces takes its claim clock, checked up front, or fails closed as the deployment\'s fault', async () => {
     const { cache, claims } = memoryNonces();
     for (const clockSeconds of [undefined, null, 5, 'now'] as const) {

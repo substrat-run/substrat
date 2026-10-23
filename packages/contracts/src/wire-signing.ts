@@ -502,8 +502,11 @@ export type WireVerdict = WireAccepted | WireRefused;
  * throw or a rejection from it is ignored. The deployment's own faults throw instead, so no counter
  * files them under a caller, and they are checked before anything else: a key set
  * {@link wireVerificationKeys} did not build, a call expectation whose replay policy is neither
- * `'none'` nor a cache, and a cache with no pinned `scopeId` (a cache lives in one scope's object,
- * so the endpoint pins the scope it claims through). A throw from the cache propagates too.
+ * `'none'` nor a cache, a cache with no pinned `scopeId` (a cache lives in one scope's object, so
+ * the endpoint pins the scope it claims through), and a cache with no `clockSeconds` function. Two
+ * more are found only when a nonce is about to be claimed, and throw then: a claim clock that reads
+ * something other than a finite, non-negative number of seconds (a promise from an async clock
+ * included), before the cache is asked; and a throw from the cache.
  */
 export async function verifyWireEnvelope(input: {
   readonly headers: { get(name: string): string | null };
@@ -582,6 +585,12 @@ export async function verifyWireEnvelope(input: {
   if (replay !== 'none') {
     const until = claims.exp + WIRE_CLOCK_SKEW_SECONDS;
     const claimedAt = input.clockSeconds!();
+    // The claim clock is the deployment's: a reading that is not a time is its fault, never a
+    // caller's reason, and a negative one never reaches the cache. `Number.isFinite` does not coerce,
+    // so it refuses a string, null or a promise as well as NaN and the infinities.
+    if (!Number.isFinite(claimedAt) || claimedAt < 0) {
+      throw new TypeError('clockSeconds read something other than a time in seconds');
+    }
     // A cache may forget the nonce after `until`, so a claim made later could not see a replay. Its
     // own reason, so a slow body is not counted as one.
     if (!(claimedAt <= until)) return refuse('claim-after-until');
