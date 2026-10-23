@@ -93,6 +93,8 @@ import {
   instant,
   meterReading,
   scopeStorageSample,
+  requestDay,
+  requestRollupDay,
   subjectRef,
   createConnectionInput,
   connectLinkFilter,
@@ -183,6 +185,8 @@ import {
   type ListPage,
   type MeterReading,
   type ScopeStorageSample,
+  type RequestDay,
+  type RequestRollupDay,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
@@ -523,6 +527,9 @@ import {
   type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
+  type RequestDayFilter,
+  type RequestDayReadInput,
+  type RequestRollupDayFilter,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
@@ -975,6 +982,11 @@ interface ControlPlaneStub {
   listScopeStorage(filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
   listScopeStorageAttempts(): Promise<ScopeStorageAttempt[]>;
   pruneScopeStorage(limit: number): Promise<number>;
+  /** #2501: the daily request rollup — kernel `request-rollup.ts`, run inside the directory DO. */
+  recordRequestDay(input: RequestDayReadInput): Promise<{ recorded: number }>;
+  listRequestDays(filter?: RequestDayFilter): Promise<RequestDay[]>;
+  listRequestRollupDays(filter?: RequestRollupDayFilter): Promise<RequestRollupDay[]>;
+  pruneRequestDays(limit: number, retentionMonths: number | null): Promise<number>;
   insertConnection(row: {
     id: string;
     tenantId: string;
@@ -10467,6 +10479,25 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows;
       },
       pruneScopeStorage: async (_actor, limit: number) => this.cp.pruneScopeStorage(assertRowLimit('limit', limit)),
+      recordRequestDay: async (_actor, input: RequestDayReadInput) => this.cp.recordRequestDay(input),
+      listRequestDays: async (actor, filter?: RequestDayFilter) => {
+        const rows = (await this.cp.listRequestDays(filter)).map((r) => requestDay.parse(r));
+        await this.recordAccess(
+          actor,
+          'listRequestDays',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows;
+      },
+      listRequestRollupDays: async (actor, filter?: RequestRollupDayFilter) => {
+        const rows = (await this.cp.listRequestRollupDays(filter)).map((r) => requestRollupDay.parse(r));
+        await this.recordAccess(actor, 'listRequestRollupDays', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.cp.pruneRequestDays(assertRowLimit('limit', limit), retentionMonths),
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;
         return this.cp.recordModelUsage({

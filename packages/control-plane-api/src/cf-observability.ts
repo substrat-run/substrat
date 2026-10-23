@@ -4,7 +4,8 @@ import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
-import { FIELD_COVERAGE_ID_FIELD, ROUTER_SCRIPT_NAMES } from '@substrat-run/contracts';
+import { FIELD_COVERAGE_ID_FIELD, ROUTER_REQUEST_POINT, ROUTER_SCRIPT_NAMES, utcDay } from '@substrat-run/contracts';
+import { RequestRollupSaturated, type RequestDayCount } from '@substrat-run/kernel';
 import { readFieldCoverage } from './field-coverage-read.js';
 import type {
   ObservabilityReader,
@@ -229,6 +230,17 @@ function requestRecordOf(e: Record<string, unknown>): RequestRecord {
  */
 const MAX_CORRELATED_INVOCATIONS = 40;
 const MAX_LINES_PER_INVOCATION = 20;
+
+/**
+ * How a service-grain read (`queryEvents`) is bounded while it fills its page after the wire line
+ * is left out: at most this many rounds of queries (the first round is one per service), and at
+ * most `MAX_FILL_QUERIES` queries past that first round in all, whatever the number of services.
+ * A page loses at most about a third to the wire line, so one more query nearly always fills it;
+ * the bounds keep a window of almost nothing else, or a read across many services, from costing
+ * more than a few.
+ */
+const MAX_FILL_ROUNDS = 4;
+const MAX_FILL_QUERIES = 8;
 
 /**
  * #1877: the groups one telemetry answer carries, and how many pages of them a span may
@@ -495,6 +507,42 @@ function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown
   // The dispatch id goes with it: it is the report's provenance and means nothing without it.
   const { outputFields: _report, [FIELD_COVERAGE_ID_FIELD]: _id, ...rest } = source as Record<string, unknown>;
   return { ...e, source: rest };
+}
+
+/**
+ * The events of a telemetry `events` answer, as every reader in this module receives them.
+ *
+ * The list is unwrapped: the view has nested it one level deeper across API revisions, so
+ * both shapes are accepted rather than pinning whichever was current at writing. And the
+ * platform's wire-signing line (`substrat: 'wire'`, RFC wire-signing §8) is left out, here
+ * and only here, so no reader can return one: it is the platform's counter, it carries a
+ * refusal's reason, and it shares a request's id, which is how a tenant's view finds the
+ * lines it shows. No reader today needs it; one that does (the readiness report, RFC §10
+ * follow-on 4) is to read it through a query of its own that opts in by name.
+ *
+ * The line is left out AFTER the backend spent its `limit` on it, because no filter of the
+ * telemetry API is known to keep the lines that lack the key it negates. So beside the events go
+ * the size of what the backend returned (`fetched`) and its oldest timestamp, never a line of it:
+ * a reader judges a full page (more may exist) by those, and asks again for what the filter took
+ * (`queryEvents`, and the tenant view's per-request read).
+ */
+function telemetryPage(result: { events?: { events?: unknown[] } | unknown[] } | undefined): {
+  events: Array<Record<string, unknown>>;
+  fetched: number;
+  oldest: number | null;
+} {
+  const outer = result?.events;
+  const all = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
+  let oldest: number | null = null;
+  for (const e of all) {
+    const t = e['timestamp'];
+    if (typeof t === 'number' && (oldest === null || t < oldest)) oldest = t;
+  }
+  return {
+    events: all.filter((e) => ((e['source'] ?? {}) as Record<string, unknown>)['substrat'] !== 'wire'),
+    fetched: all.length,
+    oldest,
+  };
 }
 
 /**
@@ -832,21 +880,22 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const key = `${dataset}\u0000${tenantId}\u0000${q.from}\u0000${q.to}\u0000${grainSeconds}`;
     const pending = inFlight.get(key);
     if (pending) return pending;
+    const p = ROUTER_REQUEST_POINT;
     const sql = `
       SELECT
-        blob1 AS vertical,
-        blob2 AS scopeId,
-        blob3 AS surface,
-        double2 AS status,
-        blob6 AS operation,
-        blob7 AS problemCode,
-        blob8 AS principalKind,
-        blob9 AS level,
+        ${p.vertical} AS vertical,
+        ${p.scopeId} AS scopeId,
+        ${p.surface} AS surface,
+        ${p.status} AS status,
+        ${p.operation} AS operation,
+        ${p.problemCode} AS problemCode,
+        ${p.principalKind} AS principalKind,
+        ${p.level} AS level,
         toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
         sum(_sample_interval) AS requests,
         max(_sample_interval) AS maxInterval
       FROM ${aeDataset(dataset)}
-      WHERE index1 = ${aeLiteral(tenantId)}
+      WHERE ${p.tenantId} = ${aeLiteral(tenantId)}
         AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
         AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
       GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, bucket
@@ -1081,14 +1130,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // single-valued equality, and an OR across script names is not a filter this
       // API offers. The queries are independent, so they run concurrently and the
       // merge (not the backend) enforces the overall `limit`.
-      if (services && services.length > 1) {
-        const pages = await Promise.all(services.map((s) => queryEvents(s, level, search, hours, limit)));
-        return pages
-          .flat()
-          .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
-          .slice(0, limit);
-      }
-      return queryEvents(services?.[0], level, search, hours, limit);
+      return queryEvents(services && services.length > 1 ? services : [services?.[0]], level, search, hours, limit);
     },
 
     // Present only when the caller named the router's dataset: with no dataset there is
@@ -1249,32 +1291,31 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // would answer two rows whose p95s no caller can combine. Vertical reads null there.
     const byScope = input.grain === 'scope';
     const window = resolveObservabilityWindow(input);
+    // Blob/double positions are the router's published shape, `ROUTER_REQUEST_POINT`: it only
+    // ever grows, never reorders, which is what lets a reader name the ordinal it wants. The
+    // connector-call dataset's ordinals are published beside these, on
+    // `queryConnectorCallsSeries` below (#1691) — a different dataset, never this one.
+    const p = ROUTER_REQUEST_POINT;
     const where = [
-      `index1 = ${aeLiteral(input.tenantId)}`,
+      `${p.tenantId} = ${aeLiteral(input.tenantId)}`,
       `timestamp >= toDateTime(${Math.ceil(Date.parse(window.since) / 1000)})`,
       `timestamp < toDateTime(${Math.ceil(Date.parse(window.until) / 1000)})`,
     ];
-    if (input.scopeId) where.push(`blob2 = ${aeLiteral(input.scopeId)}`);
-    if (input.vertical) where.push(`blob1 = ${aeLiteral(input.vertical)}`);
+    if (input.scopeId) where.push(`${p.scopeId} = ${aeLiteral(input.scopeId)}`);
+    if (input.vertical) where.push(`${p.vertical} = ${aeLiteral(input.vertical)}`);
 
-    // Blob/double positions are the router's published shape (`apps/router/src/worker.ts`
-    // `record`): index1 tenant; blob1 vertical, blob2 scope, blob3 surface, blob4 status
-    // class; double1 duration ms, double2 status. That shape only ever grows, never
-    // reorders — which is what lets these ordinals be written down here at all. The
-    // connector-call dataset's ordinals are published beside these, on
-    // `queryConnectorCallsSeries` below (#1691) — a different dataset, never this one.
     const sql = `
       SELECT
-        blob2 AS scopeId,
-        ${byScope ? "'' AS vertical" : 'blob1 AS vertical'},
-        ${byScope ? "'' AS surface" : 'blob3 AS surface'},
+        ${p.scopeId} AS scopeId,
+        ${byScope ? "'' AS vertical" : `${p.vertical} AS vertical`},
+        ${byScope ? "'' AS surface" : `${p.surface} AS surface`},
         sum(_sample_interval) AS requests,
-        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
-        sum(if(blob4 = '2xx', _sample_interval, 0)) AS class2xx,
-        sum(if(blob4 = '3xx', _sample_interval, 0)) AS class3xx,
-        sum(if(blob4 = '4xx', _sample_interval, 0)) AS class4xx,
-        quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
-        quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
+        sum(if(${p.statusClass} = '5xx', _sample_interval, 0)) AS errors,
+        sum(if(${p.statusClass} = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(${p.statusClass} = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(${p.statusClass} = '4xx', _sample_interval, 0)) AS class4xx,
+        quantileWeighted(0.5)(${p.durationMs}, _sample_interval) AS durationP50,
+        quantileWeighted(0.95)(${p.durationMs}, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
       WHERE ${where.join(' AND ')}
       GROUP BY ${byScope ? 'scopeId' : 'scopeId, vertical, surface'}
@@ -1325,22 +1366,23 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const window = resolveObservabilityWindow(input);
     const bucketMinutes = observabilityBucketMinutes(window);
     const scopes = input.scopeIds.map((s) => aeLiteral(s)).join(', ');
+    const p = ROUTER_REQUEST_POINT;
     const sql = `
       SELECT
-        blob2 AS scopeId,
+        ${p.scopeId} AS scopeId,
         toStartOfInterval(timestamp, INTERVAL '${bucketMinutes}' MINUTE) AS start,
         sum(_sample_interval) AS requests,
-        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
-        sum(if(blob4 = '2xx', _sample_interval, 0)) AS class2xx,
-        sum(if(blob4 = '3xx', _sample_interval, 0)) AS class3xx,
-        sum(if(blob4 = '4xx', _sample_interval, 0)) AS class4xx,
-        quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
-        quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
+        sum(if(${p.statusClass} = '5xx', _sample_interval, 0)) AS errors,
+        sum(if(${p.statusClass} = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(${p.statusClass} = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(${p.statusClass} = '4xx', _sample_interval, 0)) AS class4xx,
+        quantileWeighted(0.5)(${p.durationMs}, _sample_interval) AS durationP50,
+        quantileWeighted(0.95)(${p.durationMs}, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
-      WHERE index1 = ${aeLiteral(input.tenantId)}
+      WHERE ${p.tenantId} = ${aeLiteral(input.tenantId)}
         AND timestamp >= toDateTime(${Math.ceil(Date.parse(window.since) / 1000)})
         AND timestamp < toDateTime(${Math.ceil(Date.parse(window.until) / 1000)})
-        AND blob2 IN (${scopes})
+        AND ${p.scopeId} IN (${scopes})
       GROUP BY scopeId, start
       ORDER BY start ASC
       LIMIT ${SERIES_ROW_LIMIT}
@@ -1488,17 +1530,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
   }
 
   /** One Analytics Engine SQL read, returning the rows as the API shaped them. */
-  async function analyticsEngineSql(sql: string): Promise<Array<Record<string, unknown>>> {
-    const res = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/analytics_engine/sql`,
-      { method: 'POST', headers: { authorization: `Bearer ${opts.apiToken}` }, body: sql },
-    );
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`Cloudflare Analytics Engine query failed: HTTP ${res.status} ${text.slice(0, 200)}`);
-    }
-    const json = JSON.parse(text) as { data?: Array<Record<string, unknown>> };
-    return json.data ?? [];
+  function analyticsEngineSql(sql: string): Promise<Array<Record<string, unknown>>> {
+    return analyticsEngineQuery(opts, sql);
   }
 
   /**
@@ -1681,11 +1714,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       input.invocationId !== undefined ? Math.min(input.limit, 200) : MAX_LINES_PER_INVOCATION;
     const sibling = await Promise.all(
       requestIds.map(async (id) => {
-        const events = await queryRaw(
-          [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }, ...serviceFilter(input.services)],
-          timeframe,
-          linesPerInvocation,
-        );
+        // One more than the budget, then cut to it: a request writes at most one wire line (RFC
+        // wire-signing §8), which `telemetryPage` leaves out after the backend spent a slot on it.
+        // So the page holds exactly the lines it would if that line did not exist.
+        const events = (
+          await queryRaw(
+            [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }, ...serviceFilter(input.services)],
+            timeframe,
+            linesPerInvocation + 1,
+          )
+        ).slice(0, linesPerInvocation);
         // An account-wide candidate earns its place only by producing this tenant's
         // stamped line. No stamped line, or somebody else's, and the whole invocation is
         // dropped — a line shown to the wrong tenant is exactly the leak the tenant grain
@@ -1817,6 +1855,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     timeframe: { from: number; to: number },
     limit: number,
   ): Promise<Array<Record<string, unknown>>> {
+    return (await queryRawPage(filters, timeframe, limit)).events;
+  }
+
+  /** {@link queryRaw}, with the size of the page the backend returned (see `telemetryPage`). */
+  async function queryRawPage(
+    filters: TelemetryFilter[],
+    timeframe: { from: number; to: number },
+    limit: number,
+  ): Promise<ReturnType<typeof telemetryPage>> {
     const res = await authed(
       `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
       {
@@ -1835,8 +1882,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       result?: { events?: { events?: unknown[] } | unknown[] };
     };
     if (json.success === false) throw telemetryFailure(502, text);
-    const outer = json.result?.events;
-    return (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
+    return telemetryPage(json.result);
   }
 
   /** Read a complete sampled span, or refuse it; a truncated page must never mean zero fields. */
@@ -1845,8 +1891,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     timeframe: { from: number; to: number },
     depth = 0,
   ): Promise<Array<Record<string, unknown>>> {
-    const page = await queryRaw(filters, timeframe, 2000);
-    if (page.length < 2000) return page;
+    // Full is judged on what the backend returned, not on what is left once a line is filtered out.
+    const page = await queryRawPage(filters, timeframe, 2000);
+    if (page.fetched < 2000) return page.events;
     if (depth >= 12 || timeframe.to - timeframe.from <= 1000) {
       throw new ControlPlaneError(503, 'field coverage window is too busy — choose a shorter window');
     }
@@ -1858,53 +1905,112 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     return [...left, ...right];
   }
 
-  /** One telemetry query — narrowed to a single service, or to none (the fleet view). */
+  /**
+   * The service-grain read: one walk per service, or one over none (the fleet view), merged
+   * newest first and cut to `limit`, and whether it stopped short (`RecentLogs.incomplete`).
+   */
   async function queryEvents(
-    service: string | undefined,
+    services: ReadonlyArray<string | undefined>,
     level: string | undefined,
     search: string | undefined,
     hours: number,
     limit: number,
   ) {
     const to = Date.now();
-    const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
-    // `$metadata.service` is the script name in Workers Logs events — the field
-    // Cloudflare's own query examples filter on.
-    if (service) {
-      filters.push({ key: '$metadata.service', operation: 'eq', type: 'string', value: service });
-    }
-    if (level) {
-      filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
-    }
-    if (search) {
-      filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
-    }
-    const res = await authed(
-      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
-      {
-        queryId: 'substrat-recent-logs',
-        view: 'events',
-        timeframe: { from: to - hours * 3_600_000, to },
-        parameters: { datasets: ['cloudflare-workers'], filters, limit },
-        limit,
-      },
-    );
-    const json = (await res.json()) as {
-      success?: boolean;
-      errors?: Array<{ message?: string }>;
-      result?: { events?: { events?: unknown[] } | unknown[] };
+    const from = to - hours * 3_600_000;
+    const filtersFor = (service: string | undefined) => {
+      const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
+      // `$metadata.service` is the script name in Workers Logs events — the field
+      // Cloudflare's own query examples filter on.
+      if (service) {
+        filters.push({ key: '$metadata.service', operation: 'eq', type: 'string', value: service });
+      }
+      if (level) {
+        filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
+      }
+      if (search) {
+        filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
+      }
+      return filters;
     };
-    if (!res.ok || json.success === false) {
-      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
-      throw new Error(`Cloudflare telemetry query failed: ${message}`);
+    const page = async (filters: ReturnType<typeof filtersFor>, timeframe: { from: number; to: number }) => {
+      const res = await authed(
+        `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
+        {
+          queryId: 'substrat-recent-logs',
+          view: 'events',
+          timeframe,
+          parameters: { datasets: ['cloudflare-workers'], filters, limit },
+          limit,
+        },
+      );
+      const json = (await res.json()) as {
+        success?: boolean;
+        errors?: Array<{ message?: string }>;
+        result?: { events?: { events?: unknown[] } | unknown[] };
+      };
+      if (!res.ok || json.success === false) {
+        const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+        throw new Error(`Cloudflare telemetry query failed: ${message}`);
+      }
+      return telemetryPage(json.result);
+    };
+    // Filled to `limit` when more exist. A full page the wire line was taken out of (in `dual`,
+    // up to a third of one: a request writes its runtime record, its stamp and the wire line) may
+    // be followed by the page before its oldest line: its next window ends just after that oldest
+    // instant, and the event id folds the overlap. A walk is read again only while its next page
+    // could still reach the merged answer, so a read across many services pays for the fill only
+    // where a service's page decides the answer's tail, and never more than `MAX_FILL_QUERIES`.
+    //
+    // A read that stops while a walk could still hold a line for the answer says so (`incomplete`):
+    // a walk the bounds left unread, or a full page all of one instant, which no earlier window
+    // can cut past.
+    const walks = services.map((service) => ({ filters: filtersFor(service), until: to, more: false, stuck: false, oldest: 0 }));
+    const kept = new Map<string, Record<string, unknown>>();
+    const read = async (walk: (typeof walks)[number]) => {
+      const { events, fetched, oldest } = await page(walk.filters, { from, to: walk.until });
+      for (const e of events) {
+        const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+        kept.set(typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e), e);
+      }
+      // More may exist only behind a full page, and only if an earlier window can be cut: a page
+      // all of one instant cannot be, so the walk stops there, stuck rather than spent.
+      walk.more = fetched >= limit && oldest !== null && oldest + 1 < walk.until;
+      walk.stuck = fetched >= limit && !walk.more;
+      if (oldest !== null) walk.oldest = oldest;
+      if (walk.more) walk.until = oldest! + 1;
+    };
+    const answer = () => [...kept.values()].sort((a, b) => rawTime(b) - rawTime(a)).slice(0, limit);
+    // Lines older than this may have a newer one behind a walk the budget left unread.
+    let floor = -Infinity;
+    let incomplete = false;
+    let budget = MAX_FILL_QUERIES;
+    let pending = walks;
+    for (let round = 0; pending.length > 0; round++) {
+      await Promise.all(pending.map(read));
+      const merged = answer();
+      // A walk's unread lines are no newer than its oldest read one, so it can change the answer
+      // only while that line is newer than the answer's last (or the answer is short). Not "as
+      // new": the walk holding the answer's last line could add only lines of that same instant,
+      // whose order against it is arbitrary anyway, and every full page would cost a second query.
+      const cutoff = merged.length < limit ? -Infinity : rawTime(merged[merged.length - 1]!);
+      const reaches = (w: (typeof walks)[number]) => w.oldest > cutoff;
+      const wanted = walks.filter((w) => w.more && reaches(w)).sort((a, b) => b.oldest - a.oldest);
+      const roundsLeft = round + 1 < MAX_FILL_ROUNDS;
+      pending = roundsLeft ? wanted.slice(0, budget) : [];
+      budget -= pending.length;
+      const unread = wanted.slice(pending.length);
+      // Left unread by the budget while others are read on: their older lines would sit beside
+      // lines this walk may still hold, so the answer stops at its oldest and stays a true prefix.
+      // A walk that ran out of rounds is not a floor: it was read as far as every other, and a
+      // floor from it would let one service whose pages are all wire lines empty the answer.
+      if (roundsLeft) for (const w of unread) floor = Math.max(floor, w.oldest);
+      incomplete = unread.length > 0 || walks.some((w) => w.stuck && reaches(w));
     }
-    // The events view has nested the list one level deeper across API revisions —
-    // accept both rather than pinning to whichever shape was current at writing.
-    const outer = json.result?.events;
-    const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
-      Record<string, unknown>
-    >;
-    return events.map((e) => projectEvent(e));
+    const events = answer()
+      .filter((e) => rawTime(e) >= floor)
+      .map((e) => projectEvent(e));
+    return { events, incomplete };
   }
 
   /**
@@ -1956,10 +2062,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
       throw new Error(`Cloudflare span query failed: ${message}`);
     }
-    const outer = json.result?.events;
-    const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
-      Record<string, unknown>
-    >;
+    const { events, fetched } = telemetryPage(json.result);
     const spans = events.map((e) => {
       const source = (e['source'] ?? {}) as Record<string, unknown>;
       const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
@@ -1989,8 +2092,104 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     });
     // Row-cap detection: a full page means there may be more. Reported rather than
     // swallowed — an egress report that silently drops hosts is worse than none (#859).
-    return { spans, truncated: events.length >= limit };
+    return { spans, truncated: fetched >= limit };
   }
+}
+
+/** One Analytics Engine SQL read, returning the rows as the API shaped them. */
+async function analyticsEngineQuery(
+  opts: { accountId: string; apiToken: string },
+  sql: string,
+): Promise<Array<Record<string, unknown>>> {
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/analytics_engine/sql`,
+    { method: 'POST', headers: { authorization: `Bearer ${opts.apiToken}` }, body: sql },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Cloudflare Analytics Engine query failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+  }
+  const json = JSON.parse(text) as { data?: Array<Record<string, unknown>> };
+  return json.data ?? [];
+}
+
+/**
+ * The most rows one day's rollup query may answer (#2501): one per (tenant, vertical, scope) that
+ * served a request that day. A day with more is refused as `RequestRollupSaturated`, never kept as
+ * a part of the day standing for the whole. The rollup records such a day as saturated and goes on
+ * with the days after it; reading it would need a paged read, which this is not yet.
+ */
+export const REQUEST_ROLLUP_ROW_LIMIT = 50_000;
+
+/**
+ * The daily request rollup's reader (#2501): one closed UTC day of the router's request
+ * datapoints, counted per (tenant, vertical, scope). The platform sweep's request-rollup phase
+ * calls it, never a route.
+ *
+ * It reads EVERY tenant at once, which is why it is not a member of `ObservabilityReader`: that
+ * seam answers routes, and keeps a fleet-wide read one forgotten parameter away by having no
+ * all-tenants spelling. One query per day for the whole fleet is what keeps the rollup to a
+ * handful of queries a pass.
+ *
+ * Counts are `sum(_sample_interval)`, never `count()`, for `queryTenantMetrics`'s reason: Analytics
+ * Engine samples under load, so each count is an estimate and `sampled` says whether any of the
+ * day's datapoints stood for more than one request. The ordinals are the router's published shape
+ * (`ROUTER_REQUEST_POINT`). Beside the total it counts each status class from `statusClass` and
+ * the 429s from `status`, weighted the same way, so the split is kept while the datapoints last.
+ */
+export function createRouterRequestDayReader(opts: {
+  accountId: string;
+  apiToken: string;
+  /** The router's dataset, never defaulted, for `CfObservabilityOptions.routerDataset`'s reason. */
+  routerDataset: string;
+}): (day: string) => Promise<RequestDayCount[]> {
+  return async (day) => {
+    if (!utcDay.safeParse(day).success) {
+      throw new Error(`request rollup: refusing a day that is not a UTC day: ${JSON.stringify(day)}`);
+    }
+    const from = Date.parse(`${day}T00:00:00Z`) / 1000;
+    const p = ROUTER_REQUEST_POINT;
+    const sql = `
+      SELECT
+        ${p.tenantId} AS tenantId,
+        ${p.vertical} AS vertical,
+        ${p.scopeId} AS scopeId,
+        sum(_sample_interval) AS requests,
+        sum(if(${p.statusClass} = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(${p.statusClass} = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(${p.statusClass} = '4xx', _sample_interval, 0)) AS class4xx,
+        sum(if(${p.statusClass} = '5xx', _sample_interval, 0)) AS class5xx,
+        sum(if(${p.status} = 429, _sample_interval, 0)) AS rateLimited,
+        max(_sample_interval) AS maxInterval
+      FROM ${aeDataset(opts.routerDataset)}
+      WHERE timestamp >= toDateTime(${from})
+        AND timestamp < toDateTime(${from + 86_400})
+      GROUP BY tenantId, vertical, scopeId
+      ORDER BY tenantId, vertical, scopeId
+      LIMIT ${REQUEST_ROLLUP_ROW_LIMIT + 1}
+      FORMAT JSON`;
+    const rows = await analyticsEngineQuery(opts, sql);
+    // One row past the ceiling says the day holds more than one answer carries. An answer of
+    // exactly the ceiling is the whole day.
+    if (rows.length > REQUEST_ROLLUP_ROW_LIMIT) {
+      throw new RequestRollupSaturated(
+        `Cloudflare Analytics Engine request rollup holds more than ${REQUEST_ROLLUP_ROW_LIMIT} groups for ${day}: the counts would be partial`,
+      );
+    }
+    const count = (r: Record<string, unknown>, key: string) => Math.round(aeNum(r[key]));
+    return rows.map((r) => ({
+      tenantId: String(r['tenantId'] ?? ''),
+      vertical: blank(r['vertical']),
+      scopeId: String(r['scopeId'] ?? ''),
+      requests: count(r, 'requests'),
+      class2xx: count(r, 'class2xx'),
+      class3xx: count(r, 'class3xx'),
+      class4xx: count(r, 'class4xx'),
+      class5xx: count(r, 'class5xx'),
+      rateLimited: count(r, 'rateLimited'),
+      sampled: aeNum(r['maxInterval']) > 1,
+    }));
+  };
 }
 
 /**

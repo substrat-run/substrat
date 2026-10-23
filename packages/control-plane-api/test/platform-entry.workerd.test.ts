@@ -3,6 +3,21 @@ import { Miniflare } from 'miniflare';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RUNTIME_BASELINE } from '@substrat-run/contracts';
+import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
+import {
+  importWireSigningKey,
+  signWireEnvelope,
+  WIRE_AUDIENCE_VAR,
+  WIRE_ENVELOPE_HEADER,
+  WIRE_PLATFORM_KEYS_VAR,
+  WIRE_ROUTER_KEYS_VAR,
+  WIRE_SIGNATURE_HEADER,
+  WIRE_STATE_VAR,
+  wireRequestBinding,
+  type WireEnvelopeInput,
+  type WireSigningKey,
+} from '@substrat-run/contracts/wire-signing';
+import { WIRE_REFUSAL_BODY } from '../platform-entry/wire-gate.js';
 import { PLATFORM_ENTRY_MODULE, withPlatformEntry } from '../src/platform-entry.js';
 
 /**
@@ -58,8 +73,8 @@ afterAll(async () => {
   await Promise.all(runtimes.map((mf) => mf.dispose()));
 });
 
-/** Upload the vertical the way the platform does, with these declared flags, and serve one request. */
-async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_BASELINE, source = vertical, path = '/api/things') {
+/** Upload `source` the way the platform does, with these declared flags and bindings, and run it on workerd. */
+function deployed(source: string, { compatibilityFlags = [] as string[], compatibilityDate = RUNTIME_BASELINE, bindings = {} as Record<string, string> } = {}) {
   const uploaded = withPlatformEntry({
     entry: 'worker.js',
     modules: [{ name: 'worker.js', content: new TextEncoder().encode(source), contentType: 'application/javascript+module' }],
@@ -71,7 +86,7 @@ async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_
     modulesRoot: '/',
     compatibilityDate,
     compatibilityFlags: uploaded.compatibilityFlags,
-    bindings: { ROUTER_SECRET: SECRET },
+    bindings: { ROUTER_SECRET: SECRET, ...bindings },
     // #2192: the network, answered here — a host named `undeclared` the way the egress worker
     // answers one a vertical never declared, everything else 200.
     outboundService: (request: Request) =>
@@ -84,14 +99,23 @@ async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_
   });
   runtimes.push(mf);
   expect(uploaded.entry).toBe(PLATFORM_ENTRY_MODULE);
-  const res = await mf.dispatchFetch(`https://acme.example${path}`, { headers: routed });
-  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null; outboundCalls?: unknown; authChecks?: unknown };
-  return { flags: uploaded.compatibilityFlags, status: res.status, body, lines };
+  return { mf, lines, flags: uploaded.compatibilityFlags };
 }
 
+/** Upload the vertical with these declared flags, and serve one request. */
+async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_BASELINE, source = vertical, path = '/api/things') {
+  const { mf, lines, flags } = deployed(source, { compatibilityFlags, compatibilityDate });
+  const res = await mf.dispatchFetch(`https://acme.example${path}`, { headers: routed });
+  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null; outboundCalls?: unknown; authChecks?: unknown };
+  return { flags, status: res.status, body, lines };
+}
+
+/** The JSON lines in a script's stdout with this `substrat` discriminator. */
+const linesOf = (lines: string[], substrat: string) =>
+  lines.map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return undefined; } }).filter((l) => l?.['substrat'] === substrat) as Record<string, unknown>[];
+
 /** The invocation line in a script's stdout. */
-const lineOf = (lines: string[]) =>
-  lines.map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return undefined; } }).find((l) => l?.['substrat'] === 'invocation');
+const lineOf = (lines: string[]) => linesOf(lines, 'invocation')[0];
 
 const NAMED = [
   { binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: expect.any(Number) },
@@ -178,6 +202,141 @@ export default {
     return Response.json({ statuses: [a.status, b.status, c.status], outboundCalls: stamp?.record.outboundCalls ?? null });
   },
 };`;
+
+/**
+ * RFC wire-signing, step 1: the verifier the entry wraps around the stamp, on workerd. The
+ * vertical runs its own legacy checks from vertical-host's and contracts' source, as a pushed
+ * vertical bundles them, and answers with what they proved and the body it was handed.
+ */
+const CHECKING = `
+import { readRoutedNode } from ${JSON.stringify(fileURLToPath(new URL('../../vertical-host/src/routed-node.ts', import.meta.url)))};
+import { assertPlatformCall } from ${JSON.stringify(fileURLToPath(new URL('../../contracts/src/wire-auth.ts', import.meta.url)))};
+export default {
+  async fetch(request, env) {
+    let node;
+    try {
+      node = readRoutedNode(request.headers, { expectedSecret: env.ROUTER_SECRET });
+    } catch {
+      return new Response('router assertion refused', { status: 400 });
+    }
+    if (new URL(request.url).pathname.startsWith('/internal/')) {
+      try {
+        assertPlatformCall(request.headers, { expectedSecret: env.PLATFORM_SECRET });
+      } catch {
+        return new Response('not a platform call', { status: 403 });
+      }
+    }
+    const stamped = globalThis[Symbol.for('substrat.invocation-stamp')]?.get(request) !== undefined;
+    return Response.json({ node, stamped, body: await request.text() });
+  },
+};`;
+
+describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-signing §5)', () => {
+  const CALL_VALUE = 'call-legacy-value-0002';
+  const AUD = 'acme-widgets-deployment';
+  let checking: string;
+  let router: WireSigningKey;
+  let platform: WireSigningKey;
+  let lists: Record<string, string>;
+  beforeAll(async () => {
+    const out = await build({
+      stdin: { contents: CHECKING, loader: 'ts', resolveDir: fileURLToPath(new URL('.', import.meta.url)) },
+      bundle: true,
+      format: 'esm',
+      platform: 'neutral',
+      write: false,
+    });
+    checking = out.outputFiles[0]!.text;
+    const [r, p] = await Promise.all([generateScopeStoreKeyPair(), generateScopeStoreKeyPair()]);
+    [router, platform] = await Promise.all([importWireSigningKey(r.privateKey), importWireSigningKey(p.privateKey)]);
+    lists = { [WIRE_ROUTER_KEYS_VAR]: r.publicKey, [WIRE_PLATFORM_KEYS_VAR]: p.publicKey, [WIRE_AUDIENCE_VAR]: AUD };
+  });
+
+  /** The checking vertical, uploaded as the platform uploads it, with these bindings. */
+  function checked(bindings: Record<string, string>) {
+    const { mf, lines } = deployed(checking, { bindings: { PLATFORM_SECRET: CALL_VALUE, SUBSTRAT_VERSION_ID: '01JZ0000000000000000VER001', ...bindings } });
+    return { mf, lines, wire: () => linesOf(lines, 'wire'), invocation: () => lineOf(lines) };
+  }
+
+  const ROUTE = 'https://acme.example/api/things?page=2';
+  const routeEnvelope = async (over: Partial<WireEnvelopeInput> = {}) => {
+    const issued = await signWireEnvelope(router, {
+      iss: 'router',
+      kind: 'route',
+      aud: AUD,
+      tenantId: routed['x-substrat-tenant'],
+      scopeId: routed['x-substrat-scope'],
+      surface: 'app',
+      vertical: 'acme/widgets',
+      ...wireRequestBinding({ method: 'GET', url: ROUTE }),
+      ...over,
+    });
+    return { [WIRE_ENVELOPE_HEADER]: issued.header, [WIRE_SIGNATURE_HEADER]: issued.signature };
+  };
+  type Answer = { node: { tenantId: string; scopeId: string } | null; stamped: boolean; body: string };
+
+  it('with no key lists nothing changes: served as before, and no wire line is written', async () => {
+    const d = checked({});
+    const res = await d.mf.dispatchFetch(ROUTE, { headers: { ...routed, ...(await routeEnvelope()) } });
+    expect(res.status).toBe(200);
+    const answer = (await res.json()) as Answer;
+    expect(answer).toMatchObject({ node: { tenantId: routed['x-substrat-tenant'] }, stamped: true });
+    await expect.poll(() => d.invocation()?.['tenantId']).toBe(routed['x-substrat-tenant']);
+    expect(d.wire()).toEqual([]);
+  });
+
+  it('dual: a routed request is served as today and its envelope counted beside the invocation line', async () => {
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
+    const res = await d.mf.dispatchFetch(ROUTE, { headers: { ...routed, ...(await routeEnvelope()) } });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Answer).stamped).toBe(true);
+    await expect.poll(() => d.wire()).toEqual([expect.objectContaining({ substrat: 'wire', state: 'dual', outcome: 'signed-accepted', legacy: 'valid' })]);
+    await expect.poll(() => d.invocation()?.['tenantId']).toBe(routed['x-substrat-tenant']);
+  });
+
+  it('dual: an envelope alone admits a routed request, and the vertical and its line see the envelope’s identity', async () => {
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
+    const res = await d.mf.dispatchFetch(ROUTE, { headers: await routeEnvelope() });
+    expect(res.status).toBe(200);
+    const answer = (await res.json()) as Answer;
+    expect(answer.node).toMatchObject({ tenantId: routed['x-substrat-tenant'], scopeId: routed['x-substrat-scope'] });
+    // The request the vertical was handed is the one the platform stamped: one request, one line.
+    expect(answer.stamped).toBe(true);
+    await expect.poll(() => d.invocation()?.['scopeId']).toBe(routed['x-substrat-scope']);
+    expect(d.wire()).toEqual([expect.objectContaining({ outcome: 'signed-accepted', legacy: 'absent' })]);
+  });
+
+  it('dual: a call’s body is read to be verified and still reaches the vertical byte for byte', async () => {
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
+    const url = 'https://vertical/internal/query';
+    const body = JSON.stringify({ note: 'é'.repeat(70_000) });
+    const issued = await signWireEnvelope(platform, { iss: 'platform', kind: 'call', aud: AUD, ...wireRequestBinding({ method: 'POST', url }), body });
+    const res = await d.mf.dispatchFetch(url, {
+      method: 'POST',
+      headers: { 'x-substrat-platform': CALL_VALUE, [WIRE_ENVELOPE_HEADER]: issued.header, [WIRE_SIGNATURE_HEADER]: issued.signature },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Answer).body).toBe(body);
+    await expect.poll(() => d.wire()).toEqual([expect.objectContaining({ kind: 'call', outcome: 'signed-accepted', legacy: 'valid' })]);
+  });
+
+  it('signed-only: a refusal is the fixed answer, the vertical never runs, and no credential is in any output', async () => {
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'signed-only' });
+    const refused = await d.mf.dispatchFetch(ROUTE, { headers: routed });
+    expect(refused.status).toBe(401);
+    const text = await refused.text();
+    expect(text).toBe(WIRE_REFUSAL_BODY);
+    // Its positive twin: the same request with its envelope is served.
+    const served = await d.mf.dispatchFetch(ROUTE, { headers: { ...routed, ...(await routeEnvelope()) } });
+    expect(served.status).toBe(200);
+    await served.text();
+    await expect.poll(() => d.wire().map((l) => l['outcome'])).toEqual(['refused', 'signed-accepted']);
+    const everything = [text, JSON.stringify([...refused.headers]), JSON.stringify([...served.headers]), ...d.lines].join('\n');
+    expect(everything).not.toContain(SECRET);
+    expect(everything).not.toContain(CALL_VALUE);
+  });
+});
 
 describe('the platform entry records a vertical’s outbound calls, on workerd (#2192)', () => {
   it('every call reaches the network with the receiver workerd needs, and the line names each one', async () => {

@@ -382,6 +382,7 @@ import {
   lifecycleRefusal,
   purgeHeldBy,
   type PurgeGateFacts,
+  assertPlatformRequestRoom,
   purgeDueOf,
   purgeOnlyKeysOf,
   runPurgePass,
@@ -6665,11 +6666,7 @@ export function defineScopeDO(
             .toArray()[0] as { c: number }
         ).c,
       );
-      if (pending >= MAX_PENDING_PLATFORM_REQUESTS) {
-        throw new Error(
-          `too many pending platform requests (${pending}); the delivery retries once some have drained`,
-        );
-      }
+      assertPlatformRequestRoom(pending, 'the delivery retries once some have drained');
       const id = platformRequestId.parse(ulid());
       // K-42: the intent inherits the SOURCE EVENT's stamp rather than being written
       // unstamped. Nobody is impersonating at this moment — the drain runs long after
@@ -8548,9 +8545,7 @@ export function defineScopeDO(
                 .toArray()[0] as { c: number }
             ).c,
           );
-          if (pending >= MAX_PENDING_PLATFORM_REQUESTS) {
-            throw new Error(`too many pending platform requests (${pending}); retry once some have drained`);
-          }
+          assertPlatformRequestRoom(pending);
           const id = platformRequestId.parse(ulid());
           const requestedBy = systemActor ?? derivedActor;
           sql.exec(

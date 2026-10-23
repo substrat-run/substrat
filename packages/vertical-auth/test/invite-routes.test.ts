@@ -55,10 +55,15 @@ class MemoryDirectory implements InviteDirectory {
   readonly bound = new Map<string, string>();
   constructor(readonly log: string[]) {}
   async createInvite(
-    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null = null,
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string,
   ) {
     this.log.push(`createInvite ${scopeId} ${principal} ${roleKey}`);
     this.invites.set(principal, { principal, roleKey, email, createdAt: 1_700_000_000_000, tokenHash, capabilityId });
+  }
+  /** LEGACY (#2496): the explicit way to a hash-only row, as `member-directory.ts`'s `createLegacyInvite`. */
+  async createLegacyInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string) {
+    this.log.push(`createLegacyInvite ${scopeId} ${principal} ${roleKey}`);
+    this.invites.set(principal, { principal, roleKey, email, createdAt: 1_700_000_000_000, tokenHash, capabilityId: null });
   }
   async listInvites() {
     return [...this.invites.values()].map(({ tokenHash: _hash, ...row }) => row);
@@ -569,7 +574,7 @@ describe('mountInviteRoutes — the assignment bound', () => {
   describe('a revoke at a role the tenant no longer defines', () => {
     const seeded = async (roleKey: string) => {
       const principal = ulid();
-      await directory.createInvite('scope-1', principal, roleKey, null, 'hash');
+      await directory.createLegacyInvite('scope-1', principal, roleKey, null, 'hash');
       scopeRoles.set(principal, new Set([roleKey]));
       log.length = 0;
       return principal;
@@ -865,7 +870,7 @@ describe('mountInviteRoutes — the link is a become capability', () => {
   it('an invite minted before #1686 still accepts by its hash, without an exchange', async () => {
     const principal = ulid();
     const token = 'ab'.repeat(32);
-    await directory.createInvite('scope-1', principal, 'editor', null, await sha256Hex(token));
+    await directory.createLegacyInvite('scope-1', principal, 'editor', null, await sha256Hex(token));
     log.length = 0;
     const ok = await accept(token);
     expect(ok.status).toBe(200);
@@ -887,7 +892,7 @@ describe('legacy invite measurement (#2175)', () => {
   const legacy = async (email: string | null = 'legacy@acme.example') => {
     const principal = ulid();
     const token = 'cd'.repeat(32);
-    await directory.createInvite('scope-1', principal, 'editor', email, await sha256Hex(token + principal));
+    await directory.createLegacyInvite('scope-1', principal, 'editor', email, await sha256Hex(token + principal));
     return { principal, token: token + principal };
   };
 

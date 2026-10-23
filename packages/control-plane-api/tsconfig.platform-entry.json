@@ -1,0 +1,14 @@
+{
+  // The platform entry's own source (platform-entry/, RFC wire-signing): bundled into the entry
+  // by tools/platform-entry-emit.mts and never emitted, so it is outside `src` and typechecked
+  // here, with the web-standard fetch types the package build uses.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": ".",
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["platform-entry/*.ts"]
+}

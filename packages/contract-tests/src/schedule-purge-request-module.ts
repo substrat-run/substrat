@@ -6,10 +6,14 @@
  * suite's sweep counts move.
  *
  * `purgereq/purge` enqueues one request per purge, except for a row named `QUIET_PURGE_ROW`,
- * which enqueues none — the twin that a count of what was enqueued, not of what was purged.
+ * which enqueues none — the twin that a count of what was enqueued, not of what was purged — and
+ * one named `GREEDY_PURGE_ROW`, which enqueues more than a scope will ever have room for (#2506).
+ * `purgereq/enqueue` fills the scope's queue with requests of another kind, standing for traffic
+ * (or stuck rows) that are not the purge's.
  */
 import { z } from 'zod';
 import {
+  MAX_PENDING_PLATFORM_REQUESTS,
   defineEntities,
   defineOperations,
   manifestEntities,
@@ -26,6 +30,8 @@ export const PURGE_REQUEST_MODULE_ID = '@test/purge-request';
 export const PURGE_REQUEST_KIND = 'test.purged';
 export const PURGE_REQUEST_DAYS = 7;
 export const QUIET_PURGE_ROW = 'quiet';
+export const GREEDY_PURGE_ROW = 'greedy';
+export const FILLER_KIND = 'test.filler';
 
 export const purgeRequestEntities = defineEntities({
   preq: {
@@ -43,6 +49,12 @@ export const purgeRequestOperations = defineOperations(purgeRequestEntities, PER
     summary: 'Add a row',
     permission: 'purgereq:write',
     input: z.object({ id: z.string(), name: z.string() }),
+    output: ok,
+  },
+  'purgereq/enqueue': {
+    summary: 'Enqueue platform requests that are not a purge\'s',
+    permission: 'purgereq:write',
+    input: z.object({ count: z.number().int().min(1).max(MAX_PENDING_PLATFORM_REQUESTS) }),
     output: ok,
   },
   'purgereq/trash': {
@@ -92,6 +104,11 @@ export const purgeRequestMod: ModuleRegistration = {
         ctx.sql.exec('INSERT INTO purgereq_rows (id, name) VALUES (?, ?)', [i.id, i.name]);
         return { ok: true };
       }) as Handler,
+      'purgereq/enqueue': (async (ctx, i: { count: number }) => {
+        assertAllowed(await ctx.check(P('purgereq:write')));
+        for (let n = 0; n < i.count; n++) ctx.requestPlatform({ kind: FILLER_KIND, payload: { n } });
+        return { ok: true };
+      }) as Handler,
       'purgereq/trash': (async (ctx, i: { rowId: string }) => {
         await ctx.trash(ref(i.rowId));
         return { ok: true };
@@ -101,7 +118,10 @@ export const purgeRequestMod: ModuleRegistration = {
         const row = ctx.sql.query<{ name: string }>('SELECT name FROM purgereq_rows WHERE id = ?', [i.rowId])[0];
         if (!row) return { ok: false };
         ctx.sql.exec('DELETE FROM purgereq_rows WHERE id = ?', [i.rowId]);
-        if (row.name !== QUIET_PURGE_ROW) ctx.requestPlatform({ kind: PURGE_REQUEST_KIND, payload: { rowId: i.rowId } });
+        // One request per purge; none for the quiet row; more than the cap allows for the greedy one,
+        // whose purge therefore rolls back whole however empty the queue is.
+        const requests = row.name === QUIET_PURGE_ROW ? 0 : row.name === GREEDY_PURGE_ROW ? MAX_PENDING_PLATFORM_REQUESTS + 1 : 1;
+        for (let n = 0; n < requests; n++) ctx.requestPlatform({ kind: PURGE_REQUEST_KIND, payload: { rowId: i.rowId } });
         return { ok: true };
       }) as Handler,
     },

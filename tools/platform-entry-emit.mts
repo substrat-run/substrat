@@ -10,6 +10,9 @@
  * constant into `packages/control-plane-api/src/platform-entry.generated.ts`, which the
  * uploader writes into the upload with the vertical's entry name filled in.
  *
+ * Around the stamp, the wire-signing verifier (`packages/control-plane-api/platform-entry/
+ * wire-gate.ts`, RFC wire-signing §5): inert until an upload gives the deployment key lists.
+ *
  * Beside it, the scope sweeper the uploader supplies to a vertical that declares schedules
  * and exports no sweeper of its own (#1902), built the same way from adapter-cloudflare's
  * `defineScopeSweeperDO`.
@@ -30,14 +33,23 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = 'packages/control-plane-api/src/platform-entry.generated.ts';
 const SOURCE = 'packages/vertical-host/src/invocation-log.ts';
+/** The wire-signing verifier (RFC wire-signing §5), wrapped around the stamp. */
+const GATE_SOURCE = 'packages/control-plane-api/platform-entry/wire-gate.ts';
+const ROUTED_NODE_SOURCE = 'packages/vertical-host/src/routed-node.ts';
 const PLACEHOLDER = '__SUBSTRAT_VERTICAL_ENTRY__';
 const SWEEPER_SOURCE = 'packages/adapter-cloudflare/src/scope-sweeper-do.ts';
 const SWEEP_HOST_SOURCE = 'packages/vertical-host/src/scope-sweep-host.ts';
 /** The export the template and both hosted demos gave their own sweeper (#1902) — contracts' name. */
 const { PLATFORM_SWEEPER_CLASS: SWEEPER_CLASS } = await import('../packages/contracts/dist/manifest.js');
 const SWEEPER_INTERVAL_MS = 120_000;
-/** Refuse a bundle past this: it would mean a runtime dependency crept in. */
-const CEILING_BYTES = 32_000;
+/** Refuse a bundle past its ceiling: it would mean a runtime dependency crept in. */
+const SWEEPER_CEILING_BYTES = 32_000;
+/**
+ * The entry's, raised from the 32 000 both bundles shared, for the wire-signing verifier (about
+ * 23 KB with the envelope's own checks): still an order of magnitude below what a schema library
+ * would add.
+ */
+const ENTRY_CEILING_BYTES = 52_000;
 
 const check = process.argv.includes('--check');
 
@@ -58,10 +70,10 @@ async function bundle(contents: string, sourcefile: string, external: string[]):
   return result.outputFiles[0]!.text;
 }
 
-function underCeiling(name: string, js: string, source: string): void {
-  if (js.length <= CEILING_BYTES) return;
+function underCeiling(name: string, js: string, source: string, ceiling: number): void {
+  if (js.length <= ceiling) return;
   console.error(
-    `platform-entry: the ${name} bundles to ${js.length} bytes, past the ${CEILING_BYTES}-byte ceiling.\n` +
+    `platform-entry: the ${name} bundles to ${js.length} bytes, past the ${ceiling}-byte ceiling.\n` +
       `  Every byte is added to every vertical's upload. Something in ${source}'s import graph\n` +
       `  gained a runtime dependency — make it a type-only import, or keep it out of the platform's module.`,
   );
@@ -75,20 +87,29 @@ const js = await bundle(
     // nor `nodejs_compat`, and swaps this import for `ALS_FALLBACK` where it can have neither.
     `import { AsyncLocalStorage } from 'node:async_hooks';`,
     `import { withInvocationLog } from './${SOURCE}';`,
+    `import { readRoutedNode } from './${ROUTED_NODE_SOURCE}';`,
+    `import { withWireGate } from './${GATE_SOURCE}';`,
     `import * as vertical from '${PLACEHOLDER}';`,
     `export * from '${PLACEHOLDER}';`,
     // The same two answers every vertical gives \`readRoutedNode\`: the router's secret, which
     // the platform puts on every pushed script, and the local dev opt-out.
-    `export default withInvocationLog(vertical.default, {`,
-    `  routerSecret: (env) => env.ROUTER_SECRET,`,
-    `  allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',`,
-    `  asyncLocalStorage: AsyncLocalStorage,`,
-    `});`,
+    `const routerSecret = (env) => env.ROUTER_SECRET;`,
+    `const allowUnsigned = (env) => env.ALLOW_DEV_NODE === 'true';`,
+    // RFC wire-signing: the verifier judges a request before the stamp and the vertical see it,
+    // with the legacy checks answered as the vertical answers its own. Inert without key lists.
+    `export default withWireGate(`,
+    `  withInvocationLog(vertical.default, { routerSecret, allowUnsigned, asyncLocalStorage: AsyncLocalStorage }),`,
+    `  {`,
+    `    routedNode: (headers, env) => readRoutedNode(headers, { expectedSecret: routerSecret(env), allowUnsigned: allowUnsigned(env) }),`,
+    `    routerSecret,`,
+    `    platformSecret: (env) => env.PLATFORM_SECRET,`,
+    `  },`,
+    `);`,
   ].join('\n'),
   'substrat-platform-entry.ts',
   [PLACEHOLDER, 'node:async_hooks'],
 );
-underCeiling('entry', js, SOURCE);
+underCeiling('entry', js, `${SOURCE} or ${GATE_SOURCE}`, ENTRY_CEILING_BYTES);
 if (!js.includes(PLACEHOLDER)) {
   console.error(`platform-entry: the bundle no longer names ${PLACEHOLDER}, so the uploader cannot fill it in.`);
   process.exit(2);
@@ -137,9 +158,9 @@ const sweeper = await bundle(
   'substrat-platform-sweeper.ts',
   ['cloudflare:workers'],
 );
-underCeiling('sweeper', sweeper, SWEEPER_SOURCE);
+underCeiling('sweeper', sweeper, SWEEPER_SOURCE, SWEEPER_CEILING_BYTES);
 
-const generated = `// GENERATED by tools/platform-entry-emit.mts from ${SOURCE} and ${SWEEPER_SOURCE} — do not edit by hand.
+const generated = `// GENERATED by tools/platform-entry-emit.mts from ${SOURCE}, ${GATE_SOURCE} and ${SWEEPER_SOURCE} — do not edit by hand.
 // Re-emit with \`pnpm lint:platform-entry\`; CI runs it with \`--check\`.
 
 /**

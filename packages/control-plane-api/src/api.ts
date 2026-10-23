@@ -101,6 +101,8 @@ import {
   dataSubjectId as dataSubjectIdSchema,
   scopeId as scopeIdSchema,
   scopeStatus,
+  requestRollupReading,
+  utcDay,
   storageShape,
   surfaceName,
   tenantId as tenantIdSchema,
@@ -180,6 +182,8 @@ import {
   ulid,
   auditWarningOf,
   type SubjectErasureFence,
+  REQUEST_ROLLUP_LIMIT_DEFAULT,
+  REQUEST_ROLLUP_LIMIT_MAX,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -277,7 +281,7 @@ import {
   type MintedStore,
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
-import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, type ObservabilityReader } from './observability.js';
+import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, LOGS_INCOMPLETE_HEADER, type ObservabilityReader } from './observability.js';
 import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, scriptFamiliesOfScopes, type QueryReader } from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
@@ -2367,6 +2371,65 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           if (delegatesToVerticals) throw new Error(`no deployment resolves for vertical ${scope.vertical}`);
           return c.var.admin.scopeDatabaseSize(actor, q.tenantId, scope.id);
         },
+      }),
+    );
+  });
+
+  // The daily request rollup (#2501): the stored per-(day, tenant, vertical, scope) request
+  // counts the platform sweep reads from the router's Analytics Engine datapoints before they
+  // age out, and the rollup's record of each day in the window. Staff-only like `/meters`. Every
+  // count is an estimate (Analytics Engine samples), and the answer says so twice: `estimated`
+  // on the reading and on every row. A directory read; nothing is queried live. `days` is what
+  // tells a day without traffic from a day not yet rolled up.
+  //
+  // A page is at most half the directory's own read bound, so the one row past the page that
+  // says the window holds more always fits under it.
+  const REQUEST_ROLLUP_PAGE_MAX = REQUEST_ROLLUP_LIMIT_MAX / 2;
+  app.get('/meters/requests', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.listRequestDays || !admin.listRequestRollupDays) {
+      return refuseStatus(c, 501, 'this control plane keeps no request rollup');
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const q = z
+      .object({
+        tenantId: tenantIdSchema.optional(),
+        scopeId: scopeIdSchema.optional(),
+        vertical: z.string().min(1).optional(),
+        since: utcDay.optional(),
+        until: utcDay.default(today),
+        limit: z.coerce.number().int().min(1).max(REQUEST_ROLLUP_PAGE_MAX).default(REQUEST_ROLLUP_LIMIT_DEFAULT),
+      })
+      .parse({
+        tenantId: c.req.query('tenantId') || undefined,
+        scopeId: c.req.query('scopeId') || undefined,
+        vertical: c.req.query('vertical') || undefined,
+        since: c.req.query('since') || undefined,
+        until: c.req.query('until') || undefined,
+        limit: c.req.query('limit') || undefined,
+      });
+    // Unless a window is named, the 31 days ending at `until`, both ends included.
+    const since = q.since ?? new Date(Date.parse(`${q.until}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
+    if (since > q.until) return refuse(c, 'validation_failed', '`since` is after `until`');
+    const actor = c.get('actor');
+    // One row past the page says whether the window holds more than it returned.
+    const rows = await admin.listRequestDays(actor, {
+      ...(q.tenantId ? { tenantId: q.tenantId } : {}),
+      ...(q.scopeId ? { scopeId: q.scopeId } : {}),
+      ...(q.vertical ? { vertical: q.vertical } : {}),
+      since,
+      until: q.until,
+      limit: q.limit + 1,
+    });
+    const days = await admin.listRequestRollupDays(actor, { since, until: q.until });
+    return c.json(
+      requestRollupReading.parse({
+        estimated: true,
+        since,
+        until: q.until,
+        rows: rows.slice(0, q.limit),
+        truncated: rows.length > q.limit,
+        days,
       }),
     );
   });
@@ -9174,7 +9237,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // `service` repeats: one deployed unit per param, so a caller can ask for a
     // vertical's whole set (the dashboard's "all versions") in one query and get one
-    // merged stream back. Capped because each extra service is another backend query.
+    // merged stream back. Capped because each extra service is another backend query, and
+    // the Cloudflare reader may add a few more to fill the merged page (at most
+    // `MAX_FILL_QUERIES` per read, whatever the number of services).
     const asked = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
     const ownedLogServices = await ownedServices(c.get('principal'), c.get('actor'));
     // A confined principal reads only its own services' lines. An ask that names none
@@ -9197,7 +9262,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         hours: c.req.query('hours'),
         limit: c.req.query('limit'),
       });
-    return c.json(await options.observability.recentLogs(input));
+    const { events, incomplete } = await options.observability.recentLogs(input);
+    // The body stays the list every caller reads; a read that stopped short of vouching for the
+    // whole window says so beside it, so a short page is never silently "nothing more".
+    if (incomplete) c.header(LOGS_INCOMPLETE_HEADER, '1');
+    return c.json(events);
   });
 
   // -- the TENANT grain (observability.md §3 view 4, §4.2) -----------------------

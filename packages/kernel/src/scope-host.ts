@@ -77,6 +77,8 @@ import type {
   EntitlementView,
   MeterReading,
   ScopeStorageSample,
+  RequestDay,
+  RequestRollupDay,
   EntityRef,
   IdentityLink,
   IdentityPool,
@@ -212,6 +214,7 @@ import {
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
+import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter } from './request-rollup.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
 import type {
@@ -4539,6 +4542,26 @@ export interface HostAdmin {
    * `limit` per call, so a backlog drains over passes. Returns how many went. Not audited.
    */
   pruneScopeStorage?(actor: PlatformActorId, limit: number): Promise<number>;
+  /**
+   * The daily request rollup (#2501): record one attempt to read a UTC day's request counts from
+   * the router's datapoints. A successful read replaces the day's rows and marks the day read; a
+   * failed one records only the attempt and its error. Every count is an estimate. Returns how
+   * many rows were written. Not audited, like `recordScopeStorage`: a sweep's own bookkeeping.
+   *
+   * The rollup methods are optional, and the sweep's rollup phase is skipped on a host that lacks
+   * them, so an adapter built before #2501 still satisfies `HostAdmin`.
+   */
+  recordRequestDay?(actor: PlatformActorId, input: RequestDayReadInput): Promise<{ recorded: number }>;
+  /** Stored daily request counts (#2501), every one an estimate. See `RequestDayFilter`. Access-logged (K-24). */
+  listRequestDays?(actor: PlatformActorId, filter?: RequestDayFilter): Promise<RequestDay[]>;
+  /** The rollup's record of each day it tried (#2501): what the phase picks due days by. Access-logged. */
+  listRequestRollupDays?(actor: PlatformActorId, filter?: RequestRollupDayFilter): Promise<RequestRollupDay[]>;
+  /**
+   * Delete day rows older than a retention of `retentionMonths`, oldest first and at most `limit`
+   * per call. `null` deletes nothing (`BILLING_ROLLUP_RETENTION_MONTHS`). Returns how many went.
+   * Not audited, like `pruneScopeStorage`.
+   */
+  pruneRequestDays?(actor: PlatformActorId, limit: number, retentionMonths: number | null): Promise<number>;
   /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined

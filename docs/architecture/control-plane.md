@@ -1209,7 +1209,10 @@ are honestly computable *honest*, and display them.
     `pipelines-sink.ts`). No route reads them yet, and a lake row names no vertical.
   - **API calls are not computable exactly.** Reads emit nothing on the spine, and the router's
     request datapoints in Analytics Engine are sampled and kept three months, so any count
-    taken from them is an estimate.
+    taken from them is an estimate. That estimate is now kept: the platform sweep rolls each
+    closed day up into the directory, one row per (tenant, vertical, scope), before the
+    datapoints age out (§5.3). An exact counter at the router comes only when pricing uses
+    requests as a unit.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1250,9 +1253,9 @@ of this engine" is a read rather than a re-derivation.
 operator would go looking for the number. Its absence is a property of the architecture (no
 cross-tenant order flow), not a slice that was skipped. **Meter 3 is not one reading on
 `/meters`**: its computable parts are read where they are kept (storage on `/meters` and
-`/meters/storage`, model usage on `/model-usage`). Lake bytes have no reader yet; the console's
-Meters view says the same. Exact API counts stay absent because reads emit nothing on the
-spine.
+`/meters/storage`, model usage on `/model-usage`, estimated request counts on `/meters/requests`).
+Lake bytes have no reader yet; the console's Meters view says the same. Exact API counts stay
+absent because reads emit nothing on the spine.
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 
@@ -1347,6 +1350,77 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **History, not yet a price.** The day rows are what a byte-day (and so GB-month) figure
   needs, through `HostAdmin.listScopeStorage`. Nothing prices them yet, because a GB-month
   over days the pass did not sample is a coverage question the bill has to answer first.
+
+### 5.3 Requests, rolled up daily ([#2501](https://github.com/substrat-run/substrat/issues/2501))
+
+The router writes one Analytics Engine datapoint per request it dispatches, keyed by tenant
+with the vertical and scope beside it (`ROUTER_REQUEST_POINT` in contracts names each
+ordinal, and the router's own test holds what it writes to that layout). Analytics Engine
+keeps those datapoints three months and samples them under load. Billing history needs longer
+than that, so the scheduled pass keeps a compact copy.
+
+- **One row per (UTC day, tenant, vertical, scope)** in the directory's
+  `_substrat_request_days`, holding that day's count. A request that resolved to no vertical
+  is kept under none. Counts only: no path, no principal, no content.
+- **The total, and its split by status.** `requests` is every request the router routed,
+  whatever it was answered. Beside it each row keeps `class2xx` to `class5xx` from the status
+  class the router writes, and `rateLimited`, the requests answered 429: the router's own
+  rate-limit refusals, and a vertical's. The router's 502 when no deployment answers is in
+  `class5xx`. Which of these a price counts is a later billing decision. The split is kept
+  now because it cannot be recovered once Analytics Engine ages the datapoints out.
+- **Every count is an estimate.** It is `sum(_sample_interval)` over the day's datapoints,
+  never `count()`, and every row says `estimated: true`. `sampled` says whether Analytics
+  Engine actually reweighted any of them.
+- **Sampled at read time too, which is still to be checked against live data.** The rollup
+  asks one fleet-wide question per day. Analytics Engine may answer a large query from a
+  sample of its own, and a group with very few requests could then be missing from the answer
+  rather than reweighted. How far that happens for this query at the fleet's size has not yet
+  been checked against live data. Until it has, no count here is claimed exact, and a missing
+  (tenant, vertical, scope) on a read day is not proof that it served nothing.
+- **A closed day, read once.** A day is read an hour after it ends, so the datapoints of its
+  last instant have landed, with one query for the whole fleet. The oldest unread day goes
+  first, since it is the next one Analytics Engine ages out. A pass reads at most seven days,
+  so a first deploy backfills the 85 days it can still reach over about thirteen passes. A day
+  read successfully is never read again. The lookback is refused past 88 days, so the first day
+  read starts within 89 days, the shortest three months. Further back, the datapoints may have
+  begun to age out, and a part of a day, or an empty answer, would pass for the whole day.
+- **After the scheduled work, and bounded.** The phase runs after all the scheduled work of the
+  pass, just before the access-log drain, since it waits on an outside service and nothing else
+  depends on it. Each read has a deadline (30 seconds), and a read past it is an ordinary failed
+  day. The most the phase can delay is the drain, which then ships the phase's own access rows
+  in the same pass.
+- **A failed read writes nothing, and ends the pass's reads.** `_substrat_request_day_reads`
+  keeps one row per day the rollup tried: when, whether a read succeeded, and why the last one
+  failed. A failed day is tried again an hour later, and the days after it wait for the next
+  pass, so a standing failure (a credential without Analytics Engine read, a wrong dataset, an
+  outage) costs one query a pass, not a batch. It reaches the failure digest once, when its
+  streak begins: a failure that repeats the previous attempt's error is counted, not mailed
+  again, until a read succeeds. It stays visible all the same. Each failed attempt carries its
+  run on (`failingSince`, `failingCount` on the day's record), and the scheduled pass's log line
+  names the run on every pass it lasts: its error, when it began and how many attempts it holds.
+  That includes the passes between hourly retries, which read nothing: they take the run from the
+  newest attempt on record, add no attempt to it and mail nothing.
+  A malformed count refuses the whole day.
+- **A saturated day is visible, and blocks nothing.** One query answers at most 50,000
+  (tenant, vertical, scope) groups. A day with more would be a part of the day passing for the
+  whole, so it is refused and recorded with `saturated: true` on its record. It is reported
+  once and not read again, since its group count will not shrink, and the days after it are
+  still rolled up. Reading such a day needs a paged read, which this is not yet.
+- **A day without traffic is not a day not yet read.** `GET /meters/requests` (staff-only)
+  serves the rows over an inclusive window of days (by default the 31 days ending today),
+  together with the record of each day in the window, so a surface can tell the two apart.
+- **Kept for the billing horizon.** The day rows follow `BILLING_ROLLUP_RETENTION_MONTHS`.
+  Until the maintainer's bookkeeping sets that horizon it is `null` and nothing is pruned:
+  keeping everything is the reversible default, since a pruned row cannot come back. No
+  existing retention follows it; the storage gauge stays thirteen months and model usage 400
+  days.
+- **Kept when a tenant is reaped, on purpose.** Reaping a tenant (§4.8) deletes the storage
+  gauge's rows with its scopes, but not its request rows, as model usage is kept too. They
+  are what a final invoice, or a dispute about one, is answered from. They hold counts only,
+  and they leave with the billing horizon like every other row.
+- **Hosted only, for now.** The reader needs the account's Analytics Engine and the router's
+  dataset (`ROUTER_ANALYTICS_DATASET`), never defaulted. Without them the phase does not run,
+  and a self-hosted directory keeps the empty tables.
 
 ## 6. Auth: the sequencing
 

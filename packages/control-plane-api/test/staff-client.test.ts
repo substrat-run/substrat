@@ -55,6 +55,11 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   revokeEntitlement: [(c) => c.revokeEntitlement(T as never, 't-1/crm'), 'DELETE', `/tenants/${T}/entitlements/t-1%2Fcrm`],
   readMeters: [(c) => c.readMeters(T as never), 'GET', `/meters?tenantId=${T}`],
   readStorage: [(c) => c.readStorage(T as never, S as never), 'GET', `/meters/storage?tenantId=${T}&cursor=${S}`],
+  readRequestRollup: [
+    (c) => c.readRequestRollup({ tenantId: T as never, since: '2026-09-01', until: '2026-09-30' }),
+    'GET',
+    `/meters/requests?tenantId=${T}&since=2026-09-01&until=2026-09-30`,
+  ],
   readModelUsage: [(c) => c.readModelUsage({ tenantId: T as never, since: '2026-09-01' }), 'GET', `/model-usage/summary?tenantId=${T}&since=2026-09-01`],
   listScopes: [(c) => c.listScopes({ tenantId: T as never, status: ['active', 'suspended'] as never, limit: 50 }), 'GET', `/scopes?tenantId=${T}&status=active&status=suspended&limit=50`],
   migrationProgress: [(c) => c.migrationProgress('todo'), 'GET', '/fleet/migrations?vertical=todo'],

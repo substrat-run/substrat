@@ -74,6 +74,23 @@ export interface RecentLogEvent {
   raw: unknown;
 }
 
+/** A `recentLogs` answer: the events, and whether the backend stopped before it could vouch for them. */
+export interface RecentLogs {
+  events: RecentLogEvent[];
+  /**
+   * `true` when the read stopped before it could tell that no line the window holds is missing
+   * from `events` (a backend bound on its queries was reached), so a short page is not "the window
+   * held no more". `false` means `events` is the newest of the window, up to `limit`.
+   * An incomplete answer is not guaranteed to be a prefix of the window: it means only that there
+   * may be more or newer lines, since a service the read stopped on can hold lines newer than some
+   * it returned.
+   */
+  incomplete: boolean;
+}
+
+/** On `GET /observability/logs`, present (`1`) when the read behind its body was `incomplete`. */
+export const LOGS_INCOMPLETE_HEADER = 'x-substrat-logs-incomplete';
+
 /**
  * One destination a service was OBSERVED reaching (#859, D-46).
  *
@@ -671,6 +688,8 @@ export interface ObservabilityReader {
    * `search` is a case-sensitive substring match on the event message — a contract
    * capability, so each backend maps it to its own query language (never a
    * provider-shaped filter passed through the seam).
+   * A backend that may stop short of `limit` before the window is spent says so with
+   * `incomplete`, so a capped page is never read as the whole window.
    */
   recentLogs(input: {
     services?: string[];
@@ -678,7 +697,7 @@ export interface ObservabilityReader {
     search?: string;
     hours: number;
     limit: number;
-  }): Promise<RecentLogEvent[]>;
+  }): Promise<RecentLogs>;
 
   /**
    * Destinations the given services were OBSERVED reaching (#859, D-46).

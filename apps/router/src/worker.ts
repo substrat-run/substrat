@@ -313,7 +313,9 @@ function withHeaders(response: Response, change: { set?: Record<string, string>;
  * Record one resolved request (design/observability.md §4.2/§4.3): an Analytics
  * Engine datapoint keyed by tenant, and one structured log line carrying the same
  * fields for the telemetry query path. Blob/double order is a published shape —
- * the read proxy indexes into it — so it only ever grows, never reorders:
+ * `ROUTER_REQUEST_POINT` in contracts names each ordinal, every reader of the dataset
+ * takes them from there, and this worker's test holds what is written here to it — so
+ * it only ever grows, never reorders:
  * index [tenantId]; blobs [vertical, scope, surface, statusClass, rayId,
  * operation, problemCode, principalKind, level]; doubles [durationMs, status].
  *

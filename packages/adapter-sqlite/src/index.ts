@@ -49,7 +49,6 @@ import {
   meterReading,
   platformRequestInput,
   platformRequestId,
-  MAX_PENDING_PLATFORM_REQUESTS,
   identityLink,
   identityPool,
   instant,
@@ -283,6 +282,7 @@ import {
   watchUpdatedStamps,
   entityStateMigrations,
   assertNoCallerPurge,
+  assertPlatformRequestRoom,
   isUnreachableParent,
   heldPurgePass,
   purgeDueOf,
@@ -360,6 +360,14 @@ import {
   recordScopeStorageRows,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
+  REQUEST_ROLLUP_DDL,
+  listRequestDayRows,
+  listRequestRollupDayRows,
+  pruneRequestDayRows,
+  recordRequestDayRows,
+  type RequestDayFilter,
+  type RequestDayReadInput,
+  type RequestRollupDayFilter,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink,
@@ -2875,6 +2883,8 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
       -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
       ${SCOPE_STORAGE_DDL}
+      -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
+      ${REQUEST_ROLLUP_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -13029,6 +13039,29 @@ export class SqliteScopeHost implements ScopeHost {
         return rows;
       },
       pruneScopeStorage: async (_actor, limit: number) => pruneScopeStorageRows(redactionSqlOf(this.directory), Date.now(), limit),
+      recordRequestDay: async (_actor, input: RequestDayReadInput) => ({
+        recorded: this.directory.transaction(() => recordRequestDayRows(redactionSqlOf(this.directory), input))(),
+      }),
+      listRequestDays: async (actor, filter?: RequestDayFilter) => {
+        const rows = listRequestDayRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(
+          actor,
+          'listRequestDays',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter ?? null,
+          rows.length,
+        );
+        return rows;
+      },
+      listRequestRollupDays: async (actor, filter?: RequestRollupDayFilter) => {
+        const rows = listRequestRollupDayRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listRequestRollupDays', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.directory.transaction(() =>
+          pruneRequestDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
+        )(),
       listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
         const rows = this.selectModelUsage(filter);
         this.recordAccess(
@@ -13813,9 +13846,7 @@ export class SqliteScopeHost implements ScopeHost {
             .prepare(`SELECT COUNT(*) AS c FROM _substrat_platform_requests WHERE status = 'pending'`)
             .get() as { c: number }
         ).c;
-        if (pending >= MAX_PENDING_PLATFORM_REQUESTS) {
-          throw new Error(`too many pending platform requests (${pending}); retry once some have drained`);
-        }
+        assertPlatformRequestRoom(pending);
         const id = platformRequestId.parse(ulid());
         const requestedBy = overrideActor ?? actorOf(subject);
         rt.db

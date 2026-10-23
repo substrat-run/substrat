@@ -33,10 +33,19 @@ import {
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
 import { readStateRow, type EntityStatePlan, type StateCheck } from './entity-state.js';
+import { isPlatformRequestRefusal } from './platform-request-cap.js';
 import type { ScopedSql } from './scope-host.js';
 import type { SystemScheduleState } from './system-switch.js';
 
-/** How many entities one purge pass deletes per entity type. A full batch leaves the schedule due. */
+/**
+ * How many entities one purge pass deletes per entity type. A full batch leaves the schedule due.
+ *
+ * A CEILING, not a promise: a purge that enqueues a platform request is held to the scope's
+ * `MAX_PENDING_PLATFORM_REQUESTS` as well, which is smaller. The two are not reconciled by a
+ * second number — the cap is the one authority and decides how many such purges a pass commits.
+ * Past the head of its pass, a pass that meets the cap's refusal stops there; at the head the
+ * refusal is a failure like any other (`runPurgePass`, #2506).
+ */
 export const PURGE_BATCH = 50;
 
 /**
@@ -217,9 +226,11 @@ export function purgeCandidates(
 /**
  * A purge LAP in progress (#2096) — what a schedule's cadence row holds in `purge_cursor` between
  * passes. A lap walks the whole due bin, oldest first, `PURGE_BATCH` at a time; each pass resumes
- * after the last entity the one before it tried, whatever became of that entity. So entities that
+ * after the last entity the one before it tried, whatever became of that entity — except one the
+ * scope's platform-request cap turned away past the head of its pass (#2506), which was not tried
+ * in any sense that matters: it rolled back whole, and the next pass starts at it. So entities that
  * keep failing cannot hold the head of the walk: the walk moves past them, reaches everything due
- * behind them in the same lap, and tries them again in the next.
+ * behind them in the same lap, and tries them again in the next. A refused head is one of them.
  *
  * `failed` counts the purges that failed in the lap's earlier passes, so the pass that closes the
  * lap — the one that writes the cadence row — records the lap `failed` even when its own batch
@@ -275,6 +286,12 @@ export interface PurgeDue {
   readonly idFrom: string;
   /** The ids this pass tries, in the walk's order. */
   readonly ids: string[];
+  /**
+   * #2506: the walk position of each of `ids`, in the same order — what lets a pass that stops
+   * part-way resume after the last entity it actually tried. Absent from a hand-built `PurgeDue`,
+   * which a pass then cannot cut short (see `runPurgePass`).
+   */
+  readonly keys?: readonly PurgeKey[];
   /** The lap as this pass found it. */
   readonly lap: PurgeLap;
   /** Where the next pass resumes when more is due after these ids — or null: this pass closes the lap. */
@@ -309,6 +326,7 @@ export function purgeDueOf(
     cutoff,
     idFrom: target.idFrom,
     ids: batch.map((k) => k.id),
+    keys: batch,
     lap,
     next: keys.length > limit ? batch.at(-1)! : null,
   };
@@ -391,6 +409,11 @@ export function heldPurgePass(held: string): PurgePass {
  * batch with its failures added while more is due, or close the lap. After the pass, so a pass cut
  * short repeats its batch rather than skipping it. `inScope` runs the write against the scope's
  * spine, in the turn the adapter's storage needs.
+ *
+ * The one exception to "whatever its purges did" is the scope's platform-request cap (#2506): a
+ * purge the cap refuses (`isPlatformRequestRefusal`) AFTER the pass has got past its head is
+ * deferred rather than failed, and the lap resumes at it. A pass always moves the lap strictly
+ * forward, so neither a deferral nor a refused head can hold the head of the walk.
  */
 export async function runPurgePass(
   operation: string,
@@ -398,13 +421,33 @@ export async function runPurgePass(
   purgeOne: (entityId: string) => Promise<void>,
   inScope: (write: (sql: ScopedSql) => void) => unknown,
 ): Promise<PurgePass> {
-  const more = due.next !== null;
-  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more, lapFailed: more ? 0 : due.lap.failed };
-  for (const entityId of due.ids) {
+  // Where the lap resumes: after this batch's last entity, or null when the batch closes the lap.
+  let next = due.next;
+  // The walk positions of `ids`, if they really are those: a shorter array cannot place a cursor.
+  const keys = due.keys?.length === due.ids.length ? due.keys : undefined;
+  // Whether the scope's queue already refused the HEAD of this batch.
+  let headRefused = false;
+  const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more: false };
+  for (const [i, entityId] of due.ids.entries()) {
     try {
       await purgeOne(entityId);
       pass.purged += 1;
     } catch (err) {
+      // #2506: the scope's queue of platform requests is full, so this purge rolled back whole.
+      // Once the pass has got past its head, that is the cap saying "not yet", not this entity
+      // failing: the batch stops here and the lap resumes AT it, after the last entity actually
+      // tried — and it is never the head of that next pass, which moves strictly forward. A refusal
+      // AT the head is an ordinary failure, as it always was, and the rest of the batch is walked
+      // the same way: a purge that enqueues nothing behind it still commits, and an entity whose
+      // purge can never fit (it enqueues more than the scope has room for) cannot hold the head of
+      // the walk, which is what #2096 is for. Without `keys` there is no position to resume from.
+      if (isPlatformRequestRefusal(err)) {
+        if (i === 0) headRefused = true;
+        if (!headRefused && keys) {
+          next = keys[i - 1]!;
+          break;
+        }
+      }
       const code = errorCodeOf(err);
       const reason = (err as { extensions?: { reason?: unknown } }).extensions?.reason;
       if (code === 'not_found' || (code === 'conflict' && (reason === 'purge_not_due' || reason === 'purge_held'))) {
@@ -414,10 +457,12 @@ export async function runPurgePass(
       pass.errors.push({ entityId, error: err instanceof Error ? err.message : String(err) });
     }
   }
+  pass.more = next !== null;
+  pass.lapFailed = pass.more ? 0 : due.lap.failed;
   // A lap that began at the oldest and closes in this pass leaves the cursor NULL, as it found it.
-  if (more || due.lap.after !== null) {
-    const next = due.next ? { after: due.next, failed: due.lap.failed + pass.errors.length } : null;
-    await inScope((sql) => writePurgeLap(sql, operation, next));
+  if (pass.more || due.lap.after !== null) {
+    const resume = next ? { after: next, failed: due.lap.failed + pass.errors.length } : null;
+    await inScope((sql) => writePurgeLap(sql, operation, resume));
   }
   return pass;
 }
@@ -425,10 +470,12 @@ export async function runPurgePass(
 /**
  * Whether a purge pass leaves its schedule due, so the next sweep pass continues its lap rather
  * than waiting the cadence: more is due after its batch (#2096). It cannot spin (#2087): every pass
- * moves the lap strictly forward, whatever its purges did, and the pass that runs out of due
- * entities closes the lap and records the run — so a cadence window holds one lap, and an entity
- * that keeps failing is tried once per window, not once per sweep tick. A scope running code older
- * than the lap answers no `more`, and its pass waits its cadence.
+ * moves the lap strictly forward, whatever its purges did — a pass that defers an entity the
+ * platform-request cap turned away (#2506) has already got past its head, and the entity is the
+ * head of the next pass, where a refusal is a failure like any other — and the pass that runs out
+ * of due entities closes the lap and records the run. So a cadence window holds one lap, and an
+ * entity that keeps failing is tried once per window, not once per sweep tick. A scope running
+ * code older than the lap answers no `more`, and its pass waits its cadence.
  */
 export function purgeStillDue(pass: PurgePass): boolean {
   return pass.more === true;

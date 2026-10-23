@@ -13,6 +13,7 @@ import {
 } from '../src/scope-store-envelope.js';
 import {
   canonicalWireEnvelope,
+  decodeWireEnvelope,
   importWireSigningKey,
   parseWireEnvelope,
   signWireEnvelope,
@@ -25,10 +26,20 @@ import {
   WIRE_REFUSED,
   WIRE_SIGNATURE_HEADER,
   wireDigest,
+  wireEndpoint,
+  wireReplayOf,
+  WIRE_REPLAY_FREE_CALLS,
   wireEnvelopeShape,
   WireKeyError,
   wireRequestBinding,
+  wireStateOf,
   wireVerificationKeys,
+  WIRE_AUDIENCE_VAR,
+  WIRE_PLATFORM_KEYS_VAR,
+  WIRE_ROUTER_KEYS_VAR,
+  WIRE_STATE_VAR,
+  WIRE_STATES,
+  type WireBodyReader,
   type WireBytes,
   type WireEnvelopeInput,
   type WireExpectation,
@@ -92,7 +103,7 @@ interface Check {
   readonly vector?: Vector;
   readonly header?: string | null;
   readonly signature?: string | null;
-  readonly expected?: Partial<WireExpectation> & { readonly body?: WireBytes };
+  readonly expected?: Partial<WireExpectation> & { readonly body?: WireBytes | WireBodyReader };
   readonly now?: number;
   readonly keys?: WireVerificationKeys;
   /** A call's replay policy, as a cache (its scope pinned); the vector's own expectation says `'none'`. */
@@ -852,5 +863,145 @@ describe('wire envelope: replay', () => {
     await expect(check({ vector: CALL, nonces: broken })).rejects.toThrow(/storage unavailable/);
     const rejecting: WireNonceCache = { claim: () => Promise.reject(new Error('storage unavailable')) };
     await expect(check({ vector: CALL, nonces: rejecting })).rejects.toThrow(/storage unavailable/);
+  });
+});
+
+describe('wireStateOf: a deployment’s state from what its upload carries (RFC §5, Q3)', () => {
+  const lists = { routerKeys: fixture.keys.router.publicKey, platformKeys: fixture.keys.platform.publicKey };
+
+  it('no key list at all is legacy-only, whatever the setting says', () => {
+    for (const state of [undefined, 'dual', 'signed-only', 'legacy-only', 'bogus']) {
+      expect(wireStateOf({ state })).toBe('legacy-only');
+      expect(wireStateOf({ routerKeys: '', platformKeys: '  ', state })).toBe('legacy-only');
+      expect(wireStateOf({ routerKeys: 7, platformKeys: null, state })).toBe('legacy-only');
+    }
+  });
+
+  it('with key lists, an explicit legacy-only or signed-only is taken as said', () => {
+    expect(wireStateOf({ ...lists, state: 'legacy-only' })).toBe('legacy-only');
+    expect(wireStateOf({ ...lists, state: 'signed-only' })).toBe('signed-only');
+    expect(wireStateOf({ ...lists, state: 'dual' })).toBe('dual');
+  });
+
+  it('with key lists, a missing or unknown state reads as dual, never as signed-only', () => {
+    for (const state of [undefined, '', 'Signed-Only', 'signed-only ', 'bogus', 1]) {
+      expect(wireStateOf({ ...lists, state })).toBe('dual');
+    }
+  });
+
+  it('either issuer’s list alone is key lists', () => {
+    expect(wireStateOf({ routerKeys: lists.routerKeys })).toBe('dual');
+    expect(wireStateOf({ platformKeys: lists.platformKeys })).toBe('dual');
+  });
+
+  it('names every state, and the configuration it is read from', () => {
+    expect(WIRE_STATES).toEqual(['legacy-only', 'dual', 'signed-only']);
+    expect([WIRE_ROUTER_KEYS_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_AUDIENCE_VAR, WIRE_STATE_VAR]).toEqual([
+      'SUBSTRAT_WIRE_ROUTER_KEYS',
+      'SUBSTRAT_WIRE_PLATFORM_KEYS',
+      'SUBSTRAT_WIRE_AUDIENCE',
+      'SUBSTRAT_WIRE_STATE',
+    ]);
+  });
+});
+
+describe('decodeWireEnvelope: what a header names, before anything is verified', () => {
+  it('gives the canonical text and the claims of a vector header', () => {
+    const decoded = decodeWireEnvelope(ROUTE.header);
+    expect(decoded?.canonical).toBe(ROUTE.canonical);
+    expect(decoded?.claims).toEqual(parseWireEnvelope(ROUTE.canonical));
+  });
+
+  it('is undefined for anything the verifier refuses as malformed', () => {
+    const bom = bytesToBase64Url(new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(ROUTE.canonical)]));
+    for (const header of ['', 'not base64!', bytesToBase64Url(new Uint8Array([0xff, 0xfe])), bom, bytesToBase64Url(new TextEncoder().encode('1\nplatform'))]) {
+      expect(decodeWireEnvelope(header)).toBeUndefined();
+    }
+  });
+});
+
+describe('wireEndpoint: which envelope an endpoint accepts', () => {
+  it('the internal surface takes calls from the control plane, and a peer invocation from the router too', () => {
+    expect(wireEndpoint('/internal/provision')).toEqual({ kind: 'call', issuers: ['platform'] });
+    expect(wireEndpoint('/internal')).toEqual({ kind: 'call', issuers: ['platform'] });
+    expect(wireEndpoint('/internal/vertical-invoke')).toEqual({ kind: 'call', issuers: ['platform', 'router'] });
+  });
+
+  it('every other path is a routed request, the router’s alone', () => {
+    for (const path of ['/', '/api/things', '/internals', '/internal-x', '/api/internal/provision', '/api/%69nternal/x', '/docs/internal', '/my-internal/x', '/internalx']) {
+      expect(wireEndpoint(path)).toEqual({ kind: 'route', issuers: ['router'] });
+    }
+  });
+
+  it.each([
+    ['an escaped letter', '/%69nternal/provision'],
+    ['an escaped letter after the prefix', '/internal/%70rovision'],
+    ['an upper-case escape', '/%49nternal/provision'],
+    ['an escaped slash', '/internal%2Fprovision'],
+    ['a dot segment', '/./internal/provision'],
+    ['a parent segment', '/a/../internal/provision'],
+    ['escaped dot segments', '/a/%2e%2e/internal/provision'],
+    ['a doubled slash before', '//internal/provision'],
+    ['a doubled slash after', '/internal//provision'],
+    ['a trailing slash', '/internal/'],
+    ['upper case', '/INTERNAL/provision'],
+    ['mixed case', '/Internal'],
+    // decodeURI throws on the whole path, so only the run-by-run fallback sees the escaped letter.
+    ['an escaped letter beside an undecodable escape', '/%69nternal/provision/%ff'],
+    ['an escaped letter beside an undecodable last segment', '/%69nternal/%ff'],
+  ])('a path a router could read as internal is a call: %s (%s)', (_, path) => {
+    expect(wireEndpoint(path)).toEqual({ kind: 'call', issuers: ['platform'] });
+  });
+
+  it('admits the router only on the exact path a peer invocation is sent to', () => {
+    for (const path of ['/internal/vertical-invoke/', '/internal/vertical-invoke/x', '/internal/%76ertical-invoke', '/INTERNAL/vertical-invoke', '//internal/vertical-invoke']) {
+      expect(wireEndpoint(path)).toEqual({ kind: 'call', issuers: ['platform'] });
+    }
+    expect(wireEndpoint('/internal/vertical-invoke')).toEqual({ kind: 'call', issuers: ['platform', 'router'] });
+  });
+});
+
+describe('a call’s body given as a reader', () => {
+  const reader = (body: WireBytes | null) => {
+    const calls: number[] = [];
+    return { calls, read: () => (calls.push(1), Promise.resolve(body)) };
+  };
+  const bodyOf = (vector: Vector) => vector.input.body as WireBytes;
+
+  it('is read once, at the body check, and verifies as the bytes it returns', async () => {
+    const r = reader(bodyOf(CALL));
+    expect((await check({ vector: CALL, expected: { body: r.read } })).verdict).toMatchObject({ ok: true });
+    expect(r.calls).toHaveLength(1);
+  });
+
+  it('is never read when the envelope is refused before the body', async () => {
+    const r = reader(bodyOf(CALL));
+    expect(await reason({ vector: CALL, signature: ROUTE.signature, expected: { body: r.read } })).toBe('signature');
+    expect(await reason({ vector: CALL, expected: { body: r.read, aud: 'other' } })).toBe('audience');
+    expect(await reason({ vector: CALL, now: CALL.input.exp + 3600, expected: { body: r.read } })).toBe('expired');
+    expect(await reason({ vector: CALL, expected: { body: r.read, target: '/elsewhere' } })).toBe('target');
+    expect(r.calls).toEqual([]);
+  });
+
+  it('a read that answers null, or other bytes, is refused for the body', async () => {
+    expect(await reason({ vector: CALL, expected: { body: reader(null).read } })).toBe('body');
+    expect(await reason({ vector: CALL, expected: { body: reader('tampered').read } })).toBe('body');
+  });
+});
+
+describe('wireReplayOf: a call’s replay policy, as its endpoint states it', () => {
+  it('a safe method keeps no nonce, in any case', () => {
+    for (const method of ['GET', 'HEAD', 'OPTIONS', 'get', 'Head']) expect(wireReplayOf(method, '/internal/provision')).toBe('none');
+  });
+
+  it('a call the table lists as changing nothing keeps no nonce', () => {
+    for (const path of WIRE_REPLAY_FREE_CALLS) expect(wireReplayOf('POST', path)).toBe('none');
+    expect(WIRE_REPLAY_FREE_CALLS).toEqual(['/internal/query', '/internal/redrain-count', '/internal/lifecycle-flow', '/internal/operation-series', '/internal/connector-grants']);
+  });
+
+  it('every other call keeps nonces: an unlisted one, a new one, another spelling of a listed one', () => {
+    for (const path of ['/internal/provision', '/internal/vertical-invoke', '/internal/brand-new-verb', '/internal/%71uery', '/internal/query/', '/INTERNAL/query']) {
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) expect(wireReplayOf(method, path)).toBe('nonce');
+    }
   });
 });

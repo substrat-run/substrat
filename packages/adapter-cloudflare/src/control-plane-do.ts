@@ -31,6 +31,14 @@ import {
   type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
+  REQUEST_ROLLUP_DDL,
+  listRequestDayRows,
+  listRequestRollupDayRows,
+  pruneRequestDayRows,
+  recordRequestDayRows,
+  type RequestDayFilter,
+  type RequestDayReadInput,
+  type RequestRollupDayFilter,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink as insertConnectLinkRow,
@@ -186,6 +194,8 @@ import type {
   ScopeId,
   ScopeStatus,
   ScopeStorageSample,
+  RequestDay,
+  RequestRollupDay,
   Tenant,
   TenantId,
   TenantStatus,
@@ -1347,6 +1357,8 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
   -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
   ${SCOPE_STORAGE_DDL}
+  -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
+  ${REQUEST_ROLLUP_DDL}
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
   -- #1713: the lifecycle each hosted scope's deployment last acknowledged, as
   -- "<scope status>/<tenant status>" (lifecycleReceipt). A CP-less deployment has no
@@ -4183,6 +4195,25 @@ export class ControlPlaneDO extends DurableObject {
 
   pruneScopeStorage(limit: number): number {
     return pruneScopeStorageRows(doRedactionSql(this.sql), Date.now(), limit);
+  }
+
+  // -- the daily request rollup (#2501) — kernel `request-rollup.ts` -------------
+  recordRequestDay(input: RequestDayReadInput): { recorded: number } {
+    return { recorded: this.ctx.storage.transactionSync(() => recordRequestDayRows(doRedactionSql(this.sql), input)) };
+  }
+
+  listRequestDays(filter?: RequestDayFilter): RequestDay[] {
+    return listRequestDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  listRequestRollupDays(filter?: RequestRollupDayFilter): RequestRollupDay[] {
+    return listRequestRollupDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  pruneRequestDays(limit: number, retentionMonths: number | null): number {
+    return this.ctx.storage.transactionSync(() =>
+      pruneRequestDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths),
+    );
   }
 
   // -- identity pools (K-23) --------------------------------------------------

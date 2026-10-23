@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_PENDING_PLATFORM_REQUESTS,
   declaredSurfaceOf,
   errorCodeOf,
   operationInputsOf,
@@ -20,12 +21,14 @@ import {
   purgeDueOf,
   registerTrashTargets,
   runPurgePass,
+  assertPlatformRequestRoom,
   SCHEDULE_STATE_DDL,
   type PurgeGateFacts,
 } from '../src/index.js';
 import { entityStatePlans } from '../src/entity-state.js';
 import { purgeCandidates, purgeCutoffOf } from '../src/entity-trash.js';
 import { purgeLapOf, readPurgeLap, type PurgeDue } from '../src/entity-trash.js';
+import { isPlatformRequestRefusal } from '../src/platform-request-cap.js';
 
 /**
  * The kernel half of #119 PR 2 that needs no host: registration's refusals, the purge pass's
@@ -55,6 +58,16 @@ const sqlOf = (db: DatabaseSync) => ({
   query: <T>(q: string, p: readonly unknown[] = []) => db.prepare(q).all(...(p as never[])) as T[],
   exec: (q: string, p: readonly unknown[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
 });
+
+/** The refusal a scope at its cap throws from `ctx.requestPlatform`. */
+const capRefusal = (): Error => {
+  try {
+    assertPlatformRequestRoom(MAX_PENDING_PLATFORM_REQUESTS);
+  } catch (err) {
+    return err as Error;
+  }
+  throw new Error('no refusal at the cap');
+};
 
 describe('registerTrashTargets', () => {
   it('derives the targets from the declared surface, and requires one from a module with a trashable entity', () => {
@@ -405,14 +418,18 @@ describe('the purge lap (#2096)', () => {
     for (let i = 0; i < count; i++) bin(`b${String(i).padStart(3, '0')}`, i);
     const plans = new Map(entityStatePlans('m', [horizon]).map((p) => [p.entityType, p]));
     const targets = new Map([['b/delete', purgeTarget]]);
-    /** One pass: entities in `failing` throw, every other one is deleted. */
-    const pass = async (failing: ReadonlySet<string>, limit: number) => {
+    /**
+     * One pass: entities in `failing` throw, entities in `capped` meet the scope's full platform-request
+     * queue (#2506), every other one is deleted.
+     */
+    const pass = async (failing: ReadonlySet<string>, limit: number, capped: ReadonlySet<string> = new Set()) => {
       const due = purgeDueOf(sql, plans, targets, 'b/delete', 'box', NOW, limit);
       const p = await runPurgePass(
         'b/delete',
         due,
         async (id) => {
           if (failing.has(id)) throw new Error(`stuck ${id}`);
+          if (capped.has(id)) throw capRefusal();
           db.prepare('DELETE FROM boxes WHERE id = ?').run(id);
         },
         (write) => write(sql),
@@ -497,5 +514,172 @@ describe('the purge lap (#2096)', () => {
     expect(sql.query("SELECT last_run_at, last_status FROM _substrat_schedule_state WHERE schedule_op = 'b/delete'")).toEqual([
       { last_run_at: '2020-01-01T00:00:00.000Z', last_status: 'ok' },
     ]);
+  });
+
+  describe('the platform-request cap (#2506)', () => {
+    it('defers the purge that meets a full queue once the pass is past its head: the lap resumes AT it, nothing is reported failed', async () => {
+      const { sql, pass, left } = setup(6);
+      const first = await pass(new Set(), 6, new Set(['b003']));
+      // b003 and everything behind it were not tried; the three before it purged.
+      expect(first.pass).toEqual({ purged: 3, skipped: 0, errors: [], more: true, lapFailed: 0 });
+      expect(purgeStillDue(first.pass)).toBe(true);
+      expect(purgeReportOf('b/delete', 'box', first.pass).failure).toBeUndefined();
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: { at: DUE(2), id: 'b002' }, failed: 0 });
+      expect(left()).toEqual(['b003', 'b004', 'b005']);
+      // The drain ran: the next pass starts at the deferred entity and closes the lap.
+      const second = await pass(new Set(), 6);
+      expect(second.due.ids).toEqual(['b003', 'b004', 'b005']);
+      expect(second.pass).toMatchObject({ purged: 3, errors: [], more: false, lapFailed: 0 });
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: null, failed: 0 });
+      expect(left()).toEqual([]);
+    });
+
+    it('keeps the lap\'s earlier failures across a deferral', async () => {
+      const { sql, pass } = setup(6);
+      const first = await pass(new Set(['b000']), 6, new Set(['b004']));
+      expect(first.pass).toMatchObject({ purged: 3, more: true, lapFailed: 0 });
+      expect(first.pass.errors.map((e) => e.entityId)).toEqual(['b000']);
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: { at: DUE(3), id: 'b003' }, failed: 1 });
+    });
+
+    it('a head the queue refuses every lap does not starve what is behind it: the quiet purges commit in the first pass, as on main', async () => {
+      const { sql, pass, left } = setup(4);
+      const refused = new Set(['b000']);
+      for (let lap = 0; lap < 3; lap++) {
+        const { pass: p } = await pass(new Set(), 4, refused);
+        // The head fails like any entity; the three behind it are purged in the same pass.
+        expect(p.errors.map((e) => e.entityId)).toEqual(['b000']);
+        expect(p).toMatchObject({ more: false, lapFailed: 0 });
+        expect(purgeReportOf('b/delete', 'box', p).failure).toBeDefined();
+        expect(left()).toEqual(['b000']);
+        expect(readPurgeLap(sql, 'b/delete').after).toBeNull();
+      }
+    });
+
+    it('twin: the same walk with room in the queue purges the head too', async () => {
+      const { pass, left } = setup(4);
+      const { pass: p } = await pass(new Set(), 4);
+      expect(p).toMatchObject({ purged: 4, errors: [], more: false });
+      expect(left()).toEqual([]);
+    });
+
+    it('an entity whose purge can never fit is deferred once, then fails at the head, and the lap still reaches everything behind it', async () => {
+      const { sql, pass, left } = setup(6);
+      const never = new Set(['b002']);
+      const first = await pass(new Set(), 3, never);
+      expect(first.pass).toMatchObject({ purged: 2, errors: [], more: true, lapFailed: 0 });
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: { at: DUE(1), id: 'b001' }, failed: 0 });
+      // Now it IS the head: an ordinary failure, and the walk moves past it.
+      const second = await pass(new Set(), 3, never);
+      expect(second.due.ids).toEqual(['b002', 'b003', 'b004']);
+      expect(second.pass.errors.map((e) => e.entityId)).toEqual(['b002']);
+      expect(second.pass).toMatchObject({ purged: 2, more: true });
+      expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: { at: DUE(4), id: 'b004' }, failed: 1 });
+      const third = await pass(new Set(), 3, never);
+      expect(third.pass).toMatchObject({ purged: 1, errors: [], more: false, lapFailed: 1 });
+      expect(purgeReportOf('b/delete', 'box', third.pass).failure?.message).toMatch(/1 failed earlier in this lap/);
+      expect(left()).toEqual(['b002']);
+    });
+
+    it('once the head was refused the rest of the batch is walked as failures, not deferrals', async () => {
+      const { pass, left } = setup(4);
+      const { pass: p } = await pass(new Set(), 4, new Set(['b000', 'b002']));
+      expect(p.errors.map((e) => e.entityId)).toEqual(['b000', 'b002']);
+      expect(p).toMatchObject({ purged: 2, more: false });
+      expect(left()).toEqual(['b000', 'b002']);
+    });
+
+    it('a queue that stays full cannot hold the walk: a deferral is followed by a pass whose head fails and which closes the lap', async () => {
+      const { sql, pass, left } = setup(5);
+      const capped = new Set(['b001', 'b002', 'b003', 'b004']);
+      const first = await pass(new Set(), 5, capped);
+      expect(first.pass).toMatchObject({ purged: 1, errors: [], more: true });
+      expect(readPurgeLap(sql, 'b/delete').after?.id).toBe('b000');
+      // The queue is still full: the deferred entity is the head now, fails, and so does the rest.
+      const second = await pass(new Set(), 5, capped);
+      expect(second.due.ids).toEqual(['b001', 'b002', 'b003', 'b004']);
+      expect(second.pass.errors.map((e) => e.entityId)).toEqual(['b001', 'b002', 'b003', 'b004']);
+      expect(second.pass).toMatchObject({ purged: 0, more: false });
+      expect(purgeStillDue(second.pass)).toBe(false);
+      expect(left()).toEqual(['b001', 'b002', 'b003', 'b004']);
+    });
+
+    it('a refusal is recognised by what threw it, never by how it reads', async () => {
+      const refusal = capRefusal();
+      expect(isPlatformRequestRefusal(refusal)).toBe(true);
+      // The old shape, to a caller: a plain Error with the message it always had.
+      expect(refusal).toBeInstanceOf(Error);
+      expect(refusal.name).toBe('Error');
+      expect(refusal.message).toBe(`too many pending platform requests (${MAX_PENDING_PLATFORM_REQUESTS}); retry once some have drained`);
+      expect(errorCodeOf(refusal)).toBe(errorCodeOf(new Error(refusal.message)));
+      expect(() => assertPlatformRequestRoom(MAX_PENDING_PLATFORM_REQUESTS)).toThrow(/too many pending platform requests \(32\)/);
+      expect(() => assertPlatformRequestRoom(MAX_PENDING_PLATFORM_REQUESTS, 'the delivery retries')).toThrow(/32\); the delivery retries$/);
+      // Twin: one below the cap has room.
+      expect(() => assertPlatformRequestRoom(MAX_PENDING_PLATFORM_REQUESTS - 1)).not.toThrow();
+      // Module code throwing the same words, or a copy of the error, opts into nothing.
+      expect(isPlatformRequestRefusal(new Error(refusal.message))).toBe(false);
+      expect(isPlatformRequestRefusal(Object.assign(new Error(refusal.message), { pending: 32 }))).toBe(false);
+      expect(isPlatformRequestRefusal(new (refusal.constructor as ErrorConstructor)(refusal.message))).toBe(false);
+      expect(isPlatformRequestRefusal(undefined)).toBe(false);
+      expect(isPlatformRequestRefusal('too many pending platform requests')).toBe(false);
+    });
+
+    it('a module\'s own throw that reads like the refusal is an ordinary failure, deferring nothing', async () => {
+      const due: PurgeDue = {
+        cutoff: 'c',
+        idFrom: 'boxId',
+        ids: ['a', 'b', 'c'],
+        keys: [1, 2, 3].map((n) => ({ at: `t${n}`, id: `k${n}` })),
+        lap: { after: null, failed: 0 },
+        next: null,
+      };
+      const pass = await runPurgePass(
+        'b/delete',
+        due,
+        async (id) => {
+          if (id === 'b') throw new Error(capRefusal().message);
+        },
+        () => undefined,
+      );
+      expect(pass).toMatchObject({ purged: 2, more: false });
+      expect(pass.errors.map((e) => e.entityId)).toEqual(['b']);
+    });
+
+    it('walk positions that are not parallel to the ids are ignored: no deferral, no cursor from a position that is not there', async () => {
+      const writes: unknown[] = [];
+      const due: PurgeDue = {
+        cutoff: 'c',
+        idFrom: 'boxId',
+        ids: ['a', 'b', 'c'],
+        keys: [{ at: 't1', id: 'a' }],
+        lap: { after: null, failed: 0 },
+        next: null,
+      };
+      const pass = await runPurgePass(
+        'b/delete',
+        due,
+        async (id) => {
+          if (id === 'c') throw capRefusal();
+        },
+        (write) => writes.push(write),
+      );
+      expect(pass).toMatchObject({ purged: 2, more: false });
+      expect(pass.errors.map((e) => e.entityId)).toEqual(['c']);
+      expect(writes).toEqual([]);
+    });
+
+    it('a pass handed no walk positions cannot resume mid-batch, so the refusal stays an ordinary failure', async () => {
+      const due: PurgeDue = { cutoff: 'c', idFrom: 'boxId', ids: ['a', 'b'], lap: { after: null, failed: 0 }, next: null };
+      const pass = await runPurgePass(
+        'b/delete',
+        due,
+        async (id) => {
+          if (id === 'b') throw capRefusal();
+        },
+        () => undefined,
+      );
+      expect(pass).toMatchObject({ purged: 1, more: false });
+      expect(pass.errors.map((e) => e.entityId)).toEqual(['b']);
+    });
   });
 });

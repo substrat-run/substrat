@@ -11,9 +11,11 @@
  * Since #1686 the token is the secret of a `become` capability in the scope's own Durable
  * Object (single use, revocable, on the spine), and `capability_id` names it: the scope judges
  * the secret, this row says which capability IS the invite and which principal it seats. A row
- * with no `capability_id` is LEGACY — hash alone, as every invite was before #1686 and as
- * ticket0's own desk-invite flow still writes them — and is still redeemed the old way, by hash;
- * an invite has no expiry, so nothing ages those out (see `claimInvite`).
+ * with no `capability_id` is LEGACY — hash alone, as every invite was before #1686. Normal invite
+ * creation (`createInvite`) no longer writes one (it refuses to, #2496);
+ * `createLegacyInvite`, a fixture seam for tests that cover what is still pending, is the one
+ * exception. The ones already stored are still redeemed the old way, by hash, and an invite has
+ * no expiry, so nothing ages those out (see `claimInvite`).
  */
 import type { RegistrySql } from './site-registry.js';
 import { OWNER_SEAT_DDL } from './owner-seat.js';
@@ -62,19 +64,35 @@ const inviteRowOf = (r: Record<string, unknown>): InviteRow => ({
   capabilityId: (r.capability_id as string | null) ?? null,
 });
 
+const INSERT_INVITE =
+  'INSERT INTO invite (token_hash, scope_id, principal, role_key, email, capability_id) VALUES (?, ?, ?, ?, ?, ?)';
+
 /**
  * Record an invite under its token's hash. `capabilityId` names the `become` capability whose
- * secret the token is (#1686); null writes a legacy hash-only row, which this package's own
- * invite routes no longer mint.
+ * secret the token is (#1686), and is required: a row with none would be redeemable by hash
+ * alone, the path being retired (#2175). The type says so; the check is for a caller the type
+ * cannot see — an RPC from untyped code, a cast — and throws before anything is written.
  */
 export function createInvite(
   sql: RegistrySql, scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string,
-  capabilityId: string | null = null,
+  capabilityId: string,
 ): void {
-  sql.exec(
-    'INSERT INTO invite (token_hash, scope_id, principal, role_key, email, capability_id) VALUES (?, ?, ?, ?, ?, ?)',
-    tokenHash, scopeId, principal, roleKey, email, capabilityId,
-  );
+  if (typeof capabilityId !== 'string' || capabilityId === '') {
+    throw new Error('an invite names the become capability its link is; a hash-only invite can no longer be written');
+  }
+  sql.exec(INSERT_INVITE, tokenHash, scopeId, principal, roleKey, email, capabilityId);
+}
+
+/**
+ * Write a LEGACY hash-only invite — the row every invite was before #1686, which `claimInvite`
+ * still redeems. The one way to make such a row now, and only for a fixture that exists to cover
+ * what is still pending (the count, the accept branch, the withdrawal): nothing in this package
+ * or the platform calls it. It goes when the legacy branch does (#2497).
+ */
+export function createLegacyInvite(
+  sql: RegistrySql, scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string,
+): void {
+  sql.exec(INSERT_INVITE, tokenHash, scopeId, principal, roleKey, email, null);
 }
 
 /** The scope's outstanding (unclaimed) invites, newest first. No token. */
@@ -187,7 +205,8 @@ function bindInvite(sql: RegistrySql, scopeId: string, sub: string, principal: s
  * through the scope's exchange (`claimInviteByCapability`), which is what spends its one use
  * and puts it on the spine. Unlike an owner claim link, a legacy invite never expires, so this
  * path cannot age out on a timer: it stays until every legacy row is accepted or withdrawn, or
- * a cut-off is decided.
+ * the cut-off — the first vertical-auth release published on or after 2027-01-09 stops admitting
+ * here (#2497). No new row can join it (`createInvite` refuses one, #2496).
  */
 export function claimInvite(sql: RegistrySql, scopeId: string, sub: string, tokenHash: string): string | null {
   const inv = [...sql.exec(

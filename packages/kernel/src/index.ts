@@ -520,6 +520,7 @@ export {
   platformRequestOf,
 } from './platform-request-query.js';
 export type { PlatformRequestRawRow } from './platform-request-query.js';
+export { assertPlatformRequestRoom } from './platform-request-cap.js';
 export {
   CANCELLED_JOB_NOTE,
   DELIVERY_ERROR_REDACTION_SQL,
@@ -918,6 +919,8 @@ export type {
   StartPlatformSweeperOptions,
   StorageGaugeSweepOptions,
   StorageGaugeSweepReport,
+  RequestRollupSweepOptions,
+  RequestRollupSweepReport,
   CandidatesHint,
   CrossVerticalEdge,
   CrossVerticalOptions,
@@ -999,6 +1002,21 @@ export {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from './storage-gauge.js';
+export { BILLING_ROLLUP_RETENTION_MONTHS } from './billing-retention.js';
+export {
+  REQUEST_ROLLUP_DDL,
+  REQUEST_ROLLUP_LIMIT_DEFAULT,
+  REQUEST_ROLLUP_LIMIT_MAX,
+  RequestRollupSaturated,
+  listRequestDayRows,
+  listRequestRollupDayRows,
+  pruneRequestDayRows,
+  recordRequestDayRows,
+  type RequestDayCount,
+  type RequestDayFilter,
+  type RequestDayReadInput,
+  type RequestRollupDayFilter,
+} from './request-rollup.js';
 
 export {
   moduleLog,

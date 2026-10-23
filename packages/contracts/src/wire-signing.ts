@@ -1,8 +1,8 @@
 /**
  * The signed envelope the router and the control plane are to put on a call to a vertical
- * (RFC wire-signing, K-58 proposed). **Primitives only**: nothing in the repo signs or
- * verifies one yet, and the shared-secret checks in `wire-auth.ts` and vertical-host's
- * `readRoutedNode` are unchanged.
+ * (RFC wire-signing, K-58 proposed). Nothing in the repo signs one yet. The platform's entry
+ * module verifies one, inert until a deployment is given key lists (RFC §9, step 1), and the
+ * shared-secret checks in `wire-auth.ts` and vertical-host's `readRoutedNode` are unchanged.
  *
  * Ed25519 over a canonical encoding, the scheme the scope-store envelope already uses (K-52),
  * with its conventions reused rather than restated: the key id, the raw public key lists, the
@@ -198,6 +198,25 @@ export function parseWireEnvelope(canonical: string): WireClaims | undefined {
     exp: Number(exp),
     nonce,
   };
+}
+
+/**
+ * The canonical text a header carries and the claims it names, or undefined when the header is not
+ * base64url of exactly what the encoder emits. Nothing is verified here: the verifier decodes with
+ * this, and an entry may read the claims beforehand only to choose what to verify them against.
+ */
+export function decodeWireEnvelope(header: string): { readonly canonical: string; readonly claims: WireClaims } | undefined {
+  const bytes = base64UrlToBytes(header);
+  if (!bytes) return undefined;
+  let canonical: string;
+  try {
+    // Fatal and BOM-keeping, so decoding and re-encoding gives back exactly these bytes.
+    canonical = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+  const claims = parseWireEnvelope(canonical);
+  return claims ? { canonical, claims } : undefined;
 }
 
 /** Fifteen lines, no trailing newline. Throws on a field the parser would refuse. */
@@ -447,11 +466,19 @@ interface WireExpectationOf<K extends WireKind> {
   readonly scopeId?: string;
 }
 
+/**
+ * A call's body, read on demand: the verifier calls it only when the body is the next check, after
+ * the signature, the audience, the lifetime, the clock, the method and the target have passed, so an
+ * envelope refused for any of those never costs a read. The tenant and scope pins, and a nonce claim,
+ * come after it, in the order §3.4 of the RFC fixes. It answers `null` when the body could not be read, which is refused as `body`.
+ */
+export type WireBodyReader = () => WireBytes | null | Promise<WireBytes | null>;
+
 export type WireExpectation =
   | WireExpectationOf<'route'>
   | (WireExpectationOf<'call'> & {
-      /** The exact body received, read before any of it is acted on. */
-      readonly body: WireBytes;
+      /** The exact body received, read before any of it is acted on; or a reader that reads it then. */
+      readonly body: WireBytes | WireBodyReader;
       /** Required: an endpoint that forgets to say fails closed, rather than accepting replays. */
       readonly replay: WireReplayPolicy;
     });
@@ -552,17 +579,9 @@ export async function verifyWireEnvelope(input: {
   const header = input.headers.get(WIRE_ENVELOPE_HEADER);
   const signature = input.headers.get(WIRE_SIGNATURE_HEADER);
   if (!header || !signature) return refuse('missing');
-  const bytes = base64UrlToBytes(header);
-  if (!bytes) return refuse('malformed');
-  let canonical: string;
-  try {
-    // Fatal and BOM-keeping, so decoding and re-encoding gives back exactly these bytes.
-    canonical = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return refuse('malformed');
-  }
-  const claims = parseWireEnvelope(canonical);
-  if (!claims) return refuse('malformed');
+  const decoded = decodeWireEnvelope(header);
+  if (!decoded) return refuse('malformed');
+  const { canonical, claims } = decoded;
   if (claims.iss !== expected.iss) return refuse('issuer');
   if (claims.kind !== expected.kind) return refuse('kind');
   const publicKey = own[claims.iss].get(claims.kid);
@@ -575,10 +594,12 @@ export async function verifyWireEnvelope(input: {
   if (!(nowSeconds <= claims.exp + WIRE_CLOCK_SKEW_SECONDS)) return refuse('expired');
   if (claims.method !== expected.method) return refuse('method');
   if (claims.targetDigest !== (await wireDigest(expected.target))) return refuse('target');
-  // The type requires a call's body; an untyped caller that leaves it out, or hands over the null of
-  // a body read that failed, is refused, never read as an empty body.
-  if (expected.kind === 'call' && (expected.body == null || claims.bodyDigest !== (await wireDigest(expected.body)))) {
-    return refuse('body');
+  if (expected.kind === 'call') {
+    // A reader is read here and nowhere earlier. The type requires a call's body; an untyped caller
+    // that leaves it out, or hands over the null of a body read that failed, is refused, never read
+    // as an empty body.
+    const body = typeof expected.body === 'function' ? await expected.body() : expected.body;
+    if (body == null || claims.bodyDigest !== (await wireDigest(body))) return refuse('body');
   }
   if (expected.tenantId !== undefined && claims.tenantId !== expected.tenantId) return refuse('scope');
   if (expected.scopeId !== undefined && claims.scopeId !== expected.scopeId) return refuse('scope');
@@ -597,4 +618,165 @@ export async function verifyWireEnvelope(input: {
     if ((await replay.claim(claims.nonce, until)) !== true) return refuse('replay');
   }
   return { ok: true, claims };
+}
+
+/*
+ * What a deployment is given at upload (RFC §5, §6) and what its entry writes per request (§8).
+ * Named here, beside the envelope, so the entry that reads them and the uploader and readiness
+ * report that will write and read them spell them one way.
+ */
+
+/** The router's public keys, a comma-separated list. Plain configuration: public keys are not secret. */
+export const WIRE_ROUTER_KEYS_VAR = 'SUBSTRAT_WIRE_ROUTER_KEYS';
+/** The control plane's public keys, a comma-separated list. */
+export const WIRE_PLATFORM_KEYS_VAR = 'SUBSTRAT_WIRE_PLATFORM_KEYS';
+/** The deployment's own dispatch name, which an envelope's `aud` must equal. */
+export const WIRE_AUDIENCE_VAR = 'SUBSTRAT_WIRE_AUDIENCE';
+/** The environment's down-channel state, one of {@link WIRE_STATES}. */
+export const WIRE_STATE_VAR = 'SUBSTRAT_WIRE_STATE';
+
+/** What a deployment accepts on a call down (RFC §5). */
+export const WIRE_STATES = ['legacy-only', 'dual', 'signed-only'] as const;
+export type WireState = (typeof WIRE_STATES)[number];
+
+/**
+ * A deployment's state from what its upload carries (RFC §5, Q3). No key list at all is
+ * `legacy-only` whatever the setting says, so a deployment no upload gave keys behaves as it
+ * did before the verifier existed. With keys, an explicit `legacy-only` or `signed-only` is
+ * taken as said, and anything else (missing, unknown) reads as `dual`: a wrong value fails
+ * toward accepting what is accepted today.
+ */
+export function wireStateOf(config: { readonly routerKeys?: unknown; readonly platformKeys?: unknown; readonly state?: unknown }): WireState {
+  const listed = (value: unknown) => typeof value === 'string' && value.trim() !== '';
+  if (!listed(config.routerKeys) && !listed(config.platformKeys)) return 'legacy-only';
+  return config.state === 'legacy-only' || config.state === 'signed-only' ? config.state : 'dual';
+}
+
+/** What an endpoint of a deployment accepts: the kind of envelope, and the issuers that may sign it. */
+export interface WireEndpoint {
+  readonly kind: WireKind;
+  readonly issuers: readonly WireIssuer[];
+}
+
+const ROUTE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'route', issuers: Object.freeze(['router'] as const) });
+const CALL_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform'] as const) });
+const PEER_INVOKE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform', 'router'] as const) });
+
+/** Decode `path` with `decoder`, skipping any run of escapes it cannot decode: Hono's `tryDecode`. */
+function tryDecode(path: string, decoder: (text: string) => string): string {
+  try {
+    return decoder(path);
+  } catch {
+    return path.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+      try {
+        return decoder(run);
+      } catch {
+        return run;
+      }
+    });
+  }
+}
+
+/** Empty and `.` segments dropped and `..` resolved, as a lenient router could read the path. */
+function collapsed(path: string): string {
+  const segments: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '..') segments.pop();
+    else if (segment !== '' && segment !== '.') segments.push(segment);
+  }
+  return `/${segments.join('/')}`;
+}
+
+const INTERNAL = /^\/internal(?:\/|$)/i;
+
+/**
+ * Which envelope a deployment's endpoint accepts (RFC §3.4, check 3), by the request's path. The
+ * internal surface vertical-host's `mountPlatformSurface` gates (`/internal/*`) takes calls from
+ * the control plane, and its peer invocation (`/internal/vertical-invoke`) from the router too,
+ * which makes those calls. Every other path is a routed request. A verifier judges by this, and a
+ * signer signs what it says.
+ *
+ * The surface is matched on the path its router decodes (Hono's `getPath`: `decodeURI`, with `%25`
+ * kept escaped), so the path is judged in every form a router could read it: as sent, decoded that
+ * way, decoded fully, each with empty and dot segments collapsed, in any letter case. Any form under
+ * `/internal` makes it a call: the stricter reading wins. Only the exact path the router sends a peer
+ * invocation to admits the router.
+ */
+export function wireEndpoint(pathname: string): WireEndpoint {
+  const routed = tryDecode(pathname.includes('%25') ? pathname.replace(/%25/g, '%2525') : pathname, decodeURI);
+  const forms = [pathname, routed, tryDecode(pathname, decodeURIComponent)];
+  if (!forms.some((form) => INTERNAL.test(form) || INTERNAL.test(collapsed(form)))) return ROUTE_ENDPOINT;
+  return pathname === '/internal/vertical-invoke' ? PEER_INVOKE_ENDPOINT : CALL_ENDPOINT;
+}
+
+/**
+ * The internal calls that take a body but change nothing, so a call to one keeps no nonce memory
+ * (RFC §4): each only reads the scope it names. Named by the exact path the platform calls, so any
+ * other spelling of one keeps nonces.
+ */
+export const WIRE_REPLAY_FREE_CALLS: readonly string[] = Object.freeze([
+  '/internal/query',
+  '/internal/redrain-count',
+  '/internal/lifecycle-flow',
+  '/internal/operation-series',
+  '/internal/connector-grants',
+]);
+
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * A call's replay policy as its endpoint states it (RFC §4), never inferred from what an envelope
+ * names: `'none'` for a safe method or a call {@link WIRE_REPLAY_FREE_CALLS} lists, and `'nonce'`
+ * for every other call, a new endpoint included, whether or not its envelope names a scope. A call
+ * that keeps nonces and names no scope has no store to spend one in, which is its deployment's fault.
+ */
+export function wireReplayOf(method: string, pathname: string): 'none' | 'nonce' {
+  return SAFE_METHODS.has(method.toUpperCase()) || WIRE_REPLAY_FREE_CALLS.includes(pathname) ? 'none' : 'nonce';
+}
+
+/**
+ * How one request fared (RFC §8). `legacy-accepted` is an envelope refused beside a legacy
+ * credential that was valid, and carries the refusal's reason; `refused` is an envelope refused
+ * with no valid legacy credential beside it.
+ */
+export const WIRE_OUTCOMES = ['signed-accepted', 'legacy-accepted', 'dual-mismatch', 'refused', 'fault'] as const;
+export type WireOutcome = (typeof WIRE_OUTCOMES)[number];
+
+/**
+ * Which of the deployment's own faults a `fault` was: its key lists could not be loaded, it has
+ * no nonce store for a call that needs one, its nonce store threw or did not answer in time, or
+ * the verifier threw for any other reason.
+ */
+export const WIRE_FAULTS = ['keys', 'no-nonce-store', 'nonce-store', 'verifier'] as const;
+export type WireFault = (typeof WIRE_FAULTS)[number];
+
+/** The legacy credential beside the envelope: present and valid, present and not, or not sent. */
+export type WireLegacyCredential = 'valid' | 'invalid' | 'absent';
+
+/**
+ * The line an entry writes for every request it judged (RFC §8), beside the invocation line and
+ * sharing its request id. Never written in `legacy-only`. Names, ids and outcomes only: never a
+ * header, a credential, a body or an error's text. Add fields; never rename one.
+ */
+export interface WireVerificationLine {
+  readonly substrat: 'wire';
+  readonly state: Exclude<WireState, 'legacy-only'>;
+  /**
+   * Who signed: the issuer the envelope was verified as. An envelope not verified is the endpoint's
+   * one issuer, or `null` at an endpoint that admits two, since its claim is not trusted.
+   */
+  readonly issuer: WireIssuer | null;
+  /** The kind the endpoint takes. */
+  readonly kind: WireKind;
+  readonly outcome: WireOutcome;
+  /** Why the envelope was refused, beside `legacy-accepted` and `refused`; otherwise null. */
+  readonly reason: WireRefusalReason | null;
+  /** Beside `fault`; otherwise null. */
+  readonly fault: WireFault | null;
+  readonly legacy: WireLegacyCredential;
+  /** The tenant and scope the request was served as, when a credential proved one. */
+  readonly tenantId: string | null;
+  readonly scopeId: string | null;
+  /** The platform's `SUBSTRAT_VERSION_ID`, as on the invocation line. */
+  readonly versionId: string | null;
 }
