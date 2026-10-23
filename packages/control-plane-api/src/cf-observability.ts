@@ -1695,16 +1695,19 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       }),
     );
 
-    // Merge, de-duplicate, drop the router's own access log, then apply the caller's
-    // level/search filters HERE rather than in phase one — a filter pushed into phase one
-    // would have hidden the stamped line whose request id is the only way to reach the
-    // line the caller is actually looking for.
+    // Merge, de-duplicate, drop the router's own access log and the platform's wire-signing
+    // counter, then apply the caller's level/search filters HERE rather than in phase one — a
+    // filter pushed into phase one would have hidden the stamped line whose request id is the
+    // only way to reach the line the caller is actually looking for.
     const byId = new Map<string, Record<string, unknown>>();
     // A `ctx.log` line can arrive twice — directly, and as a sibling of its invocation —
     // and the event id is what folds the two into one row.
     for (const e of [...stamped, ...sibling.flat(), ...(await moduleLines)]) {
       const source = (e['source'] ?? {}) as Record<string, unknown>;
       if (source['router'] === 'request') continue;
+      // RFC wire-signing §8: the entry's verdict on a request, with its reason, shares the
+      // request's id; it is the platform's counter, never a line of the tenant's.
+      if (source['substrat'] === 'wire') continue;
       const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
       const id = typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e);
       byId.set(id, e);
