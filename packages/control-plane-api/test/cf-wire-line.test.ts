@@ -357,7 +357,11 @@ describe('a page is as full as it would be without the wire line', () => {
         const { reader, queries } = backend(() => lines);
         const { events: answer, incomplete } = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
         expect(queries.length).toBe(SERVICES.length + 8);
-        expect(answer.length).toBeGreaterThan(0);
+        // The walks whose oldest lines are newest are read first, so the cap lands as late as it can:
+        // at s 11's oldest line, keeping the 24 lines of s 0 to 11 above it and the 8 of s 12 to 19
+        // at i = 100. Read oldest first, the cap would land at s 19's and keep 25.
+        expect(queries.slice(SERVICES.length).map((q) => q.parameters?.filters?.[0]?.value)).toEqual(SERVICES.slice(12).reverse());
+        expect(answer).toHaveLength(32);
         // Whatever was left unread cut the answer short, and the read says so; nothing in it is out of place.
         expect(incomplete).toBe(true);
         expect(answer.map((e) => e.timestamp)).toEqual(truth(lines).slice(0, answer.length));
