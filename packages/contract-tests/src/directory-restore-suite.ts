@@ -387,6 +387,42 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
+    it('a dump from before the ownership history: each vertical gets a period from its created_at (#2501)', async () => {
+      await using(async (dir, fresh) => {
+        const verticals = find(fresh, 'verticals');
+        const base = Object.fromEntries(verticals.columns.map((c) => [c, valueFor('verticals', c)]));
+        const vertical = (slug: string, owner: string | null) =>
+          rowOf(verticals.columns, { ...base, slug, owner_tenant: owner, created_at: '2026-01-02T03:04:05.000Z' });
+        const dump = withTable(
+          fresh.filter((t) => t.name !== '_substrat_vertical_owners'),
+          'verticals',
+          (t) => ({ ...t, rows: [vertical('acme/crm', 'tenant-a'), vertical('platform-app', null)] }),
+        );
+        await dir.restore(dump);
+        await dir.settle();
+        const periods = (tables: ScopeDumpTable[]) =>
+          recordsOf(find(tables, '_substrat_vertical_owners')).sort((a, b) => `${a.slug}${a.since}`.localeCompare(`${b.slug}${b.since}`));
+        expect(periods(await dir.snapshot())).toEqual([
+          { slug: 'acme/crm', owner: 'tenant-a', since: '2026-01-02T03:04:05.000Z', until: null },
+          { slug: 'platform-app', owner: null, since: '2026-01-02T03:04:05.000Z', until: null },
+        ]);
+
+        // Twin: a dump that carries the history is taken as it is. An earlier owner's closed period
+        // stays, and the open one is not opened a second time.
+        const owners = find(fresh, '_substrat_vertical_owners');
+        const carried = [
+          { slug: 'acme/crm', owner: 'tenant-b', since: '2025-06-01T00:00:00.000Z', until: '2025-12-31T00:00:00.000Z' },
+          { slug: 'acme/crm', owner: 'tenant-a', since: '2026-01-02T03:04:05.000Z', until: null },
+        ];
+        await dir.restore([...dump, { ...owners, rows: carried.map((p) => rowOf(owners.columns, p)) }]);
+        await dir.settle();
+        expect(periods(await dir.snapshot())).toEqual([
+          ...carried,
+          { slug: 'platform-app', owner: null, since: '2026-01-02T03:04:05.000Z', until: null },
+        ]);
+      });
+    });
+
     describe('refused, and the directory is left exactly as it was', () => {
       const refusals: Refusal[] = [
         [

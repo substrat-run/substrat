@@ -328,3 +328,25 @@ describe('#1722 directory additions on an existing Durable Object', () => {
     expect(result.copies).toEqual([]);
   });
 });
+
+describe('the vertical ownership history on a directory from before it (#2501)', () => {
+  it('a construction over verticals with no period opens one each, from its created_at, and only once', async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`owners-${ulid()}`));
+    const result = await runInDurableObject(stub, (_instance, state) => {
+      // As a directory from before the history holds it: two verticals, and no table for the periods.
+      state.storage.sql.exec('DROP TABLE _substrat_vertical_owners');
+      state.storage.sql.exec(`INSERT INTO verticals (slug, name, source, owner_tenant, created_at)
+        VALUES ('acme/crm', 'CRM', 'cli', 'tenant-a', '2026-01-02T03:04:05.000Z'),
+               ('platform-app', 'App', 'builtin', NULL, '2026-01-03T00:00:00.000Z')`);
+      new ControlPlaneDO(state, env);
+      // Its twin: the next construction finds every period open and opens nothing more.
+      new ControlPlaneDO(state, env);
+      return state.storage.sql.exec('SELECT slug, owner, since, until FROM _substrat_vertical_owners ORDER BY slug').toArray();
+    });
+    expect(result).toEqual([
+      { slug: 'acme/crm', owner: 'tenant-a', since: '2026-01-02T03:04:05.000Z', until: null },
+      { slug: 'platform-app', owner: null, since: '2026-01-03T00:00:00.000Z', until: null },
+    ]);
+  });
+});
