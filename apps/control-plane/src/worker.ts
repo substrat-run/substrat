@@ -177,6 +177,7 @@ import {
   type CopyJobRecord,
 } from '@substrat-run/control-plane-api';
 import { durableCopyJobs } from './copy-jobs.js';
+import { refuse, refuseStatus } from './problem.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -2581,9 +2582,12 @@ export default {
       if (c.res.status !== 401) return;
       const why = await staffRefusalOf(c.env, c.req.raw.headers);
       if (!why) return;
+      // The refusal's own headers stay (a `www-authenticate`, a cookie clear); the body and
+      // media type are the problem document's.
+      const refusal = refuse('unauthenticated', why);
       const headers = new Headers(c.res.headers);
-      headers.set('content-type', 'application/json');
-      c.res = new Response(JSON.stringify({ error: why }), { status: 401, headers });
+      headers.set('content-type', refusal.headers.get('content-type')!);
+      c.res = new Response(refusal.body, { status: 401, headers });
     });
 
     // Staff sign-in: OIDC relying party (AuthHero) — /api/auth/login → /callback →
@@ -2622,7 +2626,7 @@ export default {
       // No desk configured is not an error — it is a deployment without one.
       if (!desk || !secret) return c.json({ desk: null });
       const staff = await oidcStaffSessionReader(c.env)(c.req.raw.headers);
-      if (!staff) return c.json({ error: 'unauthenticated' }, 401);
+      if (!staff) return refuse('unauthenticated', 'unauthenticated');
       c.header('cache-control', 'no-store');
       return c.json({
         desk,
@@ -2647,9 +2651,9 @@ export default {
     const membersGate = async (
       request: Request,
     ): Promise<{ db: D1Database; actor: PlatformActorId } | Response> => {
-      if (!env.AUTH_DB) return Response.json({ error: 'no roster store bound' }, { status: 501 });
+      if (!env.AUTH_DB) return refuseStatus(501, 'no roster store bound');
       const actor = await membersAuth(request);
-      if (!actor) return Response.json({ error: 'unauthenticated' }, { status: 401 });
+      if (!actor) return refuse('unauthenticated', 'unauthenticated');
       return { db: env.AUTH_DB, actor };
     };
     const members = async (db: D1Database) => ({ staff: await listStaff(db) });
@@ -2665,7 +2669,7 @@ export default {
       if (gate instanceof Response) return gate;
       const body = (await c.req.json().catch(() => ({}))) as { email?: unknown; name?: unknown };
       const email = memberEmail(body.email);
-      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      if (!email) return refuse('validation_failed', 'a valid email is required');
       const name = typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim() : undefined;
       await grantStaff(gate.db, { email, ...(name ? { name } : {}), grantedBy: gate.actor });
       return c.json(await members(gate.db));
@@ -2676,13 +2680,13 @@ export default {
       if (gate instanceof Response) return gate;
       const body = (await c.req.json().catch(() => ({}))) as { email?: unknown };
       const email = memberEmail(body.email);
-      if (!email) return c.json({ error: 'a valid email is required' }, 400);
+      if (!email) return refuse('validation_failed', 'a valid email is required');
       const outcome = await revokeStaff(gate.db, email);
-      if (outcome === 'not-found') return c.json({ error: `${email} is not an active staff member` }, 404);
+      if (outcome === 'not-found') return refuse('not_found', `${email} is not an active staff member`);
       if (outcome === 'last-member') {
         // An empty roster means NOBODY can act — including on this surface — and
         // recovery is a raw wrangler statement under pressure. Refuse instead.
-        return c.json({ error: 'cannot revoke the last active staff member' }, 409);
+        return refuse('conflict', 'cannot revoke the last active staff member');
       }
       return c.json(await members(gate.db));
     });
@@ -2699,10 +2703,10 @@ export default {
       const gate = c.env.SERVICE_TOKEN
         ? await serviceTokenAuth(c.env.SERVICE_TOKEN, SERVICE_ACTOR)(c.req.raw)
         : null;
-      if (!gate) return c.json({ error: 'service token required' }, 403);
+      if (!gate) return refuse('forbidden', 'service token required');
       const body = (await c.req.json().catch(() => ({}))) as { externalId?: unknown };
       if (typeof body.externalId !== 'string' || body.externalId === '') {
-        return c.json({ error: 'externalId (the OIDC subject) is required' }, 400);
+        return refuse('validation_failed', 'externalId (the OIDC subject) is required');
       }
       return c.json({ tenants: await studioTenantsFor(hostFor(c.env), { id: body.externalId }) });
     });
