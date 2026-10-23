@@ -45,7 +45,7 @@ format and the key tooling are K-52's.
 anything relies on one (`dual`). The signers then add signatures beside the legacy headers,
 which stay. The control plane records which deployed versions can verify, and an environment's
 down-channel becomes `signed-only` only when every live version can, the counters show no legacy
-acceptance, mismatch or fault, and a human flips it. The shared credential is withdrawn only after the up-channel
+acceptance, mismatch, fault or refusal beyond expected client noise, and a human flips it. The shared credential is withdrawn only after the up-channel
 is gone. Every step reverts on its own.
 
 **This pull request** adds this RFC, the K-58 draft and the primitives, with tests and vectors.
@@ -301,11 +301,22 @@ step 6, withdraws the credential.
   envelope), the request is **not** refused: it is answered through the legacy headers, as today,
   counted as `dual-mismatch` and surfaced (Q9). A non-zero count is a router defect, and it blocks
   the move to `signed-only` (§7). Only in `signed-only`, where the envelope alone decides admission,
-  can a disagreement refuse anything. A version built with the verifier then reads its routed
-  identity from the verified envelope (Q2), not the legacy headers. A version built against an older
-  vertical-host still reads the router's legacy headers for that identity at steps 5 and 6, which
-  is safe only because the router still sends both and `dual-mismatch` was zero at the flip; after
-  step 7 such a version needs Q10's values or blocks the withdrawal.
+  can a disagreement refuse anything.
+- **One identity per request, the same at the entry and in the vertical.** The entry passes
+  exactly one routed identity (tenant, scope, surface) downstream, and a version built with the
+  verifier reads that one (Q2), never a second source:
+  - in `legacy-only` and `dual`, the legacy headers' identity whenever the legacy credential is
+    valid, a `dual-mismatch` included, so a request is served exactly as today until the flip;
+  - in `dual`, the envelope's identity only when the envelope alone admitted the request (its
+    legacy credential missing or invalid, which with both still sent is itself a defect the
+    counters show);
+  - from `signed-only` on, the verified envelope's identity, and the legacy headers are not read
+    for it.
+
+  A version built against an older vertical-host still reads the router's legacy headers for that
+  identity at steps 5 and 6, which is safe only because the router still sends both and
+  `dual-mismatch` was zero at the flip; after step 7 such a version needs Q10's values or blocks
+  the withdrawal.
 - **The state is injected at upload, with two derived safeties.** A deployment with no key lists is
   `legacy-only` whatever the setting says, so a new verifier under an old control plane, which
   injects no keys, behaves exactly as today. A deployment with key lists and a missing or unknown
@@ -380,7 +391,8 @@ step 6, withdraws the credential.
 - **The gates.**
   - The control plane refuses to set an environment to `signed-only` unless the report is clean,
     the standby keys are listed everywhere, and the cutover criterion holds (§8: no legacy
-    acceptance, no `dual-mismatch`, no `fault`).
+    acceptance, no `dual-mismatch`, no `fault`, and no `refused:*` outside expected noise from
+    clients that send nothing).
   - It refuses to drop a public key unless every live version carries its replacement, except on
     the break-glass path (§6).
   - It refuses to stop injecting the shared credentials unless every live version is ready for
