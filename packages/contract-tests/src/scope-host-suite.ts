@@ -11022,11 +11022,17 @@ export function scopeHostContractSuite(
         ]);
         expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([]);
 
-        // A success clears the error.
+        // A success clears the error, and ends the run the failure had started.
         await host.admin.recordRequestDay!(staff, {
           day,
           attemptedAt: at(day, '02:00:00'),
           counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, ...served(9), sampled: false }],
+        });
+        expect((await host.admin.listRequestRollupDays!(staff, { since: day, until: day }))[0]).toMatchObject({
+          readAt: at(day, '02:00:00'),
+          error: null,
+          failingSince: null,
+          failingCount: null,
         });
         // A later failure records the attempt and leaves the day's rows and its successful read. It
         // names the run it extends, and the record keeps that run's start and length.
