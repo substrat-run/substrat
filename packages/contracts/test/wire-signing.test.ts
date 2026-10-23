@@ -925,10 +925,32 @@ describe('wireEndpoint: which envelope an endpoint accepts', () => {
   });
 
   it('every other path is a routed request, the router’s alone', () => {
-    for (const path of ['/', '/api/things', '/internals', '/internal-x', '/api/internal/provision']) {
+    for (const path of ['/', '/api/things', '/internals', '/internal-x', '/api/internal/provision', '/api/%69nternal/x', '/docs/internal', '/my-internal/x', '/internalx']) {
       expect(wireEndpoint(path)).toEqual({ kind: 'route', issuers: ['router'] });
     }
-    // Only the exact peer path admits the router on the internal surface.
-    expect(wireEndpoint('/internal/vertical-invoke/x')).toEqual({ kind: 'call', issuers: ['platform'] });
+  });
+
+  it.each([
+    ['an escaped letter', '/%69nternal/provision'],
+    ['an escaped letter after the prefix', '/internal/%70rovision'],
+    ['an upper-case escape', '/%49nternal/provision'],
+    ['an escaped slash', '/internal%2Fprovision'],
+    ['a dot segment', '/./internal/provision'],
+    ['a parent segment', '/a/../internal/provision'],
+    ['escaped dot segments', '/a/%2e%2e/internal/provision'],
+    ['a doubled slash before', '//internal/provision'],
+    ['a doubled slash after', '/internal//provision'],
+    ['a trailing slash', '/internal/'],
+    ['upper case', '/INTERNAL/provision'],
+    ['mixed case', '/Internal'],
+  ])('a path a router could read as internal is a call: %s (%s)', (_, path) => {
+    expect(wireEndpoint(path)).toEqual({ kind: 'call', issuers: ['platform'] });
+  });
+
+  it('admits the router only on the exact path a peer invocation is sent to', () => {
+    for (const path of ['/internal/vertical-invoke/', '/internal/vertical-invoke/x', '/internal/%76ertical-invoke', '/INTERNAL/vertical-invoke', '//internal/vertical-invoke']) {
+      expect(wireEndpoint(path)).toEqual({ kind: 'call', issuers: ['platform'] });
+    }
+    expect(wireEndpoint('/internal/vertical-invoke')).toEqual({ kind: 'call', issuers: ['platform', 'router'] });
   });
 });

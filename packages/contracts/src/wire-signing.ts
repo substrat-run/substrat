@@ -652,15 +652,50 @@ const ROUTE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'route', issuers: Obj
 const CALL_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform'] as const) });
 const PEER_INVOKE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform', 'router'] as const) });
 
+/** Decode `path` with `decoder`, skipping any run of escapes it cannot decode: Hono's `tryDecode`. */
+function tryDecode(path: string, decoder: (text: string) => string): string {
+  try {
+    return decoder(path);
+  } catch {
+    return path.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+      try {
+        return decoder(run);
+      } catch {
+        return run;
+      }
+    });
+  }
+}
+
+/** Empty and `.` segments dropped and `..` resolved, as a lenient router could read the path. */
+function collapsed(path: string): string {
+  const segments: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '..') segments.pop();
+    else if (segment !== '' && segment !== '.') segments.push(segment);
+  }
+  return `/${segments.join('/')}`;
+}
+
+const INTERNAL = /^\/internal(?:\/|$)/i;
+
 /**
  * Which envelope a deployment's endpoint accepts (RFC §3.4, check 3), by the request's path. The
  * internal surface vertical-host's `mountPlatformSurface` gates (`/internal/*`) takes calls from
  * the control plane, and its peer invocation (`/internal/vertical-invoke`) from the router too,
  * which makes those calls. Every other path is a routed request. A verifier judges by this, and a
  * signer signs what it says.
+ *
+ * The surface is matched on the path its router decodes (Hono's `getPath`: `decodeURI`, with `%25`
+ * kept escaped), so the path is judged in every form a router could read it: as sent, decoded that
+ * way, decoded fully, each with empty and dot segments collapsed, in any letter case. Any form under
+ * `/internal` makes it a call: the stricter reading wins. Only the exact path the router sends a peer
+ * invocation to admits the router.
  */
 export function wireEndpoint(pathname: string): WireEndpoint {
-  if (pathname !== '/internal' && !pathname.startsWith('/internal/')) return ROUTE_ENDPOINT;
+  const routed = tryDecode(pathname.includes('%25') ? pathname.replace(/%25/g, '%2525') : pathname, decodeURI);
+  const forms = [pathname, routed, tryDecode(pathname, decodeURIComponent)];
+  if (!forms.some((form) => INTERNAL.test(form) || INTERNAL.test(collapsed(form)))) return ROUTE_ENDPOINT;
   return pathname === '/internal/vertical-invoke' ? PEER_INVOKE_ENDPOINT : CALL_ENDPOINT;
 }
 

@@ -200,7 +200,9 @@ both.
    fails the tag), and the text parses as exactly what the encoder emits. A header spelled with
    its unused trailing bits set decodes to the same bytes, and the signature covers the bytes, not
    the spelling;
-3. the issuer, then the kind, are the ones this endpoint accepts;
+3. the issuer, then the kind, are the ones this endpoint accepts (`wireEndpoint`: the internal
+   surface takes calls, and the path is read in every form the vertical's router could decode it,
+   so any reading under `/internal` makes it a call);
 4. the key id is in the issuer's list;
 5. the signature verifies;
 6. then, all over signed bytes: the audience is this deployment; the lifetime is positive and at

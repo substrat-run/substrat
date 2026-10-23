@@ -1,3 +1,4 @@
+import { Hono } from 'hono';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { problemForStatus, PROBLEM_CONTENT_TYPE } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
@@ -12,6 +13,7 @@ import {
   WIRE_ROUTER_KEYS_VAR,
   WIRE_SIGNATURE_HEADER,
   WIRE_STATE_VAR,
+  wireEndpoint,
   wireRequestBinding,
   type WireEnvelopeInput,
   type WireNonceCache,
@@ -531,6 +533,76 @@ describe('signed-only: the envelope alone decides', () => {
       expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid' });
     }
     expect(answers).toEqual([503, 200]);
+  });
+});
+
+describe('a request is judged as the vertical’s router will route it', () => {
+  /** Whether a path reaches vertical-host's `/internal/*` gate on Hono, the router it is mounted on. */
+  async function honoRoutesInternal(url: string): Promise<boolean> {
+    let internal = false;
+    const app = new Hono();
+    app.use('/internal/*', async (_c, next) => {
+      internal = true;
+      await next();
+    });
+    app.all('*', (c) => c.text('ok'));
+    await app.fetch(new Request(url, { method: 'POST', body: '{}' }));
+    return internal;
+  }
+
+  const paths = [
+    '/internal/provision',
+    '/%69nternal/provision',
+    '/internal/%70rovision',
+    '/%49nternal/provision',
+    '/internal%2Fprovision',
+    '/a/%2e%2e/internal/provision',
+    '/./internal/provision',
+    '//internal/provision',
+    '/internal//provision',
+    '/internal/',
+    '/INTERNAL/provision',
+    '/Internal',
+    '/internal/vertical-invoke',
+    '/api/things',
+    '/api/%69nternal/x',
+    '/internals',
+    '/docs/internal',
+  ];
+
+  it.each(paths)('never judges as a route a path Hono routes into the internal surface: %s', async (path) => {
+    const url = `https://vertical${path}?next=/internal/provision`;
+    const kind = wireEndpoint(new URL(url).pathname).kind;
+    if (await honoRoutesInternal(url)) expect(kind).toBe('call');
+    // Its twin: an ordinary route stays a route, whatever its query names.
+    if (['/api/things', '/api/%69nternal/x', '/internals', '/docs/internal'].includes(path)) expect(kind).toBe('route');
+  });
+
+  it('an escaped internal path is judged as a call: a route envelope for it is refused, a call envelope verified', async () => {
+    const url = 'https://acme.example/%69nternal/provision';
+    const asRoute = gated();
+    await asRoute.fetch(new Request(url, { method: 'POST', headers: { ...legacyRoute(), ...(await routeEnvelope({ url, method: 'POST' })) }, body: '{}' }), envOf('dual'));
+    expect(asRoute.wire()[0]).toMatchObject({ kind: 'call', outcome: 'refused', reason: 'issuer' });
+    const asCall = gated();
+    await asCall.fetch(new Request(url, { method: 'POST', headers: { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(url, '{}')) }, body: '{}' }), envOf('dual'));
+    expect(asCall.wire()[0]).toMatchObject({ kind: 'call', issuer: 'platform' });
+    expect(asCall.wire()[0]!.outcome).not.toBe('refused');
+  });
+
+  it.each(['HEAD', 'OPTIONS', 'GET'])('a %s call is judged as a call and keeps no nonce', async (method) => {
+    const url = `https://vertical/internal/export?scopeId=${SCOPE}`;
+    const g = gated();
+    const res = await g.fetch(new Request(url, { method, headers: { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(url, '', { method, tenantId: TENANT, scopeId: SCOPE })) } }), envOf('dual'));
+    expect(res.status).toBe(200);
+    expect(g.wire()[0]).toMatchObject({ kind: 'call', outcome: 'signed-accepted', fault: null });
+  });
+
+  it('a route whose query names the internal surface is still a route', async () => {
+    const url = 'https://acme.example/api/things?next=/internal/provision';
+    const g = gated();
+    const res = await g.fetch(new Request(url, { headers: { ...legacyRoute(), ...(await routeEnvelope({ url })) } }), envOf('dual'));
+    expect(res.status).toBe(200);
+    expect(g.wire()[0]).toMatchObject({ kind: 'route', outcome: 'signed-accepted' });
   });
 });
 
