@@ -405,8 +405,10 @@ The one thing that must not be retrofitted. Every control-plane mutation:
 The tenant and vertical registry writes (create, status, name and reap of a tenant; register,
 publish, the staff flags, delete, admission, promote and serving state of a vertical) commit that
 row in the same directory transaction as the change, on both adapters, so a refused audit insert
-leaves the prior state for a retry and a refused change leaves no row. A write that changes
-nothing records nothing. A promote's own row commits with the channel move, so it precedes the
+leaves the prior state for a retry and a refused change leaves no row. A write records its row
+whenever its statement writes a row, a same-value write included (blocking installs twice records
+two rows); only a write that matches no row, a re-create of an existing tenant or a rename to the
+current name records nothing. A promote's own row commits with the channel move, so it precedes the
 rows of the scope rebinds a private promote makes after it. The scope-level writes follow the
 same rule (preview-and-snapshots.md); the remaining HostAdmin writes still record their row as a
 separate step.
