@@ -84,11 +84,35 @@ At runtime, a host reads the reservations off the modules it registers and the m
 A role made only of reserved keys must declare `holder: 'system'`, or the platform door
 refuses it; roles defined before the migration are unaffected until redefined.
 
+Roles a host defines and seats itself are held to the same rule:
+
+- **Defining a role** (`defineRole`, and the role set a provision or a restore projects into a
+  scope) is refused when a person's role would hold a reserved key, or a system-held role a key
+  a person may hold. So a role assigned through a door cannot be widened afterwards. A
+  definition that narrows a role is never refused.
+- **The owner's seat**, which a provision gives the owner of record, and **the owner
+  hand-over** go through the person's door: a role carrying a reserved key, or one declared
+  `holder: 'system'`, is refused. The hand-over asks before the owner record moves.
+- **Every person's door refuses a role declared `holder: 'system'`**, from the holder the role
+  is stored with, even on a host that registers none of the modules.
+- **A host that registers no modules** learns a reservation from the tenant's system-held roles:
+  their keys count as reserved when a role is defined there.
+- **A key the host knows nothing about is admitted, deliberately.** A host judges only the
+  modules it knows and the tenant's system-held roles; refusing every key it cannot place would
+  refuse every role a module-less host is given. Push is where your whole surface is judged. A
+  key reserved only through a schedule's `permissions`, which no system-held role holds, is
+  therefore not caught on a host that does not register its module; the control plane checking
+  the registry's marks against the engines it knows is #2446.
+- **Nothing is revoked.** A refused definition or seat writes nothing, so a seat that already
+  holds a key reserved after it was seated keeps working. A directory fan-out of a stored
+  definition is projected as it is and not judged again, since dropping the role there would
+  revoke its seats. `lint:role-seat-paths` refuses a host path that seats or defines a role
+  without asking.
+
 Not covered yet:
 
-- a role or grant a host seats or composes itself;
-- a role definition widened after it was assigned;
-- a role or grant conferred on a host that registers no modules;
+- a grant a host seats or composes itself, such as the owner grants an install gives the owner
+  on a host that does not register the vertical's modules (push refuses a reserved key there);
 - on a shared control plane, the directory record of a connection grant for a scope your
   deployment serves, and of a tenant-wide one: the plane cannot see your deployment's
   reservations, so it records the grant. The grant confers nothing, since your deployment
