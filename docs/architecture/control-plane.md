@@ -1380,13 +1380,24 @@ than that, so the scheduled pass keeps a compact copy.
 - **A closed day, read once.** A day is read an hour after it ends, so the datapoints of its
   last instant have landed, with one query for the whole fleet. The oldest unread day goes
   first, since it is the next one Analytics Engine ages out. A pass reads at most seven days,
-  so a first deploy backfills the 85 days it can still reach over a dozen passes. A day read
-  successfully is never read again.
-- **A failed read writes nothing.** `_substrat_request_day_reads` keeps one row per day the
-  rollup tried: when, whether a read succeeded, and why the last one failed. A failed day is
-  tried again an hour later, not on every pass. A query whose answer reaches its row limit
-  may be a prefix of the day, so it is refused rather than kept as the whole day. A malformed
-  count refuses the whole day too.
+  so a first deploy backfills the 85 days it can still reach over about thirteen passes. A day
+  read successfully is never read again. The lookback is refused past 90 days, where the
+  datapoints have aged out and an empty answer would pass for a day without traffic.
+- **Last in the pass, and bounded.** The phase runs after everything else in the scheduled
+  pass, since it waits on an outside service and nothing else depends on it. Each read has a
+  deadline (30 seconds); a read past it is an ordinary failed day.
+- **A failed read writes nothing, and ends the pass's reads.** `_substrat_request_day_reads`
+  keeps one row per day the rollup tried: when, whether a read succeeded, and why the last one
+  failed. A failed day is tried again an hour later, and the days after it wait for the next
+  pass, so a standing failure (a credential without Analytics Engine read, a wrong dataset, an
+  outage) costs one query a pass, not a batch. It reaches the failure digest once, when its
+  streak begins: a failure that repeats the previous attempt's error is counted, not mailed
+  again, until a read succeeds. A malformed count refuses the whole day.
+- **A saturated day is visible, and blocks nothing.** One query answers at most 50,000
+  (tenant, vertical, scope) groups. A day with more would be a part of the day passing for the
+  whole, so it is refused and recorded with `saturated: true` on its record. It is reported
+  once and not read again, since its group count will not shrink, and the days after it are
+  still rolled up. Reading such a day needs a paged read, which this is not yet.
 - **A day without traffic is not a day not yet read.** `GET /meters/requests` (staff-only)
   serves the rows over an inclusive window of days (by default the 31 days ending today),
   together with the record of each day in the window, so a surface can tell the two apart.
