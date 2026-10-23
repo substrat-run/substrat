@@ -38,9 +38,15 @@
  *   throwing wrappers (`refuse…`) count as plain calls.
  * What it still does not judge: whether the guard is asked about the role the seat writes.
  *
- * **What this is, and is not.** A regression TRIPWIRE that reads text, not a proof. A relation
- * built across modules, a role table named through a variable, or a guard asked in another file
- * gets past it, or is reported when it should not be. The guarantee is held by the contract
+ * **What this is, and is not.** A regression TRIPWIRE that reads text, not a proof, and it is not
+ * meant to be made evasion-proof. Known ways past it, each an innocent refactor away:
+ * - a guard on a branch that does not dominate the write (asked in an `if`, written after it);
+ * - an answer that is tested but only logged or otherwise ignored;
+ * - a literal hoisted into a constant or split (`const ROLE = 'role:'`, `'role' + ':' + key`), or the
+ *   role table named through a constant;
+ * - the write moved into a helper in another function, file or package (a kernel helper);
+ * - a projection reached by a computed member (`stub['applyProjectionReply'](…)`).
+ * Reported when it should not be: a guard asked in another file, or one this reading cannot place. The guarantee is held by the contract
  * suites: `reservedRoleContractSuite` on both adapters and the Cloudflare adapter's
  * `roles a host defines and seats itself (#2447)`. Function names are read off the tokens: the
  * nearest named enclosing function (`function f(`, a method `f(`, `f: async (`, `const f = (`),
@@ -181,7 +187,9 @@ function actedOnAt(t, k, chains) {
   const fn = chains[k].at(-1);
   for (let j = k + 1; j < t.length; j += 1) {
     if (!chains[j].includes(fn)) break; // past the guard's function
-    if (t[j].text === name && t[j - 1]?.text === '(' && t[j - 2]?.text === 'if') return j;
+    // `if (r` or `if (!r`: a write inside `if (!r) { … }` is the admitted branch, so it counts too.
+    const open = t[j - 1]?.text === '!' ? j - 2 : j - 1;
+    if (t[j].text === name && t[open]?.text === '(' && t[open - 1]?.text === 'if') return j;
   }
   return -1;
 }

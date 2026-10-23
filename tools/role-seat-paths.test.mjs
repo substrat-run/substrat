@@ -155,3 +155,9 @@ test('an UPDATE of the role table is a definition write', () => {
   assert.match(run(`function widen(p, k) { ${sql} }`)[0], /a role definition \(the role table\) is written in widen/);
   assert.deepEqual(run(`function widen(t, role, p, k) { refuseReservedDefinition(t, role); ${sql} }`), []);
 });
+
+test('a write inside \`if (!r)\` is the admitted branch of an acted-on answer, not a false positive (round 2)', () => {
+  assert.deepEqual(run(`class S { seat(o, k, role, r) { const refusal = reservedRoleRefusal(role, r, 'person'); if (!refusal) { write(\`role:\${k}\`); } } }`), []);
+  // A different name tested does not count.
+  assert.equal(run(`class S { seat(o, k, role, r, other) { const refusal = reservedRoleRefusal(role, r, 'person'); if (!other) { write(\`role:\${k}\`); } } }`).length, 1);
+});
