@@ -8,12 +8,12 @@ import {
   isSizedByteStream,
   knownLengthBody,
   putAttachmentBytes,
-  witnessedStream,
   type ByteBody,
   type IncrementalSha256,
   type SizedByteStream,
   type TenantBlobStore,
 } from '../src/index.js';
+import { witnessedStream } from '../src/byte-stream.js';
 
 /**
  * The kernel's half of streamed bodies (#2498): a sized stream is held to its declared length,

@@ -51,11 +51,6 @@ export function isSizedByteStream(body: unknown): body is SizedByteStream {
   );
 }
 
-/** How many bytes `body` carries: a buffer's own length, a stream's declared one. */
-export function byteLengthOf(body: ByteBody): number {
-  return isSizedByteStream(body) ? body.length : body.byteLength;
-}
-
 /**
  * A running SHA-256, fed one chunk at a time. The kernel holds no implementation: Web Crypto has
  * no incremental digest and a hand-rolled one is not an option, so each adapter passes its

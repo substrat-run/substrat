@@ -155,10 +155,8 @@ export {
   type ScopeScriptCopyRow,
 } from './scope-copy-ledger.js';
 export {
-  byteLengthOf,
   knownLengthBody,
   isSizedByteStream,
-  witnessedStream,
   type ByteBody,
   type ByteStream,
   type ByteStreamRead,
