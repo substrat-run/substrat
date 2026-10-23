@@ -11855,6 +11855,20 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * #2447: why `roles` may not be defined on `scopeId`, judged as a set against this host's
+   * reservations joined with the scope class's, or null. A restore asks it before it imports a
+   * dump, which replaces whatever the scope stores now, so no stored role is judged against here:
+   * `projectRolesLocal` judges again after the import, against what the dump brought.
+   */
+  async roleSetRefusalLocal(scopeId: ScopeId, roles: RoleDefinition[]): Promise<string | null> {
+    const here = await this.scopeStub(scopeId).reservationHere();
+    return reservedRoleSetRefusal(roles, {
+      reserved: new Set([...this.reservedKeys, ...here.reserved]),
+      declared: new Set([...this.declaredKeys, ...here.declared]),
+    });
+  }
+
+  /**
    * #2447: refuse a role set a CP-less provision or restore defines on `scopeId` for `tenantId`
    * (`reservedRoleSetRefusal`), against this host's reservations joined with the scope class's,
    * and the roles the scope stores for the tenant now with their seats there. Answers the reserved

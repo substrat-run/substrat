@@ -322,6 +322,13 @@ export interface VerticalScopeHost {
     loadStamp?: string | null,
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
+  /**
+   * #2447: why the vertical's role set may not be defined on `scopeId`, or null — the question
+   * `projectRolesLocal` asks, asked by a restore BEFORE it imports the dump, so a refused set leaves
+   * the scope as it was rather than restored without its role repair. Optional: a host without it is
+   * held only by `projectRolesLocal`'s own refusal, after the import.
+   */
+  roleSetRefusalLocal?(scopeId: ScopeId, roles: RoleDefinition[]): Promise<string | null>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
    *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
@@ -1246,6 +1253,9 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/restore', async (c) => {
     const body = restoreBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
+    // #2447: the role set the repair below defines, judged before the dump is imported.
+    const roleRefusal = (await host.roleSetRefusalLocal?.(body.scopeId, deps.roles)) ?? null;
+    if (roleRefusal) throw new HTTPException(409, { message: `scope ${body.scopeId}: the vertical's roles cannot be defined here: ${roleRefusal}. Nothing was restored.` });
     const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
@@ -1288,6 +1298,9 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(c.env);
     if (!host.restoreStagedScopeLocal) return refuseStatus(c, 501, 'this deployment restores a scope only whole (#2450) — redeploy it');
     const body = restoreStagedBody.parse(await c.req.json());
+    // #2447: the role set the repair below defines, judged before the dump is imported.
+    const roleRefusal = (await host.roleSetRefusalLocal?.(body.scopeId, deps.roles)) ?? null;
+    if (roleRefusal) throw new HTTPException(409, { message: `scope ${body.scopeId}: the vertical's roles cannot be defined here: ${roleRefusal}. Nothing was restored.` });
     const result = await host.restoreStagedScopeLocal(body.scopeId, body.stageId, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,

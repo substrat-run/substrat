@@ -162,6 +162,37 @@ describe('mountPlatformSurface — the platform-secret gate', () => {
   });
 });
 
+describe('a restore judges the role set its repair defines before it imports anything (#2447 round 1)', () => {
+  const post = (host: VerticalScopeHost, path: string, body: object) =>
+    appWith(host).request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, ENV);
+
+  it('refuses with a 409 and imports nothing, on /internal/restore and /internal/restore-staged; its twin restores and repairs', async () => {
+    for (const [path, body, restorer] of [
+      ['/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] }, 'restoreScopeLocal'],
+      ['/internal/restore-staged', { tenantId: TENANT, scopeId: SCOPE, stageId: 'stage-1' }, 'restoreStagedScopeLocal'],
+    ] as const) {
+      const refusing = fakeHost({
+        restoreStagedScopeLocal: async () => ({ tables: 3 }) as never,
+        roleSetRefusalLocal: async () => "role 'staff' is a person's role and would hold rsv:run",
+      });
+      const res = await post(refusing, path, body);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/the vertical's roles cannot be defined here: role 'staff'.*Nothing was restored/);
+      expect(refusing.calls).not.toContain(restorer);
+      expect(refusing.calls).not.toContain('projectRolesLocal');
+      const admitting = fakeHost({
+        restoreStagedScopeLocal: async () => {
+          admitting.calls.push('restoreStagedScopeLocal');
+          return { tables: 3 } as never;
+        },
+        roleSetRefusalLocal: async () => null,
+      });
+      expect((await post(admitting, path, body)).status).toBe(200);
+      expect(admitting.calls).toEqual(expect.arrayContaining([restorer, 'projectRolesLocal']));
+    }
+  });
+});
+
 describe('mountPlatformSurface — the error envelope (#510 regression)', () => {
   it('renders a thrown route as { error: <real message> }, never bare "Internal Server Error"', async () => {
     const host = fakeHost({

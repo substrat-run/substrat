@@ -627,6 +627,15 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       expect(await holderOf('idle')).toBe('system');
     });
 
+    it('roleSetRefusalLocal answers the refusal a restore asks before importing, writing nothing; its twin answers null (round 1)', async () => {
+      const scope = scopeId.parse(ulid());
+      expect(await local.roleSetRefusalLocal(scope, [member, { key: 'mixed', permissions: MIXED, source: 'vertical' }])).toMatch(
+        /role 'mixed' is a person's role and would hold rsv:run/,
+      );
+      expect(await local.roleSetRefusalLocal(scope, [member, runner])).toBeNull();
+      expect(await rolesOf(scope)).toEqual([]);
+    });
+
     it('the owner hand-over’s person door refuses a system-held role that the platform’s door admits', async () => {
       const scope = scopeId.parse(ulid());
       await provision(scope, [member, runner], 'member');
