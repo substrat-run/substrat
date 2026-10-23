@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { NO_APPLICATION_DETAIL, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
-import { ORPHAN_SWEEP_UNLICENSED } from '@substrat-run/kernel';
+import { ORPHAN_SWEEP_UNLICENSED, type ByteBody } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
 
@@ -1606,7 +1606,7 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
   });
 
   it('connector-attachment: multipart meta + bytes reach the host intact', async () => {
-    let seen: { upload?: { filename: string; contentType: string; body: Uint8Array } } = {};
+    let seen: { upload?: { filename: string; contentType: string; body: ByteBody } } = {};
     const host = fakeHost({
       connectorAttachmentUploadLocal: async (_c, _t, _s, upload) => {
         seen = { upload };
@@ -1636,7 +1636,9 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(((await res.json()) as { id: string }).id).toBe('att1');
     expect(seen.upload!.filename).toBe('sealed.pdf');
     expect(seen.upload!.contentType).toBe('application/pdf');
-    expect(new TextDecoder().decode(seen.upload!.body)).toBe('pdf bytes');
+    // The multipart route still hands the host a buffer; only the stream route hands a stream (#2498).
+    expect(seen.upload!.body).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(seen.upload!.body as Uint8Array)).toBe('pdf bytes');
   });
 
   /**

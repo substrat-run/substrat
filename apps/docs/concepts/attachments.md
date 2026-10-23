@@ -30,6 +30,21 @@ That leaves one gap. An [MCP](./mcp.md) client calling an operation has no cooki
 bearer for the vertical's own route, and a file of any real size cannot go through a tool call
 as base64. Upload links close it.
 
+## Streamed bodies
+
+`upload` takes the bytes as a buffer or as a sized stream, `{ stream, length }`, where `length` is
+what the producer declares. A stream goes to the blob store as it is read, and its sha256 and size
+are taken on the way, so a file never has to fit in memory. The declared length is held: a stream
+that carries more or fewer bytes lands nothing. A connector reading a provider file passes the
+response's `body` on this way, with the length from the provider's own record of the file:
+`Content-Length` counts the bytes as sent, which for a compressed response is not the file.
+
+Streaming bounds memory, not time. A connection's `fetch` runs under the connector's `timeoutMs`
+(30 seconds unless the registration says otherwise), and the timeout covers reading the response
+body too, so a provider file must arrive whole within it. One that does not errors the stream,
+and the upload lands no object and no row. A connector that moves large files declares a larger
+`timeoutMs`.
+
 ## Bytes that no row points at
 
 The bytes go to the store before the row is written, so a few paths leave an object that no row

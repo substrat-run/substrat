@@ -1,4 +1,12 @@
-import { globalFetch, type ConnectorResponse, type FetchLike, type TenantBlobStore } from '@substrat-run/kernel';
+import {
+  globalFetch,
+  isSizedByteStream,
+  knownLengthStream,
+  type ConnectorResponse,
+  type FetchLike,
+  type IncrementalSha256,
+  type TenantBlobStore,
+} from '@substrat-run/kernel';
 
 /**
  * The live R2 side of per-tenant blob stores (#473): a minimal client over Cloudflare's
@@ -131,11 +139,29 @@ export function createR2BlobStores(opts: R2BlobStoresOptions): R2BlobStores {
   };
 }
 
+/**
+ * workerd's running SHA-256 (#2498): `crypto.DigestStream`, fed chunk by chunk as a streamed
+ * upload passes, so its sha256 is known when the last byte lands without the body ever being
+ * held. The kernel's `putAttachmentBytes` takes it.
+ */
+export function workerdSha256(): IncrementalSha256 {
+  const digest = new crypto.DigestStream('SHA-256');
+  const writer = digest.getWriter();
+  return {
+    update: (chunk) => writer.write(chunk),
+    hex: async () => {
+      await writer.close();
+      return [...new Uint8Array(await digest.digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    },
+  };
+}
+
 /** The minimal slice of a worker `R2Bucket` binding this adapter relies on. */
 interface R2BucketLike {
   put(
     key: string,
-    value: Uint8Array | ArrayBuffer,
+    /** A stream must be of known length (a `FixedLengthStream`'s readable side), or R2 refuses it. */
+    value: Uint8Array | ArrayBuffer | ReadableStream,
     options?: { httpMetadata?: { contentType?: string } },
   ): Promise<unknown>;
   get(key: string): Promise<{
@@ -160,7 +186,9 @@ export function r2TenantBlobStore(bucket: unknown): TenantBlobStore {
   const r2 = bucket as R2BucketLike;
   return {
     put: async (key, body, opts) => {
-      await r2.put(key, body, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
+      // #2498: a stream goes in as it is read, at the length it declared.
+      const value = isSizedByteStream(body) ? (knownLengthStream(body) as unknown as ReadableStream) : body;
+      await r2.put(key, value, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
     },
     get: async (key) => {
       const obj = await r2.get(key);
