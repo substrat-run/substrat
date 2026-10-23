@@ -1078,7 +1078,7 @@ a new file source holds the same four invariants:
 - **Delivery is at least once, keyed by `itemId`.** A vertical's landing operation upserts by
   the item's id and may see the same change twice.
 - **A delete lands only on an answer about that item**: its own deleted facet, or its own
-  read answering gone. Never from a deleted parent, the held tree, or a re-read's silence.
+  read answering gone or outside the folder (a `moved-out` delete). Never from a deleted parent, the held tree, or a re-read's silence.
 
 The shared `FileSource` facet and where a walk runs (the RFC's Q1) are decided when a second
 file-bearing provider is committed, when a vertical needs the freshness of its own mirror, or

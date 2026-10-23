@@ -19,10 +19,12 @@ are §9, and they are open: the recommendation in §5 is one answer to Q1, not t
 >   ([connections.md §6.3](../architecture/connections.md#63-file-bearing-sources-the-reference-shape)).
 > - **Q3 is overtaken** by #2353.
 > - **Q4 is decided: keep.** Unbinding stops updates and leaves the landed rows and attachments.
-> - **Q1 is deferred**, and with it the `FileSource` facet and the job-run bridge (§10 steps
->   2–4). Both are extracted from two real implementations, not one. Q1 is decided when one of
+> - **Q1 is deferred**, and with it the `FileSource` facet and the job-run bridge (§10 steps 2
+>   and 4). Both are extracted from two real implementations, not one. Step 3, the bind
+>   extraction, waits on Q2, which is still open. Q1 is decided when one of
 >   these happens: a second file-bearing provider is committed; a vertical needs the freshness
->   of its own mirror; or the Microsoft 365 check against a large library (its QA step 7) shows
+>   of its own mirror; or the Microsoft 365 check against a large library (step 7 of
+>   [#2353's Human QA](https://github.com/substrat-run/substrat/pull/2353)) shows
 >   the current approach cannot finish a first sync.
 > - **To build now, ahead of the facet:** streams (§10 step 1, §6), which are additive and remove
 >   the per-file memory ceiling; and provider-neutral vertical-facing change and write schemas,

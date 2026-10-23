@@ -1200,12 +1200,13 @@ are honestly computable *honest*, and display them.
   [#39](https://github.com/substrat-run/substrat/issues/39)):
   - **Storage** of scope databases (§5.2): readable on demand per tenant, and kept as a stored
     daily gauge, thirteen months of day rows, that `/meters` serves without waking a scope.
-    Attachment bytes are not in it yet.
+    Attachment files, per-tenant D1 databases and lake history are not in it.
   - **Model usage** (D-59): the `_substrat_model_usage` ledger, drained from `model-usage`
     platform intents and kept 400 days, read at `/model-usage`. The vertical reports its own
     lines, so the ledger is as complete as what verticals report.
   - **Events retained**: every row shipped to the lake carries a `bytes` column, so lake bytes
-    sum per tenant (after removing rows shipped twice). A lake row names no vertical.
+    can be summed per tenant (after removing rows shipped twice; the query is in
+    `pipelines-sink.ts`). No route reads them yet, and a lake row names no vertical.
   - **API calls are not computable exactly.** Reads emit nothing on the spine, and the router's
     request datapoints in Analytics Engine are sampled and kept three months, so any count
     taken from them is an estimate.
@@ -1213,9 +1214,9 @@ are honestly computable *honest*, and display them.
   which does not exist.
 
 The rule: **a meter you cannot compute is not a pricing decision, it is a data-pipeline
-project.** §9's four meters are a commercial design, correctly made in advance; three of
-them sit downstream of infrastructure still on the roadmap. Build the two that fall out of
-work you are doing anyway, show the numbers, and let the first invoice wait until someone is
+project.** §9's four meters are a commercial design, correctly made in advance; meter 4 and
+the exact half of meter 3 sit downstream of infrastructure still on the roadmap. Build what
+falls out of work you are doing anyway, show the numbers, and let the first invoice wait until someone is
 actually paying — at which point the pricing conversation will have facts in it.
 
 ### 5.1 What the meter counts ([#38](https://github.com/substrat-run/substrat/issues/38))
@@ -1249,8 +1250,9 @@ of this engine" is a read rather than a re-derivation.
 operator would go looking for the number. Its absence is a property of the architecture (no
 cross-tenant order flow), not a slice that was skipped. **Meter 3 is not one reading on
 `/meters`**: its computable parts are read where they are kept (storage on `/meters` and
-`/meters/storage`, model usage on `/model-usage`, lake bytes in the lake), and exact API
-counts stay absent because reads emit nothing on the spine.
+`/meters/storage`, model usage on `/model-usage`). Lake bytes have no reader yet; the console's
+Meters view says the same. Exact API counts stay absent because reads emit nothing on the
+spine.
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 

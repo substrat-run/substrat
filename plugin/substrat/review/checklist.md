@@ -155,8 +155,9 @@ a message bridge) acts only as an `act` capability the vertical mints for it
 - *Gate:* none. No script can tell a bridge from any other `postMessage` handler.
 - *Reader:* a bridge that hands the extension the user's session, cookie or token; a page that
   forwards an extension's requests to the API under the signed-in user; a capability minted
-  wider than the extension needs (a scope-wide key, every operation, no entity, or
-  `attachments: 'read'` for an extension that does not read files). The bridge's
+  wider than the extension needs (an entity above the one the extension needs, `operations`
+  left unset so every operation the keys allow is open, or `attachments: 'read'` for an
+  extension that does not read files). The bridge's
   message format is the vertical's own and is not a finding.
 
 gates: judgement
