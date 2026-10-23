@@ -1471,15 +1471,16 @@ export interface FetchLike {
  * turned into the runtime's own stream of that length here (`knownLengthBody`).
  */
 export const globalFetch: FetchLike = (input, init) => {
-  const runtimeFetch = (globalThis as unknown as { fetch: (input: string, init?: unknown) => Promise<ConnectorResponse> }).fetch;
-  if (!isSizedByteStream(init?.body)) return runtimeFetch(input, init);
+  if (!isSizedByteStream(init?.body)) return (globalThis as unknown as { fetch: FetchLike }).fetch(input, init);
   const streamed = knownLengthBody(init.body);
-  return runtimeFetch(input, {
+  const runtimeInit = {
     ...init,
     body: streamed.body,
     headers: { ...init.headers, ...streamed.headers },
     ...(streamed.duplex ? { duplex: streamed.duplex } : {}),
-  });
+  };
+  // Called on the global, never through a variable: workerd refuses any other receiver.
+  return (globalThis as unknown as { fetch: (input: string, init: unknown) => Promise<ConnectorResponse> }).fetch(input, runtimeInit);
 };
 
 /**
