@@ -114,6 +114,7 @@ import {
   type VerticalCaller,
   substratError,
   CONNECTOR_ATTACHMENT_META_HEADER,
+  CONNECTOR_ATTACHMENT_META_MAX_BYTES,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   PLATFORM_SECRET_HEADER,
@@ -896,17 +897,28 @@ export class VerticalClient {
     const verb = 'connector-attachment-stream';
     const path = '/internal/connector-attachment-stream';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    // The metadata is the only header a caller's strings reach, and it is always ASCII: JSON
-    // escapes a control character or a lone surrogate, and URI encoding everything else. The
-    // file's own type rides inside it (the route reads `contentType` from there), so the request's
-    // own `content-type` is the plain octet-stream it is, and no filename or content type can
-    // make the request unsendable.
+    // The metadata is the only header a caller's strings reach. Its characters are always safe:
+    // JSON escapes a control character or a lone surrogate, and URI encoding everything else.
+    // Its SIZE is not, since it grows with the filename, so it is held to a named bound here and
+    // refused before a byte is sent rather than answered with a server's bare 431. (The
+    // multipart route carries the same metadata in its body and has no such bound.) The file's
+    // own type rides inside it (the route reads `contentType` from there), so the request's own
+    // `content-type` is the plain octet-stream it is.
+    const encodedMeta = encodeURIComponent(JSON.stringify({ ...meta, size: body.length }));
+    if (encodedMeta.length > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
+      throw new ControlPlaneError(
+        400,
+        `${verb}: the attachment's metadata is ${encodedMeta.length} bytes once encoded, over the ` +
+          `${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound a streamed upload carries it in a header — ` +
+          `shorten the filename. Nothing was sent.`,
+      );
+    }
     const init = knownLengthInit({
       method: 'POST',
       headers: {
         'content-type': 'application/octet-stream',
         [PLATFORM_SECRET_HEADER]: this.options.platformSecret,
-        [CONNECTOR_ATTACHMENT_META_HEADER]: encodeURIComponent(JSON.stringify({ ...meta, size: body.length })),
+        [CONNECTOR_ATTACHMENT_META_HEADER]: encodedMeta,
       },
       body,
     });

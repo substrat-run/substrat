@@ -2,7 +2,13 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
-import { connectionId as connectionIdOf, scopeId as scopeIdOf, substratError, tenantId as tenantIdOf } from '@substrat-run/contracts';
+import {
+  CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  connectionId as connectionIdOf,
+  scopeId as scopeIdOf,
+  substratError,
+  tenantId as tenantIdOf,
+} from '@substrat-run/contracts';
 import { isSizedByteStream, ulid, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { VerticalClient, ControlPlaneError } from '../src/index.js';
 
@@ -186,6 +192,35 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
     const { client, landed } = world(source.state);
     await client.connectorUploadAttachment(upload({ stream: source.stream, length: CHUNK }, 'lone-\uD800-surrogate.pdf'));
     expect(landed[0]!.filename).toBe('lone-\uD800-surrogate.pdf');
+  });
+
+  it('metadata over its named bound is a typed refusal before a byte is sent, not a server\'s bare 431', async () => {
+    let sent = 0;
+    const client = new VerticalClient({
+      fetch: (async () => {
+        sent += 1;
+        return new Response('{}', { status: 201 });
+      }) as typeof fetch,
+      platformSecret: SECRET,
+    });
+    // 2000 CJK characters: 9 bytes each once encoded, an 18 KB header.
+    const err = await client
+      .connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, `${'報'.repeat(2000)}.pdf`))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(400);
+    expect((err as ControlPlaneError).message).toMatch(
+      new RegExp(`over the ${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound.*Nothing was sent`),
+    );
+    expect(sent).toBe(0);
+  });
+
+  it('its twin: a long but realistic name (a 400-character path) is under the bound and lands', async () => {
+    const source = producer(1);
+    const { client, landed } = world(source.state);
+    const name = `${'Projekt/Ritningar/'.repeat(22)}plan.pdf`.slice(0, 400);
+    await client.connectorUploadAttachment(upload({ stream: source.stream, length: CHUNK }, name));
+    expect(landed[0]!.filename).toBe(name);
   });
 
   it("the request's own content-type is octet-stream: the file's type travels only in the metadata", async () => {
