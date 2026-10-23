@@ -46,7 +46,7 @@ const SWEEPER_INTERVAL_MS = 120_000;
 const SWEEPER_CEILING_BYTES = 32_000;
 /**
  * The entry's, raised from the 32 000 both bundles shared, for the wire-signing verifier (about
- * 21 KB with the envelope's own checks): still an order of magnitude below what a schema library
+ * 23 KB with the envelope's own checks): still an order of magnitude below what a schema library
  * would add.
  */
 const ENTRY_CEILING_BYTES = 52_000;
