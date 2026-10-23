@@ -800,6 +800,33 @@ describe('time, and the counter, as the gate holds them', () => {
     expect(claim).not.toHaveBeenCalled();
   });
 
+  it('a body too slow for the window meets the claim clock before a seam that has no store: refused, not the store fault', async () => {
+    const lateCall = (nonceCache?: () => undefined) => {
+      let now = NOW;
+      const g = gated({ clock: () => now * 1000, ...(nonceCache ? { nonceCache } : {}) });
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            now = NOW + 200;
+            controller.enqueue(new TextEncoder().encode('{}'));
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      return { g, run: async () => g.fetch(new Request(PROVISION, { method: 'POST', headers: await scopedHeaders(), body, duplex: 'half' } as RequestInit), envOf('dual')) };
+    };
+    const seam = vi.fn(() => undefined);
+    const withSeam = lateCall(seam);
+    await withSeam.run();
+    expect(withSeam.g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'claim-after-until', fault: null });
+    expect(seam).not.toHaveBeenCalled();
+    // Its twin: with no seam at all the claim clock never runs, and the same call is the static fault.
+    const noSeam = lateCall();
+    await noSeam.run();
+    expect(noSeam.g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', reason: null });
+  });
+
   it('gives a nonce claim one second by default, and no longer', async () => {
     let reached!: () => void;
     const claimed = new Promise<void>((resolve) => (reached = resolve));

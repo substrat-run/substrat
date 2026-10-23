@@ -74,8 +74,9 @@ export interface WireGateOptions<Env> {
    * follow-on. Until one is given, such a call cannot be verified, and is counted as the
    * `no-nonce-store` fault. It is reached only when the nonce is claimed, after every other check
    * has passed, and for the scope the verified envelope names. An answer of `undefined` says this
-   * version has no store for it: the same static fault as no seam at all (RFC §3.4). A throw is the
-   * store's failure.
+   * version has no store for it: the same static fault as no seam at all (RFC §3.4), except that a
+   * claim that would come too late is refused as `claim-after-until` first (RFC §4), since the
+   * verifier reads its claim clock before the seam is asked. A throw is the store's failure.
    */
   readonly nonceCache?: (env: Env, scopeId: string) => WireNonceCache | undefined;
   /** Milliseconds since the epoch. The wall clock unless a test injects one. */

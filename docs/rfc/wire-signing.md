@@ -318,6 +318,10 @@ nonce is claimed, which is the verifier's last check: after the signature, the b
 pin, so only for the scope the verified envelope names, and never for an envelope refused for
 anything else. With the seam empty, no scope named, or a seam that answers it has no store for that
 scope, such a call meets §3.4's statically absent store: counted, and in `dual` handed on as it came.
+Except a claim that would come too late: with the seam set, the verifier is handed a store, so it
+reads its claim clock before the seam is asked, and a call whose body finishes after `until` is
+refused as `claim-after-until` (a `reason`: served by a valid legacy credential in `dual`, the 401
+in `signed-only`), never counted as `no-nonce-store`. With the seam empty that check never runs.
 Only a store that exists and throws (reaching it included), or does not answer within the second, is
 the store's failure, the 5xx in every state.
 
