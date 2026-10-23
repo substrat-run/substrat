@@ -1381,8 +1381,9 @@ than that, so the scheduled pass keeps a compact copy.
   last instant have landed, with one query for the whole fleet. The oldest unread day goes
   first, since it is the next one Analytics Engine ages out. A pass reads at most seven days,
   so a first deploy backfills the 85 days it can still reach over about thirteen passes. A day
-  read successfully is never read again. The lookback is refused past 90 days, where the
-  datapoints have aged out and an empty answer would pass for a day without traffic.
+  read successfully is never read again. The lookback is refused past 88 days, so the first day
+  read starts within 89 days, the shortest three months. Further back, the datapoints may have
+  begun to age out, and a part of a day, or an empty answer, would pass for the whole day.
 - **After the scheduled work, and bounded.** The phase runs after all the scheduled work of the
   pass, just before the access-log drain, since it waits on an outside service and nothing else
   depends on it. Each read has a deadline (30 seconds), and a read past it is an ordinary failed

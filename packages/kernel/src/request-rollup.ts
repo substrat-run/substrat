@@ -87,11 +87,13 @@ export const isRequestRollupSaturated = (err: unknown): boolean =>
 export const REQUEST_ROLLUP_LOOKBACK_DAYS = 85;
 
 /**
- * The furthest back a lookback may reach: Analytics Engine keeps three months. A day past it has
- * aged out, and reading it would record an empty answer as a day without traffic, which is then
+ * The furthest back a lookback may reach. Analytics Engine keeps three months, which is 89 days
+ * when February is among them, and the first day read starts at midnight before `now − lookback`,
+ * up to a day earlier still. At 88 that first day starts within 89 days. A day the store has begun
+ * to age out would be read in part and recorded as whole, or as a day without traffic, and then
  * never read again.
  */
-export const REQUEST_ROLLUP_MAX_LOOKBACK_DAYS = 90;
+export const REQUEST_ROLLUP_MAX_LOOKBACK_DAYS = 88;
 
 /** How long after a day ends it may be read, so the datapoints written at its last instant have landed. */
 export const REQUEST_ROLLUP_SETTLE_MS = 3_600_000;

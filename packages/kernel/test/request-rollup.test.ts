@@ -45,6 +45,19 @@ describe('the days a pass reads', () => {
     expect(due('2026-10-23T12:00:00.000Z', reads)).toEqual(['2026-10-20', '2026-10-22']);
   });
 
+  it('at the lookback cap, the first day read starts within 89 days, the shortest three months, at any hour', () => {
+    expect(REQUEST_ROLLUP_MAX_LOOKBACK_DAYS).toBe(88);
+    const startsAgo = (nowIso: string, lookbackDays: number) => {
+      const first = requestRollupDueDays({ nowMs: at(nowIso), reads: [], lookbackDays, settleMs: HOUR, retryMs: HOUR, horizon: null })[0]!;
+      return (at(nowIso) - at(`${first}T00:00:00.000Z`)) / 86_400_000;
+    };
+    for (const nowIso of ['2026-10-23T00:00:00.000Z', '2026-10-23T20:00:00.000Z', '2026-10-23T23:59:59.999Z']) {
+      expect(startsAgo(nowIso, REQUEST_ROLLUP_MAX_LOOKBACK_DAYS)).toBeLessThan(89);
+    }
+    // Its twin: one day more, and a late pass's first day began more than 89 days back.
+    expect(startsAgo('2026-10-23T20:00:00.000Z', REQUEST_ROLLUP_MAX_LOOKBACK_DAYS + 1)).toBeGreaterThan(89);
+  });
+
   it('never reads a saturated day again, however long ago it was tried', () => {
     const saturated = [{ day: '2026-10-21', attemptedAt: '2026-10-22T02:00:00.000Z', readAt: null, saturated: true }];
     expect(due('2026-10-23T12:00:00.000Z', saturated)).toEqual(['2026-10-20', '2026-10-22']);
