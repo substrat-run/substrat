@@ -5766,8 +5766,9 @@ export class SqliteScopeHost implements ScopeHost {
     const prefix = `${tenantId}/`;
     const tenantRoles = [...this.roles].filter(([k]) => k.startsWith(prefix)).map(([, r]) => r);
     const stored = this.roles.get(`${tenantId}/${role.key}`);
-    // The seats are read only for the one case they decide: a stored role becoming system-held.
-    const seated = !!stored && stored.holder !== 'system' && role.holder === 'system' && this.roleSeated(tenantId, role.key);
+    // The seats are read only for the one case they decide: a system-held definition of a key with no
+    // system-held definition stored (none at all included: a seat can outlive its role's row).
+    const seated = stored?.holder !== 'system' && role.holder === 'system' && this.roleSeated(tenantId, role.key);
     const refusal = reservedRoleDefinitionRefusal(role, { reserved: this.reservedKeys, declared: this.declaredKeys }, tenantRoles, seated);
     if (refusal) throw substratError('forbidden', refusal);
   }

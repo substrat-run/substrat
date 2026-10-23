@@ -2828,8 +2828,8 @@ export class ControlPlaneDO extends DurableObject {
    * INSERT OR REPLACE; return the previous role (for the audit `before`) or null. Judged first, in
    * the same unit (#2447, `reservedRoleDefinitionRefusal`): against `reservation`, what the
    * coordinator's modules reserve and declare, and the tenant's roles as stored now, so no
-   * concurrent definition lands between the read and the write. Whether the stored role is seated
-   * decides a change to `holder: 'system'`: its tenant-level seats are read here, in the unit, and
+   * concurrent definition lands between the read and the write. Whether the key is seated decides a
+   * system-held definition of a key with no system-held definition stored (none at all included): its tenant-level seats are read here, in the unit, and
    * `seatedInScopes` carries what the coordinator read off the tenant's scopes. A refusal is answered
    * as data, so its text survives the hop, and writes nothing.
    */
@@ -2846,7 +2846,7 @@ export class ControlPlaneDO extends DurableObject {
     }));
     const stored = tenantRoles.find((r) => r.key === role.key);
     const seated =
-      !!stored && stored.holder !== 'system' && role.holder === 'system' &&
+      stored?.holder !== 'system' && role.holder === 'system' &&
       (seatedInScopes ||
         (this.sql.exec(TENANT_SEATED_ROLES_SQL, tenantId, new Date().toISOString()).toArray() as { role_key: string }[]).some((r) => r.role_key === role.key));
     const refused = reservedRoleDefinitionRefusal(

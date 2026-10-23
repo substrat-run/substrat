@@ -90,7 +90,8 @@ export interface HostReservations {
  * the write a role definition makes, judged before it is made, so a role that passed a door when
  * it was assigned cannot be widened afterwards with a key no person may hold. `tenantRoles` is
  * what the host stores for the tenant now, the definition this one replaces included; `seated`
- * says whether that stored role has a live seat held by anyone but a system principal
+ * says whether anyone but a system principal holds a live seat in the role's key, whether or not a
+ * definition of it is stored
  * (`SCOPE_SEATED_ROLES_SQL`, `TENANT_SEATED_ROLES_SQL`).
  *
  * The keys judged reserved are the host's, plus every key one of the tenant's system-held roles
@@ -106,9 +107,11 @@ export interface HostReservations {
  * - **A stored system-held role redefined as a person's** is judged as a person's role with the
  *   stored role's keys counted as reserved: the stored holder is the evidence, and a redefinition
  *   does not erase it.
- * - **A stored person's role redefined `holder: 'system'` while it is seated** is refused: its
- *   seats were made through a person's door, and relabelling the role would hand them its new
- *   keys. Taking the seats back first, or defining a new key, is the way. A role stored before the
+ * - **A system-held definition of a key anyone but a system principal holds a seat in** is refused
+ *   unless a system-held definition is stored for it: the seats were made through a person's door
+ *   (or before any definition, or under one a projection since dropped), and relabelling the role
+ *   would make them a system principal's. Taking the seats back first, or defining a new key, is the
+ *   way. A role stored before the
  *   holder was recorded (#2480: no holder) and made only of reserved keys — K-55's shape, which the
  *   platform's door admitted — may still be declared `holder: 'system'`.
  *
@@ -135,14 +138,16 @@ export function reservedRoleDefinitionRefusal(
   const bySystemRole = new Map<string, string>();
   for (const r of others) if (r.holder === 'system') for (const p of r.permissions) if (!bySystemRole.has(p)) bySystemRole.set(p, `the system-held role '${r.key}'`);
   if (role.holder === 'system') {
-    if (stored && stored.holder !== 'system' && seated) {
+    // Judged against the seats of the key, whether or not a definition is stored: a projection can
+    // drop a role's row and leave its seats live, and a later definition must not relabel them.
+    if (stored?.holder !== 'system' && seated) {
       const legacyShape =
-        stored.holder === undefined && stored.permissions.every((p) => host.reserved.has(p) || bySystemRole.has(p));
+        !!stored && stored.holder === undefined && stored.permissions.every((p) => host.reserved.has(p) || bySystemRole.has(p));
       if (!legacyShape) {
         return (
-          `role '${role.key}' is stored as a person's role and is held, so it cannot become holder: 'system': its seats were ` +
-          `made through a person's door and would gain its keys. Take its seats back first, or define the system-held role ` +
-          `under a new key (K-55)`
+          `role '${role.key}' is held by someone who is not a system principal (${stored ? 'stored as a person\'s role' : 'with no definition stored'}), ` +
+          `so it cannot be declared holder: 'system': those seats were made through a person\'s door, and a system-held role is a ` +
+          `system principal\'s. Take its seats back first, or define the system-held role under a new key (K-55)`
         );
       }
     }
@@ -178,7 +183,7 @@ export function reservedRoleDefinitionRefusal(
 /** What a host stores for a tenant's roles where a role set is defined, and which of them are seated. */
 export interface StoredRoles {
   roles: readonly RoleShape[];
-  /** Keys of stored roles with a live seat held by anyone but a system principal. */
+  /** Role keys anyone but a system principal holds a live seat in, defined or not. */
   seated: ReadonlySet<string>;
 }
 

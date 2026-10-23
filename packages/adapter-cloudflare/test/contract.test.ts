@@ -615,7 +615,7 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       await local.assignScopeRole(scope, who, 'staffer');
       const refused = await failure(reconcile([member, flipped('staffer'), idle]));
       expect(errorCodeOf(refused)).toBe('forbidden');
-      expect(refused?.message).toMatch(/role 'staffer' is stored as a person's role and is held/);
+      expect(refused?.message).toMatch(/role 'staffer' is held by someone who is not a system principal/);
       const repair = await failure(local.projectRolesLocal(tenant, scope, [member, flipped('staffer'), idle]));
       expect(errorCodeOf(repair)).toBe('forbidden');
       const holderOf = (key: string) =>
@@ -625,6 +625,32 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       // The twin: the role nobody holds may change holder.
       await reconcile([member, staffer, flipped('idle')]);
       expect(await holderOf('idle')).toBe('system');
+    });
+
+    it('a release that drops a seated role and a later one that defines it holder: system are refused, like the flip straight after (round 2)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const staffer = { key: 'staffer', permissions: [MIXED[0]!], source: 'vertical' as const };
+      const system = { key: 'staffer', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      const rowOf = () =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+          state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, 'staffer').toArray());
+      // Release 1: a person's role, and someone seated in it.
+      await release([member, staffer]);
+      const who = principalId.parse(ulid());
+      await local.assignScopeRole(scope, who, 'staffer');
+      // The twin: release 3 straight after release 1 is refused.
+      expect(errorCodeOf(await failure(release([member, system])))).toBe('forbidden');
+      // Release 2 drops the role: its row goes, the seat stays.
+      await release([member]);
+      expect(await rowOf()).toEqual([]);
+      // Release 3 defines it holder: system: refused as well, nothing written.
+      const refused = await failure(release([member, system]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'staffer' is held by someone who is not a system principal \(with no definition stored\)/);
+      expect(await rowOf()).toEqual([]);
     });
 
     it('roleSetRefusalLocal answers the refusal a restore asks before importing, writing nothing; its twin answers null (round 1)', async () => {

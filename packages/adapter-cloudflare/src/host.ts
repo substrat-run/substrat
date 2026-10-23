@@ -11826,8 +11826,9 @@ export class CloudflareScopeHost implements ScopeHost {
    *   binding is one class, so one of the tenant's scopes answers for all, and the fan-out after
    *   the write projects into exactly those scopes. A tenant with no scope yet is judged by this
    *   host's modules alone (a stated residual: its first scope's projection is not judged again);
-   * - for a definition that would make a stored role `holder: 'system'`, whether anyone but a
-   *   system principal holds a live scope-level seat in it in one of those scopes (the
+   * - for a `holder: 'system'` definition of a key with no system-held definition stored (none at
+   *   all included: a seat can outlive its role's row), whether anyone but a system principal holds a
+   *   live scope-level seat in it in one of those scopes (the
    *   ControlPlaneDO reads the tenant-level seats). No scope is asked for seats otherwise.
    */
   private async definitionContext(
@@ -11844,7 +11845,7 @@ export class CloudflareScopeHost implements ScopeHost {
     let seatedInScopes = false;
     if (role.holder === 'system') {
       const stored = await this.cp.getRole(tenantId, role.key);
-      if (stored && stored.holder !== 'system') {
+      if (stored?.holder !== 'system') {
         for (const s of scopes) {
           if ((await this.scopeStub(s.scope_id as ScopeId).roleStateHere(tenantId)).seated.includes(role.key)) {
             seatedInScopes = true;
