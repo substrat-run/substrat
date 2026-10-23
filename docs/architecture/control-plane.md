@@ -1273,8 +1273,8 @@ from `expires_at` and leaves no trace of its own. So the scheduled pass keeps th
   status and whether it is billable, its scopes by effective status (`meterScopeCounts`), the
   same counts split by the vertical each scope runs, and every grant it holds (key, plan,
   expiry) with whether it was live at the snapshot's instant. The fold is `foldMeterReading`,
-  so a kept day follows the same two rules as `/meters`, and the per-vertical split is the same
-  fold over each vertical's scopes, so it sums to the tenant's counts. Counts and keys only.
+  so a kept day follows the same two rules as `/meters`, and the per-vertical split counts each
+  scope with the fold's own `countScope`, so it sums to the tenant's counts. Counts and keys only.
 - **A reaped tenant has no row.** It is a tombstone that holds no scope and bills nothing; one
   row per day for every tombstone would grow the table with nothing in it. A tenant being
   deleted still has a row, not billable.
