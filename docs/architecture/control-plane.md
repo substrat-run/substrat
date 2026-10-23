@@ -402,6 +402,15 @@ The one thing that must not be retrofitted. Every control-plane mutation:
 - writes an **append-only audit row**, stamped platform-side with actor, action, target
   `(tenantId, scopeId?, vertical?)`, before/after, timestamp — never supplied by the caller.
 
+The tenant and vertical registry writes (create, status, name and reap of a tenant; register,
+publish, the staff flags, delete, admission, promote and serving state of a vertical) commit that
+row in the same directory transaction as the change, on both adapters, so a refused audit insert
+leaves the prior state for a retry and a refused change leaves no row. A write that changes
+nothing records nothing. A promote's own row commits with the channel move, so it precedes the
+rows of the scope rebinds a private promote makes after it. The scope-level writes follow the
+same rule (preview-and-snapshots.md); the remaining HostAdmin writes still record their row as a
+separate step.
+
 Same argument as K-4, and the reason the kernel is trusted at all: a surface that can act
 without a durable record of who acted is worse than no surface. (If §3's record-keeping
 vertical lands, this log *becomes* that scope's outbox rather than a second mechanism.)
