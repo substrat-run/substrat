@@ -96,6 +96,8 @@ function world(flow: Flow, overrides: Partial<VerticalScopeHost> = {}) {
           size += value.byteLength;
           flow.consumed = size;
           hash.update(value);
+          // A slow sink, as R2 is: a hop that pulled ahead of its reader would queue the body here.
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
       } else {
         size = upload.body.byteLength;
