@@ -640,6 +640,25 @@ describe('the router’s prefix, as the vertical sees it', () => {
     expect(prefixed(g.seen[0]!)).toEqual([PLATFORM_SECRET_HEADER]);
   });
 
+  it('a peer invocation the router signs is handed the vertical it names, and no other; a call that names none gets none', async () => {
+    const INVOKE = 'https://vertical/internal/vertical-invoke';
+    const body = '{"operation":"x"}';
+    // A peer invocation keeps nonces, so it is admitted on its envelope alone only where a store is.
+    const stored = { nonceCache: () => ({ claim: () => true }) };
+    const routerSigned = new Headers(await sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url: INVOKE, vertical: VERTICAL, tenantId: TENANT, scopeId: SCOPE }));
+    routerSigned.set('X-Substrat-Vertical', 'acme/forged');
+    const g = gated(stored);
+    expect((await g.fetch(new Request(INVOKE, { method: 'POST', headers: routerSigned, body }), envOf('dual'))).status).toBe(200);
+    expect(g.seen[0]!.headers.get('x-substrat-vertical')).toBe(VERTICAL);
+    expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted', issuer: 'router' });
+
+    const platformSigned = new Headers(await callEnvelope(INVOKE, body, { tenantId: TENANT, scopeId: SCOPE }));
+    platformSigned.set('x-substrat-vertical', 'acme/forged');
+    const twin = gated(stored);
+    expect((await twin.fetch(new Request(INVOKE, { method: 'POST', headers: platformSigned, body }), envOf('dual'))).status).toBe(200);
+    expect(twin.seen[0]!.headers.has('x-substrat-vertical')).toBe(false);
+  });
+
   it.each(['legacy-only', 'dual'])('%s, a valid legacy credential: the request goes on exactly as it came, as today', async (state) => {
     const g = gated();
     const request = new Request(URL_ROUTE, { headers: { ...unsigned, ...legacyRoute(), ...(await routeEnvelope()) } });
