@@ -293,7 +293,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			lanes.push({ ...plan, generator: await makeGenerator(modelSpec, phase, plan.lane) });
 		}
 	} catch (err) {
-		return sendProblem(res, providerRefusal(err, err instanceof ProviderError));
+		return sendProblem(res, providerRefusal(err));
 	}
 
 	busy = true;
@@ -498,7 +498,7 @@ async function handleModels(url: URL, res: ServerResponse): Promise<void> {
 	try {
 		json(res, 200, { provider, models: await listModels(provider) });
 	} catch (err) {
-		sendProblem(res, providerRefusal(err, err instanceof ProviderError));
+		sendProblem(res, providerRefusal(err));
 	}
 }
 
@@ -515,7 +515,7 @@ async function handleSetModel(req: IncomingMessage, res: ServerResponse): Promis
 		// neutral (§5.2), so a session can continue on another model.
 		json(res, 200, { spec, endpoint: resolved.endpoint, endpointSource: resolved.endpointSource });
 	} catch (err) {
-		sendProblem(res, providerRefusal(err, err instanceof ProviderError));
+		sendProblem(res, providerRefusal(err));
 	}
 }
 

@@ -21,6 +21,8 @@ import {
 	sendProblem,
 	unhandledResponse,
 } from '../src/problem.js';
+import { resolveModel } from '../src/providers.js';
+import { resolveModelHosted } from '../src/providers-worker.js';
 
 /** [status, a sentence one of the routes really answers, the taxonomy code or undefined for about:blank] */
 const SITES = [
@@ -89,14 +91,37 @@ describe('unreviewed throws are not relayed', () => {
 		expect(doc.error).toBeUndefined();
 	});
 
-	it('a provider error keeps its own message on the 422', () => {
-		const doc = providerRefusal(new Error('ANTHROPIC_API_KEY is not set'), true);
-		expect(doc).toMatchObject({ status: 422, detail: 'ANTHROPIC_API_KEY is not set', error: 'ANTHROPIC_API_KEY is not set' });
+	it("a provider error keeps its own message on the 422 — the hosted resolver's", () => {
+		let thrown: unknown;
+		try {
+			resolveModelHosted({}, 'anthropic:claude-opus-5');
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(Error);
+		const message = (thrown as Error).message;
+		expect(providerRefusal(thrown)).toMatchObject({ status: 422, detail: message, error: message });
+	});
+
+	it("a provider error keeps its own message on the 422 — the local resolver's", async () => {
+		const thrown = await resolveModel('no-such-provider:model').then(
+			() => undefined,
+			(err: unknown) => err,
+		);
+		expect(thrown).toBeInstanceOf(Error);
+		const message = (thrown as Error).message;
+		expect(providerRefusal(thrown)).toMatchObject({ status: 422, detail: message, error: message });
+	});
+
+	it('the class is decided inside the helper: a plain Error with the same text is not relayed', () => {
+		vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const doc = providerRefusal(new Error('ANTHROPIC_API_KEY is not set'));
+		expect(JSON.stringify(doc)).not.toContain('ANTHROPIC_API_KEY');
 	});
 
 	it('any other throw is logged, and its message stays off the wire', () => {
 		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-		const doc = providerRefusal(new Error('connect ECONNREFUSED 10.0.0.7:5432'), false);
+		const doc = providerRefusal(new Error('connect ECONNREFUSED 10.0.0.7:5432'));
 		expect(doc.status).toBe(422);
 		expect(JSON.stringify(doc)).not.toContain('ECONNREFUSED');
 		expect(log).toHaveBeenCalledOnce();

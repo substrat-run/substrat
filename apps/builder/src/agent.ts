@@ -58,7 +58,6 @@ import {
 } from './phase.js';
 import { explainProviderFailure } from '@substrat-run/model-providers';
 import {
-	HostedProviderError,
 	hostedProviderCatalog,
 	listModelsHosted,
 	resolveModelHosted,
@@ -392,7 +391,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			// Auto specs validate via their strong member (same provider/credential).
 			resolveModelHosted(this.env, resolveAutoSpec(modelSpec, 'iterate'));
 		} catch (err) {
-			return problemResponse(providerRefusal(err, err instanceof HostedProviderError));
+			return problemResponse(providerRefusal(err));
 		}
 
 		this.#busy = true;
@@ -730,7 +729,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				try {
 					return json(200, { models: await listModelsHosted(this.env, provider) });
 				} catch (err) {
-					return problemResponse(providerRefusal(err, err instanceof HostedProviderError));
+					return problemResponse(providerRefusal(err));
 				}
 			}
 			case 'POST /api/model': {
@@ -742,7 +741,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					await this.ctx.storage.put('modelSpec', spec);
 					return json(200, { spec, endpoint: r.endpoint, endpointSource: 'worker secret' });
 				} catch (err) {
-					return problemResponse(providerRefusal(err, err instanceof HostedProviderError));
+					return problemResponse(providerRefusal(err));
 				}
 			}
 			case 'GET /api/history': {

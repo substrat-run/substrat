@@ -15,6 +15,7 @@ import {
 	type ErrorCode,
 	type Problem,
 } from '@substrat-run/contracts';
+import { ProviderError } from '@substrat-run/model-providers';
 
 /** The statuses this app refuses with that have a code in the closed taxonomy. */
 const CODE_FOR_STATUS: Readonly<Record<number, ErrorCode>> = {
@@ -46,8 +47,9 @@ export function internalProblem(): Problem {
  * written for the user (a missing credential, an unknown provider); any other throw's
  * message is unreviewed and is logged, not relayed.
  */
-export function providerRefusal(err: unknown, isProviderError: boolean): Problem {
-	if (isProviderError) return problemForStatus(422, (err as Error).message);
+export function providerRefusal(err: unknown): Problem {
+	// The one class both runtimes throw: providers.ts and providers-worker.ts re-export it.
+	if (err instanceof ProviderError) return problemForStatus(422, err.message);
 	console.error('[builder] provider setup failed', err);
 	return problemForStatus(422, 'the model provider could not be set up');
 }
