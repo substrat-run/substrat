@@ -33,6 +33,7 @@ import { reservedRoleMod } from './reserved-role-module.js';
 import { rebuildMod, stateMod } from './entity-state-module.js';
 import { trashFloorMod, trashMod } from './entity-trash-module.js';
 import { purgeRequestMod } from './schedule-purge-request-module.js';
+import { purgeTwoMod } from './schedule-purge-two-module.js';
 import { derivedMod } from './derived-module.js';
 import { checkTallyMod, undeclaredTallyMod } from './check-tally-module.js';
 import { stampsMod } from './stamps-module.js';
@@ -3091,6 +3092,8 @@ export const contractTestModules: ModuleRegistration[] = [
   schedRequestMod,
   // #2440: a purge horizon whose purge enqueues a platform request. Inert for the same reason.
   purgeRequestMod,
+  // #2506: two purge horizons in one module. Inert for the same reason.
+  purgeTwoMod,
   // #1654: the composed engine and the vertical composing it. Inert for every other suite —
   // only `scheduleEntitlementContractSuite` registers them on a host, so no other scope is
   // seated their system grant or reads their table.

@@ -136,6 +136,19 @@ any other schedule.
 
 Purging is your delete, run on a timer. It is not erasure: the events about the entity stay.
 
+A pass purges at most 50 entities, oldest first, and the next pass carries on from where it
+stopped. If your purge operation calls `ctx.requestPlatform`, the scope's cap on pending requests
+(32) bounds a pass too. A purge that meets a full queue after the pass has already got past its
+first entity rolls back whole and is not counted as a failure: the pass stops there, and the next
+pass, on the next sweep, starts at that entity. If the queue is still full when it gets there, the
+refusal is a failure like any other. A purge the full queue refuses at the *first* entity of a pass
+is an ordinary failure, and so is every refusal after it in that pass; those entities stay in the
+bin and are retried on the next lap. The pass walks on, so a purge that needs no request still
+commits behind a refused one, and an entity whose purge can never fit (it enqueues more requests
+than the scope will ever have room for) cannot hold up the others. A scope's purge horizons share
+the same 32 slots within a sweep, so a horizon with a large backlog can leave the next one's first
+entity refused until it catches up. Have a purge enqueue at most one request per entity.
+
 The purge operation is also the entity's permanent delete, so by default a person holding its
 key can empty the bin at any time. If the purge operation must only ever run on what has sat in
 the bin for the whole horizon, declare `trash: { permission, purgeAfterDays, purgeEarly: false }`.

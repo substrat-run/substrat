@@ -223,6 +223,7 @@ export const INDEX_VALUE_EXPORTS = [
   'assertNoCallerPurge',
   'assertNoSecret',
   'assertPermissionKey',
+  'assertPlatformRequestRoom',
   'assertPromoteReviewCurrent',
   'assertReadOnlyQuery',
   'assertRebindReviewCurrent',
