@@ -11,10 +11,11 @@
  * Since #1686 the token is the secret of a `become` capability in the scope's own Durable
  * Object (single use, revocable, on the spine), and `capability_id` names it: the scope judges
  * the secret, this row says which capability IS the invite and which principal it seats. A row
- * with no `capability_id` is LEGACY — hash alone, as every invite was before #1686. Nothing in
- * this package writes one any more (`createInvite` refuses it, #2496); the ones already stored
- * are still redeemed the old way, by hash, and an invite has no expiry, so nothing ages those
- * out (see `claimInvite`).
+ * with no `capability_id` is LEGACY — hash alone, as every invite was before #1686. Normal invite
+ * creation (`createInvite`) no longer writes one (it refuses to, #2496);
+ * `createLegacyInvite`, a fixture seam for tests that cover what is still pending, is the one
+ * exception. The ones already stored are still redeemed the old way, by hash, and an invite has
+ * no expiry, so nothing ages those out (see `claimInvite`).
  */
 import type { RegistrySql } from './site-registry.js';
 import { OWNER_SEAT_DDL } from './owner-seat.js';
