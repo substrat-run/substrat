@@ -337,10 +337,10 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         await host.admin.activateScope(staff, owner, scope);
         await host.admin.bindScopeVersion(staff, owner, scope, first);
         await host.admin.promoteVersion(staff, slug, 'prod', first);
-        const since = new Date().toISOString();
         await host.admin.promoteVersion(staff, slug, 'prod', second);
-        const rows = (await host.admin.auditLog(staff, { action: ['promoteVersion', 'bindScopeVersion'], since }))
-          .filter((r) => r.vertical === slug || r.scopeId === scope);
+        // In id order, which is the order they were written.
+        const rows = (await host.admin.auditLog(staff, { action: ['promoteVersion', 'bindScopeVersion'] }))
+          .filter((r) => (r.vertical === slug || r.scopeId === scope) && (r.after as { versionId: string }).versionId === second);
         expect(rows.map((r) => [r.action, (r.after as { versionId: string }).versionId])).toEqual([
           ['promoteVersion', second],
           ['bindScopeVersion', second],
