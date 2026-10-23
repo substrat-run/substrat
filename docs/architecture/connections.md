@@ -1059,6 +1059,32 @@ connection, written through `HostAdmin`, never touching a scope.
 3. Does `protocol:record-signature` stay a permission key at all, or become "an operation only
    a connection may call"? Two mechanisms for one gate is worse than either.
 
+## 6.3 File-bearing sources: the reference shape
+
+Every connector above calls an API and reconciles a record. A source that holds **files**
+is the second shape ([#1578](https://github.com/substrat-run/substrat/issues/1578),
+[rfc/file-bearing-sources.md](../rfc/file-bearing-sources.md)), and its first
+implementation is `connectors/microsoft365`'s channel files (#2353): one Teams channel folder,
+writes dispatched from an event, reads a delta sync landed through the vertical's own
+operation. Until a second provider exists, that connector is the reference v1 file shape, and
+a new file source holds the same four invariants:
+
+- **Nothing outside the fence is persisted.** Metadata about an item outside the bound folder
+  is held in memory for one pass and never stored, logged, landed or put in an error. An item
+  that was landed and then leaves the folder lands one `delete` with reason `moved-out`,
+  carrying its `itemId` and its prior path and name. Where it went is never said.
+- **The conflict mode is explicit.** A write names `replace`, `rename` or `fail`; the
+  connector never lets the provider pick.
+- **Delivery is at least once, keyed by `itemId`.** A vertical's landing operation upserts by
+  the item's id and may see the same change twice.
+- **A delete lands only on an answer about that item**: its own deleted facet, or its own
+  read answering gone or outside the folder (a `moved-out` delete). Never from a deleted parent, the held tree, or a re-read's silence.
+
+The shared `FileSource` facet and where a walk runs (the RFC's Q1) are decided when a second
+file-bearing provider is committed, when a vertical needs the freshness of its own mirror, or
+when the Microsoft 365 check against a large library shows the current approach cannot finish
+a first sync. The facet is extracted from two implementations rather than from one.
+
 ---
 
 ## 7. Non-goals (v0)
