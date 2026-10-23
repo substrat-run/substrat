@@ -14,7 +14,9 @@ import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemDetail } from
 import { Hono } from 'hono';
 import {
 	internalProblem,
+	MalformedBody,
 	orUnhandled,
+	parseBody,
 	PROVIDER_FAILED,
 	providerMessage,
 	providerRefusal,
@@ -23,6 +25,7 @@ import {
 	sendProblem,
 	TURN_FAILED,
 	turnFailure,
+	unhandledProblem,
 	unhandledResponse,
 } from '../src/problem.js';
 import { resolveModel } from '../src/providers.js';
@@ -87,12 +90,42 @@ describe('refuse() answers a problem document at every status the builder uses',
 describe('unreviewed throws are not relayed', () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it('a 500 carries no detail and no error sentence', () => {
+	it("a 500 carries no detail, and control-plane-api's constant as the error sentence", () => {
 		const doc = internalProblem();
 		expect(problem.safeParse(doc).success).toBe(true);
 		expect(doc).toMatchObject({ status: 500, code: 'internal' });
 		expect(doc.detail).toBeUndefined();
-		expect(doc.error).toBeUndefined();
+		// What web/src/api.ts shows instead of `HTTP 500`; the same string mapError answers.
+		expect(doc.error).toBe('internal error');
+	});
+
+	it("a body that is not JSON answers as before #113 on the node server: 500 and the parser's sentence", () => {
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const text = '{"name": oops';
+		let parserSentence = '';
+		try {
+			JSON.parse(text);
+		} catch (err) {
+			parserSentence = (err as Error).message;
+		}
+		let thrown: unknown;
+		try {
+			parseBody(text);
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(MalformedBody);
+		const doc = unhandledProblem(thrown);
+		expect(problem.safeParse(doc).success).toBe(true);
+		expect(doc).toMatchObject({ status: 500, detail: parserSentence, error: parserSentence });
+		expect(log).not.toHaveBeenCalled();
+		expect(parseBody('{"name":"x"}')).toEqual({ name: 'x' });
+	});
+
+	it("server.ts parses every request body through parseBody, so a bad one is that answer, not an opaque 500", () => {
+		const src = readFileSync(fileURLToPath(new URL('../src/server.ts', import.meta.url)), 'utf8');
+		expect(src).not.toMatch(/JSON\.parse\(/);
+		expect(src.match(/parseBody\(/g)?.length).toBeGreaterThanOrEqual(8);
 	});
 
 	it("a provider error keeps its own message on the 422 — the hosted resolver's", () => {
@@ -151,7 +184,7 @@ describe('an unhandled throw answers the 500 problem document on the hosted path
 		expect(text).not.toContain('bundle restore');
 		const doc = JSON.parse(text);
 		expect(problem.safeParse(doc).success).toBe(true);
-		expect(doc).toMatchObject({ status: 500, code: 'internal' });
+		expect(doc).toMatchObject({ status: 500, code: 'internal', error: 'internal error' });
 		expect(doc.detail).toBeUndefined();
 	}
 

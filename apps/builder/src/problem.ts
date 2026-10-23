@@ -37,9 +37,31 @@ export function refusalProblem(status: number, detail: string): Problem {
 	return code ? toProblem(substratError(code, detail)) : problemForStatus(status, detail);
 }
 
-/** A 500 that discloses nothing: an unrecognised throw has a message nobody reviewed. */
+/**
+ * A 500 that discloses nothing: an unrecognised throw has a message nobody reviewed. The
+ * deprecated `error` duplicate is the constant control-plane-api's `mapError` answers, set
+ * by hand because it is ours rather than the throw's: `web/src/api.ts` reads `error`, and
+ * without it shows `HTTP 500`. It goes when the duplicate does.
+ */
 export function internalProblem(): Problem {
-	return toProblem(new Error('unreviewed'));
+	return { ...toProblem(new Error('unreviewed')), error: 'internal error' };
+}
+
+/**
+ * A request body that is not JSON. The node server's routes parse theirs with
+ * `parseBody`, which throws this; the DO's read `req.json().catch(() => ({}))` instead.
+ */
+export class MalformedBody extends Error {
+	override readonly name = 'MalformedBody';
+}
+
+/** `JSON.parse` for a request body, refusing as `MalformedBody` with the parser's sentence. */
+export function parseBody(text: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch (err) {
+		throw new MalformedBody(err instanceof Error ? err.message : 'malformed JSON body');
+	}
 }
 
 /**
@@ -123,6 +145,9 @@ export function refuse(status: number, detail: string): Response {
  * and the document discloses nothing of it.
  */
 export function unhandledProblem(err: unknown): Problem {
+	// The node server's answer to a body that is not JSON, as before #113: the 500 and the
+	// parser's sentence, which describes the caller's own input and nothing of ours.
+	if (err instanceof MalformedBody) return refusalProblem(500, err.message);
 	console.error('[builder] unhandled request failure', err);
 	return internalProblem();
 }

@@ -42,6 +42,7 @@ import {
 	type GateSpec,
 } from '@substrat-run/builder-workspace';
 import {
+	parseBody,
 	providerMessage,
 	providerRefusal,
 	refusalProblem,
@@ -236,7 +237,7 @@ async function handleProjects(res: ServerResponse): Promise<void> {
 
 async function handleCreateProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (busy) return refuse(res, 409, 'a turn is running');
-	const { name } = JSON.parse(await readBody(req)) as { name?: string };
+	const { name } = parseBody(await readBody(req)) as { name?: string };
 	const projectName = name?.trim() || 'Untitled';
 	const reg = await loadRegistry(ws);
 	const entry = newEntry(projectName, await uniqueDir(slugify(projectName)), name ? 'user' : 'auto');
@@ -249,7 +250,7 @@ async function handleCreateProject(req: IncomingMessage, res: ServerResponse): P
 
 async function handleSelectProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (busy) return refuse(res, 409, 'a turn is running');
-	const { id } = JSON.parse(await readBody(req)) as { id?: string };
+	const { id } = parseBody(await readBody(req)) as { id?: string };
 	const reg = await loadRegistry(ws);
 	const entry = reg.projects.find((p) => p.id === id);
 	if (!entry) return refuse(res, 404, `no project ${id}`);
@@ -260,7 +261,7 @@ async function handleSelectProject(req: IncomingMessage, res: ServerResponse): P
 }
 
 async function handleRenameProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
-	const { name } = JSON.parse(await readBody(req)) as { name?: string };
+	const { name } = parseBody(await readBody(req)) as { name?: string };
 	if (!name?.trim()) return refuse(res, 400, 'name required');
 	const reg = await loadRegistry(ws);
 	const entry = reg.projects.find((p) => p.id === cur.entry.id);
@@ -285,7 +286,7 @@ async function applyAiName(name: string): Promise<void> {
 async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (busy) return refuse(res, 409, 'a turn is already running');
 
-	const { message } = JSON.parse(await readBody(req)) as { message?: string };
+	const { message } = parseBody(await readBody(req)) as { message?: string };
 	if (!message?.trim()) return refuse(res, 400, 'message required');
 
 	let generator: VerticalGenerator;
@@ -480,7 +481,7 @@ async function handleFileRead(url: URL, res: ServerResponse): Promise<void> {
 }
 
 async function handleFileWrite(req: IncomingMessage, res: ServerResponse): Promise<void> {
-	const { path, content } = JSON.parse(await readBody(req)) as { path?: string; content?: string };
+	const { path, content } = parseBody(await readBody(req)) as { path?: string; content?: string };
 	if (!path || content === undefined) return refuse(res, 400, 'path and content required');
 	// Writes are confined to the current project — everything else is foreign
 	// work the studio must not touch (same rule the commit scope enforces).
@@ -506,7 +507,7 @@ async function handleModels(url: URL, res: ServerResponse): Promise<void> {
 
 async function handleSetModel(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	if (busy) return refuse(res, 409, 'cannot switch model mid-turn');
-	const { spec } = JSON.parse(await readBody(req)) as { spec?: string };
+	const { spec } = parseBody(await readBody(req)) as { spec?: string };
 	if (!spec) return refuse(res, 400, 'spec required (provider:model)');
 	try {
 		// Validates provider, credential, endpoint; an auto spec validates via its
@@ -574,7 +575,7 @@ const server = createServer((req, res) => {
 			case 'GET /api/dev':
 				return json(res, 200, devStatus());
 			case 'POST /api/dev': {
-				const { action } = JSON.parse(await readBody(req)) as { action?: string };
+				const { action } = parseBody(await readBody(req)) as { action?: string };
 				if (action === 'start') return json(res, 200, await startDev(ROOT, cur.entry.dir));
 				if (action === 'stop') return json(res, 200, await stopDev());
 				return refuse(res, 400, 'action must be start or stop');
@@ -591,7 +592,7 @@ const server = createServer((req, res) => {
 				const line = JSON.stringify({
 					at: new Date().toISOString(),
 					project: cur.entry.id,
-					...JSON.parse(body),
+					...(parseBody(body) as Record<string, unknown>),
 				});
 				const existing = (await ws.exists('.builder/metrics.jsonl'))
 					? await ws.readFile('.builder/metrics.jsonl')
