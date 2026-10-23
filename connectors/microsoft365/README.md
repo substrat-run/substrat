@@ -9,7 +9,10 @@ It also reads and writes files in one Teams channel's folder of the tenant's Sha
 `bindMicrosoft365Scope` binds the folder to a scope, a vertical's
 `microsoft365.channel-files-requested` event is dispatched as uploads, and
 `sweepMicrosoft365Files` follows the library's change feed and lands what changed in the folder
-through the vertical's own operation.
+through the vertical's own operation. The change and write schemas a vertical codes against are
+the provider-neutral `fileSourceChange` and `fileSourceWriteRequest` from
+`@substrat-run/contracts`; this package exports them under its own names
+(`microsoft365ChannelChange`, `microsoft365FilesRequested`).
 
 Signs in with a per-connection certificate the platform generates (the private key never leaves
 the platform; the tenant uploads the certificate), or with a client secret. Host code, never

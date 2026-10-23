@@ -22,15 +22,20 @@
  * pass, to decide what is inside, and never written to connector state, a payload, a log line or
  * an error.
  */
-import { z } from 'zod';
 import {
-  attachmentRecord,
-  entityRef,
+  FILE_SOURCE_MAX_FILES_PER_WRITE,
+  FILE_SOURCE_MAX_FILE_BYTES,
+  FILE_SOURCE_MAX_WRITE_BYTES,
+  fileSourceChange,
+  fileSourceUpsertAnswer,
+  fileSourceWriteRequest,
   scopeId as scopeIdSchema,
   substratError,
   tenantId as tenantIdSchema,
   type ConnectionId,
   type DomainEvent,
+  type FileSourceChange,
+  type FileSourceWriteRequest,
 } from '@substrat-run/contracts';
 import type { ConnectorHandler, ConnectorOptions, ScopeHost } from '@substrat-run/kernel';
 import {
@@ -63,109 +68,27 @@ import {
 export const MICROSOFT365_FILES_EVENT = 'microsoft365.channel-files-requested';
 
 /** The most files one event may carry. */
-export const MAX_FILES_PER_EVENT = 20;
+export const MAX_FILES_PER_EVENT = FILE_SOURCE_MAX_FILES_PER_WRITE;
 /** The largest file either direction moves. A bigger one is refused on write, and lands without bytes on read. */
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
-/**
- * The most bytes one write event may move, all its files together. A dispatch holds one file at a
- * time, so this bounds how long a delivery runs, not its memory; the per-file cap bounds that.
- */
-export const MAX_EVENT_BYTES = 100 * 1024 * 1024;
+export const MAX_FILE_BYTES = FILE_SOURCE_MAX_FILE_BYTES;
+/** The most bytes one write event may move, all its files together. */
+export const MAX_EVENT_BYTES = FILE_SOURCE_MAX_WRITE_BYTES;
 
 /**
- * The payload of {@link MICROSOFT365_FILES_EVENT}, as this connector reads it. A vertical builds
- * it with this schema; the dispatch parses it again with the same one.
- *
- * `conflict` is required: what happens when the name is taken is the vertical's choice, said in
- * the event, never a default. The attachments must belong to the entity the event names — the
- * delivery is the authority to read them, so no standing grant is needed and none is consulted.
- *
- * Each file states its `size` (the attachment record's), so the caps are checked before a byte is
- * read. The dispatch refuses a file whose attachment turns out to be another size — but only once
- * it is read, since `openAttachment` hands over the bytes whole and says nothing first; a dishonest
- * declaration costs its own delivery one oversized read, and is refused there.
+ * The payload of {@link MICROSOFT365_FILES_EVENT}: the provider-neutral {@link fileSourceWriteRequest},
+ * under this connector's name. It is the same schema object, not a copy, so a vertical that built
+ * its event against either name is read by the dispatch as written.
  */
-export const microsoft365FilesRequested = z.object({
-  /** The folder under the channel folder to write into; `''` (the default) is the channel folder itself. */
-  directory: z.string().default(''),
-  files: z
-    .array(
-      z.object({
-        attachmentId: z.string().min(1),
-        /** The file's name in the channel. Defaults to the attachment's filename. */
-        name: z.string().min(1).optional(),
-        /** The attachment's size in bytes, as its record states it. */
-        size: z.number().int().nonnegative().max(MAX_FILE_BYTES),
-      }),
-    )
-    .min(1)
-    .max(MAX_FILES_PER_EVENT)
-    .refine((files) => files.reduce((n, f) => n + f.size, 0) <= MAX_EVENT_BYTES, {
-      message: `the files come to more than ${MAX_EVENT_BYTES} bytes, the most one event may move`,
-    })
-    // The ledger records progress by attachment, so one attachment named twice would be written
-    // once and reported done. Two copies of one attachment are two events.
-    .refine((files) => new Set(files.map((f) => f.attachmentId)).size === files.length, {
-      message: 'an attachment is named more than once',
-    }),
-  conflict: z.enum(['replace', 'rename', 'fail']),
-});
-export type Microsoft365FilesRequested = z.input<typeof microsoft365FilesRequested>;
-
-const commonChange = {
-  connectionId: z.string().min(1),
-  /** The drive item's id — the stable key. A path changes on a rename; this does not. */
-  itemId: z.string().min(1),
-  kind: z.enum(['file', 'folder']),
-  /** Relative to the channel folder, `/`-joined. */
-  path: z.string().min(1),
-  name: z.string().min(1),
-};
+export const microsoft365FilesRequested = fileSourceWriteRequest;
+export type Microsoft365FilesRequested = FileSourceWriteRequest;
 
 /**
- * What the sync lands through the binding's operation, one change per invoke — parsed with this
- * schema on the way out, so a vertical compiled against one version of the connector gets a throw
- * rather than a reshaped change from another.
- *
- * - `upsert`: the item exists in the folder, new or changed. `previousPath` is set when it moved or
- *   was renamed. For a file, `content` says whether bytes follow: `follows` means the operation
- *   should answer `{ entity }`, the attachment target the bytes land on, and a `content` change
- *   comes next. `unchanged` means only metadata moved; `too-large` means the file is over
- *   {@link MAX_FILE_BYTES}, or Graph did not state its size, and its bytes are not brought in.
- * - `content`: the bytes landed as `attachment` on the entity the upsert named. `replaces` is the
- *   attachment the previous content landed as, if any — the vertical decides whether to keep it.
- * - `delete`: the item is gone from the folder — `deleted` in Teams, or `moved-out` of the folder
- *   (where it went is not said: outside the folder is not the binding's to report). Every delete is
- *   on that item's own answer, so a folder's delete says nothing about what was in it: an item
- *   still held under it gets a delete of its own, or none — a vertical must not cascade.
+ * What the sync lands through the binding's operation: the provider-neutral {@link fileSourceChange},
+ * under this connector's name. `path` is relative to the channel folder; `deleted` is a deletion in
+ * Teams. See the neutral schema for the change kinds and what each promises.
  */
-export const microsoft365ChannelChange = z.discriminatedUnion('change', [
-  z.object({
-    change: z.literal('upsert'),
-    ...commonChange,
-    previousPath: z.string().nullable(),
-    size: z.number().int().nonnegative().nullable(),
-    contentType: z.string().nullable(),
-    lastModifiedAt: z.string().nullable(),
-    webUrl: z.string().nullable(),
-    content: z.enum(['follows', 'unchanged', 'too-large']).nullable(),
-  }),
-  z.object({
-    change: z.literal('content'),
-    ...commonChange,
-    attachment: attachmentRecord.pick({ id: true, filename: true, contentType: true, size: true, sha256: true }),
-    replaces: z.string().nullable(),
-  }),
-  z.object({
-    change: z.literal('delete'),
-    ...commonChange,
-    reason: z.enum(['deleted', 'moved-out']),
-  }),
-]);
-export type Microsoft365ChannelChange = z.infer<typeof microsoft365ChannelChange>;
-
-/** What the landing operation answers to an upsert whose content follows. Anything else is read as "no bytes". */
-const upsertAnswer = z.object({ entity: entityRef.nullable().optional() }).passthrough();
+export const microsoft365ChannelChange = fileSourceChange;
+export type Microsoft365ChannelChange = FileSourceChange;
 
 // ── the binding ──────────────────────────────────────────────────────────────
 
@@ -679,7 +602,7 @@ export async function syncMicrosoft365Scope(
     );
     const entry: ItemEntry = { ...p.entry, attachmentId: p.prior?.attachmentId ?? null, seenIn: pass.id };
     if (p.content === 'follows') {
-      const target = upsertAnswer.safeParse(answer);
+      const target = fileSourceUpsertAnswer.safeParse(answer);
       if (target.success && target.data.entity) {
         const body = await contentOf(client, binding.driveId, item.id, MAX_FILE_BYTES);
         attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);

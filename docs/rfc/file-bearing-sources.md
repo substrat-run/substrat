@@ -29,7 +29,7 @@ are §9, and they are open: the recommendation in §5 is one answer to Q1, not t
 > - **To build now, ahead of the facet:** streams (§10 step 1, §6), which are additive and remove
 >   the per-file memory ceiling; and provider-neutral vertical-facing change and write schemas,
 >   the Microsoft 365 vocabulary re-exported from `@substrat-run/contracts` under neutral names
->   while it has no live adopters.
+>   while it has no live adopters (done, #2499: `fileSourceChange` and `fileSourceWriteRequest`).
 > - Q2 and Q5 stay open. No decision record is written until Q1 is decided.
 
 Written against `origin/main` at `c95e6d73a`. References are to sections and symbols, not
