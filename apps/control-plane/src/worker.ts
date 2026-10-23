@@ -2582,8 +2582,7 @@ export default {
       if (c.res.status !== 401) return;
       const why = await staffRefusalOf(c.env, c.req.raw.headers);
       if (!why) return;
-      // The refusal's own headers stay (a `www-authenticate`, a cookie clear); the body and
-      // media type are the problem document's.
+      // The answer's headers stay; the body and media type become the problem document's.
       const refusal = refuse('unauthenticated', why);
       const headers = new Headers(c.res.headers);
       headers.set('content-type', refusal.headers.get('content-type')!);
