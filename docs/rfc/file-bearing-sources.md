@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: kernel
-description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves five forks to a human. Partly answered 2026-10-23: Microsoft 365 channel files (#2353) are file source #1, Q3 is overtaken, Q4 is keep, and Q1 with the facet waits for a second provider.
+description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves five forks to a human. Partly answered 2026-10-23: Microsoft 365 channel files (#2353) are file source #1, Q3 is overtaken, Q4 is keep, and Q1 with the facet waits for a second provider, a vertical needing its mirror's freshness, or a large-library first sync that cannot finish.
 ---
 
 # RFC: file-bearing sources
