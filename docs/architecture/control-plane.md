@@ -1371,6 +1371,12 @@ than that, so the scheduled pass keeps a compact copy.
 - **Every count is an estimate.** It is `sum(_sample_interval)` over the day's datapoints,
   never `count()`, and every row says `estimated: true`. `sampled` says whether Analytics
   Engine actually reweighted any of them.
+- **Sampled at read time too, which is still to be checked against live data.** The rollup
+  asks one fleet-wide question per day. Analytics Engine may answer a large query from a
+  sample of its own, and a group with very few requests could then be missing from the answer
+  rather than reweighted. How far that happens for this query at the fleet's size has not yet
+  been checked against live data. Until it has, no count here is claimed exact, and a missing
+  (tenant, vertical, scope) on a read day is not proof that it served nothing.
 - **A closed day, read once.** A day is read an hour after it ends, so the datapoints of its
   last instant have landed, with one query for the whole fleet. The oldest unread day goes
   first, since it is the next one Analytics Engine ages out. A pass reads at most seven days,
@@ -1389,6 +1395,10 @@ than that, so the scheduled pass keeps a compact copy.
   keeping everything is the reversible default, since a pruned row cannot come back. No
   existing retention follows it; the storage gauge stays thirteen months and model usage 400
   days.
+- **Kept when a tenant is reaped, on purpose.** Reaping a tenant (§4.8) deletes the storage
+  gauge's rows with its scopes, but not its request rows, as model usage is kept too. They
+  are what a final invoice, or a dispute about one, is answered from. They hold counts only,
+  and they leave with the billing horizon like every other row.
 - **Hosted only, for now.** The reader needs the account's Analytics Engine and the router's
   dataset (`ROUTER_ANALYTICS_DATASET`), never defaulted. Without them the phase does not run,
   and a self-hosted directory keeps the empty tables.
