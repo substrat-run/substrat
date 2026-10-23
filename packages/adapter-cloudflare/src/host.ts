@@ -7563,7 +7563,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // #2447: judged in the ControlPlaneDO's unit, against this host's keys and the tenant's other
         // roles, so a role assigned through a door cannot be widened afterwards. A refusal writes
         // nothing, so a seat of the role as it was stored keeps working.
-        const defined = await this.cp.defineRole(tenantId, parsed, this.reservation(), await this.seatedInScopes(tenantId, parsed));
+        const context = await this.definitionContext(tenantId, parsed);
+        const defined = await this.cp.defineRole(tenantId, parsed, context.reservation, context.seatedInScopes);
         if ('refused' in defined) throw substratError('forbidden', defined.refused);
         const before = defined.before;
         await this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
@@ -11817,25 +11818,40 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * #2447: for a definition that would make a stored role `holder: 'system'`, whether anyone but a
-   * system principal holds a live scope-level seat in it in one of the tenant's scopes (the
-   * ControlPlaneDO reads the tenant-level seats in its own unit). False for every other definition,
-   * which the seats do not decide, so no scope is asked.
+   * #2447: what a tenant's role definition is judged with, beyond the stored roles the ControlPlaneDO
+   * reads in its own unit:
+   * - the reservations of this host's modules, joined with the scope class's. Every scope on this
+   *   binding is one class, so one of the tenant's scopes answers for all, and the fan-out after
+   *   the write projects into exactly those scopes. A tenant with no scope yet is judged by this
+   *   host's modules alone (a stated residual: its first scope's projection is not judged again);
+   * - for a definition that would make a stored role `holder: 'system'`, whether anyone but a
+   *   system principal holds a live scope-level seat in it in one of those scopes (the
+   *   ControlPlaneDO reads the tenant-level seats). No scope is asked for seats otherwise.
    */
-  private async seatedInScopes(tenantId: TenantId, role: RoleDefinition): Promise<boolean> {
-    if (role.holder !== 'system') return false;
-    const stored = await this.cp.getRole(tenantId, role.key);
-    if (!stored || stored.holder === 'system') return false;
+  private async definitionContext(
+    tenantId: TenantId,
+    role: RoleDefinition,
+  ): Promise<{ reservation: { reserved: string[]; declared: string[] }; seatedInScopes: boolean }> {
     const scopes = await this.cp.listScopes({ tenantId, status: ['provisioning', 'active', 'suspended'] });
-    for (const s of scopes) {
-      if ((await this.scopeStub(s.scope_id as ScopeId).roleStateHere(tenantId)).seated.includes(role.key)) return true;
+    const reservation = { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
+    if (scopes.length > 0) {
+      const here = await this.scopeStub(scopes[0]!.scope_id as ScopeId).reservationHere();
+      reservation.reserved = [...new Set([...reservation.reserved, ...here.reserved])];
+      reservation.declared = [...new Set([...reservation.declared, ...here.declared])];
     }
-    return false;
-  }
-
-  /** #2447: what this host's registered and listed modules reserve and declare, for a role definition. */
-  private reservation(): { reserved: string[]; declared: string[] } {
-    return { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
+    let seatedInScopes = false;
+    if (role.holder === 'system') {
+      const stored = await this.cp.getRole(tenantId, role.key);
+      if (stored && stored.holder !== 'system') {
+        for (const s of scopes) {
+          if ((await this.scopeStub(s.scope_id as ScopeId).roleStateHere(tenantId)).seated.includes(role.key)) {
+            seatedInScopes = true;
+            break;
+          }
+        }
+      }
+    }
+    return { reservation, seatedInScopes };
   }
 
   /**

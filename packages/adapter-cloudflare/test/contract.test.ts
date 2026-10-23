@@ -298,9 +298,35 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
 
   beforeAll(async () => {
     await host.admin.createTenant(staff, { id: t, slug: `rsv-front-${t.slice(-10).toLowerCase()}`, name: 'Front' });
+    // #2447: a definition joins the scope class's reservations once the tenant has a scope, so these
+    // roles, which hold the class's reserved key, are defined first: a tenant with no scope yet is
+    // judged by this coordinator's modules alone, which reserve nothing (a stated residual).
+    await host.admin.defineRole(staff, t, { key: 'mixed', permissions: MIXED, source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'cp-mixed', permissions: MIXED, source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'cp-member', permissions: [MIXED[0]!], source: 'vertical' });
     await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'rsv-front' });
     await host.admin.activateScope(staff, t, s);
-    await host.admin.defineRole(staff, t, { key: 'mixed', permissions: MIXED, source: 'vertical' });
+  });
+
+  it('defineRole judges the scope class’s reservations, not only the coordinator’s (#2447 round 1); an unreserved key is admitted', async () => {
+    const refused = await host.admin
+      .defineRole(staff, t, { key: 'mixed-2', permissions: MIXED, source: 'vertical' })
+      .then(() => undefined, (e: unknown) => e as Error);
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(/role 'mixed-2' is a person's role and would hold rsv:run/);
+    expect((await host.admin.listRoles(staff, { tenantId: t })).some((r) => r.key === 'mixed-2')).toBe(false);
+    await host.admin.defineRole(staff, t, { key: 'mixed-2', permissions: [MIXED[0]!, permissionKey.parse('rsv:other')], source: 'vertical' });
+  });
+
+  it('…so a seated role is not widened: the refused definition writes nothing, and nothing is fanned out (#2447 round 1)', async () => {
+    const who = principalId.parse(ulid());
+    await host.admin.defineRole(staff, t, { key: 'grows', permissions: [MIXED[0]!], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: who, roleKey: 'grows', node: { tenantId: t, scopeId: s } });
+    const widened = await host.admin
+      .defineRole(staff, t, { key: 'grows', permissions: MIXED, source: 'vertical' })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(widened)).toBe('forbidden');
+    expect((await host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'grows')?.permissions).toEqual([MIXED[0]]);
   });
   afterAll(() => host.close());
 
@@ -568,10 +594,7 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
   // the checker reads it. These rows say the opposite of the control plane's definitions — a stale
   // projection — so which source decided is what each answer shows.
   describe('assignScopeRole on a scope with no provisioning receipt', () => {
-    beforeAll(async () => {
-      await host.admin.defineRole(staff, t, { key: 'cp-mixed', permissions: MIXED, source: 'vertical' });
-      await host.admin.defineRole(staff, t, { key: 'cp-member', permissions: [MIXED[0]!], source: 'vertical' });
-    });
+    // `cp-mixed` and `cp-member` are defined in the describe's first hook, before the tenant's scope.
     /** A scope from before receipts: role rows projected for `t`, no receipt. */
     const stale = async () => {
       const bare = scopeId.parse(ulid());
