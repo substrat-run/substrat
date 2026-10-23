@@ -11833,6 +11833,9 @@ export class CloudflareScopeHost implements ScopeHost {
    *   all included: a seat can outlive its role's row), whether anyone but a system principal holds a
    *   live scope-level seat in it in one of those scopes (the
    *   ControlPlaneDO reads the tenant-level seats). No scope is asked for seats otherwise.
+   *
+   * A stated residual: this half is read before the ControlPlaneDO's unit, not in it, so a scope-level
+   * seat made in between is not seen. The tenant-level seats and the stored roles are read in the unit.
    */
   private async definitionContext(
     tenantId: TenantId,
@@ -11887,6 +11890,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * (`reservedRoleSetRefusal`), against this host's reservations joined with the scope class's,
    * and the roles the scope stores for the tenant now with their seats there. Answers the reserved
    * keys it judged with, for the seats the same call makes.
+   *
+   * A stated residual: the scope state is read in one RPC (`roleStateHere`) and written in another
+   * (`applyProjectionReply`), so a seat made between the two is not seen. The window is one call
+   * wide, and a reconcile runs again every pass.
    */
   private async refuseReservedRoleSet(roles: readonly RoleDefinition[], tenantId: TenantId, scopeId: ScopeId): Promise<ReadonlySet<string>> {
     const stub = this.scopeStub(scopeId);
