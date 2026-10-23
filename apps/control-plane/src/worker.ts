@@ -2576,7 +2576,7 @@ export default {
     // claim was carried reads that way for up to seven days — so a bare `unauthenticated`
     // would leave a signed-in person, in the console or the CLI, with no idea that signing
     // in again is the whole fix. Registered first so it sees every /api answer, including
-    // the API router's own middleware. The status and headers stay; only the sentence moves.
+    // the API router's own middleware.
     app.use('/api/*', async (c, next) => {
       await next();
       if (c.res.status !== 401) return;
