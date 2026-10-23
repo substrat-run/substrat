@@ -342,6 +342,29 @@ The producer side is `createModelHost` in
 `visibility` — `'internal' | 'customer'`, the mandatory classification on every
 attachment item that could reach a customer portal.
 
+## File sources (`file-source.ts`)
+
+The vocabulary a vertical sees of a provider that holds files, whichever provider it is (#2499).
+The first provider is the Microsoft 365 channel-files connector, which re-exports these under its
+own names; a second lands on the same words.
+
+- `fileSourceChange` / `FileSourceChange` — the change a sync lands through the vertical's own
+  operation, one per invoke: `upsert` (new or changed, with `previousPath` on a move and a
+  `content` state saying whether bytes follow), `content` (the bytes landed as an attachment, with
+  the attachment it `replaces`) or `delete` (`deleted`, or `moved-out` without saying where). Every
+  change is keyed by `itemId`, delivery is at least once, and a delete is only ever on that item's
+  own answer — never cascaded from a folder.
+- `fileSourceWriteRequest` / `FileSourceWriteRequest` — the payload of the event a vertical emits
+  to write attachments into its bound folder. `conflict` (`fileSourceConflict`: `replace`,
+  `rename` or `fail`) is required; it is never a default and the provider never picks.
+- `fileSourceUpsertAnswer` — what the landing operation answers to an `upsert` whose `content` is
+  `follows`: the `{ entity }` the bytes attach to.
+- `FILE_SOURCE_MAX_FILES_PER_WRITE` (20), `FILE_SOURCE_MAX_FILE_BYTES` (50 MiB) and
+  `FILE_SOURCE_MAX_WRITE_BYTES` (100 MiB).
+
+The event type a write travels under stays the provider's, because it is what routes the delivery.
+See [connections §6.3](https://github.com/substrat-run/substrat/blob/main/docs/architecture/connections.md#63-file-bearing-sources-the-reference-shape).
+
 ## Client context (`client-context.ts`)
 
 `clientContext` / `ClientContext` — who is on the other end of a request, as distinct

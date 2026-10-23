@@ -91,6 +91,7 @@ export * from './registry-diff.js';
 export * from './ci.js';
 export * from './money.js';
 export * from './attachments.js';
+export * from './file-source.js';
 export * from './kernel-events.js';
 export * from './email-intent.js';
 export * from './entity-state.js';
