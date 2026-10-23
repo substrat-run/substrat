@@ -492,7 +492,8 @@ export async function verifyWireEnvelope(input: {
   readonly keys: WireVerificationKeys;
   readonly expected: WireExpectation;
   readonly nowSeconds: number;
-  readonly onRefusal?: (reason: WireRefusalReason) => void | Promise<void>;
+  /** Whatever it returns is ignored; a promise it returns is awaited by nobody and its rejection caught. */
+  readonly onRefusal?: (reason: WireRefusalReason) => unknown;
 }): Promise<WireVerdict> {
   const refuse = (reason: WireRefusalReason): WireRefused => {
     try {

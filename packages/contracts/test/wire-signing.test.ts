@@ -197,7 +197,7 @@ describe('wire envelope: the shared vectors', () => {
     const keys = await keysOf();
     for (const v of fixture.invalid) {
       const reasons: WireRefusalReason[] = [];
-      const expected = (v.expected.kind === 'call' ? { ...v.expected, replay: 'none' } : v.expected) as WireExpectation;
+      const expected = (v.expected.kind === 'call' ? { ...v.expected, replay: 'none' } : v.expected) as unknown as WireExpectation;
       const verdict = await verifyWireEnvelope({ headers: headersOf(v.header, v.signature), keys, expected, nowSeconds: v.now, onRefusal: (r) => reasons.push(r) });
       expect(verdict, v.name).toBe(WIRE_REFUSED);
       expect(reasons, v.name).toEqual([v.reason]);
