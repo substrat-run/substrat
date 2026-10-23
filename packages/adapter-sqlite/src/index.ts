@@ -346,6 +346,7 @@ import {
   tooManyResultColumns,
   tooManyTableColumns,
   parseValidationRecords,
+  readableScopes,
   resolveScopeRecord,
   ulid,
   ISSUE_RETENTION_DAYS,
@@ -631,6 +632,7 @@ import {
   type ScheduleRunReport,
   type ScopedSql,
   type ScopeFilter,
+  type ScopeListing,
   type ScopeHost,
   type ScopeStub,
   type ScopeStubOptions,
@@ -8199,6 +8201,32 @@ export class SqliteScopeHost implements ScopeHost {
         archivedFromStatus: (r.archived_from_status ?? null) as ScopeStatus | null,
         createdAt: r.created_at,
       });
+    // The directory rows `listScopes` and `listScopesReadable` map, filtered and paged alike.
+    const scopeRows = (filter?: ScopeFilter): ScopeRow[] => {
+      const where: string[] = [];
+      const params: (string | number)[] = [];
+      if (filter?.tenantId) {
+        where.push('tenant_id = ?');
+        params.push(filter.tenantId);
+      }
+      if (filter?.status) {
+        const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
+        // An empty array means "no status is acceptable" — match nothing, rather
+        // than degenerating into an unfiltered read of the whole fleet.
+        if (statuses.length === 0) return [];
+        // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
+        where.push('status IN (SELECT value FROM json_each(?))');
+        params.push(JSON.stringify(statuses));
+      }
+      if (filter?.vertical) {
+        where.push('vertical = ?');
+        params.push(filter.vertical);
+      }
+      const tail = keysetTail(where, params, 'scope_id', filter);
+      const sql =
+        'SELECT * FROM scopes' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
+      return this.directory.prepare(sql).all(...params) as ScopeRow[];
+    };
     // The (version, scope) pair a bind and its impact read both start from, and the refusals
     // that come before any export-break question, in the order the bind makes them (#1756).
     const bindTarget = async (tenantId: string, scopeId: string, versionId: string) => {
@@ -10860,29 +10888,7 @@ export class SqliteScopeHost implements ScopeHost {
         return t;
       },
       listScopes: async (actor, filter?: ScopeFilter): Promise<Scope[]> => {
-        const where: string[] = [];
-        const params: (string | number)[] = [];
-        if (filter?.tenantId) {
-          where.push('tenant_id = ?');
-          params.push(filter.tenantId);
-        }
-        if (filter?.status) {
-          const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
-          // An empty array means "no status is acceptable" — match nothing, rather
-          // than degenerating into an unfiltered read of the whole fleet.
-          if (statuses.length === 0) return [];
-          // One JSON array, the shape the DO twin needs for its 100-parameter limit (#1776).
-          where.push('status IN (SELECT value FROM json_each(?))');
-          params.push(JSON.stringify(statuses));
-        }
-        if (filter?.vertical) {
-          where.push('vertical = ?');
-          params.push(filter.vertical);
-        }
-        const tail = keysetTail(where, params, 'scope_id', filter);
-        const sql =
-          'SELECT * FROM scopes' + (where.length ? ` WHERE ${where.join(' AND ')}` : '') + tail;
-        const scopes = (this.directory.prepare(sql).all(...params) as ScopeRow[]).map(mapScope);
+        const scopes = scopeRows(filter).map(mapScope);
         this.recordAccess(
           actor,
           'listScopes',
@@ -10891,6 +10897,17 @@ export class SqliteScopeHost implements ScopeHost {
           scopes.length,
         );
         return scopes;
+      },
+      listScopesReadable: async (actor, filter?: ScopeFilter): Promise<ScopeListing> => {
+        const listing = readableScopes(scopeRows(filter), mapScope);
+        this.recordAccess(
+          actor,
+          'listScopesReadable',
+          { tenantId: filter?.tenantId ?? null },
+          filter,
+          listing.scopes.length + listing.unreadable.length,
+        );
+        return listing;
       },
       listTenantStores: async (
         actor,

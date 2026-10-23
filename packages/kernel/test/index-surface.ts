@@ -529,6 +529,9 @@ export const INDEX_VALUE_EXPORTS = [
   'readScopeTimeline',
   'readTimeline',
   'readUndrainedOutbox',
+  // Both adapters' `listScopesReadable` map directory rows through it, so they name an
+  // unreadable row alike.
+  'readableScopes',
   'reassertActionOf',
   'reassertEntry',
   'reassertOffRow',

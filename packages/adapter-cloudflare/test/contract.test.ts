@@ -52,6 +52,7 @@ import {
   bindingInviteContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  unreadableScopeRowContractSuite,
   storeDriverReleaseContractSuite,
   connectLinkContractSuite,
   causedByContractSuite,
@@ -168,6 +169,26 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
     checker: UNSAFE_allowAllChecker,
   });
   return { host, cleanup: async () => host.close() };
+});
+
+// One directory row that does not read as a scope never stops a fleet-wide pass. The row is
+// written in the ControlPlaneDO's own SQL, past the provisioning boundary that now refuses it.
+unreadableScopeRowContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    fetch: connectorTestFetch,
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return {
+    host,
+    writeVertical: (scope, vertical) =>
+      runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+        state.storage.sql.exec('UPDATE scopes SET vertical = ? WHERE scope_id = ?', vertical, scope);
+      }),
+    cleanup: async () => host.close(),
+  };
 });
 
 // #2300: a store driver's releases, rollouts and holds, in the ControlPlaneDO. The hold-expiry

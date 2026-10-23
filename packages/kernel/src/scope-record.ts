@@ -1,6 +1,6 @@
 import { slug as slugSchema, substratError, verticalSlug } from '@substrat-run/contracts';
-import type { Jurisdiction, StorageShape } from '@substrat-run/contracts';
-import type { ProvisionScopeInput } from './scope-host.js';
+import type { Jurisdiction, Scope, StorageShape } from '@substrat-run/contracts';
+import type { ProvisionScopeInput, ScopeListing } from './scope-host.js';
 
 /** The directory columns `provisionScope` writes, with every optional resolved. */
 export interface ResolvedScopeRecord {
@@ -49,6 +49,41 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
     forkedAt: input.forkedAt ?? null,
     expiresAt: input.expiresAt ?? null,
   };
+}
+
+/**
+ * Map directory rows to `Scope`s the way `HostAdmin.listScopesReadable` answers: a row `map`
+ * throws on is named in `unreadable` by its stored ids and the fields that failed, and the rest
+ * are returned in order. One implementation for both adapters, so they name a bad row alike.
+ */
+export function readableScopes<R extends { scope_id: unknown; tenant_id: unknown }>(
+  rows: readonly R[],
+  map: (row: R) => Scope,
+): ScopeListing {
+  const out: ScopeListing = { scopes: [], unreadable: [] };
+  for (const row of rows) {
+    try {
+      out.scopes.push(map(row));
+    } catch (err) {
+      out.unreadable.push({ scopeId: storedId(row.scope_id), tenantId: storedId(row.tenant_id), fields: failedFieldsOf(err) });
+    }
+  }
+  return out;
+}
+
+/** A stored id as text, bounded: a corrupt row's id column is not trusted to be a ULID. */
+const storedId = (value: unknown): string => String(value).slice(0, 64);
+
+/** The top-level field names a parse failure names, without the values it read. */
+function failedFieldsOf(err: unknown): string[] {
+  const issues = (err as { issues?: unknown } | null)?.issues;
+  if (!Array.isArray(issues)) return ['row'];
+  const fields = new Set<string>();
+  for (const issue of issues as { path?: unknown }[]) {
+    const head = Array.isArray(issue.path) ? issue.path[0] : undefined;
+    fields.add(typeof head === 'string' ? head : 'row');
+  }
+  return fields.size > 0 ? [...fields] : ['row'];
 }
 
 /**

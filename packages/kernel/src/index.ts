@@ -69,6 +69,7 @@ export type {
   ScopedSql,
   ScopeFilter,
   ScopeHost,
+  ScopeListing,
   ScopeStub,
   ScopeStubOptions,
   InvokeOptions,
@@ -234,7 +235,7 @@ export {
 export type { SealingKeyPair, SealingPublicKey } from './sealed-box.js';
 export { createSubjectKeys } from './subject-keys.js';
 export type { SubjectKeyRecords, SubjectKeyRow, SubjectKeys } from './subject-keys.js';
-export { resolveScopeRecord } from './scope-record.js';
+export { readableScopes, resolveScopeRecord } from './scope-record.js';
 export type { ResolvedScopeRecord } from './scope-record.js';
 export {
   assertAllowed,

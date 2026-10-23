@@ -300,6 +300,7 @@ import {
   type OperationEntitlement,
   foldMeterReading,
   parseValidationRecords,
+  readableScopes,
   resolveScopeRecord,
   ulid,
   type CarriedAway,
@@ -374,6 +375,7 @@ import {
   type ScheduleRunReport,
   type ScheduleStateKind,
   type ScopeFilter,
+  type ScopeListing,
   type ScopeHost,
   type ScopeStub,
   type ScopeStubOptions,
@@ -6879,6 +6881,20 @@ export class CloudflareScopeHost implements ScopeHost {
         archivedFromStatus: (r.archived_from_status ?? null) as ScopeStatus | null,
         createdAt: r.created_at,
       });
+    // The directory rows `listScopes` and `listScopesReadable` map, filtered and paged alike.
+    const scopeRows = (filter?: ScopeFilter): Promise<ScopeRow[]> =>
+      this.cp.listScopes({
+        tenantId: filter?.tenantId,
+        status: filter?.status
+          ? Array.isArray(filter.status)
+            ? filter.status
+            : [filter.status]
+          : undefined,
+        vertical: filter?.vertical,
+        limit: filter?.limit,
+        cursor: filter?.cursor,
+        order: filter?.order,
+      });
     // The (version, scope) pair a bind and its impact read both start from, and the refusals
     // that come before any export-break question, in the order the bind makes them (#1756).
     const bindTarget = async (tenantId: string, scopeId: string, versionId: string) => {
@@ -8847,20 +8863,14 @@ export class CloudflareScopeHost implements ScopeHost {
         return t ? tenantSchema.parse(t) : undefined;
       },
       listScopes: async (actor, filter?: ScopeFilter): Promise<Scope[]> => {
-        const rows = await this.cp.listScopes({
-          tenantId: filter?.tenantId,
-          status: filter?.status
-            ? Array.isArray(filter.status)
-              ? filter.status
-              : [filter.status]
-            : undefined,
-          vertical: filter?.vertical,
-          limit: filter?.limit,
-          cursor: filter?.cursor,
-          order: filter?.order,
-        });
+        const rows = await scopeRows(filter);
         await this.recordAccess(actor, 'listScopes', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
         return rows.map(mapScope);
+      },
+      listScopesReadable: async (actor, filter?: ScopeFilter): Promise<ScopeListing> => {
+        const rows = await scopeRows(filter);
+        await this.recordAccess(actor, 'listScopesReadable', { tenantId: filter?.tenantId ?? null }, filter, rows.length);
+        return readableScopes(rows, mapScope);
       },
       getScopeRecord: async (actor, tenantId, scopeId): Promise<Scope | undefined> => {
         const row = await this.cp.getScopeRecord(tenantId, scopeId);
