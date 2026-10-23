@@ -14,6 +14,7 @@ import {
   ControlPlaneError,
   DeployUploadError,
   DEV_ACTOR_HEADER,
+  LOGS_INCOMPLETE_HEADER,
   TENANT_SERIES_SCOPE_CAP,
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
@@ -21,6 +22,7 @@ import {
   reconcilePayloadFor,
   reviewedEntityGrants,
   stableDeploymentRefFor,
+  type RecentLogEvent,
 } from '../src/index.js';
 
 /**
@@ -6307,6 +6309,8 @@ describe('control-plane API — observability proxy', () => {
   // A stub reader that records what the routes hand it — the proxy's job is the Zod
   // boundary + the staff gate, not Cloudflare's answers.
   const seen: { metrics: unknown[]; logs: unknown[]; egress: unknown[] } = { metrics: [], logs: [], egress: [] };
+  /** What the faked log read answers; a test sets it and puts it back. */
+  let logsAnswer: { events: RecentLogEvent[]; incomplete: boolean } = { events: [], incomplete: false };
   const reader = {
     serviceMetrics: async (input: unknown) => {
       seen.metrics.push(input);
@@ -6324,7 +6328,7 @@ describe('control-plane API — observability proxy', () => {
     },
     recentLogs: async (input: unknown) => {
       seen.logs.push(input);
-      return [];
+      return { events: logsAnswer.events, incomplete: logsAnswer.incomplete };
     },
     observedEgress: async (input: { services: string[]; hours: number; limit: number }) => {
       seen.egress.push(input);
@@ -6392,6 +6396,24 @@ describe('control-plane API — observability proxy', () => {
     });
     expect(res.status).toBe(200);
     expect(seen.logs.at(-1)).toEqual({ services: ['my-worker'], level: 'error', hours: 1, limit: 50 });
+  });
+
+  it('says beside the list when the read behind it stopped short, and only then', async () => {
+    const app = appWith(reader);
+    const event = { timestamp: 1, message: 'a line' } as RecentLogEvent;
+    try {
+      logsAnswer = { events: [event], incomplete: true };
+      const short = await app.request('/observability/logs?service=my-worker', { headers: asStaff });
+      expect(short.headers.get(LOGS_INCOMPLETE_HEADER)).toBe('1');
+      // The body is the same list either way: every caller that reads it reads it unchanged.
+      expect(await short.json()).toEqual([event]);
+      logsAnswer = { events: [event], incomplete: false };
+      const whole = await app.request('/observability/logs?service=my-worker', { headers: asStaff });
+      expect(whole.headers.has(LOGS_INCOMPLETE_HEADER)).toBe(false);
+      expect(await whole.json()).toEqual([event]);
+    } finally {
+      logsAnswer = { events: [], incomplete: false };
+    }
   });
 
   it('accepts a repeated service param — one query over a whole set of deployed units', async () => {

@@ -96,9 +96,9 @@ afterEach(() => {
 
 describe('no reader returns the platform’s wire line', () => {
   const lines: Array<[string, (reader: ReturnType<typeof fakedCloudflare>) => Promise<unknown[]>]> = [
-    ['the fleet view', (r) => r.recentLogs({ hours: 24, limit: 50 })],
-    ['the service-grain view of one service', (r) => r.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 })],
-    ['the service-grain view of several', (r) => r.recentLogs({ services: ['acme-widgets', 'acme-widgets-v2'], hours: 24, limit: 50 })],
+    ['the fleet view', async (r) => (await r.recentLogs({ hours: 24, limit: 50 })).events],
+    ['the service-grain view of one service', async (r) => (await r.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 })).events],
+    ['the service-grain view of several', async (r) => (await r.recentLogs({ services: ['acme-widgets', 'acme-widgets-v2'], hours: 24, limit: 50 })).events],
     ['the tenant view', (r) => r.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 50 })],
     ['the tenant view of one invocation', (r) => r.tenantLogs!({ tenantId: '01TENANT', invocationId: '01JZ0000000000000000INV001', hours: 24, limit: 50 })],
     ['the tenant request list', (r) => r.tenantRequests!({ tenantId: '01TENANT', services: ['acme-widgets'], from: 0, to: 2000, limit: 50 })],
@@ -228,13 +228,14 @@ describe('a page is as full as it would be without the wire line', () => {
     ] as const)('%s: a full page comes back full, newest first, and none of it the wire line', async (_, services) => {
       const lines = busy();
       const { reader, queries } = backend(() => lines);
-      const answer = await reader.recentLogs({ services: services ? [...services] : undefined, hours: 24, limit: 100 });
+      const { events: answer, incomplete } = await reader.recentLogs({ services: services ? [...services] : undefined, hours: 24, limit: 100 });
       const expected = lines
         .filter((l) => l.source['substrat'] !== 'wire')
         .sort((a, b) => b.timestamp - a.timestamp)
         .slice(0, 100)
         .map((l) => l.timestamp);
       expect(answer.map((e) => e.timestamp)).toEqual(expected);
+      expect(incomplete).toBe(false);
       expect(JSON.stringify(answer)).not.toContain(LEAKED);
       // One page lost a third of itself to the wire line; the second filled it.
       expect(queries).toHaveLength(2);
@@ -243,16 +244,53 @@ describe('a page is as full as it would be without the wire line', () => {
     it('a window with less than a page in it is answered whole, in one query', async () => {
       const lines = busy().slice(0, 30);
       const { reader, queries } = backend(() => lines);
-      const answer = await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 100 });
-      expect(answer).toHaveLength(20);
+      const { events, incomplete } = await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 100 });
+      expect(events).toHaveLength(20);
+      expect(incomplete).toBe(false);
       expect(queries).toHaveLength(1);
     });
 
-    it('a window of nothing but wire lines costs a bounded number of queries, and answers empty', async () => {
+    it('a window of nothing but wire lines costs a bounded number of queries, and says it stopped short', async () => {
       const lines = Array.from({ length: 1000 }, (_, r) => wire(now - 10_000_000 + r * 1_000, `req-${r}`));
       const { reader, queries } = backend(() => lines);
-      expect(await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 })).toEqual([]);
+      expect(await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 })).toEqual({ events: [], incomplete: true });
       expect(queries).toHaveLength(4);
+    });
+
+    describe('one service whose newest lines are all wire lines', () => {
+      const NINE = Array.from({ length: 9 }, (_, s) => `acme-widgets-v${s}`);
+      /** `v0` holds `wires` wire lines, all newer than the 30 real lines each of the other eight holds. */
+      const flooded = (wires: number): Line[] => [
+        ...Array.from({ length: wires }, (_, r): Line => ({ ...wire(now - 1_000_000 + r, `req-w${r}`), $metadata: { id: `01W${r}`, requestId: `req-w${r}`, service: NINE[0] } })),
+        ...NINE.slice(1).flatMap((service, s) =>
+          Array.from({ length: 30 }, (_, i): Line => ({
+            timestamp: now - 5_000_000 + i * 100 + s,
+            source: { message: `line ${i}` },
+            $metadata: { id: `01R${s}x${i}`, requestId: `req-${s}-${i}`, service, message: `${service} line ${i}` },
+          })),
+        ),
+      ];
+      const newest = (lines: Line[]) =>
+        lines.filter((l) => l.source['substrat'] !== 'wire').sort((a, b) => b.timestamp - a.timestamp).slice(0, 100).map((l) => l.timestamp);
+
+      it('never blanks the others: the newest 100 of theirs, and the read says it stopped short', async () => {
+        const lines = flooded(600);
+        const { reader, queries } = backend(() => lines);
+        const { events, incomplete } = await reader.recentLogs({ services: NINE, hours: 24, limit: 100 });
+        expect(events.map((e) => e.timestamp)).toEqual(newest(lines));
+        // v0 ran out of rounds with lines still behind it: they could have been newer than the answer's last.
+        expect(incomplete).toBe(true);
+        expect(queries).toHaveLength(NINE.length + 3);
+      });
+
+      it('its twin: once v0 is read to its end, the same answer is whole', async () => {
+        const lines = flooded(250);
+        const { reader, queries } = backend(() => lines);
+        const { events, incomplete } = await reader.recentLogs({ services: NINE, hours: 24, limit: 100 });
+        expect(events.map((e) => e.timestamp)).toEqual(newest(lines));
+        expect(incomplete).toBe(false);
+        expect(queries).toHaveLength(NINE.length + 2);
+      });
     });
 
     describe('across many services', () => {
@@ -280,8 +318,9 @@ describe('a page is as full as it would be without the wire line', () => {
         // In dual: a third of every page is the wire line.
         const lines = fleet((i) => i % 3 === 2);
         const { reader, queries } = backend(() => lines);
-        const answer = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
+        const { events: answer, incomplete } = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
         expect(answer.map((e) => e.timestamp)).toEqual(truth(lines).slice(0, 100));
+        expect(incomplete).toBe(false);
         expect(queries).toHaveLength(SERVICES.length);
       });
 
@@ -292,19 +331,22 @@ describe('a page is as full as it would be without the wire line', () => {
         // (i = 75, 25): an answer that took it would not be the newest page's prefix.
         const lines = fleet((i, s) => (s >= 12 ? i !== 100 && i !== 1 : i % 50 !== 25));
         const { reader, queries } = backend(() => lines);
-        const answer = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
+        const { events: answer, incomplete } = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
         expect(queries.length).toBe(SERVICES.length + 8);
         expect(answer.length).toBeGreaterThan(0);
-        // Whatever was left unread cut the answer short; nothing in it is out of place.
+        // Whatever was left unread cut the answer short, and the read says so; nothing in it is out of place.
+        expect(incomplete).toBe(true);
         expect(answer.map((e) => e.timestamp)).toEqual(truth(lines).slice(0, answer.length));
       });
     });
 
-    it('stops once a page is all one instant, which no earlier window can cut', async () => {
+    it('stops once a page is all one instant, which no earlier window can cut, and says it stopped short', async () => {
       const lines = Array.from({ length: 60 }, (_, r) => (r % 2 ? wire(now - 5_000, `req-${r}`) : line(now - 5_000, `req-${r}`, r)));
       const { reader, queries } = backend(() => lines);
-      const answer = await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 });
-      expect(answer).toHaveLength(25);
+      const { events, incomplete } = await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 });
+      // 30 of the window's lines are its own and only 25 were reached: the page is short, and says so.
+      expect(events).toHaveLength(25);
+      expect(incomplete).toBe(true);
       // The second window ends just after that instant and returns the same page; nothing is asked after it.
       expect(queries).toHaveLength(2);
       expect(queries[1]!.timeframe.to).toBe(now - 5_000 + 1);

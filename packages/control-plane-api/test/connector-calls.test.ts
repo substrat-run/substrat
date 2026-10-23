@@ -166,7 +166,7 @@ describe('GET /connections/calls (#1691) — staff only', () => {
   };
   const reader = {
     serviceMetrics: async () => [],
-    recentLogs: async () => [],
+    recentLogs: async () => ({ events: [], incomplete: false }),
     connectorCallsSeries: async (input: { hours: number; provider?: string }) => {
       asked.push(input);
       return [bucket];

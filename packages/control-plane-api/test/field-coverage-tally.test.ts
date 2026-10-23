@@ -388,7 +388,7 @@ describe('per-event reads never carry outputFields (#1923)', () => {
   });
 
   it('a service log line', async () => {
-    const events = await readerAnswering([line()]).recentLogs({ services: SERVICES, hours: 24, limit: 10 });
+    const { events } = await readerAnswering([line()]).recentLogs({ services: SERVICES, hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     carriesNoReport(events);
   });

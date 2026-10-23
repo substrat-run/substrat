@@ -154,8 +154,10 @@ describe('tenant tokens', () => {
           requests: 1,
           errors: 0,
         })),
-      recentLogs: async (input: { services?: string[] }) =>
-        (input.services ?? ['acme-app', 'rival-app']).map((service) => ({ service, message: 'hi' })),
+      recentLogs: async (input: { services?: string[] }) => ({
+        events: (input.services ?? ['acme-app', 'rival-app']).map((service) => ({ service, message: 'hi' })),
+        incomplete: false,
+      }),
     };
 
     beforeAll(async () => {

@@ -1914,7 +1914,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
 
   /**
    * The service-grain read: one walk per service, or one over none (the fleet view), merged
-   * newest first and cut to `limit`.
+   * newest first and cut to `limit`, and whether it stopped short (`RecentLogs.incomplete`).
    */
   async function queryEvents(
     services: ReadonlyArray<string | undefined>,
@@ -1968,7 +1968,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // instant, and the event id folds the overlap. A walk is read again only while its next page
     // could still reach the merged answer, so a read across many services pays for the fill only
     // where a service's page decides the answer's tail, and never more than `MAX_FILL_QUERIES`.
-    const walks = services.map((service) => ({ filters: filtersFor(service), until: to, more: false, oldest: 0 }));
+    //
+    // A read that stops while a walk could still hold a line for the answer says so (`incomplete`):
+    // a walk the bounds left unread, or a full page all of one instant, which no earlier window
+    // can cut past.
+    const walks = services.map((service) => ({ filters: filtersFor(service), until: to, more: false, stuck: false, oldest: 0 }));
     const kept = new Map<string, Record<string, unknown>>();
     const read = async (walk: (typeof walks)[number]) => {
       const { events, fetched, oldest } = await page(walk.filters, { from, to: walk.until });
@@ -1977,14 +1981,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         kept.set(typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e), e);
       }
       // More may exist only behind a full page, and only if an earlier window can be cut: a page
-      // all of one instant cannot be (and its window is spent as far as this read can tell).
+      // all of one instant cannot be, so the walk stops there, stuck rather than spent.
       walk.more = fetched >= limit && oldest !== null && oldest + 1 < walk.until;
+      walk.stuck = fetched >= limit && !walk.more;
       if (oldest !== null) walk.oldest = oldest;
       if (walk.more) walk.until = oldest! + 1;
     };
     const answer = () => [...kept.values()].sort((a, b) => rawTime(b) - rawTime(a)).slice(0, limit);
-    // Lines older than this may have a newer one behind a walk that was not read again.
+    // Lines older than this may have a newer one behind a walk the budget left unread.
     let floor = -Infinity;
+    let incomplete = false;
     let budget = MAX_FILL_QUERIES;
     let pending = walks;
     for (let round = 0; pending.length > 0; round++) {
@@ -1993,15 +1999,23 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // A walk's unread lines are no newer than its oldest read one, so it can change the answer
       // only while that line is not older than the answer's last (or the answer is short).
       const cutoff = merged.length < limit ? -Infinity : rawTime(merged[merged.length - 1]!);
-      const wanted = walks.filter((w) => w.more && w.oldest >= cutoff).sort((a, b) => b.oldest - a.oldest);
-      pending = round + 1 < MAX_FILL_ROUNDS ? wanted.slice(0, budget) : [];
+      const reaches = (w: (typeof walks)[number]) => w.oldest >= cutoff;
+      const wanted = walks.filter((w) => w.more && reaches(w)).sort((a, b) => b.oldest - a.oldest);
+      const roundsLeft = round + 1 < MAX_FILL_ROUNDS;
+      pending = roundsLeft ? wanted.slice(0, budget) : [];
       budget -= pending.length;
-      // A walk left unread caps the answer at its oldest line, so it is still a true prefix.
-      for (const w of wanted.slice(pending.length)) floor = Math.max(floor, w.oldest);
+      const unread = wanted.slice(pending.length);
+      // Left unread by the budget while others are read on: their older lines would sit beside
+      // lines this walk may still hold, so the answer stops at its oldest and stays a true prefix.
+      // A walk that ran out of rounds is not a floor: it was read as far as every other, and a
+      // floor from it would let one service whose pages are all wire lines empty the answer.
+      if (roundsLeft) for (const w of unread) floor = Math.max(floor, w.oldest);
+      incomplete = unread.length > 0 || walks.some((w) => w.stuck && reaches(w));
     }
-    return answer()
+    const events = answer()
       .filter((e) => rawTime(e) >= floor)
       .map((e) => projectEvent(e));
+    return { events, incomplete };
   }
 
   /**
