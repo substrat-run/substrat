@@ -123,7 +123,9 @@ function relay(
             controller.close();
             return;
           }
-          if (!value) return;
+          // A read that neither ends nor carries a chunk is a broken source: answering it by
+          // returning would leave the consumer's read waiting for a pull that never comes.
+          if (!value) throw new Error('the byte stream yielded a read with neither a chunk nor its end');
           size += value.byteLength;
           if (size > length) {
             throw new Error(`the byte stream carried more than the ${length} bytes it declared`);

@@ -11,6 +11,7 @@ import {
   knownLengthStream,
   putAttachmentBytes,
   type ByteStream,
+  type ByteStreamRead,
   type FetchLike,
   type IncrementalSha256,
   type TenantBlobStore,
@@ -149,6 +150,20 @@ describe('witnessedStream (#2498)', () => {
     const { stream } = producer(3);
     const witnessed = witnessedStream({ stream, length: 2 * CHUNK }, nodeSha256());
     await expect(drain(witnessed.body.stream)).rejects.toThrow(/more than the 131072 bytes it declared/);
+  });
+
+  it('a source read that carries neither a chunk nor its end errors the stream rather than hanging it', async () => {
+    // Structural, as ByteStream allows: one read with no value, then a byte.
+    const reads: ByteStreamRead[] = [{ done: false }, { done: false, value: new Uint8Array(1) }, { done: true }];
+    const source: ByteStream = {
+      getReader: () => ({ read: async () => reads.shift()!, cancel: async () => {}, releaseLock: () => {} }),
+    };
+    const reader = knownLengthStream({ stream: source, length: 1 }).getReader();
+    const outcome = await Promise.race([
+      reader.read().then(() => 'read', (e: unknown) => (e as Error).message),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 1_000)),
+    ]);
+    expect(outcome).toMatch(/neither a chunk nor its end/);
   });
 
   it('a declared length no stream can have is refused before a byte is read', () => {
