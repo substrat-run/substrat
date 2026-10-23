@@ -508,7 +508,8 @@ describe('dual, a call to the internal surface', () => {
 
     /** Envelopes for the scoped call that fail before the claim, each naming a scope in its unverified claims. */
     const refusedBeforeTheClaim: Array<[string, (body: string) => Promise<Record<string, string>>]> = [
-      ['missing', async () => ({})],
+      // The envelope names the scope, and its signature never came.
+      ['missing', async (body) => ({ [WIRE_ENVELOPE_HEADER]: (await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE }))[WIRE_ENVELOPE_HEADER]! })],
       [
         'signature',
         // The header names another scope; the signature is the genuine envelope's.
