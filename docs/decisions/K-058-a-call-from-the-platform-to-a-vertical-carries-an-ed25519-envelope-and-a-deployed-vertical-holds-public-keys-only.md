@@ -34,7 +34,7 @@ Which fields an (issuer, kind) pair carries is a closed table. The router signs 
 ## Evidence and limits
 
 - **Implemented and tested, step 0:** the primitives. `packages/contracts/src/wire-signing.ts` signs, parses and verifies, with positive and negative shared vectors under the RFC 8032 test keys in `packages/contracts/test/vectors/wire-envelope.json`, checked by node's own Ed25519 as well. Every guard was removed in turn, and a test failed each time.
-- **Implemented and tested, step 1:** the verifier in the platform's entry module (`packages/control-plane-api/platform-entry/wire-gate.ts`), with all three states and a `wire` line per judged request, inert until a deployment is given key lists, which no upload does yet. Run on workerd as uploaded. A version with no nonce store serves a valid legacy credential in `dual` and counts the fault (RFC §3.4).
+- **Implemented and tested, step 1:** the verifier in the platform's entry module (`packages/control-plane-api/platform-entry/wire-gate.ts`), with all three states and a `wire` line per judged request, inert until a deployment is given key lists, which no upload does yet. Run on workerd as uploaded. A fault of the version's own (no nonce store, or key lists that will not load) is counted in `dual` and the request handed on as it came, so `dual` refuses nothing new (RFC §3.4).
 - **Not built:** the signers, and the uploader's injection of the key lists and the capability record. Nor are the readiness report and its gates, the signers' release gate, the nonce store, the per-deployment values, or the up-channel removals. Each is a follow-on of the RFC (§10).
 
 ## Why

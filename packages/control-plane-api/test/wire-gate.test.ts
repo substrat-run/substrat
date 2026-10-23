@@ -361,7 +361,7 @@ describe('dual, a call to the internal surface', () => {
     expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', reason: null, legacy: 'valid' });
   });
 
-  it('the same call with no valid legacy credential beside it is the fixed 503, and the vertical never runs', async () => {
+  it('the same call with no valid legacy credential beside it goes on as it came, and the vertical’s own gate refuses it', async () => {
     for (const [legacy, credential] of [
       [{}, 'absent'],
       [{ [PLATFORM_SECRET_HEADER]: 'wrong' }, 'invalid'],
@@ -370,9 +370,9 @@ describe('dual, a call to the internal surface', () => {
       const body = JSON.stringify({ scopeId: SCOPE });
       const headers = { ...legacy, ...(await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE })) };
       const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body }), envOf('dual'));
-      expect(res.status).toBe(503);
-      expect(await res.text()).toBe(WIRE_FAULT_BODY);
-      expect(g.seen).toEqual([]);
+      expect(res.status).toBe(403);
+      expect(await res.text()).toBe('not a platform call');
+      expect(g.seen).toHaveLength(1);
       expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: credential });
     }
   });
@@ -535,13 +535,38 @@ describe('signed-only: the envelope alone decides', () => {
 });
 
 describe('the deployment’s own faults', () => {
-  it.each([
+  const badLists: Array<[string, () => Env]> = [
     ['a malformed key list', () => ({ [WIRE_ROUTER_KEYS_VAR]: 'not-a-key' })],
     ['a key listed for both issuers', () => ({ [WIRE_PLATFORM_KEYS_VAR]: keyLists.router })],
-  ])('%s is the fixed 503 in every request, never the legacy path', async (_, extra) => {
+  ];
+
+  it.each(badLists)('%s in dual is counted, and every request is served as it would be today', async (_, extra) => {
     const env = { ...envOf('dual'), ...extra() };
     const g = gated();
-    const res = await g.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), env);
+    // A route with a valid legacy credential: the very request, served, the fault counted for its tenant.
+    const routed = new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } });
+    expect((await g.fetch(routed, env)).status).toBe(200);
+    expect(g.seen[0]).toBe(routed);
+    // A call with a valid legacy credential, its body handed on unread.
+    const call = new Request(PROVISION, { method: 'POST', headers: { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(PROVISION, '{}')) }, body: '{}' });
+    expect((await g.fetch(call, env)).status).toBe(200);
+    expect(g.seen[1]).toBe(call);
+    // A request no legacy credential proves goes on as it came, to the vertical's own answer.
+    const bare = new Request(URL_ROUTE, { headers: await routeEnvelope() });
+    expect((await g.fetch(bare, env)).status).toBe(200);
+    expect(g.seen[2]).toBe(bare);
+    expect(await nodeOf((await g.fetch(new Request(URL_ROUTE, { headers: await routeEnvelope() }), env)))).toBeNull();
+    expect(g.wire().map((l) => [l.outcome, l.fault, l.legacy, l.tenantId])).toEqual([
+      ['fault', 'keys', 'valid', TENANT],
+      ['fault', 'keys', 'valid', null],
+      ['fault', 'keys', 'absent', null],
+      ['fault', 'keys', 'absent', null],
+    ]);
+  });
+
+  it.each(badLists)('%s in signed-only is the fixed 503, and the vertical never runs', async (_, extra) => {
+    const g = gated();
+    const res = await g.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), { ...envOf('signed-only'), ...extra() });
     expect(res.status).toBe(503);
     expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
     expect(await res.text()).toBe(WIRE_FAULT_BODY);

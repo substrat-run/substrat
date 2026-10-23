@@ -225,15 +225,19 @@ never falls back to the legacy path, in
 `dual` or otherwise, so a missing cache is an error the counters show, not a hole the flip later
 turns into an outage.
 
-One case is refined, not reversed: **a version that has no nonce store at all.** The store lives in
-the scope object (Q4), which is the vertical's own code, so a version built before it has none, and
-the re-upload of step 3 gives it the verifier without one. That absence is a fact about the version,
-not a failure of the request. So `dual` serves a valid legacy credential when the cache capability
-is statically absent; the fault is still counted, as `no-nonce-store`, and it blocks the flip. In
-`signed-only` it is the fixed 5xx. A store that exists and throws, or does not answer within a
+One case is refined, not reversed: **a fault that is a fact about the version or its settings,
+not a failure of the request.** There are two. A version may have **no nonce store at all**: the
+store lives in the scope object (Q4), which is the vertical's own code, so a version built before it
+has none, and the re-upload of step 3 gives it the verifier without one. And a deployment's **key
+lists may not load** (a malformed key, a key listed for both issuers): step 2 injects the same lists
+into every deployment of an environment, so a bad value there would otherwise answer every request
+of every deployment with the 5xx. In `dual` either is counted, as `no-nonce-store` or `keys`, and the
+request is handed on as it came, so `dual` still refuses nothing new: a valid legacy credential is
+served as today, and anything else meets the vertical's own checks. The count blocks the flip. In
+`signed-only` either is the fixed 5xx. A store that exists and throws, or does not answer within a
 second, is the 5xx in every state, as above. Until the store lands (§10, follow-on 5) no version has
-one, so every scoped call that changes state counts that fault, and no environment can pass §7's
-gate to `signed-only`.
+one, so every call that keeps nonces (§4) counts that fault, and no environment can pass §7's gate to
+`signed-only`.
 
 ### 3.5 Time
 
@@ -483,7 +487,7 @@ step 6, withdraws the credential.
 |---|---|---|---|
 | 0 | This PR: RFC, K-58 draft, primitives. Nothing wired. | delete the files | the envelope format and the plan |
 | 1 | The verifier, `dual`-capable, inert without key lists, in the platform's entry module (Q2) | revert the package | a pushed demo with no keys behaves exactly as before |
-| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record. The signers' `sign` flag on, `legacy` still on. Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused |
+| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused |
 | 3 | The fleet re-uploaded so every live version the entry wraps carries the verifier and the lists. Readiness report and tooling. A version uploaded without the entry is not reached by any re-upload, and is named in the report until its author pushes again (§7). | none needed: `dual` accepts legacy | the report is clean, or lists only named exceptions, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
 | 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included |
@@ -508,7 +512,9 @@ never rebuilt keeps the up-calls it was built with.
    calls. Legacy headers unchanged, `sign` flag per environment, default off.
 3. **The uploader** injects the key lists (standby keys included), the deployment's name, the
    state and the capability record, and
-   the key tool gains the two issuers.
+   the key tool gains the two issuers. It refuses a list `wireVerificationKeys` refuses before
+   injecting it, and gives an environment's lists to one canary deployment first. A list that
+   still will not load at a deployment is the counted `keys` fault (§3.4).
 4. **The fleet walk and readiness report**, with the gates on `signed-only` (standby keys listed,
    the cutover criterion, versions without the entry named), on dropping a key (and its
    break-glass path), and on withdrawing the shared credentials (both of §7's tests). The signers'

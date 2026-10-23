@@ -16,8 +16,9 @@
  * credential is valid is served exactly as today, and its envelope is only counted: accepted,
  * refused for a reason, or a disagreement between the two on who the request is for. One that
  * an envelope alone proves is served as the envelope says. One that neither proves goes on as it
- * came, and the vertical's own checks refuse it as they do now. In `signed-only` the envelope
- * alone decides, and every refusal is the same answer.
+ * came, and the vertical's own checks refuse it as they do now. A fault of the version's own (a
+ * key list that will not load, no nonce store) is counted and handed on the same way. In
+ * `signed-only` the envelope alone decides, and every refusal is the same answer.
  *
  * Every judged request writes one `{ substrat: 'wire' }` line (contracts'
  * `WireVerificationLine`), beside the invocation line and sharing its request id.
@@ -252,17 +253,31 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     };
 
     const legacy = legacyOf(request, call, env, options);
+    let downstream = request;
+    /**
+     * A fault that is a fact about this version or its settings, not a failure of this request: a
+     * key list that will not load, or no nonce store for a call that needs one. `dual` refuses
+     * nothing new, so it counts the fault and hands the request on as it came: a valid legacy
+     * credential is served as today, and anything else meets the vertical's own checks. Counted, it
+     * still keeps the version from passing the gate on `signed-only`, where there is no legacy path
+     * to hand it to, so the fault is answered.
+     */
+    const staticFault = (fault: WireFault, extra: Partial<WireVerificationLine> = {}) => {
+      if (state !== 'dual') return faulted(fault, legacy.credential);
+      line('fault', legacy.credential, { fault, ...extra });
+      return serve(downstream, env, ctx);
+    };
+
     let keys: WireVerificationKeys;
     try {
       keys = await keysFor(textOf(e[WIRE_ROUTER_KEYS_VAR]), textOf(e[WIRE_PLATFORM_KEYS_VAR]));
     } catch {
-      return faulted('keys', legacy.credential);
+      return staticFault('keys', servedAs(legacy.identity));
     }
 
     // A call binds its exact body (RFC §3.6), so the body is read whole before anything acts on
     // it, and the vertical is handed the same bytes.
     let body: ArrayBuffer | undefined;
-    let downstream = request;
     if (call && request.body !== null) {
       body = await request.arrayBuffer();
       downstream = new Request(request, { body });
@@ -301,14 +316,9 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       if (verdict.ok) claims = verdict.claims;
     } catch (error) {
       const fault = error instanceof GateFault ? error.fault : 'verifier';
-      // A store this version does not have is a fact about the version, not a failure of this
-      // request: `dual` still serves what the legacy credential proves, and the fault is counted,
-      // which keeps the version from passing the gate on `signed-only`. A store that exists and
-      // fails is the platform's failure in every state.
-      if (fault === 'no-nonce-store' && state === 'dual' && legacy.credential === 'valid') {
-        line('fault', 'valid', { fault });
-        return serve(downstream, env, ctx);
-      }
+      // A store this version does not have is a static fault. A store that exists and fails is the
+      // platform's failure in every state.
+      if (fault === 'no-nonce-store') return staticFault(fault, servedAs(legacy.identity));
       return faulted(fault, legacy.credential);
     }
 
