@@ -338,6 +338,10 @@ describe('the request-rollup phase', () => {
     for (let n = 5; n < 9; n++) between.push(await pass(n));
     expect(between.map((p) => p.asked)).toEqual([0, 0, 0, 1]);
     expect(between.map((p) => p.errors.length)).toEqual([0, 0, 0, 1]);
+    // Until then, the old run as the ledger holds it: its start, and both attempts.
+    expect(between.slice(0, 3).map((p) => p.rollup.streak)).toEqual(
+      Array(3).fill({ error: 'Cloudflare Analytics Engine query failed: HTTP 403 Authentication error', since: at(0), failures: 2 }),
+    );
     expect(between[3]!.rollup.streak).toEqual({ error, since: at(8), failures: 1 });
     const after = await pass(9);
     expect(after.errors).toEqual([]);
