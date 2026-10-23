@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: kernel
-description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves five forks to a human.
+description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves five forks to a human. Partly answered 2026-10-23: Microsoft 365 channel files (#2353) are file source #1, Q3 is overtaken, Q4 is keep, and Q1 with the facet waits for a second provider.
 ---
 
 # RFC: file-bearing sources
@@ -10,6 +10,25 @@ description: A connector shape for sources that hold files rather than records (
 [#1578](https://github.com/substrat-run/substrat/issues/1578), which asks whether the connector
 framework survives a second shape. It recommends; a human decides. The decisions it asks for
 are §9, and they are open: the recommendation in §5 is one answer to Q1, not the answer.
+
+> **Where it stands (2026-10-23).** The maintainer answered part of §9; the rest waits.
+>
+> - **The first implementation exists.** Microsoft 365 channel files shipped in #2353
+>   (2026-10-17) on Q3's "don't wait" branch: delta token in connector state, its own fence and
+>   its own bind. It is file source #1 and the reference shape
+>   ([connections.md §6.3](../architecture/connections.md#63-file-bearing-sources-the-reference-shape)).
+> - **Q3 is overtaken** by #2353.
+> - **Q4 is decided: keep.** Unbinding stops updates and leaves the landed rows and attachments.
+> - **Q1 is deferred**, and with it the `FileSource` facet and the job-run bridge (§10 steps
+>   2–4). Both are extracted from two real implementations, not one. Q1 is decided when one of
+>   these happens: a second file-bearing provider is committed; a vertical needs the freshness
+>   of its own mirror; or the Microsoft 365 check against a large library (its QA step 7) shows
+>   the current approach cannot finish a first sync.
+> - **To build now, ahead of the facet:** streams (§10 step 1, §6), which are additive and remove
+>   the per-file memory ceiling; and provider-neutral vertical-facing change and write schemas,
+>   the Microsoft 365 vocabulary re-exported from `@substrat-run/contracts` under neutral names
+>   while it has no live adopters.
+> - Q2 and Q5 stay open. No decision record is written until Q1 is decided.
 
 Written against `origin/main` at `c95e6d73a`. References are to sections and symbols, not
 lines.

@@ -146,6 +146,20 @@ gates: `pnpm lint:secret-literals` · judgement
 
 gates: `pnpm lint:tests` · `pnpm lint:operation-tests --base <ref>` · judgement
 
+### S9 · A runtime extension acts as a capability, never as the user: blocking
+
+Code a vertical's end users install at runtime (a sandboxed iframe talking to the page through
+a message bridge) acts only as an `act` capability the vertical mints for it
+(`ctx.capabilities.mint`), narrowed to the entity, keys and operations it needs (K-56).
+
+- *Gate:* none. No script can tell a bridge from any other `postMessage` handler.
+- *Reader:* a bridge that hands the extension the user's session, cookie or token; a page that
+  forwards an extension's requests to the API under the signed-in user; a capability minted
+  wider than the extension needs (a scope-wide key, every operation, no entity). The bridge's
+  message format is the vertical's own and is not a finding.
+
+gates: judgement
+
 ## Not listed here
 
 Event, clock and id rules (fat events, `ctx.now()`, `ulid()`, money as strings) and catching

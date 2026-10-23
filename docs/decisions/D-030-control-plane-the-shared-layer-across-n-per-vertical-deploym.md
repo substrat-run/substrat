@@ -10,6 +10,15 @@ tracking: []
 ---
 # D-30 — Control plane = the shared layer across N per-vertical deployments; billing deferred
 
+> **Note 2026-10-23 on meter 3 ([#39](https://github.com/substrat-run/substrat/issues/39)); the
+> decision stands and its text is kept as decided.** "Meters 3 and 4 are uncomputable" is no
+> longer true of meter 3. Storage is a stored daily gauge (#1524), model usage is a drained ledger
+> (D-59 amends this record for it), and every row shipped to the lake carries its `bytes`, summed
+> per tenant. Exact API-call counts are still not computable: reads emit nothing on the spine,
+> and the router's request datapoints are sampled. "Meter, don't bill" holds, and pricing,
+> dunning and the payment rail wait for a commercial decision. The current state is
+> [control-plane.md §5](../architecture/control-plane.md#5-billing-meter-do-not-bill).
+
 **Control plane = the shared layer across N per-vertical deployments; billing deferred** ([design/control-plane.md](../architecture/control-plane.md), K-20). §5.5's one-deployment-per-vertical is a *versioning and blast-radius* boundary, not duplicated platform: routing, custom hostnames, tenancy, identity, entitlements, and the Tier-2 sink are already kernel-owned and shared — the **only** per-vertical thing is the scope-DO class (the app binary). Merging the DO classes is **rejected**: it makes migrations globally ordered across unrelated verticals, merges blast radius, and forces **lockstep engine upgrades across verticals owned by different companies**. Build four things the directory was specified to hold and does not: a real `tenants` table, the §3.3 lifecycle transitions (un-archive stays a restore), an **entitlement store that finally reads `manifest.entitlementKey`**, and a `PlatformActor` + append-only **admin audit log** on every mutation (wrapping `HostAdmin`'s five unaudited methods). The admin's **effecting** half (provision/suspend/entitlements/admin-query RPC) is out-of-band host code and can never be module code (K-8: no raw DO binding — an admin vertical would be *impotent*, not dangerous); its **record-keeping** half *can* be a vertical in a platform tenant, deferred to the second vertical. Console is thin over these and is the home for the permission-diff human checkpoint. **Billing: meter, don't bill** — meters 1 (active scopes) and 2 (entitlements) fall out free; 3 and 4 are uncomputable today. Auth gates *exposing* the console, not building it
 
 ## Why
