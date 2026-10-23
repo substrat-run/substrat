@@ -11088,7 +11088,7 @@ export function scopeHostContractSuite(
         await expect(host.admin.pruneRequestDays!(staff, 10, 0)).rejects.toThrow(/whole number of months/);
       });
 
-      it('the sweep phase rolls up due days into this directory, and retries a failed day only after an hour', async () => {
+      it('the sweep phase rolls up due days into this directory, stops at a failed day, and retries it only after an hour', async () => {
         // Days far from every other test's, so the fleet-wide record of a day is this test's alone.
         const now = '2031-05-10T12:00:00.000Z';
         const t = ids();
@@ -11104,28 +11104,28 @@ export function scopeHostContractSuite(
             now: () => nowIso,
             read: async (day: string) => {
               asked.push(day);
-              if (day === failing) throw new Error('saturated: the counts would be partial');
+              if (day === failing) throw new Error('Cloudflare Analytics Engine query failed: HTTP 503');
               return [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: Number(day.slice(-2)), sampled: false }];
             },
           },
         });
 
+        // The failed day ends the pass's reads: the day after it is left for the next pass.
         const first = await runPlatformSweep(host, options(now));
-        expect(asked).toEqual(['2031-05-07', '2031-05-08', '2031-05-09']);
-        expect(first.requestRollup).toMatchObject({ due: 3, read: 2, failed: 1, recorded: 2 });
+        expect(asked).toEqual(['2031-05-07', '2031-05-08']);
+        expect(first.requestRollup).toMatchObject({ due: 3, read: 1, failed: 1, recorded: 1 });
         expect(first.errors.filter((e) => e.kind === 'request-rollup')).toEqual([
-          { kind: 'request-rollup', id: '2031-05-08', error: expect.stringMatching(/saturated/) },
+          { kind: 'request-rollup', id: '2031-05-08', error: expect.stringMatching(/HTTP 503/) },
         ]);
         expect((await host.admin.listRequestDays!(staff, { tenantId: t.tenant })).map((r) => [r.day, r.requests])).toEqual([
           ['2031-05-07', 7],
-          ['2031-05-09', 9],
         ]);
 
-        // Inside the hour nothing is read again.
+        // Inside the hour the failed day is not read again; the day after it is.
         failing = '';
         const soon = await runPlatformSweep(host, options('2031-05-10T12:30:00.000Z'));
-        expect(soon.requestRollup).toMatchObject({ due: 0, read: 0 });
-        expect(asked).toHaveLength(3);
+        expect(soon.requestRollup).toMatchObject({ due: 1, read: 1 });
+        expect(asked.slice(2)).toEqual(['2031-05-09']);
 
         // An hour on, the failed day is read, and only it.
         const later = await runPlatformSweep(host, options('2031-05-10T13:00:00.000Z'));

@@ -731,7 +731,8 @@ export interface StorageGaugeSweepReport {
  * A day is due once it ended at least `settleMs` ago, lies within `lookbackDays`, has no
  * successful read, and was never tried or last tried at least `retryMs` ago. The oldest due day
  * goes first, since it is the next one Analytics Engine ages out. A read that succeeds replaces
- * the day's rows; one that fails writes nothing of the day and records the error as its attempt.
+ * the day's rows; one that fails writes nothing of the day, records the error as its attempt, and
+ * ends the pass's reads, so a standing failure costs one query a pass, not a batch.
  */
 export interface RequestRollupSweepOptions {
   /**
@@ -768,9 +769,14 @@ export interface RequestRollupSweepReport {
   due: number;
   /** Due days left for a later pass because the batch was full. */
   deferred: number;
-  /** Days read and recorded, and days whose read or record failed. */
+  /** Days read and recorded, and days whose read or record failed. A failure ends the pass's reads, so `failed` is 0 or 1. */
   read: number;
   failed: number;
+  /**
+   * Failures that repeated the previous attempt's error: a standing failure, in `errors` only on
+   * the pass its streak began. Cleared by the next read that succeeds.
+   */
+  repeated: number;
   /** Rows the read days wrote. */
   recorded: number;
   /** Day rows past retention deleted. */
@@ -2866,8 +2872,10 @@ async function sweepStorageGauge(
 
 /**
  * One pass of the request-rollup phase (#2501): read the oldest due days one at a time, record
- * each day's counts or its failure, then prune past retention. A failed day is an error entry,
- * writes nothing of the day, and waits `retryMs` like any other attempt.
+ * each day's counts or its failure, then prune past retention. A failed day writes nothing of the
+ * day, waits `retryMs` like any other attempt, and ends the pass's reads: the days after it stay
+ * due. A failure that repeats the previous attempt's is a standing one (a credential, a dataset
+ * name, an outage), reported when its streak began and not again until a read succeeds.
  */
 async function sweepRequestRollup(
   admin: HostAdmin,
@@ -2875,16 +2883,26 @@ async function sweepRequestRollup(
   rollup: RequestRollupSweepOptions,
   report: PlatformSweepReport,
 ): Promise<RequestRollupSweepReport> {
-  const out: RequestRollupSweepReport = { due: 0, deferred: 0, read: 0, failed: 0, recorded: 0, pruned: 0 };
+  const out: RequestRollupSweepReport = { due: 0, deferred: 0, read: 0, failed: 0, repeated: 0, recorded: 0, pruned: 0 };
   const batch = rollup.batch ?? REQUEST_ROLLUP_DAYS_PER_PASS;
   const months = rollup.retentionMonths === undefined ? BILLING_ROLLUP_RETENTION_MONTHS : rollup.retentionMonths;
   const now = rollup.now ?? (() => new Date().toISOString());
   try {
     const nowMs = Date.parse(now());
     if (batch > 0) {
+      const reads = await admin.listRequestRollupDays!(actor);
+      // The error of the newest attempt before this pass, null when it succeeded or none was made.
+      let previousError: string | null = null;
+      let newest = '';
+      for (const r of reads) {
+        if (r.attemptedAt > newest) {
+          newest = r.attemptedAt;
+          previousError = r.error;
+        }
+      }
       const due = requestRollupDueDays({
         nowMs,
-        reads: await admin.listRequestRollupDays!(actor),
+        reads,
         lookbackDays: rollup.lookbackDays ?? REQUEST_ROLLUP_LOOKBACK_DAYS,
         settleMs: rollup.settleMs ?? REQUEST_ROLLUP_SETTLE_MS,
         retryMs: rollup.retryMs ?? REQUEST_ROLLUP_RETRY_MS,
@@ -2904,12 +2922,20 @@ async function sweepRequestRollup(
           );
           out.recorded += (await admin.recordRequestDay!(actor, { day, attemptedAt: now(), counts })).recorded;
           out.read += 1;
+          previousError = null;
         } catch (err) {
+          const error = message(err);
           out.failed += 1;
-          report.errors.push({ kind: 'request-rollup', id: day, error: message(err) });
+          // A standing failure goes into the failure digest when its streak begins, not on every
+          // pass it lasts. Its days still record each attempt, so the ledger shows it throughout.
+          if (error === previousError) out.repeated += 1;
+          else report.errors.push({ kind: 'request-rollup', id: day, error });
           // The failure is the day's attempt, so the day waits `retryMs` rather than taking a slot
           // on every pass. If even this write fails, the day is simply due again next pass.
-          await admin.recordRequestDay!(actor, { day, attemptedAt: now(), error: message(err) }).catch(() => undefined);
+          await admin.recordRequestDay!(actor, { day, attemptedAt: now(), error }).catch(() => undefined);
+          // The next day would most likely fail the same way, and each read is a fleet-wide query
+          // against the account's shared budget: one failure ends the pass's reads.
+          break;
         }
       }
     }

@@ -141,7 +141,7 @@ describe('the request-rollup phase', () => {
 
     const first = await sweep(host, options);
     expect(asked).toEqual(['2026-10-19', '2026-10-20']);
-    expect(first.requestRollup).toEqual({ due: 4, deferred: 2, read: 2, failed: 0, recorded: 2, pruned: 0 });
+    expect(first.requestRollup).toEqual({ due: 4, deferred: 2, read: 2, failed: 0, repeated: 0, recorded: 2, pruned: 0 });
     expect(first.errors).toEqual([]);
 
     const second = await sweep(host, options);
@@ -182,6 +182,60 @@ describe('the request-rollup phase', () => {
     const later = await sweep(host, options('2026-10-23T13:00:00.000Z'));
     expect(later.requestRollup).toMatchObject({ due: 1, read: 1, failed: 0, recorded: 1 });
     expect(reads.get('2026-10-22')).toMatchObject({ readAt: '2026-10-23T13:00:00.000Z', error: null });
+  });
+
+  it('ends the pass at the first failed read, and reports a standing failure once per streak', async () => {
+    const { host, recorded } = rollupHost();
+    let failing = true;
+    const asked: string[] = [];
+    const read = async (day: string) => {
+      asked.push(day);
+      if (failing) throw new Error('Cloudflare Analytics Engine query failed: HTTP 403 Authentication error');
+      return [count(1)];
+    };
+    // A pass every fifteen minutes, with the defaults, against a credential that cannot read.
+    const at = (pass: number) => new Date(Date.parse(NOW) + pass * 15 * 60_000).toISOString();
+    const passes = [];
+    for (let pass = 0; pass < 12; pass++) {
+      const before = asked.length;
+      const report = await sweep(host, { read, now: () => at(pass) });
+      passes.push({ asked: asked.length - before, errors: report.errors.length, rollup: report.requestRollup });
+    }
+    // One query a pass, never a batch of seven.
+    expect(passes.map((p) => p.asked)).toEqual(Array(12).fill(1));
+    // In the digest once, when the streak began; counted, not mailed, on the eleven passes after.
+    expect(passes.map((p) => p.errors)).toEqual([1, ...Array(11).fill(0)]);
+    expect(passes.slice(1).every((p) => p.rollup?.failed === 1 && p.rollup.repeated === 1)).toBe(true);
+    // Every attempt is still recorded, so the ledger shows the failure throughout. The hour's
+    // retry spacing cycles them over four days: the oldest is due again on the fifth pass.
+    expect(recorded.filter((r) => 'error' in r)).toHaveLength(12);
+    expect(new Set(recorded.map((r) => r.day)).size).toBe(4);
+
+    // A read that succeeds ends the streak, and the batch goes on past it.
+    failing = false;
+    const recovered = await sweep(host, { read, now: () => at(12) });
+    expect(recovered.errors).toEqual([]);
+    expect(recovered.requestRollup).toMatchObject({ read: 7, failed: 0, repeated: 0 });
+    // So the same failure afterwards is a new streak, and is reported again.
+    failing = true;
+    const again = await sweep(host, { read, now: () => at(13) });
+    expect(again.errors).toEqual([{ kind: 'request-rollup', id: expect.any(String), error: expect.stringMatching(/HTTP 403/) }]);
+    expect(again.requestRollup).toMatchObject({ failed: 1, repeated: 0 });
+  });
+
+  it('reports a different failure as a new streak', async () => {
+    const { host } = rollupHost();
+    let error = 'HTTP 403';
+    const read = async () => {
+      throw new Error(error);
+    };
+    const at = (pass: number) => new Date(Date.parse(NOW) + pass * 15 * 60_000).toISOString();
+    expect((await sweep(host, { read, now: () => at(0) })).errors).toHaveLength(1);
+    expect((await sweep(host, { read, now: () => at(1) })).errors).toHaveLength(0);
+    error = 'the request rollup read took longer than 30000 ms';
+    expect((await sweep(host, { read, now: () => at(2) })).errors).toEqual([
+      { kind: 'request-rollup', id: expect.any(String), error },
+    ]);
   });
 
   it('runs after every other phase, and a read that never settles fails its day without holding the pass', async () => {
