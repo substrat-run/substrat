@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { instant, platformActorId, type MeterDayTake, type ScopeStatus, type TenantId, type TenantStatus } from '@substrat-run/contracts';
+import { instant, platformActorId, type ScopeStatus, type TenantId, type TenantStatus } from '@substrat-run/contracts';
 import { runPlatformSweep, type MeterSnapshotSweepOptions, type PlatformSweepOptions } from '../src/platform-sweep.js';
 import {
   METER_DAYS_PRUNE_BATCH,
@@ -148,7 +148,11 @@ describe('taking a snapshot', () => {
 function snapshotHost(
   opts: { snapshot?: boolean; take?: (at: string) => Promise<number>; failList?: boolean; staleList?: boolean; order?: string[] } = {},
 ) {
-  const takes = new Map<string, MeterDayTake>();
+  // A day's record as the directory's columns hold it: plain strings, as the fake is handed them.
+  const takes = new Map<
+    string,
+    { day: string; attemptedAt: string; takenAt: string | null; tenants: number | null; error: string | null; failingSince: string | null; failingCount: number | null }
+  >();
   const recorded: MeterDayTakeInput[] = [];
   /** Every call that asked the directory to take a snapshot, whatever it answered. */
   const asked: string[] = [];
