@@ -50,6 +50,15 @@ const fixture = JSON.parse(readFileSync(new URL('./vectors/wire-envelope.json', 
   readonly maxLifetimeSeconds: number;
   readonly keys: Record<WireIssuer, { readonly privateKeyPkcs8: string; readonly publicKey: string; readonly kid: string }>;
   readonly vectors: readonly Vector[];
+  readonly invalid: readonly {
+    readonly name: string;
+    readonly header: string;
+    readonly signature: string;
+    readonly expected: Record<string, unknown>;
+    readonly now: number;
+    readonly reason: WireRefusalReason;
+  }[];
+  readonly invalidKeyLists: readonly { readonly name: string; readonly router?: string; readonly platform?: string }[];
 };
 const storeVector = JSON.parse(readFileSync(new URL('./vectors/scope-store-envelope.json', import.meta.url), 'utf8')) as {
   readonly canonical: string;
@@ -180,6 +189,25 @@ describe('wire envelope: the shared vectors', () => {
       expect(lines[11]).toBe(vector.input.body === undefined ? '' : createHash('sha256').update(vector.input.body as string, 'utf8').digest('hex'));
       const { verdict } = await check({ vector });
       expect(verdict, vector.name).toEqual({ ok: true, claims: parseWireEnvelope(vector.canonical) });
+    }
+  });
+
+  it('refuses every negative vector for the reason it names, and every invalid key list at load', async () => {
+    expect(fixture.invalid.length).toBeGreaterThanOrEqual(15);
+    const keys = await keysOf();
+    for (const v of fixture.invalid) {
+      const reasons: WireRefusalReason[] = [];
+      const expected = (v.expected.kind === 'call' ? { ...v.expected, replay: 'none' } : v.expected) as WireExpectation;
+      const verdict = await verifyWireEnvelope({ headers: headersOf(v.header, v.signature), keys, expected, nowSeconds: v.now, onRefusal: (r) => reasons.push(r) });
+      expect(verdict, v.name).toBe(WIRE_REFUSED);
+      expect(reasons, v.name).toEqual([v.reason]);
+    }
+    // S + L is refused by node's own Ed25519 too, so the vector is not just this module's opinion.
+    const malleable = fixture.invalid.find((v) => v.name.startsWith('S + L'))!;
+    const publicKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: fixture.keys.router.publicKey }, format: 'jwk' });
+    expect(nodeVerify(null, Buffer.from(malleable.header, 'base64url'), publicKey, Buffer.from(malleable.signature, 'base64url'))).toBe(false);
+    for (const list of fixture.invalidKeyLists) {
+      await expect(wireVerificationKeys(list), list.name).rejects.toThrow();
     }
   });
 
