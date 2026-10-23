@@ -378,7 +378,7 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   readStorage = (tenantId: TenantId, cursor?: ScopeId): Promise<StorageMeterReading> =>
     this.call(`/meters/storage${query({ tenantId, cursor })}`);
   // Requests (#2501): the stored daily request counts per (tenant, vertical, scope) over an
-  // inclusive window of UTC days (the last thirty by default), and which of those days the
+  // inclusive window of UTC days (by default the 31 days ending today), and which of those days the
   // rollup has read. Every count is an estimate. Omit `tenantId` for the fleet.
   readRequestRollup = (
     q: { tenantId?: TenantId; scopeId?: ScopeId; vertical?: string; since?: string; until?: string; limit?: number } = {},

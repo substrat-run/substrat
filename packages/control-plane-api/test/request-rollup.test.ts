@@ -312,7 +312,7 @@ describe('the rollup end to end, and GET /meters/requests (#2501)', () => {
     });
   });
 
-  it('narrows by tenant, vertical and scope, defaults to the thirty days to today, and says when a page is cut short', async () => {
+  it('narrows by tenant, vertical and scope, defaults to the 31 days ending today, and says when a page is cut short', async () => {
     const by = async (q: string) => (await (await app.request(`/meters/requests?since=2026-10-01&until=2026-10-31&${q}`, { headers: asStaff })).json()).rows;
     expect((await by(`tenantId=${B}`)).map((r: { scopeId: string }) => r.scopeId)).toEqual([S2]);
     expect(await by('vertical=acme-crm')).toHaveLength(2);

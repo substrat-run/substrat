@@ -2408,7 +2408,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         until: c.req.query('until') || undefined,
         limit: c.req.query('limit') || undefined,
       });
-    // Thirty days back from `until` unless a window is named.
+    // Unless a window is named, the 31 days ending at `until`, both ends included.
     const since = q.since ?? new Date(Date.parse(`${q.until}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
     if (since > q.until) return refuse(c, 'validation_failed', '`since` is after `until`');
     const actor = c.get('actor');

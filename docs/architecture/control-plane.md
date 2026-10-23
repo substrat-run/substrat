@@ -1382,8 +1382,8 @@ than that, so the scheduled pass keeps a compact copy.
   may be a prefix of the day, so it is refused rather than kept as the whole day. A malformed
   count refuses the whole day too.
 - **A day without traffic is not a day not yet read.** `GET /meters/requests` (staff-only)
-  serves the rows over an inclusive window of days, the last thirty by default, together with
-  the record of each day in the window, so a surface can tell the two apart.
+  serves the rows over an inclusive window of days (by default the 31 days ending today),
+  together with the record of each day in the window, so a surface can tell the two apart.
 - **Kept for the billing horizon.** The day rows follow `BILLING_ROLLUP_RETENTION_MONTHS`.
   Until the maintainer's bookkeeping sets that horizon it is `null` and nothing is pruned:
   keeping everything is the reversible default, since a pruned row cannot come back. No
