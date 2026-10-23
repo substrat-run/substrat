@@ -565,6 +565,72 @@ describe('signed-only: the envelope alone decides', () => {
   });
 });
 
+describe('time, and the counter, as the gate holds them', () => {
+  const scopedHeaders = async () => ({ [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(PROVISION, '{}', { tenantId: TENANT, scopeId: SCOPE })) });
+
+  it('judges the envelope’s window at arrival, whatever the clock reads afterwards', async () => {
+    let reads = 0;
+    const g = gated({ clock: () => (reads++ === 0 ? NOW : NOW + 1000) * 1000 });
+    await g.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), envOf('dual'));
+    expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted', reason: null });
+    // Its twin: the same envelope on a request that arrives that late is expired.
+    const late = gated({ clock: () => (NOW + 1000) * 1000 });
+    await late.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), envOf('dual'));
+    expect(late.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'expired' });
+  });
+
+  it('a body slow enough to outlast the window is refused at the claim, never claimed, never read as expired', async () => {
+    let now = NOW;
+    const claim = vi.fn<WireNonceCache['claim']>(() => true);
+    const g = gated({ clock: () => now * 1000, nonceCache: () => ({ claim }) });
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          now = NOW + 200;
+          controller.enqueue(new TextEncoder().encode('{}'));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    await g.fetch(new Request(PROVISION, { method: 'POST', headers: await scopedHeaders(), body, duplex: 'half' } as RequestInit), envOf('dual'));
+    expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'claim-after-until' });
+    expect(claim).not.toHaveBeenCalled();
+  });
+
+  it('gives a nonce claim one second by default, and no longer', async () => {
+    let reached!: () => void;
+    const claimed = new Promise<void>((resolve) => (reached = resolve));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const g = gated({ nonceCache: () => ({ claim: () => (reached(), new Promise<boolean>(() => {})) }) });
+      let settled = false;
+      const pending = g.fetch(new Request(PROVISION, { method: 'POST', headers: await scopedHeaders(), body: '{}' }), envOf('dual'));
+      void pending.then(() => (settled = true));
+      await claimed;
+      await vi.advanceTimersByTimeAsync(WIRE_CLAIM_TIMEOUT_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect((await pending).status).toBe(503);
+      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
+      expect(WIRE_CLAIM_TIMEOUT_MS).toBe(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a counter that throws never fails the request, in dual or in signed-only', async () => {
+    const throwing = { log: () => { throw new Error('the sink is down'); } };
+    const dual = gated(throwing);
+    expect((await dual.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), envOf('dual'))).status).toBe(200);
+    const signedOnly = gated(throwing);
+    const refused = await signedOnly.fetch(new Request(URL_ROUTE, { headers: legacyRoute() }), envOf('signed-only'));
+    expect(refused.status).toBe(401);
+    expect(await refused.text()).toBe(WIRE_REFUSAL_BODY);
+  });
+});
+
 describe('a call’s body is read only once its envelope has passed every cheaper check', () => {
   /** A call whose body never arrives, recording whether anything asked for it. */
   function stalledCall(headers: Record<string, string>) {
