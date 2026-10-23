@@ -257,12 +257,12 @@ describe('a page is as full as it would be without the wire line', () => {
 
     describe('across many services', () => {
       const SERVICES = Array.from({ length: 20 }, (_, s) => `acme-widgets-v${s}`);
-      /** 200 lines a service, interleaved in time across services, the `i`th a wire line when `wire(i)`. */
-      const fleet = (wire: (i: number) => boolean): Line[] =>
+      /** 200 lines a service, interleaved in time across services, the `i`th of service `s` a wire line when `wire(i, s)`. */
+      const fleet = (wire: (i: number, s: number) => boolean): Line[] =>
         SERVICES.flatMap((service, s) =>
           Array.from({ length: 200 }, (_, i): Line => {
             const at = now - 10_000_000 + i * 100 + s;
-            const own = !wire(i);
+            const own = !wire(i, s);
             return {
               timestamp: at,
               source: own ? { message: `line ${i}` } : wireLine(`req-${s}-${i}`).source,
@@ -286,8 +286,11 @@ describe('a page is as full as it would be without the wire line', () => {
       });
 
       it('fills a short merged page with at most MAX_FILL_QUERIES more queries, and answers a true prefix of the newest page', async () => {
-        // Almost every line a wire line: the first round leaves the merged page short, so every service wants more.
-        const lines = fleet((i) => i % 50 !== 0);
+        // Almost every line a wire line, so the first round leaves the merged page short and every
+        // service wants more. The 8 read again first (the newest oldest lines, s 19 to 12) reach back
+        // to a very old line of their own (i = 1), past the newer ones the 12 left unread still hold
+        // (i = 75, 25): an answer that took it would not be the newest page's prefix.
+        const lines = fleet((i, s) => (s >= 12 ? i !== 100 && i !== 1 : i % 50 !== 25));
         const { reader, queries } = backend(() => lines);
         const answer = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
         expect(queries.length).toBe(SERVICES.length + 8);
