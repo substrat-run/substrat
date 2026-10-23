@@ -10,6 +10,7 @@ import {
   slug,
   tenantId,
   auditOperationId,
+  verticalSlug,
 } from './ids.js';
 // #36's tenant export speaks the platform's own vocabulary rather than restating it, so
 // it composes the schemas that already define these shapes. One-way imports only —
@@ -1874,6 +1875,93 @@ export const scopeStorageSample = z.object({
   readAt: instant,
 });
 export type ScopeStorageSample = z.infer<typeof scopeStorageSample>;
+
+/** A UTC day that exists, `YYYY-MM-DD`: `2026-02-30` is refused, not read as another day. */
+export const utcDay = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((day) => {
+    const ms = Date.parse(`${day}T00:00:00Z`);
+    return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === day;
+  }, 'not a UTC day');
+
+/**
+ * Where the router writes each field of its per-request Analytics Engine datapoint
+ * (`apps/router/src/worker.ts`, `record`). The order is a published shape: it only grows, and
+ * no ordinal is ever reordered, renamed or reused, so a reader can name the column it wants.
+ * Every reader of the router's dataset, and the router's own test, take the ordinals from here.
+ */
+export const ROUTER_REQUEST_POINT = {
+  tenantId: 'index1',
+  vertical: 'blob1',
+  scopeId: 'blob2',
+  surface: 'blob3',
+  statusClass: 'blob4',
+  rayId: 'blob5',
+  operation: 'blob6',
+  problemCode: 'blob7',
+  principalKind: 'blob8',
+  level: 'blob9',
+  durationMs: 'double1',
+  status: 'double2',
+} as const;
+
+/**
+ * One day of one scope's requests through the router (#2501), kept for billing.
+ *
+ * The count is an ESTIMATE, always. It is read from the router's Analytics Engine datapoints,
+ * which are kept three months and sampled under load, as `sum(_sample_interval)`, never
+ * `count()`. `estimated` is always true so no consumer can mistake the figure for an exact
+ * count; `sampled` says whether Analytics Engine actually reweighted any of the day's
+ * datapoints (false means every datapoint of the day survived).
+ *
+ * Kept for `BILLING_ROLLUP_RETENTION_MONTHS` in the kernel. Counts only, no request content.
+ */
+export const requestDay = z.object({
+  day: utcDay,
+  tenantId,
+  /** The vertical the router resolved, or null when the request resolved to none. */
+  vertical: verticalSlug.nullable(),
+  scopeId,
+  requests: z.number().int().nonnegative(),
+  sampled: z.boolean(),
+  estimated: z.literal(true),
+});
+export type RequestDay = z.infer<typeof requestDay>;
+
+/**
+ * The rollup's record of one UTC day (#2501): whether its requests were read, and when. A day
+ * with no entry here, or with only a failed attempt, has not been rolled up, so its absence of
+ * rows says nothing. A day rolled with zero rows had no traffic.
+ */
+export const requestRollupDay = z.object({
+  day: utcDay,
+  /** The last attempt to read the day. */
+  attemptedAt: instant,
+  /** When the day was last read successfully; null while no read has succeeded. */
+  readAt: instant.nullable(),
+  /** How many rows that successful read recorded; null while none has succeeded. */
+  rows: z.number().int().nonnegative().nullable(),
+  /** Why the last attempt failed; null when it succeeded. */
+  error: z.string().nullable(),
+});
+export type RequestRollupDay = z.infer<typeof requestRollupDay>;
+
+/**
+ * `GET /meters/requests` (#2501): the stored daily request counts over an inclusive window of
+ * UTC days, and the rollup's record of each day in it, so a surface can tell a day without
+ * traffic from a day not yet rolled up. Every count is an estimate (`requestDay`).
+ */
+export const requestRollupReading = z.object({
+  estimated: z.literal(true),
+  since: utcDay,
+  until: utcDay,
+  rows: z.array(requestDay),
+  /** True when `rows` stopped at the row limit, so the window holds more than was returned. */
+  truncated: z.boolean(),
+  days: z.array(requestRollupDay),
+});
+export type RequestRollupReading = z.infer<typeof requestRollupReading>;
 
 /** Meter 1, per tenant: the scopes under it, and how many SKUs it holds. */
 export const tenantMeterRow = z.object({

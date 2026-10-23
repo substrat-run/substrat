@@ -10934,6 +10934,211 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- the daily request rollup (#2501) ----------------------------------------
+
+    describe('the daily request rollup (#2501)', () => {
+      // Each test owns its days, because the rollup's record of a day is fleet-wide.
+      const dayAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+      const monthsAgo = (m: number) => {
+        const d = new Date();
+        d.setUTCMonth(d.getUTCMonth() - m);
+        return d.toISOString().slice(0, 10);
+      };
+      const at = (day: string, time: string) => `${day}T${time}.000Z`;
+      const ids = () => ({ tenant: tenantId.parse(ulid()), scope: scopeId.parse(ulid()) });
+
+      it('keeps one row per (day, tenant, vertical, scope), every count an estimate, and a later read replaces the day', async () => {
+        const day = dayAgo(2);
+        const [a, b] = [ids(), ids()];
+        expect(
+          await host.admin.recordRequestDay!(staff, {
+            day,
+            attemptedAt: at(day, '23:00:00'),
+            counts: [
+              { tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, requests: 40, sampled: true },
+              // A request that resolved to no vertical is kept under none.
+              { tenantId: a.tenant, vertical: null, scopeId: a.scope, requests: 2, sampled: false },
+              { tenantId: b.tenant, vertical: 'acme-crm', scopeId: b.scope, requests: 5, sampled: false },
+            ],
+          }),
+        ).toEqual({ recorded: 3 });
+        expect(await host.admin.listRequestDays!(staff, { tenantId: a.tenant })).toEqual([
+          { day, tenantId: a.tenant, vertical: null, scopeId: a.scope, requests: 2, sampled: false, estimated: true },
+          { day, tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, requests: 40, sampled: true, estimated: true },
+        ]);
+
+        // Read again, the day is what the newer read counted: a key it no longer names is gone.
+        await host.admin.recordRequestDay!(staff, {
+          day,
+          attemptedAt: at(day, '23:30:00'),
+          counts: [{ tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, requests: 41, sampled: true }],
+        });
+        expect((await host.admin.listRequestDays!(staff, { since: day, until: day })).map((r) => [r.tenantId, r.requests])).toEqual([
+          [a.tenant, 41],
+        ]);
+        expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
+          { day, attemptedAt: at(day, '23:30:00'), readAt: at(day, '23:30:00'), rows: 1, error: null },
+        ]);
+        // K-24: both reads are attributable.
+        const reads = await host.admin.accessLog(staff, { method: 'listRequestDays' });
+        expect(reads.some((r) => r.tenantId === a.tenant)).toBe(true);
+        expect((await host.admin.accessLog(staff, { method: 'listRequestRollupDays' })).length).toBeGreaterThan(0);
+      });
+
+      it('records a failed read as the attempt, writes nothing of the day, and keeps a read that succeeded', async () => {
+        const day = dayAgo(3);
+        const t = ids();
+        expect(await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '01:00:00'), error: 'HTTP 503' })).toEqual({
+          recorded: 0,
+        });
+        expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
+          { day, attemptedAt: at(day, '01:00:00'), readAt: null, rows: null, error: 'HTTP 503' },
+        ]);
+        expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([]);
+
+        // A success clears the error.
+        await host.admin.recordRequestDay!(staff, {
+          day,
+          attemptedAt: at(day, '02:00:00'),
+          counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 9, sampled: false }],
+        });
+        // A later failure records the attempt and leaves the day's rows and its successful read.
+        await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '03:00:00'), error: 'HTTP 503' });
+        expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
+          { day, attemptedAt: at(day, '03:00:00'), readAt: at(day, '02:00:00'), rows: 1, error: 'HTTP 503' },
+        ]);
+        expect((await host.admin.listRequestDays!(staff, { since: day, until: day })).map((r) => r.requests)).toEqual([9]);
+      });
+
+      it('refuses a malformed count whole, writing none of the day; the same day well formed is written', async () => {
+        const day = dayAgo(4);
+        const t = ids();
+        const good = { tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 3, sampled: false };
+        await expect(
+          host.admin.recordRequestDay!(staff, {
+            day,
+            attemptedAt: at(day, '04:00:00'),
+            counts: [good, { ...good, tenantId: 'not-a-tenant-id', requests: 1 }],
+          }),
+        ).rejects.toThrow();
+        await expect(
+          host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '04:00:00'), counts: [good, { ...good, requests: -1 }] }),
+        ).rejects.toThrow();
+        expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([]);
+        expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([]);
+
+        // Two counts for one key are summed, never one of them dropped.
+        expect(
+          await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '05:00:00'), counts: [good, { ...good, requests: 4, sampled: true }] }),
+        ).toEqual({ recorded: 1 });
+        expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([
+          { day, tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 7, sampled: true, estimated: true },
+        ]);
+      });
+
+      it('filters by tenant, vertical, scope and an inclusive window of days, and bounds the page', async () => {
+        const [d5, d6, d7] = [dayAgo(5), dayAgo(6), dayAgo(7)];
+        const t = tenantId.parse(ulid());
+        const [s1, s2] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+        for (const day of [d5, d6, d7]) {
+          await host.admin.recordRequestDay!(staff, {
+            day,
+            attemptedAt: at(day, '23:59:00'),
+            counts: [
+              { tenantId: t, vertical: 'acme-crm', scopeId: s1, requests: 1, sampled: false },
+              { tenantId: t, vertical: 'acme-desk', scopeId: s2, requests: 2, sampled: false },
+            ],
+          });
+        }
+        expect(await host.admin.listRequestDays!(staff, { tenantId: t })).toHaveLength(6);
+        expect((await host.admin.listRequestDays!(staff, { tenantId: t, since: d6 })).map((r) => r.day)).toEqual([d6, d6, d5, d5]);
+        expect((await host.admin.listRequestDays!(staff, { tenantId: t, until: d6 })).map((r) => r.day)).toEqual([d7, d7, d6, d6]);
+        expect((await host.admin.listRequestDays!(staff, { tenantId: t, vertical: 'acme-desk' })).map((r) => r.scopeId)).toEqual([s2, s2, s2]);
+        expect(await host.admin.listRequestDays!(staff, { tenantId: t, scopeId: s1, since: d5 })).toHaveLength(1);
+        expect(await host.admin.listRequestDays!(staff, { tenantId: t, limit: 2 })).toHaveLength(2);
+        await expect(host.admin.listRequestDays!(staff, { limit: 0 })).rejects.toThrow(/limit/);
+        await expect(host.admin.listRequestDays!(staff, { since: '2026-13-01' })).rejects.toThrow(/UTC day/);
+      });
+
+      it('prunes days older than an explicit horizon, at most the limit per call; a null horizon prunes nothing', async () => {
+        const t = ids();
+        const days = [monthsAgo(16), monthsAgo(15), monthsAgo(14), monthsAgo(2), dayAgo(1)];
+        for (const day of days) {
+          await host.admin.recordRequestDay!(staff, {
+            day,
+            attemptedAt: at(day, '12:00:00'),
+            counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 1, sampled: false }],
+          });
+        }
+        // The default keeps everything: nothing goes, however old.
+        expect(await host.admin.pruneRequestDays!(staff, 500, null)).toBe(0);
+        expect(await host.admin.listRequestDays!(staff, { tenantId: t.tenant })).toHaveLength(5);
+
+        // Its positive twin: thirteen months named, the three older days go, two per call.
+        expect(await host.admin.pruneRequestDays!(staff, 2, 13)).toBe(2);
+        expect(await host.admin.pruneRequestDays!(staff, 2, 13)).toBe(1);
+        expect(await host.admin.pruneRequestDays!(staff, 2, 13)).toBe(0);
+        expect((await host.admin.listRequestDays!(staff, { tenantId: t.tenant })).map((r) => r.day)).toEqual([monthsAgo(2), dayAgo(1)]);
+        // The record of a pruned day goes with it; a kept day's stays.
+        const recorded = (await host.admin.listRequestRollupDays!(staff)).map((r) => r.day);
+        expect(recorded).not.toContain(monthsAgo(14));
+        expect(recorded).toEqual(expect.arrayContaining([monthsAgo(2), dayAgo(1)]));
+
+        await expect(host.admin.pruneRequestDays!(staff, 0, 13)).rejects.toThrow(/limit/);
+        await expect(host.admin.pruneRequestDays!(staff, 10, 0)).rejects.toThrow(/whole number of months/);
+      });
+
+      it('the sweep phase rolls up due days into this directory, and retries a failed day only after an hour', async () => {
+        // Days far from every other test's, so the fleet-wide record of a day is this test's alone.
+        const now = '2031-05-10T12:00:00.000Z';
+        const t = ids();
+        const asked: string[] = [];
+        let failing = '2031-05-08';
+        const options = (nowIso: string) => ({
+          actor: staff,
+          fetch: connectorTestFetch,
+          sweepers: {},
+          drainRetries: false,
+          requestRollup: {
+            lookbackDays: 3,
+            now: () => nowIso,
+            read: async (day: string) => {
+              asked.push(day);
+              if (day === failing) throw new Error('saturated: the counts would be partial');
+              return [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: Number(day.slice(-2)), sampled: false }];
+            },
+          },
+        });
+
+        const first = await runPlatformSweep(host, options(now));
+        expect(asked).toEqual(['2031-05-07', '2031-05-08', '2031-05-09']);
+        expect(first.requestRollup).toMatchObject({ due: 3, read: 2, failed: 1, recorded: 2 });
+        expect(first.errors.filter((e) => e.kind === 'request-rollup')).toEqual([
+          { kind: 'request-rollup', id: '2031-05-08', error: expect.stringMatching(/saturated/) },
+        ]);
+        expect((await host.admin.listRequestDays!(staff, { tenantId: t.tenant })).map((r) => [r.day, r.requests])).toEqual([
+          ['2031-05-07', 7],
+          ['2031-05-09', 9],
+        ]);
+
+        // Inside the hour nothing is read again.
+        failing = '';
+        const soon = await runPlatformSweep(host, options('2031-05-10T12:30:00.000Z'));
+        expect(soon.requestRollup).toMatchObject({ due: 0, read: 0 });
+        expect(asked).toHaveLength(3);
+
+        // An hour on, the failed day is read, and only it.
+        const later = await runPlatformSweep(host, options('2031-05-10T13:00:00.000Z'));
+        expect(later.requestRollup).toMatchObject({ due: 1, read: 1, failed: 0, recorded: 1 });
+        expect(asked.slice(3)).toEqual(['2031-05-08']);
+        expect((await host.admin.listRequestRollupDays!(staff, { since: '2031-05-07', until: '2031-05-09' })).map((r) => [r.day, r.error])).toEqual([
+          ['2031-05-07', null],
+          ['2031-05-08', null],
+          ['2031-05-09', null],
+        ]);
+      });
+    });
+
     it('leaves bare (module-less) operations ungated', async () => {
       // test/read-counter was registered via defineOperation, no manifest — it
       // must resolve regardless of entitlements.

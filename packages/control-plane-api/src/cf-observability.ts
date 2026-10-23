@@ -4,7 +4,8 @@ import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
-import { FIELD_COVERAGE_ID_FIELD, ROUTER_SCRIPT_NAMES } from '@substrat-run/contracts';
+import { FIELD_COVERAGE_ID_FIELD, ROUTER_REQUEST_POINT, ROUTER_SCRIPT_NAMES, utcDay } from '@substrat-run/contracts';
+import type { RequestDayCount } from '@substrat-run/kernel';
 import { readFieldCoverage } from './field-coverage-read.js';
 import type {
   ObservabilityReader,
@@ -1488,17 +1489,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
   }
 
   /** One Analytics Engine SQL read, returning the rows as the API shaped them. */
-  async function analyticsEngineSql(sql: string): Promise<Array<Record<string, unknown>>> {
-    const res = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/analytics_engine/sql`,
-      { method: 'POST', headers: { authorization: `Bearer ${opts.apiToken}` }, body: sql },
-    );
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`Cloudflare Analytics Engine query failed: HTTP ${res.status} ${text.slice(0, 200)}`);
-    }
-    const json = JSON.parse(text) as { data?: Array<Record<string, unknown>> };
-    return json.data ?? [];
+  function analyticsEngineSql(sql: string): Promise<Array<Record<string, unknown>>> {
+    return analyticsEngineQuery(opts, sql);
   }
 
   /**
@@ -1991,6 +1983,87 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // swallowed — an egress report that silently drops hosts is worse than none (#859).
     return { spans, truncated: events.length >= limit };
   }
+}
+
+/** One Analytics Engine SQL read, returning the rows as the API shaped them. */
+async function analyticsEngineQuery(
+  opts: { accountId: string; apiToken: string },
+  sql: string,
+): Promise<Array<Record<string, unknown>>> {
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/analytics_engine/sql`,
+    { method: 'POST', headers: { authorization: `Bearer ${opts.apiToken}` }, body: sql },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Cloudflare Analytics Engine query failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+  }
+  const json = JSON.parse(text) as { data?: Array<Record<string, unknown>> };
+  return json.data ?? [];
+}
+
+/**
+ * The most rows one day's rollup query may answer (#2501): one per (tenant, vertical, scope) that
+ * served a request that day. A full answer may be a prefix of the day, so the read refuses it
+ * rather than letting the rollup keep part of a day as the whole.
+ */
+export const REQUEST_ROLLUP_ROW_LIMIT = 50_000;
+
+/**
+ * The daily request rollup's reader (#2501): one closed UTC day of the router's request
+ * datapoints, counted per (tenant, vertical, scope). The platform sweep's request-rollup phase
+ * calls it, never a route.
+ *
+ * It reads EVERY tenant at once, which is why it is not a member of `ObservabilityReader`: that
+ * seam answers routes, and keeps a fleet-wide read one forgotten parameter away by having no
+ * all-tenants spelling. One query per day for the whole fleet is what keeps the rollup to a
+ * handful of queries a pass.
+ *
+ * Counts are `sum(_sample_interval)`, never `count()`, for `queryTenantMetrics`'s reason: Analytics
+ * Engine samples under load, so each count is an estimate and `sampled` says whether any of the
+ * day's datapoints stood for more than one request. The ordinals are the router's published shape
+ * (`ROUTER_REQUEST_POINT`).
+ */
+export function createRouterRequestDayReader(opts: {
+  accountId: string;
+  apiToken: string;
+  /** The router's dataset, never defaulted, for `CfObservabilityOptions.routerDataset`'s reason. */
+  routerDataset: string;
+}): (day: string) => Promise<RequestDayCount[]> {
+  return async (day) => {
+    if (!utcDay.safeParse(day).success) {
+      throw new Error(`request rollup: refusing a day that is not a UTC day: ${JSON.stringify(day)}`);
+    }
+    const from = Date.parse(`${day}T00:00:00Z`) / 1000;
+    const p = ROUTER_REQUEST_POINT;
+    const sql = `
+      SELECT
+        ${p.tenantId} AS tenantId,
+        ${p.vertical} AS vertical,
+        ${p.scopeId} AS scopeId,
+        sum(_sample_interval) AS requests,
+        max(_sample_interval) AS maxInterval
+      FROM ${aeDataset(opts.routerDataset)}
+      WHERE timestamp >= toDateTime(${from})
+        AND timestamp < toDateTime(${from + 86_400})
+      GROUP BY tenantId, vertical, scopeId
+      ORDER BY tenantId, vertical, scopeId
+      LIMIT ${REQUEST_ROLLUP_ROW_LIMIT}
+      FORMAT JSON`;
+    const rows = await analyticsEngineQuery(opts, sql);
+    if (rows.length >= REQUEST_ROLLUP_ROW_LIMIT) {
+      throw new Error(
+        `Cloudflare Analytics Engine request rollup saturated at ${REQUEST_ROLLUP_ROW_LIMIT} rows for ${day}: the counts would be partial`,
+      );
+    }
+    return rows.map((r) => ({
+      tenantId: String(r['tenantId'] ?? ''),
+      vertical: blank(r['vertical']),
+      scopeId: String(r['scopeId'] ?? ''),
+      requests: Math.round(aeNum(r['requests'])),
+      sampled: aeNum(r['maxInterval']) > 1,
+    }));
+  };
 }
 
 /**

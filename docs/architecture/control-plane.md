@@ -1209,7 +1209,10 @@ are honestly computable *honest*, and display them.
     `pipelines-sink.ts`). No route reads them yet, and a lake row names no vertical.
   - **API calls are not computable exactly.** Reads emit nothing on the spine, and the router's
     request datapoints in Analytics Engine are sampled and kept three months, so any count
-    taken from them is an estimate.
+    taken from them is an estimate. That estimate is now kept: the platform sweep rolls each
+    closed day up into the directory, one row per (tenant, vertical, scope), before the
+    datapoints age out (§5.3). An exact counter at the router comes only when pricing uses
+    requests as a unit.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1250,9 +1253,9 @@ of this engine" is a read rather than a re-derivation.
 operator would go looking for the number. Its absence is a property of the architecture (no
 cross-tenant order flow), not a slice that was skipped. **Meter 3 is not one reading on
 `/meters`**: its computable parts are read where they are kept (storage on `/meters` and
-`/meters/storage`, model usage on `/model-usage`). Lake bytes have no reader yet; the console's
-Meters view says the same. Exact API counts stay absent because reads emit nothing on the
-spine.
+`/meters/storage`, model usage on `/model-usage`, estimated request counts on `/meters/requests`).
+Lake bytes have no reader yet; the console's Meters view says the same. Exact API counts stay
+absent because reads emit nothing on the spine.
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 
@@ -1347,6 +1350,42 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **History, not yet a price.** The day rows are what a byte-day (and so GB-month) figure
   needs, through `HostAdmin.listScopeStorage`. Nothing prices them yet, because a GB-month
   over days the pass did not sample is a coverage question the bill has to answer first.
+
+### 5.3 Requests, rolled up daily ([#2501](https://github.com/substrat-run/substrat/issues/2501))
+
+The router writes one Analytics Engine datapoint per request it dispatches, keyed by tenant
+with the vertical and scope beside it (`ROUTER_REQUEST_POINT` in contracts names each
+ordinal, and the router's own test holds what it writes to that layout). Analytics Engine
+keeps those datapoints three months and samples them under load. Billing history needs longer
+than that, so the scheduled pass keeps a compact copy.
+
+- **One row per (UTC day, tenant, vertical, scope)** in the directory's
+  `_substrat_request_days`, holding that day's count. A request that resolved to no vertical
+  is kept under none. Counts only: no path, no principal, no content.
+- **Every count is an estimate.** It is `sum(_sample_interval)` over the day's datapoints,
+  never `count()`, and every row says `estimated: true`. `sampled` says whether Analytics
+  Engine actually reweighted any of them.
+- **A closed day, read once.** A day is read an hour after it ends, so the datapoints of its
+  last instant have landed, with one query for the whole fleet. The oldest unread day goes
+  first, since it is the next one Analytics Engine ages out. A pass reads at most seven days,
+  so a first deploy backfills the 85 days it can still reach over a dozen passes. A day read
+  successfully is never read again.
+- **A failed read writes nothing.** `_substrat_request_day_reads` keeps one row per day the
+  rollup tried: when, whether a read succeeded, and why the last one failed. A failed day is
+  tried again an hour later, not on every pass. A query whose answer reaches its row limit
+  may be a prefix of the day, so it is refused rather than kept as the whole day. A malformed
+  count refuses the whole day too.
+- **A day without traffic is not a day not yet read.** `GET /meters/requests` (staff-only)
+  serves the rows over an inclusive window of days, the last thirty by default, together with
+  the record of each day in the window, so a surface can tell the two apart.
+- **Kept for the billing horizon.** The day rows follow `BILLING_ROLLUP_RETENTION_MONTHS`.
+  Until the maintainer's bookkeeping sets that horizon it is `null` and nothing is pruned:
+  keeping everything is the reversible default, since a pruned row cannot come back. No
+  existing retention follows it; the storage gauge stays thirteen months and model usage 400
+  days.
+- **Hosted only, for now.** The reader needs the account's Analytics Engine and the router's
+  dataset (`ROUTER_ANALYTICS_DATASET`), never defaulted. Without them the phase does not run,
+  and a self-hosted directory keeps the empty tables.
 
 ## 6. Auth: the sequencing
 

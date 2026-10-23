@@ -293,7 +293,7 @@ export type { StoragePageInput, StorageScope } from './storage-meter.js';
 export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';
-export { createCfObservabilityReader } from './cf-observability.js';
+export { createCfObservabilityReader, createRouterRequestDayReader, REQUEST_ROLLUP_ROW_LIMIT } from './cf-observability.js';
 // #1923: the one sanctioned reading of a line's `outputFields` — tenant- and app-scoped, aggregate only.
 export { tallyFieldCoverage, FIELD_COVERAGE_OPERATIONS_MAX } from './field-coverage-tally.js';
 export type { FieldCoverageTally, FieldCoverageScope, OperationFieldCoverage, FieldCoverageCount } from './field-coverage-tally.js';

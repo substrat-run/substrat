@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { ROUTER_REQUEST_POINT, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import { problemFor } from '@substrat-run/vertical-host';
 import worker, { type Env } from '../src/worker.js';
 
@@ -623,6 +623,53 @@ describe('router', () => {
         rayId: '8f2ab-ARN',
         status: 200,
       });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('writes every field at the ordinal ROUTER_REQUEST_POINT publishes, which every reader of the dataset names (#2501)', async () => {
+    // The request rollup reads tenant, vertical and scope by these ordinals, one query a day for
+    // the whole fleet; a field written anywhere else would be billed to the wrong key silently.
+    const points: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const env = {
+      ROUTER_SECRET: SECRET,
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: spyVertical({
+        'x-substrat-invocation-record': 'operation=repairs%2Fclose&problemCode=conflict&principalKind=user',
+      }).binding,
+      ANALYTICS: { writeDataPoint: (p: (typeof points)[number]) => points.push(p) },
+    } as unknown as Env;
+    const at = (p: (typeof points)[number], ordinal: string): unknown => {
+      const [, kind, n] = /^(index|blob|double)(\d+)$/.exec(ordinal)!;
+      return (kind === 'index' ? p.indexes : kind === 'blob' ? p.blobs : p.doubles)?.[Number(n) - 1];
+    };
+
+    try {
+      expect((await worker.fetch(get('https://acme.example.com/api/repairs/close', { 'cf-ray': '8f2ab-ARN' }), env)).status).toBe(200);
+      expect(points).toHaveLength(1);
+      const p = points[0]!;
+      const read = Object.fromEntries(
+        Object.entries(ROUTER_REQUEST_POINT).map(([name, ordinal]) => [name, at(p, ordinal)]),
+      );
+      expect(read).toEqual({
+        tenantId: T,
+        vertical: 'fsm',
+        scopeId: S,
+        surface: 'app',
+        statusClass: '2xx',
+        rayId: '8f2ab-ARN',
+        operation: 'repairs/close',
+        problemCode: 'conflict',
+        principalKind: 'user',
+        level: 'warn',
+        durationMs: expect.any(Number),
+        status: 200,
+      });
+      // Nothing is written that the layout does not name, so no ordinal is in use unpublished.
+      const written = (p.indexes?.length ?? 0) + (p.blobs?.length ?? 0) + (p.doubles?.length ?? 0);
+      expect(written).toBe(Object.keys(ROUTER_REQUEST_POINT).length);
     } finally {
       logSpy.mockRestore();
     }

@@ -24,6 +24,17 @@ import type {
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
+import { BILLING_ROLLUP_RETENTION_MONTHS } from './billing-retention.js';
+import {
+  REQUEST_ROLLUP_DAYS_PER_PASS,
+  REQUEST_ROLLUP_LOOKBACK_DAYS,
+  REQUEST_ROLLUP_PRUNE_BATCH,
+  REQUEST_ROLLUP_RETRY_MS,
+  REQUEST_ROLLUP_SETTLE_MS,
+  requestRollupDueDays,
+  requestRollupHorizon,
+  type RequestDayCount,
+} from './request-rollup.js';
 import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
@@ -339,6 +350,13 @@ export interface PlatformSweepOptions {
    */
   storageGauge?: StorageGaugeSweepOptions;
   /**
+   * Roll up each closed UTC day of the router's request datapoints into the directory (#2501).
+   * UNSET (the default) skips the phase, as does a host without `recordRequestDay` and
+   * `listRequestRollupDays`. Injected because the datapoints live in Analytics Engine, which only
+   * the hosted control plane can query. See {@link RequestRollupSweepOptions}.
+   */
+  requestRollup?: RequestRollupSweepOptions;
+  /**
    * Collect attachment bytes no row names (#2314), a bounded window of scopes per pass. UNSET (the
    * default) skips the phase: the sweep deletes tenant bytes, so a deployment opts in, and opts in
    * to a dry run first. See {@link OrphanAttachmentSweepOptions}.
@@ -547,6 +565,8 @@ export interface PlatformSweepReport {
   storage?: StorageGaugeSweepReport | null;
   /** What the orphan-attachment phase did (#2314). Null when the phase is off. */
   orphanAttachments?: OrphanAttachmentSweepReport | null;
+  /** What the request-rollup phase read and pruned (#2501). Null when the phase is off. */
+  requestRollup?: RequestRollupSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -576,7 +596,10 @@ export interface PlatformSweepReport {
       | 'storage'
       // #2314: one scope's orphan-attachment pass failed. Nothing it had not condemned is deleted,
       // and a condemned object is finished by a later pass.
-      | 'attachment-sweep';
+      | 'attachment-sweep'
+      // #2501: one day's request rollup failed. Nothing of the day is written, and the day is
+      // tried again once `RequestRollupSweepOptions.retryMs` has passed.
+      | 'request-rollup';
     id: string;
     error: string;
   }[];
@@ -697,6 +720,53 @@ export interface StorageGaugeSweepReport {
   /** Sample rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
   recorded: number;
   /** Samples past retention deleted. */
+  pruned: number;
+}
+
+/**
+ * How the request-rollup phase reads (#2501). Every number here is a bound on Analytics Engine
+ * queries: one per day read.
+ *
+ * A day is due once it ended at least `settleMs` ago, lies within `lookbackDays`, has no
+ * successful read, and was never tried or last tried at least `retryMs` ago. The oldest due day
+ * goes first, since it is the next one Analytics Engine ages out. A read that succeeds replaces
+ * the day's rows; one that fails writes nothing of the day and records the error as its attempt.
+ */
+export interface RequestRollupSweepOptions {
+  /**
+   * One UTC day's request counts per (tenant, vertical, scope), every count an estimate. A throw
+   * fails the day: nothing of it is written, and a read that could only answer part of the day
+   * (a saturated query) must throw rather than return the part.
+   */
+  read: (day: string) => Promise<readonly RequestDayCount[]>;
+  /** The most days read in one pass. Default `REQUEST_ROLLUP_DAYS_PER_PASS`. `0` pauses reading; the prune still runs. */
+  batch?: number;
+  /** How many days back a day may be read. Default `REQUEST_ROLLUP_LOOKBACK_DAYS`. */
+  lookbackDays?: number;
+  /** How long after its end a day may be read. Default `REQUEST_ROLLUP_SETTLE_MS`. */
+  settleMs?: number;
+  /** How long a failed day waits before it is tried again. Default `REQUEST_ROLLUP_RETRY_MS`. */
+  retryMs?: number;
+  /** How many months of day rows are kept; null keeps them all. Default `BILLING_ROLLUP_RETENTION_MONTHS`. */
+  retentionMonths?: number | null;
+  /** Day rows past retention deleted per pass. Default `REQUEST_ROLLUP_PRUNE_BATCH`. */
+  pruneBatch?: number;
+  /** The instant the pass judges days against. Default the wall clock. */
+  now?: () => string;
+}
+
+/** What the request-rollup phase did in one pass (#2501). */
+export interface RequestRollupSweepReport {
+  /** Days due this pass. */
+  due: number;
+  /** Due days left for a later pass because the batch was full. */
+  deferred: number;
+  /** Days read and recorded, and days whose read or record failed. */
+  read: number;
+  failed: number;
+  /** Rows the read days wrote. */
+  recorded: number;
+  /** Day rows past retention deleted. */
   pruned: number;
 }
 
@@ -1100,6 +1170,18 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   if (gauge?.batch !== undefined && !(Number.isInteger(gauge.batch) && gauge.batch >= 0)) {
     throw substratError('validation_failed', `storageGauge.batch must be a non-negative integer, got ${String(gauge.batch)}`);
   }
+  const rollup = options.requestRollup;
+  if (rollup?.pruneBatch !== undefined) assertRowLimit('requestRollup.pruneBatch', rollup.pruneBatch);
+  if (rollup?.batch !== undefined && !(Number.isInteger(rollup.batch) && rollup.batch >= 0)) {
+    throw substratError('validation_failed', `requestRollup.batch must be a non-negative integer, got ${String(rollup.batch)}`);
+  }
+  if (rollup?.retentionMonths !== undefined) {
+    try {
+      requestRollupHorizon(0, rollup.retentionMonths);
+    } catch (err) {
+      throw substratError('validation_failed', `requestRollup.retentionMonths: ${message(err)}`);
+    }
+  }
   const orphans = options.orphanAttachments;
   if (orphans?.batch !== undefined && !(Number.isInteger(orphans.batch) && orphans.batch >= 0)) {
     throw substratError('validation_failed', `orphanAttachments.batch must be a non-negative integer, got ${String(orphans.batch)}`);
@@ -1135,6 +1217,7 @@ export async function runPlatformSweep(
     findings: null,
     storage: null,
     orphanAttachments: null,
+    requestRollup: null,
     errors: [],
   };
 
@@ -1302,6 +1385,16 @@ export async function runPlatformSweep(
     typeof host.admin.listScopeStorageAttempts === 'function'
   ) {
     report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, reachedThisPass, report);
+  }
+
+  // -- the daily request rollup (#2501) ----------------------------------------
+  // Reads Analytics Engine, not a scope, so it wakes nothing and can sit anywhere in the pass.
+  if (
+    options.requestRollup &&
+    typeof host.admin.recordRequestDay === 'function' &&
+    typeof host.admin.listRequestRollupDays === 'function'
+  ) {
+    report.requestRollup = await sweepRequestRollup(host.admin, options.actor, options.requestRollup, report);
   }
 
   // -- provision reconcile (#1172, #1653) -------------------------------------
@@ -2757,6 +2850,62 @@ async function sweepStorageGauge(
     // A directory read or write failed: this pass's attempts are lost, never half-kept, and
     // the next pass finds the same scopes due.
     report.errors.push({ kind: 'storage', id: 'directory', error: message(err) });
+  }
+  return out;
+}
+
+/**
+ * One pass of the request-rollup phase (#2501): read the oldest due days one at a time, record
+ * each day's counts or its failure, then prune past retention. A failed day is an error entry,
+ * writes nothing of the day, and waits `retryMs` like any other attempt.
+ */
+async function sweepRequestRollup(
+  admin: HostAdmin,
+  actor: PlatformActorId,
+  rollup: RequestRollupSweepOptions,
+  report: PlatformSweepReport,
+): Promise<RequestRollupSweepReport> {
+  const out: RequestRollupSweepReport = { due: 0, deferred: 0, read: 0, failed: 0, recorded: 0, pruned: 0 };
+  const batch = rollup.batch ?? REQUEST_ROLLUP_DAYS_PER_PASS;
+  const months = rollup.retentionMonths === undefined ? BILLING_ROLLUP_RETENTION_MONTHS : rollup.retentionMonths;
+  const now = rollup.now ?? (() => new Date().toISOString());
+  try {
+    const nowMs = Date.parse(now());
+    if (batch > 0) {
+      const due = requestRollupDueDays({
+        nowMs,
+        reads: await admin.listRequestRollupDays!(actor),
+        lookbackDays: rollup.lookbackDays ?? REQUEST_ROLLUP_LOOKBACK_DAYS,
+        settleMs: rollup.settleMs ?? REQUEST_ROLLUP_SETTLE_MS,
+        retryMs: rollup.retryMs ?? REQUEST_ROLLUP_RETRY_MS,
+        horizon: requestRollupHorizon(nowMs, months),
+      });
+      const take = due.slice(0, batch);
+      out.due = due.length;
+      out.deferred = due.length - take.length;
+      // One day at a time: each is one Analytics Engine query, and the account's query budget
+      // is shared with every observability read.
+      for (const day of take) {
+        try {
+          const counts = await rollup.read(day);
+          out.recorded += (await admin.recordRequestDay!(actor, { day, attemptedAt: now(), counts })).recorded;
+          out.read += 1;
+        } catch (err) {
+          out.failed += 1;
+          report.errors.push({ kind: 'request-rollup', id: day, error: message(err) });
+          // The failure is the day's attempt, so the day waits `retryMs` rather than taking a slot
+          // on every pass. If even this write fails, the day is simply due again next pass.
+          await admin.recordRequestDay!(actor, { day, attemptedAt: now(), error: message(err) }).catch(() => undefined);
+        }
+      }
+    }
+    if (typeof admin.pruneRequestDays === 'function') {
+      out.pruned = await admin.pruneRequestDays(actor, rollup.pruneBatch ?? REQUEST_ROLLUP_PRUNE_BATCH, months);
+    }
+  } catch (err) {
+    // A directory read or the prune failed: whatever days were recorded stay recorded, and the
+    // next pass finds the rest due.
+    report.errors.push({ kind: 'request-rollup', id: 'directory', error: message(err) });
   }
   return out;
 }

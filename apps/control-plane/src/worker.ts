@@ -58,6 +58,7 @@ import {
   type SweepRunInput,
   type HostAdmin,
   type OrphanAttachmentSweepOptions,
+  type RequestRollupSweepOptions,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -100,6 +101,7 @@ import {
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
+  createRouterRequestDayReader,
   createCfDoNamespaceReader,
   createR2AccessLogSink,
   createPipelinesEventSink,
@@ -918,6 +920,26 @@ function observabilityFor(env: Env) {
     // #1691: the same never-defaulted rule for the connector-call dataset.
     connectorCallsDataset: env.CONNECTOR_ANALYTICS_DATASET,
   });
+}
+
+/**
+ * #2501: the daily request rollup's reader — one closed UTC day of the router's Analytics Engine
+ * datapoints, counted per (tenant, vertical, scope), for the scheduled pass to keep in the
+ * directory before the datapoints age out. The same credential and the same never-defaulted
+ * dataset as `observabilityFor`'s tenant grain: absent any of them, the pass runs no rollup,
+ * which is the honest answer for TEST reading production's traffic as much as for self-host.
+ */
+export function requestRollupFor(
+  env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_ID' | 'ROUTER_ANALYTICS_DATASET'>,
+): RequestRollupSweepOptions | undefined {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID || !env.ROUTER_ANALYTICS_DATASET) return undefined;
+  return {
+    read: createRouterRequestDayReader({
+      accountId: env.CF_ACCOUNT_ID,
+      apiToken: env.CF_API_TOKEN,
+      routerDataset: env.ROUTER_ANALYTICS_DATASET,
+    }),
+  };
 }
 
 /**
@@ -2265,6 +2287,7 @@ export default {
       : undefined;
     const crossVertical = crossVerticalFor(env, host);
     const orphanAttachments = orphanAttachmentSweepFor(env, host.admin, resolveRef);
+    const requestRollup = requestRollupFor(env);
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
@@ -2377,6 +2400,9 @@ export default {
       // #2314: attachment bytes no row names, collected through the script that serves each scope.
       // Off unless ORPHAN_ATTACHMENT_SWEEP says otherwise, and a dry run before any delete.
       ...(orphanAttachments ? { orphanAttachments } : {}),
+      // #2501: each closed day of the router's request datapoints, kept in the directory as
+      // estimated counts before Analytics Engine ages them out. Off without the router's dataset.
+      ...(requestRollup ? { requestRollup } : {}),
     });
     // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
     // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
