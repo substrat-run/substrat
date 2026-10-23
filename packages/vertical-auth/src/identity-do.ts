@@ -276,11 +276,12 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
 
   /**
    * Record a member invite: a pre-minted `principal` + `roleKey` the caller has already
-   * granted at scope level, claimable by whoever presents the token whose hash is `tokenHash`.
-   * The plaintext token never reaches the DO — only its hash, so a DB read can't mint access.
+   * granted at scope level, whose link is the `become` capability `capabilityId` and whose
+   * secret hashes to `tokenHash`. The plaintext token never reaches the DO — only its hash, so a
+   * DB read can't mint access. A missing capability id is refused (#2496): no hash-only row.
    */
   async createInvite(
-    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null = null,
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string,
   ): Promise<void> {
     createInviteRow(this.registrySql, scopeId, principal, roleKey, email, tokenHash, capabilityId);
   }
@@ -389,7 +390,7 @@ export type IdentityStub = {
   ownerClaimMatches(scopeId: string, tokenHash: string): Promise<boolean>;
   claimOwnerByCapability(scopeId: string, sub: string, capabilityId: string, principal: string): Promise<string | null>;
   createInvite(
-    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId?: string | null,
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string,
   ): Promise<void>;
   listInvites(scopeId: string): Promise<InviteRow[]>;
   getInvite(scopeId: string, principal: string): Promise<InviteRow | null>;

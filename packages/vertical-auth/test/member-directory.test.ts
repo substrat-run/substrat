@@ -13,6 +13,7 @@ import {
   claimInviteByCapability,
   countLegacyInvites,
   createInvite,
+  createLegacyInvite,
   getInvite,
   inviteExists,
   inviteMatches,
@@ -99,7 +100,7 @@ describe('a capability-era invite (#1686)', () => {
 });
 
 describe('a legacy invite — minted before #1686, by hash alone', () => {
-  beforeEach(() => createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob'));
+  beforeEach(() => createLegacyInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob'));
 
   it('still accepts by its hash, once', () => {
     expect(claimInvite(sql, SCOPE, 'sub-bob', 'hash-bob')).toBe(BOB);
@@ -118,28 +119,56 @@ describe('a legacy invite — minted before #1686, by hash alone', () => {
   });
 });
 
+describe('the write path (#2496) — no new hash-only row', () => {
+  const stored = () => [...sql.exec('SELECT principal, capability_id FROM invite')];
+
+  it('refuses an invite with no capability id, and writes nothing', () => {
+    // The type forbids each of these; the check is for an RPC from untyped code or a cast.
+    for (const none of [null, undefined, '']) {
+      expect(() => createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob', none as unknown as string)).toThrow(/hash-only/);
+    }
+    expect(stored()).toEqual([]);
+    expect(countLegacyInvites(sql, SCOPE)).toBe(0);
+    expect(inviteExists(sql, SCOPE, 'hash-bob')).toBe(false);
+  });
+
+  it('writes the same row once it names a capability — and that row is no legacy one', () => {
+    createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob', CAP);
+    expect(stored()).toEqual([{ principal: BOB, capability_id: CAP }]);
+    expect(countLegacyInvites(sql, SCOPE)).toBe(0);
+    expect(claimInvite(sql, SCOPE, 'sub-bob', 'hash-bob')).toBeNull(); // not redeemable by hash
+    expect(claimInviteByCapability(sql, SCOPE, 'sub-bob', CAP, BOB)).toBe(BOB);
+  });
+
+  it('createLegacyInvite is the explicit way to the old row: no capability, redeemable by hash', () => {
+    createLegacyInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob');
+    expect(stored()).toEqual([{ principal: BOB, capability_id: null }]);
+    expect(countLegacyInvites(sql, SCOPE)).toBe(1);
+  });
+});
+
 describe('countLegacyInvites (#2175)', () => {
   it('counts unclaimed hash-only invites at the scope — and only those', () => {
     expect(countLegacyInvites(sql, SCOPE)).toBe(0);
-    createInvite(sql, SCOPE, BOB, 'editor', 'bob@acme.example', 'hash-bob');
-    createInvite(sql, SCOPE, '01PRINCIPALCAL', 'editor', null, 'hash-cal');
+    createLegacyInvite(sql, SCOPE, BOB, 'editor', 'bob@acme.example', 'hash-bob');
+    createLegacyInvite(sql, SCOPE, '01PRINCIPALCAL', 'editor', null, 'hash-cal');
     expect(countLegacyInvites(sql, SCOPE)).toBe(2);
     // Not counted: a capability-era invite, and a legacy one at another scope.
     createInvite(sql, SCOPE, ANN, 'editor', null, 'hash-ann', CAP);
-    createInvite(sql, OTHER_SCOPE, '01PRINCIPALDAN', 'editor', null, 'hash-dan');
+    createLegacyInvite(sql, OTHER_SCOPE, '01PRINCIPALDAN', 'editor', null, 'hash-dan');
     expect(countLegacyInvites(sql, SCOPE)).toBe(2);
     expect(countLegacyInvites(sql, OTHER_SCOPE)).toBe(1);
   });
 
   it('stops counting an invite once it is claimed', () => {
-    createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob');
+    createLegacyInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob');
     expect(claimInvite(sql, SCOPE, 'sub-bob', 'hash-bob')).toBe(BOB);
     expect(countLegacyInvites(sql, SCOPE)).toBe(0);
   });
 
   it('stops counting an invite once it is withdrawn — a withdrawal, and so a member removal, deletes the row', () => {
-    createInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob');
-    createInvite(sql, SCOPE, '01PRINCIPALCAL', 'editor', null, 'hash-cal');
+    createLegacyInvite(sql, SCOPE, BOB, 'editor', null, 'hash-bob');
+    createLegacyInvite(sql, SCOPE, '01PRINCIPALCAL', 'editor', null, 'hash-cal');
     revokeInvite(sql, SCOPE, BOB);
     expect(countLegacyInvites(sql, SCOPE)).toBe(1);
     expect(listInvites(sql, SCOPE).filter((i) => i.capabilityId === null)).toHaveLength(1);

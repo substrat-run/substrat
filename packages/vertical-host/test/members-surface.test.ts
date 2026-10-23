@@ -79,7 +79,7 @@ describe('/internal/members — an installed vertical’s members, managed from 
   const directory = {
     listInvites: async (scope: string) => invites.listInvites(sql, scope),
     getInvite: async (scope: string, p: string) => invites.getInvite(sql, scope, p),
-    createInvite: async (scope: string, p: string, r: string, e: string | null, h: string, cap: string | null = null) => {
+    createInvite: async (scope: string, p: string, r: string, e: string | null, h: string, cap: string) => {
       await recording?.(p); // a test may hold the row's insert, between the scope grant and the row
       invites.createInvite(sql, scope, p, r, e, h, cap);
     },

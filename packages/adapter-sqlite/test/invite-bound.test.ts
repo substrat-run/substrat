@@ -24,8 +24,12 @@ type Row = { principal: string; roleKey: string; email: string | null; createdAt
 /** The identity DO's invite half, in memory — the bound under test is the host's, not the directory's. */
 class MemoryDirectory implements InviteDirectory {
   readonly rows = new Map<string, Row>();
-  async createInvite(_s: string, principal: string, roleKey: string, email: string | null, _h?: string, capabilityId: string | null = null) {
+  async createInvite(_s: string, principal: string, roleKey: string, email: string | null, _h: string, capabilityId: string) {
     this.rows.set(principal, { principal, roleKey, email, createdAt: 0, capabilityId });
+  }
+  /** LEGACY (#2496): a hash-only row, made the one explicit way `member-directory.ts` offers. */
+  async createLegacyInvite(_s: string, principal: string, roleKey: string, email: string | null) {
+    this.rows.set(principal, { principal, roleKey, email, createdAt: 0, capabilityId: null });
   }
   async listInvites() {
     return [...this.rows.values()];
@@ -234,7 +238,7 @@ describe('invite routes over the SQLite host — the assignment bound (#1931)', 
    */
   const seeded = async (roleKey: string) => {
     const principal = principalId.parse(ulid());
-    await directory.createInvite(s, principal, roleKey, null);
+    await directory.createLegacyInvite(s, principal, roleKey, null);
     return principal;
   };
 

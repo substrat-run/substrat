@@ -28,6 +28,7 @@ import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { OWNER_CLAIM_LABEL, OWNER_CLAIM_TTL_MS, mintOwnerClaimLink, sha256Hex } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { MEMBER_INVITE_LABEL, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
+import { createLegacyInvite, type RegistrySql } from '@substrat-run/vertical-auth/member-directory';
 import { CloudflareScopeHost } from './test-host.js';
 
 const ORIGIN = 'https://desk.example.test';
@@ -264,6 +265,11 @@ describe('member invite link as a become capability (#1686)', () => {
   const USE = permissionKey.parse('perm:use');
 
   const identity = () => env.AUTH.get(env.AUTH.idFromName(t));
+  /** A hash-only row, written the one explicit way (#2496): the routes no longer mint one. */
+  const legacyInvite = (principal: string, tokenHash: string) =>
+    runInDurableObject(identity(), (_i, state) =>
+      createLegacyInvite(state.storage.sql as unknown as RegistrySql, s, principal, 'agent', null, tokenHash),
+    );
   const capabilities = async (): Promise<CapabilityRecord[]> =>
     (await host.listCapabilitiesLocal(s, { includeRevoked: true })).entries;
   const record = async (id: string) => (await capabilities()).find((r) => r.id === id)!;
@@ -424,14 +430,35 @@ describe('member invite link as a become capability (#1686)', () => {
     const [cap] = await capabilities();
     expect(cap).toMatchObject({ uses: 0, revokedBy: null, revokedReason: 'holdings-changed' });
     const legacy = principalId.parse(ulid());
-    await identity().createInvite(s, legacy, 'agent', null, await sha256Hex('ef'.repeat(32)));
+    await legacyInvite(legacy, await sha256Hex('ef'.repeat(32)));
     expect((await list()).find((i) => i.principal === legacy)?.link).toBeNull();
+  });
+
+  it('the real directory refuses a hash-only invite (#2496) — and takes the same row once it names a capability', async () => {
+    const principal = principalId.parse(ulid());
+    const before = await identity().legacyInviteCount(s);
+    const hash = await sha256Hex('01'.repeat(32));
+    // The type forbids a missing capability id; an RPC from untyped code is what the DO's own check is for.
+    for (const none of [null, undefined, '']) {
+      await expect(() => identity().createInvite(s, principal, 'agent', null, hash, none as unknown as string)).rejects.toThrow(
+        /hash-only/,
+      );
+    }
+    expect(await identity().legacyInviteCount(s)).toBe(before);
+    expect(await identity().inviteExists(s, hash)).toBe(false);
+    // Twin: with a capability id the row is written, and it is no legacy row.
+    await identity().createInvite(s, principal, 'agent', null, hash, ulid());
+    expect(await identity().inviteExists(s, hash)).toBe(true);
+    expect(await identity().legacyInviteCount(s)).toBe(before);
+    // And the explicit legacy seam is the only way to a hash-only row.
+    await legacyInvite(principalId.parse(ulid()), await sha256Hex('02'.repeat(32)));
+    expect(await identity().legacyInviteCount(s)).toBe(before + 1);
   });
 
   it('an invite minted before #1686 — a hash-only row — still accepts by its hash in the real directory', async () => {
     const principal = principalId.parse(ulid());
     const token = 'cd'.repeat(32);
-    await identity().createInvite(s, principal, 'agent', null, await sha256Hex(token));
+    await legacyInvite(principal, await sha256Hex(token));
     const ok = await accept(token, 'sub-legacy');
     expect(ok.status).toBe(200);
     expect(await identity().resolvePrincipal(s, 'sub-legacy')).toBe(principal);

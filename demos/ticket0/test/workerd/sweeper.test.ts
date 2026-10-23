@@ -59,6 +59,8 @@ import {
   type ScopeSweepReport,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
+import type { IdentityDO } from '@substrat-run/vertical-auth';
+import { createLegacyInvite, type RegistrySql } from '@substrat-run/vertical-auth/member-directory';
 import { classifyError } from '@substrat-run/vertical-host';
 import { addBusinessMs, businessMsBetween, instantOf } from '../../src/business-time.js';
 import { ticket0Manifest } from '../../src/manifest.js';
@@ -69,6 +71,22 @@ import { listsBefore0027 } from '../before-0027.js';
 import { DESK_TABLES, populateDesk } from '../desk-fixture.js';
 import { checkTicket0SubjectErasure, type ErasureSql } from '../subject-erasure-case.js';
 import { DESK_READS, INBOX_PAGES, SUSPENDED_QUEUE, planUsesIndex, sorts, type Shape } from '../desk-read-shapes.js';
+
+/**
+ * A hash-only invite row, written into the identity DO the one explicit way (#2496). The routes
+ * no longer mint one, and these cases exist to cover the rows still pending: the count (#2175),
+ * the accept branch, and what a member's removal does around them.
+ */
+const legacyInvite = (
+  directory: DurableObjectStub<IdentityDO>,
+  scope: ScopeId,
+  principal: PrincipalId,
+  roleKey: string,
+  tokenHash: string,
+): Promise<void> =>
+  runInDurableObject(directory, (_i, state) =>
+    createLegacyInvite(state.storage.sql as unknown as RegistrySql, scope, principal, roleKey, null, tokenHash),
+  );
 
 interface Conversation {
   id: string;
@@ -678,7 +696,7 @@ describe("ticket0 on workerd — a reconcile repairs the desk's places at its id
     // and an accepted invite.
     expect(await directory().resolvePrincipal(desk, 'sub-owner')).toBe(owner);
     const member = principalId.parse(ulid());
-    await directory().createInvite(desk, member, 'agent', null, 'invite-hash');
+    await legacyInvite(directory(), desk, member, 'agent', 'invite-hash');
     // #2175: a hash-only invite is pending until claimed — counted in the DO's own SQLite.
     expect(await directory().legacyInviteCount(desk)).toBe(1);
     expect(await directory().claimInvite(desk, 'sub-ann', 'invite-hash')).toBe(member);
@@ -807,7 +825,7 @@ describe("ticket0 on workerd — the live feed tells a subscriber only what they
   /** Bind `sub` to a new principal in this desk, holding `role`. */
   async function member(sub: string, role: string): Promise<PrincipalId> {
     const principal = principalId.parse(ulid());
-    await directory().createInvite(desk, principal, role, null, `hash-${sub}`);
+    await legacyInvite(directory(), desk, principal, role, `hash-${sub}`);
     expect(await directory().claimInvite(desk, sub, `hash-${sub}`)).toBe(principal);
     await host().assignScopeRole(desk, principal, role);
     return principal;
@@ -1648,7 +1666,7 @@ describe('ticket0 on workerd — an owner hand-over moves the owner the lockout 
   /** B made a member the way an invite does: the role granted, then the invite accepted. */
   async function member(s: ScopeId, who: PrincipalId): Promise<void> {
     await host().assignScopeRole(s, who, 'agent');
-    await directory().createInvite(s, who, 'agent', null, `hash-${s}-${who}`);
+    await legacyInvite(directory(), s, who, 'agent', `hash-${s}-${who}`);
     expect(await directory().claimInvite(s, `sub-${who}-${s}`, `hash-${s}-${who}`)).toBe(who);
   }
 
