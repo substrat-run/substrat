@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { platformActorId, type RequestRollupDay } from '@substrat-run/contracts';
+import { platformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, type PlatformSweepOptions, type RequestRollupSweepOptions } from '../src/platform-sweep.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
@@ -24,7 +24,7 @@ const HOUR = 3_600_000;
 const at = (iso: string) => Date.parse(iso);
 
 describe('the days a pass reads', () => {
-  const due = (nowIso: string, reads: Pick<RequestRollupDay, 'day' | 'attemptedAt' | 'readAt'>[] = [], horizon: string | null = null) =>
+  const due = (nowIso: string, reads: { day: string; attemptedAt: string; readAt: string | null }[] = [], horizon: string | null = null) =>
     requestRollupDueDays({ nowMs: at(nowIso), reads, lookbackDays: 3, settleMs: HOUR, retryMs: HOUR, horizon });
 
   it('reads every closed day in the lookback, oldest first, once it has settled', () => {
@@ -71,9 +71,18 @@ describe('the billing retention horizon', () => {
   });
 });
 
+/** One day of the rollup's record, as the in-memory directory below keeps it. */
+interface ReadRow {
+  day: string;
+  attemptedAt: string;
+  readAt: string | null;
+  rows: number | null;
+  error: string | null;
+}
+
 /** A directory that keeps the rollup's ledger in memory, as `recordRequestDayRows` would. */
 function rollupHost(opts: { rollup?: boolean; failRecord?: boolean } = {}) {
-  const reads = new Map<string, RequestRollupDay>();
+  const reads = new Map<string, ReadRow>();
   const recorded: RequestDayReadInput[] = [];
   const pruned: { limit: number; months: number | null }[] = [];
   const admin: Record<string, unknown> = {

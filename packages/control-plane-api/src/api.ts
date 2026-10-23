@@ -183,6 +183,7 @@ import {
   auditWarningOf,
   type SubjectErasureFence,
   REQUEST_ROLLUP_LIMIT_DEFAULT,
+  REQUEST_ROLLUP_LIMIT_MAX,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -2383,7 +2384,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   //
   // A page is at most half the directory's own read bound, so the one row past the page that
   // says the window holds more always fits under it.
-  const REQUEST_ROLLUP_PAGE_MAX = 5_000;
+  const REQUEST_ROLLUP_PAGE_MAX = REQUEST_ROLLUP_LIMIT_MAX / 2;
   app.get('/meters/requests', async (c) => {
     const admin = c.var.admin;
     if (!admin.listRequestDays || !admin.listRequestRollupDays) {

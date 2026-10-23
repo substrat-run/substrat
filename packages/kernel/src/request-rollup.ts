@@ -107,7 +107,7 @@ export interface RequestRollupDayFilter {
 }
 
 /** The UTC day an instant falls on. */
-export function utcDayOf(ms: number): string {
+function utcDayOf(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
@@ -288,7 +288,7 @@ export function pruneRequestDayRows(sql: RedactionSql, nowMs: number, limit: num
  */
 export function requestRollupDueDays(input: {
   nowMs: number;
-  reads: readonly Pick<RequestRollupDay, 'day' | 'attemptedAt' | 'readAt'>[];
+  reads: readonly { day: string; attemptedAt: string; readAt: string | null }[];
   lookbackDays: number;
   settleMs: number;
   retryMs: number;

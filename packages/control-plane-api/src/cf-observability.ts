@@ -833,21 +833,22 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const key = `${dataset}\u0000${tenantId}\u0000${q.from}\u0000${q.to}\u0000${grainSeconds}`;
     const pending = inFlight.get(key);
     if (pending) return pending;
+    const p = ROUTER_REQUEST_POINT;
     const sql = `
       SELECT
-        blob1 AS vertical,
-        blob2 AS scopeId,
-        blob3 AS surface,
-        double2 AS status,
-        blob6 AS operation,
-        blob7 AS problemCode,
-        blob8 AS principalKind,
-        blob9 AS level,
+        ${p.vertical} AS vertical,
+        ${p.scopeId} AS scopeId,
+        ${p.surface} AS surface,
+        ${p.status} AS status,
+        ${p.operation} AS operation,
+        ${p.problemCode} AS problemCode,
+        ${p.principalKind} AS principalKind,
+        ${p.level} AS level,
         toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
         sum(_sample_interval) AS requests,
         max(_sample_interval) AS maxInterval
       FROM ${aeDataset(dataset)}
-      WHERE index1 = ${aeLiteral(tenantId)}
+      WHERE ${p.tenantId} = ${aeLiteral(tenantId)}
         AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
         AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
       GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, bucket
@@ -1250,32 +1251,31 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // would answer two rows whose p95s no caller can combine. Vertical reads null there.
     const byScope = input.grain === 'scope';
     const window = resolveObservabilityWindow(input);
+    // Blob/double positions are the router's published shape, `ROUTER_REQUEST_POINT`: it only
+    // ever grows, never reorders, which is what lets a reader name the ordinal it wants. The
+    // connector-call dataset's ordinals are published beside these, on
+    // `queryConnectorCallsSeries` below (#1691) — a different dataset, never this one.
+    const p = ROUTER_REQUEST_POINT;
     const where = [
-      `index1 = ${aeLiteral(input.tenantId)}`,
+      `${p.tenantId} = ${aeLiteral(input.tenantId)}`,
       `timestamp >= toDateTime(${Math.ceil(Date.parse(window.since) / 1000)})`,
       `timestamp < toDateTime(${Math.ceil(Date.parse(window.until) / 1000)})`,
     ];
-    if (input.scopeId) where.push(`blob2 = ${aeLiteral(input.scopeId)}`);
-    if (input.vertical) where.push(`blob1 = ${aeLiteral(input.vertical)}`);
+    if (input.scopeId) where.push(`${p.scopeId} = ${aeLiteral(input.scopeId)}`);
+    if (input.vertical) where.push(`${p.vertical} = ${aeLiteral(input.vertical)}`);
 
-    // Blob/double positions are the router's published shape (`apps/router/src/worker.ts`
-    // `record`): index1 tenant; blob1 vertical, blob2 scope, blob3 surface, blob4 status
-    // class; double1 duration ms, double2 status. That shape only ever grows, never
-    // reorders — which is what lets these ordinals be written down here at all. The
-    // connector-call dataset's ordinals are published beside these, on
-    // `queryConnectorCallsSeries` below (#1691) — a different dataset, never this one.
     const sql = `
       SELECT
-        blob2 AS scopeId,
-        ${byScope ? "'' AS vertical" : 'blob1 AS vertical'},
-        ${byScope ? "'' AS surface" : 'blob3 AS surface'},
+        ${p.scopeId} AS scopeId,
+        ${byScope ? "'' AS vertical" : `${p.vertical} AS vertical`},
+        ${byScope ? "'' AS surface" : `${p.surface} AS surface`},
         sum(_sample_interval) AS requests,
-        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
-        sum(if(blob4 = '2xx', _sample_interval, 0)) AS class2xx,
-        sum(if(blob4 = '3xx', _sample_interval, 0)) AS class3xx,
-        sum(if(blob4 = '4xx', _sample_interval, 0)) AS class4xx,
-        quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
-        quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
+        sum(if(${p.statusClass} = '5xx', _sample_interval, 0)) AS errors,
+        sum(if(${p.statusClass} = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(${p.statusClass} = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(${p.statusClass} = '4xx', _sample_interval, 0)) AS class4xx,
+        quantileWeighted(0.5)(${p.durationMs}, _sample_interval) AS durationP50,
+        quantileWeighted(0.95)(${p.durationMs}, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
       WHERE ${where.join(' AND ')}
       GROUP BY ${byScope ? 'scopeId' : 'scopeId, vertical, surface'}
@@ -1326,22 +1326,23 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const window = resolveObservabilityWindow(input);
     const bucketMinutes = observabilityBucketMinutes(window);
     const scopes = input.scopeIds.map((s) => aeLiteral(s)).join(', ');
+    const p = ROUTER_REQUEST_POINT;
     const sql = `
       SELECT
-        blob2 AS scopeId,
+        ${p.scopeId} AS scopeId,
         toStartOfInterval(timestamp, INTERVAL '${bucketMinutes}' MINUTE) AS start,
         sum(_sample_interval) AS requests,
-        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
-        sum(if(blob4 = '2xx', _sample_interval, 0)) AS class2xx,
-        sum(if(blob4 = '3xx', _sample_interval, 0)) AS class3xx,
-        sum(if(blob4 = '4xx', _sample_interval, 0)) AS class4xx,
-        quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
-        quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
+        sum(if(${p.statusClass} = '5xx', _sample_interval, 0)) AS errors,
+        sum(if(${p.statusClass} = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(${p.statusClass} = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(${p.statusClass} = '4xx', _sample_interval, 0)) AS class4xx,
+        quantileWeighted(0.5)(${p.durationMs}, _sample_interval) AS durationP50,
+        quantileWeighted(0.95)(${p.durationMs}, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
-      WHERE index1 = ${aeLiteral(input.tenantId)}
+      WHERE ${p.tenantId} = ${aeLiteral(input.tenantId)}
         AND timestamp >= toDateTime(${Math.ceil(Date.parse(window.since) / 1000)})
         AND timestamp < toDateTime(${Math.ceil(Date.parse(window.until) / 1000)})
-        AND blob2 IN (${scopes})
+        AND ${p.scopeId} IN (${scopes})
       GROUP BY scopeId, start
       ORDER BY start ASC
       LIMIT ${SERIES_ROW_LIMIT}
