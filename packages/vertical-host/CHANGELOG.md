@@ -1,5 +1,18 @@
 # @substrat-run/vertical-host
 
+## 0.159.0
+
+### Patch Changes
+
+- 6aad0fb: Record bounded, credential-free authentication checks on request invocation logs. Bearer verification distinguishes invalid issuer/audience, expiry, signature, discovery/key failures and app/delegation policy refusals; MCP records caller-resolution outcomes and early refusal problem codes. Request details show these checks, including a verified token followed by a caller refusal. Authentication responses and admission policy are unchanged.
+
+  Upgrade and re-push a vertical with the updated auth and host packages to produce the diagnostics. Older lines remain readable and do not imply authentication succeeded.
+
+- Updated dependencies [6aad0fb]
+  - @substrat-run/contracts@0.159.0
+  - @substrat-run/kernel@0.159.0
+  - @substrat-run/model-providers@0.5.49
+
 ## 0.158.0
 
 ### Minor Changes
