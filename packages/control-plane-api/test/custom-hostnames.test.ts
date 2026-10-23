@@ -1,4 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+import { ulid } from '@substrat-run/kernel';
+import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   createCustomHostnameProvisioner,
   mapCfStatus,
@@ -341,5 +347,71 @@ describe('reconcilePendingHostnames', () => {
     // The live scope's active row is untouched; nothing was polled or re-issued.
     expect(issuanceWrites).not.toHaveBeenCalled();
     expect(provisioner.check).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The orphan pass over a real directory holding an archived scope whose row does not read as a
+ * scope (an empty vertical stored before provisioning refused one). The read steps over the row
+ * and names it, and its hostnames are orphaned like any dead scope's, instead of the strict read
+ * failing the whole pass.
+ */
+describe('reconcilePendingHostnames over a directory with an unreadable dead scope', () => {
+  const staff = platformActorId.parse(ulid());
+  const tenant = tenantId.parse(ulid());
+  let dir: string;
+  let host: SqliteScopeHost;
+  const provisioner = { check: vi.fn(), create: vi.fn(), remove: vi.fn(async () => {}) } as unknown as CustomHostnameProvisioner;
+
+  /** An active scope with one platform hostname, optionally archived and its vertical stored as given. */
+  const scopeWithHostname = async (hostname: string, opts: { archive?: boolean; storedVertical?: string } = {}) => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical: 'todo' });
+    await host.admin.activateScope(staff, tenant, s);
+    await host.admin.bindHostname(staff, { hostname, tenantId: tenant, scopeId: s, surface: 'app', region: null, canonical: true });
+    if (opts.archive) await host.admin.archiveScope(staff, tenant, s);
+    if (opts.storedVertical !== undefined) {
+      (host as unknown as { directory: { prepare(q: string): { run(...a: unknown[]): unknown } } }).directory
+        .prepare('UPDATE scopes SET vertical = ? WHERE scope_id = ?')
+        .run(opts.storedVertical, s);
+    }
+    return s;
+  };
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-hostnames-unreadable-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: tenant, slug: 'acme', name: 'Acme' });
+  });
+  afterEach(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const pass = (admin: HostnameReconcileAdmin = host.admin) =>
+    reconcilePendingHostnames({ admin, actor: staff, provisioner, isCustom: () => false });
+
+  it('orphans the hostnames of an unreadable archived scope, names it once, and leaves a live one bound', async () => {
+    const dead = await scopeWithHostname('dead-app.global.substrat.run', { archive: true, storedVertical: '' });
+    await scopeWithHostname('live-app.global.substrat.run');
+
+    const out = await pass();
+
+    expect(out.orphaned).toBe(1);
+    expect(out.unreadableScopes).toEqual([{ scopeId: dead, fields: ['vertical'] }]);
+    expect(out.errors).toEqual([]);
+    expect((await host.admin.listHostnames(staff)).map((h) => h.hostname)).toEqual(['live-app.global.substrat.run']);
+  });
+
+  it('orphans a readable archived scope the same way, naming nothing', async () => {
+    await scopeWithHostname('dead-app.global.substrat.run', { archive: true });
+    const out = await pass();
+    expect(out).toMatchObject({ orphaned: 1, unreadableScopes: [], errors: [] });
+  });
+
+  it('a host without listScopesReadable is read strictly, as before', async () => {
+    await scopeWithHostname('dead-app.global.substrat.run', { archive: true, storedVertical: '' });
+    const { listScopesReadable: _readable, ...strict } = host.admin;
+    await expect(pass(strict as HostnameReconcileAdmin)).rejects.toThrow();
   });
 });

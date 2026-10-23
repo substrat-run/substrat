@@ -301,6 +301,15 @@ export interface HostnameReconcileAdmin {
     actor: PlatformActorId,
     filter?: { status?: ScopeStatus | ScopeStatus[] },
   ): Promise<Array<{ id: ScopeId }>>;
+  /**
+   * The same read, naming a row that does not read as a scope instead of failing the list
+   * (`HostAdmin.listScopesReadable`). Used when the host has it, so one such row cannot stop the
+   * pass; a host without it is read through `listScopes`.
+   */
+  listScopesReadable?(
+    actor: PlatformActorId,
+    filter?: { status?: ScopeStatus | ScopeStatus[] },
+  ): Promise<{ scopes: Array<{ id: ScopeId }>; unreadable: Array<{ scopeId: string; fields: string[] }> }>;
   unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
 }
 
@@ -319,6 +328,12 @@ export interface ReconcileHostnamesResult {
   orphaned: number;
   /** Per-hostname errors — one bad row never sinks the pass. */
   errors: { hostname: string; error: string }[];
+  /**
+   * Archived/reaped directory rows that do not read as a scope, by id and the names of the fields
+   * that failed, once per pass. Each still counts as dead (the read matched it on its status), so
+   * its hostnames are orphaned like any other's.
+   */
+  unreadableScopes: { scopeId: string; fields: string[] }[];
 }
 
 /** The scope statuses past which a hostname serves nothing — its rows are orphans. */
@@ -361,7 +376,7 @@ export async function reconcilePendingHostnames(deps: {
   const activated = async (h: { hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null }) => {
     if (deps.onActivated) await deps.onActivated(h).catch(() => {});
   };
-  const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, healed: 0, orphaned: 0, errors: [] };
+  const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, healed: 0, orphaned: 0, errors: [], unreadableScopes: [] };
 
   // A live fork is `active`; a preview's reap archives it only after unrouting it (#1704),
   // and its delete removes its rows, so this set never holds a live preview's hostname.
@@ -369,9 +384,21 @@ export async function reconcilePendingHostnames(deps: {
   // delete-app already unbinds at delete time, so a bound row on an archived scope is a
   // relic; a staff rescue that unarchives re-binds hostnames as part of the restore,
   // while leaving rows bound would parade dead names on the Domains page all retention.
-  const deadScopes = new Set<string>(
-    (await deps.admin.listScopes(deps.actor, { status: DEAD_SCOPE_STATUSES })).map((s) => s.id),
-  );
+  //
+  // Read through `listScopesReadable` when the host has it: a row that does not read as a scope
+  // is named instead of failing the whole pass. It matched the status filter, so it is dead, and
+  // its hostnames are orphaned with the rest rather than read as live.
+  const deadScopes = new Set<string>();
+  if (deps.admin.listScopesReadable) {
+    const { scopes, unreadable } = await deps.admin.listScopesReadable(deps.actor, { status: DEAD_SCOPE_STATUSES });
+    for (const s of scopes) deadScopes.add(s.id);
+    for (const u of unreadable) {
+      deadScopes.add(u.scopeId);
+      out.unreadableScopes.push({ scopeId: u.scopeId, fields: u.fields });
+    }
+  } else {
+    for (const s of await deps.admin.listScopes(deps.actor, { status: DEAD_SCOPE_STATUSES })) deadScopes.add(s.id);
+  }
   const rows = await deps.admin.listHostnames(deps.actor);
 
   for (const h of rows) {
