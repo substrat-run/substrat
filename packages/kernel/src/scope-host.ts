@@ -2054,8 +2054,11 @@ export interface HostAdmin {
    * `reservedRoleDefinitionRefusal`) for a person's role holding a key reserved to a system
    * principal, or a system-held role holding a key a person may hold, judged against what the
    * host's modules reserve and declare and the tenant's other roles (a system-held role's keys
-   * count as reserved). A key the host knows nothing about is admitted. A refusal writes nothing,
-   * so the stored definition and every seat of it are left as they were.
+   * count as reserved). A redefinition is judged against the stored row of its key: a stored
+   * system-held role's keys count as reserved when it is redefined as a person's, and a stored
+   * person's role held by anyone but a system principal cannot become `holder: 'system'`. A key the
+   * host knows nothing about is admitted. A refusal writes nothing, so the stored definition and
+   * every seat of it are left as they were.
    */
   defineRole(actor: PlatformActorId, tenantId: TenantId, role: RoleDefinition): Promise<void>;
   /**

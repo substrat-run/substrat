@@ -88,8 +88,12 @@ Roles a host defines and seats itself are held to the same rule:
 
 - **Defining a role** (`defineRole`, and the role set a provision or a restore projects into a
   scope) is refused when a person's role would hold a reserved key, or a system-held role a key
-  a person may hold. So a role assigned through a door cannot be widened afterwards. A
-  definition that narrows a role is never refused.
+  a person may hold. A redefinition is judged against the role it replaces: a key it adds
+  meets the same rule; a system-held role redefined as a person's counts its old keys as
+  reserved; and a person's role cannot become `holder: 'system'` while anyone holds it, since
+  those seats were made through a person's door. So a role assigned through a door cannot be
+  widened afterwards, by a key or by a holder change. A definition is never refused for a key
+  it takes out, only for a reserved key it still holds.
 - **The owner's seat**, which a provision gives the owner of record, and **the owner
   hand-over** go through the person's door: a role carrying a reserved key, or one declared
   `holder: 'system'`, is refused. The hand-over asks before the owner record moves.
