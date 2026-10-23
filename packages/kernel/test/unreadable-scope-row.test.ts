@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, scope as scopeSchema, type Scope } from '@substrat-run/contracts';
 import { readableScopes } from '../src/scope-record.js';
-import { runPlatformSweep } from '../src/platform-sweep.js';
+import { runCrossVerticalFrom, runPlatformSweep } from '../src/platform-sweep.js';
 import { ulid } from '../src/ulid.js';
 import type { ScopeHost, ScopeListing } from '../src/scope-host.js';
 
@@ -193,6 +193,38 @@ describe('runPlatformSweep over a directory with an unreadable row', () => {
       expect(cleared).toEqual([T]);
       expect(report.tenantsReaped).toBe(1);
     });
+  });
+
+  it("runs a producer's cross-vertical edges beside the row, naming it once (the router kick)", async () => {
+    const bad = row('');
+    const { host, reads } = hostWith(good, [bad]);
+    const out = await runCrossVerticalFrom(
+      host,
+      { actor: ACTOR, crossVertical: {} },
+      { tenantId: good[0]!.tenantId, scopeId: good[0]!.id },
+    );
+    expect(reads.strict).toBe(0);
+    expect(out.errors).toEqual([{ kind: 'scope-row', id: bad.scope_id, error: expect.stringMatching(/\(vertical\)/) }]);
+  });
+
+  it('samples resting scopes for the storage gauge beside the row', async () => {
+    const bad = row('');
+    const { host, reads } = hostWith(good, [bad]);
+    Object.assign(host.admin, {
+      listScopeStorageAttempts: async () => [],
+      recordScopeStorage: async (_a: unknown, readings: unknown[]) => ({ recorded: readings.length }),
+      pruneScopeStorage: async () => 0,
+    });
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      storageGauge: { read: async () => 4096 },
+    });
+    // The gauge's own directory read stepped over the row instead of failing the phase.
+    expect(report.errors.filter((e) => e.kind === 'storage')).toEqual([]);
+    expect(report.storage).not.toBeNull();
+    expect(reads.strict).toBe(0);
   });
 
   it('reads a host without listScopesReadable through listScopes, strict as before', async () => {
