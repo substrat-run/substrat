@@ -29,6 +29,7 @@ import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
   REQUEST_ROLLUP_LOOKBACK_DAYS,
   REQUEST_ROLLUP_PRUNE_BATCH,
+  REQUEST_ROLLUP_READ_TIMEOUT_MS,
   REQUEST_ROLLUP_RETRY_MS,
   REQUEST_ROLLUP_SETTLE_MS,
   requestRollupDueDays,
@@ -747,6 +748,12 @@ export interface RequestRollupSweepOptions {
   settleMs?: number;
   /** How long a failed day waits before it is tried again. Default `REQUEST_ROLLUP_RETRY_MS`. */
   retryMs?: number;
+  /**
+   * How long one day's read may take, in ms. Past it the day counts as failed, like any other
+   * failed read, and is retried later: a stalled Analytics Engine answer must not hold the pass
+   * past its invocation limit. Default `REQUEST_ROLLUP_READ_TIMEOUT_MS`.
+   */
+  readTimeoutMs?: number;
   /** How many months of day rows are kept; null keeps them all. Default `BILLING_ROLLUP_RETENTION_MONTHS`. */
   retentionMonths?: number | null;
   /** Day rows past retention deleted per pass. Default `REQUEST_ROLLUP_PRUNE_BATCH`. */
@@ -1387,16 +1394,6 @@ export async function runPlatformSweep(
     report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, reachedThisPass, report);
   }
 
-  // -- the daily request rollup (#2501) ----------------------------------------
-  // Reads Analytics Engine, not a scope, so it wakes nothing and can sit anywhere in the pass.
-  if (
-    options.requestRollup &&
-    typeof host.admin.recordRequestDay === 'function' &&
-    typeof host.admin.listRequestRollupDays === 'function'
-  ) {
-    report.requestRollup = await sweepRequestRollup(host.admin, options.actor, options.requestRollup, report);
-  }
-
   // -- provision reconcile (#1172, #1653) -------------------------------------
   // A vertical's `onProvision` runs once per scope, at install. So a scope serving code
   // whose provision hook never ran against it is missing whatever that hook creates —
@@ -1875,6 +1872,19 @@ export async function runPlatformSweep(
       // ship→stamp→prune leaves the rows exactly where they were.
       report.errors.push({ kind: 'access-log', id: 'access-log', error: message(err) });
     }
+  }
+
+  // -- the daily request rollup (#2501) ----------------------------------------
+  // AFTER everything else, deliberately: it waits on Analytics Engine, an outside service, and
+  // nothing in the pass depends on it, so a slow answer must not hold back the work that has to
+  // happen every pass. Each read is also bounded (`RequestRollupSweepOptions.readTimeoutMs`). Its
+  // one directory read leaves an access row for the next pass's drain to ship.
+  if (
+    options.requestRollup &&
+    typeof host.admin.recordRequestDay === 'function' &&
+    typeof host.admin.listRequestRollupDays === 'function'
+  ) {
+    report.requestRollup = await sweepRequestRollup(host.admin, options.actor, options.requestRollup, report);
   }
 
   return report;
@@ -2887,7 +2897,11 @@ async function sweepRequestRollup(
       // is shared with every observability read.
       for (const day of take) {
         try {
-          const counts = await rollup.read(day);
+          const counts = await withinDeadline(
+            rollup.read(day),
+            rollup.readTimeoutMs ?? REQUEST_ROLLUP_READ_TIMEOUT_MS,
+            'the request rollup read',
+          );
           out.recorded += (await admin.recordRequestDay!(actor, { day, attemptedAt: now(), counts })).recorded;
           out.read += 1;
         } catch (err) {

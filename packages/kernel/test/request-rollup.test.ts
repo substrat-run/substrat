@@ -81,13 +81,18 @@ interface ReadRow {
 }
 
 /** A directory that keeps the rollup's ledger in memory, as `recordRequestDayRows` would. */
-function rollupHost(opts: { rollup?: boolean; failRecord?: boolean } = {}) {
+function rollupHost(opts: { rollup?: boolean; failRecord?: boolean; order?: string[] } = {}) {
   const reads = new Map<string, ReadRow>();
   const recorded: RequestDayReadInput[] = [];
   const pruned: { limit: number; months: number | null }[] = [];
   const admin: Record<string, unknown> = {
     listScopes: async () => [],
     listConnections: async () => [],
+    // Another phase of the same pass, so a test can see what ran before the rollup.
+    pruneTelemetry: async () => {
+      opts.order?.push('telemetry');
+      return { opsFailures: 0, issues: 0, sweepRuns: 0 };
+    },
   };
   if (opts.rollup !== false) {
     admin.listRequestRollupDays = async () => [...reads.values()];
@@ -177,6 +182,28 @@ describe('the request-rollup phase', () => {
     const later = await sweep(host, options('2026-10-23T13:00:00.000Z'));
     expect(later.requestRollup).toMatchObject({ due: 1, read: 1, failed: 0, recorded: 1 });
     expect(reads.get('2026-10-22')).toMatchObject({ readAt: '2026-10-23T13:00:00.000Z', error: null });
+  });
+
+  it('runs after every other phase, and a read that never settles fails its day without holding the pass', async () => {
+    const order: string[] = [];
+    const { host, reads, pruned } = rollupHost({ order });
+    const report = await sweep(host, {
+      read: () => {
+        order.push('read');
+        return new Promise<never>(() => {});
+      },
+      lookbackDays: 1,
+      readTimeoutMs: 20,
+      now: () => NOW,
+    });
+    // The rest of the pass ran first, so a stalled read cannot starve it.
+    expect(order).toEqual(['telemetry', 'read']);
+    expect(report.telemetry).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0 });
+    // The stalled read is an ordinary failed day: recorded, retried later, and the phase's own
+    // prune still ran after it.
+    expect(report.requestRollup).toMatchObject({ read: 0, failed: 1 });
+    expect(reads.get('2026-10-22')).toMatchObject({ readAt: null, error: 'the request rollup read took longer than 20 ms' });
+    expect(pruned).toHaveLength(1);
   });
 
   it('counts a day whose counts the directory refused as failed, and records the refusal', async () => {

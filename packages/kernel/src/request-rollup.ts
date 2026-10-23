@@ -62,6 +62,12 @@ export const REQUEST_ROLLUP_SETTLE_MS = 3_600_000;
 /** How long a day whose read failed waits before it is tried again. */
 export const REQUEST_ROLLUP_RETRY_MS = 3_600_000;
 
+/**
+ * How long one day's read may take before it counts as failed. A fleet-wide query over a day
+ * answers in seconds; this is the bound that keeps a stalled one from holding the pass.
+ */
+export const REQUEST_ROLLUP_READ_TIMEOUT_MS = 30_000;
+
 /** The most days one pass reads, one Analytics Engine query each. A first pass backfills over several. */
 export const REQUEST_ROLLUP_DAYS_PER_PASS = 7;
 
