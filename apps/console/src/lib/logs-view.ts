@@ -1,4 +1,4 @@
-import type { RecentLogEvent, RecentLogsRead } from './api';
+import type { Api, RecentLogEvent, RecentLogsRead } from './api';
 
 /**
  * What the Observability view's recent-logs card holds, and what it says about it (#2520).
@@ -41,13 +41,41 @@ export interface LogsPanel {
   notice: boolean;
   /** The sentence of the empty row, or `null` when the page has no empty row. */
   emptyRow: string | null;
+  /** Show the table's loading row. */
+  loading: boolean;
+  /** The failure sentence that replaces the table, or `null` when the read did not fail. */
+  failure: string | null;
 }
 
-/** What the card shows for a view: the notice only on an answered, incomplete page; an empty row only on an answered, empty one. */
+/**
+ * What the card shows for a view: the notice only on an answered, incomplete page; an empty row
+ * only on an answered, empty one; the loading row while a read is in flight; the failure sentence
+ * (in place of the table) after a failed one. Every branch of the card is one of these.
+ */
 export function logsPanelOf(view: LogsView): LogsPanel {
   const ready = view.state === 'ready';
   return {
     notice: ready && view.incomplete,
     emptyRow: ready && view.events.length === 0 ? (view.incomplete ? LOGS_EMPTY_INCOMPLETE : LOGS_EMPTY_COMPLETE) : null,
+    loading: view.state === 'loading',
+    failure: view.state === 'error' ? `Log query failed: ${view.error}` : null,
   };
+}
+
+/**
+ * The transition a read ends in: the answered view, or the failed one. The read itself is the
+ * caller's (`recentLogsRead` of one service); what an answer or a failure turns into is here, so
+ * it is tested with a stub client rather than by mounting the view.
+ */
+export async function loadLogs(
+  api: Pick<Api, 'recentLogsRead'>,
+  query: Parameters<Api['recentLogsRead']>[0],
+): Promise<(prev: LogsView) => LogsView> {
+  try {
+    const read = await api.recentLogsRead(query);
+    return () => logsLoaded(read);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return (prev) => logsFailed(prev, message);
+  }
 }

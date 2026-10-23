@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, EmptyState, Select, Tag } from '../components';
 import { ApiError } from '../lib/api';
 import type { Api, ServiceMetricsRow } from '../lib/api';
-import { LOGS_IDLE, LOGS_INCOMPLETE_NOTICE, logsFailed, logsLoaded, logsLoading, logsPanelOf } from '../lib/logs-view';
+import { LOGS_IDLE, LOGS_INCOMPLETE_NOTICE, loadLogs, logsLoading, logsPanelOf, type LogsView } from '../lib/logs-view';
 
 /**
  * The staff fleet view (design/observability.md §5, view 1): per-service invocation
@@ -23,6 +23,28 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 const ms = (us: number) => (us >= 100_000 ? `${Math.round(us / 1000)} ms` : `${(us / 1000).toFixed(1)} ms`);
 const pct = (part: number, whole: number) => (whole === 0 ? '—' : `${((part / whole) * 100).toFixed(2)}%`);
 
+const th: React.CSSProperties = {
+  textAlign: 'left',
+  padding: '0 16px',
+  height: 36,
+  fontSize: 11,
+  fontWeight: 500,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  color: 'var(--text-tertiary)',
+  borderBottom: '1px solid var(--border-default)',
+  background: 'var(--surface-inset)',
+  whiteSpace: 'nowrap',
+};
+const td: React.CSSProperties = {
+  padding: '0 16px',
+  height: 40,
+  borderBottom: '1px solid var(--border-subtle)',
+  fontSize: 12.5,
+};
+const num: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--font-mono)' };
+const numTh: React.CSSProperties = { ...th, textAlign: 'right' };
+
 /**
  * Said above the logs table when the plane marked the page it answered as possibly incomplete
  * (`x-substrat-logs-incomplete`, #2520): the read stopped before it could vouch for the whole
@@ -36,6 +58,63 @@ export function LogsIncompleteNotice() {
     >
       {LOGS_INCOMPLETE_NOTICE}
     </div>
+  );
+}
+
+/**
+ * The recent-logs card's body: everything under its header, a pure function of the view (props
+ * only, no effects), so a render test drives every branch. What shows is `logsPanelOf`'s call.
+ */
+export function LogsCard({ view }: { view: LogsView }) {
+  const panel = logsPanelOf(view);
+  return (
+    <>
+      {panel.notice && <LogsIncompleteNotice />}
+      {panel.failure !== null ? (
+        <div style={{ padding: 16, fontSize: 13, color: 'var(--status-danger-fg)' }}>{panel.failure}</div>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, width: 170 }}>Time</th>
+              <th style={{ ...th, width: 80 }}>Level</th>
+              <th style={th}>Message</th>
+              <th style={{ ...th, width: 110 }}>Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {view.events.map((l, i) => (
+              <tr key={i}>
+                <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                  {l.timestamp ? new Date(l.timestamp).toISOString().slice(0, 19).replace('T', ' ') : '—'}
+                </td>
+                <td style={{ ...td, fontFamily: 'var(--font-mono)', color: l.level === 'error' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
+                  {l.level ?? '—'}
+                </td>
+                <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, wordBreak: 'break-all' }}>
+                  {l.message ?? <span style={{ color: 'var(--text-placeholder)' }}>(no message)</span>}
+                </td>
+                <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{l.outcome ?? '—'}</td>
+              </tr>
+            ))}
+            {panel.emptyRow !== null && (
+              <tr>
+                <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
+                  {panel.emptyRow}
+                </td>
+              </tr>
+            )}
+            {panel.loading && (
+              <tr>
+                <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
+                  Loading…
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      )}
+    </>
   );
 }
 
@@ -80,55 +159,26 @@ export function Observability({ api }: ObservabilityProps) {
     let live = true;
     setLogView(logsLoading);
     void (async () => {
-      try {
-        // Logs are capped to the last 24h even on the 3-day metrics range — Workers
-        // Logs retention is short and a narrower window keeps the query cheap.
-        const read = await api.recentLogsRead({
-          service: selected,
-          hours: Math.min(Number(hours), 24),
-          limit: 100,
-          level: errorsOnly ? 'error' : undefined,
-        });
-        if (!live) return;
-        setLogView(logsLoaded(read));
-      } catch (e) {
-        if (!live) return;
-        setLogView((prev) => logsFailed(prev, e instanceof Error ? e.message : String(e)));
-      }
+      // Logs are capped to the last 24h even on the 3-day metrics range — Workers
+      // Logs retention is short and a narrower window keeps the query cheap.
+      const next = await loadLogs(api, {
+        service: selected,
+        hours: Math.min(Number(hours), 24),
+        limit: 100,
+        level: errorsOnly ? 'error' : undefined,
+      });
+      if (live) setLogView(next);
     })();
     return () => {
       live = false;
     };
   }, [api, selected, hours, errorsOnly]);
 
-  const logsPanel = logsPanelOf(logView);
-
   const totals = rows.reduce(
     (acc, r) => ({ requests: acc.requests + r.requests, errors: acc.errors + r.errors }),
     { requests: 0, errors: 0 },
   );
 
-  const th: React.CSSProperties = {
-    textAlign: 'left',
-    padding: '0 16px',
-    height: 36,
-    fontSize: 11,
-    fontWeight: 500,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase',
-    color: 'var(--text-tertiary)',
-    borderBottom: '1px solid var(--border-default)',
-    background: 'var(--surface-inset)',
-    whiteSpace: 'nowrap',
-  };
-  const td: React.CSSProperties = {
-    padding: '0 16px',
-    height: 40,
-    borderBottom: '1px solid var(--border-subtle)',
-    fontSize: 12.5,
-  };
-  const num: React.CSSProperties = { ...td, textAlign: 'right', fontFamily: 'var(--font-mono)' };
-  const numTh: React.CSSProperties = { ...th, textAlign: 'right' };
 
   if (state === 'unconfigured') {
     return (
@@ -249,51 +299,7 @@ export function Observability({ api }: ObservabilityProps) {
               Close
             </Button>
           </div>
-          {logsPanel.notice && <LogsIncompleteNotice />}
-          {logView.state === 'error' ? (
-            <div style={{ padding: 16, fontSize: 13, color: 'var(--status-danger-fg)' }}>Log query failed: {logView.error}</div>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
-              <thead>
-                <tr>
-                  <th style={{ ...th, width: 170 }}>Time</th>
-                  <th style={{ ...th, width: 80 }}>Level</th>
-                  <th style={th}>Message</th>
-                  <th style={{ ...th, width: 110 }}>Outcome</th>
-                </tr>
-              </thead>
-              <tbody>
-                {logView.events.map((l, i) => (
-                  <tr key={i}>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
-                      {l.timestamp ? new Date(l.timestamp).toISOString().slice(0, 19).replace('T', ' ') : '—'}
-                    </td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', color: l.level === 'error' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
-                      {l.level ?? '—'}
-                    </td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 12, wordBreak: 'break-all' }}>
-                      {l.message ?? <span style={{ color: 'var(--text-placeholder)' }}>(no message)</span>}
-                    </td>
-                    <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{l.outcome ?? '—'}</td>
-                  </tr>
-                ))}
-                {logsPanel.emptyRow !== null && (
-                  <tr>
-                    <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
-                      {logsPanel.emptyRow}
-                    </td>
-                  </tr>
-                )}
-                {logView.state === 'loading' && (
-                  <tr>
-                    <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
-                      Loading…
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
+          <LogsCard view={logView} />
         </Card>
       )}
     </div>
