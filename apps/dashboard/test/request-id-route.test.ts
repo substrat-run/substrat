@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { REQUEST_ID_HEADER, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { REQUEST_ID_HEADER, platformActorId, problem, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
@@ -127,11 +127,35 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);
   });
 
-  it("a 401 a route answered itself carries the header, with the route's body unchanged", async () => {
+  it("a 401 a route answered itself carries the header, and is a problem document (#113)", async () => {
     const res = await get('/me');
     expect(res.status).toBe(401);
     expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);
-    expect(await res.json()).toEqual({ error: 'unauthorized' });
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(problem.safeParse(body).success).toBe(true);
+    // The sentence the SPA read before stays, as `error` and as `detail`; the id rides the body.
+    expect(body).toMatchObject({ status: 401, detail: 'unauthorized', error: 'unauthorized' });
+    expect(body.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
+  });
+
+  it('/api/support/identity answers its 401 the same way; an unconfigured desk is still plain JSON', async () => {
+    const unconfigured = await get('/support/identity');
+    expect(unconfigured.status).toBe(200);
+    expect(unconfigured.headers.get('content-type')).not.toContain('problem');
+
+    const res = await app.request(
+      '/api/support/identity',
+      {},
+      { ...env, SUPPORT_DESK_ORIGIN: 'https://desk.test', SUPPORT_WIDGET_SECRET: 's' },
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(problem.safeParse(body).success).toBe(true);
+    expect(body).toMatchObject({ status: 401, detail: 'unauthorized', error: 'unauthorized' });
+    expect(body.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
   });
 
   it('a thrown 401 rendered by onError carries the id in the problem body, equal to the header', async () => {
