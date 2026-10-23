@@ -16,11 +16,9 @@ the scope-store envelope, whose scheme this reuses.
 
 ## Summary
 
-**The problem.** Every deployed vertical is handed the same shared secrets the platform's own
-workers use, and authenticates the platform by comparing a presented value with its copy. A
-shared secret cannot tell callers apart: the check learns that the caller holds the value, never
-who the caller is, and every holder can present it. So a credential held by any one deployment
-is as strong as the platform's own, and rotating it is a change to every deployment at once.
+**The problem.** Calls between the platform and a deployed vertical are authenticated with
+shared secrets. A shared secret cannot tell callers apart, and a credential held by a deployment
+is as strong as the platform's own.
 
 **The target is one-way trust.**
 
@@ -33,7 +31,9 @@ is as strong as the platform's own, and rotating it is a change to every deploym
    control plane goes to its own outbox, the way provisioning and platform requests already flow
    (K-31). The few direct calls a vertical makes up to the control plane are replaced one by one.
 3. **Then nothing a deployment holds is accepted by any platform worker,** and the shared
-   secrets are retired.
+   secrets are retired. The down-channel can be signed-only before that, but the shared
+   credential stays injected until the up-channel is gone, so the up-channel work is on the
+   critical path (§9).
 
 **The envelope** is fifteen lines of UTF-8, signed with Ed25519 (§3): a protocol tag, the
 issuer (`router` or `platform`), the kind (`route` or `call`), the key id, the target deployment,
@@ -43,9 +43,10 @@ format and the key tooling are K-52's.
 
 **The rollout breaks nothing that is live** (§9). Verifiers learn to accept a signature before
 anything relies on one (`dual`). The signers then add signatures beside the legacy headers,
-which stay. The control plane records which deployed versions can verify, and an environment
-becomes `signed-only` only when every live version can, the counters show no legacy acceptance,
-and a human flips it. Every step reverts on its own.
+which stay. The control plane records which deployed versions can verify, and an environment's
+down-channel becomes `signed-only` only when every live version can, the counters show no legacy
+acceptance, and a human flips it. The shared credential is withdrawn only after the up-channel
+is gone. Every step reverts on its own.
 
 **This pull request** adds this RFC, the K-58 draft and the primitives, with tests and vectors.
 It wires nothing and changes no behaviour.
@@ -61,20 +62,14 @@ record); a dual-mode disagreement (refuse it and count it).
 
 ## 1. The problem
 
-Two kinds of call cross from the platform into a deployed vertical today. The router forwards
-an end user's request after resolving which tenant, scope and surface it is for, and asserts
-that resolution in headers. The control plane, and the router for a few calls of its own, call
-the vertical's internal endpoints. Both are authenticated by a shared secret: the caller presents
-a value, and the vertical compares it with the copy the uploader injected (K-27, K-31).
+Calls between the platform and a deployed vertical are authenticated today by comparing a
+presented value with a copy (K-27, K-31). That model has two properties that do not change
+however carefully it is operated:
 
-That model has two properties that do not change however carefully it is operated:
-
-- **It cannot tell callers apart.** A shared value proves possession, not identity. The verifier
-  cannot distinguish the router from the control plane from any other holder, so it cannot apply
-  different rules to them.
-- **Its strength is that of its weakest holder.** The same value sits in every deployment,
-  because every deployment must verify it. A credential held by a deployment is therefore as
-  strong as the platform's own, and the cost of rotating it grows with the fleet.
+- **It cannot tell callers apart.** A shared value proves possession, not identity, so a verifier
+  cannot apply different rules to different callers.
+- **A credential held by a deployment is as strong as the platform's own,** and rotating it is a
+  change to the whole fleet at once.
 
 The cure is the one K-52 applied to scope stores: separate the power to sign from the power to
 verify. A deployment that verifies with a public key holds nothing that signs.
@@ -137,7 +132,11 @@ signer's role is `iss`.
 
 The signed message is exactly these bytes. A verifier in another language rebuilds them from the
 fields and checks the signature. The vectors cover a route, a scoped call, an unscoped call with
-an empty body, and a call the router makes.
+an empty body, and a call the router makes. Negative vectors beside them name the reason each must
+be refused for (a tampered line, S + L, another audience, an expired or not-yet-valid envelope, a
+key of the other issuer, an over-long lifetime, an aliased kid or nonce, a byte-order mark, CRLF,
+a trailing line feed, a lone surrogate, a store envelope, an inadmissible pair), and key lists a
+loader must refuse (a small-order point, an alias, a key listed for both issuers, a duplicate).
 
 - UTF-8, no byte-order mark. Fifteen lines joined by a line feed (0x0A), with no trailing line
   feed. Nothing else separates fields, and no field contains a line feed.
@@ -182,8 +181,11 @@ the last step (§9, step 7) stops sending them.
 ### 3.4 The checks, in order, and the one refusal
 
 `verifyWireEnvelope` makes every check in one fixed order. Before any of them it requires a key
-set that `wireVerificationKeys` built, which refuses a key listed for both issuers. Any other key
-set is the deployment's fault, not the caller's, so it throws, and no refusal counter hears it.
+set that `wireVerificationKeys` built, which refuses a key listed for both issuers, and a call
+expectation that states its replay policy (§4). Anything else is the deployment's fault, not the
+caller's, so it throws, and no refusal counter hears it. The key set is marked by the module
+instance, so it must be built by the same copy of the package that verifies: the entry (Q2) holds
+both.
 
 1. both headers present;
 2. the header decodes as base64url to UTF-8, decoded strictly (a byte-order mark is kept, so it
@@ -197,11 +199,13 @@ set is the deployment's fault, not the caller's, so it throws, and no refusal co
    most the maximum; the clock is inside `[iat - skew, exp + skew]`; the method and target are
    this request's; a call's body is this body; a tenant or scope the endpoint pins is the one
    named;
-7. last, and only when the endpoint keeps nonces, the nonce is unspent (§4).
+7. last, and only on a call whose replay policy is a nonce cache, the nonce is unspent: the claim
+   must answer exactly `true` (§4).
 
-**Every failure the caller caused returns the same value**, `WIRE_REFUSED`, and an endpoint answers every refusal
-with the same status and body. The reason goes to an `onRefusal` callback for counters only, and
-never into a response or a log line a caller can read. Nothing secret is compared in the
+**Every failure the caller caused returns the same value**, `WIRE_REFUSED`, and an endpoint
+answers every refusal with the same status and body. The reason goes to an `onRefusal` callback
+for counters only (a throw or a rejection from it is ignored), and never into a response or a log
+line a caller can read. Nothing secret is compared in the
 verifier, so the time a refusal takes reveals nothing secret. The single answer stops a caller
 from learning which check failed.
 
@@ -224,29 +228,47 @@ upload, and a route's authority is the identity the router resolved, not the pay
   one target, and lives two minutes at most. Replaying one repeats the same request to the same
   deployment inside that window, which HTTP retries already do, and the router's own bounded
   retry (K-29) does deliberately.
-- **Calls that change state keep one.** The endpoint passes a `WireNonceCache`, and the verifier
-  claims the nonce only after every other check has passed, so an envelope refused for anything
-  else never spends an entry. `claim(nonce, until)` answers `true` once per nonce. It may forget
-  the nonce after `until`, which is `exp + skew`, the moment the envelope is refused on time
-  anyway. The cache lives in the scope's own Durable Object (Q4): the object is the one place that
-  serializes the scope's writes, so a claim there is atomic with no further machinery. A cache
+- **Every call states its replay policy, and none is defaulted.** A call's expectation carries
+  `replay`: `'none'` (no nonce memory, for a read or an idempotent call) or a `WireNonceCache`
+  (for a call that changes state). An expectation without one is the deployment's fault: the
+  verifier throws before it reads anything, so a wiring that forgets the cache fails closed
+  instead of accepting replays.
+- **With a cache**, the verifier claims the nonce only after every other check has passed, so an
+  envelope refused for anything else never spends an entry. `claim(nonce, until)` must answer
+  exactly `true` for a nonce it had not seen; any other answer refuses. It may forget the nonce
+  after `until`, which is `exp + skew`, the moment the envelope is refused on time anyway. A cache
   that cannot answer throws, and the call fails as the platform's own fault, never as acceptance.
-- **Calls that only read keep none.**
+- **Where the cache lives.** In the scope's own Durable Object (Q4): the object is the one place
+  that serializes the scope's writes, so a claim there is atomic with no further machinery. The
+  entry module (Q2) verifies everything else in the worker, then makes the claim through the same
+  scope stub the request is about to use, as one call on the object before the operation runs.
+  The cache interface is the seam, so the verifier never holds a binding.
+- **A signer mints a fresh envelope for every attempt.** A retry that resends the same headers
+  carries a spent nonce and is refused as `replay`, which would read as noise in `dual` and fail
+  outright in `signed-only`. So the router's bounded retry and every platform retry re-sign.
 - **A call that names no scope** has no scope object to hold a cache. Such a call must be a read
-  or idempotent. Any that is not is named in the PR that wires it.
+  or idempotent (`replay: 'none'`). Any that is not is named in the PR that wires it.
 
 The primitives define the cache interface only. Its storage is a follow-on.
 
 ## 5. Verifier states
 
-Each environment has one setting with three values. Every deployment in the environment applies
-it, and each environment moves on its own.
+Each environment has one setting with three values. It governs the **down-channel**: what a
+deployment accepts on a call from the router or the control plane. Every deployment in the
+environment applies it, and each environment moves on its own.
 
-| State | A deployment accepts | It is given at upload | The signers send |
+| State | On a call down, a deployment accepts | It is given at upload | The signers send |
 |---|---|---|---|
 | `legacy-only` | the legacy secret, as today | the legacy secret | legacy headers, and signatures once signing is on |
 | `dual` | a valid signature **or** the legacy secret | the public key lists, its own name, the legacy secret | both |
-| `signed-only` | a valid signature only | the public key lists, its own name; **no** legacy secret | both, until step 7 |
+| `signed-only` | a valid signature only | the public key lists, its own name, the state, and **still** the legacy secret, for the up-channel | both, until step 7 |
+
+**The shared credential is not withdrawn by `signed-only`.** Until the up-channel removals of
+step 6 are done, a vertical's own calls up to the control plane still present it, so the uploader
+keeps injecting it and the platform keeps accepting it on those calls. Until then the platform
+still accepts a credential that vertical code can read. That is why step 6 is on the critical
+path and must not be deprioritised: `signed-only` closes the down-channel, and only step 7, after
+step 6, withdraws the credential.
 
 - **`dual` is safe by construction.** It accepts everything `legacy-only` accepts. A signature
   that fails, beside a legacy secret that matches, is accepted through the legacy path and counted
@@ -254,17 +276,18 @@ it, and each environment moves on its own.
   both are present and valid but the router's legacy headers name a different tenant, scope or
   surface from the envelope, the request is refused and counted as `dual-mismatch` (Q9). That
   count must be zero. A non-zero one is a router defect.
-- **The state follows from what the deployment was given, with the setting as the switch.** A
-  deployment with no key lists is `legacy-only` whatever the setting says, so a new verifier
-  under an old control plane, which injects no keys, behaves exactly as today. `signed-only`
-  means the uploader stops injecting the legacy secret, so no flag inside the deployment can be
-  wrong in the dangerous direction.
+- **The state is injected at upload, with one derived safety.** A deployment with no key lists is
+  `legacy-only` whatever the setting says, so a new verifier under an old control plane, which
+  injects no keys, behaves exactly as today. Otherwise the deployment reads the state the uploader
+  gave it. A wrong value fails toward today's behaviour: a deployment told `dual` when it should
+  be `signed-only` still accepts the legacy secret on the down-channel, as every deployment does
+  now, and never accepts less than a valid signature.
 - **The signers have two flags per environment:** `sign` (add envelopes) and `legacy` (keep
   sending the legacy headers). Signing, once on, stays on. Legacy goes off only at step 7.
 - **Reverting** an environment from `signed-only` to `dual` is a setting change followed by a
   re-upload, the same walk as the flip. One deployment is reverted on its own by re-uploading it.
-  The signers kept sending the legacy headers throughout, so a reverted deployment is accepted
-  the moment it holds the secret again.
+  The signers kept sending the legacy headers throughout, and the deployment still holds the
+  secret, so a reverted deployment accepts the legacy path again at once.
 
 ## 6. Key management
 
@@ -287,9 +310,16 @@ it, and each environment moves on its own.
   with `scripts/secrets.mjs`, as today.
 - **Rotation** is the store runbook's (`secrets/store-keys.md`): list the new public key, wait
   until every live deployment carries it (the readiness report, §7), switch the signer, drop the
-  old key, and wait again. **A compromised key** reverses the order: switch the signer first and
-  accept refusals at deployments that do not yet list the new key, then push the new list
-  through the fleet at once.
+  old key, and wait again.
+- **A compromised key takes the break-glass path,** which overrides §7's gate on dropping a key.
+  Switch the signer first and accept refusals at deployments that do not yet list the new key,
+  push the new list through the fleet at once, and drop the compromised key without waiting for
+  every live version to carry its replacement. Only platform staff on call may take it, as a
+  person's action recorded in the admin log with the reason, never automation's. In a
+  `signed-only` environment the refusals it causes are real outages for deployments the walk has
+  not reached yet, so the person first sets the environment back to `dual` (the legacy path still
+  serves those deployments, §5), then breaks glass, and flips back once the readiness report is
+  clean.
 - **The audience needs the deployment's own name.** The uploader already knows it, since it
   uploads to it, and injects it beside the lists. A deployment with no name configured refuses
   every envelope on the audience check, so a missing value fails closed.
@@ -302,9 +332,13 @@ it, and each environment moves on its own.
 - **A readiness report per environment** lists every live version: the serving version of every
   install, every preview, and every version a scope is bound to. For each it shows whether it
   verifies, which key lists it carries and which state it is in.
-- **The gate.** The control plane refuses to set an environment to `signed-only` unless the
+- **The gates.** The control plane refuses to set an environment to `signed-only` unless the
   report is clean. It refuses to drop a public key unless every live version carries its
-  replacement. The flip is a person's action, recorded in the admin log, and never automation's.
+  replacement, except on the break-glass path (§6). It refuses to stop injecting the shared
+  credential unless step 6 is complete, which means no live version still makes an up-call with
+  it (the report lists each version's up-calls by kind, from the uploader's record of what the
+  bundle can make). Each flip is a person's action, recorded in the admin log, and never
+  automation's.
 
 ## 8. Observability
 
@@ -337,21 +371,14 @@ it, and each environment moves on its own.
 | 2 | Keys generated per environment. The uploader injects the lists, the deployment's name and the capability record. The signers' `sign` flag on, `legacy` still on. Test environment first. | `sign` off | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused |
 | 3 | The fleet re-uploaded so every live version carries the verifier and the lists. Readiness report and tooling. | none needed: `dual` accepts legacy | the report is clean, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
-| 5 | A person flips one environment to `signed-only` (test, then production). The uploader stops injecting the legacy secret there, and the fleet is walked again. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted`, every live app answering |
-| 6 | The up-channel goes, one PR each (below) | revert that PR | the feature works end to end on a test deployment |
-| 7 | The signers stop sending legacy headers, and the shared secrets are retired from vertical paths and rotated out | turn `legacy` back on | every environment `signed-only`, step 6 complete |
+| 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included |
+| 6 | **On the critical path:** the up-channel goes, one PR each (below). It can run in parallel with steps 1 to 5, and nothing after it starts until it is done. | revert that PR | the feature works end to end on a test deployment, and the readiness report shows no live version still making that up-call |
+| 7 | The uploader stops injecting the shared credential, the signers stop sending legacy headers, and the shared secrets are retired from every vertical path and rotated out. Gated on step 6 (§7). | inject it again and turn `legacy` back on | every environment `signed-only`, step 6 complete, the report clean |
 
-**Step 6, the up-channel.** Each item removes one reason a vertical holds a credential the
-control plane accepts:
-
-- **Outbound email** a vertical sends through the platform is written to its outbox as the
-  existing email intent kind, which the platform already drains.
-- **Connection consent links** are minted by the dashboard, which already holds the platform's
-  authority, and recorded as an intent. They are no longer requested from the control plane by
-  the vertical.
-- **The prompt to drain** a scope sooner, which a vertical raises on a response today, is
-  dropped. If its latency matters, it is reduced to a bare wake that carries no identifier,
-  coalesced, so it can name nothing and costs at most one early sweep.
+**Step 6, the up-channel.** Each item moves one of a vertical's calls up to the control plane onto
+its outbox, so it no longer needs the shared credential: outbound email (as the existing email
+intent), connection consent (minted by the dashboard and recorded as an intent), and the prompt
+to drain a scope sooner (dropped, or reduced to a coalesced wake that carries no identifier).
 
 ## 10. The follow-on pull requests
 
@@ -361,11 +388,14 @@ control plane accepts:
    calls. Legacy headers unchanged, `sign` flag per environment, default off.
 3. **The uploader** injects the key lists, the deployment's name and the capability record, and
    the key tool gains the two issuers.
-4. **The fleet walk and readiness report**, with the gate on `signed-only` and on dropping a key.
+4. **The fleet walk and readiness report**, with the gates on `signed-only`, on dropping a key
+   (and its break-glass path), and on withdrawing the shared credential.
 5. **The nonce store** in the scope object, for calls that change state.
-6. **The flip**: the per-environment setting, triggered by a person, test first.
-7. **The up-channel removals**, one PR each (§9, step 6).
-8. **Retiring the shared secrets** from every vertical path.
+6. **The up-channel removals**, one PR each (§9, step 6). On the critical path: they can start
+   now, in parallel with 1 to 5, and the credential cannot be withdrawn until all are merged and
+   live.
+7. **The flip**: the per-environment down-channel setting, triggered by a person, test first.
+8. **Withdrawing and retiring the shared secrets** from every vertical path, after 6.
 
 ## 11. Not in scope
 
@@ -394,12 +424,14 @@ versions whose authors never push again. K-52 already put the store's checks in 
 entry and never in the code behind it. **Recommendation:** the platform's entry. It hands the
 verified node to vertical-host. A deployment built against an older vertical-host still runs its
 own legacy check, and the entry satisfies that check with a value unique to the deployment,
-minted at upload and held nowhere else, so the shared secret leaves even un-rebuilt deployments.
+minted at upload and held nowhere else, so at step 7 the shared secret leaves even un-rebuilt
+deployments.
 This variant needs its own review in follow-on 1.
 
 **Q3. How does a deployment learn its state?** **Recommendation:** an explicit per-environment
-setting, applied by the uploader, with the safety of §5: no key lists means `legacy-only`, and
-`signed-only` means the legacy secret is not injected.
+setting, injected by the uploader, with the safety of §5: no key lists means `legacy-only`, and a
+wrong value fails toward today's behaviour. The legacy secret stays injected through
+`signed-only` for the up-channel, and is withdrawn only at step 7.
 
 **Q4. Where do nonces live?** A spine table would need a migration on both adapters, a
 migration-diff checkpoint and a spine-ddl change. **Recommendation:** the scope object's own
@@ -428,7 +460,8 @@ count stops the rollout.
   the original signature refused as the signature; validly signed envelopes for another audience,
   method, target, body or scope refused for that; the clock edges and the lifetime bounds; issuer
   and kind separation, so the router's key cannot sign as the platform; key rotation with two
-  ids; malformed inputs; and the nonce cache consulted last. Each guard was removed in turn and a
+  ids; malformed inputs and the negative vectors; a call with no replay policy failing closed;
+  only a claim of exactly `true` accepted; and the nonce cache consulted last. Each guard was removed in turn and a
   test failed every time. The vectors use the RFC 8032 test keys, and the test checks them with
   node's own Ed25519 and SHA-256 as well as with the module.
 - **Not shown.** The verifier running on workerd. Follow-on 1 carries that test, the way K-52's
@@ -477,22 +510,20 @@ a non-canonical spelling, and of a key listed for two signers. The key tool and 
 runbook are the store's too. The keys themselves are new pairs, one for the router and one for
 the control plane, and each private key is held only by its signer.
 
-**An environment moves through three states: `legacy-only`, `dual` and `signed-only`.** `dual`
-accepts a valid signature or the legacy secret, so a deployment can learn to verify before
-anything relies on it. Signers send the envelope beside the legacy headers until the very end. An
-environment becomes `signed-only` only when three things hold: every live version carries the
-verifier and the key lists, as the uploader records them; the counters show no legacy
-acceptance; and a person flips it. Each step reverts on its own.
+**An environment's down-channel moves through three states: `legacy-only`, `dual` and
+`signed-only`.** `dual` accepts a valid signature or the legacy secret, so a deployment can learn
+to verify before anything relies on it. Signers send the envelope beside the legacy headers until
+the very end. An environment becomes `signed-only` only when three things hold: every live
+version carries the verifier and the key lists, as the uploader records them; the counters show
+no legacy acceptance; and a person flips it. Each step reverts on its own. Every call states its
+replay policy, and a call that changes state spends its nonce once.
 
-**The up-channel goes.** What a vertical needs from the control plane it writes to its own
-outbox, and the platform pulls it:
-
-- outbound email becomes the existing email intent;
-- a connection consent link is minted by the dashboard and recorded as an intent;
-- the prompt to drain a scope sooner is dropped, or reduced to a wake that carries no identifier.
-
-Once those are gone and every environment is `signed-only`, the shared secrets are retired from
-every path into a vertical.
+**The up-channel goes, and only then the shared credential.** What a vertical needs from the
+control plane it writes to its own outbox, and the platform pulls it. `signed-only` does not
+withdraw the shared credential: a vertical's own up-calls still present it until they are moved,
+so it stays injected, and accepted on those calls, until the up-channel is gone. That work is on
+the critical path. Once it is done and every environment is `signed-only`, the credential is
+withdrawn and the shared secrets are retired from every path into a vertical.
 
 #### Evidence and limits
 
@@ -505,10 +536,8 @@ every path into a vertical.
 
 #### Why
 
-**A shared secret cannot tell callers apart, and it is as strong as its weakest holder.** A check
-against a shared value learns that the caller holds it, never who the caller is. Every deployment
-holds the value because every deployment must verify it. So a credential held by a deployment is
-as strong as the platform's own, and rotating it is a change to the whole fleet at once.
+**A shared secret cannot tell callers apart, and a credential held by a deployment is as strong
+as the platform's own.** Rotating it is also a change to the whole fleet at once.
 
 **Signing separates the power to sign from the power to verify.** This is K-52's argument, made
 again for the other direction. A deployment that verifies with a public key holds nothing that
