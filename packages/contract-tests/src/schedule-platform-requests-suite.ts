@@ -37,8 +37,11 @@ const DAY = 86_400_000;
 export function schedulePlatformRequestsContractSuite(
   adapterName: string,
   makeFixture: () => Promise<ScopeHostFixture>,
-  /** Runs SQL against a scope's own storage — to age a binned row past its purge horizon. */
-  raw: RawScopeSql,
+  /**
+   * Runs SQL against a scope's own storage — to age a binned row past its purge horizon. Optional so
+   * the export stays additive: without it the purge-horizon cases are skipped, the rest run.
+   */
+  raw?: RawScopeSql,
 ): void {
   describe(`a scheduled pass reports the platform requests it enqueued (#2431): ${adapterName}`, () => {
     let fixture: ScopeHostFixture;
@@ -89,7 +92,7 @@ export function schedulePlatformRequestsContractSuite(
       expect(await queued()).toEqual([1, 2]);
     });
 
-    describe('a purge horizon (#2440)', () => {
+    describe.skipIf(raw === undefined)('a purge horizon (#2440; skipped: no `raw` SQL door was passed)', () => {
       /** A new primary scope, so the schedule's cadence row starts empty. */
       const freshScope = async (): Promise<ScopeId> => {
         const fresh = scopeId.parse(ulid());
@@ -105,9 +108,9 @@ export function schedulePlatformRequestsContractSuite(
           const id = `row-${n}-${ulid()}`;
           await stub.invoke('purgereq/add', { id, name });
           await stub.invoke('purgereq/trash', { rowId: id });
-          await raw(t, fresh, `INSERT INTO _substrat_state_moves (entity_type, entity_id) VALUES (?, ?)`, ['preq', id]);
-          await raw(t, fresh, `UPDATE purgereq_rows SET _substrat_trashed_at = ? WHERE id = ?`, [at, id]);
-          await raw(t, fresh, `DELETE FROM _substrat_state_moves WHERE entity_type = ? AND entity_id = ?`, ['preq', id]);
+          await raw!(t, fresh, `INSERT INTO _substrat_state_moves (entity_type, entity_id) VALUES (?, ?)`, ['preq', id]);
+          await raw!(t, fresh, `UPDATE purgereq_rows SET _substrat_trashed_at = ? WHERE id = ?`, [at, id]);
+          await raw!(t, fresh, `DELETE FROM _substrat_state_moves WHERE entity_type = ? AND entity_id = ?`, ['preq', id]);
         }
       };
       const purgeRequests = async (fresh: ScopeId) =>
