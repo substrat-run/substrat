@@ -1812,7 +1812,7 @@ export async function runPlatformSweep(
   }
 
   const connections = await host.admin.listConnections(options.actor, {});
-  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency) : null;
+  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency, listScopes) : null;
   await mapBounded(connections, concurrency, async (c) => {
     // #1232: the connection's durable sweep record. A connection row carries no
     // scope (a connection spans scopes by construction) and no version.
