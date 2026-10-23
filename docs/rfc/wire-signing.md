@@ -6,7 +6,7 @@ description: One-way trust between the platform and a deployed vertical. The rou
 
 # RFC: wire signing
 
-**Status:** proposed, argued and not agreed · **Decision:**
+**Status:** proposed; its ten design questions are decided (§12) · **Decision:**
 [K-58](../decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md),
 proposed · **Primitives:**
 `packages/contracts/src/wire-signing.ts`, with shared vectors in
@@ -51,14 +51,13 @@ is gone. Every step reverts on its own.
 **This pull request** adds this RFC, the K-58 draft and the primitives, with tests and vectors.
 It wires nothing and changes no behaviour.
 
-**Open questions** (§12, each with a recommendation): new key pairs or the store keys (new);
-where the verifier runs (in the platform's entry module); how a deployment learns its state (an
-explicit per-environment setting applied at upload); where nonces live (the scope object's own
-storage); large bodies (buffer them, no streaming endpoint in version 1); the lifetimes (as
-proposed); whether a route binds its body (no); what proves the capability (the uploader's
-record); a dual-mode disagreement (accept, count it, and let a non-zero count block the flip); the
-credentials for builds that are never rebuilt (a per-deployment value for each of their legacy
-checks, as a bounded exception to G1).
+**Decided questions** (§12): new key pairs, one per issuer, not the store keys; the verifier runs
+in the platform's entry module; a deployment learns its state from an explicit per-environment
+setting applied at upload; nonces live in the scope object's own storage; large bodies are
+buffered, with no streaming endpoint in version 1; the lifetimes are 60 s by default, 120 s at
+most, 30 s of skew; a route binds no body; the capability is the uploader's record; a dual-mode
+disagreement is accepted and counted, and a non-zero count blocks the flip; a build that is never
+rebuilt gets a per-deployment value for each of its legacy checks, as a bounded exception to G1.
 
 ---
 
@@ -441,7 +440,7 @@ step 6, withdraws the credential.
 | Step | Changes | Revert | A human checks before the next step |
 |---|---|---|---|
 | 0 | This PR: RFC, K-58 draft, primitives. Nothing wired. | delete the files | the envelope format and the plan |
-| 1 | The verifier, `dual`-capable, inert without key lists (Q2: in the platform's entry or in vertical-host) | revert the package | a pushed demo with no keys behaves exactly as before |
+| 1 | The verifier, `dual`-capable, inert without key lists, in the platform's entry module (Q2) | revert the package | a pushed demo with no keys behaves exactly as before |
 | 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record. The signers' `sign` flag on, `legacy` still on. Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused |
 | 3 | The fleet re-uploaded so every live version the entry wraps carries the verifier and the lists. Readiness report and tooling. A version uploaded without the entry is not reached by any re-upload, and is named in the report until its author pushes again (§7). | none needed: `dual` accepts legacy | the report is clean, or lists only named exceptions, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
@@ -489,20 +488,23 @@ never rebuilt keeps the up-calls it was built with.
 - The scope-store envelope, end-user authentication, permissions, and network reachability.
 - Retiring or renaming any secret.
 
-## 12. Open questions
+## 12. Decided questions
 
-**Q1. New key pairs, or the store keys?** The router and the control plane already hold one
-Ed25519 key each for scope stores. The tag makes sharing them safe as cryptography: neither
+Each of these was argued as an open question and is now decided. The reasoning is kept beside
+each decision.
+
+**Q1. New key pairs, or the store keys?** **Decided:** new pairs, one per issuer, with the same
+format, tool and runbook as the store keys. The router and the control plane already hold one
+Ed25519 key each for scope stores, and the tag makes sharing them safe as cryptography: neither
 protocol's message parses as the other's. But a leaked key would then open both channels, and
-neither could rotate without the other. **Recommendation:** new pairs, one per issuer, with the
-same format, tool and runbook.
+neither could rotate without the other.
 
-**Q2. Where does the verifier run?** In vertical-host, it reaches a deployment only when that
-vertical is rebuilt and pushed again. In the platform's entry module (#1893), which the control
-plane uploads in front of a bundle, it reaches that deployment at its next upload, including
-versions whose authors never push again. K-52 already put the store's checks in the platform's
-entry and never in the code behind it. **Recommendation:** the platform's entry. It hands the
-verified node to vertical-host.
+**Q2. Where does the verifier run?** **Decided:** in the platform's entry module (#1893), which
+hands the verified node to vertical-host. In vertical-host it would reach a deployment only when
+that vertical is rebuilt and pushed again. In the entry, which the control plane uploads in front
+of a bundle, it reaches that deployment at its next upload, including versions whose authors never
+push again. K-52 already put the store's checks in the platform's entry and never in the code
+behind it.
 
 Two kinds of deployment are not reached that way, and the plan says so rather than assuming
 them away:
@@ -518,36 +520,36 @@ them away:
   request and on a platform call, which refuse everything once the credentials are withdrawn. So
   the credentials cannot be withdrawn while it is live unless the entry satisfies both of those
   checks with a value unique to the deployment and the control plane accepts the platform one for
-  that deployment's own up-calls only. Q10 is that path; without it, the version blocks step 7 by
-  name.
+  that deployment's own up-calls only. Q10 is that path; until a version's values reach it, the
+  version blocks step 7 by name.
 
-This variant needs its own review in follow-on 1.
+The entry variant still gets its own review in follow-on 1.
 
-**Q3. How does a deployment learn its state?** **Recommendation:** an explicit per-environment
-setting, injected by the uploader, with the safety of §5: no key lists means `legacy-only`, a
-missing or unknown state reads as `dual`, and a wrong value fails toward today's behaviour. The legacy secret stays injected through
-`signed-only` for the up-channel, and is withdrawn only at step 7.
+**Q3. How does a deployment learn its state?** **Decided:** an explicit per-environment setting,
+injected by the uploader, with the safety of §5: no key lists means `legacy-only`, a missing or
+unknown state reads as `dual`, and a wrong value fails toward today's behaviour. The legacy secret
+stays injected through `signed-only` for the up-channel, and is withdrawn only at step 7.
 
-**Q4. Where do nonces live?** A spine table would need a migration on both adapters, a
-migration-diff checkpoint and a spine-ddl change. **Recommendation:** the scope object's own
-key-value storage, keyed by nonce, with expiry at `exp + skew` and pruning on write. Calls that
-change state are few, so the store stays small.
+**Q4. Where do nonces live?** **Decided:** in the scope object's own key-value storage, keyed by
+nonce, with expiry at `exp + skew` and pruning on write. A spine table would need a migration on
+both adapters, a migration-diff checkpoint and a spine-ddl change. Calls that change state are
+few, so the store stays small.
 
-**Q5. Large bodies.** **Recommendation:** buffer them. Version 1 has no streaming endpoint. If
-one is ever needed, it gets a new field in a new version rather than a special case in this one.
+**Q5. Large bodies.** **Decided:** buffer them. Version 1 has no streaming endpoint. If one is
+ever needed, it gets a new field in a new version rather than a special case in this one.
 
-**Q6. The lifetimes** (60 seconds by default, 120 at most, 30 of skew). **Recommendation:** as
-proposed, revisited from the `refused:expired` and `refused:not-yet-valid` counts.
+**Q6. The lifetimes.** **Decided:** 60 seconds by default, 120 at most, 30 of skew, revisited from
+the `refused:expired` and `refused:not-yet-valid` counts.
 
-**Q7. Should a route bind its body?** **Recommendation:** no (§3.6).
+**Q7. Should a route bind its body?** **Decided:** no (§3.6).
 
-**Q8. What proves the capability?** **Recommendation:** the uploader's record on the version,
-written from what it built, never a declaration by the vertical (§7).
+**Q8. What proves the capability?** **Decided:** the uploader's record on the version, written
+from what it built, never a declaration by the vertical (§7).
 
 **Q9. A dual-mode disagreement** between the envelope and the legacy headers, both valid.
-**Recommendation:** accept the call, answered through the legacy headers as today, since `dual`
-accepts whatever either credential proves and refusing would break a live request for nothing.
-Count it as `dual-mismatch` and surface it. A non-zero count is a router defect, and it blocks the
+**Decided:** accept the call, answered through the legacy headers as today, since `dual` accepts
+whatever either credential proves and refusing would break a live request for nothing. Count it as
+`dual-mismatch` and surface it. A non-zero count is a router defect, and it blocks the
 environment's move to `signed-only` (§7) until it is fixed.
 
 **Q10. The shared credentials in a version that is never rebuilt.** Such a version, built
@@ -559,7 +561,7 @@ both checks refuse everything (the router no longer sends the legacy headers eit
 replacing the platform's value with a unique one would break the up-calls, unless the control
 plane accepts that unique value for that deployment and nothing else.
 
-**Recommendation:** a per-deployment value for each legacy check, as a stepping stone. At upload
+**Decided:** a per-deployment value for each legacy check, as a stepping stone. At upload
 the platform mints, for each such version, one value per check and records which deployment they
 belong to. The entry, having verified the envelope, satisfies both of the version's own checks
 with them: it presents the routed identity the envelope proved, with the routed-request value,
@@ -572,8 +574,8 @@ from such a version at step 7.
 **This is a bounded exception to G1.** For as long as such a version is live, its deployment
 holds a value that one platform worker, the control plane, accepts, but only for that deployment's
 own up-calls and its own tenants and scopes. The exception ends when the version is rebuilt (its
-up-calls go with step 6) or retired. If this is declined, such versions stay on the shared
-credentials, named, with a notice and a date (§7), and step 7 waits for them. Versions uploaded
+up-calls go with step 6) or retired. Until its values reach it, such a version stays on the shared
+credentials, named, with a notice and a date (§7), and step 7 waits for it. Versions uploaded
 without the entry cannot take these values at all, since the entry is what presents them; their
 path is Q2's wrapper or retirement (§7).
 

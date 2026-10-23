@@ -11,7 +11,7 @@ tracking: []
 
 # K-58 — A call from the platform to a vertical carries an Ed25519 envelope, a deployed vertical holds public keys only, and its calls up to the control plane give way to its outbox
 
-> Proposed 2026-10-23, awaiting ratification. The argument, the rollout and ten open questions are [the wire-signing RFC](../rfc/wire-signing.md). If ratified, it amends [K-27](./K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md) (the router's shared secret) and [K-31](./K-031-provisioning-is-control-plane-driven-pull-the-vertical-s-sel.md) (the same shape for the control plane's calls). Until then both stand as written, and nothing in the platform behaves differently.
+> Proposed 2026-10-23, awaiting ratification. The argument, the rollout and the ten decided design questions are [the wire-signing RFC](../rfc/wire-signing.md). If ratified, it amends [K-27](./K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md) (the router's shared secret) and [K-31](./K-031-provisioning-is-control-plane-driven-pull-the-vertical-s-sel.md) (the same shape for the control plane's calls). Until then both stand as written, and nothing in the platform behaves differently.
 
 **Every call the router or the control plane makes to a deployed vertical is to carry one Ed25519 envelope, and a deployed vertical is to hold public keys only.** The envelope is fifteen lines of UTF-8 joined by `\n`, with no trailing newline:
 
