@@ -49,7 +49,6 @@ import {
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunsPayload,
   modelUsageEntry,
-  attachmentRecord,
   type AttachmentRecord,
   type UploadLinkView,
   type BlobStoreHandle,
@@ -299,6 +298,7 @@ import {
   type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
+  putAttachmentBytes,
   entitlementDenial,
   requiredEntitlementFor,
   type OperationEntitlement,
@@ -424,6 +424,7 @@ import {
   type LegacySubjectRedactionCounts,
   type SubjectTextTarget,
   globalFetch,
+  fetchLikeOf,
   assertRedrainWindow,
   platformRequestOf,
   type PlatformRequestRawRow,
@@ -569,7 +570,7 @@ import {
   liveWithinOf,
 } from './live-reads.js';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
-import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
+import { blobStoreBucketName, r2TenantBlobStore, workerdSha256, type R2BlobStores } from './r2.js';
 import type {
   AccessLogRow,
   AuditLogQuery,
@@ -3004,7 +3005,8 @@ export class CloudflareScopeHost implements ScopeHost {
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
-    this.fetchImpl = options.fetch ?? globalFetch;
+    // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
+    this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
@@ -4757,22 +4759,17 @@ export class CloudflareScopeHost implements ScopeHost {
       const filename = view.filename ?? input.filename;
       // Recorded as it is judged: the essence, never a parameter or a stray space.
       const contentType = normalizeUploadMediaType(input.contentType);
-      const record = attachmentRecord.parse({
-        id,
-        entity: view.entity,
-        filename,
-        contentType,
-        size: input.body.byteLength,
-        sha256: await attachmentSha256(input.body),
-        visibility: view.visibility,
-        createdBy: mintedBy,
-        createdAt: new Date().toISOString(),
-      });
       // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
       // someone else spent first) compensates the object away, and the link is unspent with it.
       // A lost reply keeps the bytes (`compensatingRefusal`), and a retry carrying the same
       // `Idempotency-Key` is answered as a replay (#2315).
-      await store.put(key, input.body, { contentType });
+      const record = await putAttachmentBytes(
+        store,
+        key,
+        { id, entity: view.entity, filename, contentType, visibility: view.visibility, createdBy: mintedBy, createdAt: new Date().toISOString() },
+        input.body,
+        workerdSha256,
+      );
       return unwrapReply(await compensatingRefusal(store, key, () =>
         stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId, input.idempotencyKey),
       ));
@@ -4949,20 +4946,19 @@ export class CloudflareScopeHost implements ScopeHost {
       upload: async (input) => {
         const id = ulid();
         const key = attachmentBlobKey(scopeId, id);
-        const record = attachmentRecord.parse({
+        const fields = {
           id,
           entity: input.entity,
           filename: input.filename,
           contentType: input.contentType,
-          size: input.body.byteLength,
-          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy,
           createdAt: new Date().toISOString(),
-        });
+        };
         // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
         // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
-        await store.put(key, input.body, { contentType: input.contentType });
+        // A streamed body is hashed and counted as R2 reads it (#2498).
+        const record = await putAttachmentBytes(store, key, fields, input.body, workerdSha256);
         return unwrapReply(await compensatingRefusal(store, key, () =>
           stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
         ));

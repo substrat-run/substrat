@@ -345,6 +345,8 @@ export const INDEX_VALUE_EXPORTS = [
   'facetEvents',
   'fenceAttachmentSweep',
   'fencedTables',
+  // #2498: a runtime fetch as a FetchLike, converting a sized stream body; both hosts wrap their injected fetch.
+  'fetchLikeOf',
   'findingOfOpsFailure',
   'findingOfSweepRun',
   'finishStoreDriverRolloutIn',
@@ -398,6 +400,8 @@ export const INDEX_VALUE_EXPORTS = [
   'isPrimaryScopeRow',
   'isSearchIndexTable',
   'isSecretBoxConfigured',
+  // #2498: the streamed-body helpers the adapters, the platform's vertical client and test fakes use.
+  'isSizedByteStream',
   'isSpineTable',
   'isSupersededOutcome',
   'isUnreachableParent',
@@ -408,6 +412,9 @@ export const INDEX_VALUE_EXPORTS = [
   'jobRunListLimit',
   'jobRunOf',
   'kernelJobFor',
+  // #2498: a sized stream as the runtime's fetch and R2 take it; the R2 store and the vertical client use it.
+  'knownLengthInit',
+  'knownLengthStream',
   'legacyStoreDriverConflict',
   'legacyStoreDriverRenames',
   'licensedOrphanIds',
@@ -509,6 +516,8 @@ export const INDEX_VALUE_EXPORTS = [
   'purgeOnlyKeysOf',
   'purgeReportOf',
   'purgeStillDue',
+  // #2498: both adapters land an upload's bytes through it, a buffer or a stream.
+  'putAttachmentBytes',
   'queueAttachmentTextBackfill',
   'reachesWithin',
   'readAttachmentText',

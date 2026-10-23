@@ -38,7 +38,7 @@ import {
   requestRollupDueDays,
   type RequestDayCount,
 } from './request-rollup.js';
-import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
+import { assertRowLimit, backoffAt, fetchLikeOf, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';
@@ -1881,7 +1881,8 @@ export async function runPlatformSweep(
       report.connectionLandings.failed += landed.failed.length;
     }
     try {
-      const result = await sweeper(host, c.id, { fetch: options.fetch });
+      // #2498: a sized stream body the connector sends reaches the injected fetch converted.
+      const result = await sweeper(host, c.id, { fetch: fetchLikeOf(options.fetch) });
       const answer = options.connectionLandings?.binders[c.provider] ? connectorSweepAnswerOf(result) : null;
       report.connectionsSwept += 1;
       // #2316: a resolved sweep is not a landed one. A scope the connector could not land in, or a

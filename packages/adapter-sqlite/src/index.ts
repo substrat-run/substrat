@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -18,7 +19,6 @@ import {
   modelUsageEntry,
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
-  attachmentRecord,
   type AttachmentRecord,
   type UploadLinkPolicy,
   type UploadLinkView,
@@ -331,6 +331,11 @@ import {
   assertReadOnlyQuery,
   attachmentBlobKey,
   attachmentSha256,
+  isSizedByteStream,
+  knownLengthStream,
+  putAttachmentBytes,
+  type IncrementalSha256,
+  type SizedByteStream,
   entitlementDenial,
   requiredEntitlementFor,
   type OperationEntitlement,
@@ -799,6 +804,7 @@ import {
   idempotencyOptedOutMessage,
   replayFor,
   globalFetch,
+  fetchLikeOf,
   createUlid,
   type UlidMint,
   type IdempotencyRow,
@@ -887,6 +893,43 @@ export function isStorageFault(err: unknown): boolean {
  * this map — cannot write one. Registered as each context is built.
  */
 const kernelEmitters = new WeakMap<OperationContext, (event: DomainEventInput) => void>();
+
+/**
+ * Node's running SHA-256 (#2498), for a streamed upload — the kernel's `putAttachmentBytes` takes
+ * it. `node:crypto` because Web Crypto has no running digest, and hashing the written file
+ * afterwards would read it whole into memory, which is what streaming is for.
+ */
+function nodeSha256(): IncrementalSha256 {
+  const hash = createHash('sha256');
+  return {
+    update: (chunk) => {
+      hash.update(chunk);
+    },
+    hex: async () => hash.digest('hex'),
+  };
+}
+
+/**
+ * Write a sized stream to `path` one chunk at a time (#2498), so the file is never held whole,
+ * held to its declared length as the store contract says: a stream that carries more or fewer
+ * bytes leaves no file.
+ */
+async function writeStreamToFile(path: string, body: SizedByteStream): Promise<void> {
+  const reader = knownLengthStream(body).getReader();
+  const fd = openSync(path, 'w');
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) writeSync(fd, value);
+    }
+  } catch (err) {
+    rmSync(path, { force: true });
+    throw err;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   const write = kernelEmitters.get(ctx);
@@ -2149,7 +2192,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.wrapBlobStore = options.wrapBlobStore ?? ((store) => store);
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
-    this.fetchImpl = options.fetch ?? globalFetch;
+    // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
+    this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
@@ -3664,7 +3708,8 @@ export class SqliteScopeHost implements ScopeHost {
       put: async (key, body, opts) => {
         const p = resolveKey(key);
         mkdirSync(dirname(p), { recursive: true });
-        writeFileSync(p, body);
+        if (isSizedByteStream(body)) await writeStreamToFile(p, body);
+        else writeFileSync(p, body);
         writeFileSync(`${p}.meta`, JSON.stringify({ contentType: opts?.contentType ?? null }));
       },
       get: async (key) => {
@@ -4026,21 +4071,20 @@ export class SqliteScopeHost implements ScopeHost {
         const creator = authority as CheckSubject;
         const id = ulid();
         const key = attachmentBlobKey(rt.scopeId, id);
-        const record = attachmentRecord.parse({
+        const fields = {
           id,
           entity: input.entity,
           filename: input.filename,
           contentType: input.contentType,
-          size: input.body.byteLength,
-          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy: creator.id,
           createdAt: new Date().toISOString(),
-        });
+        };
         // Bytes first, row second: a crash between the two leaves an orphaned object that no
         // row points at (#2314). A refused check compensates the object away below; a drain
         // fault after the commit is not a refusal (`serialized` keeps it from becoming one).
-        await store.put(key, input.body, { contentType: input.contentType });
+        // A streamed body is hashed and counted as it is written (#2498).
+        const record = await putAttachmentBytes(store, key, fields, input.body, nodeSha256);
         try {
           return await guarded('attachments.upload', async (ctx) => {
             assertAllowed(await ctx.check(gate.write, input.entity));
