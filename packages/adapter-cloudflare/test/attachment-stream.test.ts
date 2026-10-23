@@ -161,6 +161,9 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
     expect(await objectsUnder(s)).toEqual([]);
   });
 
+  // The local R2 simulator logs an uncaught "Network connection lost" from its own service when
+  // the stream it is reading errors. It is that service's, not this worker's: the rejection setup
+  // file does not count it, and it is logged with the bucket put going straight to R2 too.
   it('a stream ending short of what it declared lands no object and no row', async () => {
     const { host, t, s, editor } = await world(() => 2 * MiB);
     const att = await host.attachments(editor, t, s);
