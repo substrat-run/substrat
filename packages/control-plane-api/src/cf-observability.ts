@@ -231,6 +231,13 @@ const MAX_CORRELATED_INVOCATIONS = 40;
 const MAX_LINES_PER_INVOCATION = 20;
 
 /**
+ * How many queries one service-grain page (`queryEvents`) may take to fill itself after the wire
+ * line is left out. A page loses at most about a third to it, so a second query nearly always
+ * fills one; the bound keeps a window of almost nothing else from costing more than a few.
+ */
+const MAX_FILL_ROUNDS = 4;
+
+/**
  * #1877: the groups one telemetry answer carries, and how many pages of them a span may
  * take. Past the cap a span is refused rather than cached in part.
  */
@@ -507,11 +514,30 @@ function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown
  * refusal's reason, and it shares a request's id, which is how a tenant's view finds the
  * lines it shows. No reader today needs it; one that does (the readiness report, RFC §10
  * follow-on 4) is to read it through a query of its own that opts in by name.
+ *
+ * The line is left out AFTER the backend spent its `limit` on it, because no filter of the
+ * telemetry API is known to keep the lines that lack the key it negates. So beside the events go
+ * the size of what the backend returned (`fetched`) and its oldest timestamp, never a line of it:
+ * a reader judges a full page (more may exist) by those, and asks again for what the filter took
+ * (`queryEvents`, and the tenant view's per-request read).
  */
-function telemetryEvents(result: { events?: { events?: unknown[] } | unknown[] } | undefined): Array<Record<string, unknown>> {
+function telemetryPage(result: { events?: { events?: unknown[] } | unknown[] } | undefined): {
+  events: Array<Record<string, unknown>>;
+  fetched: number;
+  oldest: number | null;
+} {
   const outer = result?.events;
-  const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
-  return events.filter((e) => ((e['source'] ?? {}) as Record<string, unknown>)['substrat'] !== 'wire');
+  const all = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
+  let oldest: number | null = null;
+  for (const e of all) {
+    const t = e['timestamp'];
+    if (typeof t === 'number' && (oldest === null || t < oldest)) oldest = t;
+  }
+  return {
+    events: all.filter((e) => ((e['source'] ?? {}) as Record<string, unknown>)['substrat'] !== 'wire'),
+    fetched: all.length,
+    oldest,
+  };
 }
 
 /**
@@ -1698,11 +1724,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       input.invocationId !== undefined ? Math.min(input.limit, 200) : MAX_LINES_PER_INVOCATION;
     const sibling = await Promise.all(
       requestIds.map(async (id) => {
-        const events = await queryRaw(
-          [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }, ...serviceFilter(input.services)],
-          timeframe,
-          linesPerInvocation,
-        );
+        // One more than the budget, then cut to it: a request writes at most one wire line (RFC
+        // wire-signing §8), which `telemetryPage` leaves out after the backend spent a slot on it.
+        // So the page holds exactly the lines it would if that line did not exist.
+        const events = (
+          await queryRaw(
+            [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }, ...serviceFilter(input.services)],
+            timeframe,
+            linesPerInvocation + 1,
+          )
+        ).slice(0, linesPerInvocation);
         // An account-wide candidate earns its place only by producing this tenant's
         // stamped line. No stamped line, or somebody else's, and the whole invocation is
         // dropped — a line shown to the wrong tenant is exactly the leak the tenant grain
@@ -1834,6 +1865,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     timeframe: { from: number; to: number },
     limit: number,
   ): Promise<Array<Record<string, unknown>>> {
+    return (await queryRawPage(filters, timeframe, limit)).events;
+  }
+
+  /** {@link queryRaw}, with the size of the page the backend returned (see `telemetryPage`). */
+  async function queryRawPage(
+    filters: TelemetryFilter[],
+    timeframe: { from: number; to: number },
+    limit: number,
+  ): Promise<ReturnType<typeof telemetryPage>> {
     const res = await authed(
       `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
       {
@@ -1852,7 +1892,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       result?: { events?: { events?: unknown[] } | unknown[] };
     };
     if (json.success === false) throw telemetryFailure(502, text);
-    return telemetryEvents(json.result);
+    return telemetryPage(json.result);
   }
 
   /** Read a complete sampled span, or refuse it; a truncated page must never mean zero fields. */
@@ -1861,8 +1901,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     timeframe: { from: number; to: number },
     depth = 0,
   ): Promise<Array<Record<string, unknown>>> {
-    const page = await queryRaw(filters, timeframe, 2000);
-    if (page.length < 2000) return page;
+    // Full is judged on what the backend returned, not on what is left once a line is filtered out.
+    const page = await queryRawPage(filters, timeframe, 2000);
+    if (page.fetched < 2000) return page.events;
     if (depth >= 12 || timeframe.to - timeframe.from <= 1000) {
       throw new ControlPlaneError(503, 'field coverage window is too busy — choose a shorter window');
     }
@@ -1895,26 +1936,46 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     if (search) {
       filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
     }
-    const res = await authed(
-      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
-      {
-        queryId: 'substrat-recent-logs',
-        view: 'events',
-        timeframe: { from: to - hours * 3_600_000, to },
-        parameters: { datasets: ['cloudflare-workers'], filters, limit },
-        limit,
-      },
-    );
-    const json = (await res.json()) as {
-      success?: boolean;
-      errors?: Array<{ message?: string }>;
-      result?: { events?: { events?: unknown[] } | unknown[] };
+    const page = async (timeframe: { from: number; to: number }) => {
+      const res = await authed(
+        `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
+        {
+          queryId: 'substrat-recent-logs',
+          view: 'events',
+          timeframe,
+          parameters: { datasets: ['cloudflare-workers'], filters, limit },
+          limit,
+        },
+      );
+      const json = (await res.json()) as {
+        success?: boolean;
+        errors?: Array<{ message?: string }>;
+        result?: { events?: { events?: unknown[] } | unknown[] };
+      };
+      if (!res.ok || json.success === false) {
+        const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+        throw new Error(`Cloudflare telemetry query failed: ${message}`);
+      }
+      return telemetryPage(json.result);
     };
-    if (!res.ok || json.success === false) {
-      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
-      throw new Error(`Cloudflare telemetry query failed: ${message}`);
+    // Filled to `limit` when more exist. A full page the wire line was taken out of (in `dual`,
+    // up to a third of one: a request writes its runtime record, its stamp and the wire line) is
+    // followed by the page before its oldest line, so a short answer still means the window held no
+    // more. The next window ends just after that oldest instant, and the event id folds the overlap.
+    const from = to - hours * 3_600_000;
+    const kept = new Map<string, Record<string, unknown>>();
+    let until = to;
+    for (let round = 0; round < MAX_FILL_ROUNDS; round++) {
+      const { events, fetched, oldest } = await page({ from, to: until });
+      for (const e of events) {
+        const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+        kept.set(typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e), e);
+      }
+      // The window is spent, or a page is all one instant and an earlier window cannot be cut.
+      if (kept.size >= limit || fetched < limit || oldest === null || oldest + 1 >= until) break;
+      until = oldest + 1;
     }
-    return telemetryEvents(json.result).map((e) => projectEvent(e));
+    return [...kept.values()].slice(0, limit).map((e) => projectEvent(e));
   }
 
   /**
@@ -1966,7 +2027,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
       throw new Error(`Cloudflare span query failed: ${message}`);
     }
-    const events = telemetryEvents(json.result);
+    const { events, fetched } = telemetryPage(json.result);
     const spans = events.map((e) => {
       const source = (e['source'] ?? {}) as Record<string, unknown>;
       const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
@@ -1996,7 +2057,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     });
     // Row-cap detection: a full page means there may be more. Reported rather than
     // swallowed — an egress report that silently drops hosts is worse than none (#859).
-    return { spans, truncated: events.length >= limit };
+    return { spans, truncated: fetched >= limit };
   }
 }
 

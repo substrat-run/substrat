@@ -846,7 +846,8 @@ describe('cf tenant logs — filtered to one invocation', () => {
     it('reads up to the caller’s limit, past the per-invocation share', async () => {
       const { reader, limits } = over();
       const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 100 });
-      expect(limits).toEqual([100]);
+      // One more than the budget: the slot a request's wire line takes before the reader drops it.
+      expect(limits).toEqual([100 + 1]);
       expect(events).toHaveLength(46); // the stamped line and all 45 of its own
     });
 
@@ -860,7 +861,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
     it('keeps the 20-line share per invocation when no call is named', async () => {
       const { reader, limits } = over();
       await reader.tenantLogs!({ tenantId: OURS, hours: 24, limit: 100 });
-      expect(limits).toEqual([20]);
+      expect(limits).toEqual([20 + 1]);
     });
   });
 

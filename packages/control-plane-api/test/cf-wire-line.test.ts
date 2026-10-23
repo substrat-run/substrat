@@ -97,3 +97,129 @@ describe('no reader returns the platform’s wire line', () => {
     expect(JSON.stringify(report)).not.toContain(LEAKED);
   });
 });
+
+/**
+ * The line is left out after the backend has spent its `limit` on it, so the readers ask again
+ * for what it took. This Cloudflare answers as the real one does: newest first, at most `limit`
+ * lines, from the window asked for.
+ */
+describe('a page is as full as it would be without the wire line', () => {
+  type Line = { timestamp: number; source: Record<string, unknown>; $metadata: Record<string, unknown> };
+  type Query = { view?: string; limit: number; timeframe: { from: number; to: number }; parameters?: { filters?: Array<{ key: string; value: unknown }> } };
+
+  function backend(linesFor: (query: Query) => Line[]) {
+    const queries: Query[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        const query = JSON.parse(init.body) as Query;
+        queries.push(query);
+        const events = linesFor(query)
+          .filter((l) => l.timestamp >= query.timeframe.from && l.timestamp <= query.timeframe.to)
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .slice(0, query.limit);
+        const result = query.view === 'events' ? { events: { events } } : { calculations: [] };
+        return new Response(JSON.stringify({ success: true, result }), { status: 200 });
+      }),
+    );
+    return { reader: createCfObservabilityReader({ accountId: 'acct', apiToken: 't' }), queries };
+  }
+
+  const line = (timestamp: number, requestId: string, i: number): Line => ({
+    timestamp,
+    source: { message: `line ${i}` },
+    $metadata: { id: `01LINE${requestId}${i}`, requestId, message: `the vertical’s line ${i}`, service: 'acme-widgets' },
+  });
+  const stamped = (timestamp: number, requestId: string): Line => ({
+    ...invocation,
+    timestamp,
+    source: { ...invocation.source, invocationId: `01JZ00000000000000${requestId.slice(-8)}` },
+    $metadata: { ...invocation.$metadata, id: `01STAMP${requestId}`, requestId },
+  });
+  const wire = (timestamp: number, requestId: string): Line => ({ ...wireLine(requestId), timestamp });
+  const asks = (query: Query, key: string) => query.parameters?.filters?.find((f) => f.key === key)?.value;
+
+  describe('the tenant view, one query per request id', () => {
+    /** A chatty request: its stamped line first, then 30 lines of its own, then the wire line, newest. */
+    const now = Date.now();
+    const chatty = (withWire: boolean): Line[] => [
+      stamped(now - 100_000, 'req-chatty'),
+      ...Array.from({ length: 30 }, (_, i) => line(now - 50_000 + i * 100, 'req-chatty', i)),
+      ...(withWire ? [wire(now - 1_000, 'req-chatty')] : []),
+    ];
+    const read = (withWire: boolean) => {
+      const { reader } = backend((query) =>
+        asks(query, '$metadata.requestId') === 'req-chatty' ? chatty(withWire)
+        : asks(query, 'substrat') === 'invocation' ? [stamped(now - 100_000, 'req-chatty')]
+        : [],
+      );
+      return reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 100 });
+    };
+
+    it('shows a request its whole line budget, the wire line’s slot given back', async () => {
+      const answer = await read(true);
+      // The stamped line, and the 20 newest of the request's own: the per-request budget.
+      const own = answer.filter((e) => (e.message ?? '').startsWith('the vertical’s line'));
+      expect(own.map((e) => e.message)).toEqual(Array.from({ length: 20 }, (_, i) => `the vertical’s line ${29 - i}`));
+      expect(answer).toHaveLength(21);
+      expect(JSON.stringify(answer)).not.toContain(LEAKED);
+    });
+
+    it('its twin: a request with no wire line shows exactly the same page, and not a line more', async () => {
+      expect(await read(false)).toEqual(await read(true));
+    });
+  });
+
+  describe('the service-grain view, filled from the window before', () => {
+    const now = Date.now();
+    /** Three lines a request, as `dual` writes them: its own, its stamp and the wire line, 300 requests. */
+    const busy = (): Line[] =>
+      Array.from({ length: 300 }, (_, r) => {
+        const at = now - 10_000_000 + r * 10_000;
+        return [line(at, `req-${r}`, r), stamped(at + 1, `req-${r}`), wire(at + 2, `req-${r}`)];
+      }).flat();
+
+    it.each([
+      ['the fleet view', undefined],
+      ['one service', ['acme-widgets']],
+    ] as const)('%s: a full page comes back full, newest first, and none of it the wire line', async (_, services) => {
+      const lines = busy();
+      const { reader, queries } = backend(() => lines);
+      const answer = await reader.recentLogs({ services: services ? [...services] : undefined, hours: 24, limit: 100 });
+      const expected = lines
+        .filter((l) => l.source['substrat'] !== 'wire')
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, 100)
+        .map((l) => l.timestamp);
+      expect(answer.map((e) => e.timestamp)).toEqual(expected);
+      expect(JSON.stringify(answer)).not.toContain(LEAKED);
+      // One page lost a third of itself to the wire line; the second filled it.
+      expect(queries).toHaveLength(2);
+    });
+
+    it('a window with less than a page in it is answered whole, in one query', async () => {
+      const lines = busy().slice(0, 30);
+      const { reader, queries } = backend(() => lines);
+      const answer = await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 100 });
+      expect(answer).toHaveLength(20);
+      expect(queries).toHaveLength(1);
+    });
+
+    it('a window of nothing but wire lines costs a bounded number of queries, and answers empty', async () => {
+      const lines = Array.from({ length: 1000 }, (_, r) => wire(now - 10_000_000 + r * 1_000, `req-${r}`));
+      const { reader, queries } = backend(() => lines);
+      expect(await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 })).toEqual([]);
+      expect(queries).toHaveLength(4);
+    });
+
+    it('stops once a page is all one instant, which no earlier window can cut', async () => {
+      const lines = Array.from({ length: 60 }, (_, r) => (r % 2 ? wire(now - 5_000, `req-${r}`) : line(now - 5_000, `req-${r}`, r)));
+      const { reader, queries } = backend(() => lines);
+      const answer = await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 });
+      expect(answer).toHaveLength(25);
+      // The second window ends just after that instant and returns the same page; nothing is asked after it.
+      expect(queries).toHaveLength(2);
+      expect(queries[1]!.timeframe.to).toBe(now - 5_000 + 1);
+    });
+  });
+});
