@@ -418,6 +418,7 @@ export async function provisionSiblingScope(
     slug: input.slug,
     name: input.name,
     vertical: parent.vertical,
+    verticalSource: 'copy',
     jurisdiction: parent.jurisdiction ?? undefined,
   } as Parameters<ScopeHost['provisionScope']>[1]);
   const created = await adoptServingForProvisioning(

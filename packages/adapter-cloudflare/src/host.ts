@@ -5141,6 +5141,7 @@ export class CloudflareScopeHost implements ScopeHost {
         scopeId: snapshotId,
         kind: opts?.kind ?? 'archive',
         vertical: source.vertical,
+        verticalSource: 'copy',
         jurisdiction: source.jurisdiction,
         expiresAt: opts?.expiresAt,
         // forkedFrom/forkedAt are stamped from the dump by importScope.

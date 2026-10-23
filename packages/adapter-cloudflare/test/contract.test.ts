@@ -53,6 +53,7 @@ import {
   impersonationContractSuite,
   inertScopeContractSuite,
   unreadableScopeRowContractSuite,
+  storedVerticalCopyContractSuite,
   storeDriverReleaseContractSuite,
   connectLinkContractSuite,
   causedByContractSuite,
@@ -174,6 +175,24 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
 // One directory row that does not read as a scope never stops a fleet-wide pass. The row is
 // written in the ControlPlaneDO's own SQL, past the provisioning boundary that now refuses it.
 unreadableScopeRowContractSuite(
+  'adapter-cloudflare',
+  async () => {
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      checker: UNSAFE_allowAllChecker,
+    });
+    return { host, cleanup: async () => host.close() };
+  },
+  async (_host, sql) => {
+    await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_i, state) => {
+      state.storage.sql.exec(sql);
+    });
+  },
+);
+
+// A copy takes the vertical its source stores; a caller's is held to the registry grammar.
+storedVerticalCopyContractSuite(
   'adapter-cloudflare',
   async () => {
     const host = new CloudflareScopeHost({

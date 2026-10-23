@@ -39,7 +39,7 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
     slug,
     kind: textOf('kind', input.kind) ?? 'scope',
     name: textOf('name', input.name) ?? slug,
-    vertical: verticalOf(input.vertical),
+    vertical: verticalOf(input.vertical, input.verticalSource ?? 'input'),
     storageShape: input.storageShape ?? 'A',
     // No jurisdiction stated means `global` — unconstrained, the honest name for
     // what an un-pinned scope already is (K-32). The old default was `null`, which
@@ -96,13 +96,17 @@ function textOf(field: 'kind' | 'name', value: string | null | undefined): strin
 }
 
 /**
- * The vertical a scope runs, as the registry names it (`verticalSlug`), or null for none.
- * An empty or whitespace-only string is not "no vertical": it is refused like any other
- * value the registry grammar does not admit, since the directory's own `scope` schema
- * reads it back as a parse error.
+ * The vertical a scope runs, or null for none.
+ *
+ * One a caller names (`'input'`) is held to the registry's grammar (`verticalSlug`), so an empty
+ * or whitespace-only string is refused like any other value it does not admit. One copied from
+ * a scope that already exists (`'copy'`) is that scope's stored value, held only to what the
+ * directory's `scope` schema reads (non-empty), as it was before the grammar was held here: a
+ * stored `Todo` still lists, so its scope can still be snapshotted or given a sibling.
  */
-function verticalOf(vertical: string | null | undefined): string | null {
+function verticalOf(vertical: string | null | undefined, source: 'input' | 'copy'): string | null {
   if (vertical === undefined || vertical === null) return null;
+  if (source === 'copy') return vertical.length > 0 ? vertical : refuse('vertical', 'must not be empty');
   if (verticalSlug.safeParse(vertical).success) return vertical;
   return refuse('vertical', 'must be a vertical slug: lowercase letters, digits and hyphens, optionally prefixed by an owner slug and one /');
 }

@@ -11,6 +11,7 @@ import {
   impersonationContractSuite,
   inertScopeContractSuite,
   unreadableScopeRowContractSuite,
+  storedVerticalCopyContractSuite,
   connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
@@ -131,6 +132,25 @@ unreadableScopeRowContractSuite(
   'adapter-sqlite',
   async () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-unreadable-row-'));
+    const host = new SqliteScopeHost({ dir });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (host, sql) => {
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+  },
+);
+
+// A copy takes the vertical its source stores; a caller's is held to the registry grammar.
+storedVerticalCopyContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-stored-vertical-'));
     const host = new SqliteScopeHost({ dir });
     return {
       host,

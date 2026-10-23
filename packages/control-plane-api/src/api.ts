@@ -5766,6 +5766,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       scopeId: snapId,
       kind: opts.kind ?? 'archive',
       vertical: scope.vertical,
+      verticalSource: 'copy',
       jurisdiction: scope.jurisdiction,
       forkedFrom: scope.id,
       forkedAt: new Date().toISOString(),

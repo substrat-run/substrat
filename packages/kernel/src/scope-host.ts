@@ -4793,6 +4793,15 @@ export interface ProvisionScopeInput {
   name?: string;
   /** Which vertical's deployment executes this scope. Defaults to null. */
   vertical?: string | null;
+  /**
+   * Where `vertical` came from, which decides what it is held to. `'input'` (the default): a
+   * caller named it, and it must be a `verticalSlug`. `'copy'`: it is the stored vertical of a
+   * scope that already exists and this one copies (a snapshot, a sibling), taken as the directory
+   * reads it (any non-empty string), so a scope stored before the grammar was held at provisioning
+   * can still be copied. Platform code sets `'copy'` only with a value it read from the directory;
+   * no request body carries it.
+   */
+  verticalSource?: 'input' | 'copy';
   storageShape?: StorageShape;
   jurisdiction?: Jurisdiction;
   /**
