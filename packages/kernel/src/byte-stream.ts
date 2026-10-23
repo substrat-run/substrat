@@ -196,8 +196,9 @@ export function knownLengthStream(body: SizedByteStream): ByteStream {
 /**
  * A request init whose body is a sized stream, as the runtime's `fetch` takes it: the body
  * as {@link knownLengthStream}, and off workerd the `Content-Length` header and `duplex: 'half'`
- * a streamed request body needs there. `globalFetch` sends through it; a `FetchLike` of its own
- * passes its init through it too.
+ * a streamed request body needs there. `fetchLikeOf` sends through it, so a `FetchLike` does not
+ * call this itself: a runtime `fetch` becomes one by `fetchLikeOf`. A caller that holds a
+ * runtime `fetch` it does not make a `FetchLike` (the platform's vertical client) does.
  */
 export function knownLengthInit<Init extends { headers?: Record<string, string>; body: SizedByteStream }>(
   init: Init,

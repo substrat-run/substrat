@@ -1534,10 +1534,12 @@ export interface ConnectorRequestInit {
    * this only widens the declared surface — the adapter passes it straight
    * through.
    *
-   * A {@link SizedByteStream} as well (#2498), for a body too large to hold: an upload of a
-   * provider file of any size. The length is part of the value because a provider wants a
-   * `Content-Length`, and a stream carries none. `globalFetch` hands it to the runtime as a
-   * stream of that length; a `FetchLike` of its own must do the same (`knownLengthInit`).
+   * A {@link SizedByteStream} as well (#2498), for a body too large to hold in memory. The
+   * length is part of the value because a provider wants a `Content-Length`, and a stream
+   * carries none. The runtime cannot take one as it is, so it is converted by `fetchLikeOf`:
+   * `globalFetch` is built from it, and both hosts and `runPlatformSweep` pass the `fetch` they
+   * are given through it. A runtime `fetch` handed straight to a connector is made a
+   * `FetchLike` with `fetchLikeOf` too, never by a cast.
    */
   body?: string | Uint8Array | SizedByteStream;
   signal?: unknown;
