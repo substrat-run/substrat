@@ -41,8 +41,7 @@ import {
 	workspaceBrief,
 	type GateSpec,
 } from '@substrat-run/builder-workspace';
-import { PROBLEM_CONTENT_TYPE, type Problem } from '@substrat-run/contracts';
-import { providerRefusal, refusalProblem, unhandledProblem } from './problem.js';
+import { providerRefusal, refusalProblem, sendProblem, unhandledProblem } from './problem.js';
 import { devStatus, startDev, stopDev } from './devserver.js';
 import { loadEnvFiles } from './env.js';
 import { providerCatalog } from './hosting.js';
@@ -143,11 +142,6 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** A refusal: an RFC 9457 problem document (`problem.ts`), same status and sentence as before. */
-function sendProblem(res: ServerResponse, problem: Problem): void {
-	res.writeHead(problem.status, { 'content-type': PROBLEM_CONTENT_TYPE });
-	res.end(JSON.stringify(problem));
-}
-
 function refuse(res: ServerResponse, status: number, detail: string): void {
 	sendProblem(res, refusalProblem(status, detail));
 }

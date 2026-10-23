@@ -52,11 +52,35 @@ export function providerRefusal(err: unknown, isProviderError: boolean): Problem
 	return problemForStatus(422, 'the model provider could not be set up');
 }
 
-export function problemResponse(problem: Problem): Response {
-	return new Response(JSON.stringify(problem), {
+/** A problem on the wire — the one place both runtimes take the media type from. */
+export function problemWire(problem: Problem): {
+	status: number;
+	headers: Record<string, string>;
+	body: string;
+} {
+	return {
 		status: problem.status,
 		headers: { 'content-type': PROBLEM_CONTENT_TYPE },
-	});
+		body: JSON.stringify(problem),
+	};
+}
+
+export function problemResponse(problem: Problem): Response {
+	const { status, headers, body } = problemWire(problem);
+	return new Response(body, { status, headers });
+}
+
+/** The part of node's `ServerResponse` the writer needs (no `node:http` import: the worker loads this file). */
+export interface NodeResponse {
+	writeHead(status: number, headers: Record<string, string>): unknown;
+	end(body: string): unknown;
+}
+
+/** A problem written to the node server's response (`server.ts`). */
+export function sendProblem(res: NodeResponse, problem: Problem): void {
+	const { status, headers, body } = problemWire(problem);
+	res.writeHead(status, headers);
+	res.end(body);
 }
 
 /** A refusal as a `Response`, for the worker and the agent DO. */
