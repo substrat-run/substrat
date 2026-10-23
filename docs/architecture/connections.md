@@ -1070,7 +1070,9 @@ operation. Until a second provider exists, that connector is the reference v1 fi
 a new file source holds the same four invariants:
 
 - **Nothing outside the fence is persisted.** Metadata about an item outside the bound folder
-  is held in memory for one pass and never stored, logged, landed or put in an error.
+  is held in memory for one pass and never stored, logged, landed or put in an error. An item
+  that was landed and then leaves the folder lands one `delete` with reason `moved-out`,
+  carrying its `itemId` and its prior path and name. Where it went is never said.
 - **The conflict mode is explicit.** A write names `replace`, `rename` or `fail`; the
   connector never lets the provider pick.
 - **Delivery is at least once, keyed by `itemId`.** A vertical's landing operation upserts by
