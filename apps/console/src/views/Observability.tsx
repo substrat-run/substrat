@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Button, Card, EmptyState, Select, Tag } from '../components';
 import { ApiError } from '../lib/api';
-import type { Api, RecentLogEvent, ServiceMetricsRow } from '../lib/api';
+import type { Api, ServiceMetricsRow } from '../lib/api';
+import { LOGS_IDLE, LOGS_INCOMPLETE_NOTICE, logsFailed, logsLoaded, logsLoading, logsPanelOf } from '../lib/logs-view';
 
 /**
  * The staff fleet view (design/observability.md §5, view 1): per-service invocation
@@ -25,16 +26,15 @@ const pct = (part: number, whole: number) => (whole === 0 ? '—' : `${((part / 
 /**
  * Said above the logs table when the plane marked the page it answered as possibly incomplete
  * (`x-substrat-logs-incomplete`, #2520): the read stopped before it could vouch for the whole
- * window, so a short page is not "nothing more". A complete page shows nothing.
+ * window, so a short page is not "nothing more". `logsPanelOf` decides when it shows.
  */
-export function LogsIncompleteNotice({ incomplete }: { incomplete: boolean }) {
-  if (!incomplete) return null;
+export function LogsIncompleteNotice() {
   return (
     <div
       role="status"
       style={{ padding: '10px 16px', fontSize: 12.5, background: 'var(--status-warning-bg)', color: 'var(--status-warning-fg)' }}
     >
-      This page may be incomplete or missing newer lines.
+      {LOGS_INCOMPLETE_NOTICE}
     </div>
   );
 }
@@ -49,10 +49,7 @@ export function Observability({ api }: ObservabilityProps) {
   const [state, setState] = useState<'loading' | 'ready' | 'unconfigured' | 'error'>('loading');
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<string>();
-  const [logs, setLogs] = useState<RecentLogEvent[]>([]);
-  const [logsIncomplete, setLogsIncomplete] = useState(false);
-  const [logState, setLogState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [logError, setLogError] = useState('');
+  const [logView, setLogView] = useState(LOGS_IDLE);
   const [errorsOnly, setErrorsOnly] = useState(false);
 
   useEffect(() => {
@@ -81,32 +78,30 @@ export function Observability({ api }: ObservabilityProps) {
   useEffect(() => {
     if (!selected) return;
     let live = true;
-    setLogState('loading');
-    setLogsIncomplete(false);
+    setLogView(logsLoading);
     void (async () => {
       try {
         // Logs are capped to the last 24h even on the 3-day metrics range — Workers
         // Logs retention is short and a narrower window keeps the query cheap.
-        const { events, incomplete } = await api.recentLogsRead({
+        const read = await api.recentLogsRead({
           service: selected,
           hours: Math.min(Number(hours), 24),
           limit: 100,
           level: errorsOnly ? 'error' : undefined,
         });
         if (!live) return;
-        setLogs(events);
-        setLogsIncomplete(incomplete);
-        setLogState('ready');
+        setLogView(logsLoaded(read));
       } catch (e) {
         if (!live) return;
-        setLogError(e instanceof Error ? e.message : String(e));
-        setLogState('error');
+        setLogView((prev) => logsFailed(prev, e instanceof Error ? e.message : String(e)));
       }
     })();
     return () => {
       live = false;
     };
   }, [api, selected, hours, errorsOnly]);
+
+  const logsPanel = logsPanelOf(logView);
 
   const totals = rows.reduce(
     (acc, r) => ({ requests: acc.requests + r.requests, errors: acc.errors + r.errors }),
@@ -254,9 +249,9 @@ export function Observability({ api }: ObservabilityProps) {
               Close
             </Button>
           </div>
-          {logState === 'ready' && <LogsIncompleteNotice incomplete={logsIncomplete} />}
-          {logState === 'error' ? (
-            <div style={{ padding: 16, fontSize: 13, color: 'var(--status-danger-fg)' }}>Log query failed: {logError}</div>
+          {logsPanel.notice && <LogsIncompleteNotice />}
+          {logView.state === 'error' ? (
+            <div style={{ padding: 16, fontSize: 13, color: 'var(--status-danger-fg)' }}>Log query failed: {logView.error}</div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: 'var(--font-sans)', fontSize: 14 }}>
               <thead>
@@ -268,7 +263,7 @@ export function Observability({ api }: ObservabilityProps) {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((l, i) => (
+                {logView.events.map((l, i) => (
                   <tr key={i}>
                     <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
                       {l.timestamp ? new Date(l.timestamp).toISOString().slice(0, 19).replace('T', ' ') : '—'}
@@ -282,14 +277,14 @@ export function Observability({ api }: ObservabilityProps) {
                     <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>{l.outcome ?? '—'}</td>
                   </tr>
                 ))}
-                {logState === 'ready' && logs.length === 0 && (
+                {logsPanel.emptyRow !== null && (
                   <tr>
                     <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
-                      No log events in this window.
+                      {logsPanel.emptyRow}
                     </td>
                   </tr>
                 )}
-                {logState === 'loading' && (
+                {logView.state === 'loading' && (
                   <tr>
                     <td colSpan={4} style={{ ...td, color: 'var(--text-placeholder)', textAlign: 'center', height: 60 }}>
                       Loading…
