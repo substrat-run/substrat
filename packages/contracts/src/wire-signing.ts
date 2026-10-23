@@ -363,7 +363,12 @@ function lifetimeAdmitted(iat: number, exp: number): boolean {
   return exp > iat && exp - iat <= WIRE_ENVELOPE_MAX_LIFETIME_SECONDS;
 }
 
-/** The public keys a deployment verifies with, per issuer, by key id. Only {@link wireVerificationKeys} makes one. */
+/**
+ * The public keys a deployment verifies with, per issuer, by key id. Only {@link wireVerificationKeys}
+ * makes one, and only the same copy of this module accepts it: the mark is held by the module
+ * instance, so a key set built by a second copy of the package (two bundled versions, say) throws
+ * on every call. Build the key set and verify in the same bundle.
+ */
 export interface WireVerificationKeys {
   readonly router: ReadonlyMap<string, string>;
   readonly platform: ReadonlyMap<string, string>;
@@ -398,11 +403,18 @@ export interface WireNonceCache {
   /**
    * Record `nonce` as spent until `until` (Unix seconds) and answer whether it was unspent. It
    * answers `true` at most once per nonce while recorded, concurrent claims included, and may
-   * forget a nonce after `until`. A cache that cannot answer throws, and the verifier never
-   * reads a throw as acceptance.
+   * forget a nonce after `until`. Only `true` itself is acceptance: any other answer refuses. A
+   * cache that cannot answer throws, and the verifier never reads a throw as acceptance.
    */
   claim(nonce: string, until: number): boolean | Promise<boolean>;
 }
+
+/**
+ * How a call is held against replay, stated by the endpoint, never defaulted: `'none'` keeps no
+ * nonce memory, so a replay inside the window is accepted (a read, an idempotent call); a cache
+ * spends each nonce once (a call that changes state). A call expectation without one throws.
+ */
+export type WireReplayPolicy = 'none' | WireNonceCache;
 
 /** What a deployment expects of an envelope: who signs, for whom, and the request it rides on. */
 interface WireExpectationOf<K extends WireKind> {
@@ -424,6 +436,8 @@ export type WireExpectation =
   | (WireExpectationOf<'call'> & {
       /** The exact body received, read before any of it is acted on. */
       readonly body: WireBytes;
+      /** Required: an endpoint that forgets to say fails closed, rather than accepting replays. */
+      readonly replay: WireReplayPolicy;
     });
 
 /** Why an envelope was refused, in the order the verifier checks. For metrics only. */
@@ -463,32 +477,38 @@ export type WireVerdict = WireAccepted | WireRefused;
  * Every check a deployment makes on an envelope, in one fixed order: present, well-formed, the
  * expected issuer and kind, a listed key id, the signature, then (all over signed bytes) the
  * audience, the lifetime, the clock, the method, the target, a call's body, any pinned tenant
- * and scope, and last the nonce, so an envelope that fails anything else never spends a cache
- * entry. `nowSeconds` is the time the request arrived, not when its body finished reading.
+ * and scope, and last a call's nonce when its policy keeps them, so an envelope that fails anything
+ * else never spends a cache entry. A route keeps no nonces. `nowSeconds` is the time the request
+ * arrived, not when its body finished reading.
  *
- * Returns {@link WIRE_REFUSED} for every failure of the caller's. `onRefusal` hears the reason;
- * a throw from it is ignored. The deployment's own faults throw instead, so no counter files them
- * under a caller: a key set {@link wireVerificationKeys} did not build, checked before anything
- * else, and a throw from `nonces`.
+ * Returns {@link WIRE_REFUSED} for every failure of the caller's. `onRefusal` hears the reason; a
+ * throw or a rejection from it is ignored. The deployment's own faults throw instead, so no counter
+ * files them under a caller, and they are checked before anything else: a key set
+ * {@link wireVerificationKeys} did not build, and a call expectation whose replay policy is neither
+ * `'none'` nor a cache. A throw from the cache propagates too.
  */
 export async function verifyWireEnvelope(input: {
   readonly headers: { get(name: string): string | null };
   readonly keys: WireVerificationKeys;
   readonly expected: WireExpectation;
   readonly nowSeconds: number;
-  readonly nonces?: WireNonceCache;
-  readonly onRefusal?: (reason: WireRefusalReason) => void;
+  readonly onRefusal?: (reason: WireRefusalReason) => void | Promise<void>;
 }): Promise<WireVerdict> {
   const refuse = (reason: WireRefusalReason): WireRefused => {
     try {
-      input.onRefusal?.(reason);
+      // Metrics never decide a verdict, and an async counter that rejects must not crash the isolate.
+      void Promise.resolve(input.onRefusal?.(reason)).catch(() => {});
     } catch {
-      // Metrics never decide a verdict.
+      // A synchronous throw, likewise ignored.
     }
     return WIRE_REFUSED;
   };
   const { expected, keys, nowSeconds } = input;
   if (!PREPARED.has(keys)) throw new TypeError('verifyWireEnvelope takes the key set wireVerificationKeys built');
+  const replay = expected.kind === 'call' ? expected.replay : 'none';
+  if (replay !== 'none' && typeof (replay as Partial<WireNonceCache> | undefined)?.claim !== 'function') {
+    throw new TypeError("a call's expectation states its replay policy: 'none' or a nonce cache");
+  }
   const header = input.headers.get(WIRE_ENVELOPE_HEADER);
   const signature = input.headers.get(WIRE_SIGNATURE_HEADER);
   if (!header || !signature) return refuse('missing');
@@ -521,6 +541,6 @@ export async function verifyWireEnvelope(input: {
   }
   if (expected.tenantId !== undefined && claims.tenantId !== expected.tenantId) return refuse('scope');
   if (expected.scopeId !== undefined && claims.scopeId !== expected.scopeId) return refuse('scope');
-  if (input.nonces && !(await input.nonces.claim(claims.nonce, claims.exp + WIRE_CLOCK_SKEW_SECONDS))) return refuse('replay');
+  if (replay !== 'none' && (await replay.claim(claims.nonce, claims.exp + WIRE_CLOCK_SKEW_SECONDS)) !== true) return refuse('replay');
   return { ok: true, claims };
 }

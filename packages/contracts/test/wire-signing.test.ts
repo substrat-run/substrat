@@ -70,7 +70,7 @@ const headersOf = (header: string | null, signature: string | null) => ({
 /** What a deployment expects of the vector's own request. */
 function expectationOf(vector: Vector): WireExpectation {
   const { iss, kind, aud, method, target, body } = vector.input;
-  return kind === 'call' ? { iss, kind, aud, method, target, body: body! } : { iss, kind, aud, method, target };
+  return kind === 'call' ? { iss, kind, aud, method, target, body: body!, replay: 'none' } : { iss, kind, aud, method, target };
 }
 
 interface Check {
@@ -80,6 +80,7 @@ interface Check {
   readonly expected?: Partial<WireExpectation> & { readonly body?: WireBytes };
   readonly now?: number;
   readonly keys?: WireVerificationKeys;
+  /** A call's replay policy, as a cache; the vector's own expectation says `'none'`. */
   readonly nonces?: WireNonceCache;
 }
 
@@ -90,9 +91,8 @@ async function check(input: Check = {}) {
   const verdict = await verifyWireEnvelope({
     headers: headersOf(input.header === undefined ? vector.header : input.header, input.signature === undefined ? vector.signature : input.signature),
     keys: input.keys ?? (await keysOf()),
-    expected: { ...expectationOf(vector), ...input.expected } as WireExpectation,
+    expected: { ...expectationOf(vector), ...(input.nonces ? { replay: input.nonces } : {}), ...input.expected } as WireExpectation,
     nowSeconds: input.now ?? vector.input.iat,
-    ...(input.nonces ? { nonces: input.nonces } : {}),
     onRefusal: (reason) => reasons.push(reason),
   });
   return { verdict, reasons };
@@ -222,7 +222,7 @@ describe('wire envelope: one refusal for every failure', () => {
   it('every reason in the list is reached, and each returns the same frozen value with no detail on it', async () => {
     const other = await generateScopeStoreKeyPair();
     const nonces = memoryNonces();
-    await check({ nonces: nonces.cache });
+    await check({ vector: CALL, nonces: nonces.cache });
     const cases: [WireRefusalReason, Check][] = [
       ['missing', { signature: null }],
       ['malformed', { header: 'not base64url!' }],
@@ -238,7 +238,7 @@ describe('wire envelope: one refusal for every failure', () => {
       ['target', { expected: { target: '/api/lists?page=3' } }],
       ['body', { vector: CALL, expected: { body: '{"hello":"World"}' } }],
       ['scope', { expected: { scopeId: OTHER_ULID } }],
-      ['replay', { nonces: nonces.cache }],
+      ['replay', { vector: CALL, nonces: nonces.cache }],
     ];
     expect(cases.map(([r]) => r)).toEqual([...WIRE_REFUSAL_REASONS]);
     for (const [expected, input] of cases) expect(await reason(input), expected).toBe(expected);
@@ -258,6 +258,29 @@ describe('wire envelope: one refusal for every failure', () => {
     });
     expect(verdict).toBe(WIRE_REFUSED);
     expect(await verifyWireEnvelope({ headers: headersOf(null, null), keys: await keysOf(), expected: expectationOf(ROUTE), nowSeconds: 0 })).toBe(WIRE_REFUSED);
+  });
+
+  it('an async onRefusal that rejects is caught, never an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const verdict = await verifyWireEnvelope({
+        headers: headersOf(ROUTE.header, null),
+        keys: await keysOf(),
+        expected: expectationOf(ROUTE),
+        nowSeconds: ROUTE.input.iat,
+        onRefusal: async () => {
+          throw new Error('async metrics are down');
+        },
+      });
+      expect(verdict).toBe(WIRE_REFUSED);
+      // Let any rejection surface: unhandled rejections are reported after the microtask queue drains.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });
 
@@ -372,7 +395,7 @@ describe('wire envelope: who signs', () => {
     expect(await reason({ expected: { iss: 'platform' } })).toBe('issuer');
     expect(await reason({ vector: CALL, expected: { iss: 'router' } })).toBe('issuer');
     expect(await reason({ vector: ROUTER_CALL, expected: { kind: 'route' } })).toBe('kind');
-    expect(await reason({ vector: ROUTE, expected: { kind: 'call', body: '' } })).toBe('kind');
+    expect(await reason({ vector: ROUTE, expected: { kind: 'call', body: '', replay: 'none' } })).toBe('kind');
   });
 
   it("the router's key cannot sign as the platform, nor the platform's as the router", async () => {
@@ -593,9 +616,43 @@ describe('wire envelope: the encoder', () => {
 });
 
 describe('wire envelope: replay', () => {
-  it('accepts the same envelope twice inside the window when the endpoint keeps no nonces, by design', async () => {
+  it("accepts the same envelope twice inside the window only where the endpoint said so: a route, or a call whose policy is 'none'", async () => {
     expect((await check()).verdict).toMatchObject({ ok: true });
     expect((await check({ now: ROUTE.input.iat + 10 })).verdict).toMatchObject({ ok: true });
+    expect((await check({ vector: CALL, expected: { replay: 'none' } })).verdict).toMatchObject({ ok: true });
+    expect((await check({ vector: CALL, expected: { replay: 'none' }, now: CALL.input.iat + 10 })).verdict).toMatchObject({ ok: true });
+  });
+
+  it('a call whose expectation names no replay policy fails closed, as the deployment\'s fault, before anything is read', async () => {
+    for (const replay of [undefined, null, 'window', 'nonce', {}, { claim: true }] as const) {
+      const heard: WireRefusalReason[] = [];
+      for (const [header, signature] of [[CALL.header, CALL.signature], [null, null]] as const) {
+        await expect(
+          verifyWireEnvelope({
+            headers: headersOf(header, signature),
+            keys: await keysOf(),
+            expected: { ...expectationOf(CALL), replay } as unknown as WireExpectation,
+            nowSeconds: CALL.input.iat,
+            onRefusal: (r) => heard.push(r),
+          }),
+          JSON.stringify(replay),
+        ).rejects.toThrow(/replay policy/);
+      }
+      expect(heard).toEqual([]);
+    }
+  });
+
+  it('only a claim of exactly true accepts: 1, "false", "true", undefined, an object and false all refuse', async () => {
+    for (const answer of [1, 'false', 'true', undefined, null, {}, false]) {
+      const cache = { claim: () => answer } as unknown as WireNonceCache;
+      expect(await reason({ vector: CALL, nonces: cache }), JSON.stringify(answer)).toBe('replay');
+      const asyncCache = { claim: async () => answer } as unknown as WireNonceCache;
+      expect(await reason({ vector: CALL, nonces: asyncCache }), `async ${JSON.stringify(answer)}`).toBe('replay');
+    }
+    // The twin: true, sync or async, accepts.
+    for (const claim of [() => true, async () => true]) {
+      expect((await check({ vector: CALL, nonces: { claim } })).verdict).toMatchObject({ ok: true });
+    }
   });
 
   it('with a cache: the first use is accepted, the second refused, and the cache holds it until exp plus the skew', async () => {
