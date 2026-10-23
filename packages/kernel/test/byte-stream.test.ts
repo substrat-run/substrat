@@ -4,12 +4,14 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   attachmentSha256,
+  fetchLikeOf,
   globalFetch,
   isSizedByteStream,
   knownLengthInit,
   knownLengthStream,
   putAttachmentBytes,
   type ByteStream,
+  type FetchLike,
   type IncrementalSha256,
   type TenantBlobStore,
 } from '../src/index.js';
@@ -294,6 +296,21 @@ describe('globalFetch with a sized stream body (#2498)', () => {
       // The response's body is there as a stream, the seam's `ConnectorResponse.body`.
       expect(res.body).toBeTruthy();
       expect(await drain(res.body!)).toEqual({ sha256: createHash('sha256').update('ok').digest('hex'), size: 2 });
+    } finally {
+      await s.close();
+    }
+  });
+
+  it('any runtime fetch made a FetchLike by fetchLikeOf sends it the same way, not as "[object Object]"', async () => {
+    const s = await server();
+    try {
+      const bound = globalThis.fetch.bind(globalThis);
+      await fetchLikeOf(bound)(s.url, { method: 'PUT', body: { stream: producer(8).stream, length: 8 * CHUNK } });
+      // The twin: the same fetch cast to a FetchLike and handed the sized body as it is.
+      await (bound as unknown as FetchLike)(s.url, { method: 'PUT', body: { stream: producer(1).stream, length: CHUNK } });
+      expect(s.seen[0]!.headers['content-length']).toBe(String(8 * CHUNK));
+      expect({ sha256: s.seen[0]!.sha256, size: s.seen[0]!.size }).toEqual(expected(8));
+      expect(s.seen[1]!.size).toBe('[object Object]'.length);
     } finally {
       await s.close();
     }
