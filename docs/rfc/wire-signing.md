@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: kernel
-description: One-way trust between the platform and a deployed vertical. The router and the control plane sign what they send a vertical with Ed25519, a vertical holds public keys only, and a vertical's calls up to the control plane give way to its outbox. Envelope, verifier states, key management, the readiness gate and a rollout that breaks no live app. Primitives only so far.
+description: One-way trust between the platform and a deployed vertical. The router and the control plane sign what they send a vertical with Ed25519, a vertical holds public keys only, and a vertical's calls up to the control plane give way to its outbox. Envelope, verifier states, key management, the readiness gate and a rollout that breaks no live app. Primitives, and the verifier in the platform's entry, inert until key lists are given.
 ---
 
 # RFC: wire signing
@@ -10,7 +10,9 @@ description: One-way trust between the platform and a deployed vertical. The rou
 [K-58](../decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md),
 proposed · **Primitives:**
 `packages/contracts/src/wire-signing.ts`, with shared vectors in
-`packages/contracts/test/vectors/wire-envelope.json` · **Precedent:**
+`packages/contracts/test/vectors/wire-envelope.json` · **Verifier:**
+`packages/control-plane-api/platform-entry/wire-gate.ts`, in the platform's entry, inert until a
+deployment is given key lists · **Precedent:**
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
 the scope-store envelope, whose scheme this reuses.
 
@@ -48,8 +50,10 @@ down-channel becomes `signed-only` only when every live version can, the counter
 acceptance, mismatch, fault or refusal beyond expected client noise, and a human flips it. The shared credential is withdrawn only after the up-channel
 is gone. Every step reverts on its own.
 
-**This pull request** adds this RFC, the K-58 draft and the primitives, with tests and vectors.
-It wires nothing and changes no behaviour.
+**Where it stands.** Step 0 (#2503) added this RFC, the K-58 draft and the primitives, with tests
+and vectors. Step 1 adds the verifier to the platform's entry module, with all three states and the
+counters, inert until an upload gives a deployment key lists, which none does yet: a deployment
+behaves exactly as before. §11 is step 0's scope.
 
 **Decided questions** (§12): new key pairs, one per issuer, not the store keys; the verifier runs
 in the platform's entry module; a deployment learns its state from an explicit per-environment
@@ -221,6 +225,16 @@ never falls back to the legacy path, in
 `dual` or otherwise, so a missing cache is an error the counters show, not a hole the flip later
 turns into an outage.
 
+One case is refined, not reversed: **a version that has no nonce store at all.** The store lives in
+the scope object (Q4), which is the vertical's own code, so a version built before it has none, and
+the re-upload of step 3 gives it the verifier without one. That absence is a fact about the version,
+not a failure of the request. So `dual` serves a valid legacy credential when the cache capability
+is statically absent; the fault is still counted, as `no-nonce-store`, and it blocks the flip. In
+`signed-only` it is the fixed 5xx. A store that exists and throws, or does not answer within a
+second, is the 5xx in every state, as above. Until the store lands (§10, follow-on 5) no version has
+one, so every scoped call that changes state counts that fault, and no environment can pass §7's
+gate to `signed-only`.
+
 ### 3.5 Time
 
 An envelope lives 60 seconds by default and at most 120 (`exp - iat`). A verifier allows 30
@@ -276,7 +290,10 @@ payload (Q7).
 - **A call that names no scope** has no scope object to hold a cache. Such a call must be a read
   or idempotent (`replay: 'none'`). Any that is not is named in the PR that wires it.
 
-The primitives define the cache interface only. Its storage is a follow-on.
+The primitives define the cache interface only. Its storage is a follow-on. The entry (step 1)
+already holds a call to it: any method but `GET`, `HEAD` and `OPTIONS` on an envelope that names a
+scope claims its nonce in that scope, through a seam the store will fill, bounded at a second. With
+the seam empty, such a call meets §3.4's statically absent store.
 
 ## 5. Verifier states
 
@@ -303,7 +320,9 @@ step 6, withdraws the credential.
   envelope), the request is **not** refused: it is answered through the legacy headers, as today,
   counted as `dual-mismatch` and surfaced (Q9). A non-zero count is a router defect, and it blocks
   the move to `signed-only` (§7). Only in `signed-only`, where the envelope alone decides admission,
-  can a disagreement refuse anything.
+  can a disagreement refuse anything. When neither credential proves a request, `dual` hands it on
+  untouched and the vertical's own checks answer it as they do today, so `dual` refuses nothing
+  new; the envelope's refusal is counted all the same.
 - **One identity per request, the same at the entry and in the vertical.** The entry passes
   exactly one routed identity (tenant, scope, surface) downstream, and a version built with the
   verifier reads that one (Q2), never a second source:
@@ -324,7 +343,10 @@ step 6, withdraws the credential.
   injects no keys, behaves exactly as today. A deployment with key lists and a missing or unknown
   state reads it as `dual`. A wrong value fails toward today's behaviour: a deployment told `dual`
   when it should be `signed-only` accepts either a valid signature or a valid legacy credential on
-  the down-channel, as every deployment does now.
+  the down-channel, as every deployment does now. The settings are plain configuration, named in
+  `@substrat-run/contracts/wire-signing` with the rule that reads them (`wireStateOf`):
+  `SUBSTRAT_WIRE_ROUTER_KEYS`, `SUBSTRAT_WIRE_PLATFORM_KEYS`, `SUBSTRAT_WIRE_AUDIENCE` (the
+  deployment's own name) and `SUBSTRAT_WIRE_STATE`.
 - **The signers have two flags per environment:** `sign` (add envelopes) and `legacy` (keep
   sending the legacy headers). Both are the signers' own configuration, so changing either is a
   deploy of that signer. Signing, once on, stays on: the signers' release gate (§7) refuses `sign`
@@ -428,9 +450,15 @@ step 6, withdraws the credential.
 
 - **Every verification is counted** by environment, issuer, kind and outcome: `signed-accepted`,
   `legacy-accepted`, `refused:<reason>` (one per reason in `WIRE_REFUSAL_REASONS`),
-  `dual-mismatch`, and `fault` (a verifier throw, §3.4). The count rides the invocation line the
-  platform's entry already writes for every request (#1893), so it can be read per deployment and
-  per tenant as well as in total.
+  `dual-mismatch`, and `fault` (a verifier throw, §3.4, named by kind: `keys`, `no-nonce-store`,
+  `nonce-store`, `verifier`). The count is one line per judged request, `{ substrat: 'wire', … }`
+  (contracts' `WireVerificationLine`), written by the platform's entry beside the invocation line
+  (#1893) and sharing its request id, so it can be read per deployment and per tenant as well as in
+  total. A line of its own rather than a field on the invocation line: the verifier runs outside
+  the stamp, so the invocation line's grammar and the code that writes it are unchanged, and a call
+  to the internal surface, a refusal and a fault, which write no invocation line, are counted too.
+  It names outcomes, ids and the legacy credential's state (`valid`, `invalid`, `absent`), never a
+  header, a credential, a body or an error's text, and none is written in `legacy-only`.
 - **The signers count** envelopes signed and signing failures. A signer whose key will not import
   keeps sending the legacy headers and raises an alarm. Where every environment it signs for is
   still `dual`, that is degraded but serving. In a `signed-only` environment it is an outage that
@@ -473,7 +501,9 @@ never rebuilt keeps the up-calls it was built with.
 ## 10. The follow-on pull requests
 
 1. **The verifier** with `dual` acceptance, the counters and the agreement check, behind the
-   absence of key lists (inert until step 2). Not ready to merge without a test on workerd.
+   absence of key lists (inert until step 2). Not ready to merge without a test on workerd. This is
+   `packages/control-plane-api/platform-entry/wire-gate.ts`, composed into the entry by
+   `tools/platform-entry-emit.mts` and run on workerd in `platform-entry.workerd.test.ts`.
 2. **The signers**: the router signs routes and its own calls, and the control plane signs its
    calls. Legacy headers unchanged, `sign` flag per environment, default off.
 3. **The uploader** injects the key lists (standby keys included), the deployment's name, the
@@ -483,7 +513,11 @@ never rebuilt keeps the up-calls it was built with.
    the cutover criterion, versions without the entry named), on dropping a key (and its
    break-glass path), and on withdrawing the shared credentials (both of §7's tests). The signers'
    release gate on `sign` off and on non-signing builds goes into each signer's deploy workflow.
-5. **The nonce store** in the scope object, for calls that change state.
+5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
+   verifier already calls (§4). Until it is live in a version, that version counts every scoped
+   call that changes state as the `no-nonce-store` fault (§3.4), served through the legacy
+   credential in `dual`, so step 2's check reads those calls as faults, not refusals, and no
+   environment can pass the gate to `signed-only`.
 6. **The up-channel removals**, one PR each (§9, step 6). On the critical path: they can start
    now, in parallel with 1 to 5, and the credential cannot be withdrawn until all are merged and
    live.
@@ -604,5 +638,13 @@ path is Q2's wrapper or retirement (§7).
   only a claim of exactly `true` accepted; and the nonce cache consulted last. Each guard was removed in turn and a
   test failed every time. The vectors use the RFC 8032 test keys, and the test checks them with
   node's own Ed25519 and SHA-256 as well as with the module.
-- **Not shown.** The verifier running on workerd. Follow-on 1 carries that test, the way K-52's
-  entry was shown on workerd before it was relied on.
+- **Shown, step 1.** The verifier in the entry
+  (`packages/control-plane-api/test/wire-gate.test.ts`, against vertical-host's own
+  `readRoutedNode` and contracts' own `assertPlatformCall`): with no key lists, or `legacy-only`,
+  the vertical is handed the very request and its return value comes back unawaited, with nothing
+  read or logged; every `dual` and `signed-only` path with its positive twin; one refusal body for
+  every reason; the faults; and no legacy credential in any answer or line. Each guard was broken in
+  turn and a test failed every time. On workerd (`platform-entry.workerd.test.ts`), the entry as
+  uploaded: no keys and no line, `dual` with and without a legacy credential, a large call body
+  read and handed on byte for byte, and a `signed-only` refusal beside its twin.
+- **Not shown.** Anything signing, so no envelope has yet met a deployed entry; the nonce store.
