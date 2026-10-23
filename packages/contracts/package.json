@@ -33,6 +33,10 @@
       "types": "./dist/wire-auth.d.ts",
       "default": "./dist/wire-auth.js"
     },
+    "./wire-signing": {
+      "types": "./dist/wire-signing.d.ts",
+      "default": "./dist/wire-signing.js"
+    },
     "./assistant-stream": {
       "types": "./dist/assistant-stream.d.ts",
       "default": "./dist/assistant-stream.js"

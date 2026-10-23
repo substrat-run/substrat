@@ -1,0 +1,99 @@
+{
+  "about": "Shared vectors for the wire envelope (RFC wire-signing, packages/contracts/src/wire-signing.ts). The keys are RFC 8032 §7.1 TEST 1 (router) and TEST 2 (platform): published test keys, never used anywhere but here. A verifier in another language rebuilds each canonical text from its input, checks the signature under the signer's public key, and checks that the kid is base64url of the first 8 bytes of SHA-256 over the raw public key.",
+  "clockSkewSeconds": 30,
+  "maxLifetimeSeconds": 120,
+  "keys": {
+    "router": {
+      "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v_VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g",
+      "publicKey": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "kid": "If4x36FUomE"
+    },
+    "platform": {
+      "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIEzNCJso_5banbbDRuwRTg9bijGfNaumJNqM9u1PuKb7",
+      "publicKey": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw",
+      "kid": "OfcT0KZEJT8"
+    }
+  },
+  "vectors": [
+    {
+      "name": "a routed request",
+      "signer": "router",
+      "input": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "tenantId": "01JCV4Z2ZQ8S2Y9V6F0M3K7T5A",
+        "scopeId": "01JCV4Z30B5N8RXHMW6D2E9G4P",
+        "surface": "app",
+        "vertical": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2",
+        "iat": 1700000000,
+        "exp": 1700000060,
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "canonical": "substrat-wire/1\nrouter\nroute\nIf4x36FUomE\ntodo\n01JCV4Z2ZQ8S2Y9V6F0M3K7T5A\n01JCV4Z30B5N8RXHMW6D2E9G4P\napp\ntodo\nGET\na77825dd42b2e045848b2c50aeecdb9d812e0cc3d9d4c76ad216eb6893a8a749\n\n1700000000\n1700000060\nAAAAAAAAAAAAAAAAAAAAAA",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "CecWCj8qPz_NpzJEazkEz5dwWOhYUoRoJlQwkCKQVupTaRu19w0cgvVqItlCRe1PG5yguw2zf2gytIihEORSAg"
+    },
+    {
+      "name": "a platform call for a scope",
+      "signer": "platform",
+      "input": {
+        "iss": "platform",
+        "kind": "call",
+        "aud": "todo",
+        "tenantId": "01JCV4Z2ZQ8S2Y9V6F0M3K7T5A",
+        "scopeId": "01JCV4Z30B5N8RXHMW6D2E9G4P",
+        "method": "POST",
+        "target": "/internal/example",
+        "iat": 1700000000,
+        "exp": 1700000060,
+        "nonce": "AQIDBAUGBwgJCgsMDQ4PEA",
+        "body": "{\"hello\":\"world\"}"
+      },
+      "canonical": "substrat-wire/1\nplatform\ncall\nOfcT0KZEJT8\ntodo\n01JCV4Z2ZQ8S2Y9V6F0M3K7T5A\n01JCV4Z30B5N8RXHMW6D2E9G4P\n\n\nPOST\n8acf0265f1e7f5b857566cde80c8f366eddd2afbdc17c38ba4f6bbdf8c7c51b9\n93a23971a914e5eacbf0a8d25154cda309c3c1c72fbb9914d47c60f3cb681588\n1700000000\n1700000060\nAQIDBAUGBwgJCgsMDQ4PEA",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnBsYXRmb3JtCmNhbGwKT2ZjVDBLWkVKVDgKdG9kbwowMUpDVjRaMlpROFMyWTlWNkYwTTNLN1Q1QQowMUpDVjRaMzBCNU44UlhITVc2RDJFOUc0UAoKClBPU1QKOGFjZjAyNjVmMWU3ZjViODU3NTY2Y2RlODBjOGYzNjZlZGRkMmFmYmRjMTdjMzhiYTRmNmJiZGY4YzdjNTFiOQo5M2EyMzk3MWE5MTRlNWVhY2JmMGE4ZDI1MTU0Y2RhMzA5YzNjMWM3MmZiYjk5MTRkNDdjNjBmM2NiNjgxNTg4CjE3MDAwMDAwMDAKMTcwMDAwMDA2MApBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVB",
+      "signature": "eQHMEIbWVIo3NyUakgc9Yem5CJkioHSvkXiKD6IO-Hbv8Fc2Wap3xjGgr8bvTJtAhDE_gYgRZFDUhKXJ9oxCAw"
+    },
+    {
+      "name": "a platform call that names no scope, with an empty body",
+      "signer": "platform",
+      "input": {
+        "iss": "platform",
+        "kind": "call",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/internal/example",
+        "iat": 1700000000,
+        "exp": 1700000030,
+        "nonce": "_____________________w",
+        "body": ""
+      },
+      "canonical": "substrat-wire/1\nplatform\ncall\nOfcT0KZEJT8\ntodo\n\n\n\n\nGET\n8acf0265f1e7f5b857566cde80c8f366eddd2afbdc17c38ba4f6bbdf8c7c51b9\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1700000000\n1700000030\n_____________________w",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnBsYXRmb3JtCmNhbGwKT2ZjVDBLWkVKVDgKdG9kbwoKCgoKR0VUCjhhY2YwMjY1ZjFlN2Y1Yjg1NzU2NmNkZTgwYzhmMzY2ZWRkZDJhZmJkYzE3YzM4YmE0ZjZiYmRmOGM3YzUxYjkKZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NQoxNzAwMDAwMDAwCjE3MDAwMDAwMzAKX19fX19fX19fX19fX19fX19fX19fdw",
+      "signature": "IK0JKVDKHz2cvWbOiZN7Xp3uouXQ9_PfOZdrbI19bWGfTJbYLJdzMpLxcJDnn9xH0tRhx5mQt0VHpJ8t98GOBg"
+    },
+    {
+      "name": "a call the router makes itself",
+      "signer": "router",
+      "input": {
+        "iss": "router",
+        "kind": "call",
+        "aud": "todo",
+        "tenantId": "01JCV4Z2ZQ8S2Y9V6F0M3K7T5A",
+        "scopeId": "01JCV4Z30B5N8RXHMW6D2E9G4P",
+        "vertical": "todo",
+        "method": "POST",
+        "target": "/internal/example",
+        "iat": 1700000000,
+        "exp": 1700000060,
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "body": "{}"
+      },
+      "canonical": "substrat-wire/1\nrouter\ncall\nIf4x36FUomE\ntodo\n01JCV4Z2ZQ8S2Y9V6F0M3K7T5A\n01JCV4Z30B5N8RXHMW6D2E9G4P\n\ntodo\nPOST\n8acf0265f1e7f5b857566cde80c8f366eddd2afbdc17c38ba4f6bbdf8c7c51b9\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n1700000000\n1700000060\nAAAAAAAAAAAAAAAAAAAAAA",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpjYWxsCklmNHgzNkZVb21FCnRvZG8KMDFKQ1Y0WjJaUThTMlk5VjZGME0zSzdUNUEKMDFKQ1Y0WjMwQjVOOFJYSE1XNkQyRTlHNFAKCnRvZG8KUE9TVAo4YWNmMDI2NWYxZTdmNWI4NTc1NjZjZGU4MGM4ZjM2NmVkZGQyYWZiZGMxN2MzOGJhNGY2YmJkZjhjN2M1MWI5CjQ0MTM2ZmEzNTViMzY3OGExMTQ2YWQxNmY3ZTg2NDllOTRmYjRmYzIxZmU3N2U4MzEwYzA2MGY2MWNhYWZmOGEKMTcwMDAwMDAwMAoxNzAwMDAwMDYwCkFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+      "signature": "_Iggp6kTo3YtYj-ayZ8auXkZQVC8J4zez7xO_1H2fcszwojn8Fayg2Tg-F_qfNR8NQ2SciQXj5jZFDHnYeyzBQ"
+    }
+  ]
+}
