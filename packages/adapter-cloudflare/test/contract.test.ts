@@ -265,6 +265,56 @@ scopeCausedByContractSuite('adapter-cloudflare', async () => {
   return { host, cleanup: async () => host.close() };
 });
 
+// #2447 (review round 1): most deployed scope classes reserve nothing, so the person's doors at a
+// scope node must not short-circuit on an empty reservation: a role stored `holder: 'system'` is
+// still no person's. `CausedByScopeDO` registers no module reserving a key, which is that shape.
+describe('a scope class that reserves nothing: its person’s doors read the stored holder (#2447)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const caller = principalId.parse(ulid());
+  const host = new CloudflareScopeHost({ scope: env.CAUSED_BY_SCOPE, controlPlane: env.CONTROL_PLANE });
+  const RUN = permissionKey.parse('nor:run');
+  const USE = permissionKey.parse('nor:use');
+  const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as Error);
+  const SYSTEM_HELD = /role 'runner' is declared holder: 'system', a role for a system principal: no person's bound covers it/;
+
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `nor-${t.slice(-10).toLowerCase()}`, name: 'Reserves nothing' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'nor-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.defineRole(staff, t, { key: 'runner', permissions: [RUN], source: 'vertical', holder: 'system' });
+    await host.admin.defineRole(staff, t, { key: 'member', permissions: [USE], source: 'vertical' });
+  });
+  afterAll(() => host.close());
+
+  it('assignScopeRoleBounded refuses the system-held role and seats nothing; its twin is answered by the bound', async () => {
+    const who = principalId.parse(ulid());
+    const refused = await failure(host.assignScopeRoleBounded(t, s, caller, who, 'runner'));
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(SYSTEM_HELD);
+    expect(await host.listScopeRoleHolders(t, s, who)).toEqual([]);
+    // The twin: a person's role reaches the bound, which answers coverage instead of a refusal.
+    expect(await host.assignScopeRoleBounded(t, s, caller, who, 'member')).toMatchObject({ covered: false });
+  });
+
+  it('changeScopeRoleBounded refuses moving someone into it, leaving the role they held', async () => {
+    const who = principalId.parse(ulid());
+    await host.admin.assignRole(staff, { principalId: who, roleKey: 'member', node: { tenantId: t, scopeId: s } });
+    const refused = await failure(host.changeScopeRoleBounded(t, s, caller, who, 'member', 'runner'));
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(SYSTEM_HELD);
+    expect(await host.listScopeRoleHolders(t, s, who)).toEqual([{ principal: who, roleKey: 'member' }]);
+  });
+
+  it('canAssign refuses it; its twin answers coverage', async () => {
+    const refused = await failure(host.canAssign(t, s, caller, 'runner'));
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(SYSTEM_HELD);
+    expect(await host.canAssign(t, s, caller, 'member')).toMatchObject({ covered: false });
+  });
+});
+
 // #1184: the membership executor, on the DEFAULT tuple checker — the bound is a set
 // comparison an allow-all checker would answer "covered" for everything. Its executors run
 // here on the coordinator; the fixture module is in `contractTestModules`, so the ScopeDO has it.
