@@ -28,7 +28,13 @@ import {
   wireEnvelopeShape,
   WireKeyError,
   wireRequestBinding,
+  wireStateOf,
   wireVerificationKeys,
+  WIRE_AUDIENCE_VAR,
+  WIRE_PLATFORM_KEYS_VAR,
+  WIRE_ROUTER_KEYS_VAR,
+  WIRE_STATE_VAR,
+  WIRE_STATES,
   type WireBytes,
   type WireEnvelopeInput,
   type WireExpectation,
@@ -852,5 +858,44 @@ describe('wire envelope: replay', () => {
     await expect(check({ vector: CALL, nonces: broken })).rejects.toThrow(/storage unavailable/);
     const rejecting: WireNonceCache = { claim: () => Promise.reject(new Error('storage unavailable')) };
     await expect(check({ vector: CALL, nonces: rejecting })).rejects.toThrow(/storage unavailable/);
+  });
+});
+
+describe('wireStateOf: a deployment’s state from what its upload carries (RFC §5, Q3)', () => {
+  const lists = { routerKeys: fixture.keys.router.publicKey, platformKeys: fixture.keys.platform.publicKey };
+
+  it('no key list at all is legacy-only, whatever the setting says', () => {
+    for (const state of [undefined, 'dual', 'signed-only', 'legacy-only', 'bogus']) {
+      expect(wireStateOf({ state })).toBe('legacy-only');
+      expect(wireStateOf({ routerKeys: '', platformKeys: '  ', state })).toBe('legacy-only');
+      expect(wireStateOf({ routerKeys: 7, platformKeys: null, state })).toBe('legacy-only');
+    }
+  });
+
+  it('with key lists, an explicit legacy-only or signed-only is taken as said', () => {
+    expect(wireStateOf({ ...lists, state: 'legacy-only' })).toBe('legacy-only');
+    expect(wireStateOf({ ...lists, state: 'signed-only' })).toBe('signed-only');
+    expect(wireStateOf({ ...lists, state: 'dual' })).toBe('dual');
+  });
+
+  it('with key lists, a missing or unknown state reads as dual, never as signed-only', () => {
+    for (const state of [undefined, '', 'Signed-Only', 'signed-only ', 'bogus', 1]) {
+      expect(wireStateOf({ ...lists, state })).toBe('dual');
+    }
+  });
+
+  it('either issuer’s list alone is key lists', () => {
+    expect(wireStateOf({ routerKeys: lists.routerKeys })).toBe('dual');
+    expect(wireStateOf({ platformKeys: lists.platformKeys })).toBe('dual');
+  });
+
+  it('names every state, and the configuration it is read from', () => {
+    expect(WIRE_STATES).toEqual(['legacy-only', 'dual', 'signed-only']);
+    expect([WIRE_ROUTER_KEYS_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_AUDIENCE_VAR, WIRE_STATE_VAR]).toEqual([
+      'SUBSTRAT_WIRE_ROUTER_KEYS',
+      'SUBSTRAT_WIRE_PLATFORM_KEYS',
+      'SUBSTRAT_WIRE_AUDIENCE',
+      'SUBSTRAT_WIRE_STATE',
+    ]);
   });
 });
