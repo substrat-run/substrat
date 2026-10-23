@@ -1,0 +1,364 @@
+{
+  "about": "Shared vectors for the wire envelope (RFC wire-signing, packages/contracts/src/wire-signing.ts). The keys are RFC 8032 §7.1 TEST 1 (router) and TEST 2 (platform): published test keys, never used anywhere but here. A verifier in another language rebuilds each canonical text from its input, checks the signature under the signer's public key, and checks that the kid is base64url of the first 8 bytes of SHA-256 over the raw public key. Each entry of invalid must be refused, for the reason given, when verified at its now against these keys and its expected values (a call with replay none); each entry of invalidKeyLists must be refused when the key lists are loaded.",
+  "clockSkewSeconds": 30,
+  "maxLifetimeSeconds": 120,
+  "keys": {
+    "router": {
+      "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v_VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g",
+      "publicKey": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "kid": "If4x36FUomE"
+    },
+    "platform": {
+      "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIEzNCJso_5banbbDRuwRTg9bijGfNaumJNqM9u1PuKb7",
+      "publicKey": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw",
+      "kid": "OfcT0KZEJT8"
+    }
+  },
+  "vectors": [
+    {
+      "name": "a routed request",
+      "signer": "router",
+      "input": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "tenantId": "01JCV4Z2ZQ8S2Y9V6F0M3K7T5A",
+        "scopeId": "01JCV4Z30B5N8RXHMW6D2E9G4P",
+        "surface": "app",
+        "vertical": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2",
+        "iat": 1700000000,
+        "exp": 1700000060,
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "canonical": "substrat-wire/1\nrouter\nroute\nIf4x36FUomE\ntodo\n01JCV4Z2ZQ8S2Y9V6F0M3K7T5A\n01JCV4Z30B5N8RXHMW6D2E9G4P\napp\ntodo\nGET\na77825dd42b2e045848b2c50aeecdb9d812e0cc3d9d4c76ad216eb6893a8a749\n\n1700000000\n1700000060\nAAAAAAAAAAAAAAAAAAAAAA",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "CecWCj8qPz_NpzJEazkEz5dwWOhYUoRoJlQwkCKQVupTaRu19w0cgvVqItlCRe1PG5yguw2zf2gytIihEORSAg"
+    },
+    {
+      "name": "a platform call for a scope",
+      "signer": "platform",
+      "input": {
+        "iss": "platform",
+        "kind": "call",
+        "aud": "todo",
+        "tenantId": "01JCV4Z2ZQ8S2Y9V6F0M3K7T5A",
+        "scopeId": "01JCV4Z30B5N8RXHMW6D2E9G4P",
+        "method": "POST",
+        "target": "/internal/example",
+        "iat": 1700000000,
+        "exp": 1700000060,
+        "nonce": "AQIDBAUGBwgJCgsMDQ4PEA",
+        "body": "{\"hello\":\"world\"}"
+      },
+      "canonical": "substrat-wire/1\nplatform\ncall\nOfcT0KZEJT8\ntodo\n01JCV4Z2ZQ8S2Y9V6F0M3K7T5A\n01JCV4Z30B5N8RXHMW6D2E9G4P\n\n\nPOST\n8acf0265f1e7f5b857566cde80c8f366eddd2afbdc17c38ba4f6bbdf8c7c51b9\n93a23971a914e5eacbf0a8d25154cda309c3c1c72fbb9914d47c60f3cb681588\n1700000000\n1700000060\nAQIDBAUGBwgJCgsMDQ4PEA",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnBsYXRmb3JtCmNhbGwKT2ZjVDBLWkVKVDgKdG9kbwowMUpDVjRaMlpROFMyWTlWNkYwTTNLN1Q1QQowMUpDVjRaMzBCNU44UlhITVc2RDJFOUc0UAoKClBPU1QKOGFjZjAyNjVmMWU3ZjViODU3NTY2Y2RlODBjOGYzNjZlZGRkMmFmYmRjMTdjMzhiYTRmNmJiZGY4YzdjNTFiOQo5M2EyMzk3MWE5MTRlNWVhY2JmMGE4ZDI1MTU0Y2RhMzA5YzNjMWM3MmZiYjk5MTRkNDdjNjBmM2NiNjgxNTg4CjE3MDAwMDAwMDAKMTcwMDAwMDA2MApBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVB",
+      "signature": "eQHMEIbWVIo3NyUakgc9Yem5CJkioHSvkXiKD6IO-Hbv8Fc2Wap3xjGgr8bvTJtAhDE_gYgRZFDUhKXJ9oxCAw"
+    },
+    {
+      "name": "a platform call that names no scope, with an empty body",
+      "signer": "platform",
+      "input": {
+        "iss": "platform",
+        "kind": "call",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/internal/example",
+        "iat": 1700000000,
+        "exp": 1700000030,
+        "nonce": "_____________________w",
+        "body": ""
+      },
+      "canonical": "substrat-wire/1\nplatform\ncall\nOfcT0KZEJT8\ntodo\n\n\n\n\nGET\n8acf0265f1e7f5b857566cde80c8f366eddd2afbdc17c38ba4f6bbdf8c7c51b9\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1700000000\n1700000030\n_____________________w",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnBsYXRmb3JtCmNhbGwKT2ZjVDBLWkVKVDgKdG9kbwoKCgoKR0VUCjhhY2YwMjY1ZjFlN2Y1Yjg1NzU2NmNkZTgwYzhmMzY2ZWRkZDJhZmJkYzE3YzM4YmE0ZjZiYmRmOGM3YzUxYjkKZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NQoxNzAwMDAwMDAwCjE3MDAwMDAwMzAKX19fX19fX19fX19fX19fX19fX19fdw",
+      "signature": "IK0JKVDKHz2cvWbOiZN7Xp3uouXQ9_PfOZdrbI19bWGfTJbYLJdzMpLxcJDnn9xH0tRhx5mQt0VHpJ8t98GOBg"
+    },
+    {
+      "name": "a call the router makes itself",
+      "signer": "router",
+      "input": {
+        "iss": "router",
+        "kind": "call",
+        "aud": "todo",
+        "tenantId": "01JCV4Z2ZQ8S2Y9V6F0M3K7T5A",
+        "scopeId": "01JCV4Z30B5N8RXHMW6D2E9G4P",
+        "vertical": "todo",
+        "method": "POST",
+        "target": "/internal/example",
+        "iat": 1700000000,
+        "exp": 1700000060,
+        "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+        "body": "{}"
+      },
+      "canonical": "substrat-wire/1\nrouter\ncall\nIf4x36FUomE\ntodo\n01JCV4Z2ZQ8S2Y9V6F0M3K7T5A\n01JCV4Z30B5N8RXHMW6D2E9G4P\n\ntodo\nPOST\n8acf0265f1e7f5b857566cde80c8f366eddd2afbdc17c38ba4f6bbdf8c7c51b9\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n1700000000\n1700000060\nAAAAAAAAAAAAAAAAAAAAAA",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpjYWxsCklmNHgzNkZVb21FCnRvZG8KMDFKQ1Y0WjJaUThTMlk5VjZGME0zSzdUNUEKMDFKQ1Y0WjMwQjVOOFJYSE1XNkQyRTlHNFAKCnRvZG8KUE9TVAo4YWNmMDI2NWYxZTdmNWI4NTc1NjZjZGU4MGM4ZjM2NmVkZGQyYWZiZGMxN2MzOGJhNGY2YmJkZjhjN2M1MWI5CjQ0MTM2ZmEzNTViMzY3OGExMTQ2YWQxNmY3ZTg2NDllOTRmYjRmYzIxZmU3N2U4MzEwYzA2MGY2MWNhYWZmOGEKMTcwMDAwMDAwMAoxNzAwMDAwMDYwCkFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+      "signature": "_Iggp6kTo3YtYj-ayZ8auXkZQVC8J4zez7xO_1H2fcszwojn8Fayg2Tg-F_qfNR8NQ2SciQXj5jZFDHnYeyzBQ"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "a line changed under the original signature (the tenant)",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFozQTdRV0VSVFlYNU45TTJLOEhCCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "CecWCj8qPz_NpzJEazkEz5dwWOhYUoRoJlQwkCKQVupTaRu19w0cgvVqItlCRe1PG5yguw2zf2gytIihEORSAg",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "signature"
+    },
+    {
+      "name": "S + L: the signature scalar raised by the group order",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "CecWCj8qPz_NpzJEazkEz5dwWOhYUoRoJlQwkCKQVupAPRESEnEu2ssHGnwhP8xkG5yguw2zf2gytIihEORSEg",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "signature"
+    },
+    {
+      "name": "validly signed for another deployment",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "CecWCj8qPz_NpzJEazkEz5dwWOhYUoRoJlQwkCKQVupTaRu19w0cgvVqItlCRe1PG5yguw2zf2gytIihEORSAg",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo-preview",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "audience"
+    },
+    {
+      "name": "expired: one second past exp plus the skew",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "CecWCj8qPz_NpzJEazkEz5dwWOhYUoRoJlQwkCKQVupTaRu19w0cgvVqItlCRe1PG5yguw2zf2gytIihEORSAg",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000091,
+      "reason": "expired"
+    },
+    {
+      "name": "not yet valid: one second before iat minus the skew",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "CecWCj8qPz_NpzJEazkEz5dwWOhYUoRoJlQwkCKQVupTaRu19w0cgvVqItlCRe1PG5yguw2zf2gytIihEORSAg",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1699999969,
+      "reason": "not-yet-valid"
+    },
+    {
+      "name": "signed by the platform's key while claiming to be the router: no router key has its kid",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpPZmNUMEtaRUpUOAp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "ClSG_wmDkV-OEKElWb6yq0pQpsbonSBaN-B-BKI2PzOtPUTBGcK09F_I9vNzJNtN7L4wpeOrsNrGHVYgGyCDCg",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "kid"
+    },
+    {
+      "name": "exp - iat = maximum + 1, validly signed",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAxMjEKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "lPGPoqNj3K3lq91LdxDjK1_DMD19MCOf2TSYdKJrRKRp_xV4KIRY8q3sR_nARwG7QsZRRZzpYlqRGkZ8MolRDQ",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "lifetime"
+    },
+    {
+      "name": "an aliased kid (unused trailing bits set)",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRgp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "9-Qy1TMsTs_DoB3b_WMyXqbbAAuhY_ygKf7G6z5UQYHo3dfo6gKrzUzJRT1X7xoDxehpjVhL5pLOrSQ1PsaSCA",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "an aliased nonce (unused trailing bits set)",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQg",
+      "signature": "0taCOkH-pIgOYH2e0HWPSZ3baW6c9IH4qPGpNirYIgrh6AmNukc4CP4-nrFVlcbCO0aRgTF73iFfx-Dw6X35Cw",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "a byte-order mark before the tag",
+      "header": "77u_c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "ijC4KngRfgXUqF7Vf8u-OgSgU5qlb4maSlZ17UNd3qCnBRSVSvZDE5arTFV8c7M8PbbVxESH7CZiUYjuMz2bBw",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "CRLF line endings",
+      "header": "c3Vic3RyYXQtd2lyZS8xDQpyb3V0ZXINCnJvdXRlDQpJZjR4MzZGVW9tRQ0KdG9kbw0KMDFKQ1Y0WjJaUThTMlk5VjZGME0zSzdUNUENCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQDQphcHANCnRvZG8NCkdFVA0KYTc3ODI1ZGQ0MmIyZTA0NTg0OGIyYzUwYWVlY2RiOWQ4MTJlMGNjM2Q5ZDRjNzZhZDIxNmViNjg5M2E4YTc0OQ0KDQoxNzAwMDAwMDAwDQoxNzAwMDAwMDYwDQpBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+      "signature": "Oa5sVpwYpDmskr64Xs2lhdewjrgTtFgM9hSBQS8vTs9pyCRT__406LKInNb3uQPO9zsH1Jfc3xujUv1DTRGNDA",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "a trailing line feed",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQo",
+      "signature": "aWE1n6A-FGwIFecjJTfaPvDJvfxLpA6OVprbzVEF4_yOxxQSrAh20Qx6n5a1LE846N3PSJ2rCLkbZtuxJQjVCg",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "a lone surrogate in a text field, as CESU-8 bytes",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCu2ggAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CgoxNzAwMDAwMDAwCjE3MDAwMDAwNjAKQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ",
+      "signature": "hVYoxy9Xlz3L6CCqmAj3nzOVXvTkCK0GqVPSsUy6549Zg187S5kA-EaD1KTa2sHFpmeOYD71MMVy12tYSw-IAQ",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "a scope-store envelope, signed by the router's wire key under its own kid",
+      "header": "MQpjYWxsZXIKSWY0eDM2RlVvbUUKdG9kbwp0ZW5hbnQvdG9kby9zY29wZS9ncmFwaApyZWFkCmQwOWVjMWQ3NDFhZDlhYTgzNzY1YTE5YWU2ZmE0YjM3MzdiMDAxM2FmZGFjNDczNjU1ZjA1MWRmM2ViNDJiNWYKMTcwMDAwMDAwMApBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+      "signature": "Ow1owxt8pUDZewUSZKAcDzVG6do9jL87tTwlF-laOl2tdnZm2UdbKgqcy6yYjS8shpVPiWCMizNgJxdrmZj8Aw",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "(platform, route): a pair the closed table does not admit, validly signed",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnBsYXRmb3JtCnJvdXRlCk9mY1QwS1pFSlQ4CnRvZG8KMDFKQ1Y0WjJaUThTMlk5VjZGME0zSzdUNUEKMDFKQ1Y0WjMwQjVOOFJYSE1XNkQyRTlHNFAKYXBwCnRvZG8KR0VUCmE3NzgyNWRkNDJiMmUwNDU4NDhiMmM1MGFlZWNkYjlkODEyZTBjYzNkOWQ0Yzc2YWQyMTZlYjY4OTNhOGE3NDkKCjE3MDAwMDAwMDAKMTcwMDAwMDA2MApBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+      "signature": "rnJfHob9E_Ip6TSIY03-mESYyPbKYnr06IdfDT_OzFH9ze8uFzGI622UaUbKHEm4nDuPvqmVllXumwfdizM8CA",
+      "expected": {
+        "iss": "platform",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "a route carrying a body digest",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnJvdXRlcgpyb3V0ZQpJZjR4MzZGVW9tRQp0b2RvCjAxSkNWNFoyWlE4UzJZOVY2RjBNM0s3VDVBCjAxSkNWNFozMEI1TjhSWEhNVzZEMkU5RzRQCmFwcAp0b2RvCkdFVAphNzc4MjVkZDQyYjJlMDQ1ODQ4YjJjNTBhZWVjZGI5ZDgxMmUwY2MzZDlkNGM3NmFkMjE2ZWI2ODkzYThhNzQ5CjkzYTIzOTcxYTkxNGU1ZWFjYmYwYThkMjUxNTRjZGEzMDljM2MxYzcyZmJiOTkxNGQ0N2M2MGYzY2I2ODE1ODgKMTcwMDAwMDAwMAoxNzAwMDAwMDYwCkFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+      "signature": "VnLycS1-hxhmXZpIF8SwoDuJhN4NwAcLrwjR0S_Nb73VxtNd1bXx3D6QApDNpJ5DmyHKVoX_wQ9pc7-KeSKzBw",
+      "expected": {
+        "iss": "router",
+        "kind": "route",
+        "aud": "todo",
+        "method": "GET",
+        "target": "/api/lists?page=2"
+      },
+      "now": 1700000000,
+      "reason": "malformed"
+    },
+    {
+      "name": "a call whose body is not the signed one",
+      "header": "c3Vic3RyYXQtd2lyZS8xCnBsYXRmb3JtCmNhbGwKT2ZjVDBLWkVKVDgKdG9kbwowMUpDVjRaMlpROFMyWTlWNkYwTTNLN1Q1QQowMUpDVjRaMzBCNU44UlhITVc2RDJFOUc0UAoKClBPU1QKOGFjZjAyNjVmMWU3ZjViODU3NTY2Y2RlODBjOGYzNjZlZGRkMmFmYmRjMTdjMzhiYTRmNmJiZGY4YzdjNTFiOQo5M2EyMzk3MWE5MTRlNWVhY2JmMGE4ZDI1MTU0Y2RhMzA5YzNjMWM3MmZiYjk5MTRkNDdjNjBmM2NiNjgxNTg4CjE3MDAwMDAwMDAKMTcwMDAwMDA2MApBUUlEQkFVR0J3Z0pDZ3NNRFE0UEVB",
+      "signature": "eQHMEIbWVIo3NyUakgc9Yem5CJkioHSvkXiKD6IO-Hbv8Fc2Wap3xjGgr8bvTJtAhDE_gYgRZFDUhKXJ9oxCAw",
+      "expected": {
+        "iss": "platform",
+        "kind": "call",
+        "aud": "todo",
+        "method": "POST",
+        "target": "/internal/example",
+        "replay": "none",
+        "body": "{\"hello\":\"World\"}"
+      },
+      "now": 1700000000,
+      "reason": "body"
+    }
+  ],
+  "invalidKeyLists": [
+    {
+      "name": "a small-order point (the identity)",
+      "reason": "small-order",
+      "router": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    },
+    {
+      "name": "a non-canonical spelling of a listed key",
+      "reason": "non-canonical",
+      "router": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURp"
+    },
+    {
+      "name": "one key listed for both issuers",
+      "reason": "both-issuers",
+      "router": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "platform": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw,11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    },
+    {
+      "name": "the same key twice",
+      "reason": "duplicate",
+      "router": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo,11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+    }
+  ]
+}
