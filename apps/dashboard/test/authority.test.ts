@@ -299,7 +299,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       calls.push(String(url));
       return new Response(JSON.stringify(pages[calls.length - 1] ?? { entries: [], nextCursor: null }), {
         status: 200,
-        headers: { 'content-type': 'application/json', ...headers },
+        headers: { 'content-type': 'application/json' },
       });
     }) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
@@ -449,7 +449,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       const hit = Object.entries(routes).find(([p]) => path === p || path.startsWith(`${p}?`));
       return new Response(JSON.stringify(hit ? hit[1] : []), {
         status: 200,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...headers },
       });
     }) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
