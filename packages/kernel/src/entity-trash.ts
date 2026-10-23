@@ -42,8 +42,9 @@ import type { SystemScheduleState } from './system-switch.js';
  *
  * A CEILING, not a promise: a purge that enqueues a platform request is held to the scope's
  * `MAX_PENDING_PLATFORM_REQUESTS` as well, which is smaller. The two are not reconciled by a
- * second number — the cap is the one authority, and a pass that meets its refusal stops there
- * and continues after the drain (`runPurgePass`, #2506).
+ * second number — the cap is the one authority and decides how many such purges a pass commits.
+ * Past the head of its pass, a pass that meets the cap's refusal stops there; at the head the
+ * refusal is a failure like any other (`runPurgePass`, #2506).
  */
 export const PURGE_BATCH = 50;
 
