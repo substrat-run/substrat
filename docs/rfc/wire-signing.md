@@ -532,12 +532,25 @@ step 6, withdraws the credential.
 |---|---|---|---|
 | 0 | This PR: RFC, K-58 draft, primitives. Nothing wired. | delete the files | the envelope format and the plan |
 | 1 | The verifier, `dual`-capable, inert without key lists, in the platform's entry module (Q2) | revert the package | a pushed demo with no keys behaves exactly as before |
-| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The router's signer decides, by name, how the informational headers it sends (the field-coverage sample, a peer call's parent request id) reach a request admitted on its envelope alone: signed as claims, or listed by the entry as carrying no authority (§5). Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused |
+| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The router's signer decides, by name, how the informational headers it sends (the field-coverage sample, a peer call's parent request id) reach a request admitted on its envelope alone: signed as claims, or listed by the entry as carrying no authority (§5). Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused, each read from the environment's own log query (below) |
 | 3 | The fleet re-uploaded so every live version the entry wraps carries the verifier and the lists. Readiness report and tooling. A version uploaded without the entry is not reached by any re-upload, and is named in the report until its author pushes again (§7). | none needed: `dual` accepts legacy | the report is clean, or lists only named exceptions, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
 | 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included, field coverage still arming and peer-call lines still naming their parent (§5) |
 | 6 | **On the critical path:** the up-channel goes, one PR each (below). It can run in parallel with steps 1 to 5, and nothing after it starts until it is done. | revert that PR | the feature works end to end on a test deployment, and the readiness report shows no live version still making that up-call |
 | 7 | The uploader stops injecting the shared credential, the signers stop sending legacy headers, and the shared secrets are retired from every vertical path and rotated out. Gated by §7's two tests for every live version: its up-calls (step 6 complete for it) and its legacy down-checks (none, or each satisfied by the entry with a per-deployment value, Q10). A version never rebuilt fails both until Q10's values reach it. | inject it again and turn `legacy` back on | every environment `signed-only`, both of §7's tests hold for every live version, the report clean |
+
+**Where step 2 reads its counts.** No reader in this repo returns the wire line (§8), and the
+readiness report that will is follow-on 4, which lands with step 3. So step 2's check is read
+straight from the environment's Workers Logs, through Cloudflare's own query (the dashboard's query
+builder, or the account's telemetry query API, the one `cf-observability.ts` calls): the events
+whose `substrat` is `wire`, over the window since the canary was given its lists, counted by
+`outcome`, with `reason` and `fault` beside it, for each deployment's script (`$metadata.service`).
+The check is the table's, read there: the re-pushed demo's script counts `signed-accepted`, the
+untouched vertical's counts `legacy-accepted`, and no script counts `refused`. Of the faults, only
+`no-nonce-store` on a call that keeps nonces is expected before follow-on 5; any other fails the
+check. The person who checks records the query and its counts on the step's pull request.
+Follow-on 4 replaces this reading with the report's own query, over the same lines; from step 3 on,
+the report is what every later check and §7's gate read.
 
 **Step 6, the up-channel.** Each item moves one of a vertical's calls up to the control plane onto
 its outbox, so it no longer needs the shared credential: outbound email (as the existing email
@@ -567,6 +580,12 @@ never rebuilt keeps the up-calls it was built with.
    the cutover criterion, versions without the entry named), on dropping a key (and its
    break-glass path), and on withdrawing the shared credentials (both of §7's tests). The signers'
    release gate on `sign` off and on non-signing builds goes into each signer's deploy workflow.
+   The report reads the wire lines through a query of its own (§8), and takes step 2's reading
+   over (§9). The counts in those lines originate in the deployment's own isolate, so the report
+   corroborates them with a count taken on the platform side, for example the router's own count
+   of the requests it sent each deployment over the same window. A deployment whose entry count is
+   missing, or does not agree with the platform's within the expected loss of log delivery, is not
+   ready, by name, whatever its own counts say.
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step
