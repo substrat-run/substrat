@@ -18,7 +18,7 @@ import {
   type WireSigningKey,
   type WireVerificationLine,
 } from '@substrat-run/contracts/wire-signing';
-import { readRoutedNode } from '@substrat-run/vertical-host';
+import { readRoutedNode, withInvocationLog } from '@substrat-run/vertical-host';
 import {
   WIRE_CLAIM_TIMEOUT_MS,
   WIRE_FAULT_BODY,
@@ -139,6 +139,7 @@ async function sign(key: WireSigningKey, input: Omit<WireEnvelopeInput, 'method'
 }
 
 const URL_ROUTE = 'https://acme.example/api/things?page=2';
+const PROVISION = 'https://vertical/internal/provision';
 
 /** A route envelope for `URL_ROUTE` naming the router's identity, unless told otherwise. */
 const routeEnvelope = (over: Partial<WireEnvelopeInput> & { url?: string; method?: string } = {}, key = router) =>
@@ -148,6 +149,7 @@ const callEnvelope = (url: string, body: string, over: Partial<WireEnvelopeInput
   sign(key, { iss: 'platform', kind: 'call', aud: AUD, method: 'POST', body, url, ...over });
 
 const nodeOf = async (res: Response) => ((await res.json()) as { node: { tenantId: string; scopeId: string; surface: string; verticalSlug: string | null } | null }).node;
+const bodyOf = async (res: Response) => ((await res.json()) as { body: string }).body;
 
 describe('legacy-only: a deployment with no key lists is untouched', () => {
   it('hands the vertical the very request, returns what it returned without awaiting, and logs nothing', () => {
@@ -204,24 +206,22 @@ describe('legacy-only: a deployment with no key lists is untouched', () => {
 
   it('writes no wire line through the default console either', async () => {
     const console_ = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const v = vertical();
-    const gate = withWireGate<Env>(v.worker as GatedWorker<Env>, {
-      routedNode: (headers, env) => readRoutedNode(headers, { expectedSecret: env['ROUTER_SECRET'] }),
-      routerSecret: (env) => env['ROUTER_SECRET'],
-      platformSecret: (env) => env['CALL_SECRET'],
-    });
-    await gate.fetch!(new Request(URL_ROUTE, { headers: legacyRoute() }), legacyEnv(), {});
+    const g = gated({ log: undefined, clock: undefined });
+    await g.fetch(new Request(URL_ROUTE, { headers: legacyRoute() }), legacyEnv());
     expect(console_).not.toHaveBeenCalled();
     // Positive twin: in dual the default sink is the console, and it hears exactly the wire line.
-    await gate.fetch!(new Request(URL_ROUTE, { headers: legacyRoute() }), envOf('dual'), {});
+    await g.fetch(new Request(URL_ROUTE, { headers: legacyRoute() }), envOf('dual'));
     expect(console_).toHaveBeenCalledTimes(1);
     expect(JSON.parse(console_.mock.calls[0]![0] as string)).toMatchObject({ substrat: 'wire', outcome: 'legacy-accepted', reason: 'missing' });
   });
 
-  it('passes the other handlers through, bound to the worker, and leaves a worker with no fetch untouched', async () => {
+  it('passes the stamp’s other handlers through as they are, and leaves a worker with no fetch untouched', async () => {
     const worker = { marker: 7, fetch: () => new Response('ok'), scheduled(this: { marker: number }) { return this.marker; } };
     const options = { routedNode: () => null, routerSecret: () => undefined, platformSecret: () => undefined };
-    const gate = withWireGate<Env>(worker as unknown as GatedWorker<Env>, options);
+    // What the entry wraps: the stamp's output, whose handlers are its own, bound to the vertical.
+    const stamped = withInvocationLog(worker as unknown as Parameters<typeof withInvocationLog>[0]) as GatedWorker<Env>;
+    const gate = withWireGate<Env>(stamped, options);
+    expect(gate['scheduled']).toBe(stamped['scheduled']);
     expect((gate['scheduled'] as () => number)()).toBe(7);
     const classEntrypoint = { scheduled: () => 1 };
     expect(withWireGate<Env>(classEntrypoint as unknown as GatedWorker<Env>, options)).toBe(classEntrypoint);
@@ -337,7 +337,6 @@ describe('dual, a routed request the legacy credential does not prove', () => {
 });
 
 describe('dual, a call to the internal surface', () => {
-  const PROVISION = 'https://vertical/internal/provision';
   const EXPORT = `https://vertical/internal/export?scopeId=${SCOPE}`;
   const callHeaders = (legacy: boolean) => (legacy ? { [PLATFORM_SECRET_HEADER]: CALL_VALUE } : {});
 
@@ -358,7 +357,7 @@ describe('dual, a call to the internal surface', () => {
     const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body }), envOf('dual'));
     expect(res.status).toBe(200);
     // The body was read to be verified, and the vertical still receives every byte of it.
-    expect(((await res.json()) as { body: string }).body).toBe(body);
+    expect(await bodyOf(res)).toBe(body);
     expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', reason: null, legacy: 'valid' });
   });
 
@@ -380,7 +379,7 @@ describe('dual, a call to the internal surface', () => {
     const body = '{"ping":true}';
     const headers = { ...callHeaders(true), ...(await callEnvelope(PROVISION, body)) };
     const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body }), envOf('dual'));
-    expect(((await res.json()) as { body: string }).body).toBe(body);
+    expect(await bodyOf(res)).toBe(body);
     expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted', tenantId: null, scopeId: null });
   });
 
@@ -388,7 +387,7 @@ describe('dual, a call to the internal surface', () => {
     const g = gated();
     const headers = { ...callHeaders(true), ...(await callEnvelope(PROVISION, '{"a":1}')) };
     const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body: '{"a":2}' }), envOf('dual'));
-    expect(((await res.json()) as { body: string }).body).toBe('{"a":2}');
+    expect(await bodyOf(res)).toBe('{"a":2}');
     expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'body' });
   });
 
@@ -397,7 +396,7 @@ describe('dual, a call to the internal surface', () => {
     const body = '{"ping":true}';
     const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers: await callEnvelope(PROVISION, body), body }), envOf('dual'));
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { body: string }).body).toBe(body);
+    expect(await bodyOf(res)).toBe(body);
     expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted', legacy: 'absent' });
   });
 
@@ -491,8 +490,7 @@ describe('signed-only: the envelope alone decides', () => {
 
   it('every refusal is the same status and the same body, and the vertical never runs', async () => {
     const answers = new Set<string>();
-    const reasons: string[] = [];
-    for (const [, envelope] of [
+    for (const [reason, envelope] of [
       ['missing', async () => ({})],
       ['kid', async () => routeEnvelope({}, stranger)],
       ['audience', async () => routeEnvelope({ aud: 'another-deployment' })],
@@ -503,15 +501,13 @@ describe('signed-only: the envelope alone decides', () => {
       const res = await g.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await envelope()) } }), envOf('signed-only'));
       answers.add(`${res.status} ${res.headers.get('content-type')} ${await res.text()}`);
       expect(g.seen).toEqual([]);
-      reasons.push(g.wire()[0]!.reason!);
+      // The reason went to the counter, and only there.
+      expect(g.wire()[0]).toMatchObject({ outcome: 'refused', reason });
     }
     expect([...answers]).toEqual([`401 ${PROBLEM_CONTENT_TYPE} ${WIRE_REFUSAL_BODY}`]);
-    // The reason went to the counter, and only there.
-    expect(reasons).toEqual(['missing', 'kid', 'audience', 'expired', 'target']);
   });
 
   it('a call that needs a nonce store this version lacks is the fixed 503; one that names no scope is served', async () => {
-    const PROVISION = 'https://vertical/internal/provision';
     const body = '{}';
     const scoped = gated();
     const res = await scoped.fetch(new Request(PROVISION, { method: 'POST', headers: await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE }), body }), envOf('signed-only'));
@@ -522,7 +518,6 @@ describe('signed-only: the envelope alone decides', () => {
   });
 
   it('a valid legacy credential does not carry a call past a missing nonce store: only dual serves it', async () => {
-    const PROVISION = 'https://vertical/internal/provision';
     const body = '{}';
     const answers: number[] = [];
     for (const state of ['signed-only', 'dual']) {
@@ -538,11 +533,10 @@ describe('signed-only: the envelope alone decides', () => {
 
 describe('the deployment’s own faults', () => {
   it.each([
-    ['a malformed key list', { [WIRE_ROUTER_KEYS_VAR]: 'not-a-key' }],
-    ['a key listed for both issuers', { [WIRE_PLATFORM_KEYS_VAR]: 'SAME' }],
+    ['a malformed key list', () => ({ [WIRE_ROUTER_KEYS_VAR]: 'not-a-key' })],
+    ['a key listed for both issuers', () => ({ [WIRE_PLATFORM_KEYS_VAR]: keyLists.router })],
   ])('%s is the fixed 503 in every request, never the legacy path', async (_, extra) => {
-    const env = { ...envOf('dual'), ...extra };
-    if (env[WIRE_PLATFORM_KEYS_VAR] === 'SAME') env[WIRE_PLATFORM_KEYS_VAR] = keyLists.router;
+    const env = { ...envOf('dual'), ...extra() };
     const g = gated();
     const res = await g.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), env);
     expect(res.status).toBe(503);
@@ -567,7 +561,6 @@ describe('what the gate answers and writes', () => {
   });
 
   it('never carries a legacy credential in a response, a response header or a line, whatever the path', async () => {
-    const PROVISION = 'https://vertical/internal/provision';
     const out: string[] = [];
     const console_ = vi.spyOn(console, 'log').mockImplementation((...a) => void out.push(a.join(' ')));
     const warn = vi.spyOn(console, 'warn').mockImplementation((...a) => void out.push(a.join(' ')));
@@ -590,9 +583,6 @@ describe('what the gate answers and writes', () => {
     expect(everything).toContain('"substrat":"wire"');
     expect(everything).not.toContain(ROUTER_VALUE);
     expect(everything).not.toContain(CALL_VALUE);
-    console_.mockRestore();
-    warn.mockRestore();
-    error.mockRestore();
   });
 
   it('a line carries exactly the published fields, and nothing from the request’s headers', async () => {

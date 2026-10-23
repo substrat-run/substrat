@@ -13,6 +13,7 @@ import {
 } from '../src/scope-store-envelope.js';
 import {
   canonicalWireEnvelope,
+  decodeWireEnvelope,
   importWireSigningKey,
   parseWireEnvelope,
   signWireEnvelope,
@@ -25,6 +26,7 @@ import {
   WIRE_REFUSED,
   WIRE_SIGNATURE_HEADER,
   wireDigest,
+  wireEndpoint,
   wireEnvelopeShape,
   WireKeyError,
   wireRequestBinding,
@@ -897,5 +899,36 @@ describe('wireStateOf: a deployment’s state from what its upload carries (RFC 
       'SUBSTRAT_WIRE_AUDIENCE',
       'SUBSTRAT_WIRE_STATE',
     ]);
+  });
+});
+
+describe('decodeWireEnvelope: what a header names, before anything is verified', () => {
+  it('gives the canonical text and the claims of a vector header', () => {
+    const decoded = decodeWireEnvelope(ROUTE.header);
+    expect(decoded?.canonical).toBe(ROUTE.canonical);
+    expect(decoded?.claims).toEqual(parseWireEnvelope(ROUTE.canonical));
+  });
+
+  it('is undefined for anything the verifier refuses as malformed', () => {
+    const bom = bytesToBase64Url(new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode(ROUTE.canonical)]));
+    for (const header of ['', 'not base64!', bytesToBase64Url(new Uint8Array([0xff, 0xfe])), bom, bytesToBase64Url(new TextEncoder().encode('1\nplatform'))]) {
+      expect(decodeWireEnvelope(header)).toBeUndefined();
+    }
+  });
+});
+
+describe('wireEndpoint: which envelope an endpoint accepts', () => {
+  it('the internal surface takes calls from the control plane, and a peer invocation from the router too', () => {
+    expect(wireEndpoint('/internal/provision')).toEqual({ kind: 'call', issuers: ['platform'] });
+    expect(wireEndpoint('/internal')).toEqual({ kind: 'call', issuers: ['platform'] });
+    expect(wireEndpoint('/internal/vertical-invoke')).toEqual({ kind: 'call', issuers: ['platform', 'router'] });
+  });
+
+  it('every other path is a routed request, the router’s alone', () => {
+    for (const path of ['/', '/api/things', '/internals', '/internal-x', '/api/internal/provision']) {
+      expect(wireEndpoint(path)).toEqual({ kind: 'route', issuers: ['router'] });
+    }
+    // Only the exact peer path admits the router on the internal surface.
+    expect(wireEndpoint('/internal/vertical-invoke/x')).toEqual({ kind: 'call', issuers: ['platform'] });
   });
 });

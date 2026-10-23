@@ -73,8 +73,8 @@ afterAll(async () => {
   await Promise.all(runtimes.map((mf) => mf.dispose()));
 });
 
-/** Upload the vertical the way the platform does, with these declared flags, and serve one request. */
-async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_BASELINE, source = vertical, path = '/api/things') {
+/** Upload `source` the way the platform does, with these declared flags and bindings, and run it on workerd. */
+function deployed(source: string, { compatibilityFlags = [] as string[], compatibilityDate = RUNTIME_BASELINE, bindings = {} as Record<string, string> } = {}) {
   const uploaded = withPlatformEntry({
     entry: 'worker.js',
     modules: [{ name: 'worker.js', content: new TextEncoder().encode(source), contentType: 'application/javascript+module' }],
@@ -86,7 +86,7 @@ async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_
     modulesRoot: '/',
     compatibilityDate,
     compatibilityFlags: uploaded.compatibilityFlags,
-    bindings: { ROUTER_SECRET: SECRET },
+    bindings: { ROUTER_SECRET: SECRET, ...bindings },
     // #2192: the network, answered here — a host named `undeclared` the way the egress worker
     // answers one a vertical never declared, everything else 200.
     outboundService: (request: Request) =>
@@ -99,14 +99,23 @@ async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_
   });
   runtimes.push(mf);
   expect(uploaded.entry).toBe(PLATFORM_ENTRY_MODULE);
-  const res = await mf.dispatchFetch(`https://acme.example${path}`, { headers: routed });
-  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null; outboundCalls?: unknown; authChecks?: unknown };
-  return { flags: uploaded.compatibilityFlags, status: res.status, body, lines };
+  return { mf, lines, flags: uploaded.compatibilityFlags };
 }
 
+/** Upload the vertical with these declared flags, and serve one request. */
+async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_BASELINE, source = vertical, path = '/api/things') {
+  const { mf, lines, flags } = deployed(source, { compatibilityFlags, compatibilityDate });
+  const res = await mf.dispatchFetch(`https://acme.example${path}`, { headers: routed });
+  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null; outboundCalls?: unknown; authChecks?: unknown };
+  return { flags, status: res.status, body, lines };
+}
+
+/** The JSON lines in a script's stdout with this `substrat` discriminator. */
+const linesOf = (lines: string[], substrat: string) =>
+  lines.map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return undefined; } }).filter((l) => l?.['substrat'] === substrat) as Record<string, unknown>[];
+
 /** The invocation line in a script's stdout. */
-const lineOf = (lines: string[]) =>
-  lines.map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return undefined; } }).find((l) => l?.['substrat'] === 'invocation');
+const lineOf = (lines: string[]) => linesOf(lines, 'invocation')[0];
 
 const NAMED = [
   { binding: 'GRAPH', operation: 'increment', outcome: 'ok', durationMs: expect.any(Number) },
@@ -244,27 +253,9 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
   });
 
   /** The checking vertical, uploaded as the platform uploads it, with these bindings. */
-  function deployed(bindings: Record<string, string>) {
-    const uploaded = withPlatformEntry({
-      entry: 'worker.js',
-      modules: [{ name: 'worker.js', content: new TextEncoder().encode(checking), contentType: 'application/javascript+module' }],
-      compatibilityFlags: [],
-    });
-    const lines: string[] = [];
-    const mf = new Miniflare({
-      modules: uploaded.modules.map((m) => ({ type: 'ESModule' as const, path: m.name, contents: new TextDecoder().decode(m.content) })),
-      modulesRoot: '/',
-      compatibilityDate: RUNTIME_BASELINE,
-      compatibilityFlags: uploaded.compatibilityFlags,
-      bindings: { ROUTER_SECRET: SECRET, PLATFORM_SECRET: CALL_VALUE, SUBSTRAT_VERSION_ID: '01JZ0000000000000000VER001', ...bindings },
-      handleRuntimeStdio(stdout) {
-        stdout.on('data', (chunk: Buffer) => lines.push(...chunk.toString().split('\n')));
-      },
-    });
-    runtimes.push(mf);
-    const parsed = () =>
-      lines.map((l) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return undefined; } }).filter((l) => l !== undefined);
-    return { mf, lines, wire: () => parsed().filter((l) => l['substrat'] === 'wire'), invocation: () => parsed().find((l) => l['substrat'] === 'invocation') };
+  function checked(bindings: Record<string, string>) {
+    const { mf, lines } = deployed(checking, { bindings: { PLATFORM_SECRET: CALL_VALUE, SUBSTRAT_VERSION_ID: '01JZ0000000000000000VER001', ...bindings } });
+    return { mf, lines, wire: () => linesOf(lines, 'wire'), invocation: () => lineOf(lines) };
   }
 
   const ROUTE = 'https://acme.example/api/things?page=2';
@@ -285,7 +276,7 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
   type Answer = { node: { tenantId: string; scopeId: string } | null; stamped: boolean; body: string };
 
   it('with no key lists nothing changes: served as before, and no wire line is written', async () => {
-    const d = deployed({});
+    const d = checked({});
     const res = await d.mf.dispatchFetch(ROUTE, { headers: { ...routed, ...(await routeEnvelope()) } });
     expect(res.status).toBe(200);
     const answer = (await res.json()) as Answer;
@@ -295,7 +286,7 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
   });
 
   it('dual: a routed request is served as today and its envelope counted beside the invocation line', async () => {
-    const d = deployed({ ...lists, [WIRE_STATE_VAR]: 'dual' });
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
     const res = await d.mf.dispatchFetch(ROUTE, { headers: { ...routed, ...(await routeEnvelope()) } });
     expect(res.status).toBe(200);
     expect(((await res.json()) as Answer).stamped).toBe(true);
@@ -304,7 +295,7 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
   });
 
   it('dual: an envelope alone admits a routed request, and the vertical and its line see the envelope’s identity', async () => {
-    const d = deployed({ ...lists, [WIRE_STATE_VAR]: 'dual' });
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
     const res = await d.mf.dispatchFetch(ROUTE, { headers: await routeEnvelope() });
     expect(res.status).toBe(200);
     const answer = (await res.json()) as Answer;
@@ -316,7 +307,7 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
   });
 
   it('dual: a call’s body is read to be verified and still reaches the vertical byte for byte', async () => {
-    const d = deployed({ ...lists, [WIRE_STATE_VAR]: 'dual' });
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
     const url = 'https://vertical/internal/provision';
     const body = JSON.stringify({ note: 'é'.repeat(70_000) });
     const issued = await signWireEnvelope(platform, { iss: 'platform', kind: 'call', aud: AUD, ...wireRequestBinding({ method: 'POST', url }), body });
@@ -331,7 +322,7 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
   });
 
   it('signed-only: a refusal is the fixed answer, the vertical never runs, and no credential is in any output', async () => {
-    const d = deployed({ ...lists, [WIRE_STATE_VAR]: 'signed-only' });
+    const d = checked({ ...lists, [WIRE_STATE_VAR]: 'signed-only' });
     const refused = await d.mf.dispatchFetch(ROUTE, { headers: routed });
     expect(refused.status).toBe(401);
     const text = await refused.text();

@@ -200,6 +200,25 @@ export function parseWireEnvelope(canonical: string): WireClaims | undefined {
   };
 }
 
+/**
+ * The canonical text a header carries and the claims it names, or undefined when the header is not
+ * base64url of exactly what the encoder emits. Nothing is verified here: the verifier decodes with
+ * this, and an entry may read the claims beforehand only to choose what to verify them against.
+ */
+export function decodeWireEnvelope(header: string): { readonly canonical: string; readonly claims: WireClaims } | undefined {
+  const bytes = base64UrlToBytes(header);
+  if (!bytes) return undefined;
+  let canonical: string;
+  try {
+    // Fatal and BOM-keeping, so decoding and re-encoding gives back exactly these bytes.
+    canonical = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+  const claims = parseWireEnvelope(canonical);
+  return claims ? { canonical, claims } : undefined;
+}
+
 /** Fifteen lines, no trailing newline. Throws on a field the parser would refuse. */
 export function canonicalWireEnvelope(claims: WireClaims): string {
   if (claims.v !== WIRE_ENVELOPE_VERSION) throw new Error(`unknown wire envelope version ${claims.v}`);
@@ -552,17 +571,9 @@ export async function verifyWireEnvelope(input: {
   const header = input.headers.get(WIRE_ENVELOPE_HEADER);
   const signature = input.headers.get(WIRE_SIGNATURE_HEADER);
   if (!header || !signature) return refuse('missing');
-  const bytes = base64UrlToBytes(header);
-  if (!bytes) return refuse('malformed');
-  let canonical: string;
-  try {
-    // Fatal and BOM-keeping, so decoding and re-encoding gives back exactly these bytes.
-    canonical = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return refuse('malformed');
-  }
-  const claims = parseWireEnvelope(canonical);
-  if (!claims) return refuse('malformed');
+  const decoded = decodeWireEnvelope(header);
+  if (!decoded) return refuse('malformed');
+  const { canonical, claims } = decoded;
   if (claims.iss !== expected.iss) return refuse('issuer');
   if (claims.kind !== expected.kind) return refuse('kind');
   const publicKey = own[claims.iss].get(claims.kid);
@@ -629,6 +640,28 @@ export function wireStateOf(config: { readonly routerKeys?: unknown; readonly pl
   const listed = (value: unknown) => typeof value === 'string' && value.trim() !== '';
   if (!listed(config.routerKeys) && !listed(config.platformKeys)) return 'legacy-only';
   return config.state === 'legacy-only' || config.state === 'signed-only' ? config.state : 'dual';
+}
+
+/** What an endpoint of a deployment accepts: the kind of envelope, and the issuers that may sign it. */
+export interface WireEndpoint {
+  readonly kind: WireKind;
+  readonly issuers: readonly WireIssuer[];
+}
+
+const ROUTE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'route', issuers: Object.freeze(['router'] as const) });
+const CALL_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform'] as const) });
+const PEER_INVOKE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform', 'router'] as const) });
+
+/**
+ * Which envelope a deployment's endpoint accepts (RFC §3.4, check 3), by the request's path. The
+ * internal surface vertical-host's `mountPlatformSurface` gates (`/internal/*`) takes calls from
+ * the control plane, and its peer invocation (`/internal/vertical-invoke`) from the router too,
+ * which makes those calls. Every other path is a routed request. A verifier judges by this, and a
+ * signer signs what it says.
+ */
+export function wireEndpoint(pathname: string): WireEndpoint {
+  if (pathname !== '/internal' && !pathname.startsWith('/internal/')) return ROUTE_ENDPOINT;
+  return pathname === '/internal/vertical-invoke' ? PEER_INVOKE_ENDPOINT : CALL_ENDPOINT;
 }
 
 /**
