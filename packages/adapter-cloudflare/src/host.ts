@@ -593,6 +593,7 @@ import type {
   RepliedMethod,
 } from './control-plane-do.js';
 import { unwrapReply, type DoReply } from './do-reply.js';
+import { definedRoleOf } from './role-definition-reply.js';
 
 /**
  * `CloudflareScopeHost` — the coordinator (design doc §5.7). It runs in the
@@ -7564,7 +7565,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // roles, so a role assigned through a door cannot be widened afterwards. A refusal writes
         // nothing, so a seat of the role as it was stored keeps working.
         const context = await this.definitionContext(tenantId, parsed);
-        const defined = await this.cp.defineRole(tenantId, parsed, context.reservation, context.seatedInScopes);
+        // Read by `definedRoleOf`, so a ControlPlaneDO from before #2447 in a deploy's restart window is understood.
+        const defined = definedRoleOf(await this.cp.defineRole(tenantId, parsed, context.reservation, context.seatedInScopes));
         if ('refused' in defined) throw substratError('forbidden', defined.refused);
         const before = defined.before;
         await this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
