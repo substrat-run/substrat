@@ -4079,11 +4079,11 @@ export interface HostAdmin {
    * instant so a lapsed grant reads as lapsed rather than as never-granted.
    *
    * Computes nothing that needs a data pipeline, so it carries meters 1 and 2 only.
-   * Meter 4 has no number: it needs the cross-tenant order flow. Meter 3 is mostly
-   * computable now (storage gauge, model usage ledger, lake bytes), but it is read
-   * elsewhere, not folded into this reading, because it comes from stores this
-   * directory read does not touch. Exact API counts are not computable: reads emit
-   * nothing on the spine. See control-plane.md §5.
+   * Meter 4 has no number: it needs the cross-tenant order flow. Meter 3 is not
+   * folded into this reading; its parts are read elsewhere: the storage gauge, the
+   * model usage ledger, and the estimated daily request rollup at `/meters/requests`.
+   * Lake rows carry their bytes, but no reader sums them yet. Exact API counts are
+   * not computable: reads emit nothing on the spine. See control-plane.md §5.
    *
    * Nothing is stored: a reading is recomputed per call. D-30 is meter, do not bill,
    * and a persisted running total is the first half of a billing ledger.

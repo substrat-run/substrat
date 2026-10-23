@@ -1768,12 +1768,13 @@ export type TenantExport = z.infer<typeof tenantExport>;
  * flags *are* the SKUs. Both are free, both come from the directory database, and
  * neither needs a data pipeline. **Meters 3 and 4 are absent from THIS reading on
  * purpose**, not by omission: this reading is one directory read, and meter 3 comes
- * from other stores — the storage gauge, the model-usage ledger and the daily request
- * rollup have their own routes, and lake bytes have no reader yet. Meter 4 needs the cross-tenant order flow, which does
- * not exist. Exact API counts are not computable at all: reads emit nothing on the spine
- * (§5). A field here would be a number this read cannot stand behind. Model usage, because
- * every call is raised as a platform intent and drained into the directory, has its own
- * reading, `modelUsageSummary` (model-usage.ts, #1054).
+ * from other stores — the storage gauge, the model-usage ledger and the estimated daily
+ * request rollup have their own routes, and lake bytes have no reader yet. Meter 4 needs
+ * the cross-tenant order flow, which does not exist. Exact API counts are not computable
+ * at all: reads emit nothing on the spine (§5). A field here would be a number this read
+ * cannot stand behind. Model usage, because every call is raised as a platform intent and
+ * drained into the directory, has its own reading, `modelUsageSummary` (model-usage.ts,
+ * #1054).
  *
  * Two rules decide every number below, and they are the reason this is a server-side
  * aggregate rather than arithmetic over `listScopes`:
