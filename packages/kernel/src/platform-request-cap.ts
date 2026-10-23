@@ -1,25 +1,35 @@
 /**
- * The refusal behind `MAX_PENDING_PLATFORM_REQUESTS` (#2506), written once for both adapters.
+ * The refusal behind `MAX_PENDING_PLATFORM_REQUESTS` (#2506), written once for the adapters.
  *
  * `ctx.requestPlatform` refuses once a scope already holds the cap's worth of `pending` intents.
- * That refusal used to be a bare `Error` at each adapter, which left a caller no way to tell
- * "the queue is full, wait for the drain" from a fault in its own work. The purge pass is that
- * caller: a batch can hold more entities than the queue has room for, and the ones that hit the
- * cap are not failures — they are due again once the drain has run (`runPurgePass`).
+ * The refusal used to be an `Error` like any other, which left a caller no way to tell "the queue
+ * is full, wait for the drain" from a fault in its own work. The purge pass is that caller: a batch
+ * can hold more entities than the queue has room for, and a purge that meets the cap after the
+ * pass has already got past its head is not a failure — it is due again once the drain has run
+ * (`runPurgePass`).
  *
- * The class changes nothing a caller could see on the wire: it is still an `Error` named `Error`
- * with the message it always had, so a `catch` written against the old shape keeps matching.
+ * It is still a plain `Error`, with the message it always had, and nothing about it is visible on
+ * the wire. What marks it is membership of a set only this module can add to: not a class or a
+ * property, so module code cannot throw one from its own purge to have a failure of its own
+ * treated as a deferral, and nothing here is public surface beyond the assert itself.
  */
 import { MAX_PENDING_PLATFORM_REQUESTS } from '@substrat-run/contracts';
 
-/** `ctx.requestPlatform` found the scope's queue full: `pending` intents already wait for the drain. */
-export class PlatformRequestBackpressureError extends Error {
-  constructor(readonly pending: number) {
-    super(`too many pending platform requests (${pending}); retry once some have drained`);
-  }
+const refusals = new WeakSet<object>();
+
+/**
+ * Refuse a request for a platform intent the scope has no room for, given how many it holds
+ * `pending`. `retry` finishes the message; the module-facing `ctx.requestPlatform` keeps the
+ * default, and the executor's routing says what its delivery will do instead.
+ */
+export function assertPlatformRequestRoom(pending: number, retry = 'retry once some have drained'): void {
+  if (pending < MAX_PENDING_PLATFORM_REQUESTS) return;
+  const refusal = new Error(`too many pending platform requests (${pending}); ${retry}`);
+  refusals.add(refusal);
+  throw refusal;
 }
 
-/** Refuse a `ctx.requestPlatform` the scope has no room for, given how many intents it holds `pending`. */
-export function assertPlatformRequestRoom(pending: number): void {
-  if (pending >= MAX_PENDING_PLATFORM_REQUESTS) throw new PlatformRequestBackpressureError(pending);
+/** Whether `err` is a refusal `assertPlatformRequestRoom` threw, as opposed to any error that merely reads like one. */
+export function isPlatformRequestRefusal(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && refusals.has(err);
 }

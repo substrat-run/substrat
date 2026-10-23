@@ -507,7 +507,7 @@ export {
   platformRequestOf,
 } from './platform-request-query.js';
 export type { PlatformRequestRawRow } from './platform-request-query.js';
-export { PlatformRequestBackpressureError, assertPlatformRequestRoom } from './platform-request-cap.js';
+export { assertPlatformRequestRoom } from './platform-request-cap.js';
 export {
   CANCELLED_JOB_NOTE,
   DELIVERY_ERROR_REDACTION_SQL,

@@ -135,7 +135,6 @@ export const INDEX_VALUE_EXPORTS = [
   'PROVISION_RECONCILE_BATCH',
   'PURGE_BATCH',
   'PermissionDenied',
-  'PlatformRequestBackpressureError',
   'RAISE_MEMBERSHIP_FENCE_SQL',
   'REDACTED_DELIVERY_NOTE',
   'REDACTED_FAILURE_NOTE',
