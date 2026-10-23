@@ -1343,8 +1343,11 @@ export class TenantNarrowedControlPlane {
    * "all versions", which the plane answers as one merged newest-first stream).
    * Ownership is checked BEFORE the plane is asked: unowned refs are dropped here, so
    * they never reach the staff-wide log query, and a request for nothing but unowned
-   * refs answers `[]`, indistinguishable from services with no logs (existence hiding,
-   * the same property `listVerticals` narrowing gives the registry).
+   * refs answers no events and a complete page, indistinguishable from services with no logs
+   * (existence hiding, the same property `listVerticals` narrowing gives the registry).
+   *
+   * `incomplete` is the plane's own `x-substrat-logs-incomplete` header (#2520), set when the
+   * page may be incomplete or missing newer lines; it never reaches the events.
    */
   async observabilityLogs(input: {
     services: string[];

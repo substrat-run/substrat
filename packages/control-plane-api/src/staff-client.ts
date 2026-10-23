@@ -61,8 +61,7 @@ import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 
 import type { ClientProvisionScopeInput, RebindReview } from '@substrat-run/control-plane-client';
 import type { DoNamespaceRecord } from './do-namespaces.js';
-import type { ConnectorCallsBucket } from './observability.js';
-import { LOGS_INCOMPLETE_HEADER } from './observability.js';
+import { LOGS_INCOMPLETE_HEADER, type ConnectorCallsBucket } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 
@@ -746,12 +745,9 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // (master-plan §5.3).
   serviceMetrics = (hours: number): Promise<ServiceMetricsRow[]> =>
     this.call(`/observability/metrics${query({ hours })}`);
-  recentLogs = (q: { service?: string; level?: string; hours?: number; limit?: number } = {}): Promise<RecentLogEvent[]> =>
-    this.call(`/observability/logs${query({ ...q })}`);
   /**
-   * The same read as `recentLogs`, with what its body cannot carry: the plane's
-   * `x-substrat-logs-incomplete` header (#2520). A caller that renders the page says so when
-   * `incomplete` is set; `recentLogs` keeps answering the bare list for those that do not.
+   * The lines and what their body cannot carry: the plane's `x-substrat-logs-incomplete`
+   * header (#2520). A caller that renders the page says so when `incomplete` is set.
    */
   recentLogsRead = async (
     q: { service?: string; level?: string; hours?: number; limit?: number } = {},
@@ -762,6 +758,9 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
       incomplete: res.headers.get(LOGS_INCOMPLETE_HEADER) === '1',
     };
   };
+  /** The bare list of `recentLogsRead`, for a caller that does not render `incomplete`. */
+  recentLogs = async (q: { service?: string; level?: string; hours?: number; limit?: number } = {}): Promise<RecentLogEvent[]> =>
+    (await this.recentLogsRead(q)).events;
   /** Observed-vs-declared outbound egress for a vertical's deployed versions (#859). */
   verticalEgress = (slug: string, q: { hours?: number; limit?: number } = {}): Promise<EgressReport> =>
     this.call(`/verticals/${seg(slug)}/egress${query({ ...q })}`);
