@@ -354,8 +354,14 @@ step 6, withdraws the credential.
   Whenever the envelope alone admits a request, the vertical sees exactly one identity, the
   envelope's, and no other header under the router's `x-substrat-` prefix: one the envelope did
   not sign is dropped, in any case and however often it was sent. That includes the informational
-  ones the router adds (a field-coverage sample, a peer call's parent id), which such a request
-  goes without until a later step signs them or lists them as carrying no authority.
+  ones the router adds: the field-coverage sample (`x-substrat-field-coverage`, which arms the
+  per-response field walk) and a peer call's parent request id (which links a peer invocation's
+  line to the request that made it). **Step 2 owns them** (§9, follow-on 2): the router's signer
+  either carries them as signed claims of the envelope or the entry lists them as carrying no
+  authority and hands them on, decided by name in that PR. **`signed-only` must not be flipped
+  fleet-wide before that lands**: from the flip every request is admitted on its envelope alone,
+  so field coverage would stop arming and every peer-call line would lose its
+  `parentInvocationId`. §7's gate holds the flip to it.
 
   A version built against an older vertical-host still reads the router's legacy headers for that
   identity at steps 5 and 6, which is safe only because the router still sends both and
@@ -438,9 +444,10 @@ step 6, withdraws the credential.
   but is handed back ungated, Q2). The report counts each as not ready, by name.
 - **The gates.**
   - The control plane refuses to set an environment to `signed-only` unless the report is clean,
-    the standby keys are listed everywhere, and the cutover criterion holds (§8: no legacy
+    the standby keys are listed everywhere, the cutover criterion holds (§8: no legacy
     acceptance, no `dual-mismatch`, no `fault`, and no `refused:*` outside expected noise from
-    clients that send nothing).
+    clients that send nothing), and the informational headers (§5) reach a request admitted on
+    its envelope alone, signed or listed, in the router and in every live version's entry.
   - It refuses to drop a public key unless every live version carries its replacement, except on
     the break-glass path (§6).
   - It refuses to stop injecting the shared credentials unless every live version is ready for
@@ -515,10 +522,10 @@ step 6, withdraws the credential.
 |---|---|---|---|
 | 0 | This PR: RFC, K-58 draft, primitives. Nothing wired. | delete the files | the envelope format and the plan |
 | 1 | The verifier, `dual`-capable, inert without key lists, in the platform's entry module (Q2) | revert the package | a pushed demo with no keys behaves exactly as before |
-| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused |
+| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The router's signer decides, by name, how the informational headers it sends (the field-coverage sample, a peer call's parent request id) reach a request admitted on its envelope alone: signed as claims, or listed by the entry as carrying no authority (§5). Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused |
 | 3 | The fleet re-uploaded so every live version the entry wraps carries the verifier and the lists. Readiness report and tooling. A version uploaded without the entry is not reached by any re-upload, and is named in the report until its author pushes again (§7). | none needed: `dual` accepts legacy | the report is clean, or lists only named exceptions, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
-| 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included |
+| 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included, field coverage still arming and peer-call lines still naming their parent (§5) |
 | 6 | **On the critical path:** the up-channel goes, one PR each (below). It can run in parallel with steps 1 to 5, and nothing after it starts until it is done. | revert that PR | the feature works end to end on a test deployment, and the readiness report shows no live version still making that up-call |
 | 7 | The uploader stops injecting the shared credential, the signers stop sending legacy headers, and the shared secrets are retired from every vertical path and rotated out. Gated by §7's two tests for every live version: its up-calls (step 6 complete for it) and its legacy down-checks (none, or each satisfied by the entry with a per-deployment value, Q10). A version never rebuilt fails both until Q10's values reach it. | inject it again and turn `legacy` back on | every environment `signed-only`, both of §7's tests hold for every live version, the report clean |
 
@@ -537,7 +544,10 @@ never rebuilt keeps the up-calls it was built with.
    `packages/control-plane-api/platform-entry/wire-gate.ts`, composed into the entry by
    `tools/platform-entry-emit.mts` and run on workerd in `platform-entry.workerd.test.ts`.
 2. **The signers**: the router signs routes and its own calls, and the control plane signs its
-   calls. Legacy headers unchanged, `sign` flag per environment, default off.
+   calls. Legacy headers unchanged, `sign` flag per environment, default off. It also owns the
+   informational headers the router adds (§5): the field-coverage sample and a peer call's parent
+   request id are carried as signed claims, or listed by the entry as carrying no authority and
+   handed on, decided by name in that PR. `signed-only` is not flipped fleet-wide before it lands.
 3. **The uploader** injects the key lists (standby keys included), the deployment's name, the
    state and the capability record, and
    the key tool gains the two issuers. It refuses a list `wireVerificationKeys` refuses before
