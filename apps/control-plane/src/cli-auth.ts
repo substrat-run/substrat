@@ -9,6 +9,7 @@ import {
   userFromClaims,
   type OidcEnv,
 } from '@substrat-run/oidc-rp';
+import { refuse } from './problem.js';
 
 /**
  * The CLI login broker — a loopback OAuth flow for `substrat login`, brokered by the
@@ -72,12 +73,12 @@ export function mountCliAuthRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>
 
   app.post('/api/auth/cli/token', async (c) => {
     const body = (await c.req.json().catch(() => null)) as { code?: string; verifier?: string } | null;
-    if (!body?.code || !body?.verifier) return c.json({ error: 'missing code or verifier' }, 400);
+    if (!body?.code || !body?.verifier) return refuse('validation_failed', 'missing code or verifier');
 
     const payload = await verifyEphemeral(c.env, body.code);
-    if (!payload || payload.purpose !== 'cli') return c.json({ error: 'invalid or expired code' }, 400);
+    if (!payload || payload.purpose !== 'cli') return refuse('validation_failed', 'invalid or expired code');
     if (payload.ch !== (await pkceS256(body.verifier))) {
-      return c.json({ error: 'pkce verification failed' }, 400);
+      return refuse('validation_failed', 'pkce verification failed');
     }
 
     const token = await mintSession(c.env, userFromClaims(payload));

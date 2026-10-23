@@ -347,8 +347,21 @@ already answer their expected refusal as a value.
      `x-substrat-live` values are unchanged, as is the `error` sentence everywhere except
      those three 500s, which no longer carry it; the 101 upgrades are untouched. `test/live-reads.test.ts` holds the media type, status,
      header and detail of each refusal, the DO's own ones by fetching the stub directly.
-   - **Still open, surface by surface:** the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
-     builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
+   - **`apps/control-plane` worker (non-relay routes), CLI auth, dashboard 401s — built.** The worker's own
+     refusals answer `application/problem+json` through `refuse(code, detail)` / `refuseStatus(status, detail)`
+     (`apps/control-plane/src/problem.ts`): the `/api` 401 rewrite that names why a session was refused, the
+     support-identity 401, the members surface (`unauthenticated`, `validation_failed`, `not_found`, `conflict`;
+     the 501 "no roster store bound" is `about:blank`), the builder identity lookup (`forbidden`,
+     `validation_failed`) and the CLI login broker's token exchange (`validation_failed`). The dashboard's three
+     bare `/api/me` and support-identity 401s go through its existing `problem()` envelope, so they carry
+     `requestId`. Statuses and the `error` sentence are unchanged. `test/problem-refusals.test.ts` (control
+     plane) and `test/request-id-route.test.ts` (dashboard) hold the media type, the schema, `code` and
+     `error === detail`, each refusal beside the success of the same route. Left alone on purpose: the
+     excluded relay, email and connection routes (`/internal/drain-scope`, `/internal/email/*`,
+     `/internal/connections/*`, the connector callbacks, `relay-caller.ts`, the dashboard's connection probe), and
+     the CLI broker's browser-facing `GET` (a `text/plain` page for a person, not an API answer).
+   - **Still open, surface by surface:** those excluded relay, email and connection routes, the
+     builder, `dev-issuer`; a `requestId` on the control plane's
      problems (#2192). A repo-wide source gate waits until a second surface is converted.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
      `problemDetail` (#971) and every surface answers `detail`. The members carried beside
