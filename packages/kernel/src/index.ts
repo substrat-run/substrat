@@ -1057,6 +1057,13 @@ export {
   type RequestRollupDayFilter,
 } from './request-rollup.js';
 export {
+  VERTICAL_OWNERS_BACKFILL,
+  VERTICAL_OWNERS_DDL,
+  closeVerticalOwnerRow,
+  listVerticalOwnerRows,
+  openVerticalOwnerRow,
+} from './vertical-owners.js';
+export {
   METER_DAYS_DDL,
   METER_DAYS_LIMIT_DEFAULT,
   METER_DAYS_LIMIT_MAX,

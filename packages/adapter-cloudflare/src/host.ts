@@ -99,6 +99,7 @@ import {
   requestRollupDay,
   meterDay,
   meterDayTake,
+  verticalOwnerPeriod,
   subjectRef,
   createConnectionInput,
   connectLinkFilter,
@@ -193,6 +194,7 @@ import {
   type RequestRollupDay,
   type MeterDay,
   type MeterDayTake,
+  type VerticalOwnerPeriod,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
@@ -909,6 +911,8 @@ interface ControlPlaneStub {
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string,
     audit: AdminEntry): Promise<void>;
+  /** #2501: every period of a slug's ownership, oldest first. */
+  listVerticalOwners(slug: string): Promise<VerticalOwnerPeriod[]>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
   updateVerticalListed(slug: string, listed: number, audit: AdminEntry): Promise<void>;
   updateVerticalPublishRequest(slug: string, requestedAt: string, audit: AdminEntry): Promise<void>;
@@ -8372,6 +8376,11 @@ export class CloudflareScopeHost implements ScopeHost {
           { slug, source: existing.source, ownerTenant: existing.owner_tenant },
           null,
         ));
+      },
+      listVerticalOwners: async (actor, slug: string) => {
+        const periods = (await this.cp.listVerticalOwners(slug)).map((p) => verticalOwnerPeriod.parse(p));
+        await this.recordAccess(actor, 'listVerticalOwners', { tenantId: null }, { slug }, periods.length);
+        return periods;
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);

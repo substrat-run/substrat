@@ -210,6 +210,9 @@ export const INDEX_VALUE_EXPORTS = [
   'UncheckedOperation',
   'VERSION_MIGRATIONS_DDL',
   'VERTICAL_EVENTS_DDL',
+  // #2501: the history of who owned each vertical slug, shared by both directories.
+  'VERTICAL_OWNERS_BACKFILL',
+  'VERTICAL_OWNERS_DDL',
   'VERTICAL_SCOPE_STORES_DDL',
   'WITHHELD_SECRET',
   'WRITE_REVISION_KEY',
@@ -293,6 +296,7 @@ export const INDEX_VALUE_EXPORTS = [
   'clearCopyMarker',
   'clearOrphanSweepLicence',
   'clearSwitchOwed',
+  'closeVerticalOwnerRow',
   'collectPeers',
   'condemnLicensedOrphanAttachments',
   'condemnOrphanAttachments',
@@ -454,6 +458,7 @@ export const INDEX_VALUE_EXPORTS = [
   'listScopeStorageRows',
   'listScopeStoreStorageRows',
   'listSystemSwitchRecords',
+  'listVerticalOwnerRows',
   'loadDirectoryDump',
   // #2450: a staged load drops a copy's capability rows by table name, never holding them as an array.
   'loadDropsRowsOf',
@@ -501,6 +506,7 @@ export const INDEX_VALUE_EXPORTS = [
   'observeFinding',
   'observeStoreCall',
   'openSealed',
+  'openVerticalOwnerRow',
   'operationKeyOf',
   'operationSeriesQuery',
   'operationsFor',

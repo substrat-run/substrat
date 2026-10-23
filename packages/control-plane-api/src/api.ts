@@ -104,6 +104,7 @@ import {
   scopeStatus,
   requestRollupReading,
   meterDaysReading,
+  verticalOwnersReading,
   utcDay,
   storageShape,
   surfaceName,
@@ -8410,6 +8411,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (await notOwned(c.get('principal'), slug)) return refuse(c, 'not_found', 'not found');
     await c.var.admin.deleteVertical(c.get('actor'), slug);
     return c.json({ slug, deleted: true });
+  });
+
+  // Who owned a vertical slug when (#2501): every period, opened when the slug was registered and
+  // closed when it was deleted, so a past period bills the builder who owned the vertical then.
+  // Staff-only, like `/meters`: absent from BUILDER_ROUTES and from the tenant credential's pins.
+  // Served for a deleted slug too, which is the point; a slug never registered has no period.
+  app.get('/verticals/:slug/owners', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.listVerticalOwners) return refuseStatus(c, 501, 'this control plane keeps no ownership history');
+    const slug = verticalSlug.parse(c.req.param('slug'));
+    return c.json(verticalOwnersReading.parse({ slug, owners: await admin.listVerticalOwners(c.get('actor'), slug) }));
   });
 
   app.get('/verticals/:slug/channels', async (c) => {
