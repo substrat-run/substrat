@@ -107,6 +107,14 @@ Roles a host defines and seats itself are held to the same rule:
   key reserved only through a schedule's `permissions`, which no system-held role holds, is
   therefore not caught on a host that does not register its module; the control plane checking
   the registry's marks against the engines it knows is #2446.
+- **A release that makes a person's role system-held while people hold it passes push**, because
+  push cannot see who holds a role. Each scope's reconcile then refuses it, on every pass, naming
+  the tenant, the scope and the role, at every scope where a person holds a seat in that role
+  (an archived scope included). Nothing is written, but that scope's **whole** reconcile is held:
+  the release's other roles, its new schedules' grants, delivered connection grants and entity-grant
+  retirements are not applied there while the scope runs the new code. To clear it, take those
+  seats back in each such scope, or ship a release that keeps the role a person's. Refusing the
+  change at push or promote is part of #2446.
 - **Nothing is revoked.** A refused definition or seat writes nothing, so a seat that already
   holds a key reserved after it was seated keeps working. A directory fan-out of a stored
   definition is projected as it is and not judged again, since dropping the role there would

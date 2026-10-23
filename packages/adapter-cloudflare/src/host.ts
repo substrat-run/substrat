@@ -11888,7 +11888,9 @@ export class CloudflareScopeHost implements ScopeHost {
       { reserved, declared: new Set([...this.declaredKeys, ...here.declared]) },
       { roles: state.roles, seated: new Set(state.seated) },
     );
-    if (refusal) throw substratError('forbidden', refusal);
+    // Named by tenant and scope as well as role: a release push admitted can be refused here at every
+    // scope where the role is seated, and staff find each one by this line (K-55).
+    if (refusal) throw substratError('forbidden', `tenant ${tenantId}, scope ${scopeId}: the vertical's roles cannot be defined here: ${refusal}`);
     return reserved;
   }
 

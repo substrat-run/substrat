@@ -650,6 +650,8 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       const refused = await failure(release([member, system]));
       expect(errorCodeOf(refused)).toBe('forbidden');
       expect(refused?.message).toMatch(/role 'staffer' is held by someone who is not a system principal \(with no definition stored\)/);
+      // Named by scope as well as role, so staff can find every scope a release is refused at (SF4).
+      expect(refused?.message).toContain(`tenant ${tenant}, scope ${scope}: the vertical's roles cannot be defined here`);
       expect(await rowOf()).toEqual([]);
     });
 
