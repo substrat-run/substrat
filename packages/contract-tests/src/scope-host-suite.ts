@@ -10846,6 +10846,55 @@ export function scopeHostContractSuite(
         });
       });
 
+      it('keeps attachment samples beside the databases, the day\'s latest, and drops them past retention and at reap (#2501)', async () => {
+        const ta = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-attachments', name: 'Gauge Attachments' });
+        const [s, quiet] = [await newScope(ta), await newScope(ta)];
+        const attachmentsOf = async (tenant: TenantId) => (await host.admin.readMeters(staff, { tenantId: tenant })).perTenant[0]!.storage;
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 100, readAt: day(0, '08:00:00'), attachments: 300 }]);
+        // Beside the databases' figure, never inside it, which still names attachments as excluded.
+        expect(await attachmentsOf(ta)).toMatchObject({ bytes: 100, excluded: ['attachments', 'tenant-stores', 'lake'], attachments: { bytes: 300, sampled: 1 } });
+        // A later reading of the day replaces it; an older one, recorded after it, does not.
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 100, readAt: day(0, '09:00:00'), attachments: 50 }]);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 100, readAt: day(0, '08:30:00'), attachments: 999 }]);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 1 });
+        // A reading that did not measure attachments (unsupported, failed, declined) leaves them.
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 120, readAt: day(0, '10:00:00') }]);
+        expect(await attachmentsOf(ta)).toMatchObject({ bytes: 120, attachments: { bytes: 50, sampled: 1 } });
+        // A scope with none holds 0 of them: a sample like any other, counted in `sampled`.
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: quiet, bytes: 10, readAt: day(0, '10:00:00'), attachments: 0 }]);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+        // Named under another tenant, refused like the database sample.
+        const other = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: other, slug: 'gauge-attachments-other', name: 'Gauge Attachments Other' });
+        await newScope(other);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: other, scopeId: s, bytes: 1, readAt: day(0, '11:00:00'), attachments: 7 }]);
+        expect((await attachmentsOf(other))?.attachments).toBeUndefined();
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+
+        // Past retention a sample goes with the database samples, the limit shared across the tables.
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        const aged = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: aged, slug: 'gauge-attachments-old', name: 'Gauge Attachments Old' });
+        const agedScope = await newScope(aged);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: aged, scopeId: agedScope, bytes: 1, readAt: old.toISOString(), attachments: 9 }]);
+        expect((await attachmentsOf(aged))?.attachments).toEqual({ bytes: 9, sampled: 1 });
+        expect(await host.admin.pruneScopeStorage!(staff, 1)).toBe(1);
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(1);
+        expect((await attachmentsOf(aged))?.attachments).toBeUndefined();
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+
+        // A reaped scope's samples are deleted with it, not only hidden: a sample past retention
+        // that the prune would otherwise find is gone before it runs.
+        const reaped = await newScope(ta);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: reaped, bytes: 1, readAt: old.toISOString(), attachments: 3 }]);
+        await host.admin.archiveScope(staff, ta, reaped);
+        await host.admin.reapScope(staff, ta, reaped);
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
+      });
+
       it("forgets a reaped scope's samples, and never writes one for it again", async () => {
         const tr = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tr, slug: 'gauge-reap', name: 'Gauge Reap' });
