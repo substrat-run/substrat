@@ -639,7 +639,7 @@ export interface MemberDirectory {
   listInvites(scopeId: string): Promise<{ principal: string; roleKey: string; email: string | null; createdAt: number; capabilityId?: string | null }[]>;
   getInvite(scopeId: string, principal: string): Promise<{ roleKey: string } | null>;
   createInvite(
-    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string | null,
+    scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string, capabilityId: string,
   ): Promise<void>;
   /** The `become` capability an open invite's link is (#1686), or null. */
   inviteLink(scopeId: string, principal: string): Promise<string | null>;
