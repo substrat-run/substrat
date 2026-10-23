@@ -10946,32 +10946,39 @@ export function scopeHostContractSuite(
       };
       const at = (day: string, time: string) => `${day}T${time}.000Z`;
       const ids = () => ({ tenant: tenantId.parse(ulid()), scope: scopeId.parse(ulid()) });
+      // `n` requests, all served (2xx) unless a split is given.
+      const served = (
+        n: number,
+        split: Partial<{ class2xx: number; class3xx: number; class4xx: number; class5xx: number; rateLimited: number }> = {},
+      ) => ({ requests: n, class2xx: n, class3xx: 0, class4xx: 0, class5xx: 0, rateLimited: 0, ...split });
 
-      it('keeps one row per (day, tenant, vertical, scope), every count an estimate, and a later read replaces the day', async () => {
+      it('keeps one row per (day, tenant, vertical, scope) with its status split, every count an estimate, and a later read replaces the day', async () => {
         const day = dayAgo(2);
         const [a, b] = [ids(), ids()];
+        // 40 routed: 30 served, 1 redirected, 7 refused (5 of them the router's rate limit), 2 failed.
+        const split = { class2xx: 30, class3xx: 1, class4xx: 7, class5xx: 2, rateLimited: 5 };
         expect(
           await host.admin.recordRequestDay!(staff, {
             day,
             attemptedAt: at(day, '23:00:00'),
             counts: [
-              { tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, requests: 40, sampled: true },
+              { tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, ...served(40, split), sampled: true },
               // A request that resolved to no vertical is kept under none.
-              { tenantId: a.tenant, vertical: null, scopeId: a.scope, requests: 2, sampled: false },
-              { tenantId: b.tenant, vertical: 'acme-crm', scopeId: b.scope, requests: 5, sampled: false },
+              { tenantId: a.tenant, vertical: null, scopeId: a.scope, ...served(2), sampled: false },
+              { tenantId: b.tenant, vertical: 'acme-crm', scopeId: b.scope, ...served(5), sampled: false },
             ],
           }),
         ).toEqual({ recorded: 3 });
         expect(await host.admin.listRequestDays!(staff, { tenantId: a.tenant })).toEqual([
-          { day, tenantId: a.tenant, vertical: null, scopeId: a.scope, requests: 2, sampled: false, estimated: true },
-          { day, tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, requests: 40, sampled: true, estimated: true },
+          { day, tenantId: a.tenant, vertical: null, scopeId: a.scope, ...served(2), sampled: false, estimated: true },
+          { day, tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, ...served(40, split), sampled: true, estimated: true },
         ]);
 
         // Read again, the day is what the newer read counted: a key it no longer names is gone.
         await host.admin.recordRequestDay!(staff, {
           day,
           attemptedAt: at(day, '23:30:00'),
-          counts: [{ tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, requests: 41, sampled: true }],
+          counts: [{ tenantId: a.tenant, vertical: 'acme-crm', scopeId: a.scope, ...served(41), sampled: true }],
         });
         expect((await host.admin.listRequestDays!(staff, { since: day, until: day })).map((r) => [r.tenantId, r.requests])).toEqual([
           [a.tenant, 41],
@@ -11000,7 +11007,7 @@ export function scopeHostContractSuite(
         await host.admin.recordRequestDay!(staff, {
           day,
           attemptedAt: at(day, '02:00:00'),
-          counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 9, sampled: false }],
+          counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, ...served(9), sampled: false }],
         });
         // A later failure records the attempt and leaves the day's rows and its successful read.
         await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '03:00:00'), error: 'HTTP 503' });
@@ -11029,7 +11036,7 @@ export function scopeHostContractSuite(
         await host.admin.recordRequestDay!(staff, {
           day,
           attemptedAt: at(day, '04:00:00'),
-          counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 2, sampled: false }],
+          counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, ...served(2), sampled: false }],
         });
         expect((await host.admin.listRequestRollupDays!(staff, { since: day, until: day }))[0]).toMatchObject({
           readAt: at(day, '04:00:00'),
@@ -11041,26 +11048,46 @@ export function scopeHostContractSuite(
       it('refuses a malformed count whole, writing none of the day; the same day well formed is written', async () => {
         const day = dayAgo(4);
         const t = ids();
-        const good = { tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 3, sampled: false };
+        const good = { tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, ...served(3), sampled: false };
         await expect(
           host.admin.recordRequestDay!(staff, {
             day,
             attemptedAt: at(day, '04:00:00'),
-            counts: [good, { ...good, tenantId: 'not-a-tenant-id', requests: 1 }],
+            counts: [good, { ...good, tenantId: 'not-a-tenant-id', ...served(1) }],
           }),
         ).rejects.toThrow();
         await expect(
           host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '04:00:00'), counts: [good, { ...good, requests: -1 }] }),
         ).rejects.toThrow();
+        // A split that does not fit inside its total, or 429s beyond the 4xx, is malformed too.
+        await expect(
+          host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '04:00:00'), counts: [good, { ...good, ...served(3, { class5xx: 1 }) }] }),
+        ).rejects.toThrow();
+        await expect(
+          host.admin.recordRequestDay!(staff, {
+            day,
+            attemptedAt: at(day, '04:00:00'),
+            counts: [good, { ...good, ...served(3, { class2xx: 2, class4xx: 1, rateLimited: 2 }) }],
+          }),
+        ).rejects.toThrow();
         expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([]);
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([]);
 
-        // Two counts for one key are summed, never one of them dropped.
+        // Two counts for one key are summed, every column of them, never one dropped.
+        const refused = served(4, { class2xx: 1, class4xx: 3, rateLimited: 3 });
         expect(
-          await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '05:00:00'), counts: [good, { ...good, requests: 4, sampled: true }] }),
+          await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '05:00:00'), counts: [good, { ...good, ...refused, sampled: true }] }),
         ).toEqual({ recorded: 1 });
         expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([
-          { day, tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 7, sampled: true, estimated: true },
+          {
+            day,
+            tenantId: t.tenant,
+            vertical: 'acme-crm',
+            scopeId: t.scope,
+            ...served(7, { class2xx: 4, class4xx: 3, rateLimited: 3 }),
+            sampled: true,
+            estimated: true,
+          },
         ]);
       });
 
@@ -11073,8 +11100,8 @@ export function scopeHostContractSuite(
             day,
             attemptedAt: at(day, '23:59:00'),
             counts: [
-              { tenantId: t, vertical: 'acme-crm', scopeId: s1, requests: 1, sampled: false },
-              { tenantId: t, vertical: 'acme-desk', scopeId: s2, requests: 2, sampled: false },
+              { tenantId: t, vertical: 'acme-crm', scopeId: s1, ...served(1), sampled: false },
+              { tenantId: t, vertical: 'acme-desk', scopeId: s2, ...served(2), sampled: false },
             ],
           });
         }
@@ -11095,7 +11122,7 @@ export function scopeHostContractSuite(
           await host.admin.recordRequestDay!(staff, {
             day,
             attemptedAt: at(day, '12:00:00'),
-            counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: 1, sampled: false }],
+            counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, ...served(1), sampled: false }],
           });
         }
         // The default keeps everything: nothing goes, however old.
@@ -11133,7 +11160,7 @@ export function scopeHostContractSuite(
             read: async (day: string) => {
               asked.push(day);
               if (day === failing) throw new Error('Cloudflare Analytics Engine query failed: HTTP 503');
-              return [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, requests: Number(day.slice(-2)), sampled: false }];
+              return [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, ...served(Number(day.slice(-2))), sampled: false }];
             },
           },
         });

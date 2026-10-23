@@ -1915,18 +1915,35 @@ export const ROUTER_REQUEST_POINT = {
  * count; `sampled` says whether Analytics Engine actually reweighted any of the day's
  * datapoints (false means every datapoint of the day survived).
  *
+ * The split by status is kept beside the total, because it cannot be recovered once the
+ * datapoints age out: which requests a price counts (the router's own rate-limit refusals, the
+ * platform's 5xx) is a later decision, and this keeps it open. Every split is an estimate too.
+ *
  * Kept for `BILLING_ROLLUP_RETENTION_MONTHS` in the kernel. Counts only, no request content.
  */
-export const requestDay = z.object({
-  day: utcDay,
-  tenantId,
-  /** The vertical the router resolved, or null when the request resolved to none. */
-  vertical: verticalSlug.nullable(),
-  scopeId,
-  requests: z.number().int().nonnegative(),
-  sampled: z.boolean(),
-  estimated: z.literal(true),
-});
+export const requestDay = z
+  .object({
+    day: utcDay,
+    tenantId,
+    /** The vertical the router resolved, or null when the request resolved to none. */
+    vertical: verticalSlug.nullable(),
+    scopeId,
+    /** Every request the router routed for this key that day, whatever it was answered. */
+    requests: z.number().int().nonnegative(),
+    /** By status class. Their sum may fall short of `requests` by the 1xx answers (a WebSocket upgrade). */
+    class2xx: z.number().int().nonnegative(),
+    class3xx: z.number().int().nonnegative(),
+    class4xx: z.number().int().nonnegative(),
+    /** Every 5xx: the vertical's own, and the router's 502 when no deployment answers. */
+    class5xx: z.number().int().nonnegative(),
+    /** Answered 429, by the router's rate limit or the vertical: a part of `class4xx`. */
+    rateLimited: z.number().int().nonnegative(),
+    sampled: z.boolean(),
+    estimated: z.literal(true),
+  })
+  .refine((d) => d.class2xx + d.class3xx + d.class4xx + d.class5xx <= d.requests && d.rateLimited <= d.class4xx, {
+    message: 'a status split must fit inside the total, and the 429s inside the 4xx',
+  });
 export type RequestDay = z.infer<typeof requestDay>;
 
 /**

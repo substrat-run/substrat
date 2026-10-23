@@ -29,6 +29,10 @@ import { utcDayMonthsBefore } from './billing-retention.js';
  *
  * `vertical` is `''` when a request resolved to no vertical: a primary key cannot hold a NULL
  * that compares equal to itself. The read maps it back to null.
+ *
+ * Beside the total, each row keeps the split by status class and the 429s, from the status the
+ * router writes on each datapoint. Which of them a price counts is a later decision; once the
+ * datapoints age out the split could not be recovered, so it is kept now.
  */
 export const REQUEST_ROLLUP_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_request_days (
@@ -37,6 +41,11 @@ export const REQUEST_ROLLUP_DDL = `
     vertical TEXT NOT NULL,
     scope_id TEXT NOT NULL,
     requests INTEGER NOT NULL,
+    class2xx INTEGER NOT NULL,
+    class3xx INTEGER NOT NULL,
+    class4xx INTEGER NOT NULL,
+    class5xx INTEGER NOT NULL,
+    rate_limited INTEGER NOT NULL,
     sampled INTEGER NOT NULL,
     PRIMARY KEY (day, tenant_id, vertical, scope_id)
   );
@@ -103,7 +112,14 @@ export interface RequestDayCount {
   /** Null when the requests resolved to no vertical. */
   vertical: string | null;
   scopeId: string;
+  /** Every request routed, whatever its answer. */
   requests: number;
+  /** By status class, and the 429s (a part of `class4xx`). See `requestDay`. */
+  class2xx: number;
+  class3xx: number;
+  class4xx: number;
+  class5xx: number;
+  rateLimited: number;
   /** Whether Analytics Engine reweighted any of the datapoints behind `requests`. */
   sampled: boolean;
 }
@@ -171,6 +187,11 @@ export function recordRequestDayRows(sql: RedactionSql, input: RequestDayReadInp
       vertical: c.vertical === '' ? null : c.vertical,
       scopeId: c.scopeId,
       requests: c.requests,
+      class2xx: c.class2xx,
+      class3xx: c.class3xx,
+      class4xx: c.class4xx,
+      class5xx: c.class5xx,
+      rateLimited: c.rateLimited,
       sampled: c.sampled,
       estimated: true,
     }),
@@ -179,12 +200,30 @@ export function recordRequestDayRows(sql: RedactionSql, input: RequestDayReadInp
   for (const r of rows) {
     // Two counts for one key are one key's count: summed, never one dropped.
     sql(
-      `INSERT INTO _substrat_request_days (day, tenant_id, vertical, scope_id, requests, sampled)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO _substrat_request_days
+         (day, tenant_id, vertical, scope_id, requests, class2xx, class3xx, class4xx, class5xx, rate_limited, sampled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (day, tenant_id, vertical, scope_id) DO UPDATE SET
          requests = _substrat_request_days.requests + excluded.requests,
+         class2xx = _substrat_request_days.class2xx + excluded.class2xx,
+         class3xx = _substrat_request_days.class3xx + excluded.class3xx,
+         class4xx = _substrat_request_days.class4xx + excluded.class4xx,
+         class5xx = _substrat_request_days.class5xx + excluded.class5xx,
+         rate_limited = _substrat_request_days.rate_limited + excluded.rate_limited,
          sampled = MAX(_substrat_request_days.sampled, excluded.sampled)`,
-      [day, r.tenantId, r.vertical ?? '', r.scopeId, r.requests, r.sampled ? 1 : 0],
+      [
+        day,
+        r.tenantId,
+        r.vertical ?? '',
+        r.scopeId,
+        r.requests,
+        r.class2xx,
+        r.class3xx,
+        r.class4xx,
+        r.class5xx,
+        r.rateLimited,
+        r.sampled ? 1 : 0,
+      ],
     );
   }
   const written = (sql('SELECT COUNT(*) AS n FROM _substrat_request_days WHERE day = ?', [day]) as { n: number }[])[0]?.n ?? 0;
@@ -205,6 +244,11 @@ interface RequestDayRow {
   vertical: string;
   scope_id: string;
   requests: number;
+  class2xx: number;
+  class3xx: number;
+  class4xx: number;
+  class5xx: number;
+  rate_limited: number;
   sampled: number;
 }
 
@@ -235,7 +279,8 @@ export function listRequestDayRows(sql: RedactionSql, filter: RequestDayFilter =
   const limit = Math.min(assertRowLimit('limit', filter.limit ?? REQUEST_ROLLUP_LIMIT_DEFAULT), REQUEST_ROLLUP_LIMIT_MAX);
   params.push(limit);
   const rows = sql(
-    `SELECT day, tenant_id, vertical, scope_id, requests, sampled FROM _substrat_request_days
+    `SELECT day, tenant_id, vertical, scope_id, requests, class2xx, class3xx, class4xx, class5xx, rate_limited, sampled
+       FROM _substrat_request_days
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY day, tenant_id, vertical, scope_id LIMIT ?`,
     params,
@@ -247,6 +292,11 @@ export function listRequestDayRows(sql: RedactionSql, filter: RequestDayFilter =
       vertical: r.vertical === '' ? null : r.vertical,
       scopeId: r.scope_id,
       requests: r.requests,
+      class2xx: r.class2xx,
+      class3xx: r.class3xx,
+      class4xx: r.class4xx,
+      class5xx: r.class5xx,
+      rateLimited: r.rate_limited,
       sampled: r.sampled === 1,
       estimated: true,
     }),

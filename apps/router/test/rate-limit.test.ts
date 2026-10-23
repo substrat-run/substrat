@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unstable_readConfig } from 'wrangler';
-import { DEFAULT_RATE_LIMITS, parseRateLimits, PROBLEM_CONTENT_TYPE, type RateLimiter } from '@substrat-run/contracts';
+import { DEFAULT_RATE_LIMITS, parseRateLimits, PROBLEM_CONTENT_TYPE, ROUTER_REQUEST_POINT, type RateLimiter } from '@substrat-run/contracts';
 import worker, { type Env } from '../src/worker.js';
 
 /**
@@ -108,6 +108,16 @@ describe('router rate limiting (#130)', () => {
     expect(points[0]!.indexes).toEqual([T1]);
     expect(points[0]!.blobs[6]).toBe('rate_limited');
     expect(points[0]!.doubles[1]).toBe(429);
+    // #2501: read through the published layout, as the request rollup does, the refusal is a 4xx
+    // and a 429, which is what keeps it apart from the requests a vertical served.
+    const read = (ordinal: string): unknown => {
+      const [, kind, n] = /^(index|blob|double)(\d+)$/.exec(ordinal)!;
+      return (kind === 'index' ? points[0]!.indexes : kind === 'blob' ? points[0]!.blobs : points[0]!.doubles)[Number(n) - 1];
+    };
+    expect(read(ROUTER_REQUEST_POINT.tenantId)).toBe(T1);
+    expect(read(ROUTER_REQUEST_POINT.statusClass)).toBe('4xx');
+    expect(read(ROUTER_REQUEST_POINT.status)).toBe(429);
+    expect(read(ROUTER_REQUEST_POINT.problemCode)).toBe('rate_limited');
   });
 
   it('gives two tokens independent budgets', async () => {

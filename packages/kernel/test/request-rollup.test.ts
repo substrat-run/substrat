@@ -155,6 +155,11 @@ const count = (requests: number): RequestDayCount => ({
   vertical: 'todo',
   scopeId: '01J00000000000000000000S01',
   requests,
+  class2xx: requests,
+  class3xx: 0,
+  class4xx: 0,
+  class5xx: 0,
+  rateLimited: 0,
   sampled: false,
 });
 

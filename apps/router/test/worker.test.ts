@@ -670,6 +670,16 @@ describe('router', () => {
       // Nothing is written that the layout does not name, so no ordinal is in use unpublished.
       const written = (p.indexes?.length ?? 0) + (p.blobs?.length ?? 0) + (p.doubles?.length ?? 0);
       expect(written).toBe(Object.keys(ROUTER_REQUEST_POINT).length);
+
+      // The router's own failure is metered at the same ordinals: with no deployment to answer, a
+      // 502, filed under 5xx, which is how the rollup keeps platform errors apart from served
+      // requests. (Its 429 refusal is pinned the same way in rate-limit.test.ts.)
+      const failing = { ...env, VERTICAL_FSM: undefined } as unknown as Env;
+      expect((await worker.fetch(get('https://acme.example.com/'), failing)).status).toBe(502);
+      expect(at(points[1]!, ROUTER_REQUEST_POINT.statusClass)).toBe('5xx');
+      expect(at(points[1]!, ROUTER_REQUEST_POINT.status)).toBe(502);
+      expect(at(points[1]!, ROUTER_REQUEST_POINT.tenantId)).toBe(T);
+      expect(at(points[1]!, ROUTER_REQUEST_POINT.scopeId)).toBe(S);
     } finally {
       logSpy.mockRestore();
     }

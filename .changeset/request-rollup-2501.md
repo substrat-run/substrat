@@ -8,7 +8,7 @@
 '@substrat-run/control-plane': minor
 ---
 
-Daily request rollup, kept for billing (#2501). The platform sweep now reads each closed UTC day of the router's Analytics Engine request datapoints and keeps one row per (day, tenant, vertical, scope) in the directory before the datapoints age out. Every count is an estimate (`sum(_sample_interval)`), marked `estimated: true` on every row.
+Daily request rollup, kept for billing (#2501). The platform sweep now reads each closed UTC day of the router's Analytics Engine request datapoints and keeps one row per (day, tenant, vertical, scope) in the directory before the datapoints age out: the total routed, and its split by status class and 429s. Every count is an estimate (`sum(_sample_interval)`), marked `estimated: true` on every row.
 
 - contracts: `requestDay`, `requestRollupDay`, `requestRollupReading`, a strict `utcDay`, and `ROUTER_REQUEST_POINT`, the router datapoint's published ordinals.
 - kernel: `REQUEST_ROLLUP_DDL` and its statements, the sweep's `requestRollup` phase (one query per day, oldest unread first, at most seven a pass, a failed day retried after an hour, a saturated answer refused whole), four optional `HostAdmin` methods (`recordRequestDay`, `listRequestDays`, `listRequestRollupDays`, `pruneRequestDays`), and `BILLING_ROLLUP_RETENTION_MONTHS`, `null` until a billing horizon is set, so nothing is pruned.

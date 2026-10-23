@@ -2024,7 +2024,8 @@ export const REQUEST_ROLLUP_ROW_LIMIT = 50_000;
  * Counts are `sum(_sample_interval)`, never `count()`, for `queryTenantMetrics`'s reason: Analytics
  * Engine samples under load, so each count is an estimate and `sampled` says whether any of the
  * day's datapoints stood for more than one request. The ordinals are the router's published shape
- * (`ROUTER_REQUEST_POINT`).
+ * (`ROUTER_REQUEST_POINT`). Beside the total it counts each status class from `statusClass` and
+ * the 429s from `status`, weighted the same way, so the split is kept while the datapoints last.
  */
 export function createRouterRequestDayReader(opts: {
   accountId: string;
@@ -2044,6 +2045,11 @@ export function createRouterRequestDayReader(opts: {
         ${p.vertical} AS vertical,
         ${p.scopeId} AS scopeId,
         sum(_sample_interval) AS requests,
+        sum(if(${p.statusClass} = '2xx', _sample_interval, 0)) AS class2xx,
+        sum(if(${p.statusClass} = '3xx', _sample_interval, 0)) AS class3xx,
+        sum(if(${p.statusClass} = '4xx', _sample_interval, 0)) AS class4xx,
+        sum(if(${p.statusClass} = '5xx', _sample_interval, 0)) AS class5xx,
+        sum(if(${p.status} = 429, _sample_interval, 0)) AS rateLimited,
         max(_sample_interval) AS maxInterval
       FROM ${aeDataset(opts.routerDataset)}
       WHERE timestamp >= toDateTime(${from})
@@ -2060,11 +2066,17 @@ export function createRouterRequestDayReader(opts: {
         `Cloudflare Analytics Engine request rollup holds more than ${REQUEST_ROLLUP_ROW_LIMIT} groups for ${day}: the counts would be partial`,
       );
     }
+    const count = (r: Record<string, unknown>, key: string) => Math.round(aeNum(r[key]));
     return rows.map((r) => ({
       tenantId: String(r['tenantId'] ?? ''),
       vertical: blank(r['vertical']),
       scopeId: String(r['scopeId'] ?? ''),
-      requests: Math.round(aeNum(r['requests'])),
+      requests: count(r, 'requests'),
+      class2xx: count(r, 'class2xx'),
+      class3xx: count(r, 'class3xx'),
+      class4xx: count(r, 'class4xx'),
+      class5xx: count(r, 'class5xx'),
+      rateLimited: count(r, 'rateLimited'),
       sampled: aeNum(r['maxInterval']) > 1,
     }));
   };

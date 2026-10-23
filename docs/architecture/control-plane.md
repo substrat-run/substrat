@@ -1362,6 +1362,12 @@ than that, so the scheduled pass keeps a compact copy.
 - **One row per (UTC day, tenant, vertical, scope)** in the directory's
   `_substrat_request_days`, holding that day's count. A request that resolved to no vertical
   is kept under none. Counts only: no path, no principal, no content.
+- **The total, and its split by status.** `requests` is every request the router routed,
+  whatever it was answered. Beside it each row keeps `class2xx` to `class5xx` from the status
+  class the router writes, and `rateLimited`, the requests answered 429: the router's own
+  rate-limit refusals, and a vertical's. The router's 502 when no deployment answers is in
+  `class5xx`. Which of these a price counts is a later billing decision. The split is kept
+  now because it cannot be recovered once Analytics Engine ages the datapoints out.
 - **Every count is an estimate.** It is `sum(_sample_interval)` over the day's datapoints,
   never `count()`, and every row says `estimated: true`. `sampled` says whether Analytics
   Engine actually reweighted any of them.

@@ -38,7 +38,11 @@ interface StoredPoint {
 const NAMES = Object.keys(ROUTER_REQUEST_POINT) as (keyof typeof ROUTER_REQUEST_POINT)[];
 
 /** A datapoint with the fields the router writes, each at the ordinal the published layout gives it. */
-function point(fields: { tenantId: string; vertical: string; scopeId: string }, at: string, sampleInterval = 1): StoredPoint {
+function point(
+  fields: { tenantId: string; vertical: string; scopeId: string; statusClass?: string; status?: number },
+  at: string,
+  sampleInterval = 1,
+): StoredPoint {
   const p: StoredPoint = { indexes: [], blobs: [], doubles: [], timestamp: Date.parse(at), sampleInterval };
   const values: Record<string, string | number> = {
     surface: 'app',
@@ -60,24 +64,51 @@ function point(fields: { tenantId: string; vertical: string; scopeId: string }, 
   return p;
 }
 
+/** The value at an ordinal (`index1`, `blob4`, `double2`) of a stored datapoint. */
+function at(p: StoredPoint, kind: string, n: string): string | number | undefined {
+  return (kind === 'index' ? p.indexes : kind === 'blob' ? p.blobs : p.doubles)[Number(n) - 1];
+}
+
+/** The select list, split at its top-level commas (a `sum(if(a, b, c))` keeps its own). */
+function selectItems(sql: string): string[] {
+  const list = /SELECT([\s\S]*?)\n\s*FROM/.exec(sql)![1]!;
+  const items: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of list) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      items.push(current.trim());
+      current = '';
+    } else current += ch;
+  }
+  items.push(current.trim());
+  return items;
+}
+
 /**
  * Analytics Engine, for exactly the shape of query the rollup sends: plain columns by ordinal,
- * `sum`/`max` of `_sample_interval`, a half-open `timestamp` window, GROUP BY the column aliases,
- * and a LIMIT. Sums come back as strings, as the real API answers 64-bit aggregates.
+ * `sum`/`max` of `_sample_interval`, `sum(if(<ordinal> = <literal>, _sample_interval, 0))`, a
+ * half-open `timestamp` window, GROUP BY the column aliases, and a LIMIT. Sums come back as
+ * strings, as the real API answers 64-bit aggregates. Anything else is refused.
  */
 function evaluate(sql: string, points: readonly StoredPoint[]): Array<Record<string, unknown>> {
-  const select = /SELECT([\s\S]*?)FROM/.exec(sql)![1]!.split(',').map((s) => s.trim());
   const columns: { alias: string; read: (p: StoredPoint) => string }[] = [];
-  const aggregates: { alias: string; fn: 'sum' | 'max' }[] = [];
-  for (const item of select) {
+  const aggregates: { alias: string; fn: 'sum' | 'max'; weight: (p: StoredPoint) => number }[] = [];
+  for (const item of selectItems(sql)) {
     const col = /^(index|blob|double)(\d+) AS (\w+)$/.exec(item);
     const agg = /^(sum|max)\(_sample_interval\) AS (\w+)$/.exec(item);
+    const when = /^sum\(if\((index|blob|double)(\d+) = ('[^']*'|\d+), _sample_interval, 0\)\) AS (\w+)$/.exec(item);
     if (col) {
       const [, kind, n, alias] = col;
-      const i = Number(n) - 1;
-      columns.push({ alias: alias!, read: (p) => String((kind === 'index' ? p.indexes : kind === 'blob' ? p.blobs : p.doubles)[i] ?? '') });
+      columns.push({ alias: alias!, read: (p) => String(at(p, kind!, n!) ?? '') });
     } else if (agg) {
-      aggregates.push({ alias: agg[2]!, fn: agg[1] as 'sum' | 'max' });
+      aggregates.push({ alias: agg[2]!, fn: agg[1] as 'sum' | 'max', weight: (p) => p.sampleInterval });
+    } else if (when) {
+      const [, kind, n, literal, alias] = when;
+      const wanted = literal!.startsWith("'") ? literal!.slice(1, -1) : Number(literal);
+      aggregates.push({ alias: alias!, fn: 'sum', weight: (p) => (at(p, kind!, n!) === wanted ? p.sampleInterval : 0) });
     } else {
       throw new Error(`the stand-in cannot evaluate select item ${JSON.stringify(item)}`);
     }
@@ -94,7 +125,7 @@ function evaluate(sql: string, points: readonly StoredPoint[]): Array<Record<str
     const row = groups.get(key) ?? Object.fromEntries(columns.map((c) => [c.alias, c.read(p)]));
     for (const a of aggregates) {
       const prior = Number(row[a.alias] ?? 0);
-      row[a.alias] = a.fn === 'sum' ? String(prior + p.sampleInterval) : Math.max(prior, p.sampleInterval);
+      row[a.alias] = a.fn === 'sum' ? String(prior + a.weight(p)) : Math.max(prior, a.weight(p));
     }
     groups.set(key, row);
   }
@@ -126,24 +157,43 @@ const S2 = scopeId.parse(ulid());
 
 describe('the request rollup reader (#2501)', () => {
   it("counts one UTC day per (tenant, vertical, scope), weighted by the sample interval, and nothing of the days beside it", async () => {
+    const crm = { tenantId: A, vertical: 'acme-crm', scopeId: S1 };
     const sqls = analyticsEngine(() => [
-      point({ tenantId: A, vertical: 'acme-crm', scopeId: S1 }, '2026-10-21T00:00:00.000Z'),
+      point(crm, '2026-10-21T00:00:00.000Z'),
       // One datapoint that stood for forty requests: counted as forty, and the day is `sampled`.
-      point({ tenantId: A, vertical: 'acme-crm', scopeId: S1 }, '2026-10-21T13:00:00.000Z', 40),
+      point(crm, '2026-10-21T13:00:00.000Z', 40),
+      // The router's own rate-limit refusal, a redirect, and its 502 when no deployment answered:
+      // in the total, and each in its own column.
+      point({ ...crm, statusClass: '4xx', status: 429 }, '2026-10-21T14:00:00.000Z', 3),
+      point({ ...crm, statusClass: '4xx', status: 404 }, '2026-10-21T14:30:00.000Z'),
+      point({ ...crm, statusClass: '3xx', status: 302 }, '2026-10-21T15:00:00.000Z'),
+      point({ ...crm, statusClass: '5xx', status: 502 }, '2026-10-21T16:00:00.000Z', 2),
+      // A WebSocket upgrade: in the total, in no class.
+      point({ ...crm, statusClass: '1xx', status: 101 }, '2026-10-21T17:00:00.000Z'),
       point({ tenantId: A, vertical: 'acme-crm', scopeId: S2 }, '2026-10-21T23:59:59.999Z'),
       // A request that resolved to no vertical.
       point({ tenantId: B, vertical: '', scopeId: S2 }, '2026-10-21T08:00:00.000Z'),
       // The instants either side of the day belong to the days either side.
-      point({ tenantId: A, vertical: 'acme-crm', scopeId: S1 }, '2026-10-20T23:59:59.999Z'),
-      point({ tenantId: A, vertical: 'acme-crm', scopeId: S1 }, '2026-10-22T00:00:00.000Z'),
+      point(crm, '2026-10-20T23:59:59.999Z'),
+      point(crm, '2026-10-22T00:00:00.000Z'),
     ]);
     const counts = await reader()('2026-10-21');
 
+    const only2xx = { class3xx: 0, class4xx: 0, class5xx: 0, rateLimited: 0 };
     expect(counts).toEqual(
       expect.arrayContaining([
-        { tenantId: A, vertical: 'acme-crm', scopeId: S1, requests: 41, sampled: true },
-        { tenantId: A, vertical: 'acme-crm', scopeId: S2, requests: 1, sampled: false },
-        { tenantId: B, vertical: null, scopeId: S2, requests: 1, sampled: false },
+        {
+          ...crm,
+          requests: 49,
+          class2xx: 41,
+          class3xx: 1,
+          class4xx: 4,
+          class5xx: 2,
+          rateLimited: 3,
+          sampled: true,
+        },
+        { tenantId: A, vertical: 'acme-crm', scopeId: S2, requests: 1, class2xx: 1, ...only2xx, sampled: false },
+        { tenantId: B, vertical: null, scopeId: S2, requests: 1, class2xx: 1, ...only2xx, sampled: false },
       ]),
     );
     expect(counts).toHaveLength(3);
@@ -217,8 +267,9 @@ describe('the rollup end to end, and GET /meters/requests (#2501)', () => {
     // The sweep reads the router's datapoints through the real reader, into this directory.
     const points = [
       point({ tenantId: A, vertical: 'acme-crm', scopeId: S1 }, '2026-10-21T10:00:00.000Z', 3),
+      point({ tenantId: A, vertical: 'acme-crm', scopeId: S1, statusClass: '4xx', status: 429 }, '2026-10-21T11:00:00.000Z', 2),
       point({ tenantId: A, vertical: 'acme-crm', scopeId: S1 }, '2026-10-22T10:00:00.000Z'),
-      point({ tenantId: B, vertical: 'acme-desk', scopeId: S2 }, '2026-10-22T11:00:00.000Z'),
+      point({ tenantId: B, vertical: 'acme-desk', scopeId: S2, statusClass: '5xx', status: 502 }, '2026-10-22T11:00:00.000Z'),
     ];
     analyticsEngine(() => points);
     const report = await runPlatformSweep(host, {
@@ -237,18 +288,20 @@ describe('the rollup end to end, and GET /meters/requests (#2501)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('serves what the sweep rolled up, every count marked an estimate, with the record of each day', async () => {
+  it('serves what the sweep rolled up with its status split, every count marked an estimate, with the record of each day', async () => {
     const res = await app.request('/meters/requests?since=2026-10-20&until=2026-10-22', { headers: asStaff });
     expect(res.status).toBe(200);
+    const none = { class2xx: 0, class3xx: 0, class4xx: 0, class5xx: 0, rateLimited: 0 };
     expect(await res.json()).toEqual({
       estimated: true,
       since: '2026-10-20',
       until: '2026-10-22',
       truncated: false,
       rows: [
-        { day: '2026-10-21', tenantId: A, vertical: 'acme-crm', scopeId: S1, requests: 3, sampled: true, estimated: true },
-        { day: '2026-10-22', tenantId: A, vertical: 'acme-crm', scopeId: S1, requests: 1, sampled: false, estimated: true },
-        { day: '2026-10-22', tenantId: B, vertical: 'acme-desk', scopeId: S2, requests: 1, sampled: false, estimated: true },
+        // The router's rate-limit refusals stay apart from what was served.
+        { day: '2026-10-21', tenantId: A, vertical: 'acme-crm', scopeId: S1, requests: 5, ...none, class2xx: 3, class4xx: 2, rateLimited: 2, sampled: true, estimated: true },
+        { day: '2026-10-22', tenantId: A, vertical: 'acme-crm', scopeId: S1, requests: 1, ...none, class2xx: 1, sampled: false, estimated: true },
+        { day: '2026-10-22', tenantId: B, vertical: 'acme-desk', scopeId: S2, requests: 1, ...none, class5xx: 1, sampled: false, estimated: true },
       ].sort((x, y) => (x.day + x.tenantId < y.day + y.tenantId ? -1 : 1)),
       // The first day had no traffic, and says so by being read with no rows.
       days: [
