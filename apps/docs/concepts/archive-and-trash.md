@@ -138,11 +138,13 @@ Purging is your delete, run on a timer. It is not erasure: the events about the 
 
 A pass purges at most 50 entities, oldest first, and the next pass carries on from where it
 stopped. If your purge operation calls `ctx.requestPlatform`, the scope's cap on pending requests
-(32) bounds a pass too. The purge that meets a full queue rolls back whole, is not counted as a
-failure, and the pass stops there; once the platform has drained the queue the next pass resumes
-at that entity. A pass that cannot purge even its first entity because the queue is still full
-reports that once and waits for its next cadence window. Have a purge enqueue at most one
-request per entity: a purge that needs several can fail on the last one even though the first fit.
+(32) bounds a pass too. A purge that meets a full queue after the pass has already got past its
+first entity rolls back whole and is not counted as a failure: the pass stops there, and once the
+platform has drained the queue the next pass resumes at that entity. A purge the full queue
+refuses at the *first* entity of a pass is an ordinary failure, reported as such, and the pass walks
+on, so a purge that needs no request still commits behind it and an entity whose purge can never
+fit (it enqueues more requests than the scope will ever have room for) cannot hold up the others.
+Have a purge enqueue at most one request per entity.
 
 The purge operation is also the entity's permanent delete, so by default a person holding its
 key can empty the bin at any time. If the purge operation must only ever run on what has sat in

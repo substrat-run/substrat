@@ -225,9 +225,11 @@ export function purgeCandidates(
 /**
  * A purge LAP in progress (#2096) — what a schedule's cadence row holds in `purge_cursor` between
  * passes. A lap walks the whole due bin, oldest first, `PURGE_BATCH` at a time; each pass resumes
- * after the last entity the one before it tried, whatever became of that entity. So entities that
+ * after the last entity the one before it tried, whatever became of that entity — except one the
+ * scope's platform-request cap turned away past the head of its pass (#2506), which was not tried
+ * in any sense that matters: it rolled back whole, and the next pass starts at it. So entities that
  * keep failing cannot hold the head of the walk: the walk moves past them, reaches everything due
- * behind them in the same lap, and tries them again in the next.
+ * behind them in the same lap, and tries them again in the next. A refused head is one of them.
  *
  * `failed` counts the purges that failed in the lap's earlier passes, so the pass that closes the
  * lap — the one that writes the cadence row — records the lap `failed` even when its own batch
@@ -467,10 +469,12 @@ export async function runPurgePass(
 /**
  * Whether a purge pass leaves its schedule due, so the next sweep pass continues its lap rather
  * than waiting the cadence: more is due after its batch (#2096). It cannot spin (#2087): every pass
- * moves the lap strictly forward, whatever its purges did, and the pass that runs out of due
- * entities closes the lap and records the run — so a cadence window holds one lap, and an entity
- * that keeps failing is tried once per window, not once per sweep tick. A scope running code older
- * than the lap answers no `more`, and its pass waits its cadence.
+ * moves the lap strictly forward, whatever its purges did — a pass that defers an entity the
+ * platform-request cap turned away (#2506) has already got past its head, and the entity is the
+ * head of the next pass, where a refusal is a failure like any other — and the pass that runs out
+ * of due entities closes the lap and records the run. So a cadence window holds one lap, and an
+ * entity that keeps failing is tried once per window, not once per sweep tick. A scope running
+ * code older than the lap answers no `more`, and its pass waits its cadence.
  */
 export function purgeStillDue(pass: PurgePass): boolean {
   return pass.more === true;
