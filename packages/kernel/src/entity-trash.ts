@@ -33,7 +33,7 @@ import {
 } from '@substrat-run/contracts';
 import { assertAllowed } from './permission-checker.js';
 import { readStateRow, type EntityStatePlan, type StateCheck } from './entity-state.js';
-import { PlatformRequestBackpressureError } from './platform-request-cap.js';
+import { isPlatformRequestRefusal } from './platform-request-cap.js';
 import type { ScopedSql } from './scope-host.js';
 import type { SystemScheduleState } from './system-switch.js';
 
@@ -408,8 +408,9 @@ export function heldPurgePass(held: string): PurgePass {
  * spine, in the turn the adapter's storage needs.
  *
  * The one exception to "whatever its purges did" is the scope's platform-request cap (#2506): a
- * purge refused with `PlatformRequestBackpressureError` is deferred rather than failed, and the lap
- * resumes at it.
+ * purge the cap refuses (`isPlatformRequestRefusal`) AFTER the pass has got past its head is
+ * deferred rather than failed, and the lap resumes at it. A pass always moves the lap strictly
+ * forward, so neither a deferral nor a refused head can hold the head of the walk.
  */
 export async function runPurgePass(
   operation: string,
@@ -419,27 +420,30 @@ export async function runPurgePass(
 ): Promise<PurgePass> {
   // Where the lap resumes: after this batch's last entity, or null when the batch closes the lap.
   let next = due.next;
+  // The walk positions of `ids`, if they really are those: a shorter array cannot place a cursor.
+  const keys = due.keys?.length === due.ids.length ? due.keys : undefined;
+  // Whether the scope's queue already refused the HEAD of this batch.
+  let headRefused = false;
   const pass: PurgePass = { purged: 0, skipped: 0, errors: [], more: false };
   for (const [i, entityId] of due.ids.entries()) {
     try {
       await purgeOne(entityId);
       pass.purged += 1;
     } catch (err) {
-      // #2506: the scope's queue of platform requests is full, so this purge rolled back whole, and
-      // so would every one behind it until the drain runs. That is the cap saying "not yet", not
-      // this entity failing: the batch stops here and the lap resumes AT it, after the last entity
-      // actually tried — the next pass finds it still due. A pass that made no progress at all
-      // means the drain is not keeping up, so it closes the lap with one reported error and waits
-      // its cadence instead of retrying on every sweep tick. Without `keys` there is no position
-      // to resume from, so it stays an ordinary failure.
-      if (err instanceof PlatformRequestBackpressureError && due.keys) {
-        if (i > 0) {
-          next = due.keys[i - 1]!;
-        } else {
-          pass.errors.push({ entityId, error: err.message });
-          next = null;
+      // #2506: the scope's queue of platform requests is full, so this purge rolled back whole.
+      // Once the pass has got past its head, that is the cap saying "not yet", not this entity
+      // failing: the batch stops here and the lap resumes AT it, after the last entity actually
+      // tried — and it is never the head of that next pass, which moves strictly forward. A refusal
+      // AT the head is an ordinary failure, as it always was, and the rest of the batch is walked
+      // the same way: a purge that enqueues nothing behind it still commits, and an entity whose
+      // purge can never fit (it enqueues more than the scope has room for) cannot hold the head of
+      // the walk, which is what #2096 is for. Without `keys` there is no position to resume from.
+      if (isPlatformRequestRefusal(err)) {
+        if (i === 0) headRefused = true;
+        if (!headRefused && keys) {
+          next = keys[i - 1]!;
+          break;
         }
-        break;
       }
       const code = errorCodeOf(err);
       const reason = (err as { extensions?: { reason?: unknown } }).extensions?.reason;
