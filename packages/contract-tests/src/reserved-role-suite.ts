@@ -43,7 +43,9 @@ export function reservedRoleContractSuite(
     const s1 = scopeId.parse(ulid());
     const staff = platformActorId.parse(ulid());
     const alice = principalId.parse(ulid()); // holds rsv:use tenant-wide, and rsv:run through a reserved-only role
-    const legacy = principalId.parse(ulid()); // seated in `mixed` before rsv:run was reserved here (#2447)
+    const legacy = principalId.parse(ulid());
+    /** A key no module here declares: a host admits it (fail-open), so it fills out a role's list. */
+    const RSV_EXTRA = 'rsv:extra' as PermissionKey; // seated in `mixed` before rsv:run was reserved here (#2447)
     const person = () => principalId.parse(ulid());
     const entity = () => ({ entityType: 'rsvdoc', entityId: ulid() });
     const RSV = moduleId.parse('@test/reserved-role');
@@ -68,6 +70,7 @@ export function reservedRoleContractSuite(
       // registered here (a key an engine reserves in a later version). `legacy` is seated then too.
       await host.admin.defineRole(staff, t1, { key: 'mixed', permissions: [RSV_USE, RSV_RUN], source: 'vertical' });
       await host.admin.defineRole(staff, t1, { key: 'person-runner', permissions: [RSV_RUN], source: 'vertical' });
+      await host.admin.defineRole(staff, t1, { key: 'wide', permissions: [RSV_USE, RSV_RUN, RSV_EXTRA], source: 'vertical' });
       await host.admin.assignRole(staff, { principalId: legacy, roleKey: 'mixed', node: { tenantId: t1, scopeId: null } });
       host.registerModule(reservedRoleMod);
       await host.admin.grantEntitlement(staff, t1, 'perm');
@@ -337,9 +340,16 @@ export function reservedRoleContractSuite(
         expect(await holds(legacy, RSV_USE)).toBe(true);
       });
 
-      it('a narrowing redefinition is never refused for what it takes out', async () => {
-        await host.admin.defineRole(staff, t1, { key: 'person-runner', permissions: [RSV_USE], source: 'vertical' });
-        expect(await stored('person-runner')).toEqual([RSV_USE]);
+      it('a narrowing is never refused for the key it takes out, only for a reserved key it still holds', async () => {
+        // `wide` [rsv:use, rsv:run, rsv:extra] predates the reservation (the first hook).
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'wide', permissions: [RSV_USE, RSV_RUN], source: 'vertical' }),
+          'forbidden',
+          /role 'wide' is a person's role and would hold rsv:run/,
+        );
+        expect(await stored('wide')).toEqual([RSV_USE, RSV_RUN, RSV_EXTRA]);
+        await host.admin.defineRole(staff, t1, { key: 'wide', permissions: [RSV_USE], source: 'vertical' });
+        expect(await stored('wide')).toEqual([RSV_USE]);
       });
 
       it('refuses a system-held role holding a key a registered module declares for a person; its twin is defined', async () => {
