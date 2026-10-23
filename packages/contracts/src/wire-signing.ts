@@ -36,9 +36,10 @@
  * first line names the protocol, so no message signed under another protocol (a store
  * envelope's first line is `1`) parses as one of these, whatever key signed it.
  *
- * Every refusal is the same value, {@link WIRE_REFUSED}: a caller cannot tell a wrong audience
- * from a bad signature, and neither can whoever it answers. The reason goes to `onRefusal`,
- * for metrics only.
+ * Every refusal of a caller is the same value, {@link WIRE_REFUSED}: a caller cannot tell a wrong
+ * audience from a bad signature, and neither can whoever it answers. The reason goes to
+ * `onRefusal`, for metrics only. A fault of the deployment's own (a key set it built some other
+ * way, a nonce cache that cannot answer) throws instead.
  *
  * Imports nothing but its sibling subpath `scope-store-envelope.ts`, which imports nothing, so
  * an entry bundle that imports this subpath pulls in no schema and no zod.

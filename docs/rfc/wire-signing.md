@@ -199,7 +199,7 @@ set is the deployment's fault, not the caller's, so it throws, and no refusal co
    named;
 7. last, and only when the endpoint keeps nonces, the nonce is unspent (§4).
 
-**Every failure returns the same value**, `WIRE_REFUSED`, and an endpoint answers every refusal
+**Every failure the caller caused returns the same value**, `WIRE_REFUSED`, and an endpoint answers every refusal
 with the same status and body. The reason goes to an `onRefusal` callback for counters only, and
 never into a response or a log line a caller can read. Nothing secret is compared in the
 verifier, so the time a refusal takes reveals nothing secret. The single answer stops a caller
