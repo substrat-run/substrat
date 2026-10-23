@@ -1383,9 +1383,11 @@ than that, so the scheduled pass keeps a compact copy.
   so a first deploy backfills the 85 days it can still reach over about thirteen passes. A day
   read successfully is never read again. The lookback is refused past 90 days, where the
   datapoints have aged out and an empty answer would pass for a day without traffic.
-- **Last in the pass, and bounded.** The phase runs after everything else in the scheduled
-  pass, since it waits on an outside service and nothing else depends on it. Each read has a
-  deadline (30 seconds); a read past it is an ordinary failed day.
+- **After the scheduled work, and bounded.** The phase runs after all the scheduled work of the
+  pass, just before the access-log drain, since it waits on an outside service and nothing else
+  depends on it. Each read has a deadline (30 seconds), and a read past it is an ordinary failed
+  day. The most the phase can delay is the drain, which then ships the phase's own access rows
+  in the same pass.
 - **A failed read writes nothing, and ends the pass's reads.** `_substrat_request_day_reads`
   keeps one row per day the rollup tried: when, whether a read succeeded, and why the last one
   failed. A failed day is tried again an hour later, and the days after it wait for the next

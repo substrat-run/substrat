@@ -1889,6 +1889,19 @@ export async function runPlatformSweep(
     }
   }
 
+  // -- the daily request rollup (#2501) ----------------------------------------
+  // After all the scheduled work, deliberately: it waits on Analytics Engine, an outside service,
+  // and nothing in the pass depends on it, so a slow answer must not hold back the work that has
+  // to happen every pass. Each read is bounded (`RequestRollupSweepOptions.readTimeoutMs`), so the
+  // most it can delay is the access-log drain below, which then ships this phase's own reads too.
+  if (
+    options.requestRollup &&
+    typeof host.admin.recordRequestDay === 'function' &&
+    typeof host.admin.listRequestRollupDays === 'function'
+  ) {
+    report.requestRollup = await sweepRequestRollup(host.admin, options.actor, options.requestRollup, report);
+  }
+
   // -- drain the staff access log to Tier 2, then prune it (K-24, §4.4) --------
   // LAST, deliberately: every phase above reads the directory through the audited
   // seam, so each one writes access rows. Running the drain last means a pass ships
@@ -1902,19 +1915,6 @@ export async function runPlatformSweep(
       // ship→stamp→prune leaves the rows exactly where they were.
       report.errors.push({ kind: 'access-log', id: 'access-log', error: message(err) });
     }
-  }
-
-  // -- the daily request rollup (#2501) ----------------------------------------
-  // AFTER everything else, deliberately: it waits on Analytics Engine, an outside service, and
-  // nothing in the pass depends on it, so a slow answer must not hold back the work that has to
-  // happen every pass. Each read is also bounded (`RequestRollupSweepOptions.readTimeoutMs`). Its
-  // one directory read leaves an access row for the next pass's drain to ship.
-  if (
-    options.requestRollup &&
-    typeof host.admin.recordRequestDay === 'function' &&
-    typeof host.admin.listRequestRollupDays === 'function'
-  ) {
-    report.requestRollup = await sweepRequestRollup(host.admin, options.actor, options.requestRollup, report);
   }
 
   return report;

@@ -106,11 +106,16 @@ function rollupHost(opts: { rollup?: boolean; failRecord?: boolean; order?: stri
   const admin: Record<string, unknown> = {
     listScopes: async () => [],
     listConnections: async () => [],
-    // Another phase of the same pass, so a test can see what ran before the rollup.
+    // Other phases of the same pass, so a test can see what ran before and after the rollup.
     pruneTelemetry: async () => {
       opts.order?.push('telemetry');
       return { opsFailures: 0, issues: 0, sweepRuns: 0 };
     },
+    accessLog: async () => {
+      opts.order?.push('access-log');
+      return [];
+    },
+    pruneAccessLog: async () => 0,
   };
   if (opts.rollup !== false) {
     admin.listRequestRollupDays = async () => [...reads.values()];
@@ -321,21 +326,27 @@ describe('the request-rollup phase', () => {
     ]);
   });
 
-  it('runs after every other phase, and a read that never settles fails its day without holding the pass', async () => {
+  it('runs after the scheduled work and before the access-log drain, and a read that never settles fails its day without holding the pass', async () => {
     const order: string[] = [];
     const { host, reads, pruned } = rollupHost({ order });
-    const report = await sweep(host, {
-      read: () => {
-        order.push('read');
-        return new Promise<never>(() => {});
+    const report = await sweep(
+      host,
+      {
+        read: () => {
+          order.push('read');
+          return new Promise<never>(() => {});
+        },
+        lookbackDays: 1,
+        readTimeoutMs: 20,
+        now: () => NOW,
       },
-      lookbackDays: 1,
-      readTimeoutMs: 20,
-      now: () => NOW,
-    });
-    // The rest of the pass ran first, so a stalled read cannot starve it.
-    expect(order).toEqual(['telemetry', 'read']);
+      { accessLogSink: { ship: async () => ({ ref: 'r' }) } },
+    );
+    // The scheduled work ran first, so a stalled read cannot starve it; the drain runs after the
+    // bounded read, so it still runs, and ships this pass's own access rows.
+    expect(order).toEqual(['telemetry', 'read', 'access-log']);
     expect(report.telemetry).toEqual({ opsFailures: 0, issues: 0, sweepRuns: 0 });
+    expect(report.accessLog).toEqual({ shipped: 0, marked: 0, pruned: 0, ref: null });
     // The stalled read is an ordinary failed day: recorded, retried later, and the phase's own
     // prune still ran after it.
     expect(report.requestRollup).toMatchObject({ read: 0, failed: 1 });
