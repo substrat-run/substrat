@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { principalId, scopeId, substratError, tenantId, toProblem } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { TenantNarrowedControlPlane, ControlPlaneError } from '../src/authority.js';
+import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api';
 
 /**
  * The §4 seam (docs/architecture/dashboard.md): the Dashboard effects provisioning on the
@@ -298,7 +299,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       calls.push(String(url));
       return new Response(JSON.stringify(pages[calls.length - 1] ?? { entries: [], nextCursor: null }), {
         status: 200,
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...headers },
       });
     }) as unknown as typeof globalThis.fetch;
     const cp = new TenantNarrowedControlPlane({
@@ -439,7 +440,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
   const OTHER = tenantId.parse(ulid());
 
   /** A fetch harness with per-path payloads, for reads that fan out. */
-  function routedHarness(routes: Record<string, unknown>) {
+  function routedHarness(routes: Record<string, unknown>, headers: Record<string, string> = {}) {
     const calls: string[] = [];
     const fetch = (async (url: string | URL | Request) => {
       const u = String(url);
@@ -531,7 +532,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
 
   it('observabilityLogs answers [] for an unowned service WITHOUT asking the plane', async () => {
     const { cp, calls } = routedHarness(registry);
-    expect(await cp.observabilityLogs({ services: ['rival-crm-v9'] })).toEqual([]);
+    expect(await cp.observabilityLogs({ services: ['rival-crm-v9'] })).toEqual({ events: [], incomplete: false });
     // The ownership check runs first — the staff-wide log query was never issued.
     expect(calls.some((u) => u.includes('/observability/logs'))).toBe(false);
   });
@@ -580,7 +581,8 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
         },
       ],
     });
-    const events = await cp.observabilityLogs({ services: ['acme-helpdesk-v1'] });
+    const { events, incomplete } = await cp.observabilityLogs({ services: ['acme-helpdesk-v1'] });
+    expect(incomplete).toBe(false);
     expect(events).toEqual([
       {
         timestamp: 1722700000000,
@@ -597,6 +599,18 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
         raw: { $metadata: { trigger: 'default.closeTicket' }, $workers: { outcome: 'exception' } },
       },
     ]);
+  });
+
+  it('observabilityLogs reports the plane’s logs-incomplete header, and only when it is set (#2520)', async () => {
+    const owned = { ...registry, '/observability/logs': [{ message: 'a line' }] };
+    const short = routedHarness(owned, { [LOGS_INCOMPLETE_HEADER]: '1' });
+    const page = await short.cp.observabilityLogs({ services: ['acme-helpdesk-v1'] });
+    expect(page.incomplete).toBe(true);
+    // The events are the body, whatever the header says.
+    expect(page.events).toHaveLength(1);
+    const whole = await routedHarness(owned).cp.observabilityLogs({ services: ['acme-helpdesk-v1'] });
+    expect(whole.incomplete).toBe(false);
+    expect(whole.events).toEqual(page.events);
   });
 
   it('observabilityMetrics with a vertical filter keeps that vertical only; an unowned slug never reaches the plane', async () => {

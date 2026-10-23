@@ -67,6 +67,7 @@ import type {
   MemberRemoval,
   ScopeMembers,
 } from '@substrat-run/contracts';
+import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
 import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
@@ -305,8 +306,11 @@ export class TenantNarrowedControlPlane {
    * tolerance, and a lenient read of a 2xx. The connect `probe` (#605) arrives on the
    * transport's own `ControlPlaneError`.
    */
-  private async call<T>(path: string, init: RequestInit & { idempotent?: boolean } = {}): Promise<T> {
-    const { idempotent, ...request } = init;
+  private async call<T>(
+    path: string,
+    init: RequestInit & { idempotent?: boolean; onResponse?: (headers: Headers) => void } = {},
+  ): Promise<T> {
+    const { idempotent, onResponse, ...request } = init;
     // A credential the provider cannot resolve is thrown as it is, before anything is sent:
     // it is a different failure with its own answer (the worker's 503 naming what is
     // unconfigured), and burying it under a transport message would lose that.
@@ -336,6 +340,8 @@ export class TenantNarrowedControlPlane {
       if (idempotent && e instanceof ControlPlaneError && (e.status === 409 || e.status === 422)) return undefined as T;
       throw e;
     }
+    // For the one read whose answer says something its body cannot (a header the plane sets beside it).
+    onResponse?.(res.headers);
     return res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
   }
 
@@ -1346,8 +1352,8 @@ export class TenantNarrowedControlPlane {
     search?: string;
     hours?: number;
     limit?: number;
-  }): Promise<
-    Array<{
+  }): Promise<{
+    events: Array<{
       timestamp: number | null;
       level: string | null;
       message: string | null;
@@ -1361,8 +1367,10 @@ export class TenantNarrowedControlPlane {
       cpuTimeMs: number | null;
       wallTimeMs: number | null;
       raw: unknown;
-    }>
-  > {
+    }>;
+    /** The plane said the page may be incomplete or missing newer lines (#2520). */
+    incomplete: boolean;
+  }> {
     const refs = await this.ownedServiceRefs();
     // Same refusal as observabilityMetrics: a partial ownership map here would
     // silently drop a legitimately owned service from the ask.
@@ -1370,13 +1378,14 @@ export class TenantNarrowedControlPlane {
       throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
     }
     const services = input.services.filter((s) => refs.owned.has(s));
-    if (services.length === 0) return [];
+    if (services.length === 0) return { events: [], incomplete: false };
     const q = new URLSearchParams();
     for (const s of services) q.append('service', s);
     if (input.level) q.set('level', input.level);
     if (input.search) q.set('search', input.search);
     if (input.hours) q.set('hours', String(input.hours));
     if (input.limit) q.set('limit', String(input.limit));
+    let incomplete = false;
     const events =
       (await this.call<
         Array<{
@@ -1394,28 +1403,35 @@ export class TenantNarrowedControlPlane {
           wallTimeMs?: unknown;
           raw?: unknown;
         }>
-      >(`/observability/logs?${q.toString()}`)) ?? [];
+      >(`/observability/logs?${q.toString()}`, {
+        onResponse: (headers) => {
+          incomplete = headers.get(LOGS_INCOMPLETE_HEADER) === '1';
+        },
+      })) ?? [];
     // A builder only ever reaches an OWNED service here (checked above), so the event —
     // `raw` included — is already this tenant's own telemetry: passing the whole thing
     // through is a deliberate widening (the drill-down the per-app tab renders), not a
     // leak. The one narrowing that remains is the ownership gate, not the field set.
     const str = (v: unknown) => (typeof v === 'string' ? v : null);
     const num = (v: unknown) => (typeof v === 'number' ? v : null);
-    return events.map((e) => ({
-      timestamp: num(e.timestamp),
-      level: str(e.level),
-      message: str(e.message),
-      service: str(e.service),
-      outcome: str(e.outcome),
-      trigger: str(e.trigger),
-      invocation: str(e.invocation),
-      entrypoint: str(e.entrypoint),
-      requestId: str(e.requestId),
-      ...(e.invocationId === undefined ? {} : { invocationId: str(e.invocationId) }),
-      cpuTimeMs: num(e.cpuTimeMs),
-      wallTimeMs: num(e.wallTimeMs),
-      raw: e.raw,
-    }));
+    return {
+      events: events.map((e) => ({
+        timestamp: num(e.timestamp),
+        level: str(e.level),
+        message: str(e.message),
+        service: str(e.service),
+        outcome: str(e.outcome),
+        trigger: str(e.trigger),
+        invocation: str(e.invocation),
+        entrypoint: str(e.entrypoint),
+        requestId: str(e.requestId),
+        ...(e.invocationId === undefined ? {} : { invocationId: str(e.invocationId) }),
+        cpuTimeMs: num(e.cpuTimeMs),
+        wallTimeMs: num(e.wallTimeMs),
+        raw: e.raw,
+      })),
+      incomplete,
+    };
   }
 
   /** One installed app's sampled field counts. The tenant is fixed by this credential. */
