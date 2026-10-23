@@ -600,7 +600,13 @@ export interface VerticalScopeHost {
    * invite flow. OPTIONAL like the switches: a host without them answers 501 at
    * `/internal/owner-transfer` before the record moves, so no hand-over is ever half-started.
    */
-  assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void>;
+  assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string, door?: 'person' | 'platform'): Promise<void>;
+  /**
+   * #2447: why `roleKey` may not be seated at scope level through `door`, or null — asked by the
+   * hand-over before the record moves, so a refused seat leaves nothing half-done. Optional: a host
+   * without it is held only by `assignScopeRole`'s own door, after the record moved.
+   */
+  scopeRoleRefusal?(scopeId: ScopeId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
   revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
   /** Does `principal` hold a role the scope can expand? The hand-over's check on `to` (#1665). */
   hasScopeRoleLocal?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean>;
@@ -2377,6 +2383,11 @@ export function mountPlatformSurface<Env extends object>(
     // revoking their role keeps the binding, and handing them the scope would seat someone
     // the scope already let go. Read before step 1 and decided by the directory, which judges
     // an open hand-over first so a refusal names the real state; a refusal writes nothing.
+    // #2447: the successor is a person, so the owner role is seated through the person's door — asked
+    // before the record moves, so a refusal (a role carrying a key reserved to a system principal)
+    // writes nothing and the owner of record stays who it was.
+    const seatRefusal = (await host.scopeRoleRefusal?.(body.scopeId, deps.ownerRoleKey, 'person')) ?? null;
+    if (seatRefusal) return refuseStatus(c, 403, `scope ${body.scopeId}: the owner role cannot be handed to a person: ${seatRefusal}. Nothing was moved.`);
     const toHoldsRole = await host.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to);
     const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, { ...pair, toHoldsRole }));
     if (record.outcome === 'refused') {
@@ -2389,7 +2400,7 @@ export function mountPlatformSurface<Env extends object>(
     }
     const answer = { scopeId: body.scopeId, from: body.from, owner: body.to, outcome: record.outcome };
     if (record.outcome === 'done') return c.json({ ...answer, fromRevoked: false } satisfies OwnerTransferResult);
-    await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey);
+    await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey, 'person');
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
     if (!(await deps.completeOwnerTransfer(c.env, ref, pair))) {
       // Seated and revoked, but the hand-over was no longer the open one to close: it was

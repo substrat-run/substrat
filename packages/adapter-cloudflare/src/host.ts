@@ -1542,6 +1542,8 @@ interface ScopeStubRpc {
   reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null>;
   /** #2430: which of these keys the scope class's modules reserve to a system principal. */
   reservedAmong(permissions: string[]): Promise<string[]>;
+  /** #2447: what the scope class's modules reserve and declare. */
+  reservationHere(): Promise<{ reserved: string[]; declared: string[] }>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -4022,6 +4024,8 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     roles: RoleDefinition[],
   ): Promise<void> {
+    // #2447: the role set is defined here, so it is judged here, before anything is projected.
+    await this.refuseReservedRoleSet(roles, scopeId);
     unwrapReply(await this.scopeStub(scopeId).applyProjectionReply(
       tenantId,
       roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' })),
@@ -11725,6 +11729,13 @@ export class CloudflareScopeHost implements ScopeHost {
     const carry = recordedOffFromWire(input);
     // #2430: refused before anything is written, rather than at the top-up after the projection.
     if (input.entityGrants) await this.refuseReservedShapes(input.entityGrants, input.scopeId);
+    // #2447: the role set this provision defines, and the owner's seat in it — a person's seat, so
+    // the person's door — are judged before anything is written. A refusal fails the provision and
+    // writes nothing, so a seat a reconcile would have re-asserted is left exactly as it is.
+    const reserved = await this.refuseReservedRoleSet(input.roles, input.scopeId);
+    const ownerRole = input.roles.find((r) => r.key === input.ownerRoleKey);
+    const ownerRefusal = ownerRole ? reservedRoleRefusal(ownerRole, reserved, 'person') : null;
+    if (ownerRefusal) throw substratError('forbidden', `the owner's seat: ${ownerRefusal}`);
     const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
@@ -11804,6 +11815,24 @@ export class CloudflareScopeHost implements ScopeHost {
       ...(shapes?.boundEver ? { boundShapeTypes: shapes.boundEver } : {}),
       ...(connections.skipped.length ? { skippedConnectionGrants: connections.skipped } : {}),
     };
+  }
+
+  /** #2447: what this host's registered and listed modules reserve and declare, for a role definition. */
+  private reservation(): { reserved: string[]; declared: string[] } {
+    return { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
+  }
+
+  /**
+   * #2447: refuse a role set a CP-less provision or restore defines on `scopeId`
+   * (`reservedRoleSetRefusal`), against this host's reservations joined with the scope class's.
+   * Answers the reserved keys it judged with, for the seats the same call makes.
+   */
+  private async refuseReservedRoleSet(roles: readonly RoleDefinition[], scopeId: ScopeId): Promise<ReadonlySet<string>> {
+    const here = await this.scopeStub(scopeId).reservationHere();
+    const reserved = new Set([...this.reservedKeys, ...here.reserved]);
+    const refusal = reservedRoleSetRefusal(roles, { reserved, declared: new Set([...this.declaredKeys, ...here.declared]) });
+    if (refusal) throw substratError('forbidden', refusal);
+    return reserved;
   }
 
   /**
@@ -11923,13 +11952,29 @@ export class CloudflareScopeHost implements ScopeHost {
    * storage. Idempotent (writeTuple is INSERT OR REPLACE). `roleKey` must be one the scope
    * already projected (via `provisionScopeLocal`), or the local checker expands it to nothing.
    */
-  async assignScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void> {
-    // #2430: a platform door, as `HostAdmin.assignRole` is — a role mixing reserved and other keys
-    // is refused, against the scope class's own reservations and the role as the checker reads it
-    // for the tenant the scope's receipt names (`reservedRoleRefusalHere` says what happens without one).
-    const refusal = await this.scopeStub(scopeId).reservedRoleRefusalHere(roleKey, 'platform');
+  async assignScopeRole(
+    scopeId: ScopeId,
+    principal: PrincipalId,
+    roleKey: string,
+    /** #2447: `person` when the caller knows it seats a person (the owner hand-over); the platform's door otherwise. */
+    door: 'person' | 'platform' = 'platform',
+  ): Promise<void> {
+    // #2430: a platform door by default, as `HostAdmin.assignRole` is — a role mixing reserved and
+    // other keys is refused, against the scope class's own reservations and the role as the checker
+    // reads it for the tenant the scope's receipt names (`reservedRoleRefusalHere` says what happens
+    // without one). The person's door also refuses any reserved key and a system-held role (#2447).
+    const refusal = await this.scopeStub(scopeId).reservedRoleRefusalHere(roleKey, door);
     if (refusal) throw substratError('forbidden', refusal);
     unwrapReply(await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null));
+  }
+
+  /**
+   * #2447: why `roleKey` may not be seated at scope level through `door`, or null — the question
+   * `assignScopeRole` asks before it writes, for a caller (the owner hand-over) that must ask it
+   * before anything else moves.
+   */
+  async scopeRoleRefusal(scopeId: ScopeId, roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
+    return this.scopeStub(scopeId).reservedRoleRefusalHere(roleKey, door);
   }
 
   /**

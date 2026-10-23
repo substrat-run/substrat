@@ -8,6 +8,7 @@ import {
   RAISE_MEMBERSHIP_FENCE_SQL,
   memberAddedAudit,
   orgChangeBound,
+  reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
   tenantCoverage,
   type MembershipChange,
@@ -2822,8 +2823,29 @@ export class ControlPlaneDO extends DurableObject {
 
   // -- roles (checker rule 1) -------------------------------------------------
 
-  /** INSERT OR REPLACE; return the previous role (for the audit `before`) or null. */
-  defineRole(tenantId: string, role: RoleDefinition): RoleDefinition | null {
+  /**
+   * INSERT OR REPLACE; return the previous role (for the audit `before`) or null. Judged first, in
+   * the same unit (#2447, `reservedRoleDefinitionRefusal`): against `reservation`, what the
+   * coordinator's modules reserve and declare, and the tenant's other roles as stored now, so no
+   * concurrent definition lands between the read and the write. A refusal is answered as data, so
+   * its text survives the hop, and writes nothing.
+   */
+  defineRole(
+    tenantId: string,
+    role: RoleDefinition,
+    reservation: { reserved: readonly string[]; declared: readonly string[] } = { reserved: [], declared: [] },
+  ): { before: RoleDefinition | null } | { refused: string } {
+    const tenantRoles = this.listRoles({ tenantId }).map((r) => ({
+      key: r.role_key,
+      permissions: JSON.parse(r.permissions) as string[],
+      holder: r.holder ?? undefined,
+    }));
+    const refused = reservedRoleDefinitionRefusal(
+      role,
+      { reserved: new Set(reservation.reserved), declared: new Set(reservation.declared) },
+      tenantRoles,
+    );
+    if (refused) return { refused };
     const before = this.getRole(tenantId, role.key) ?? null;
     this.sql.exec(
       `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder)
@@ -2834,7 +2856,7 @@ export class ControlPlaneDO extends DurableObject {
       String(role.source),
       role.holder ?? 'person',
     );
-    return before;
+    return { before };
   }
 
   /** Raw rows; the coordinator parses them through the `tenantRole` contract. */

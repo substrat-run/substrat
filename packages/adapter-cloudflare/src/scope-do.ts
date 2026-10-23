@@ -117,6 +117,7 @@ import {
   type RoleBound,
   type ScopeRoleHolder,
   assertModuleDeclared,
+  noteDeclaredKeys,
   noteReservedKeys,
   reservedGrantRefusal,
   reservedRoleRefusal,
@@ -1384,7 +1385,11 @@ export function defineScopeDO(
   for (const registration of modules) assertModuleDeclared(options.permissions, registration.manifest.id);
   // What the declared surface reserves holds in every instance too, whatever registers under its ids.
   const declaredReserved = new Set<string>();
-  for (const m of options.permissions?.modules ?? []) noteReservedKeys(declaredReserved, m.manifest);
+  const declaredListed = new Set<string>();
+  for (const m of options.permissions?.modules ?? []) {
+    noteReservedKeys(declaredReserved, m.manifest);
+    noteDeclaredKeys(declaredListed, m.manifest);
+  }
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
     private readonly sql: SqlStorage;
     private continuationOrder = 0;
@@ -1445,6 +1450,8 @@ export function defineScopeDO(
      * `holder: 'system'` — the role and grant doors' refusals read it.
      */
     private readonly reservedKeys = new Set<string>(declaredReserved);
+    /** #2447: every key those modules declare, marked or not — a role definition projected here reads it. */
+    private readonly declaredKeys = new Set<string>(declaredListed);
     /** #1705: what this deployment exports to other verticals and imports from them. */
     private readonly crossVertical = new CrossVerticalRegistry();
     /**
@@ -1645,6 +1652,7 @@ export function defineScopeDO(
         })),
       });
       noteReservedKeys(this.reservedKeys, manifest);
+      noteDeclaredKeys(this.declaredKeys, manifest);
       if (erasure) this.erasurePlans.push(erasure);
       for (const [name, handler] of Object.entries(registration.predicates ?? {})) {
         this.predicates.set(name, { module: manifest.id, handler });
@@ -5003,10 +5011,12 @@ export function defineScopeDO(
     /**
      * #2430: why `roleKey` may not be conferred through `door` here, or null — the tenant's role as
      * the checker expands it (`controlPlaneReader`), against the keys this class's modules reserve.
-     * A role the tenant does not define is left to the door's own answer for it.
+     * A role the tenant does not define is left to the door's own answer for it. A person's door reads
+     * the role even when this class reserves nothing (#2447): a role stored `holder: 'system'` is
+     * never a person's, whatever this class knows.
      */
     async reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
-      if (this.reservedKeys.size === 0) return null;
+      if (door === 'platform' && this.reservedKeys.size === 0) return null;
       const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
       return role ? reservedRoleRefusal(role, this.reservedKeys, door) : null;
     }
@@ -5025,7 +5035,7 @@ export function defineScopeDO(
      * door cannot know, so it refuses.
      */
     async reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
-      if (this.reservedKeys.size === 0) return null;
+      if (door === 'platform' && this.reservedKeys.size === 0) return null;
       const tenantId = this.provisionedFor();
       if (tenantId) return this.reservedRoleRefusalFor(tenantId as TenantId, roleKey, door);
       const tenants = this.hasTable('_substrat_roles')
@@ -5035,7 +5045,8 @@ export function defineScopeDO(
         const refusal = await this.reservedRoleRefusalFor(projected, roleKey, door);
         if (refusal) return refusal;
       }
-      if (tenants.length === 0 && this.permissionSourceIsRemote()) {
+      // A class that reserves nothing has nothing to rule out here, at either door (#2447 keeps that).
+      if (tenants.length === 0 && this.reservedKeys.size > 0 && this.permissionSourceIsRemote()) {
         return (
           `role '${roleKey}' cannot be judged here: this scope has no provisioning receipt and no projected role, and its ` +
           "checks read roles from the control plane, so which tenant's definition a check expands is unknown and a key " +
@@ -5053,6 +5064,11 @@ export function defineScopeDO(
     /** #2430: why a reconcile of declared `shapes` is refused against this class's reservations, or null. */
     async reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null> {
       return reservedShapeRefusal(shapes, this.reservedKeys);
+    }
+
+    /** #2447: what this class's modules reserve and declare — a coordinator judging a role definition joins its own. */
+    async reservationHere(): Promise<{ reserved: string[]; declared: string[] }> {
+      return { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
     }
 
     /** #2430: which of `permissions` this class's modules reserve to a system principal. */
