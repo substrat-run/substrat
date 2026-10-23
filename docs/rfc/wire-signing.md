@@ -214,8 +214,10 @@ reveals nothing secret. The single answer stops a caller from learning which che
 
 **A throw is answered as the platform's own failure, never through the legacy path.** The entry
 answers a verifier throw (a misbuilt key set, a missing replay policy, a cache that fails or does
-not answer in time) with a 5xx and a fixed message that echoes nothing, a cache error's text
-included, and counts it as its own outcome (§8). It never falls back to the legacy path, in
+not answer in time) with a 5xx whose body is fixed and identical for every throw: it never
+carries the error's text, a cache error's included. The error's detail goes only to the platform's
+own telemetry, never into the response, and the throw is counted as its own outcome (§8). It
+never falls back to the legacy path, in
 `dual` or otherwise, so a missing cache is an error the counters show, not a hole the flip later
 turns into an outage.
 
@@ -321,8 +323,8 @@ step 6, withdraws the credential.
   `legacy-only` whatever the setting says, so a new verifier under an old control plane, which
   injects no keys, behaves exactly as today. A deployment with key lists and a missing or unknown
   state reads it as `dual`. A wrong value fails toward today's behaviour: a deployment told `dual`
-  when it should be `signed-only` still accepts the legacy credential on the down-channel, as
-  every deployment does now, and never accepts less than a valid signature.
+  when it should be `signed-only` accepts either a valid signature or a valid legacy credential on
+  the down-channel, as every deployment does now.
 - **The signers have two flags per environment:** `sign` (add envelopes) and `legacy` (keep
   sending the legacy headers). Both are the signers' own configuration, so changing either is a
   deploy of that signer. Signing, once on, stays on: the signers' release gate (§7) refuses `sign`
