@@ -12,18 +12,31 @@
  * So this reads the shipped source of the hosts (both adapters, the ControlPlaneDO and the
  * vertical host) for a SEAT, any of:
  * 1. a string forming a role tuple's relation: `` `role:${…}` `` or `'role:' + …`;
- * 2. SQL writing the role table: `INSERT … INTO _substrat_roles`, `REPLACE INTO _substrat_roles`;
+ * 2. SQL writing the role table: `INSERT … INTO _substrat_roles`, `REPLACE INTO _substrat_roles`,
+ *    `UPDATE _substrat_roles`;
  * 3. a call of the kernel's scope-role writers, `applyScopeRoleChange(` and `changeScopeRole(`;
  * 4. a call of a ScopeDO's role projection, `.applyProjection(`, `.applyProjectionReply(` and
  *    `.projectRole(`, each of which defines the roles it is handed in the scope.
  *
- * Each seat must be covered by a call of a GUARD — before it, in its function or one enclosing
- * it (`attachment-writers.mjs`'s `covers`) — or sit in a function listed in `ALLOWED`, keyed
+ * Each seat must be covered by a GUARD of its own kind — before it, in its function or one
+ * enclosing it (`attachment-writers.mjs`'s `covers`) — or sit in a function listed in `ALLOWED`, keyed
  * `path#function`, with the reason it seats nothing a person is given: a revoke or a tombstone
  * (it takes a role away), a projection of definitions the directory already judged when they
  * were written (re-judging there would drop a stored role and so revoke its seats, #2447), or the
  * primitive a guarded door calls. An entry whose function no longer seats anything is refused
  * too, so the list cannot rot into blanket cover.
+ *
+ * A guard is held as narrowly as text allows:
+ * - **its kind matches the seat.** A role tuple and a kernel scope-role writer (1, 3) are SEATS,
+ *   covered by `reservedRoleRefusal` and the wrappers that ask it; a role-table write and a
+ *   projection (2, 4) are DEFINITIONS, covered by `reservedRoleDefinitionRefusal`,
+ *   `reservedRoleSetRefusal` and theirs. So an owner seat's refusal does not cover the role set
+ *   projected beside it.
+ * - **its answer is acted on.** A guard that answers (rather than throws) counts only where its
+ *   result is assigned (`const r = guard(…)`) and then tested by `if (r` before the seat, or
+ *   returned. A call whose answer is dropped, or assigned and never tested, covers nothing. The
+ *   throwing wrappers (`refuse…`) count as plain calls.
+ * What it still does not judge: whether the guard is asked about the role the seat writes.
  *
  * **What this is, and is not.** A regression TRIPWIRE that reads text, not a proof. A relation
  * built across modules, a role table named through a variable, or a guard asked in another file
@@ -50,17 +63,21 @@ export function inScope(path) {
   return HOST_DIRS.some((d) => path.startsWith(d)) && shippedSource(path);
 }
 
-/** The reserved-key rule, as a door asks it: the kernel's three and each adapter's wrappers. */
-export const GUARDS = [
-  'reservedRoleRefusal',
-  'reservedRoleDefinitionRefusal',
-  'reservedRoleSetRefusal',
-  'refuseReservedRole',
-  'refuseReservedDefinition',
-  'refuseReservedRoleSet',
-  'reservedRoleRefusalFor',
-  'reservedRoleRefusalHere',
-];
+/**
+ * The reserved-key rule, as a door asks it: the kernel's three and each adapter's wrappers, by the
+ * kind of write each covers. `throws` marks a wrapper that refuses by throwing, so calling it is
+ * acting on it.
+ */
+export const GUARDS = {
+  reservedRoleRefusal: { kind: 'seat' },
+  reservedRoleRefusalFor: { kind: 'seat' },
+  reservedRoleRefusalHere: { kind: 'seat' },
+  refuseReservedRole: { kind: 'seat', throws: true },
+  reservedRoleDefinitionRefusal: { kind: 'definition' },
+  reservedRoleSetRefusal: { kind: 'definition' },
+  refuseReservedDefinition: { kind: 'definition', throws: true },
+  refuseReservedRoleSet: { kind: 'definition', throws: true },
+};
 
 /** `path#function` → why that function seats or defines no role a person is given unasked. */
 export const ALLOWED = {
@@ -74,12 +91,13 @@ export const ALLOWED = {
     "a fan-out of the directory's stored definitions, each judged when `defineRole` wrote it; re-judged here, a stored role would be dropped and its seats revoked (#2447)",
   'packages/adapter-cloudflare/src/scope-do.ts#projectRole':
     "the ScopeDO's one-role projection RPC: no shipped caller (tests seed a scope's role rows through it), so it writes what it is handed unjudged, a named residual of #2447",
+  'packages/adapter-cloudflare/src/scope-do.ts#revokeProjectedRole': 'a revoke: it tombstones a projected role definition, which then grants nothing',
   'packages/adapter-cloudflare/src/scope-do.ts#applyProjectionReply': '`applyProjection` with its refusal answered as data: the same write, judged where its caller defines the roles',
   'packages/adapter-cloudflare/src/scope-do.ts#applyProjection':
     "the ScopeDO's write of the role set and seats its coordinator sends, judged where the coordinator defines them (`provisionScopeLocal`, `projectRolesLocal`); a directory fan-out is not re-judged (#2447)",
 };
 
-const ROLE_TABLE_WRITE_ALL = /\b(?:INSERT(?:\s+OR\s+\w+)?|REPLACE)\s+INTO\s+["`[]?_substrat_roles\b/gi;
+const ROLE_TABLE_WRITE_ALL = /\b(?:(?:INSERT(?:\s+OR\s+\w+)?|REPLACE)\s+INTO|UPDATE(?:\s+OR\s+\w+)?)\s+["`[]?_substrat_roles\b/gi;
 /** A role tuple's relation formed in a string: `` `role:${…}` `` or `'role:' + …`. */
 const ROLE_RELATION = /`role:\$\{|['"`]role:['"`]\s*\+/g;
 const KERNEL_WRITERS = ['applyScopeRoleChange', 'changeScopeRole'];
@@ -140,19 +158,47 @@ function enclosingName(t, chains, openings, k) {
   return undefined;
 }
 
-/** Each seat in a source text: `{ k, line, what }`, `k` its token. */
+/**
+ * Where a guard call at token `k` is acted on, or -1 when its answer is dropped: the call itself
+ * for a throwing wrapper or a returned answer, else the `if (name` that tests the variable its
+ * statement assigns. The statement is found by walking back to its start (a `;`, `{` or `}` at
+ * the call's depth), so a guard nested in a ternary or a `.then` callback is still the initializer.
+ */
+function actedOnAt(t, k, chains) {
+  if (GUARDS[t[k].text].throws) return k;
+  let st = k - 1;
+  for (let depth = 0; st >= 0; st -= 1) {
+    const x = t[st].text;
+    if (t[st].kind !== 'punct') continue;
+    if (depth === 0 && (x === ';' || x === '{' || x === '}')) break;
+    if (x === ')' || x === ']' || x === '}') depth += 1;
+    else if ((x === '(' || x === '[' || x === '{') && depth > 0) depth -= 1;
+  }
+  const head = t[st + 1];
+  if (head?.text === 'return') return k;
+  if (!(head && ['const', 'let', 'var'].includes(head.text) && t[st + 2]?.kind === 'word' && t[st + 3]?.text === '=')) return -1;
+  const name = t[st + 2].text;
+  const fn = chains[k].at(-1);
+  for (let j = k + 1; j < t.length; j += 1) {
+    if (!chains[j].includes(fn)) break; // past the guard's function
+    if (t[j].text === name && t[j - 1]?.text === '(' && t[j - 2]?.text === 'if') return j;
+  }
+  return -1;
+}
+
+/** Each seat in a source text: `{ k, line, what, kind }`, `k` its token. */
 function seatsOf(text, t) {
   const seats = [];
   // The lexer keeps a string's quote, not its text, so a string seat is found in the text and
   // placed at the string token its line holds (`stringTokenAt`), as `attachment-writers` does.
-  for (const [pattern, what] of [
-    [ROLE_RELATION, 'a role tuple'],
-    [ROLE_TABLE_WRITE_ALL, 'a role definition (the role table)'],
+  for (const [pattern, what, kind] of [
+    [ROLE_RELATION, 'a role tuple', 'seat'],
+    [ROLE_TABLE_WRITE_ALL, 'a role definition (the role table)', 'definition'],
   ]) {
     for (const m of text.matchAll(pattern)) {
       const line = lineOf(text, m.index);
       const k = stringTokenAt(t, line);
-      if (k >= 0) seats.push({ k, line, what });
+      if (k >= 0) seats.push({ k, line, what, kind });
     }
   }
   for (let k = 0; k < t.length; k += 1) {
@@ -160,9 +206,9 @@ function seatsOf(text, t) {
     if (tok.kind === 'word' && t[k + 1]?.text === '(') {
       const prev = t[k - 1]?.text;
       if (KERNEL_WRITERS.includes(tok.text) && prev !== '.' && prev !== 'function') {
-        seats.push({ k, line: tok.line, what: `a scope role (${tok.text})` });
+        seats.push({ k, line: tok.line, what: `a scope role (${tok.text})`, kind: 'seat' });
       } else if (PROJECTIONS.includes(tok.text) && prev === '.') {
-        seats.push({ k, line: tok.line, what: `a role definition (${tok.text})` });
+        seats.push({ k, line: tok.line, what: `a role definition (${tok.text})`, kind: 'definition' });
       }
     }
   }
@@ -183,10 +229,18 @@ export function findUnguardedSeats(files, allowed = ALLOWED) {
     const t = lex(text);
     const chains = functionChains(t);
     const openings = functionOpenings(t, chains);
-    // A guard is a call inside a function: a declaration (an interface's, a method's head) sits in none.
-    const guards = GUARDS.flatMap((g) => callsOf(t, g).filter((k) => chains[k].length > 0 && t[k - 1]?.text !== 'function'));
+    // A guard is a call inside a function: a declaration (an interface's, a method's head) sits in
+    // none. Each is placed where its answer is acted on, and one whose answer is dropped is no guard.
+    const guards = Object.keys(GUARDS).flatMap((g) =>
+      callsOf(t, g)
+        .filter((k) => chains[k].length > 0 && t[k - 1]?.text !== 'function')
+        .map((k) => ({ kind: GUARDS[g].kind, at: actedOnAt(t, k, chains), call: k }))
+        .filter((g) => g.at >= 0),
+    );
     for (const seat of seatsOf(text, t)) {
-      if (guards.some((g) => covers(chains, g, seat.k))) continue;
+      // Covered: a guard of the seat's kind, called in its function (or one enclosing it), whose
+      // answer is acted on before the seat.
+      if (guards.some((g) => g.kind === seat.kind && covers(chains, g.call, seat.k) && g.at < seat.k)) continue;
       const fn = enclosingName(t, chains, openings, seat.k);
       const key = `${path}#${fn ?? '(module)'}`;
       if (fn && Object.hasOwn(allowed, key)) {
@@ -194,8 +248,8 @@ export function findUnguardedSeats(files, allowed = ALLOWED) {
         continue;
       }
       out.push(
-        `${path}:${seat.line}: ${seat.what} is written in ${fn ?? 'module code'} with no reserved-key refusal before it ` +
-          `(${GUARDS.slice(0, 3).join(', ')} or an adapter's wrapper of one)`,
+        `${path}:${seat.line}: ${seat.what} is written in ${fn ?? 'module code'} with no ${seat.kind === 'seat' ? 'reservedRoleRefusal' : 'reservedRoleDefinitionRefusal / reservedRoleSetRefusal'} ` +
+          `(or an adapter's wrapper of one) acted on before it`,
       );
     }
   }

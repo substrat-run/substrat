@@ -16,7 +16,7 @@ test('a role tuple seated with no refusal before it is reported, naming its func
   }
 }`);
   assert.equal(out.length, 1);
-  assert.match(out[0], /fixture\.ts:3: a role tuple is written in seatOwner with no reserved-key refusal before it/);
+  assert.match(out[0], /fixture\.ts:3: a role tuple is written in seatOwner with no reservedRoleRefusal \(or an adapter's wrapper of one\) acted on before it/);
 });
 
 test('its twin: a refusal asked first in the same function covers it', () => {
@@ -112,4 +112,46 @@ test('only host source is read: a test file and another package are out of scope
 
 test('prose naming a seat in a comment is not one', () => {
   assert.deepEqual(run('// writes `role:${key}` and INSERT INTO _substrat_roles\nconst x = 1;'), []);
+});
+
+test('a guard whose answer is dropped covers nothing (M2): assigned but never tested, or called for nothing', () => {
+  const write = "db.prepare('INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key) VALUES (?, ?)').run(t, role.key);";
+  assert.equal(run(`class D { defineRole(t, role, r, d) { const refused = reservedRoleDefinitionRefusal(role, r, d); void refused; ${write} } }`).length, 1);
+  assert.equal(run(`class D { defineRole(t, role, r, d) { reservedRoleDefinitionRefusal(role, r, d); ${write} } }`).length, 1);
+  // A test AFTER the write does not cover it either.
+  assert.equal(run(`class D { defineRole(t, role, r, d) { const refused = reservedRoleDefinitionRefusal(role, r, d); ${write} if (refused) return { refused }; } }`).length, 1);
+  // The twin: assigned and tested before the write.
+  assert.deepEqual(run(`class D { defineRole(t, role, r, d) { const refused = reservedRoleDefinitionRefusal(role, r, d); if (refused) return { refused }; ${write} } }`), []);
+  // A guard nested in a ternary initializer, or a returned answer, is acted on too.
+  assert.deepEqual(run(`class D { seat(o, k, role, r) { const refusal = role ? reservedRoleRefusal(role, r, 'person') : null; if (refusal) throw new Error(refusal); write(\`role:\${k}\`); } }`), []);
+});
+
+test('a guard covers only its own kind of write (M3): a seat refusal does not cover a projected role set', () => {
+  const out = run(`class H {
+  async provision(input, owner, stub, reserved) {
+    const ownerRefusal = reservedRoleRefusal(owner, reserved, 'person');
+    if (ownerRefusal) throw new Error(ownerRefusal);
+    await stub.applyProjectionReply(input.tenantId, input.roles, [{ relation: \`role:\${input.ownerRoleKey}\` }]);
+  }
+}`);
+  assert.equal(out.length, 1);
+  assert.match(out[0], /a role definition \(applyProjectionReply\) is written in provision with no reservedRoleDefinitionRefusal/);
+  // The twin: the set refused first as well.
+  assert.deepEqual(
+    run(`class H {
+  async provision(input, owner, stub, reserved) {
+    await this.refuseReservedRoleSet(input.roles, input.tenantId, input.scopeId);
+    const ownerRefusal = reservedRoleRefusal(owner, reserved, 'person');
+    if (ownerRefusal) throw new Error(ownerRefusal);
+    await stub.applyProjectionReply(input.tenantId, input.roles, [{ relation: \`role:\${input.ownerRoleKey}\` }]);
+  }
+}`),
+    [],
+  );
+});
+
+test('an UPDATE of the role table is a definition write', () => {
+  const sql = "db.prepare('UPDATE _substrat_roles SET permissions = ? WHERE role_key = ?').run(p, k);";
+  assert.match(run(`function widen(p, k) { ${sql} }`)[0], /a role definition \(the role table\) is written in widen/);
+  assert.deepEqual(run(`function widen(t, role, p, k) { refuseReservedDefinition(t, role); ${sql} }`), []);
 });
