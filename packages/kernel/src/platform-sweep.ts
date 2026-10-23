@@ -780,9 +780,12 @@ export interface RequestRollupSweepReport {
    */
   repeated: number;
   /**
-   * The run of identical failures this pass's failure belongs to: its error, when the run began,
-   * and how many attempts it holds with this one. Null when no read failed this pass. Set on every
-   * pass the run lasts, so a standing failure stays visible after its first digest.
+   * The run of identical failures that stands at the end of this pass: its error, when the run
+   * began, and how many attempts it holds. On a pass that retried the failing day, that attempt is
+   * counted in. On a pass that read nothing (the day waits `retryMs`, so most passes do), it is the
+   * run as the ledger's newest attempt left it, with no new attempt counted and no new digest entry.
+   * Null once a read succeeds, and when no attempt has failed. So a standing failure stays visible
+   * on every pass it lasts, after its one digest.
    */
   streak: { error: string; since: string; failures: number } | null;
   /** Days found saturated (`RequestRollupSaturated`): recorded as such, not read again, and not a reason to stop. */
@@ -3003,6 +3006,12 @@ async function sweepRequestRollup(
           // against the account's shared budget: one failure ends the pass's reads.
           break;
         }
+      }
+      // No read failed this pass and none succeeded (a success resets `previous`): a run the ledger
+      // holds still stands, though this pass had nothing due to retry. It is reported as it is,
+      // with no attempt added and nothing pushed to the digest, which mailed it when it began.
+      if (out.streak === null && previous.error !== null && previous.since !== null) {
+        out.streak = { error: previous.error, since: previous.since, failures: previous.failures };
       }
       // Each saturated day reaches the digest once, on the pass that found it: it is not read again.
       out.saturatedDays = saturated;

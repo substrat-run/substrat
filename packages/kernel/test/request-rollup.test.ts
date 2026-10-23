@@ -303,6 +303,69 @@ describe('the request-rollup phase', () => {
     expect(again.requestRollup).toMatchObject({ failed: 1, repeated: 0, streak: { since: at(13), failures: 1 } });
   });
 
+  it('keeps a standing failure on the report between its hourly retries, without an attempt or a digest entry', async () => {
+    const { host, recorded } = rollupHost();
+    let error: string | null = 'Cloudflare Analytics Engine query failed: HTTP 403 Authentication error';
+    let asked = 0;
+    const read = async () => {
+      asked += 1;
+      if (error !== null) throw new Error(error);
+      return [count(1)];
+    };
+    // Once the backfill is done at most one day is due: a pass every fifteen minutes retries it
+    // only once an hour, so three passes in four have nothing to read.
+    const at = (pass: number) => new Date(Date.parse(NOW) + pass * 15 * 60_000).toISOString();
+    const pass = async (n: number) => {
+      const before = asked;
+      const report = await sweep(host, { read, lookbackDays: 1, now: () => at(n) });
+      return { asked: asked - before, errors: report.errors, rollup: report.requestRollup! };
+    };
+    const passes = [];
+    for (let n = 0; n < 5; n++) passes.push(await pass(n));
+    expect(passes.map((p) => p.asked)).toEqual([1, 0, 0, 0, 1]);
+    // The run is on every pass, its start pass zero's, its length the attempts actually made.
+    expect(passes.map((p) => p.rollup.streak?.failures ?? null)).toEqual([1, 1, 1, 1, 2]);
+    expect(passes.every((p) => p.rollup.streak?.since === at(0) && p.rollup.streak.error === error)).toBe(true);
+    // Mailed once, when it began; the passes between retries add no attempt and no digest entry.
+    expect(passes.map((p) => p.errors.length)).toEqual([1, 0, 0, 0, 0]);
+    expect(passes.map((p) => [p.rollup.failed, p.rollup.repeated])).toEqual([[1, 0], [0, 0], [0, 0], [0, 0], [1, 1]]);
+    expect(recorded).toHaveLength(2);
+
+    // A different error at the next retry is a new run, mailed once, and the passes after it carry
+    // that run, not the old one.
+    error = 'the request rollup read took longer than 30000 ms';
+    const between = [];
+    for (let n = 5; n < 9; n++) between.push(await pass(n));
+    expect(between.map((p) => p.asked)).toEqual([0, 0, 0, 1]);
+    expect(between.map((p) => p.errors.length)).toEqual([0, 0, 0, 1]);
+    expect(between[3]!.rollup.streak).toEqual({ error, since: at(8), failures: 1 });
+    const after = await pass(9);
+    expect(after.errors).toEqual([]);
+    expect(after.rollup.streak).toEqual({ error, since: at(8), failures: 1 });
+
+    // A read that succeeds ends the run: off the report on that pass and on the quiet passes after.
+    error = null;
+    const recovered = [];
+    for (let n = 10; n < 14; n++) recovered.push(await pass(n));
+    expect(recovered.map((p) => p.asked)).toEqual([0, 0, 1, 0]);
+    expect(recovered.map((p) => p.rollup.streak)).toEqual([
+      { error: 'the request rollup read took longer than 30000 ms', since: at(8), failures: 1 },
+      { error: 'the request rollup read took longer than 30000 ms', since: at(8), failures: 1 },
+      null,
+      null,
+    ]);
+    expect(recovered.every((p) => p.errors.length === 0)).toBe(true);
+  });
+
+  it('carries no run onto the report of a pass when no attempt has failed', async () => {
+    const { host } = rollupHost();
+    const read = async () => [count(1)];
+    const first = await sweep(host, { read, lookbackDays: 1, now: () => NOW });
+    expect(first.requestRollup).toMatchObject({ read: 1, streak: null });
+    const quiet = await sweep(host, { read, lookbackDays: 1, now: () => '2026-10-23T12:15:00.000Z' });
+    expect(quiet.requestRollup).toMatchObject({ due: 0, read: 0, failed: 0, streak: null });
+  });
+
   it('records a saturated day as such and goes on: it never freezes the days after it, and is not read again', async () => {
     const { host, reads } = rollupHost();
     const asked: string[] = [];

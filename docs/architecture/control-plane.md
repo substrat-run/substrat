@@ -1398,6 +1398,8 @@ than that, so the scheduled pass keeps a compact copy.
   again, until a read succeeds. It stays visible all the same. Each failed attempt carries its
   run on (`failingSince`, `failingCount` on the day's record), and the scheduled pass's log line
   names the run on every pass it lasts: its error, when it began and how many attempts it holds.
+  That includes the passes between hourly retries, which read nothing: they take the run from the
+  newest attempt on record, add no attempt to it and mail nothing.
   A malformed count refuses the whole day.
 - **A saturated day is visible, and blocks nothing.** One query answers at most 50,000
   (tenant, vertical, scope) groups. A day with more would be a part of the day passing for the

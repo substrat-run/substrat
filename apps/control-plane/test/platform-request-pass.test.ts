@@ -546,6 +546,8 @@ describe('requestRollupLogOf: a standing rollup failure stays in the pass log (#
     expect(requestRollupLogOf({ ...base, read: 2, recorded: 5 })).toEqual({ read: 2, recorded: 5 });
     const streak = { error: 'HTTP 403', since: '2026-10-23T12:00:00.000Z', failures: 4 };
     expect(requestRollupLogOf({ ...base, failed: 1, repeated: 1, streak })).toEqual({ read: 0, recorded: 0, failing: streak });
+    // A pass between the run's retries reads nothing and still names it.
+    expect(requestRollupLogOf({ ...base, streak })).toEqual({ read: 0, recorded: 0, failing: streak });
     expect(requestRollupLogOf({ ...base, saturated: 1, saturatedDays: ['2026-10-21'] })).toEqual({
       read: 0,
       recorded: 0,
@@ -579,6 +581,16 @@ describe('requestRollupLogOf: a standing rollup failure stays in the pass log (#
     const second = await pass('2034-03-10T12:15:00.000Z');
     expect(second.errors.filter((e) => e.kind === 'request-rollup')).toEqual([]);
     expect(requestRollupLogOf(second.requestRollup)).toEqual({
+      read: 0,
+      recorded: 0,
+      failing: { error: expect.stringMatching(/HTTP 403/), since: '2034-03-10T12:00:00.000Z', failures: 2 },
+    });
+    // Both days were tried within the hour, so the third pass has nothing to retry: it takes the
+    // run from the ledger, adds no attempt and mails nothing, and its log line still names it.
+    const third = await pass('2034-03-10T12:30:00.000Z');
+    expect(third.requestRollup).toMatchObject({ due: 0, read: 0, failed: 0 });
+    expect(third.errors.filter((e) => e.kind === 'request-rollup')).toEqual([]);
+    expect(requestRollupLogOf(third.requestRollup)).toEqual({
       read: 0,
       recorded: 0,
       failing: { error: expect.stringMatching(/HTTP 403/), since: '2034-03-10T12:00:00.000Z', failures: 2 },
