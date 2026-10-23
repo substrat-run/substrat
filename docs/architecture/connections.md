@@ -1095,8 +1095,12 @@ so a vertical codes against these names and a second provider lands on the same 
 The connector re-exports them under its old names, so an existing consumer is unchanged. What is
 still the provider's is the **event type** a write travels under
 (`microsoft365.channel-files-requested`): it is what routes a delivery to that provider's connector,
-so a neutral type could not say which provider to run. The four invariants above are carried by
-these schemas; they are the contract a second provider is held to.
+so a neutral type could not say which provider to run. The schemas carry only the structural
+half of the four invariants above: `conflict` is required, and a `moved-out` delete has no field
+for where the item went. The rest (at-least-once delivery keyed by `itemId`, a delete only on an
+answer about that item, nothing outside the fence persisted) are properties of the provider's sync
+loop, and no schema holds them: a second provider is held to them by review and by its own
+tests.
 
 The shared `FileSource` facet and where a walk runs (the RFC's Q1) are decided when a second
 file-bearing provider is committed, when a vertical needs the freshness of its own mirror, or

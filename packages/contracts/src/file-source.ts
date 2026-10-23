@@ -18,7 +18,9 @@ import { entityRef } from './events.js';
  * The event TYPE a write travels under is the provider's, never named here: it is what routes the
  * delivery to that provider's connector, so a neutral type could not say which provider to run.
  *
- * Every file source holds the same four invariants, and these shapes carry them:
+ * Every file source holds the same four invariants. These shapes carry only the structural half of
+ * them (a required `conflict`, and no destination field on a `moved-out` delete); the rest are
+ * properties of the provider's sync loop, which no schema here can hold:
  *
  * - **Nothing outside the fence is persisted.** A change names an item inside the bound folder or
  *   an item that was, never one that is outside it. A `delete` with reason `moved-out` carries the
