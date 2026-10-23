@@ -1,6 +1,6 @@
 /**
  * The signed envelope the router and the control plane are to put on a call to a vertical
- * (RFC wire-signing, K-56 proposed). **Primitives only**: nothing in the repo signs or
+ * (RFC wire-signing, K-58 proposed). **Primitives only**: nothing in the repo signs or
  * verifies one yet, and the shared-secret checks in `wire-auth.ts` and vertical-host's
  * `readRoutedNode` are unchanged.
  *
@@ -56,7 +56,7 @@ import {
 
 export const WIRE_ENVELOPE_VERSION = 1;
 /** The first line of every wire envelope: the protocol and its version. */
-export const WIRE_ENVELOPE_TAG = 'substrat-wire/1';
+export const WIRE_ENVELOPE_TAG = `substrat-wire/${WIRE_ENVELOPE_VERSION}` as const;
 /** The request header carrying base64url of the canonical bytes. */
 export const WIRE_ENVELOPE_HEADER = 'x-substrat-wire-envelope';
 /** The request header carrying the base64url signature. */
@@ -130,7 +130,7 @@ const LINES = 15;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const METHOD = /^[A-Z]{1,16}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
-// At most 15 digits, no sign and no leading zero: exactly `String(n)` of a safe integer n.
+// At most 15 digits, no sign and no leading zero: the text `String(n)` gives for an integer below 10^15.
 const SECONDS = /^(0|[1-9]\d{0,14})$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
@@ -233,9 +233,8 @@ export type WireBytes = string | ArrayBuffer | ArrayBufferView;
 function bytesOf(data: WireBytes): Uint8Array<ArrayBuffer> {
   if (typeof data === 'string') return new TextEncoder().encode(data);
   const view = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
-  const copy = new Uint8Array(view.byteLength);
-  copy.set(view);
-  return copy;
+  // Web Crypto copies what it is given, so only a shared buffer needs copying here, to type as one.
+  return view.buffer instanceof ArrayBuffer ? (view as Uint8Array<ArrayBuffer>) : view.slice();
 }
 
 /** SHA-256 of the exact bytes, lowercase hex: for a string, the store's body digest. */
@@ -330,8 +329,10 @@ export interface IssuedWireEnvelope {
 
 /** Build, digest and sign one envelope. Throws on an input no verifier would accept. */
 export async function signWireEnvelope(key: WireSigningKey, input: WireEnvelopeInput): Promise<IssuedWireEnvelope> {
-  if (input.kind === 'route' && input.body !== undefined) throw new Error('a route envelope binds no body');
-  if (input.kind === 'call' && input.body === undefined) throw new Error('a call envelope binds its body: pass it, empty or not');
+  // A pair the table does not admit fails in the encoder below, as malformed.
+  const body = wireEnvelopeShape(input.iss, input.kind)?.body;
+  if (body === 'absent' && input.body !== undefined) throw new Error(`a ${input.kind} envelope binds no body`);
+  if (body === 'required' && input.body === undefined) throw new Error(`a ${input.kind} envelope binds its body: pass it, empty or not`);
   const iat = input.iat ?? Math.floor(Date.now() / 1000);
   const exp = input.exp ?? iat + WIRE_ENVELOPE_LIFETIME_SECONDS;
   if (!lifetimeAdmitted(iat, exp)) throw new Error('a wire envelope lives for at most the maximum lifetime, and ends after it starts');
@@ -377,7 +378,7 @@ const PREPARED = new WeakSet<WireVerificationKeys>();
  * router's private key could then sign as the platform.
  */
 export async function wireVerificationKeys(config: { readonly router?: string; readonly platform?: string }): Promise<WireVerificationKeys> {
-  const listed = (text: string | undefined) => (text === undefined || text.trim() === '' ? [] : parseScopeStorePublicKeys(text));
+  const listed = (text: string | undefined) => (text?.trim() ? parseScopeStorePublicKeys(text) : []);
   const router = listed(config.router);
   const platform = listed(config.platform);
   if (router.some((key) => platform.includes(key))) throw new Error('a wire public key is listed for both issuers');
@@ -455,7 +456,7 @@ export interface WireAccepted {
 export interface WireRefused {
   readonly ok: false;
 }
-export const WIRE_REFUSED: WireRefused = Object.freeze({ ok: false as const });
+export const WIRE_REFUSED: WireRefused = Object.freeze({ ok: false });
 
 export type WireVerdict = WireAccepted | WireRefused;
 
@@ -513,9 +514,9 @@ export async function verifyWireEnvelope(input: {
   if (!(nowSeconds <= claims.exp + WIRE_CLOCK_SKEW_SECONDS)) return refuse('expired');
   if (claims.method !== expected.method) return refuse('method');
   if (claims.targetDigest !== (await wireDigest(expected.target))) return refuse('target');
-  if (expected.kind === 'call') {
-    const body = (expected as { readonly body?: WireBytes }).body;
-    if (body === undefined || claims.bodyDigest !== (await wireDigest(body))) return refuse('body');
+  // The type requires a call's body; an untyped caller that leaves it out is refused, not trusted.
+  if (expected.kind === 'call' && (expected.body === undefined || claims.bodyDigest !== (await wireDigest(expected.body)))) {
+    return refuse('body');
   }
   if (expected.tenantId !== undefined && claims.tenantId !== expected.tenantId) return refuse('scope');
   if (expected.scopeId !== undefined && claims.scopeId !== expected.scopeId) return refuse('scope');

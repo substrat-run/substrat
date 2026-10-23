@@ -147,8 +147,9 @@ an empty body, and a call the router makes.
   normalization.
 - Tenant and scope are 26-character Crockford ULIDs in upper case, the grammar the router asserts
   today.
-- The method is 1 to 16 upper-case ASCII letters. Both ends read it through the same helper,
-  `wireRequestBinding`, which upper-cases what the request says.
+- The method is 1 to 16 upper-case ASCII letters. Both ends are to read the method and target
+  through the same helper, `wireRequestBinding`, which upper-cases what the request says. The
+  primitives take both as strings, so the wiring is what holds each end to the helper.
 - The target is the request URL's `pathname` followed by its `search`, as the WHATWG URL API
   serializes them. The fragment never travels, and an empty `?` reads as no query on both ends.
   The envelope carries its digest, not the text, so the header stays a fixed size whatever the
@@ -182,8 +183,10 @@ the last step (§9, step 7) stops sending them.
 `verifyWireEnvelope` makes every check in one fixed order:
 
 1. both headers present;
-2. the envelope is canonical base64url of UTF-8, decoded strictly (a byte-order mark is kept, so
-   it fails the tag), and parses as exactly what the encoder emits;
+2. the header decodes as base64url to UTF-8, decoded strictly (a byte-order mark is kept, so it
+   fails the tag), and the text parses as exactly what the encoder emits. A header spelled with
+   its unused trailing bits set decodes to the same bytes, and the signature covers the bytes, not
+   the spelling;
 3. the issuer, then the kind, are the ones this endpoint accepts;
 4. the key set was built by `wireVerificationKeys` (which refuses a key listed for both issuers);
 5. the key id is in the issuer's list;

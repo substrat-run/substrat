@@ -31,15 +31,15 @@ import {
   type WireBytes,
   type WireEnvelopeInput,
   type WireExpectation,
+  type WireIssuer,
   type WireNonceCache,
   type WireRefusalReason,
   type WireVerificationKeys,
 } from '../src/wire-signing.js';
 
-type Signer = 'router' | 'platform';
 interface Vector {
   readonly name: string;
-  readonly signer: Signer;
+  readonly signer: WireIssuer;
   readonly input: WireEnvelopeInput & { readonly iat: number; readonly exp: number };
   readonly canonical: string;
   readonly header: string;
@@ -48,7 +48,7 @@ interface Vector {
 const fixture = JSON.parse(readFileSync(new URL('./vectors/wire-envelope.json', import.meta.url), 'utf8')) as {
   readonly clockSkewSeconds: number;
   readonly maxLifetimeSeconds: number;
-  readonly keys: Record<Signer, { readonly privateKeyPkcs8: string; readonly publicKey: string; readonly kid: string }>;
+  readonly keys: Record<WireIssuer, { readonly privateKeyPkcs8: string; readonly publicKey: string; readonly kid: string }>;
   readonly vectors: readonly Vector[];
 };
 const storeVector = JSON.parse(readFileSync(new URL('./vectors/scope-store-envelope.json', import.meta.url), 'utf8')) as {
@@ -118,34 +118,39 @@ function withLine(vector: Vector, index: number, value: string): string {
 /** That text as a header, carried under the ORIGINAL signature. */
 const tampered = (vector: Vector, index: number, value: string) => encode(withLine(vector, index, value));
 
+/** The same bytes spelled differently: an 11- or 43-character base64url value has 2 unused trailing bits. */
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const alias = (value: string) => value.slice(0, -1) + ALPHABET[ALPHABET.indexOf(value.at(-1)!) ^ 1];
+
 /** A fresh, validly signed envelope: the vector's input with `patch` over it. */
-async function signed(vector: Vector, patch: Partial<WireEnvelopeInput> = {}, signer: Signer = vector.signer) {
+async function signed(vector: Vector, patch: Partial<WireEnvelopeInput> = {}, signer: WireIssuer = vector.signer) {
   const key = await importWireSigningKey(fixture.keys[signer].privateKeyPkcs8);
-  return signWireEnvelope(key, { ...vector.input, ...patch } as WireEnvelopeInput);
+  return signWireEnvelope(key, { ...vector.input, ...patch });
 }
 
 /** Any canonical text, signed directly with a fixture key: for what the signer refuses to mint. */
-async function rawSigned(canonical: string, signer: Signer) {
-  const key = await crypto.subtle.importKey(
-    'pkcs8',
-    base64UrlToBytes(fixture.keys[signer].privateKeyPkcs8)! as Uint8Array<ArrayBuffer>,
-    { name: 'Ed25519' },
-    false,
-    ['sign'],
-  );
+async function rawSigned(canonical: string, signer: WireIssuer) {
+  const { key } = await importWireSigningKey(fixture.keys[signer].privateKeyPkcs8);
   const bytes = new TextEncoder().encode(canonical);
   return { header: bytesToBase64Url(bytes), signature: bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('Ed25519', key, bytes))) };
 }
 
-/** An in-memory nonce cache, counting its claims. */
+/** The route vector's times replaced, signed directly. */
+const withTimes = (iat: number, exp: number) => {
+  const lines = withLine(ROUTE, 12, String(iat)).split('\n');
+  lines[13] = String(exp);
+  return rawSigned(lines.join('\n'), 'router');
+};
+
+/** An in-memory nonce cache, recording its claims. */
 function memoryNonces() {
-  const spent = new Map<string, number>();
+  const spent = new Set<string>();
   const claims: [string, number][] = [];
   const cache: WireNonceCache = {
     claim(nonce, until) {
       claims.push([nonce, until]);
       if (spent.has(nonce)) return false;
-      spent.set(nonce, until);
+      spent.add(nonce);
       return true;
     },
   };
@@ -228,11 +233,7 @@ describe('wire envelope: one refusal for every failure', () => {
       ['kid', { keys: await keysOf(other.publicKey) }],
       ['signature', { signature: CALL.signature }],
       ['audience', { expected: { aud: 'other' } }],
-      ['lifetime', await (async () => {
-        const lines = ROUTE.canonical.split('\n');
-        lines[13] = String(ROUTE.input.iat);
-        return rawSigned(lines.join('\n'), 'router');
-      })()],
+      ['lifetime', await withTimes(ROUTE.input.iat, ROUTE.input.iat)],
       ['not-yet-valid', { now: ROUTE.input.iat - WIRE_CLOCK_SKEW_SECONDS - 1 }],
       ['expired', { now: ROUTE.input.exp + WIRE_CLOCK_SKEW_SECONDS + 1 }],
       ['method', { expected: { method: 'POST' } }],
@@ -242,11 +243,7 @@ describe('wire envelope: one refusal for every failure', () => {
       ['replay', { nonces: nonces.cache }],
     ];
     expect(cases.map(([r]) => r)).toEqual([...WIRE_REFUSAL_REASONS]);
-    for (const [expected, input] of cases) {
-      const { verdict, reasons } = await check(input);
-      expect(verdict, expected).toBe(WIRE_REFUSED);
-      expect(reasons, expected).toEqual([expected]);
-    }
+    for (const [expected, input] of cases) expect(await reason(input), expected).toBe(expected);
     expect(Object.isFrozen(WIRE_REFUSED)).toBe(true);
     expect(Object.keys(WIRE_REFUSED)).toEqual(['ok']);
   });
@@ -298,7 +295,7 @@ describe('wire envelope: what the signature binds', () => {
       return { vector, header: issued.header, signature: issued.signature };
     };
     expect(await reason(await as({ aud: 'todo-preview' }))).toBe('audience');
-    expect(await reason({ ...(await as({})), expected: { aud: '' } })).toBe('audience');
+    expect(await reason({ expected: { aud: '' } })).toBe('audience');
     expect(await reason(await as({ method: 'POST' }))).toBe('method');
     expect(await reason(await as({ target: '/api/lists?page=3' }))).toBe('target');
     expect(await reason(await as({ target: '/api/lists' }))).toBe('target');
@@ -324,7 +321,7 @@ describe('wire envelope: what the signature binds', () => {
     const verdict = await verifyWireEnvelope({
       headers: received.headers,
       keys: await keysOf(),
-      expected: { ...(expectationOf(ROUTE) as WireExpectation & { kind: 'route' }), ...wireRequestBinding(received) },
+      expected: { ...expectationOf(ROUTE), ...wireRequestBinding(received) },
       nowSeconds: ROUTE.input.iat,
     });
     expect(verdict).toMatchObject({ ok: true });
@@ -358,12 +355,6 @@ describe('wire envelope: time', () => {
   });
 
   it('refuses a lifetime that ends before it starts or runs past the maximum, which the signer never mints', async () => {
-    const withTimes = async (iat: number, exp: number) => {
-      const lines = ROUTE.canonical.split('\n');
-      lines[12] = String(iat);
-      lines[13] = String(exp);
-      return rawSigned(lines.join('\n'), 'router');
-    };
     const { iat } = ROUTE.input;
     expect(await reason({ ...(await withTimes(iat, iat)), now: iat })).toBe('lifetime');
     expect(await reason({ ...(await withTimes(iat, iat - 1)), now: iat })).toBe('lifetime');
@@ -417,10 +408,9 @@ describe('wire envelope: who signs', () => {
     expect(Object.isFrozen(built)).toBe(true);
     expect(await reason({ keys: { router: new Map(built.router), platform: new Map(built.platform) } })).toBe('keys');
     expect(await reason({ keys: { ...built } })).toBe('keys');
-    const alias = router.slice(0, -1) + 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'.indexOf(router.at(-1)!) ^ 1];
     for (const [config, message] of [
       [{ router, platform: `${other.publicKey},${router}` }, /both issuers/],
-      [{ router: alias }, /canonical/],
+      [{ router: alias(router) }, /canonical/],
       [{ router: `${router},${router}` }, /twice/],
       [{ router: `${router},` }, /empty/],
       [{ router: fixture.keys.router.privateKeyPkcs8 }, /32 bytes/],
@@ -488,7 +478,7 @@ describe('wire envelope: malformed input', () => {
       [ROUTE, 2, 'routes'],
       [CALL, 2, 'route'], // the platform never asserts a routed request
       [ROUTE, 3, 'short'],
-      [ROUTE, 3, fixture.keys.router.kid.slice(0, -1) + 'F'], // an alias spelling of the kid's 8 bytes
+      [ROUTE, 3, alias(fixture.keys.router.kid)], // another spelling of the kid's 8 bytes
       [ROUTE, 4, ''],
       [ROUTE, 4, control],
       [ROUTE, 4, 'x'.repeat(256)],
@@ -532,8 +522,8 @@ describe('wire envelope: malformed input', () => {
     expect(wireEnvelopeShape('router', 'call')).toMatchObject({ surface: 'absent', body: 'required' });
     expect(wireEnvelopeShape('platform', 'call')).toMatchObject({ surface: 'absent', vertical: 'absent', body: 'required' });
     // Inherited names at both levels, which a lookup without own-key checks would return.
-    for (const [iss, kind] of [['platform', 'route'], ['toString', 'route'], ['router', '__proto__'], ['__proto__', 'call'], ['__proto__', 'toString'], ['constructor', 'name'], ['', '']]) {
-      expect(wireEnvelopeShape(iss!, kind!), `${iss}/${kind}`).toBeUndefined();
+    for (const [iss, kind] of [['platform', 'route'], ['toString', 'route'], ['router', '__proto__'], ['__proto__', 'call'], ['__proto__', 'toString'], ['constructor', 'name'], ['', '']] as const) {
+      expect(wireEnvelopeShape(iss, kind), `${iss}/${kind}`).toBeUndefined();
     }
   });
 
