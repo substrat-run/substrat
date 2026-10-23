@@ -352,8 +352,10 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  ATTACHMENT_BYTES_SQL,
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  listScopeAttachmentStorageRows,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
   listScopeStoreStorageRows,
@@ -10756,6 +10758,11 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'scopeStoreSizes', { tenantId, scopeId }, null, sizes.length);
         return sizes;
       },
+      scopeAttachmentBytes: async (actor, tenantId, scopeId) => {
+        const { bytes } = this.scopeReadDbFor(tenantId, scopeId).prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number };
+        this.recordAccess(actor, 'scopeAttachmentBytes', { tenantId, scopeId }, null, 1);
+        return bytes;
+      },
       rewindScope: async () => {
         throw new Error(
           'point-in-time rewind is not available on this host (PITR is a Durable-Object-plane mechanism) — use the backup restore path',
@@ -11963,6 +11970,7 @@ export class SqliteScopeHost implements ScopeHost {
           storage: listScopeStorageRows(redactionSqlOf(this.directory), { tenantId: only, latest: true }),
           storageAttempts: listScopeStorageAttemptRows(redactionSqlOf(this.directory), only),
           storeStorage: listScopeStoreStorageRows(redactionSqlOf(this.directory), only),
+          attachmentStorage: listScopeAttachmentStorageRows(redactionSqlOf(this.directory), only),
         });
         // The count that matters for K-24 is how many TENANTS this reading covered —
         // "read the meter for one tenant" and "metered the whole fleet" are different

@@ -401,6 +401,12 @@ export interface VerticalScopeHost {
    */
   databaseSizeLocal?(scopeId: ScopeId): Promise<number>;
   /**
+   * What the scope's attachment rows sum to, in bytes (#2501), for the storage gauge. OPTIONAL for
+   * the reason `databaseSizeLocal` is: a host built before it satisfies this interface without it,
+   * and the route answers 501 rather than 0, which a sum would add.
+   */
+  attachmentSizeLocal?(scopeId: ScopeId): Promise<number>;
+  /**
    * One orphan-attachment pass over a scope this deployment holds (#2314). OPTIONAL for the reason
    * `databaseSizeLocal` is: a host built before it satisfies this interface without it, and the
    * route answers 501, which the platform counts as a deployment to redeploy, not as a clean pass.
@@ -1622,6 +1628,18 @@ export function mountPlatformSurface<Env extends object>(
       return refuseStatus(c, 501, 'this deployment cannot read a database size (#1524). Redeploy it');
     }
     return c.json({ bytes: await host.databaseSizeLocal(scope) });
+  });
+
+  // #2501: what one scope's attachment rows sum to, for the storage gauge. Metadata only, like the
+  // database size: one number crosses, no attachment does. Behind the one gate above, as every
+  // route here is.
+  app.get('/internal/attachment-size', async (c) => {
+    const scope = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.attachmentSizeLocal) {
+      return refuseStatus(c, 501, 'this deployment cannot read attachment bytes (#2501). Redeploy it');
+    }
+    return c.json({ bytes: await host.attachmentSizeLocal(scope) });
   });
 
   // #2314: one orphan-attachment pass over a scope this deployment holds. The platform calls it

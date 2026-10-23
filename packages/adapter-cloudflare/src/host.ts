@@ -1002,6 +1002,8 @@ interface ControlPlaneStub {
     storageAttempts: ScopeStorageAttempt[];
     /** #2212: the latest sample per (scope, binding). */
     storeStorage: { tenantId: TenantId; bytes: number; readAt: string }[];
+    /** #2501: the latest attachment sample per non-reaped scope. */
+    attachmentStorage: { tenantId: TenantId; bytes: number }[];
   }>;
   /** #1524: the stored storage gauge — kernel `storage-gauge.ts`, run inside the directory DO. */
   recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
@@ -2004,6 +2006,8 @@ interface ScopeStubRpc {
   appliedMigrations(limit?: number): Promise<AppliedMigration[]>;
   /** `SqlStorage.databaseSize` of this scope (#1524). */
   databaseSize(): Promise<number>;
+  /** What this scope's attachment rows sum to (#2501). */
+  attachmentBytes(): Promise<number>;
   entityHistory(input: {
     entityType: string;
     entityId: string;
@@ -4145,6 +4149,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** This host's own scope's database size in bytes (#1524), the vertical-host read. */
   async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
     return this.scopeStub(scopeId).databaseSize();
+  }
+
+  /** This host's own scope's attachment bytes (#2501), the vertical-host read. */
+  async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
+    return this.scopeStub(scopeId).attachmentBytes();
   }
 
   /**
@@ -8763,6 +8772,13 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'scopeStoreSizes', { tenantId, scopeId }, null, sizes.length);
         return sizes;
       },
+      scopeAttachmentBytes: async (actor, tenantId, scopeId) => {
+        // Reaped is refused, not read: addressing the deleted DO would recreate it.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const bytes = await this.scopeStub(scopeId).attachmentBytes();
+        await this.recordAccess(actor, 'scopeAttachmentBytes', { tenantId, scopeId }, null, 1);
+        return bytes;
+      },
       rewindScope: async (actor, tenantId, scopeId, bookmark, opts) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -9837,6 +9853,7 @@ export class CloudflareScopeHost implements ScopeHost {
           storage: rows.storage,
           storageAttempts: rows.storageAttempts,
           storeStorage: rows.storeStorage,
+          attachmentStorage: rows.attachmentStorage,
         });
         // Tenants covered, not totals: "read one tenant's meter" and "metered the whole
         // fleet" are different acts, and K-24 exists to tell them apart.

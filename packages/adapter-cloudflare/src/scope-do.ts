@@ -188,6 +188,7 @@ import {
   type SearchIndexPlan,
   type SearchOptions,
   ATTACHMENT_TEXT_DDL,
+  ATTACHMENT_BYTES_SQL,
   ATTACHMENT_CONDEMNED_DDL,
   ATTACHMENT_SWEEP_LICENCE_DDL,
   ATTACHMENT_SWEEP_LICENCE_TABLE,
@@ -1858,6 +1859,16 @@ export function defineScopeDO(
      */
     databaseSize(): number {
       return this.sql.databaseSize;
+    }
+
+    /**
+     * This scope's attachment bytes (#2501): what its attachment rows sum to
+     * (`ATTACHMENT_BYTES_SQL`). Read without migrating, as `databaseSize` is: a scope whose spine
+     * was never made holds no attachment, so it reads 0.
+     */
+    attachmentBytes(): number {
+      if (!this.hasTable('_substrat_attachments')) return 0;
+      return (this.sql.exec(ATTACHMENT_BYTES_SQL).toArray()[0] as { bytes: number }).bytes;
     }
 
     /**

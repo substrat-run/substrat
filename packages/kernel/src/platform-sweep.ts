@@ -664,9 +664,19 @@ export interface StorageGaugeSweepOptions {
    */
   readStores?: (scope: Scope) => Promise<{ binding: string; bytes: number }[] | null>;
   /**
-   * How long one scope's store read may take, in ms (#2212). Past it the read counts as failed
-   * and the database sample is kept: one hung store must not hold the pass past its invocation
-   * limit and lose every sample the batch read. Default `STORE_READ_TIMEOUT_MS`.
+   * The scope's attachment bytes (#2501), read in the same pass as the database and only for a
+   * scope that pass already decided was due: what its attachment rows sum to. Absent means this
+   * deployment does not sample attachments. `null` declines. A throw records the database sample,
+   * leaves the day's attachment sample as it is, and the attempt carries the error. A deployment
+   * that cannot read them (`StorageReadUnsupported`) is not a failure and not a size of 0, exactly
+   * as for stores. A read past `storeReadTimeoutMs` is an ordinary failure.
+   */
+  readAttachments?: (scope: Scope) => Promise<number | null>;
+  /**
+   * How long each read beside the database may take, in ms: the stores' (#2212) and the
+   * attachments' (#2501). Past it the read counts as failed and the database sample is kept: one
+   * hung read must not hold the pass past its invocation limit and lose every sample the batch
+   * read. Default `STORE_READ_TIMEOUT_MS`.
    */
   storeReadTimeoutMs?: number;
   /** The instant the pass judges age against. Default the wall clock. */
@@ -730,9 +740,10 @@ export interface StorageGaugeSweepReport {
   skipped: number;
   /**
    * Reads the deployment cannot make (`StorageReadUnsupported`): a standing condition, kept out
-   * of `errors`. A database read that is unsupported is also in `failed`. A store read that is
-   * unsupported is not a failure and not a size of 0 (#2212): its scope counts in `read`, and its
-   * attempt carries no error, so the gauge does not show the scope as failing.
+   * of `errors`. A database read that is unsupported is also in `failed`. A store read (#2212) or
+   * an attachment read (#2501) that is unsupported is not a failure and not a size of 0: its scope
+   * counts in `read` unless another of its reads failed, and an unsupported read adds no error to
+   * its attempt, so the gauge does not show the scope as failing. Counted per read.
    */
   unsupported: number;
   /** Sample rows the directory wrote (a reading for a scope reaped meanwhile writes none). */
@@ -3014,35 +3025,42 @@ async function sweepStorageGauge(
             return;
           }
           if (!Number.isInteger(bytes) || bytes < 0) throw new Error(`not a size: ${String(bytes)}`);
-          // The store read is its own attempt. A failure here must not throw away the
-          // database size just read, and must not replace the day's store rows.
-          let stores: { binding: string; bytes: number }[] | null | undefined;
+          // The store read and the attachment read are each their own: a failure of one must not
+          // throw away the database size just read, nor the other's reading, nor replace what the
+          // day already holds of it. A read the deployment cannot make is not a failure and not a
+          // size of 0: what it would measure is left as it is.
+          const beside: Pick<ScopeStorageReadingInput, 'stores' | 'attachments'> = {};
+          const failures: string[] = [];
+          const timeoutMs = gauge.storeReadTimeoutMs ?? STORE_READ_TIMEOUT_MS;
           if (gauge.readStores) {
             try {
-              stores = await withinDeadline(
-                gauge.readStores(s),
-                gauge.storeReadTimeoutMs ?? STORE_READ_TIMEOUT_MS,
-                `scope store read of ${s.id}`,
-              );
+              const stores = await withinDeadline(gauge.readStores(s), timeoutMs, `scope store read of ${s.id}`);
+              if (stores !== null) beside.stores = stores;
             } catch (err) {
-              if (isUnsupported(err)) {
-                // Not a failure, and not a size: the database sample stands, the store rows stay.
-                out.read += 1;
-                out.unsupported += 1;
-                attempts.push({ ...attempt, bytes });
-                return;
-              }
-              out.failed += 1;
-              attempts.push({ ...attempt, bytes, error: message(err) });
-              report.errors.push({ kind: 'storage', id: s.id, error: message(err) });
-              return;
+              if (isUnsupported(err)) out.unsupported += 1;
+              else failures.push(message(err));
             }
           }
-          if (stores === null) {
-            attempts.push({ ...attempt, bytes });
-          } else {
-            attempts.push({ ...attempt, bytes, ...(stores ? { stores } : {}) });
+          if (gauge.readAttachments) {
+            try {
+              const attachments = await withinDeadline(gauge.readAttachments(s), timeoutMs, `attachment read of ${s.id}`);
+              if (attachments !== null) {
+                if (!Number.isInteger(attachments) || attachments < 0) throw new Error(`not a size: ${String(attachments)}`);
+                beside.attachments = attachments;
+              }
+            } catch (err) {
+              if (isUnsupported(err)) out.unsupported += 1;
+              else failures.push(message(err));
+            }
           }
+          if (failures.length > 0) {
+            const error = failures.join('; ');
+            out.failed += 1;
+            attempts.push({ ...attempt, bytes, ...beside, error });
+            report.errors.push({ kind: 'storage', id: s.id, error });
+            return;
+          }
+          attempts.push({ ...attempt, bytes, ...beside });
           out.read += 1;
         } catch (err) {
           out.failed += 1;

@@ -27,6 +27,7 @@ import {
   forgetScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
+  listScopeAttachmentStorageRows,
   listScopeStoreStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
@@ -4238,6 +4239,8 @@ export class ControlPlaneDO extends DurableObject {
     storage: ScopeStorageSample[];
     storageAttempts: ScopeStorageAttempt[];
     storeStorage: { tenantId: TenantId; bytes: number; readAt: string }[];
+    /** #2501: the latest attachment sample per non-reaped scope. */
+    attachmentStorage: { tenantId: TenantId; bytes: number }[];
   } {
     const where = tenantId ? ' WHERE tenant_id = ?' : '';
     const args = tenantId ? [tenantId] : [];
@@ -4260,6 +4263,7 @@ export class ControlPlaneDO extends DurableObject {
       storage: listScopeStorageRows(doRedactionSql(this.sql), { tenantId: tenantId as TenantId | undefined, latest: true }),
       storageAttempts: listScopeStorageAttemptRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
       storeStorage: listScopeStoreStorageRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
+      attachmentStorage: listScopeAttachmentStorageRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
     };
   }
 

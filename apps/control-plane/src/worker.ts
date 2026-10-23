@@ -1744,20 +1744,39 @@ function deploymentForScopeFor(
 export function storageReaderFor(
   resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'databaseSize'> | undefined>,
 ): (scope: Scope) => Promise<number | null> {
+  return deploymentSizeReaderFor(resolve, (client, scopeId) => client.databaseSize(scopeId), 'a database size');
+}
+
+/**
+ * The storage-gauge phase's attachment reader (#2501): what one scope's attachment rows sum to,
+ * read through the deployment that holds its DO (`/internal/attachment-size`), by the database
+ * reader's rules: a scope bound to no vertical is skipped, one whose deployment does not resolve
+ * fails, and a deployment built before the route is the standing condition, never a size of 0.
+ */
+export function attachmentReaderFor(
+  resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'attachmentSize'> | undefined>,
+): (scope: Scope) => Promise<number | null> {
+  return deploymentSizeReaderFor(resolve, (client, scopeId) => client.attachmentSize(scopeId), 'attachment bytes');
+}
+
+/** One size of a scope, read through the deployment that holds its DO (see `storageReaderFor`). */
+function deploymentSizeReaderFor<C>(
+  resolve: (scope: Scope) => Promise<C | undefined>,
+  read: (client: C, scopeId: ScopeId) => Promise<number>,
+  what: string,
+): (scope: Scope) => Promise<number | null> {
   return async (scope) => {
     if (!scope.vertical) return null;
     const client = await resolve(scope);
     if (!client) throw new Error(`no deployment resolves for vertical '${scope.vertical}'`);
     try {
-      return await client.databaseSize(scope.id);
+      return await read(client, scope.id);
     } catch (err) {
       // A deployment built before the route answers 501 (the route, without the host's read)
       // or a ROUTE MISS (no route at all). Standing until it is redeployed, so not a digest
       // entry. Any other 404 is a real failure that reaches the digest.
       if (err instanceof ControlPlaneError && (err.status === 501 || isRouteMiss(err))) {
-        throw new StorageReadUnsupported(
-          `vertical '${scope.vertical}' cannot read a database size (${err.status}); redeploy it`,
-        );
+        throw new StorageReadUnsupported(`vertical '${scope.vertical}' cannot read ${what} (${err.status}); redeploy it`);
       }
       throw err;
     }
@@ -2432,6 +2451,8 @@ export default {
       storageGauge: {
         read: storageReaderFor(resolveVerticalForScopeFor(env)),
         readStores: storeStorageReaderFor((scope) => declaredStoreSizes(env, host.admin, scope)),
+        // #2501: attachment bytes beside the database, through the same deployment.
+        readAttachments: attachmentReaderFor(resolveVerticalForScopeFor(env)),
       },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is

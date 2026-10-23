@@ -1913,6 +1913,21 @@ export class VerticalClient {
   }
 
   /**
+   * What one scope's attachment rows sum to, in bytes (#2501), for the storage gauge. A deployment
+   * built before the route answers 501, or 404 with no route at all; both throw here, and the
+   * caller decides that is a deployment to redeploy, never a size of 0.
+   */
+  async attachmentSize(scopeId: ScopeId): Promise<number> {
+    const answer = await this.getInternal<{ bytes?: unknown }>(
+      `/internal/attachment-size?scopeId=${encodeURIComponent(scopeId)}`,
+    );
+    if (typeof answer.bytes !== 'number' || !Number.isInteger(answer.bytes) || answer.bytes < 0) {
+      throw new ControlPlaneError(502, `vertical answered attachment-size without a size for scope ${scopeId}`);
+    }
+    return answer.bytes;
+  }
+
+  /**
    * One orphan-attachment pass over a scope this deployment serves (#2314). The caller is the
    * platform's sweep, and only after it read the directory and the whole copy ledger itself and
    * found nothing unsettled: `copiesSettled: true` is that word, never a person's. The deployment

@@ -11,6 +11,8 @@ export const INDEX_VALUE_EXPORTS = [
   'ADMIN_LOG_INDEXES_SQL',
   'ADMIN_LOG_INDEX_DDL',
   'ASYNC_LINES_PER_PASS',
+  // #2501: a scope's attachment bytes, the one statement both adapters read them with.
+  'ATTACHMENT_BYTES_SQL',
   'ATTACHMENT_CONDEMNED',
   'ATTACHMENT_CONDEMNED_DDL',
   'ATTACHMENT_SEARCH_OWNERS_SQL',
@@ -441,6 +443,7 @@ export const INDEX_VALUE_EXPORTS = [
   'listQuery',
   'listRequestDayRows',
   'listRequestRollupDayRows',
+  'listScopeAttachmentStorageRows',
   'listScopeStorageAttemptRows',
   'listScopeStorageRows',
   'listScopeStoreStorageRows',

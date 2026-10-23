@@ -1859,6 +1859,19 @@ export const storageGauge = z.object({
       sampled: z.number().int().nonnegative(),
     })
     .optional(),
+  /**
+   * Attachment bytes sampled beside the databases (#2501): the sum of each sampled scope's latest
+   * reading of what its attachment rows record. Not part of `bytes`, which stays the databases
+   * (`basis`), and attachments stay in `excluded` for that reason. Absent when this reading has no
+   * attachment sample. `sampled` counts scopes; a scope whose deployment cannot read attachments is
+   * not among them.
+   */
+  attachments: z
+    .object({
+      bytes: z.number().int().nonnegative(),
+      sampled: z.number().int().nonnegative(),
+    })
+    .optional(),
 });
 export type StorageGauge = z.infer<typeof storageGauge>;
 
