@@ -764,6 +764,25 @@ describe('a call’s body is read only once its envelope has passed every cheape
     expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason });
   });
 
+  it('a body that fails to arrive is refused for the body, never read as the empty body an envelope signed', async () => {
+    const g = gated({}, unreading());
+    const broken = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          controller.error(new Error('the connection dropped'));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const headers = { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(QUERY, '')) };
+    await g.fetch(new Request(QUERY, { method: 'POST', headers, body: broken, duplex: 'half' } as RequestInit), envOf('dual'));
+    expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'body' });
+    // Its twin: a body that really is empty verifies against the same envelope.
+    const empty = gated();
+    await empty.fetch(new Request(QUERY, { method: 'POST', headers, body: '' }), envOf('dual'));
+    expect(empty.wire()[0]).toMatchObject({ outcome: 'signed-accepted' });
+  });
+
   it('its positive twin: an envelope that passes them reads the body, and the vertical receives it', async () => {
     const g = gated();
     let pulled = false;
