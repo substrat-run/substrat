@@ -231,11 +231,15 @@ const MAX_CORRELATED_INVOCATIONS = 40;
 const MAX_LINES_PER_INVOCATION = 20;
 
 /**
- * How many queries one service-grain page (`queryEvents`) may take to fill itself after the wire
- * line is left out. A page loses at most about a third to it, so a second query nearly always
- * fills one; the bound keeps a window of almost nothing else from costing more than a few.
+ * How a service-grain read (`queryEvents`) is bounded while it fills its page after the wire line
+ * is left out: at most this many rounds of queries (the first round is one per service), and at
+ * most `MAX_FILL_QUERIES` queries past that first round in all, whatever the number of services.
+ * A page loses at most about a third to the wire line, so one more query nearly always fills it;
+ * the bounds keep a window of almost nothing else, or a read across many services, from costing
+ * more than a few.
  */
 const MAX_FILL_ROUNDS = 4;
+const MAX_FILL_QUERIES = 8;
 
 /**
  * #1877: the groups one telemetry answer carries, and how many pages of them a span may
@@ -1124,14 +1128,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // single-valued equality, and an OR across script names is not a filter this
       // API offers. The queries are independent, so they run concurrently and the
       // merge (not the backend) enforces the overall `limit`.
-      if (services && services.length > 1) {
-        const pages = await Promise.all(services.map((s) => queryEvents(s, level, search, hours, limit)));
-        return pages
-          .flat()
-          .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
-          .slice(0, limit);
-      }
-      return queryEvents(services?.[0], level, search, hours, limit);
+      return queryEvents(services && services.length > 1 ? services : [services?.[0]], level, search, hours, limit);
     },
 
     // Present only when the caller named the router's dataset: with no dataset there is
@@ -1915,28 +1912,35 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     return [...left, ...right];
   }
 
-  /** One telemetry query — narrowed to a single service, or to none (the fleet view). */
+  /**
+   * The service-grain read: one walk per service, or one over none (the fleet view), merged
+   * newest first and cut to `limit`.
+   */
   async function queryEvents(
-    service: string | undefined,
+    services: ReadonlyArray<string | undefined>,
     level: string | undefined,
     search: string | undefined,
     hours: number,
     limit: number,
   ) {
     const to = Date.now();
-    const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
-    // `$metadata.service` is the script name in Workers Logs events — the field
-    // Cloudflare's own query examples filter on.
-    if (service) {
-      filters.push({ key: '$metadata.service', operation: 'eq', type: 'string', value: service });
-    }
-    if (level) {
-      filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
-    }
-    if (search) {
-      filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
-    }
-    const page = async (timeframe: { from: number; to: number }) => {
+    const from = to - hours * 3_600_000;
+    const filtersFor = (service: string | undefined) => {
+      const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
+      // `$metadata.service` is the script name in Workers Logs events — the field
+      // Cloudflare's own query examples filter on.
+      if (service) {
+        filters.push({ key: '$metadata.service', operation: 'eq', type: 'string', value: service });
+      }
+      if (level) {
+        filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
+      }
+      if (search) {
+        filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
+      }
+      return filters;
+    };
+    const page = async (filters: ReturnType<typeof filtersFor>, timeframe: { from: number; to: number }) => {
       const res = await authed(
         `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
         {
@@ -1959,23 +1963,45 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return telemetryPage(json.result);
     };
     // Filled to `limit` when more exist. A full page the wire line was taken out of (in `dual`,
-    // up to a third of one: a request writes its runtime record, its stamp and the wire line) is
-    // followed by the page before its oldest line, so a short answer still means the window held no
-    // more. The next window ends just after that oldest instant, and the event id folds the overlap.
-    const from = to - hours * 3_600_000;
+    // up to a third of one: a request writes its runtime record, its stamp and the wire line) may
+    // be followed by the page before its oldest line: its next window ends just after that oldest
+    // instant, and the event id folds the overlap. A walk is read again only while its next page
+    // could still reach the merged answer, so a read across many services pays for the fill only
+    // where a service's page decides the answer's tail, and never more than `MAX_FILL_QUERIES`.
+    const walks = services.map((service) => ({ filters: filtersFor(service), until: to, more: false, oldest: 0 }));
     const kept = new Map<string, Record<string, unknown>>();
-    let until = to;
-    for (let round = 0; round < MAX_FILL_ROUNDS; round++) {
-      const { events, fetched, oldest } = await page({ from, to: until });
+    const read = async (walk: (typeof walks)[number]) => {
+      const { events, fetched, oldest } = await page(walk.filters, { from, to: walk.until });
       for (const e of events) {
         const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
         kept.set(typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e), e);
       }
-      // The window is spent, or a page is all one instant and an earlier window cannot be cut.
-      if (kept.size >= limit || fetched < limit || oldest === null || oldest + 1 >= until) break;
-      until = oldest + 1;
+      // More may exist only behind a full page, and only if an earlier window can be cut: a page
+      // all of one instant cannot be (and its window is spent as far as this read can tell).
+      walk.more = fetched >= limit && oldest !== null && oldest + 1 < walk.until;
+      if (oldest !== null) walk.oldest = oldest;
+      if (walk.more) walk.until = oldest! + 1;
+    };
+    const answer = () => [...kept.values()].sort((a, b) => rawTime(b) - rawTime(a)).slice(0, limit);
+    // Lines older than this may have a newer one behind a walk that was not read again.
+    let floor = -Infinity;
+    let budget = MAX_FILL_QUERIES;
+    let pending = walks;
+    for (let round = 0; pending.length > 0; round++) {
+      await Promise.all(pending.map(read));
+      const merged = answer();
+      // A walk's unread lines are no newer than its oldest read one, so it can change the answer
+      // only while that line is not older than the answer's last (or the answer is short).
+      const cutoff = merged.length < limit ? -Infinity : rawTime(merged[merged.length - 1]!);
+      const wanted = walks.filter((w) => w.more && w.oldest >= cutoff).sort((a, b) => b.oldest - a.oldest);
+      pending = round + 1 < MAX_FILL_ROUNDS ? wanted.slice(0, budget) : [];
+      budget -= pending.length;
+      // A walk left unread caps the answer at its oldest line, so it is still a true prefix.
+      for (const w of wanted.slice(pending.length)) floor = Math.max(floor, w.oldest);
     }
-    return [...kept.values()].slice(0, limit).map((e) => projectEvent(e));
+    return answer()
+      .filter((e) => rawTime(e) >= floor)
+      .map((e) => projectEvent(e));
   }
 
   /**

@@ -9174,7 +9174,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // `service` repeats: one deployed unit per param, so a caller can ask for a
     // vertical's whole set (the dashboard's "all versions") in one query and get one
-    // merged stream back. Capped because each extra service is another backend query.
+    // merged stream back. Capped because each extra service is another backend query, and
+    // the Cloudflare reader may add a few more to fill the merged page (at most
+    // `MAX_FILL_QUERIES` per read, whatever the number of services).
     const asked = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
     const ownedLogServices = await ownedServices(c.get('principal'), c.get('actor'));
     // A confined principal reads only its own services' lines. An ask that names none

@@ -155,7 +155,9 @@ describe('a page is as full as it would be without the wire line', () => {
       vi.fn(async (_url: string, init: { body: string }) => {
         const query = JSON.parse(init.body) as Query;
         queries.push(query);
+        const service = query.parameters?.filters?.find((f) => f.key === '$metadata.service')?.value;
         const events = linesFor(query)
+          .filter((l) => service === undefined || l.$metadata['service'] === service)
           .filter((l) => l.timestamp >= query.timeframe.from && l.timestamp <= query.timeframe.to)
           .sort((a, b) => b.timestamp - a.timestamp)
           .slice(0, query.limit);
@@ -251,6 +253,48 @@ describe('a page is as full as it would be without the wire line', () => {
       const { reader, queries } = backend(() => lines);
       expect(await reader.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 })).toEqual([]);
       expect(queries).toHaveLength(4);
+    });
+
+    describe('across many services', () => {
+      const SERVICES = Array.from({ length: 20 }, (_, s) => `acme-widgets-v${s}`);
+      /** 200 lines a service, interleaved in time across services, the `i`th a wire line when `wire(i)`. */
+      const fleet = (wire: (i: number) => boolean): Line[] =>
+        SERVICES.flatMap((service, s) =>
+          Array.from({ length: 200 }, (_, i): Line => {
+            const at = now - 10_000_000 + i * 100 + s;
+            const own = !wire(i);
+            return {
+              timestamp: at,
+              source: own ? { message: `line ${i}` } : wireLine(`req-${s}-${i}`).source,
+              $metadata: { id: `01L${s}x${i}`, requestId: `req-${s}-${i}`, service, message: own ? `${service} line ${i}` : undefined },
+            };
+          }),
+        );
+      const truth = (lines: Line[]) =>
+        lines
+          .filter((l) => l.source['substrat'] !== 'wire')
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .map((l) => l.timestamp);
+
+      it('a page the services’ first queries already fill costs one query a service, and is the true newest page', async () => {
+        // In dual: a third of every page is the wire line.
+        const lines = fleet((i) => i % 3 === 2);
+        const { reader, queries } = backend(() => lines);
+        const answer = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
+        expect(answer.map((e) => e.timestamp)).toEqual(truth(lines).slice(0, 100));
+        expect(queries).toHaveLength(SERVICES.length);
+      });
+
+      it('fills a short merged page with at most MAX_FILL_QUERIES more queries, and answers a true prefix of the newest page', async () => {
+        // Almost every line a wire line: the first round leaves the merged page short, so every service wants more.
+        const lines = fleet((i) => i % 50 !== 0);
+        const { reader, queries } = backend(() => lines);
+        const answer = await reader.recentLogs({ services: SERVICES, hours: 24, limit: 100 });
+        expect(queries.length).toBe(SERVICES.length + 8);
+        expect(answer.length).toBeGreaterThan(0);
+        // Whatever was left unread cut the answer short; nothing in it is out of place.
+        expect(answer.map((e) => e.timestamp)).toEqual(truth(lines).slice(0, answer.length));
+      });
     });
 
     it('stops once a page is all one instant, which no earlier window can cut', async () => {
