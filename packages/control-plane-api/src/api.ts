@@ -277,7 +277,7 @@ import {
   type MintedStore,
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
-import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, type ObservabilityReader } from './observability.js';
+import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, LOGS_INCOMPLETE_HEADER, type ObservabilityReader } from './observability.js';
 import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, scriptFamiliesOfScopes, type QueryReader } from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
@@ -9174,7 +9174,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // `service` repeats: one deployed unit per param, so a caller can ask for a
     // vertical's whole set (the dashboard's "all versions") in one query and get one
-    // merged stream back. Capped because each extra service is another backend query.
+    // merged stream back. Capped because each extra service is another backend query, and
+    // the Cloudflare reader may add a few more to fill the merged page (at most
+    // `MAX_FILL_QUERIES` per read, whatever the number of services).
     const asked = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
     const ownedLogServices = await ownedServices(c.get('principal'), c.get('actor'));
     // A confined principal reads only its own services' lines. An ask that names none
@@ -9197,7 +9199,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         hours: c.req.query('hours'),
         limit: c.req.query('limit'),
       });
-    return c.json(await options.observability.recentLogs(input));
+    const { events, incomplete } = await options.observability.recentLogs(input);
+    // The body stays the list every caller reads; a read that stopped short of vouching for the
+    // whole window says so beside it, so a short page is never silently "nothing more".
+    if (incomplete) c.header(LOGS_INCOMPLETE_HEADER, '1');
+    return c.json(events);
   });
 
   // -- the TENANT grain (observability.md §3 view 4, §4.2) -----------------------

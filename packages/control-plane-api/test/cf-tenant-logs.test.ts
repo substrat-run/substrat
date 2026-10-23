@@ -280,6 +280,23 @@ describe('cf tenant logs', () => {
     expect(events[0]!.message).toContain('/api/orders');
   });
 
+  /** RFC wire-signing §8: the entry's verdict shares the request id, and is the platform's counter. */
+  it('drops the platform’s wire-signing line from an app’s log view, and keeps the app’s own beside it', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat')
+        ? [invocation()]
+        : [
+            { timestamp: 1002, source: { substrat: 'wire', state: 'dual', outcome: 'legacy-accepted', reason: 'signature', tenantId: '01TENANT' }, $metadata: { id: '01WIRE', requestId: 'req-01EV' } },
+            ownLine('info', 'the vertical’s own line', 'req-01EV', '01SIB'),
+          ],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.message)).toContain('the vertical’s own line');
+    expect(JSON.stringify(events)).not.toContain('legacy-accepted');
+    expect(JSON.stringify(events)).not.toContain('"wire"');
+  });
+
   it('an id read by itself is ANDed onto the tenant, never instead of it — a parent id naming another tenant’s request reaches nothing (#2192)', async () => {
     const theirs = invocation({ tenantId: '01OTHER', invocationId: '01JABCDEFGHJKMNPQRSTVWXYZ0' });
     const { reader, sent } = readerOver((f) =>
@@ -829,7 +846,8 @@ describe('cf tenant logs — filtered to one invocation', () => {
     it('reads up to the caller’s limit, past the per-invocation share', async () => {
       const { reader, limits } = over();
       const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 100 });
-      expect(limits).toEqual([100]);
+      // One more than the budget: the slot a request's wire line takes before the reader drops it.
+      expect(limits).toEqual([100 + 1]);
       expect(events).toHaveLength(46); // the stamped line and all 45 of its own
     });
 
@@ -843,7 +861,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
     it('keeps the 20-line share per invocation when no call is named', async () => {
       const { reader, limits } = over();
       await reader.tenantLogs!({ tenantId: OURS, hours: 24, limit: 100 });
-      expect(limits).toEqual([20]);
+      expect(limits).toEqual([20 + 1]);
     });
   });
 
