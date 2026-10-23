@@ -2315,11 +2315,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // -- the meters (§5, #38) --------------------------------------------------
-  // Meters 1 and 2, read fleet-wide or narrowed with `?tenantId=`. Meters 3 and 4 have
-  // no route because they have no number: the outbox is per-scope-database with no
-  // cross-tenant fan-in and reads emit nothing, so anything served here would be
-  // invented. Staff-only (absent from BUILDER_ROUTES) — a fleet-wide revenue aggregate
-  // is the platform's own book, not a builder's view of their installs.
+  // Meters 1 and 2, read fleet-wide or narrowed with `?tenantId=`. Meter 3's parts are
+  // read at their own routes, not here (`/meters/storage`, `/model-usage`, and the estimated
+  // daily request rollup at `/meters/requests`); lake bytes have no reader yet, and exact API counts are not computable, since
+  // reads emit nothing on the spine. Meter 4 has no route because it has no number
+  // (it needs the cross-tenant order flow). See control-plane.md §5. Staff-only (absent
+  // from BUILDER_ROUTES) — a fleet-wide revenue aggregate is the platform's own book, not
+  // a builder's view of their installs.
   //
   // GET, and nothing is stored: D-30 is meter, do not bill, so a reading is recomputed
   // per call and stamped with the instant it was taken.

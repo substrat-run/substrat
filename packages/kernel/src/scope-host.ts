@@ -4078,9 +4078,12 @@ export interface HostAdmin {
    * suspension is an outage, not revenue), and expiry is evaluated at the reading's
    * instant so a lapsed grant reads as lapsed rather than as never-granted.
    *
-   * Computes nothing that needs a data pipeline. Meters 3 and 4 are absent because
-   * they are uncomputable by construction, not because this is a first slice — the
-   * per-scope outbox has no cross-tenant fan-in, and reads emit nothing at all.
+   * Computes nothing that needs a data pipeline, so it carries meters 1 and 2 only.
+   * Meter 4 has no number: it needs the cross-tenant order flow. Meter 3 is not
+   * folded into this reading; its parts are read elsewhere: the storage gauge, the
+   * model usage ledger, and the estimated daily request rollup at `/meters/requests`.
+   * Lake rows carry their bytes, but no reader sums them yet. Exact API counts are
+   * not computable: reads emit nothing on the spine. See control-plane.md §5.
    *
    * Nothing is stored: a reading is recomputed per call. D-30 is meter, do not bill,
    * and a persisted running total is the first half of a billing ledger.

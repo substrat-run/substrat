@@ -300,7 +300,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
 
       <Card
         title="What meter 3 still cannot count, and why meter 4 is not shown"
-        description="Storage above is scope databases only; API reads and meter 4 are uncomputable, by construction. Writing it here so it stops being re-proposed."
+        description="Storage above is scope databases only. Exact API counts cannot be computed, and meter 4 has no data source yet. Writing it here so it stops being re-proposed."
       >
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
           <li>
@@ -311,8 +311,10 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
             Nothing aggregates those rows per tenant yet. Storage is the sum of each scope
             database's latest daily sample (#1524), and it does not count{' '}
             {Object.values(EXCLUSION_LABEL).join(', ')}. The samples are kept thirteen months, but
-            nothing prices them as byte-days yet. Reads emit nothing at all, so API volume is
-            unmeterable from the event spine by design, not by omission.
+            nothing prices them as byte-days yet. Reads emit nothing at all, so an exact API count
+            cannot come from the event spine. The platform keeps a daily estimate of requests per
+            tenant, vertical and scope, taken from the router's sampled datapoints. It is served
+            at the staff API's /meters/requests, and nothing on this page reads it.
           </li>
           <li>
             <strong>Meter 4 (network transactions).</strong> Needs the cross-tenant order flow, which
