@@ -190,6 +190,7 @@ import type {
   EntityGrantShape,
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
+import { fetchStreamBody, isSizedByteStream, type ByteBody, type ByteStream, type SizedByteStream } from './byte-stream.js';
 import type { CapabilityVerbs } from './capability.js';
 import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
@@ -1456,9 +1457,21 @@ export interface FetchLike {
  * installs, so no suite in this repo sees the difference; the Fortnox consent
  * callback shipped green and failed every hosted round that way (#1291). Closing
  * over the global here means the receiver is never in play, anywhere downstream.
+ *
+ * A `SizedByteStream` body (#2498) is the one field the runtime cannot take as it is, so it is
+ * turned into the runtime's own stream of that length here (`fetchStreamBody`).
  */
-export const globalFetch: FetchLike = (input, init) =>
-  (globalThis as unknown as { fetch: FetchLike }).fetch(input, init);
+export const globalFetch: FetchLike = (input, init) => {
+  const runtimeFetch = (globalThis as unknown as { fetch: (input: string, init?: unknown) => Promise<ConnectorResponse> }).fetch;
+  if (!isSizedByteStream(init?.body)) return runtimeFetch(input, init);
+  const streamed = fetchStreamBody(init.body);
+  return runtimeFetch(input, {
+    ...init,
+    body: streamed.body,
+    headers: { ...init.headers, ...streamed.headers },
+    ...(streamed.duplex ? { duplex: streamed.duplex } : {}),
+  });
+};
 
 /**
  * The host's clock (#812) — what `ctx.now()` reads.
@@ -1499,8 +1512,13 @@ export interface ConnectorRequestInit {
    * string cannot carry without corrupting the file. Web `fetch` accepts both, so
    * this only widens the declared surface — the adapter passes it straight
    * through.
+   *
+   * A {@link SizedByteStream} as well (#2498), for a body too large to hold: an upload of a
+   * provider file of any size. The length is part of the value because a provider wants a
+   * `Content-Length`, and a stream carries none. `globalFetch` hands it to the runtime as a
+   * stream of that length; a `FetchLike` of its own must do the same (`fetchStreamBody`).
    */
-  body?: string | Uint8Array;
+  body?: string | Uint8Array | SizedByteStream;
   signal?: unknown;
 }
 export interface ConnectorResponse {
@@ -1515,6 +1533,17 @@ export interface ConnectorResponse {
    * only widens the structural surface the adapter passes straight through.
    */
   arrayBuffer(): Promise<ArrayBuffer>;
+  /**
+   * The body as a stream (#2498), for a provider file too large to hold: read it chunk by chunk,
+   * or hand it on to `upload` as a `SizedByteStream` with the length the provider declared.
+   * `null` for a response with no body, as on a web `Response`, which every adapter's `fetch`
+   * returns.
+   *
+   * OPTIONAL for the reason `headers` is: a hand-built stand-in is an object literal, and most
+   * connectors never read a stream. A caller that needs one falls back to `arrayBuffer()` when it
+   * is absent. Read a body once, by one of these.
+   */
+  readonly body?: ByteStream | null;
   /**
    * The response headers, when the runtime behind this seam has them.
    *
@@ -4776,7 +4805,12 @@ export interface BlobStoreProvisionInput {
  * is what turns "scope/<id>/ is a convention" into "cross-scope keys are unwritable".
  */
 export interface TenantBlobStore {
-  put(key: string, body: Uint8Array, opts?: { contentType?: string }): Promise<void>;
+  /**
+   * Write `body` under `key`. A `SizedByteStream` (#2498) is written as it is read, never
+   * collected first, and refused if it carries other than its declared length. The put
+   * resolves only once the whole stream has been read.
+   */
+  put(key: string, body: ByteBody, opts?: { contentType?: string }): Promise<void>;
   get(key: string): Promise<{ body: Uint8Array; contentType?: string } | null>;
   delete(key: string): Promise<void>;
   /** Keys under `prefix` — the GC/ops walk. */
@@ -4958,7 +4992,13 @@ export interface AttachmentUploadInput {
   filename: string;
   contentType: string;
   visibility: Visibility;
-  body: Uint8Array;
+  /**
+   * The bytes: a buffer, or a `SizedByteStream` for a file too large to hold (#2498). A stream
+   * goes to the blob store as it is read; its sha256 and size are taken on the way through, and
+   * the row is written after the object, as for a buffer. Its declared length is the record's
+   * `size`, and a stream that carries a different number of bytes lands nothing.
+   */
+  body: ByteBody;
 }
 
 /**
