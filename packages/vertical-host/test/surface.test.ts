@@ -2439,7 +2439,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
 
   /** One scope's owner state: the record, the last hand-over, members, owner-role holders. */
   function world(
-    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[] } = {},
+    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[]; seatRefusal?: string } = {},
   ) {
     const w = {
       record: init.record === undefined ? A : init.record,
@@ -2450,6 +2450,8 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       /** Who holds SOME live role in the scope (a member role), besides the owner seats. */
       roles: new Set(init.roles ?? [A, B, C]),
       steps: [] as string[],
+      /** #2447: each owner role the hand-over asked the person's door about, before any step. */
+      judged: [] as string[],
       /** Throw on the named step, once — the failure "between" steps. */
       failOn: null as null | Step,
     };
@@ -2507,8 +2509,13 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       return 'abandoned' as const;
     };
     const host = fakeHost({
-      assignScopeRole: async (_s, principal, roleKey) => {
-        w.steps.push(`assign ${principal} ${roleKey}`);
+      // #2447: the person's door the hand-over asks first, and passes to the seat.
+      scopeRoleRefusal: async (_s, roleKey, door) => {
+        w.judged.push(`${roleKey} ${door}`);
+        return init.seatRefusal ?? null;
+      },
+      assignScopeRole: async (_s, principal, roleKey, door) => {
+        w.steps.push(`assign ${principal} ${roleKey}${door ? ` (${door})` : ''}`);
         failIf('assign');
         w.seats.add(principal);
       },
@@ -2540,8 +2547,19 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const res = await send({ ...REF, from: A, to: B });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
-    expect(w.steps).toEqual(['record', `assign ${B} admin`, `revoke ${A} admin`, 'complete']);
+    expect(w.judged).toEqual(['admin person']);
+    expect(w.steps).toEqual(['record', `assign ${B} admin (person)`, `revoke ${A} admin`, 'complete']);
     expect(state()).toEqual({ record: B, seats: [B], last: { from: A, to: B, state: 'done' } });
+  });
+
+  it('refuses, before the record moves, an owner role the person’s door refuses (#2447) — nothing is seated or revoked', async () => {
+    const { w, send, state } = world({ seatRefusal: "role 'admin' is declared holder: 'system', a role for a system principal" });
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toMatch(/the owner role cannot be handed to a person: role 'admin' is declared holder: 'system'.*Nothing was moved/);
+    expect(w.judged).toEqual(['admin person']);
+    expect(w.steps).toEqual([]);
+    expect(state()).toEqual({ record: A, seats: [A], last: null });
   });
 
   it('a repeat of a finished hand-over is a 200 that seats and revokes nothing', async () => {

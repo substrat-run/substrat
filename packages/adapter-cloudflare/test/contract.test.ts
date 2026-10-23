@@ -449,23 +449,94 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     // A CP-less host, as a deployed vertical's is: `provisionScopeLocal` writes the receipt and the roles.
     const local = new CloudflareScopeHost({ scope: env.SCOPE });
     const owned = scopeId.parse(ulid());
+    const tenant = tenantId.parse(ulid());
     try {
       await local.provisionScopeLocal({
-        tenantId: tenantId.parse(ulid()),
+        tenantId: tenant,
         scopeId: owned,
         owner: principalId.parse(ulid()),
-        roles: [
-          { key: 'mixed', permissions: MIXED, source: 'vertical' },
-          { key: 'member', permissions: [MIXED[0]!], source: 'vertical' },
-        ],
+        roles: [{ key: 'member', permissions: [MIXED[0]!], source: 'vertical' }],
         ownerRoleKey: 'member',
       });
+      // #2447: a provision refuses defining `mixed` here, so it reaches the scope as a row projected
+      // before the key was reserved would.
+      await projector(owned).projectRole(tenant, { key: 'mixed', permissions: MIXED, source: 'vertical' });
       const refused = await local.assignScopeRole(owned, principalId.parse(ulid()), 'mixed').then(() => undefined, (e: unknown) => e);
       expect(errorCodeOf(refused)).toBe('forbidden');
       await local.assignScopeRole(owned, principalId.parse(ulid()), 'member');
     } finally {
       await local.close();
     }
+  });
+
+  // #2447: the roles a CP-less provision or restore defines, and the owner's seat in them, judged
+  // against the scope class's reservations though the coordinator has none.
+  describe('roles a host defines and seats itself (#2447)', () => {
+    const member = { key: 'member', permissions: [MIXED[0]!], source: 'vertical' as const };
+    const runner = { key: 'runner', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+    const receiptOf = (scope: ScopeId) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+        state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray(),
+      );
+    const rolesOf = (scope: ScopeId) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) => {
+        const has = state.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_substrat_roles'`).toArray().length > 0;
+        return has ? (state.storage.sql.exec(`SELECT role_key FROM _substrat_roles ORDER BY role_key`).toArray() as { role_key: string }[]).map((r) => r.role_key) : [];
+      });
+    const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as Error);
+    let local: CloudflareScopeHost;
+    beforeAll(() => {
+      local = new CloudflareScopeHost({ scope: env.SCOPE }); // CP-less, as a deployed vertical's host is
+    });
+    afterAll(() => local.close());
+    const provision = (scope: ScopeId, roles: RoleDefinition[], ownerRoleKey: string) =>
+      local.provisionScopeLocal({ tenantId: tenantId.parse(ulid()), scopeId: scope, owner: principalId.parse(ulid()), roles, ownerRoleKey });
+
+    it('provisionScopeLocal refuses a role set with a person’s role carrying the reserved key, writing nothing; its twin provisions', async () => {
+      const refusedScope = scopeId.parse(ulid());
+      const refused = await failure(provision(refusedScope, [member, { key: 'mixed', permissions: MIXED, source: 'vertical' }], 'member'));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'mixed' is a person's role and would hold rsv:run/);
+      expect(await receiptOf(refusedScope)).toEqual([]);
+      expect(await rolesOf(refusedScope)).toEqual([]);
+      const twin = scopeId.parse(ulid());
+      await provision(twin, [member, runner], 'member');
+      expect(await receiptOf(twin)).toHaveLength(1);
+      expect(await rolesOf(twin)).toEqual(['member', 'runner']);
+    });
+
+    it('provisionScopeLocal refuses seating the owner, a person, in a system-held role, writing nothing; its twin seats', async () => {
+      const refusedScope = scopeId.parse(ulid());
+      const refused = await failure(provision(refusedScope, [member, runner], 'runner'));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/^the owner's seat: role 'runner' is declared holder: 'system'/);
+      expect(await receiptOf(refusedScope)).toEqual([]);
+      const twin = scopeId.parse(ulid());
+      await provision(twin, [member, runner], 'member');
+      expect(await receiptOf(twin)).toHaveLength(1);
+    });
+
+    it('projectRolesLocal (a restore’s repair) refuses the same role set and projects nothing; its twin projects', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const refused = await failure(local.projectRolesLocal(tenant, scope, [member, { key: 'mixed', permissions: MIXED, source: 'vertical' }]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(await rolesOf(scope)).toEqual([]);
+      await local.projectRolesLocal(tenant, scope, [member, runner]);
+      expect(await rolesOf(scope)).toEqual(['member', 'runner']);
+    });
+
+    it('the owner hand-over’s person door refuses a system-held role that the platform’s door admits', async () => {
+      const scope = scopeId.parse(ulid());
+      await provision(scope, [member, runner], 'member');
+      expect(await local.scopeRoleRefusal(scope, 'runner', 'person')).toMatch(/role 'runner' is declared holder: 'system'/);
+      expect(await local.scopeRoleRefusal(scope, 'member', 'person')).toBeNull();
+      const who = principalId.parse(ulid());
+      expect(errorCodeOf(await failure(local.assignScopeRole(scope, who, 'runner', 'person')))).toBe('forbidden');
+      expect(await grantedTo(scope, `principal:${who}`)).toEqual([]);
+      // The twin: the platform's door seats a system-held role, K-55's shape.
+      await local.assignScopeRole(scope, who, 'runner');
+    });
   });
 
   // A scope with no receipt names its tenants only through its role rows, and the role is judged as
