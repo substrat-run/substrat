@@ -59,6 +59,7 @@ import {
   type HostAdmin,
   type OrphanAttachmentSweepOptions,
   type RequestRollupSweepOptions,
+  type RequestRollupSweepReport,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -939,6 +940,27 @@ export function requestRollupFor(
       apiToken: env.CF_API_TOKEN,
       routerDataset: env.ROUTER_ANALYTICS_DATASET,
     }),
+  };
+}
+
+/**
+ * #2501: what the pass's log line says about the request rollup, or null when it did nothing
+ * worth a line. A standing failure is mailed once, when its run begins (the phase keeps repeats
+ * out of `report.errors`), so this line is where it stays visible on every pass it lasts: the
+ * run's error, when it began, and how many attempts it holds.
+ */
+export function requestRollupLogOf(rollup: RequestRollupSweepReport | null | undefined): {
+  read: number;
+  recorded: number;
+  failing?: { error: string; since: string; failures: number };
+  saturatedDays?: string[];
+} | null {
+  if (!rollup || (rollup.read === 0 && rollup.failed === 0 && rollup.saturated === 0)) return null;
+  return {
+    read: rollup.read,
+    recorded: rollup.recorded,
+    ...(rollup.streak ? { failing: rollup.streak } : {}),
+    ...(rollup.saturatedDays.length > 0 ? { saturatedDays: rollup.saturatedDays } : {}),
   };
 }
 
@@ -2438,6 +2460,9 @@ export default {
     // answers so on every visit, and one whose store binding is missing fails into `errors` instead.
     const oa = report.orphanAttachments;
     const orphansActive = oa != null && (oa.orphans > 0 || oa.deleted > 0 || oa.refused.count > 0 || oa.unsupported.count > 0);
+    // #2501: days rolled up, a failing run (on every pass it lasts, though the digest mails it once)
+    // and days found saturated.
+    const rollup = requestRollupLogOf(report.requestRollup);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -2451,7 +2476,8 @@ export default {
       skipped !== undefined ||
       unsettleable !== undefined ||
       cvActive ||
-      orphansActive
+      orphansActive ||
+      rollup !== null
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -2477,6 +2503,7 @@ export default {
             }
           : {}),
         ...(orphansActive ? { orphanAttachments: oa } : {}),
+        ...(rollup ? { requestRollup: rollup } : {}),
         errors: report.errors,
       });
     }

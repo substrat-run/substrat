@@ -25,7 +25,9 @@ import { utcDayMonthsBefore } from './billing-retention.js';
  * `_substrat_request_day_reads` keeps one row per day the rollup tried: when, whether a read
  * succeeded, and why the last one failed. A day is rolled up once a read succeeds and is never
  * read again. A day without a successful read has no rows to say anything with, so the read row
- * is what tells "no traffic" from "not rolled up yet".
+ * is what tells "no traffic" from "not rolled up yet". A failed attempt also carries the run of
+ * identical failures it belongs to (`failing_since`, `failing_count`), handed on from the attempt
+ * before it, because a day keeps only its last attempt and the run's start would be lost.
  *
  * `vertical` is `''` when a request resolved to no vertical: a primary key cannot hold a NULL
  * that compares equal to itself. The read maps it back to null.
@@ -56,7 +58,9 @@ export const REQUEST_ROLLUP_DDL = `
     read_at TEXT,
     row_count INTEGER,
     error TEXT,
-    saturated INTEGER NOT NULL DEFAULT 0
+    saturated INTEGER NOT NULL DEFAULT 0,
+    failing_since TEXT,
+    failing_count INTEGER
   );
 `;
 
@@ -133,11 +137,13 @@ export interface RequestDayCount {
 
 /**
  * One attempt to roll up a day: what was read, or why the read failed. Exactly one of the two.
- * `saturated` marks a failure as the day holding more groups than a read may answer.
+ * `saturated` marks a failure as the day holding more groups than a read may answer. A failed
+ * read names the run of identical failures it extends: when it began and how many attempts it
+ * holds with this one (absent, this attempt starts a run). A saturated day belongs to no run.
  */
 export type RequestDayReadInput =
   | { day: string; attemptedAt: string; counts: readonly RequestDayCount[] }
-  | { day: string; attemptedAt: string; error: string; saturated?: boolean };
+  | { day: string; attemptedAt: string; error: string; saturated?: boolean; failingSince?: string; failingCount?: number };
 
 /** Filter for `listRequestDays`: inclusive UTC days, at most `limit` rows, ordered by (day, tenant, vertical, scope). */
 export interface RequestDayFilter {
@@ -178,12 +184,20 @@ export function recordRequestDayRows(sql: RedactionSql, input: RequestDayReadInp
   const day = assertDay('day', input.day);
   const attemptedAt = new Date(input.attemptedAt).toISOString();
   if ('error' in input) {
+    const saturated = input.saturated === true;
+    const since = saturated ? null : new Date(input.failingSince ?? attemptedAt).toISOString();
+    const count = saturated ? null : input.failingCount ?? 1;
+    if (count !== null && !(Number.isInteger(count) && count >= 1)) {
+      throw new Error(`failingCount must be a whole number, at least one, got ${String(count)}`);
+    }
     sql(
-      `INSERT INTO _substrat_request_day_reads (day, attempted_at, read_at, row_count, error, saturated)
-       VALUES (?, ?, NULL, NULL, ?, ?)
+      `INSERT INTO _substrat_request_day_reads
+         (day, attempted_at, read_at, row_count, error, saturated, failing_since, failing_count)
+       VALUES (?, ?, NULL, NULL, ?, ?, ?, ?)
        ON CONFLICT (day) DO UPDATE SET
-         attempted_at = excluded.attempted_at, error = excluded.error, saturated = excluded.saturated`,
-      [day, attemptedAt, input.error || 'the read failed', input.saturated ? 1 : 0],
+         attempted_at = excluded.attempted_at, error = excluded.error, saturated = excluded.saturated,
+         failing_since = excluded.failing_since, failing_count = excluded.failing_count`,
+      [day, attemptedAt, input.error || 'the read failed', saturated ? 1 : 0, since, count],
     );
     return 0;
   }
@@ -235,11 +249,12 @@ export function recordRequestDayRows(sql: RedactionSql, input: RequestDayReadInp
   }
   const written = (sql('SELECT COUNT(*) AS n FROM _substrat_request_days WHERE day = ?', [day]) as { n: number }[])[0]?.n ?? 0;
   sql(
-    `INSERT INTO _substrat_request_day_reads (day, attempted_at, read_at, row_count, error, saturated)
-     VALUES (?, ?, ?, ?, NULL, 0)
+    `INSERT INTO _substrat_request_day_reads
+       (day, attempted_at, read_at, row_count, error, saturated, failing_since, failing_count)
+     VALUES (?, ?, ?, ?, NULL, 0, NULL, NULL)
      ON CONFLICT (day) DO UPDATE SET
        attempted_at = excluded.attempted_at, read_at = excluded.read_at, row_count = excluded.row_count,
-       error = NULL, saturated = 0`,
+       error = NULL, saturated = 0, failing_since = NULL, failing_count = NULL`,
     [day, attemptedAt, attemptedAt, written],
   );
   return written;
@@ -323,7 +338,8 @@ export function listRequestRollupDayRows(sql: RedactionSql, filter: RequestRollu
     params.push(assertDay('until', filter.until));
   }
   const rows = sql(
-    `SELECT day, attempted_at, read_at, row_count, error, saturated FROM _substrat_request_day_reads
+    `SELECT day, attempted_at, read_at, row_count, error, saturated, failing_since, failing_count
+       FROM _substrat_request_day_reads
       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
       ORDER BY day`,
     params,
@@ -334,6 +350,8 @@ export function listRequestRollupDayRows(sql: RedactionSql, filter: RequestRollu
     row_count: number | null;
     error: string | null;
     saturated: number;
+    failing_since: string | null;
+    failing_count: number | null;
   }[];
   return rows.map((r) =>
     requestRollupDay.parse({
@@ -343,6 +361,8 @@ export function listRequestRollupDayRows(sql: RedactionSql, filter: RequestRollu
       rows: r.row_count,
       error: r.error,
       saturated: r.saturated === 1,
+      failingSince: r.failing_since,
+      failingCount: r.failing_count,
     }),
   );
 }

@@ -305,9 +305,20 @@ describe('the rollup end to end, and GET /meters/requests (#2501)', () => {
       ].sort((x, y) => (x.day + x.tenantId < y.day + y.tenantId ? -1 : 1)),
       // The first day had no traffic, and says so by being read with no rows.
       days: [
-        { day: '2026-10-20', attemptedAt: NOW, readAt: NOW, rows: 0, error: null, saturated: false },
-        { day: '2026-10-21', attemptedAt: NOW, readAt: NOW, rows: 1, error: null, saturated: false },
-        { day: '2026-10-22', attemptedAt: NOW, readAt: NOW, rows: 2, error: null, saturated: false },
+        ...[
+          ['2026-10-20', 0],
+          ['2026-10-21', 1],
+          ['2026-10-22', 2],
+        ].map(([day, rows]) => ({
+          day,
+          attemptedAt: NOW,
+          readAt: NOW,
+          rows,
+          error: null,
+          saturated: false,
+          failingSince: null,
+          failingCount: null,
+        })),
       ],
     });
   });

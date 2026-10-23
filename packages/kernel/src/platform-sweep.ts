@@ -779,8 +779,16 @@ export interface RequestRollupSweepReport {
    * the pass its streak began. Cleared by the next read that succeeds.
    */
   repeated: number;
+  /**
+   * The run of identical failures this pass's failure belongs to: its error, when the run began,
+   * and how many attempts it holds with this one. Null when no read failed this pass. Set on every
+   * pass the run lasts, so a standing failure stays visible after its first digest.
+   */
+  streak: { error: string; since: string; failures: number } | null;
   /** Days found saturated (`RequestRollupSaturated`): recorded as such, not read again, and not a reason to stop. */
   saturated: number;
+  /** Which days those were. */
+  saturatedDays: string[];
   /** Rows the read days wrote. */
   recorded: number;
   /** Day rows past retention deleted. */
@@ -2913,7 +2921,9 @@ async function sweepRequestRollup(
     read: 0,
     failed: 0,
     repeated: 0,
+    streak: null,
     saturated: 0,
+    saturatedDays: [],
     recorded: 0,
     pruned: 0,
   };
@@ -2924,14 +2934,15 @@ async function sweepRequestRollup(
     const nowMs = Date.parse(now());
     if (batch > 0) {
       const reads = await admin.listRequestRollupDays!(actor);
-      // The error of the newest attempt before this pass, null when it succeeded or none was made.
-      // A saturated day is a state of that day, not a failure of the read, so it is not a streak.
-      let previousError: string | null = null;
+      // The newest attempt before this pass: its error (null when it succeeded or none was made),
+      // and, when it failed, the run of identical failures it belongs to. A saturated day is a
+      // state of that day, not a failure of the read, so it belongs to no run.
+      let previous: { error: string | null; since: string | null; failures: number } = { error: null, since: null, failures: 0 };
       let newest = '';
       for (const r of reads) {
         if (!r.saturated && r.attemptedAt > newest) {
           newest = r.attemptedAt;
-          previousError = r.error;
+          previous = { error: r.error, since: r.failingSince ?? r.attemptedAt, failures: r.failingCount ?? 1 };
         }
       }
       const due = requestRollupDueDays({
@@ -2957,31 +2968,44 @@ async function sweepRequestRollup(
           );
           out.recorded += (await admin.recordRequestDay!(actor, { day, attemptedAt: now(), counts })).recorded;
           out.read += 1;
-          previousError = null;
+          // A read that succeeds ends any run, so a failure later in this pass starts a new one.
+          previous = { error: null, since: null, failures: 0 };
         } catch (err) {
           const error = message(err);
+          const attemptedAt = now();
           if (isRequestRollupSaturated(err)) {
             // A standing state of this day, not a failed read: kept visible on the day's record,
             // never read again, and no reason to stop, so the days after it are still rolled up.
             out.saturated += 1;
             saturated.push(day);
-            await admin.recordRequestDay!(actor, { day, attemptedAt: now(), error, saturated: true }).catch(() => undefined);
+            await admin.recordRequestDay!(actor, { day, attemptedAt, error, saturated: true }).catch(() => undefined);
             continue;
           }
           out.failed += 1;
-          // A standing failure goes into the failure digest when its streak begins, not on every
-          // pass it lasts. Its days still record each attempt, so the ledger shows it throughout.
-          if (error === previousError) out.repeated += 1;
+          // A standing failure goes into the failure digest when its run begins, not on every pass
+          // it lasts. Each attempt carries the run on, so its start and length stay on the ledger
+          // and in `streak`, where the pass's log line shows them.
+          const repeated = error === previous.error;
+          const streak = {
+            error,
+            since: repeated && previous.since ? previous.since : attemptedAt,
+            failures: repeated ? previous.failures + 1 : 1,
+          };
+          out.streak = streak;
+          if (repeated) out.repeated += 1;
           else report.errors.push({ kind: 'request-rollup', id: day, error });
           // The failure is the day's attempt, so the day waits `retryMs` rather than taking a slot
           // on every pass. If even this write fails, the day is simply due again next pass.
-          await admin.recordRequestDay!(actor, { day, attemptedAt: now(), error }).catch(() => undefined);
+          await admin
+            .recordRequestDay!(actor, { day, attemptedAt, error, failingSince: streak.since, failingCount: streak.failures })
+            .catch(() => undefined);
           // The next day would most likely fail the same way, and each read is a fleet-wide query
           // against the account's shared budget: one failure ends the pass's reads.
           break;
         }
       }
       // Each saturated day reaches the digest once, on the pass that found it: it is not read again.
+      out.saturatedDays = saturated;
       if (saturated.length > 0) {
         report.errors.push({
           kind: 'request-rollup',

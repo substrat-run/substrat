@@ -10984,7 +10984,16 @@ export function scopeHostContractSuite(
           [a.tenant, 41],
         ]);
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
-          { day, attemptedAt: at(day, '23:30:00'), readAt: at(day, '23:30:00'), rows: 1, error: null, saturated: false },
+          {
+            day,
+            attemptedAt: at(day, '23:30:00'),
+            readAt: at(day, '23:30:00'),
+            rows: 1,
+            error: null,
+            saturated: false,
+            failingSince: null,
+            failingCount: null,
+          },
         ]);
         // K-24: both reads are attributable.
         const reads = await host.admin.accessLog(staff, { method: 'listRequestDays' });
@@ -10999,7 +11008,17 @@ export function scopeHostContractSuite(
           recorded: 0,
         });
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
-          { day, attemptedAt: at(day, '01:00:00'), readAt: null, rows: null, error: 'HTTP 503', saturated: false },
+          // A failure named no run, so it starts one of its own.
+          {
+            day,
+            attemptedAt: at(day, '01:00:00'),
+            readAt: null,
+            rows: null,
+            error: 'HTTP 503',
+            saturated: false,
+            failingSince: at(day, '01:00:00'),
+            failingCount: 1,
+          },
         ]);
         expect(await host.admin.listRequestDays!(staff, { since: day, until: day })).toEqual([]);
 
@@ -11009,11 +11028,30 @@ export function scopeHostContractSuite(
           attemptedAt: at(day, '02:00:00'),
           counts: [{ tenantId: t.tenant, vertical: 'acme-crm', scopeId: t.scope, ...served(9), sampled: false }],
         });
-        // A later failure records the attempt and leaves the day's rows and its successful read.
-        await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '03:00:00'), error: 'HTTP 503' });
+        // A later failure records the attempt and leaves the day's rows and its successful read. It
+        // names the run it extends, and the record keeps that run's start and length.
+        await host.admin.recordRequestDay!(staff, {
+          day,
+          attemptedAt: at(day, '03:00:00'),
+          error: 'HTTP 503',
+          failingSince: at(day, '00:30:00'),
+          failingCount: 4,
+        });
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
-          { day, attemptedAt: at(day, '03:00:00'), readAt: at(day, '02:00:00'), rows: 1, error: 'HTTP 503', saturated: false },
+          {
+            day,
+            attemptedAt: at(day, '03:00:00'),
+            readAt: at(day, '02:00:00'),
+            rows: 1,
+            error: 'HTTP 503',
+            saturated: false,
+            failingSince: at(day, '00:30:00'),
+            failingCount: 4,
+          },
         ]);
+        await expect(
+          host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '04:00:00'), error: 'HTTP 503', failingCount: 0 }),
+        ).rejects.toThrow(/failingCount/);
         expect((await host.admin.listRequestDays!(staff, { since: day, until: day })).map((r) => r.requests)).toEqual([9]);
       });
 
@@ -11025,13 +11063,28 @@ export function scopeHostContractSuite(
           attemptedAt: at(day, '01:00:00'),
           error: 'more than 50000 groups',
           saturated: true,
+          failingSince: at(day, '00:00:00'),
+          failingCount: 3,
         });
+        // Saturated belongs to no run of failures, even when it is handed one.
         expect(await host.admin.listRequestRollupDays!(staff, { since: day, until: day })).toEqual([
-          { day, attemptedAt: at(day, '01:00:00'), readAt: null, rows: null, error: 'more than 50000 groups', saturated: true },
+          {
+            day,
+            attemptedAt: at(day, '01:00:00'),
+            readAt: null,
+            rows: null,
+            error: 'more than 50000 groups',
+            saturated: true,
+            failingSince: null,
+            failingCount: null,
+          },
         ]);
-        // Its twin: an ordinary failure of the same day is not saturated.
+        // Its twin: an ordinary failure of the same day is not saturated, and does start a run.
         await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '02:00:00'), error: 'HTTP 503' });
-        expect((await host.admin.listRequestRollupDays!(staff, { since: day, until: day }))[0]).toMatchObject({ saturated: false });
+        expect((await host.admin.listRequestRollupDays!(staff, { since: day, until: day }))[0]).toMatchObject({
+          saturated: false,
+          failingCount: 1,
+        });
         await host.admin.recordRequestDay!(staff, { day, attemptedAt: at(day, '03:00:00'), error: 'too many', saturated: true });
         await host.admin.recordRequestDay!(staff, {
           day,
@@ -11042,6 +11095,8 @@ export function scopeHostContractSuite(
           readAt: at(day, '04:00:00'),
           error: null,
           saturated: false,
+          failingSince: null,
+          failingCount: null,
         });
       });
 

@@ -1966,6 +1966,13 @@ export const requestRollupDay = z.object({
    * is complete. A standing state: the day is not read again, and the days after it are.
    */
   saturated: z.boolean(),
+  /**
+   * While the day's last attempt failed (not saturated): when the run of identical failures it
+   * belongs to began, and how many attempts, across days, that run holds up to this one. Null
+   * otherwise. A standing failure is mailed once, so this is where its length stays visible.
+   */
+  failingSince: instant.nullable(),
+  failingCount: z.number().int().positive().nullable(),
 });
 export type RequestRollupDay = z.infer<typeof requestRollupDay>;
 

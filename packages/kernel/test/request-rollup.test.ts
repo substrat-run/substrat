@@ -96,6 +96,8 @@ interface ReadRow {
   rows: number | null;
   error: string | null;
   saturated: boolean;
+  failingSince: string | null;
+  failingCount: number | null;
 }
 
 /** A directory that keeps the rollup's ledger in memory, as `recordRequestDayRows` would. */
@@ -131,6 +133,8 @@ function rollupHost(opts: { rollup?: boolean; failRecord?: boolean; order?: stri
           rows: prior?.rows ?? null,
           error: input.error,
           saturated: input.saturated === true,
+          failingSince: input.saturated ? null : input.failingSince ?? input.attemptedAt,
+          failingCount: input.saturated ? null : input.failingCount ?? 1,
         });
         return { recorded: 0 };
       }
@@ -141,6 +145,8 @@ function rollupHost(opts: { rollup?: boolean; failRecord?: boolean; order?: stri
         rows: input.counts.length,
         error: null,
         saturated: false,
+        failingSince: null,
+        failingCount: null,
       });
       return { recorded: input.counts.length };
     };
@@ -183,7 +189,18 @@ describe('the request-rollup phase', () => {
 
     const first = await sweep(host, options);
     expect(asked).toEqual(['2026-10-19', '2026-10-20']);
-    expect(first.requestRollup).toEqual({ due: 4, deferred: 2, read: 2, failed: 0, repeated: 0, saturated: 0, recorded: 2, pruned: 0 });
+    expect(first.requestRollup).toEqual({
+      due: 4,
+      deferred: 2,
+      read: 2,
+      failed: 0,
+      repeated: 0,
+      streak: null,
+      saturated: 0,
+      saturatedDays: [],
+      recorded: 2,
+      pruned: 0,
+    });
     expect(first.errors).toEqual([]);
 
     const second = await sweep(host, options);
@@ -211,7 +228,10 @@ describe('the request-rollup phase', () => {
     const failed = await sweep(host, options(NOW));
     expect(failed.requestRollup).toMatchObject({ due: 1, read: 0, failed: 1, recorded: 0 });
     expect(failed.errors).toEqual([{ kind: 'request-rollup', id: '2026-10-22', error: expect.stringMatching(/saturated/) }]);
-    expect(recorded).toEqual([{ day: '2026-10-22', attemptedAt: NOW, error: expect.stringMatching(/saturated/) }]);
+    // The attempt starts a run of one, which is what the pass's log line would show.
+    expect(recorded).toEqual([
+      { day: '2026-10-22', attemptedAt: NOW, error: expect.stringMatching(/saturated/), failingSince: NOW, failingCount: 1 },
+    ]);
     expect(reads.get('2026-10-22')).toMatchObject({ readAt: null, error: expect.stringMatching(/saturated/) });
 
     // Within the hour the day is not tried again, so a standing failure is not every pass's error.
@@ -248,6 +268,11 @@ describe('the request-rollup phase', () => {
     // In the digest once, when the streak began; counted, not mailed, on the eleven passes after.
     expect(passes.map((p) => p.errors)).toEqual([1, ...Array(11).fill(0)]);
     expect(passes.slice(1).every((p) => p.rollup?.failed === 1 && p.rollup.repeated === 1)).toBe(true);
+    // The run is on every pass's report, with its start and its length, though only the first
+    // pass mailed it: that is what the pass's log line shows while it lasts.
+    expect(passes.map((p) => p.rollup?.streak?.failures)).toEqual(Array.from({ length: 12 }, (_, i) => i + 1));
+    expect(passes.every((p) => p.rollup?.streak?.since === at(0))).toBe(true);
+    expect(passes[11]!.rollup?.streak?.error).toMatch(/HTTP 403/);
     // Every attempt is still recorded, so the ledger shows the failure throughout. The hour's
     // retry spacing cycles them over four days: the oldest is due again on the fifth pass.
     expect(recorded.filter((r) => 'error' in r)).toHaveLength(12);
@@ -257,12 +282,12 @@ describe('the request-rollup phase', () => {
     failing = false;
     const recovered = await sweep(host, { read, now: () => at(12) });
     expect(recovered.errors).toEqual([]);
-    expect(recovered.requestRollup).toMatchObject({ read: 7, failed: 0, repeated: 0 });
+    expect(recovered.requestRollup).toMatchObject({ read: 7, failed: 0, repeated: 0, streak: null });
     // So the same failure afterwards is a new streak, and is reported again.
     failing = true;
     const again = await sweep(host, { read, now: () => at(13) });
     expect(again.errors).toEqual([{ kind: 'request-rollup', id: expect.any(String), error: expect.stringMatching(/HTTP 403/) }]);
-    expect(again.requestRollup).toMatchObject({ failed: 1, repeated: 0 });
+    expect(again.requestRollup).toMatchObject({ failed: 1, repeated: 0, streak: { since: at(13), failures: 1 } });
   });
 
   it('records a saturated day as such and goes on: it never freezes the days after it, and is not read again', async () => {

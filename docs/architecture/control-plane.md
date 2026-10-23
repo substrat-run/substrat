@@ -1394,7 +1394,10 @@ than that, so the scheduled pass keeps a compact copy.
   pass, so a standing failure (a credential without Analytics Engine read, a wrong dataset, an
   outage) costs one query a pass, not a batch. It reaches the failure digest once, when its
   streak begins: a failure that repeats the previous attempt's error is counted, not mailed
-  again, until a read succeeds. A malformed count refuses the whole day.
+  again, until a read succeeds. It stays visible all the same. Each failed attempt carries its
+  run on (`failingSince`, `failingCount` on the day's record), and the scheduled pass's log line
+  names the run on every pass it lasts: its error, when it began and how many attempts it holds.
+  A malformed count refuses the whole day.
 - **A saturated day is visible, and blocks nothing.** One query answers at most 50,000
   (tenant, vertical, scope) groups. A day with more would be a part of the day passing for the
   whole, so it is refused and recorded with `saturated: true` on its record. It is reported

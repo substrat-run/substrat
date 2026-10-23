@@ -12,13 +12,21 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { ControlPlaneError, VerticalClient, drainScopePlatformRequests } from '@substrat-run/control-plane-api';
-import { INERT_SCOPE_REASON, StorageReadUnsupported, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
+import {
+  INERT_SCOPE_REASON,
+  StorageReadUnsupported,
+  globalFetch,
+  runPlatformSweep,
+  ulid,
+  type PlatformSweepReport,
+} from '@substrat-run/kernel';
 import worker, {
   drainContextOf,
   drainTarget,
   platformRequestSweepRun,
   recordPlatformRequestPass,
   requestRollupFor,
+  requestRollupLogOf,
   storageReaderFor,
   storeStorageReaderFor,
   timedDrain,
@@ -522,5 +530,58 @@ describe('requestRollupFor (#2501)', () => {
     expect(asked).toHaveLength(1);
     expect(asked[0]!.url).toBe('https://api.cloudflare.com/client/v4/accounts/acct/analytics_engine/sql');
     expect(asked[0]!.sql).toContain('FROM substrat_router_test');
+  });
+});
+
+describe('requestRollupLogOf: a standing rollup failure stays in the pass log (#2501)', () => {
+  const base = { due: 0, deferred: 0, read: 0, failed: 0, repeated: 0, streak: null, saturated: 0, saturatedDays: [], recorded: 0, pruned: 0 };
+
+  it('says nothing for a pass the rollup did nothing in', () => {
+    expect(requestRollupLogOf(null)).toBeNull();
+    expect(requestRollupLogOf(undefined)).toBeNull();
+    expect(requestRollupLogOf({ ...base, due: 3, deferred: 0 })).toBeNull();
+  });
+
+  it('names days read, a failing run with its start and length, and days found saturated', () => {
+    expect(requestRollupLogOf({ ...base, read: 2, recorded: 5 })).toEqual({ read: 2, recorded: 5 });
+    const streak = { error: 'HTTP 403', since: '2026-10-23T12:00:00.000Z', failures: 4 };
+    expect(requestRollupLogOf({ ...base, failed: 1, repeated: 1, streak })).toEqual({ read: 0, recorded: 0, failing: streak });
+    expect(requestRollupLogOf({ ...base, saturated: 1, saturatedDays: ['2026-10-21'] })).toEqual({
+      read: 0,
+      recorded: 0,
+      saturatedDays: ['2026-10-21'],
+    });
+  });
+
+  it('on the directory DO: the second pass of a standing failure mails nothing, and its log line still names the run', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const staff = platformActorId.parse(ulid());
+    // Days no other test of this pool touches: the rollup's record of a day is fleet-wide.
+    const pass = (now: string) =>
+      runPlatformSweep(host, {
+        actor: staff,
+        fetch: globalFetch,
+        sweepers: {},
+        drainRetries: false,
+        // Only the rollup is under test: leave the shared directory's scopes alone.
+        reconcileMigrations: false,
+        runSchedules: false,
+        requestRollup: {
+          lookbackDays: 2,
+          now: () => now,
+          read: async () => {
+            throw new Error('Cloudflare Analytics Engine query failed: HTTP 403 Authentication error');
+          },
+        },
+      });
+    const first = await pass('2034-03-10T12:00:00.000Z');
+    expect(first.errors.filter((e) => e.kind === 'request-rollup')).toHaveLength(1);
+    const second = await pass('2034-03-10T12:15:00.000Z');
+    expect(second.errors.filter((e) => e.kind === 'request-rollup')).toEqual([]);
+    expect(requestRollupLogOf(second.requestRollup)).toEqual({
+      read: 0,
+      recorded: 0,
+      failing: { error: expect.stringMatching(/HTTP 403/), since: '2034-03-10T12:00:00.000Z', failures: 2 },
+    });
   });
 });
