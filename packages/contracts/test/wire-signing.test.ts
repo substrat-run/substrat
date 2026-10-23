@@ -37,6 +37,7 @@ import {
   WIRE_ROUTER_KEYS_VAR,
   WIRE_STATE_VAR,
   WIRE_STATES,
+  type WireBodyReader,
   type WireBytes,
   type WireEnvelopeInput,
   type WireExpectation,
@@ -100,7 +101,7 @@ interface Check {
   readonly vector?: Vector;
   readonly header?: string | null;
   readonly signature?: string | null;
-  readonly expected?: Partial<WireExpectation> & { readonly body?: WireBytes };
+  readonly expected?: Partial<WireExpectation> & { readonly body?: WireBytes | WireBodyReader };
   readonly now?: number;
   readonly keys?: WireVerificationKeys;
   /** A call's replay policy, as a cache (its scope pinned); the vector's own expectation says `'none'`. */
@@ -952,5 +953,33 @@ describe('wireEndpoint: which envelope an endpoint accepts', () => {
       expect(wireEndpoint(path)).toEqual({ kind: 'call', issuers: ['platform'] });
     }
     expect(wireEndpoint('/internal/vertical-invoke')).toEqual({ kind: 'call', issuers: ['platform', 'router'] });
+  });
+});
+
+describe('a call’s body given as a reader', () => {
+  const reader = (body: WireBytes | null) => {
+    const calls: number[] = [];
+    return { calls, read: () => (calls.push(1), Promise.resolve(body)) };
+  };
+  const bodyOf = (vector: Vector) => vector.input.body as WireBytes;
+
+  it('is read once, at the body check, and verifies as the bytes it returns', async () => {
+    const r = reader(bodyOf(CALL));
+    expect((await check({ vector: CALL, expected: { body: r.read } })).verdict).toMatchObject({ ok: true });
+    expect(r.calls).toHaveLength(1);
+  });
+
+  it('is never read when the envelope is refused before the body', async () => {
+    const r = reader(bodyOf(CALL));
+    expect(await reason({ vector: CALL, signature: ROUTE.signature, expected: { body: r.read } })).toBe('signature');
+    expect(await reason({ vector: CALL, expected: { body: r.read, aud: 'other' } })).toBe('audience');
+    expect(await reason({ vector: CALL, now: CALL.input.exp + 3600, expected: { body: r.read } })).toBe('expired');
+    expect(await reason({ vector: CALL, expected: { body: r.read, target: '/elsewhere' } })).toBe('target');
+    expect(r.calls).toEqual([]);
+  });
+
+  it('a read that answers null, or other bytes, is refused for the body', async () => {
+    expect(await reason({ vector: CALL, expected: { body: reader(null).read } })).toBe('body');
+    expect(await reason({ vector: CALL, expected: { body: reader('tampered').read } })).toBe('body');
   });
 });

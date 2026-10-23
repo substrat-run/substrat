@@ -250,7 +250,9 @@ finished reading. A clock that is not a number fails both comparisons rather tha
 ### 3.6 Bodies
 
 A `call` binds its exact body, so the verifier reads the whole body before it acts on any of it.
-Web Crypto has no streaming digest, so this means buffering. Every internal endpoint today reads
+Web Crypto has no streaming digest, so this means buffering. It reads it only when the body is the
+next check (a `WireBodyReader`), after the signature, the audience, the time, the method and the
+target have passed: a call with no envelope, or one refused before that, is never buffered. Every internal endpoint today reads
 a whole JSON body anyway, and a scope too large for one call already moves in pages (#2450). An
 empty body is the empty string or zero bytes. A body that is absent or `null` (a body read that
 failed) is refused, never digested as empty. A `route` binds no body: the router does not buffer

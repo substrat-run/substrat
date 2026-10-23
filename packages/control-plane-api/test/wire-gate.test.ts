@@ -107,8 +107,13 @@ function vertical() {
   return { worker, seen };
 }
 
-function gated(extra: Partial<WireGateOptions<Env>> = {}) {
-  const v = vertical();
+/** A vertical that answers without reading its body. */
+function unreading() {
+  const seen: Request[] = [];
+  return { worker: { fetch: (request: Request) => (seen.push(request), new Response('ok', { status: 202 })) }, seen };
+}
+
+function gated(extra: Partial<WireGateOptions<Env>> = {}, v: { worker: object; seen: Request[] } = vertical()) {
   const lines: string[] = [];
   const gate = withWireGate<Env>(v.worker as GatedWorker<Env>, {
     routedNode: (headers, env) => readRoutedNode(headers, { expectedSecret: env['ROUTER_SECRET'] }),
@@ -533,6 +538,74 @@ describe('signed-only: the envelope alone decides', () => {
       expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid' });
     }
     expect(answers).toEqual([503, 200]);
+  });
+});
+
+describe('a call’s body is read only once its envelope has passed every cheaper check', () => {
+  /** A call whose body never arrives, recording whether anything asked for it. */
+  function stalledCall(headers: Record<string, string>) {
+    const asked = { pulled: false };
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          asked.pulled = true;
+          return new Promise<void>(() => {});
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return { asked, request: new Request(PROVISION, { method: 'POST', headers, body: stream, duplex: 'half' } as RequestInit) };
+  }
+
+  it('with no envelope, dual hands the call on unread, and signed-only refuses it unread', async () => {
+    const dual = gated({}, unreading());
+    const handedOn = stalledCall({ [PLATFORM_SECRET_HEADER]: CALL_VALUE });
+    expect((await dual.fetch(handedOn.request, envOf('dual'))).status).toBe(202);
+    expect(dual.seen[0]).toBe(handedOn.request);
+    expect(handedOn.asked.pulled).toBe(false);
+    expect(dual.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'missing' });
+
+    const signedOnly = gated({}, unreading());
+    const refused = stalledCall({ [PLATFORM_SECRET_HEADER]: CALL_VALUE });
+    expect((await signedOnly.fetch(refused.request, envOf('signed-only'))).status).toBe(401);
+    expect(refused.asked.pulled).toBe(false);
+    expect(signedOnly.seen).toEqual([]);
+  });
+
+  it.each([
+    ['signature', async () => ({ ...(await callEnvelope(PROVISION, '{}')), [WIRE_SIGNATURE_HEADER]: (await callEnvelope(PROVISION, '{"other":1}'))[WIRE_SIGNATURE_HEADER]! })],
+    ['kid', async () => callEnvelope(PROVISION, '{}', {}, stranger)],
+    ['audience', async () => callEnvelope(PROVISION, '{}', { aud: 'another-deployment' })],
+    ['expired', async () => callEnvelope(PROVISION, '{}', { iat: NOW - 200, exp: NOW - 100 })],
+    ['method', async () => callEnvelope(PROVISION, '{}', { method: 'PUT' })],
+    ['target', async () => callEnvelope('https://vertical/internal/restore', '{}')],
+  ])('an envelope refused for %s, before the body, never reads it', async (reason, envelope) => {
+    const g = gated({}, unreading());
+    const { asked, request } = stalledCall({ [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await envelope()) });
+    expect((await g.fetch(request, envOf('dual'))).status).toBe(202);
+    expect(g.seen[0]).toBe(request);
+    expect(asked.pulled).toBe(false);
+    expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason });
+  });
+
+  it('its positive twin: an envelope that passes them reads the body, and the vertical receives it', async () => {
+    const g = gated();
+    let pulled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulled = true;
+          controller.enqueue(new TextEncoder().encode('{"ping":true}'));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const headers = { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(PROVISION, '{"ping":true}')) };
+    const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body, duplex: 'half' } as RequestInit), envOf('dual'));
+    expect(pulled).toBe(true);
+    expect(await bodyOf(res)).toBe('{"ping":true}');
+    expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted' });
   });
 });
 

@@ -466,11 +466,18 @@ interface WireExpectationOf<K extends WireKind> {
   readonly scopeId?: string;
 }
 
+/**
+ * A call's body, read on demand: the verifier calls it only when the body is the next check, after
+ * the signature and every cheaper check have passed, so an envelope refused before that never costs
+ * a read. It answers `null` when the body could not be read, which is refused as `body`.
+ */
+export type WireBodyReader = () => WireBytes | null | Promise<WireBytes | null>;
+
 export type WireExpectation =
   | WireExpectationOf<'route'>
   | (WireExpectationOf<'call'> & {
-      /** The exact body received, read before any of it is acted on. */
-      readonly body: WireBytes;
+      /** The exact body received, read before any of it is acted on; or a reader that reads it then. */
+      readonly body: WireBytes | WireBodyReader;
       /** Required: an endpoint that forgets to say fails closed, rather than accepting replays. */
       readonly replay: WireReplayPolicy;
     });
@@ -586,10 +593,12 @@ export async function verifyWireEnvelope(input: {
   if (!(nowSeconds <= claims.exp + WIRE_CLOCK_SKEW_SECONDS)) return refuse('expired');
   if (claims.method !== expected.method) return refuse('method');
   if (claims.targetDigest !== (await wireDigest(expected.target))) return refuse('target');
-  // The type requires a call's body; an untyped caller that leaves it out, or hands over the null of
-  // a body read that failed, is refused, never read as an empty body.
-  if (expected.kind === 'call' && (expected.body == null || claims.bodyDigest !== (await wireDigest(expected.body)))) {
-    return refuse('body');
+  if (expected.kind === 'call') {
+    // A reader is read here and nowhere earlier. The type requires a call's body; an untyped caller
+    // that leaves it out, or hands over the null of a body read that failed, is refused, never read
+    // as an empty body.
+    const body = typeof expected.body === 'function' ? await expected.body() : expected.body;
+    if (body == null || claims.bodyDigest !== (await wireDigest(body))) return refuse('body');
   }
   if (expected.tenantId !== undefined && claims.tenantId !== expected.tenantId) return refuse('scope');
   if (expected.scopeId !== undefined && claims.scopeId !== expected.scopeId) return refuse('scope');

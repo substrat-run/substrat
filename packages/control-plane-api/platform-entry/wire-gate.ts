@@ -275,13 +275,22 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       return staticFault('keys', servedAs(legacy.identity));
     }
 
-    // A call binds its exact body (RFC §3.6), so the body is read whole before anything acts on
-    // it, and the vertical is handed the same bytes.
-    let body: ArrayBuffer | undefined;
-    if (call && request.body !== null) {
-      body = await request.arrayBuffer();
+    // A call binds its exact body (RFC §3.6). It is read whole, and only when the verifier reaches
+    // it, after the signature and every cheaper check: a call that carries no envelope, or one
+    // refused before that, is handed on with its body unread. One that is read hands the vertical
+    // the same bytes.
+    const readBody = async (): Promise<ArrayBuffer | string | null> => {
+      if (request.body === null) return '';
+      let body: ArrayBuffer;
+      try {
+        body = await request.arrayBuffer();
+      } catch {
+        // The caller's body did not arrive: refused as `body`, never digested as empty.
+        return null;
+      }
       downstream = new Request(request, { body });
-    }
+      return body;
+    };
 
     // A call that changes state spends its nonce in the scope's own store, so it pins that scope.
     // One that names no scope has no store to spend it in, and is held to its window alone.
@@ -294,7 +303,7 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
           aud,
           method,
           target,
-          body: body ?? '',
+          body: readBody,
           replay: pinned === undefined ? 'none' : store ? boundedCache(store, timeoutMs) : NO_NONCE_STORE,
           scopeId: pinned,
         }
