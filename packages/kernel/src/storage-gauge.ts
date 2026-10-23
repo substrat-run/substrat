@@ -8,6 +8,7 @@ import {
 } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
 import { assertRowLimit, boundedRetentionDelete } from './scope-host.js';
+import { utcDayMonthsBefore } from './billing-retention.js';
 
 /**
  * The stored storage gauge (#1524), as statements both adapters run against their directory:
@@ -140,17 +141,9 @@ export function storageGaugeDay(readAt: string): string {
   return new Date(readAt).toISOString().slice(0, 10);
 }
 
-/**
- * The first day retention keeps: thirteen calendar months before `nowMs`, as a UTC day. The
- * day is clamped to the target month's last day, so the 31st of a month counts back to the
- * 28th, 29th or 30th rather than rolling forward into the month after.
- */
+/** The first day retention keeps: thirteen calendar months before `nowMs`, as a UTC day. */
 export function storageRetentionHorizon(nowMs: number): string {
-  const now = new Date(nowMs);
-  const month = now.getUTCMonth() - STORAGE_GAUGE_RETENTION_MONTHS;
-  // Day 0 of the following month is the last day of the target month.
-  const lastDay = new Date(Date.UTC(now.getUTCFullYear(), month + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(now.getUTCFullYear(), month, Math.min(now.getUTCDate(), lastDay))).toISOString().slice(0, 10);
+  return utcDayMonthsBefore(nowMs, STORAGE_GAUGE_RETENTION_MONTHS);
 }
 
 /**

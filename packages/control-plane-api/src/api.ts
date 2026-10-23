@@ -101,6 +101,8 @@ import {
   dataSubjectId as dataSubjectIdSchema,
   scopeId as scopeIdSchema,
   scopeStatus,
+  requestRollupReading,
+  utcDay,
   storageShape,
   surfaceName,
   tenantId as tenantIdSchema,
@@ -180,6 +182,8 @@ import {
   ulid,
   auditWarningOf,
   type SubjectErasureFence,
+  REQUEST_ROLLUP_LIMIT_DEFAULT,
+  REQUEST_ROLLUP_LIMIT_MAX,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -2367,6 +2371,65 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           if (delegatesToVerticals) throw new Error(`no deployment resolves for vertical ${scope.vertical}`);
           return c.var.admin.scopeDatabaseSize(actor, q.tenantId, scope.id);
         },
+      }),
+    );
+  });
+
+  // The daily request rollup (#2501): the stored per-(day, tenant, vertical, scope) request
+  // counts the platform sweep reads from the router's Analytics Engine datapoints before they
+  // age out, and the rollup's record of each day in the window. Staff-only like `/meters`. Every
+  // count is an estimate (Analytics Engine samples), and the answer says so twice: `estimated`
+  // on the reading and on every row. A directory read; nothing is queried live. `days` is what
+  // tells a day without traffic from a day not yet rolled up.
+  //
+  // A page is at most half the directory's own read bound, so the one row past the page that
+  // says the window holds more always fits under it.
+  const REQUEST_ROLLUP_PAGE_MAX = REQUEST_ROLLUP_LIMIT_MAX / 2;
+  app.get('/meters/requests', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.listRequestDays || !admin.listRequestRollupDays) {
+      return refuseStatus(c, 501, 'this control plane keeps no request rollup');
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const q = z
+      .object({
+        tenantId: tenantIdSchema.optional(),
+        scopeId: scopeIdSchema.optional(),
+        vertical: z.string().min(1).optional(),
+        since: utcDay.optional(),
+        until: utcDay.default(today),
+        limit: z.coerce.number().int().min(1).max(REQUEST_ROLLUP_PAGE_MAX).default(REQUEST_ROLLUP_LIMIT_DEFAULT),
+      })
+      .parse({
+        tenantId: c.req.query('tenantId') || undefined,
+        scopeId: c.req.query('scopeId') || undefined,
+        vertical: c.req.query('vertical') || undefined,
+        since: c.req.query('since') || undefined,
+        until: c.req.query('until') || undefined,
+        limit: c.req.query('limit') || undefined,
+      });
+    // Unless a window is named, the 31 days ending at `until`, both ends included.
+    const since = q.since ?? new Date(Date.parse(`${q.until}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
+    if (since > q.until) return refuse(c, 'validation_failed', '`since` is after `until`');
+    const actor = c.get('actor');
+    // One row past the page says whether the window holds more than it returned.
+    const rows = await admin.listRequestDays(actor, {
+      ...(q.tenantId ? { tenantId: q.tenantId } : {}),
+      ...(q.scopeId ? { scopeId: q.scopeId } : {}),
+      ...(q.vertical ? { vertical: q.vertical } : {}),
+      since,
+      until: q.until,
+      limit: q.limit + 1,
+    });
+    const days = await admin.listRequestRollupDays(actor, { since, until: q.until });
+    return c.json(
+      requestRollupReading.parse({
+        estimated: true,
+        since,
+        until: q.until,
+        rows: rows.slice(0, q.limit),
+        truncated: rows.length > q.limit,
+        days,
       }),
     );
   });

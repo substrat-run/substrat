@@ -12,12 +12,21 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { ControlPlaneError, VerticalClient, drainScopePlatformRequests } from '@substrat-run/control-plane-api';
-import { INERT_SCOPE_REASON, StorageReadUnsupported, ulid, type PlatformSweepReport } from '@substrat-run/kernel';
+import {
+  INERT_SCOPE_REASON,
+  StorageReadUnsupported,
+  globalFetch,
+  runPlatformSweep,
+  ulid,
+  type PlatformSweepReport,
+} from '@substrat-run/kernel';
 import worker, {
   drainContextOf,
   drainTarget,
   platformRequestSweepRun,
   recordPlatformRequestPass,
+  requestRollupFor,
+  requestRollupLogOf,
   storageReaderFor,
   storeStorageReaderFor,
   timedDrain,
@@ -491,5 +500,100 @@ describe('storeStorageReaderFor (#2212)', () => {
     });
     await expect(skip(scope(null))).resolves.toBeNull();
     expect(resolved).toBe(0);
+  });
+});
+
+describe('requestRollupFor (#2501)', () => {
+  const configured = { CF_API_TOKEN: 'tok', CF_ACCOUNT_ID: 'acct', ROUTER_ANALYTICS_DATASET: 'substrat_router_test' };
+
+  it('runs no rollup without the credential, the account or the router dataset', () => {
+    expect(requestRollupFor({ ...configured, CF_API_TOKEN: undefined })).toBeUndefined();
+    expect(requestRollupFor({ ...configured, CF_ACCOUNT_ID: undefined })).toBeUndefined();
+    // Never defaulted: TEST must not read production's dataset as its own.
+    expect(requestRollupFor({ ...configured, ROUTER_ANALYTICS_DATASET: undefined })).toBeUndefined();
+  });
+
+  it('with all three, reads one day of the named dataset through the Analytics Engine API', async () => {
+    const rollup = requestRollupFor(configured);
+    expect(rollup).toBeDefined();
+    const asked: { url: string; sql: string }[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      asked.push({ url: String(url), sql: String(init?.body ?? '') });
+      return new Response(JSON.stringify({ data: [] }));
+    }) as typeof fetch;
+    try {
+      await expect(rollup!.read('2026-10-21')).resolves.toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.url).toBe('https://api.cloudflare.com/client/v4/accounts/acct/analytics_engine/sql');
+    expect(asked[0]!.sql).toContain('FROM substrat_router_test');
+  });
+});
+
+describe('requestRollupLogOf: a standing rollup failure stays in the pass log (#2501)', () => {
+  const base = { due: 0, deferred: 0, read: 0, failed: 0, repeated: 0, streak: null, saturated: 0, saturatedDays: [], recorded: 0, pruned: 0 };
+
+  it('says nothing for a pass the rollup did nothing in', () => {
+    expect(requestRollupLogOf(null)).toBeNull();
+    expect(requestRollupLogOf(undefined)).toBeNull();
+    expect(requestRollupLogOf({ ...base, due: 3, deferred: 0 })).toBeNull();
+  });
+
+  it('names days read, a failing run with its start and length, and days found saturated', () => {
+    expect(requestRollupLogOf({ ...base, read: 2, recorded: 5 })).toEqual({ read: 2, recorded: 5 });
+    const streak = { error: 'HTTP 403', since: '2026-10-23T12:00:00.000Z', failures: 4 };
+    expect(requestRollupLogOf({ ...base, failed: 1, repeated: 1, streak })).toEqual({ read: 0, recorded: 0, failing: streak });
+    // A pass between the run's retries reads nothing and still names it.
+    expect(requestRollupLogOf({ ...base, streak })).toEqual({ read: 0, recorded: 0, failing: streak });
+    expect(requestRollupLogOf({ ...base, saturated: 1, saturatedDays: ['2026-10-21'] })).toEqual({
+      read: 0,
+      recorded: 0,
+      saturatedDays: ['2026-10-21'],
+    });
+  });
+
+  it('on the directory DO: the second pass of a standing failure mails nothing, and its log line still names the run', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const staff = platformActorId.parse(ulid());
+    // Days no other test of this pool touches: the rollup's record of a day is fleet-wide.
+    const pass = (now: string) =>
+      runPlatformSweep(host, {
+        actor: staff,
+        fetch: globalFetch,
+        sweepers: {},
+        drainRetries: false,
+        // Only the rollup is under test: leave the shared directory's scopes alone.
+        reconcileMigrations: false,
+        runSchedules: false,
+        requestRollup: {
+          lookbackDays: 2,
+          now: () => now,
+          read: async () => {
+            throw new Error('Cloudflare Analytics Engine query failed: HTTP 403 Authentication error');
+          },
+        },
+      });
+    const first = await pass('2034-03-10T12:00:00.000Z');
+    expect(first.errors.filter((e) => e.kind === 'request-rollup')).toHaveLength(1);
+    const second = await pass('2034-03-10T12:15:00.000Z');
+    expect(second.errors.filter((e) => e.kind === 'request-rollup')).toEqual([]);
+    expect(requestRollupLogOf(second.requestRollup)).toEqual({
+      read: 0,
+      recorded: 0,
+      failing: { error: expect.stringMatching(/HTTP 403/), since: '2034-03-10T12:00:00.000Z', failures: 2 },
+    });
+    // Both days were tried within the hour, so the third pass has nothing to retry: it takes the
+    // run from the ledger, adds no attempt and mails nothing, and its log line still names it.
+    const third = await pass('2034-03-10T12:30:00.000Z');
+    expect(third.requestRollup).toMatchObject({ due: 0, read: 0, failed: 0 });
+    expect(third.errors.filter((e) => e.kind === 'request-rollup')).toEqual([]);
+    expect(requestRollupLogOf(third.requestRollup)).toEqual({
+      read: 0,
+      recorded: 0,
+      failing: { error: expect.stringMatching(/HTTP 403/), since: '2034-03-10T12:00:00.000Z', failures: 2 },
+    });
   });
 });

@@ -58,6 +58,8 @@ import {
   type SweepRunInput,
   type HostAdmin,
   type OrphanAttachmentSweepOptions,
+  type RequestRollupSweepOptions,
+  type RequestRollupSweepReport,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -100,6 +102,7 @@ import {
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
+  createRouterRequestDayReader,
   createCfDoNamespaceReader,
   createR2AccessLogSink,
   createPipelinesEventSink,
@@ -918,6 +921,48 @@ function observabilityFor(env: Env) {
     // #1691: the same never-defaulted rule for the connector-call dataset.
     connectorCallsDataset: env.CONNECTOR_ANALYTICS_DATASET,
   });
+}
+
+/**
+ * #2501: the daily request rollup's reader — one closed UTC day of the router's Analytics Engine
+ * datapoints, counted per (tenant, vertical, scope), for the scheduled pass to keep in the
+ * directory before the datapoints age out. The same credential and the same never-defaulted
+ * dataset as `observabilityFor`'s tenant grain: absent any of them, the pass runs no rollup,
+ * which is the honest answer for TEST reading production's traffic as much as for self-host.
+ */
+export function requestRollupFor(
+  env: Pick<Env, 'CF_API_TOKEN' | 'CF_ACCOUNT_ID' | 'ROUTER_ANALYTICS_DATASET'>,
+): RequestRollupSweepOptions | undefined {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID || !env.ROUTER_ANALYTICS_DATASET) return undefined;
+  return {
+    read: createRouterRequestDayReader({
+      accountId: env.CF_ACCOUNT_ID,
+      apiToken: env.CF_API_TOKEN,
+      routerDataset: env.ROUTER_ANALYTICS_DATASET,
+    }),
+  };
+}
+
+/**
+ * #2501: what the pass's log line says about the request rollup, or null when it did nothing
+ * worth a line. A standing failure is mailed once, when its run begins (the phase keeps repeats
+ * out of `report.errors`), so this line is where it stays visible on every pass it lasts, the
+ * passes between its hourly retries included: the run's error, when it began, and how many
+ * attempts it holds.
+ */
+export function requestRollupLogOf(rollup: RequestRollupSweepReport | null | undefined): {
+  read: number;
+  recorded: number;
+  failing?: { error: string; since: string; failures: number };
+  saturatedDays?: string[];
+} | null {
+  if (!rollup || (rollup.read === 0 && rollup.failed === 0 && rollup.saturated === 0 && rollup.streak === null)) return null;
+  return {
+    read: rollup.read,
+    recorded: rollup.recorded,
+    ...(rollup.streak ? { failing: rollup.streak } : {}),
+    ...(rollup.saturatedDays.length > 0 ? { saturatedDays: rollup.saturatedDays } : {}),
+  };
 }
 
 /**
@@ -2265,6 +2310,7 @@ export default {
       : undefined;
     const crossVertical = crossVerticalFor(env, host);
     const orphanAttachments = orphanAttachmentSweepFor(env, host.admin, resolveRef);
+    const requestRollup = requestRollupFor(env);
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
@@ -2377,6 +2423,9 @@ export default {
       // #2314: attachment bytes no row names, collected through the script that serves each scope.
       // Off unless ORPHAN_ATTACHMENT_SWEEP says otherwise, and a dry run before any delete.
       ...(orphanAttachments ? { orphanAttachments } : {}),
+      // #2501: each closed day of the router's request datapoints, kept in the directory as
+      // estimated counts before Analytics Engine ages them out. Off without the router's dataset.
+      ...(requestRollup ? { requestRollup } : {}),
     });
     // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
     // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
@@ -2412,6 +2461,9 @@ export default {
     // answers so on every visit, and one whose store binding is missing fails into `errors` instead.
     const oa = report.orphanAttachments;
     const orphansActive = oa != null && (oa.orphans > 0 || oa.deleted > 0 || oa.refused.count > 0 || oa.unsupported.count > 0);
+    // #2501: days rolled up, a failing run (on every pass it lasts, between its hourly retries too,
+    // though the digest mails it once) and days found saturated.
+    const rollup = requestRollupLogOf(report.requestRollup);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -2425,7 +2477,8 @@ export default {
       skipped !== undefined ||
       unsettleable !== undefined ||
       cvActive ||
-      orphansActive
+      orphansActive ||
+      rollup !== null
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -2451,6 +2504,7 @@ export default {
             }
           : {}),
         ...(orphansActive ? { orphanAttachments: oa } : {}),
+        ...(rollup ? { requestRollup: rollup } : {}),
         errors: report.errors,
       });
     }
