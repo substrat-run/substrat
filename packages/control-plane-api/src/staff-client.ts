@@ -62,6 +62,7 @@ import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 import type { ClientProvisionScopeInput, RebindReview } from '@substrat-run/control-plane-client';
 import type { DoNamespaceRecord } from './do-namespaces.js';
 import type { ConnectorCallsBucket } from './observability.js';
+import { LOGS_INCOMPLETE_HEADER } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 
@@ -116,6 +117,17 @@ export interface RecentLogEvent {
   service: string | null;
   outcome: string | null;
   raw: unknown;
+}
+
+/** What `recentLogsRead` answers: the lines, and whether the plane said it may be missing some. */
+export interface RecentLogsRead {
+  events: RecentLogEvent[];
+  /**
+   * `true` when the plane set `x-substrat-logs-incomplete: 1` beside the list: the read stopped
+   * before it could vouch for the whole window, so the page may be incomplete or missing newer
+   * lines. `false` is its absence — the plane saying nothing, which for a complete page is all it says.
+   */
+  incomplete: boolean;
 }
 
 /**
@@ -736,6 +748,20 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
     this.call(`/observability/metrics${query({ hours })}`);
   recentLogs = (q: { service?: string; level?: string; hours?: number; limit?: number } = {}): Promise<RecentLogEvent[]> =>
     this.call(`/observability/logs${query({ ...q })}`);
+  /**
+   * The same read as `recentLogs`, with what its body cannot carry: the plane's
+   * `x-substrat-logs-incomplete` header (#2520). A caller that renders the page says so when
+   * `incomplete` is set; `recentLogs` keeps answering the bare list for those that do not.
+   */
+  recentLogsRead = async (
+    q: { service?: string; level?: string; hours?: number; limit?: number } = {},
+  ): Promise<RecentLogsRead> => {
+    const res = await this.send(`/observability/logs${query({ ...q })}`);
+    return {
+      events: (await res.json()) as RecentLogEvent[],
+      incomplete: res.headers.get(LOGS_INCOMPLETE_HEADER) === '1',
+    };
+  };
   /** Observed-vs-declared outbound egress for a vertical's deployed versions (#859). */
   verticalEgress = (slug: string, q: { hours?: number; limit?: number } = {}): Promise<EgressReport> =>
     this.call(`/verticals/${seg(slug)}/egress${query({ ...q })}`);

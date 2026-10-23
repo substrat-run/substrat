@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ControlPlaneClient, ControlPlaneError, ControlPlaneStaffClient } from '../src/index.js';
 import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from '../src/auth.js';
+import { LOGS_INCOMPLETE_HEADER } from '../src/observability.js';
 
 /**
  * The staff client (#971) is the console's hand-rolled client moved behind the shared
@@ -130,6 +131,7 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   revokeStaffAccess: [(c) => c.revokeStaffAccess('a@b.c'), 'POST', '/members/staff/revoke', { email: 'a@b.c' }],
   serviceMetrics: [(c) => c.serviceMetrics(6), 'GET', '/observability/metrics?hours=6'],
   recentLogs: [(c) => c.recentLogs({ service: 's', limit: 10 }), 'GET', '/observability/logs?service=s&limit=10'],
+  recentLogsRead: [(c) => c.recentLogsRead({ service: 's', limit: 10 }), 'GET', '/observability/logs?service=s&limit=10'],
   verticalEgress: [(c) => c.verticalEgress('v', { hours: 24 }), 'GET', '/verticals/v/egress?hours=24'],
   platformRequestBacklog: [(c) => c.platformRequestBacklog(), 'GET', '/platform-requests/backlog'],
 };
@@ -290,5 +292,35 @@ describe('ControlPlaneClient — defaults are exactly today’s request (#971)',
     const { ControlPlaneError: fromEntry } = await import('../src/index.js');
     const { ControlPlaneError: fromPackage } = await import('@substrat-run/control-plane-client');
     expect(fromEntry).toBe(fromPackage);
+  });
+});
+
+describe('ControlPlaneStaffClient — the logs-incomplete header (#2520)', () => {
+  const lines = [{ timestamp: 1, level: 'info', message: 'a line', service: 's', outcome: null, raw: null }];
+  const answering = (headers: Record<string, string> = {}) => spy(() => Response.json(lines, { headers }));
+
+  it('reports incomplete exactly when the plane sets the header, and the events are the body', async () => {
+    const short = answering({ [LOGS_INCOMPLETE_HEADER]: '1' });
+    expect(await make(short.fetch).recentLogsRead()).toEqual({ events: lines, incomplete: true });
+  });
+
+  it('twin: a complete page carries no header and reports incomplete: false', async () => {
+    const whole = answering();
+    expect(await make(whole.fetch).recentLogsRead()).toEqual({ events: lines, incomplete: false });
+  });
+
+  it('a header value other than 1 is not the plane saying the page is incomplete', async () => {
+    const odd = answering({ [LOGS_INCOMPLETE_HEADER]: '0' });
+    expect((await make(odd.fetch).recentLogsRead()).incomplete).toBe(false);
+  });
+
+  it('recentLogs keeps answering the bare list, header or not', async () => {
+    const short = answering({ [LOGS_INCOMPLETE_HEADER]: '1' });
+    expect(await make(short.fetch).recentLogs()).toEqual(lines);
+  });
+
+  it('a refusal is still a ControlPlaneError, not an empty page', async () => {
+    const refused = spy(() => Response.json({ detail: 'observability is not configured' }, { status: 501 }));
+    await expect(make(refused.fetch).recentLogsRead()).rejects.toBeInstanceOf(ControlPlaneError);
   });
 });

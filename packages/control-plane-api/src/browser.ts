@@ -25,6 +25,7 @@ export type {
   RebindScopeResult,
   RebindReviewResult,
   RecentLogEvent,
+  RecentLogsRead,
   ReprovisionedScope,
   ScopeHealth,
   ServiceMetricsRow,
