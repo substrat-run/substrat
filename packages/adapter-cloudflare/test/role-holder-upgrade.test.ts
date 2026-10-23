@@ -117,15 +117,18 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   const tenant = tenantId.parse(ulid());
   const scope = scopeId.parse(ulid());
   const owner = principalId.parse(ulid());
+  // #2447: the local paths judge the role set they define, so a person's role of a key the scope class
+  // reserves is refused there. Keys the class knows nothing about (admitted, fail-open), held apart
+  // so no system-held role's key is a person's, carry the holder through to the door unjudged.
   await host.provisionScopeLocal({
     tenantId: tenant,
     scopeId: scope,
     owner,
     roles: [
       { key: 'owner', permissions: [permissionKey.parse('perm:use')], source: 'vertical', holder: 'person' },
-      { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical' },
-      { key: 'unknown', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
-      { key: 'system', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
+      { key: 'runner', permissions: [permissionKey.parse('zzz:run')], source: 'vertical' },
+      { key: 'unknown', permissions: [permissionKey.parse('zzz:run')], source: 'vertical', holder: 'unknown' as never },
+      { key: 'system', permissions: [permissionKey.parse('zzz:sys')], source: 'vertical', holder: 'system' },
     ],
     ownerRoleKey: 'owner',
   });
@@ -134,7 +137,7 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   const roleDoor = async (key: string) => {
     const role = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
       createLocalControlPlaneReader(state.storage.sql).getRole(tenant, key));
-    return reservedRoleRefusal(role!, new Set(['rsv:run']), 'platform');
+    return reservedRoleRefusal(role!, new Set(['zzz:run', 'zzz:sys']), 'platform');
   };
   expect(await holders()).toEqual([
     { role_key: 'owner', holder: 'person' }, { role_key: 'runner', holder: 'person' },
@@ -146,9 +149,9 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   expect(await roleDoor('system')).toBeNull();
 
   await host.projectRolesLocal(tenant, scope, [
-    { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical' },
-    { key: 'unknown', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
-    { key: 'system', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
+    { key: 'runner', permissions: [permissionKey.parse('zzz:run')], source: 'vertical' },
+    { key: 'unknown', permissions: [permissionKey.parse('zzz:run')], source: 'vertical', holder: 'unknown' as never },
+    { key: 'system', permissions: [permissionKey.parse('zzz:sys')], source: 'vertical', holder: 'system' },
   ]);
   expect(await holders()).toEqual([
     { role_key: 'runner', holder: 'person' }, { role_key: 'system', holder: 'system' },
