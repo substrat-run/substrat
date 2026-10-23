@@ -60,6 +60,11 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
     'GET',
     `/meters/requests?tenantId=${T}&since=2026-09-01&until=2026-09-30`,
   ],
+  readMeterDays: [
+    (c) => c.readMeterDays({ tenantId: T as never, since: '2026-09-01', until: '2026-09-30', limit: 5 }),
+    'GET',
+    `/meters/days?tenantId=${T}&since=2026-09-01&until=2026-09-30&limit=5`,
+  ],
   readModelUsage: [(c) => c.readModelUsage({ tenantId: T as never, since: '2026-09-01' }), 'GET', `/model-usage/summary?tenantId=${T}&since=2026-09-01`],
   listScopes: [(c) => c.listScopes({ tenantId: T as never, status: ['active', 'suspended'] as never, limit: 50 }), 'GET', `/scopes?tenantId=${T}&status=active&status=suspended&limit=50`],
   migrationProgress: [(c) => c.migrationProgress('todo'), 'GET', '/fleet/migrations?vertical=todo'],

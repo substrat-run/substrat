@@ -363,6 +363,14 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  METER_DAYS_DDL,
+  listMeterDayRows,
+  listMeterDayTakeRows,
+  pruneMeterDayRows,
+  recordMeterDayRows,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink,
@@ -2841,6 +2849,8 @@ export class SqliteScopeHost implements ScopeHost {
       ${SCOPE_STORAGE_DDL}
       -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
       ${REQUEST_ROLLUP_DDL}
+      -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
+      ${METER_DAYS_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -13017,6 +13027,23 @@ export class SqliteScopeHost implements ScopeHost {
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.directory.transaction(() =>
           pruneRequestDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
+        )(),
+      // #2501: the snapshot reads and writes in one transaction, so its rows are one instant's reading.
+      recordMeterDay: async (_actor, input: MeterDayTakeInput) =>
+        this.directory.transaction(() => recordMeterDayRows(redactionSqlOf(this.directory), input))(),
+      listMeterDays: async (actor, filter?: MeterDayFilter) => {
+        const rows = listMeterDayRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listMeterDays', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
+      },
+      listMeterDayTakes: async (actor, filter?: MeterDayTakeFilter) => {
+        const rows = listMeterDayTakeRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listMeterDayTakes', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneMeterDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.directory.transaction(() =>
+          pruneMeterDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
         )(),
       listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
         const rows = this.selectModelUsage(filter);

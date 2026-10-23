@@ -96,6 +96,8 @@ import {
   scopeStorageSample,
   requestDay,
   requestRollupDay,
+  meterDay,
+  meterDayTake,
   subjectRef,
   createConnectionInput,
   connectLinkFilter,
@@ -188,6 +190,8 @@ import {
   type ScopeStorageSample,
   type RequestDay,
   type RequestRollupDay,
+  type MeterDay,
+  type MeterDayTake,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
@@ -529,6 +533,10 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
+  type MeterDayTakeResult,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
@@ -986,6 +994,11 @@ interface ControlPlaneStub {
   listRequestDays(filter?: RequestDayFilter): Promise<RequestDay[]>;
   listRequestRollupDays(filter?: RequestRollupDayFilter): Promise<RequestRollupDay[]>;
   pruneRequestDays(limit: number, retentionMonths: number | null): Promise<number>;
+  /** #2501: the daily meter snapshot — kernel `meter-days.ts`, run inside the directory DO. */
+  recordMeterDay(input: MeterDayTakeInput): Promise<MeterDayTakeResult>;
+  listMeterDays(filter?: MeterDayFilter): Promise<MeterDay[]>;
+  listMeterDayTakes(filter?: MeterDayTakeFilter): Promise<MeterDayTake[]>;
+  pruneMeterDays(limit: number, retentionMonths: number | null): Promise<number>;
   insertConnection(row: {
     id: string;
     tenantId: string;
@@ -10502,6 +10515,19 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.cp.pruneRequestDays(assertRowLimit('limit', limit), retentionMonths),
+      recordMeterDay: async (_actor, input: MeterDayTakeInput) => this.cp.recordMeterDay(input),
+      listMeterDays: async (actor, filter?: MeterDayFilter) => {
+        const rows = (await this.cp.listMeterDays(filter)).map((r) => meterDay.parse(r));
+        await this.recordAccess(actor, 'listMeterDays', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
+      },
+      listMeterDayTakes: async (actor, filter?: MeterDayTakeFilter) => {
+        const rows = (await this.cp.listMeterDayTakes(filter)).map((r) => meterDayTake.parse(r));
+        await this.recordAccess(actor, 'listMeterDayTakes', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneMeterDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.cp.pruneMeterDays(assertRowLimit('limit', limit), retentionMonths),
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;
         return this.cp.recordModelUsage({

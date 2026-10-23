@@ -76,6 +76,8 @@ import type {
   EntitlementGrantInput,
   EntitlementView,
   MeterReading,
+  MeterDay,
+  MeterDayTake,
   ScopeStorageSample,
   RequestDay,
   RequestRollupDay,
@@ -200,6 +202,7 @@ import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './mode
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
 import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter } from './request-rollup.js';
+import type { MeterDayFilter, MeterDayTakeFilter, MeterDayTakeInput, MeterDayTakeResult } from './meter-days.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
 import type {
@@ -4495,6 +4498,27 @@ export interface HostAdmin {
    * Not audited, like `pruneScopeStorage`.
    */
   pruneRequestDays?(actor: PlatformActorId, limit: number, retentionMonths: number | null): Promise<number>;
+  /**
+   * The daily meter snapshot (#2501): record one attempt at the snapshot of the UTC day of
+   * `input.at`. Without an error it takes the snapshot, in one directory transaction, unless the
+   * day already has one: meters 1 and 2 folded by `foldMeterReading` at `input.at`, one row per
+   * tenant that is not reaped. With an error it records only the failed attempt. Not audited, like
+   * `recordRequestDay`: a sweep's own bookkeeping, and nothing it reads leaves the directory.
+   *
+   * The snapshot methods are optional, and the sweep's snapshot phase is skipped on a host that
+   * lacks them, so an adapter built before #2501's snapshot still satisfies `HostAdmin`.
+   */
+  recordMeterDay?(actor: PlatformActorId, input: MeterDayTakeInput): Promise<MeterDayTakeResult>;
+  /** Stored daily meter snapshots (#2501). See `MeterDayFilter`. Access-logged (K-24). */
+  listMeterDays?(actor: PlatformActorId, filter?: MeterDayFilter): Promise<MeterDay[]>;
+  /** The record of each day a pass tried to snapshot (#2501): what the phase reads its run from. Access-logged. */
+  listMeterDayTakes?(actor: PlatformActorId, filter?: MeterDayTakeFilter): Promise<MeterDayTake[]>;
+  /**
+   * Delete snapshot rows older than a retention of `retentionMonths`, oldest first and at most
+   * `limit` per call. `null` deletes nothing (`BILLING_ROLLUP_RETENTION_MONTHS`). Returns how many
+   * went. Not audited, like `pruneRequestDays`.
+   */
+  pruneMeterDays?(actor: PlatformActorId, limit: number, retentionMonths: number | null): Promise<number>;
   /**
    * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
    * is ingest's word and not accepted here. Returns the updated row, or undefined

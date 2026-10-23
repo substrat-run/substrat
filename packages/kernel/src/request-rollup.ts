@@ -9,7 +9,7 @@ import {
 } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
 import { assertRowLimit, boundedRetentionDelete } from './scope-host.js';
-import { utcDayMonthsBefore } from './billing-retention.js';
+import { billingRollupHorizon } from './billing-retention.js';
 
 /**
  * The daily request rollup (#2501), as statements both adapters run against their directory:
@@ -371,15 +371,10 @@ export function listRequestRollupDayRows(sql: RedactionSql, filter: RequestRollu
 
 /**
  * The first day a retention of `months` keeps, or null when `months` is null (kept for good).
- * A horizon is a whole number of months, at least one.
+ * A horizon is a whole number of months, at least one. The one horizon every billing rollup
+ * prunes by (`billingRollupHorizon`).
  */
-export function requestRollupHorizon(nowMs: number, months: number | null): string | null {
-  if (months === null) return null;
-  if (!Number.isInteger(months) || months < 1) {
-    throw new Error(`a billing retention must be a whole number of months, at least one, or null, got ${String(months)}`);
-  }
-  return utcDayMonthsBefore(nowMs, months);
-}
+export const requestRollupHorizon = billingRollupHorizon;
 
 /**
  * Delete at most `limit` day rows older than a retention of `months`, oldest first, then the

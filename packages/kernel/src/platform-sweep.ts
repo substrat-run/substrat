@@ -24,7 +24,8 @@ import type {
 import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
-import { BILLING_ROLLUP_RETENTION_MONTHS } from './billing-retention.js';
+import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon } from './billing-retention.js';
+import { METER_DAYS_PRUNE_BATCH, METER_SNAPSHOT_TIMEOUT_MS } from './meter-days.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
   REQUEST_ROLLUP_LOOKBACK_DAYS,
@@ -360,6 +361,13 @@ export interface PlatformSweepOptions {
    */
   requestRollup?: RequestRollupSweepOptions;
   /**
+   * Keep each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass (#2501).
+   * UNSET (the default) skips the phase, as does a host without `recordMeterDay` and
+   * `listMeterDayTakes`: the rows are kept for the billing horizon, so a deployment opts in. See
+   * {@link MeterSnapshotSweepOptions}.
+   */
+  meterSnapshot?: MeterSnapshotSweepOptions;
+  /**
    * Collect attachment bytes no row names (#2314), a bounded window of scopes per pass. UNSET (the
    * default) skips the phase: the sweep deletes tenant bytes, so a deployment opts in, and opts in
    * to a dry run first. See {@link OrphanAttachmentSweepOptions}.
@@ -570,6 +578,8 @@ export interface PlatformSweepReport {
   orphanAttachments?: OrphanAttachmentSweepReport | null;
   /** What the request-rollup phase read and pruned (#2501). Null when the phase is off. */
   requestRollup?: RequestRollupSweepReport | null;
+  /** What the meter-snapshot phase took and pruned (#2501). Null when the phase is off. */
+  meterSnapshot?: MeterSnapshotSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -602,7 +612,10 @@ export interface PlatformSweepReport {
       | 'attachment-sweep'
       // #2501: one day's request rollup failed. Nothing of the day is written, and the day is
       // tried again once `RequestRollupSweepOptions.retryMs` has passed.
-      | 'request-rollup';
+      | 'request-rollup'
+      // #2501: the day's meter snapshot failed. Nothing of it is written, and the next pass of the
+      // same day tries again.
+      | 'meter-snapshot';
     id: string;
     error: string;
   }[];
@@ -795,6 +808,53 @@ export interface RequestRollupSweepReport {
   /** Rows the read days wrote. */
   recorded: number;
   /** Day rows past retention deleted. */
+  pruned: number;
+}
+
+/**
+ * How the meter-snapshot phase takes a day (#2501). It reads only the directory, in one
+ * transaction (`HostAdmin.recordMeterDay`), so opting in with `{}` is enough.
+ *
+ * A pass takes the snapshot of the UTC day it runs in, unless the day already has one, so the
+ * first pass of the day is the one whose reading stands. An attempt that fails writes nothing of
+ * the day, records the failure, and the next pass of the same day tries again: there is no outside
+ * budget to spare, and the earlier in the day the snapshot is, the closer it is to the day's start.
+ * A day no pass managed to take keeps its failed record and no rows; a later day cannot take it.
+ */
+export interface MeterSnapshotSweepOptions {
+  /**
+   * How long the snapshot may take, in ms. Past it the attempt counts as failed and the pass moves
+   * on; a snapshot that commits after that still stands, and the next pass finds the day taken.
+   * Default `METER_SNAPSHOT_TIMEOUT_MS`.
+   */
+  timeoutMs?: number;
+  /** How many months of snapshot rows are kept; null keeps them all. Default `BILLING_ROLLUP_RETENTION_MONTHS`. */
+  retentionMonths?: number | null;
+  /** Snapshot rows past retention deleted per pass. Default `METER_DAYS_PRUNE_BATCH`. */
+  pruneBatch?: number;
+  /** The instant the pass snapshots at. Default the wall clock. */
+  now?: () => string;
+}
+
+/** What the meter-snapshot phase did in one pass (#2501). */
+export interface MeterSnapshotSweepReport {
+  /** The UTC day this pass snapshots, or null when the pass's instant was not one. */
+  day: string | null;
+  /** Whether this pass took the day's snapshot. False on every later pass of the day. */
+  taken: boolean;
+  /** The tenant rows this pass's snapshot wrote. */
+  tenants: number;
+  /** Whether this pass's attempt failed (0 or 1), and whether that failure repeated the attempt before it. */
+  failed: number;
+  repeated: number;
+  /**
+   * The run of identical failures that stands at the end of this pass: its error, when it began,
+   * and how many attempts it holds. Every pass of a day not yet taken makes an attempt, so a
+   * standing failure is on the report of every pass it lasts, though it reaches the digest only on
+   * the pass its run began. Null once a snapshot is taken, and when no attempt has failed.
+   */
+  streak: { error: string; since: string; failures: number } | null;
+  /** Snapshot rows past retention deleted. */
   pruned: number;
 }
 
@@ -1230,6 +1290,19 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   if (timeout !== undefined && !(Number.isFinite(timeout) && timeout > 0)) {
     throw substratError('validation_failed', `requestRollup.readTimeoutMs must be a positive number of ms, got ${String(timeout)}`);
   }
+  const snapshot = options.meterSnapshot;
+  if (snapshot?.pruneBatch !== undefined) assertRowLimit('meterSnapshot.pruneBatch', snapshot.pruneBatch);
+  if (snapshot?.retentionMonths !== undefined) {
+    try {
+      billingRollupHorizon(0, snapshot.retentionMonths);
+    } catch (err) {
+      throw substratError('validation_failed', `meterSnapshot.retentionMonths: ${message(err)}`);
+    }
+  }
+  const snapshotTimeout = snapshot?.timeoutMs;
+  if (snapshotTimeout !== undefined && !(Number.isFinite(snapshotTimeout) && snapshotTimeout > 0)) {
+    throw substratError('validation_failed', `meterSnapshot.timeoutMs must be a positive number of ms, got ${String(snapshotTimeout)}`);
+  }
   const orphans = options.orphanAttachments;
   if (orphans?.batch !== undefined && !(Number.isInteger(orphans.batch) && orphans.batch >= 0)) {
     throw substratError('validation_failed', `orphanAttachments.batch must be a non-negative integer, got ${String(orphans.batch)}`);
@@ -1266,6 +1339,7 @@ export async function runPlatformSweep(
     storage: null,
     orphanAttachments: null,
     requestRollup: null,
+    meterSnapshot: null,
     errors: [],
   };
 
@@ -1898,6 +1972,19 @@ export async function runPlatformSweep(
     } catch (err) {
       report.errors.push({ kind: 'findings', id: 'findings', error: message(err) });
     }
+  }
+
+  // -- the daily meter snapshot (#2501) -----------------------------------------
+  // After all the scheduled work, so the day's reading is the directory as this pass leaves it,
+  // reaps included, and just before the request rollup: the snapshot is one directory transaction,
+  // and a slow Analytics Engine answer must not push its reading later in the day. Its one read of
+  // the day records is shipped by the access-log drain below, in the same pass.
+  if (
+    options.meterSnapshot &&
+    typeof host.admin.recordMeterDay === 'function' &&
+    typeof host.admin.listMeterDayTakes === 'function'
+  ) {
+    report.meterSnapshot = await sweepMeterSnapshot(host.admin, options.actor, options.meterSnapshot, report);
   }
 
   // -- the daily request rollup (#2501) ----------------------------------------
@@ -3030,6 +3117,84 @@ async function sweepRequestRollup(
     // A directory read or the prune failed: whatever days were recorded stay recorded, and the
     // next pass finds the rest due.
     report.errors.push({ kind: 'request-rollup', id: 'directory', error: message(err) });
+  }
+  return out;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * One pass of the meter-snapshot phase (#2501): take the snapshot of the UTC day the pass runs in,
+ * unless the day already has one, then prune past retention. A failed attempt writes nothing of the
+ * day and is recorded, and the next pass of the day tries again. A failure that repeats the attempt
+ * before it, across days too, is a standing one: reported when its run began, and not again until
+ * a snapshot is taken.
+ */
+async function sweepMeterSnapshot(
+  admin: HostAdmin,
+  actor: PlatformActorId,
+  snapshot: MeterSnapshotSweepOptions,
+  report: PlatformSweepReport,
+): Promise<MeterSnapshotSweepReport> {
+  const out: MeterSnapshotSweepReport = { day: null, taken: false, tenants: 0, failed: 0, repeated: 0, streak: null, pruned: 0 };
+  const months = snapshot.retentionMonths === undefined ? BILLING_ROLLUP_RETENTION_MONTHS : snapshot.retentionMonths;
+  const now = snapshot.now ?? (() => new Date().toISOString());
+  try {
+    const at = new Date(now()).toISOString();
+    const day = at.slice(0, 10);
+    out.day = day;
+    // The attempt before this pass is today's, or yesterday's when today has none: one a day at the
+    // least while the phase runs, so two days hold it.
+    const yesterday = new Date(Date.parse(`${day}T00:00:00.000Z`) - DAY_MS).toISOString().slice(0, 10);
+    const takes = await admin.listMeterDayTakes!(actor, { since: yesterday, until: day });
+    let previous: { error: string | null; since: string | null; failures: number } = { error: null, since: null, failures: 0 };
+    let newest = '';
+    for (const t of takes) {
+      if (t.attemptedAt > newest) {
+        newest = t.attemptedAt;
+        previous = { error: t.error, since: t.failingSince ?? t.attemptedAt, failures: t.failingCount ?? 1 };
+      }
+    }
+    // A day already taken is not tried again, so a later pass of the day can never report a failure
+    // about a snapshot that stands. The directory checks again inside its own transaction, which is
+    // what settles two passes racing for the same day.
+    if (!takes.some((t) => t.day === day && t.takenAt !== null)) {
+      try {
+        const taken = await withinDeadline(
+          admin.recordMeterDay!(actor, { at }),
+          snapshot.timeoutMs ?? METER_SNAPSHOT_TIMEOUT_MS,
+          'the meter snapshot',
+        );
+        out.taken = taken.taken;
+        out.tenants = taken.tenants;
+      } catch (err) {
+        const error = message(err);
+        out.failed = 1;
+        // A standing failure reaches the digest when its run begins. Each attempt carries the run
+        // on, so its start and length stay on the day's record and on every pass's report.
+        const repeated = error === previous.error;
+        const streak = {
+          error,
+          since: repeated && previous.since ? previous.since : at,
+          failures: repeated ? previous.failures + 1 : 1,
+        };
+        out.streak = streak;
+        if (repeated) out.repeated = 1;
+        else report.errors.push({ kind: 'meter-snapshot', id: day, error });
+        // The attempt's own instant, so its record lands on its day even when the deadline ran past
+        // midnight. If even this write fails, the next pass simply tries again.
+        await admin
+          .recordMeterDay!(actor, { at, error, failingSince: streak.since, failingCount: streak.failures })
+          .catch(() => undefined);
+      }
+    }
+    if (typeof admin.pruneMeterDays === 'function') {
+      out.pruned = await admin.pruneMeterDays(actor, snapshot.pruneBatch ?? METER_DAYS_PRUNE_BATCH, months);
+    }
+  } catch (err) {
+    // A directory read or the prune failed: a snapshot already taken stays taken, and the next pass
+    // tries the day again if it was not.
+    report.errors.push({ kind: 'meter-snapshot', id: 'directory', error: message(err) });
   }
   return out;
 }
