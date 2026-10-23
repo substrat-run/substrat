@@ -42,6 +42,7 @@ import {
   type SubjectRedactionCounts,
   type OrphanSweepReport,
   type OrphanSweepRequest,
+  type ByteBody,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
@@ -178,6 +179,7 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
+  CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
@@ -489,7 +491,8 @@ export interface VerticalScopeHost {
       filename: string;
       contentType: string;
       visibility: Visibility;
-      body: Uint8Array;
+      /** A sized stream from `/internal/connector-attachment-stream` (#2498). */
+      body: ByteBody;
     },
   ): Promise<unknown>;
   /** The outbound read (#711) — the vertical's own document, handed back by id.
@@ -983,6 +986,11 @@ const connectorAttachmentMeta = z.object({
   filename: z.string().min(1),
   contentType: z.string().min(1),
   visibility,
+});
+
+/** The `/internal/connector-attachment-stream` metadata header (#2498): `meta`, plus the body's declared size. */
+const connectorAttachmentStreamMeta = connectorAttachmentMeta.extend({
+  size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
 
 /** `/internal/system-switch` body (#1666) — the far end of `revokeFromSystem` / `restoreToSystem`. */
@@ -1846,6 +1854,35 @@ export function mountPlatformSurface<Env extends object>(
         contentType: meta.contentType,
         visibility: meta.visibility,
         body: new Uint8Array(await blob.arrayBuffer()),
+      },
+    );
+    return c.json(record as Record<string, unknown>, 201);
+  });
+
+  // The bytes leg, streamed (#2498): the request body is the file, handed to the upload as a
+  // sized stream so it reaches the bucket as it arrives and is never held here. The metadata
+  // rides a header, the multipart `meta` plus the `size` the body declares; a body that carries
+  // a different number of bytes lands nothing. Same gate and same far-end check as the route above.
+  app.post('/internal/connector-attachment-stream', async (c) => {
+    const raw = c.req.header(CONNECTOR_ATTACHMENT_META_HEADER);
+    if (raw === undefined) {
+      throw new HTTPException(400, { message: `connector-attachment-stream needs a ${CONNECTOR_ATTACHMENT_META_HEADER} header` });
+    }
+    const meta = connectorAttachmentStreamMeta.parse(JSON.parse(decodeURIComponent(raw)));
+    const stream = c.req.raw.body;
+    if (stream === null && meta.size > 0) {
+      throw new HTTPException(400, { message: `connector-attachment-stream declared ${meta.size} bytes and sent no body` });
+    }
+    const record = await deps.hostFor(c.env).connectorAttachmentUploadLocal(
+      meta.connectionId,
+      meta.tenantId,
+      meta.scopeId,
+      {
+        entity: meta.entity,
+        filename: meta.filename,
+        contentType: meta.contentType,
+        visibility: meta.visibility,
+        body: stream === null ? new Uint8Array(0) : { stream, length: meta.size },
       },
     );
     return c.json(record as Record<string, unknown>, 201);

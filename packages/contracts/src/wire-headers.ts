@@ -25,6 +25,14 @@ export const PLATFORM_SECRET_HEADER = 'x-substrat-platform';
 export const CONNECTOR_ATTACHMENT_RECORD_HEADER = 'x-substrat-attachment';
 
 /**
+ * The REQUEST header carrying a streamed connector upload's metadata (#2498): the platform's
+ * `POST /internal/connector-attachment-stream`, whose body is the file itself, read as it
+ * arrives. The metadata is the multipart route's `meta` field plus the `size` the body
+ * declares, as URI-encoded JSON, since a header carries ASCII only and a filename need not be.
+ */
+export const CONNECTOR_ATTACHMENT_META_HEADER = 'x-substrat-attachment-meta';
+
+/**
  * The RESPONSE header a vertical sets when the operation it just ran enqueued
  * platform requests (`ctx.requestPlatform`). The router — the one hop that sees
  * every response — reads it and kicks an immediate drain of that scope (#381),
