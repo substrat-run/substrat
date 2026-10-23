@@ -1,17 +1,28 @@
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  connectionId,
   permissionKey,
   platformActorId,
   principalId,
   scopeId,
   tenantId,
+  type DomainEvent,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { isSizedByteStream, ulid, webCryptoSecretBox, type SizedByteStream, type TenantBlobStore } from '@substrat-run/kernel';
+import {
+  isSizedByteStream,
+  ulid,
+  webCryptoSecretBox,
+  type ConnectorResponse,
+  type SizedByteStream,
+  type TenantBlobStore,
+} from '@substrat-run/kernel';
 import { permMod } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -156,6 +167,56 @@ describe('streamed attachment upload (pure adapter)', () => {
     await expect(att.upload(upload({ stream: producer(2), length: 3 * CHUNK }))).rejects.toThrow(/ended after/);
     expect(await att.list(item)).toEqual([]);
     expect(objectFiles()).toEqual([]);
+  });
+
+  it("a provider body still arriving when the connection's timeout fires errors the stream, and lands nothing", async () => {
+    // The current behaviour, pinned (#2498): a connection's fetch runs under `timeoutMs`, and that
+    // signal also errors a body still being read. The server sends its headers at once and then
+    // trickles the body for longer than the timeout.
+    const srv = createServer((_req, res) => {
+      res.writeHead(200, { 'content-length': String(8 * CHUNK) });
+      let i = 0;
+      const tick = setInterval(() => {
+        if (res.destroyed || i === 8) {
+          clearInterval(tick);
+          if (!res.destroyed) res.end();
+          return;
+        }
+        res.write(chunkOf(i++));
+      }, 100);
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+    try {
+      const { host, t, s, editor } = await world();
+      await host.admin.createConnection(platformActorId.parse(ulid()), {
+        id: connectionId.parse(ulid()),
+        tenantId: t,
+        vertical: 'docs',
+        provider: 'drive',
+        label: 'drive',
+        externalAccountRef: 'acct-1',
+        scopes: [],
+        secret: { apiToken: 'tok' },
+      });
+      let response: ConnectorResponse | undefined;
+      await host.dispatchConnector(
+        t,
+        s,
+        async (ctx) => {
+          const conn = await ctx.connection('drive');
+          response = await conn.fetch(`http://127.0.0.1:${(srv.address() as AddressInfo).port}/file`);
+        },
+        { id: ulid(), type: 'doc.send-requested', payload: {} } as unknown as DomainEvent,
+        { timeoutMs: 300 },
+      );
+      const att = await host.attachments(editor, t, s);
+      await expect(att.upload(upload({ stream: response!.body!, length: 8 * CHUNK }))).rejects.toThrow(/timeout|aborted/i);
+      expect(await att.list(item)).toEqual([]);
+      expect(objectFiles()).toEqual([]);
+    } finally {
+      srv.closeAllConnections();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
   });
 
   it('a refused write still lands the object first, then deletes it', async () => {
