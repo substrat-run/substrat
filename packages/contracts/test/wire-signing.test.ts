@@ -223,13 +223,11 @@ describe('wire envelope: one refusal for every failure', () => {
     const other = await generateScopeStoreKeyPair();
     const nonces = memoryNonces();
     await check({ nonces: nonces.cache });
-    const handBuilt = { router: new Map([[fixture.keys.router.kid, fixture.keys.router.publicKey]]), platform: new Map() };
     const cases: [WireRefusalReason, Check][] = [
       ['missing', { signature: null }],
       ['malformed', { header: 'not base64url!' }],
       ['issuer', { expected: { iss: 'platform' } }],
       ['kind', { vector: ROUTER_CALL, expected: { kind: 'route' } }],
-      ['keys', { keys: handBuilt }],
       ['kid', { keys: await keysOf(other.publicKey) }],
       ['signature', { signature: CALL.signature }],
       ['audience', { expected: { aud: 'other' } }],
@@ -301,6 +299,8 @@ describe('wire envelope: what the signature binds', () => {
     expect(await reason(await as({ target: '/api/lists' }))).toBe('target');
     expect(await reason(await as({ body: '{"hello":"World"}' }, CALL))).toBe('body');
     expect(await reason(await as({ body: '' }, CALL))).toBe('body');
+    // An untyped caller that passes no body is refused, even for a call whose signed body is empty.
+    expect(await reason({ vector: UNSCOPED, expected: { body: undefined } })).toBe('body');
     // A call's body as bytes binds the same as the same text.
     expect((await check({ vector: CALL, expected: { body: new TextEncoder().encode(CALL.input.body as string) } })).verdict).toMatchObject({ ok: true });
     // Pinned tenant and scope are compared; unpinned they are reported, not judged.
@@ -406,8 +406,17 @@ describe('wire envelope: who signs', () => {
     const router = fixture.keys.router.publicKey;
     const built = await keysOf();
     expect(Object.isFrozen(built)).toBe(true);
-    expect(await reason({ keys: { router: new Map(built.router), platform: new Map(built.platform) } })).toBe('keys');
-    expect(await reason({ keys: { ...built } })).toBe('keys');
+    // Any other key set is the deployment's fault, not the caller's: a throw, before any header is read,
+    // that no refusal counter hears.
+    for (const keys of [{ router: new Map(built.router), platform: new Map(built.platform) }, { ...built }]) {
+      const heard: WireRefusalReason[] = [];
+      for (const [header, signature] of [[ROUTE.header, ROUTE.signature], [null, null]] as const) {
+        await expect(
+          verifyWireEnvelope({ headers: headersOf(header, signature), keys, expected: expectationOf(ROUTE), nowSeconds: ROUTE.input.iat, onRefusal: (r) => heard.push(r) }),
+        ).rejects.toThrow(/wireVerificationKeys/);
+      }
+      expect(heard).toEqual([]);
+    }
     for (const [config, message] of [
       [{ router, platform: `${other.publicKey},${router}` }, /both issuers/],
       [{ router: alias(router) }, /canonical/],
@@ -543,14 +552,27 @@ describe('wire envelope: the encoder', () => {
     const bad = (patch: object) => () => canonicalWireEnvelope({ ...claims, ...patch });
     expect(bad({ vertical: '' })).toThrow(/null/);
     expect(bad({ vertical: 'a\nb' })).toThrow(/newline/);
-    expect(bad({ surface: '\ud800' })).toThrow(/well-formed/);
     expect(bad({ iat: -1 })).toThrow(/time/);
     expect(bad({ exp: 1.5 })).toThrow(/time/);
     expect(bad({ v: 2 })).toThrow(/version/);
     expect(bad({ scopeId: null })).toThrow(/malformed/);
-    // Non-ASCII text is carried as UTF-8 and round-trips.
-    const text = canonicalWireEnvelope({ ...claims, surface: 'bokföring' });
-    expect(parseWireEnvelope(text)?.surface).toBe('bokföring');
+    // Non-ASCII text is carried as UTF-8 and round-trips, a surrogate pair included.
+    for (const surface of ['bokföring', 'clef 𝄞']) {
+      expect(parseWireEnvelope(canonicalWireEnvelope({ ...claims, surface }))?.surface).toBe(surface);
+    }
+  });
+
+  it('half a surrogate pair is refused by the parser and so by the encoder: UTF-8 cannot carry it', () => {
+    const claims = parseWireEnvelope(ROUTE.canonical)!;
+    for (const [field, value] of [
+      ['surface', '\ud800'],
+      ['surface', 'a\udc00'],
+      ['vertical', '\ud834x'],
+      ['aud', 'todo\udd1e'],
+    ] as const) {
+      expect(parseWireEnvelope(withLine(ROUTE, { aud: 4, surface: 7, vertical: 8 }[field], value)), `${field} = ${JSON.stringify(value)}`).toBeUndefined();
+      expect(() => canonicalWireEnvelope({ ...claims, [field]: value }), field).toThrow(/malformed/);
+    }
   });
 
   it('the signer refuses what no verifier accepts', async () => {

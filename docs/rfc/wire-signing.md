@@ -180,7 +180,9 @@ the last step (§9, step 7) stops sending them.
 
 ### 3.4 The checks, in order, and the one refusal
 
-`verifyWireEnvelope` makes every check in one fixed order:
+`verifyWireEnvelope` makes every check in one fixed order. Before any of them it requires a key
+set that `wireVerificationKeys` built, which refuses a key listed for both issuers. Any other key
+set is the deployment's fault, not the caller's, so it throws, and no refusal counter hears it.
 
 1. both headers present;
 2. the header decodes as base64url to UTF-8, decoded strictly (a byte-order mark is kept, so it
@@ -188,14 +190,13 @@ the last step (§9, step 7) stops sending them.
    its unused trailing bits set decodes to the same bytes, and the signature covers the bytes, not
    the spelling;
 3. the issuer, then the kind, are the ones this endpoint accepts;
-4. the key set was built by `wireVerificationKeys` (which refuses a key listed for both issuers);
-5. the key id is in the issuer's list;
-6. the signature verifies;
-7. then, all over signed bytes: the audience is this deployment; the lifetime is positive and at
+4. the key id is in the issuer's list;
+5. the signature verifies;
+6. then, all over signed bytes: the audience is this deployment; the lifetime is positive and at
    most the maximum; the clock is inside `[iat - skew, exp + skew]`; the method and target are
    this request's; a call's body is this body; a tenant or scope the endpoint pins is the one
    named;
-8. last, and only when the endpoint keeps nonces, the nonce is unspent (§4).
+7. last, and only when the endpoint keeps nonces, the nonce is unspent (§4).
 
 **Every failure returns the same value**, `WIRE_REFUSED`, and an endpoint answers every refusal
 with the same status and body. The reason goes to an `onRefusal` callback for counters only, and

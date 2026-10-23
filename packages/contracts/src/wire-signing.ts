@@ -134,10 +134,13 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const SECONDS = /^(0|[1-9]\d{0,14})$/;
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/;
+/** Half a surrogate pair: UTF-8 cannot carry it, so the bytes signed would name another string. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 /** The longest opaque field (aud, surface, vertical), in UTF-16 code units. */
 const MAX_TEXT = 255;
 
-const isText = (value: string) => value.length <= MAX_TEXT && !CONTROL.test(value);
+/** An opaque field: every other field's grammar is ASCII, so this is the one place well-formedness is judged. */
+const isText = (value: string) => value.length <= MAX_TEXT && !CONTROL.test(value) && !LONE_SURROGATE.test(value);
 
 /**
  * Whether `text` is the canonical base64url of exactly `length` bytes, as the store module judges
@@ -220,10 +223,6 @@ export function canonicalWireEnvelope(claims: WireClaims): string {
   if (lines.some((line) => line.includes('\n'))) throw new Error('a wire envelope field contains a newline');
   const canonical = lines.join('\n');
   if (!parseWireEnvelope(canonical)) throw new Error('a wire envelope field is malformed');
-  // A lone surrogate encodes as U+FFFD, so the bytes signed would name another string.
-  if (new TextDecoder().decode(new TextEncoder().encode(canonical)) !== canonical) {
-    throw new Error('a wire envelope field is not well-formed Unicode');
-  }
   return canonical;
 }
 
@@ -432,7 +431,6 @@ export const WIRE_REFUSAL_REASONS = [
   'malformed',
   'issuer',
   'kind',
-  'keys',
   'kid',
   'signature',
   'audience',
@@ -467,8 +465,10 @@ export type WireVerdict = WireAccepted | WireRefused;
  * and scope, and last the nonce, so an envelope that fails anything else never spends a cache
  * entry. `nowSeconds` is the time the request arrived, not when its body finished reading.
  *
- * Returns {@link WIRE_REFUSED} for every failure. `onRefusal` hears the reason; a throw from it
- * is ignored. A throw from `nonces` propagates: the cache failed, not the caller.
+ * Returns {@link WIRE_REFUSED} for every failure of the caller's. `onRefusal` hears the reason;
+ * a throw from it is ignored. The deployment's own faults throw instead, so no counter files them
+ * under a caller: a key set {@link wireVerificationKeys} did not build, checked before anything
+ * else, and a throw from `nonces`.
  */
 export async function verifyWireEnvelope(input: {
   readonly headers: { get(name: string): string | null };
@@ -487,6 +487,7 @@ export async function verifyWireEnvelope(input: {
     return WIRE_REFUSED;
   };
   const { expected, keys, nowSeconds } = input;
+  if (!PREPARED.has(keys)) throw new TypeError('verifyWireEnvelope takes the key set wireVerificationKeys built');
   const header = input.headers.get(WIRE_ENVELOPE_HEADER);
   const signature = input.headers.get(WIRE_SIGNATURE_HEADER);
   if (!header || !signature) return refuse('missing');
@@ -503,7 +504,6 @@ export async function verifyWireEnvelope(input: {
   if (!claims) return refuse('malformed');
   if (claims.iss !== expected.iss) return refuse('issuer');
   if (claims.kind !== expected.kind) return refuse('kind');
-  if (!PREPARED.has(keys)) return refuse('keys');
   const publicKey = keys[claims.iss].get(claims.kid);
   if (!publicKey) return refuse('kid');
   if (!(await verifyScopeStoreEnvelope(publicKey, canonical, signature))) return refuse('signature');
