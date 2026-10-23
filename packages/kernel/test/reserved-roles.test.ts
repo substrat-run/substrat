@@ -153,8 +153,8 @@ describe('reservedRoleDefinitionRefusal (#2447)', () => {
     );
     // Twin: the same role with no system-held role in the tenant cannot be judged, and is admitted.
     expect(reservedRoleDefinitionRefusal(role(['a:use', 'a:run']), none, [])).toBeNull();
-    // The role being redefined is not its own evidence.
-    expect(reservedRoleDefinitionRefusal(role(['a:run']), none, [{ ...role(['a:run']), holder: 'system' }])).toBeNull();
+    // A stored PERSON's definition of the same key is no evidence: only a system-held one is (round 1).
+    expect(reservedRoleDefinitionRefusal(role(['a:run']), none, [{ ...role(['a:run']), holder: 'person' }])).toBeNull();
   });
 
   it('fails open on a key the host knows nothing about: admitted for a person, and in a system-held role', () => {
@@ -194,5 +194,60 @@ describe('noteDeclaredKeys (#2447)', () => {
     noteDeclaredKeys(keys, { id: '@t/declared' });
     noteDeclaredKeys(keys, manifest('@t/a', [{ key: 'a:run', description: 'run', holder: 'system' }, { key: 'a:use', description: 'use' }]));
     expect([...keys].sort()).toEqual(['a:run', 'a:use']);
+  });
+});
+
+describe('reservedRoleDefinitionRefusal against the stored row of the same key (#2447 round 1)', () => {
+  const host = { reserved: new Set(['a:run']), declared: new Set(['a:run', 'a:use']) };
+  const none = { reserved: new Set<string>(), declared: new Set<string>() };
+  const stored = (permissions: string[], holder?: 'person' | 'system') => ({ key: 'r', permissions, ...(holder ? { holder } : {}) });
+
+  it('refuses a seated person’s role becoming holder: system (its seats would gain its keys)', () => {
+    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:use'], 'person')], true)).toMatch(
+      /^role 'r' is stored as a person's role and is held, so it cannot become holder: 'system'/,
+    );
+  });
+
+  it('twins: the same flip with no seat is judged as a first definition, and a first system-held definition is unchanged', () => {
+    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:use'], 'person')], false)).toBeNull();
+    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [], true)).toBeNull();
+    // A stored system-held role redefined system-held, seated, is no flip.
+    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:run'], 'system')], true)).toBeNull();
+  });
+
+  it('keeps the legacy upgrade: a seated role stored with no holder and only reserved keys may become holder: system; one with a person’s key may not', () => {
+    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:run'])], true)).toBeNull();
+    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:use', 'a:run'])], true)).toMatch(/cannot become holder: 'system'/);
+  });
+
+  it('judges a stored system-held role redefined as a person’s with its stored keys counted reserved, even on a module-less host', () => {
+    expect(reservedRoleDefinitionRefusal(role(['a:run']), none, [stored(['a:run'], 'system')])).toMatch(
+      /^role 'r' is a person's role and would hold a:run \(held by its stored system-held definition\)/,
+    );
+    // Twin: redefined as a person's role without that key, it is defined.
+    expect(reservedRoleDefinitionRefusal(role(['a:use']), none, [stored(['a:run'], 'system')])).toBeNull();
+  });
+
+  it('judges a key added to a seated person’s role as the new definition', () => {
+    expect(reservedRoleDefinitionRefusal(role(['a:use', 'a:run']), host, [stored(['a:use'], 'person')], true)).toMatch(/would hold a:run/);
+    expect(reservedRoleDefinitionRefusal(role(['a:use', 'z:new']), host, [stored(['a:use'], 'person')], true)).toBeNull();
+  });
+
+  it('a key the host declares unmarked is a person’s, whatever a stored system-held role holds (symmetric with the system branch)', () => {
+    const tenant = [{ key: 'odd', permissions: ['a:use'], holder: 'system' as const }];
+    expect(reservedRoleDefinitionRefusal(role(['a:use']), host, tenant)).toBeNull();
+    // Twin: a key the host does not declare, held by that system-held role, is refused.
+    expect(reservedRoleDefinitionRefusal(role(['z:x']), host, [{ key: 'odd', permissions: ['z:x'], holder: 'system' }])).toMatch(/held by the system-held role 'odd'/);
+  });
+});
+
+describe('reservedRoleSetRefusal against what the scope stores (#2447 round 1)', () => {
+  const host = { reserved: new Set(['a:run']), declared: new Set(['a:run', 'a:use']) };
+  it('refuses a set that flips a seated stored person’s role to holder: system; twin with no seat passes', () => {
+    const roles = [{ key: 'staff', permissions: ['a:run'], holder: 'system' as const }];
+    const stored = { roles: [{ key: 'staff', permissions: ['a:use'], holder: 'person' as const }], seated: new Set(['staff']) };
+    expect(reservedRoleSetRefusal(roles, host, stored)).toMatch(/role 'staff' is stored as a person's role and is held/);
+    expect(reservedRoleSetRefusal(roles, host, { ...stored, seated: new Set() })).toBeNull();
+    expect(reservedRoleSetRefusal(roles, host)).toBeNull();
   });
 });

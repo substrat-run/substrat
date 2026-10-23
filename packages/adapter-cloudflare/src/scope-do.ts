@@ -119,6 +119,8 @@ import {
   assertModuleDeclared,
   noteDeclaredKeys,
   noteReservedKeys,
+  SCOPE_SEATED_ROLES_SQL,
+  TENANT_SEATED_ROLES_SQL,
   reservedGrantRefusal,
   reservedRoleRefusal,
   reservedShapeRefusal,
@@ -5064,6 +5066,30 @@ export function defineScopeDO(
     /** #2430: why a reconcile of declared `shapes` is refused against this class's reservations, or null. */
     async reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null> {
       return reservedShapeRefusal(shapes, this.reservedKeys);
+    }
+
+    /**
+     * #2447: the tenant's roles as this scope stores them, and the keys of those anyone but a system
+     * principal holds a live seat in here (scope-level, or tenant-level as projected) — what a role
+     * set defined on this scope, or a role definition fanned out to it, is judged against.
+     */
+    async roleStateHere(tenantId: TenantId): Promise<{ roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[]; seated: string[] }> {
+      // Spine tables only (built in the constructor), so no module migration runs ahead of a provision's.
+      const now = new Date().toISOString();
+      const roles = this.hasTable('_substrat_roles')
+        ? (this.sql.exec('SELECT role_key, permissions, holder FROM _substrat_roles WHERE tenant_id = ? AND revoked_at IS NULL', tenantId).toArray() as {
+            role_key: string;
+            permissions: string;
+            holder: 'person' | 'system' | null;
+          }[]).map((r) => ({ key: r.role_key, permissions: JSON.parse(r.permissions) as string[], ...(r.holder ? { holder: r.holder } : {}) }))
+        : [];
+      const seated = new Set(
+        [
+          ...this.sql.exec(SCOPE_SEATED_ROLES_SQL, now).toArray(),
+          ...(this.hasTable('_substrat_tenant_tuples') ? this.sql.exec(TENANT_SEATED_ROLES_SQL, tenantId, now).toArray() : []),
+        ].map((r) => (r as { role_key: string }).role_key),
+      );
+      return { roles, seated: [...seated] };
     }
 
     /** #2447: what this class's modules reserve and declare — a coordinator judging a role definition joins its own. */

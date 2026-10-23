@@ -468,6 +468,8 @@ import {
   reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
   reservedShapeRefusal,
+  SCOPE_SEATED_ROLES_SQL,
+  TENANT_SEATED_ROLES_SQL,
   type DeclaredPermissions,
   admitPeer,
   boundToPeerDeclarations,
@@ -5763,8 +5765,25 @@ export class SqliteScopeHost implements ScopeHost {
   private refuseReservedDefinition(tenantId: TenantId, role: RoleDefinition): void {
     const prefix = `${tenantId}/`;
     const tenantRoles = [...this.roles].filter(([k]) => k.startsWith(prefix)).map(([, r]) => r);
-    const refusal = reservedRoleDefinitionRefusal(role, { reserved: this.reservedKeys, declared: this.declaredKeys }, tenantRoles);
+    const stored = this.roles.get(`${tenantId}/${role.key}`);
+    // The seats are read only for the one case they decide: a stored role becoming system-held.
+    const seated = !!stored && stored.holder !== 'system' && role.holder === 'system' && this.roleSeated(tenantId, role.key);
+    const refusal = reservedRoleDefinitionRefusal(role, { reserved: this.reservedKeys, declared: this.declaredKeys }, tenantRoles, seated);
     if (refusal) throw substratError('forbidden', refusal);
+  }
+
+  /**
+   * #2447: does anyone but a system principal hold a live seat in `roleKey` in this tenant — a
+   * tenant-level assignment, or a scope-level one in any of its scopes still alive?
+   */
+  private roleSeated(tenantId: TenantId, roleKey: string): boolean {
+    const now = this.clock();
+    const holds = (rows: unknown[]) => (rows as { role_key: string }[]).some((r) => r.role_key === roleKey);
+    if (holds(this.directory.prepare(TENANT_SEATED_ROLES_SQL).all(tenantId, now))) return true;
+    const scopes = this.directory
+      .prepare("SELECT scope_id FROM scopes WHERE tenant_id = ? AND status NOT IN ('archived', 'reaped')")
+      .all(tenantId) as { scope_id: string }[];
+    return scopes.some((s) => holds(this.runtime(tenantId, s.scope_id as ScopeId).db.prepare(SCOPE_SEATED_ROLES_SQL).all(now)));
   }
 
   /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */

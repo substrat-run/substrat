@@ -603,9 +603,12 @@ export {
   reservedRoleRefusal,
   reservedRoleSetRefusal,
   reservedShapeRefusal,
+  SCOPE_SEATED_ROLES_SQL,
+  TENANT_SEATED_ROLES_SQL,
   type DeclaredPermissions,
   type HostReservations,
   type RoleShape,
+  type StoredRoles,
 } from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';

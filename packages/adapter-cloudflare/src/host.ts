@@ -830,6 +830,7 @@ interface ControlPlaneStub {
     tenantId: string,
     role: RoleDefinition,
     reservation?: { reserved: string[]; declared: string[] },
+    seatedInScopes?: boolean,
   ): Promise<{ before: RoleDefinition | null } | { refused: string }>;
   listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
   getRole(tenantId: string, key: string): Promise<RoleDefinition | undefined>;
@@ -1545,6 +1546,8 @@ interface ScopeStubRpc {
   reservedAmong(permissions: string[]): Promise<string[]>;
   /** #2447: what the scope class's modules reserve and declare. */
   reservationHere(): Promise<{ reserved: string[]; declared: string[] }>;
+  /** #2447: the tenant's roles as the scope stores them, and the keys of those seated there. */
+  roleStateHere(tenantId: TenantId): Promise<{ roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[]; seated: string[] }>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -4027,7 +4030,7 @@ export class CloudflareScopeHost implements ScopeHost {
     roles: RoleDefinition[],
   ): Promise<void> {
     // #2447: the role set is defined here, so it is judged here, before anything is projected.
-    await this.refuseReservedRoleSet(roles, scopeId);
+    await this.refuseReservedRoleSet(roles, tenantId, scopeId);
     unwrapReply(await this.scopeStub(scopeId).applyProjectionReply(
       tenantId,
       roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' })),
@@ -7560,7 +7563,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // #2447: judged in the ControlPlaneDO's unit, against this host's keys and the tenant's other
         // roles, so a role assigned through a door cannot be widened afterwards. A refusal writes
         // nothing, so a seat of the role as it was stored keeps working.
-        const defined = await this.cp.defineRole(tenantId, parsed, this.reservation());
+        const defined = await this.cp.defineRole(tenantId, parsed, this.reservation(), await this.seatedInScopes(tenantId, parsed));
         if ('refused' in defined) throw substratError('forbidden', defined.refused);
         const before = defined.before;
         await this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
@@ -11728,7 +11731,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // #2447: the role set this provision defines, and the owner's seat in it — a person's seat, so
     // the person's door — are judged before anything is written. A refusal fails the provision and
     // writes nothing, so a seat a reconcile would have re-asserted is left exactly as it is.
-    const reserved = await this.refuseReservedRoleSet(input.roles, input.scopeId);
+    const reserved = await this.refuseReservedRoleSet(input.roles, input.tenantId, input.scopeId);
     const ownerRole = input.roles.find((r) => r.key === input.ownerRoleKey);
     const ownerRefusal = ownerRole ? reservedRoleRefusal(ownerRole, reserved, 'person') : null;
     if (ownerRefusal) throw substratError('forbidden', `the owner's seat: ${ownerRefusal}`);
@@ -11813,20 +11816,43 @@ export class CloudflareScopeHost implements ScopeHost {
     };
   }
 
+  /**
+   * #2447: for a definition that would make a stored role `holder: 'system'`, whether anyone but a
+   * system principal holds a live scope-level seat in it in one of the tenant's scopes (the
+   * ControlPlaneDO reads the tenant-level seats in its own unit). False for every other definition,
+   * which the seats do not decide, so no scope is asked.
+   */
+  private async seatedInScopes(tenantId: TenantId, role: RoleDefinition): Promise<boolean> {
+    if (role.holder !== 'system') return false;
+    const stored = await this.cp.getRole(tenantId, role.key);
+    if (!stored || stored.holder === 'system') return false;
+    const scopes = await this.cp.listScopes({ tenantId, status: ['provisioning', 'active', 'suspended'] });
+    for (const s of scopes) {
+      if ((await this.scopeStub(s.scope_id as ScopeId).roleStateHere(tenantId)).seated.includes(role.key)) return true;
+    }
+    return false;
+  }
+
   /** #2447: what this host's registered and listed modules reserve and declare, for a role definition. */
   private reservation(): { reserved: string[]; declared: string[] } {
     return { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
   }
 
   /**
-   * #2447: refuse a role set a CP-less provision or restore defines on `scopeId`
-   * (`reservedRoleSetRefusal`), against this host's reservations joined with the scope class's.
-   * Answers the reserved keys it judged with, for the seats the same call makes.
+   * #2447: refuse a role set a CP-less provision or restore defines on `scopeId` for `tenantId`
+   * (`reservedRoleSetRefusal`), against this host's reservations joined with the scope class's,
+   * and the roles the scope stores for the tenant now with their seats there. Answers the reserved
+   * keys it judged with, for the seats the same call makes.
    */
-  private async refuseReservedRoleSet(roles: readonly RoleDefinition[], scopeId: ScopeId): Promise<ReadonlySet<string>> {
-    const here = await this.scopeStub(scopeId).reservationHere();
+  private async refuseReservedRoleSet(roles: readonly RoleDefinition[], tenantId: TenantId, scopeId: ScopeId): Promise<ReadonlySet<string>> {
+    const stub = this.scopeStub(scopeId);
+    const [here, state] = await Promise.all([stub.reservationHere(), stub.roleStateHere(tenantId)]);
     const reserved = new Set([...this.reservedKeys, ...here.reserved]);
-    const refusal = reservedRoleSetRefusal(roles, { reserved, declared: new Set([...this.declaredKeys, ...here.declared]) });
+    const refusal = reservedRoleSetRefusal(
+      roles,
+      { reserved, declared: new Set([...this.declaredKeys, ...here.declared]) },
+      { roles: state.roles, seated: new Set(state.seated) },
+    );
     if (refusal) throw substratError('forbidden', refusal);
     return reserved;
   }

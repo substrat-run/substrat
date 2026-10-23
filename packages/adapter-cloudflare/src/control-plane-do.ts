@@ -10,6 +10,7 @@ import {
   orgChangeBound,
   reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
+  TENANT_SEATED_ROLES_SQL,
   tenantCoverage,
   type MembershipChange,
   type MembershipChangeResult,
@@ -2826,24 +2827,33 @@ export class ControlPlaneDO extends DurableObject {
   /**
    * INSERT OR REPLACE; return the previous role (for the audit `before`) or null. Judged first, in
    * the same unit (#2447, `reservedRoleDefinitionRefusal`): against `reservation`, what the
-   * coordinator's modules reserve and declare, and the tenant's other roles as stored now, so no
-   * concurrent definition lands between the read and the write. A refusal is answered as data, so
-   * its text survives the hop, and writes nothing.
+   * coordinator's modules reserve and declare, and the tenant's roles as stored now, so no
+   * concurrent definition lands between the read and the write. Whether the stored role is seated
+   * decides a change to `holder: 'system'`: its tenant-level seats are read here, in the unit, and
+   * `seatedInScopes` carries what the coordinator read off the tenant's scopes. A refusal is answered
+   * as data, so its text survives the hop, and writes nothing.
    */
   defineRole(
     tenantId: string,
     role: RoleDefinition,
     reservation: { reserved: readonly string[]; declared: readonly string[] } = { reserved: [], declared: [] },
+    seatedInScopes = false,
   ): { before: RoleDefinition | null } | { refused: string } {
     const tenantRoles = this.listRoles({ tenantId }).map((r) => ({
       key: r.role_key,
       permissions: JSON.parse(r.permissions) as string[],
       holder: r.holder ?? undefined,
     }));
+    const stored = tenantRoles.find((r) => r.key === role.key);
+    const seated =
+      !!stored && stored.holder !== 'system' && role.holder === 'system' &&
+      (seatedInScopes ||
+        (this.sql.exec(TENANT_SEATED_ROLES_SQL, tenantId, new Date().toISOString()).toArray() as { role_key: string }[]).some((r) => r.role_key === role.key));
     const refused = reservedRoleDefinitionRefusal(
       role,
       { reserved: new Set(reservation.reserved), declared: new Set(reservation.declared) },
       tenantRoles,
+      seated,
     );
     if (refused) return { refused };
     const before = this.getRole(tenantId, role.key) ?? null;

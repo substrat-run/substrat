@@ -153,6 +153,8 @@ export const INDEX_VALUE_EXPORTS = [
   'SCHEDULE_STATE_REBUILD',
   'SCOPE_COPY_LEASE_MS',
   'SCOPE_SCRIPT_COPY_COLUMNS',
+  // #2447: the role keys a scope seats anyone but a system principal in — a role set is judged against it.
+  'SCOPE_SEATED_ROLES_SQL',
   'SCOPE_STORAGE_DDL',
   'SECURE_DELETE_MIN_SQLITE',
   'SERVES_NOW_CONDITION',
@@ -180,6 +182,8 @@ export const INDEX_VALUE_EXPORTS = [
   'StateColumnLost',
   'StorageReadUnsupported',
   'TABLE_OWNERS_DDL',
+  // #2447: the same for a tenant's tenant-level tuples.
+  'TENANT_SEATED_ROLES_SQL',
   'UNCHECKED_OPERATION_FINDING',
   'UNCHECKED_OPERATION_TEMPLATE',
   'UNRECORDED_OUTCOME_LOG',

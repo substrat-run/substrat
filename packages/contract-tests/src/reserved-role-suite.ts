@@ -354,6 +354,40 @@ export function reservedRoleContractSuite(
       });
     });
 
+    describe('a holder change, judged against the stored role and its seats (#2447 round 1)', () => {
+      const stored = async (key: string) => (await host.admin.listRoles(staff, { tenantId: t1 })).find((r) => r.key === key);
+
+      it('refuses making a seated person’s role holder: system, and writes nothing: its seat keeps what it held', async () => {
+        const bob = person();
+        await host.admin.defineRole(staff, t1, { key: 'staffer', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: bob, roleKey: 'staffer', node: { tenantId: t1, scopeId: s1 } });
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'staffer', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'staffer' is stored as a person's role and is held, so it cannot become holder: 'system'/,
+        );
+        expect(await stored('staffer')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
+        expect(await holds(bob, RSV_RUN)).toBe(false);
+        expect(await holds(bob, RSV_USE)).toBe(true);
+      });
+
+      it('…and refuses it for a tenant-level seat too', async () => {
+        await host.admin.defineRole(staff, t1, { key: 'staffer-t', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: person(), roleKey: 'staffer-t', node: { tenantId: t1, scopeId: null } });
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'staffer-t', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /stored as a person's role and is held/,
+        );
+      });
+
+      it('twin: the same change to a role nobody holds is judged as a first definition, and admitted', async () => {
+        await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
+        expect(await stored('idle')).toMatchObject({ permissions: [RSV_RUN], holder: 'system' });
+      });
+    });
+
     describe('a host that registers no module reserving the key (#2447)', () => {
       let bare: ScopeHostFixture;
       const t = tenantId.parse(ulid());
@@ -386,6 +420,20 @@ export function reservedRoleContractSuite(
       it('fails open on a key it knows nothing about: with no system-held role holding it, the same role is defined', async () => {
         await bare.host.admin.defineRole(staff, other, { key: 'crew', permissions: [RSV_USE, RSV_RUN], source: 'vertical' });
         expect(await roster(other)).toEqual(['crew']);
+      });
+
+      it('judges a system-held role redefined as a person’s with its stored keys reserved (#2447 round 1); its twin is defined', async () => {
+        // A key only this role holds, so its own stored definition is the only evidence there is.
+        const SOLO = 'rsv:solo' as PermissionKey;
+        await bare.host.admin.defineRole(staff, t, { key: 'solo-runner', permissions: [SOLO], source: 'vertical', holder: 'system' });
+        await expectRefusal(
+          bare.host.admin.defineRole(staff, t, { key: 'solo-runner', permissions: [SOLO], source: 'vertical' }),
+          'forbidden',
+          /role 'solo-runner' is a person's role and would hold rsv:solo \(held by its stored system-held definition\)/,
+        );
+        expect((await bare.host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'solo-runner')?.holder).toBe('system');
+        await bare.host.admin.defineRole(staff, t, { key: 'solo-runner', permissions: [RSV_USE], source: 'vertical' });
+        expect((await bare.host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'solo-runner')?.holder).toBe('person');
       });
 
       it('a person’s door refuses the system-held role from its stored holder alone; its twin applies', async () => {

@@ -526,6 +526,31 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       expect(await rolesOf(scope)).toEqual(['member', 'runner']);
     });
 
+    it('a reconcile, and a restore’s repair, refuse making a seated stored person’s role holder: system (round 1); an unseated one changes', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const staffer = { key: 'staffer', permissions: [MIXED[0]!], source: 'vertical' as const };
+      const idle = { key: 'idle', permissions: [MIXED[0]!], source: 'vertical' as const };
+      const flipped = (key: string) => ({ key, permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const });
+      const reconcile = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await reconcile([member, staffer, idle]);
+      const who = principalId.parse(ulid());
+      await local.assignScopeRole(scope, who, 'staffer');
+      const refused = await failure(reconcile([member, flipped('staffer'), idle]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'staffer' is stored as a person's role and is held/);
+      const repair = await failure(local.projectRolesLocal(tenant, scope, [member, flipped('staffer'), idle]));
+      expect(errorCodeOf(repair)).toBe('forbidden');
+      const holderOf = (key: string) =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+          (state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, key).toArray()[0] as { holder: string } | undefined)?.holder);
+      expect(await holderOf('staffer')).toBe('person');
+      // The twin: the role nobody holds may change holder.
+      await reconcile([member, staffer, flipped('idle')]);
+      expect(await holderOf('idle')).toBe('system');
+    });
+
     it('the owner hand-over’s person door refuses a system-held role that the platform’s door admits', async () => {
       const scope = scopeId.parse(ulid());
       await provision(scope, [member, runner], 'member');
