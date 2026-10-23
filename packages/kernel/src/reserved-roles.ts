@@ -22,17 +22,28 @@ import { reservedKeysOf, type ReservedKeySource } from '@substrat-run/contracts'
  *   admitted only when its stored holder is `system`. A legacy row with no holder keeps the
  *   old key-only behavior until its definition is written again.
  *
- * Never asked on a provisioning seat or the owner hand-over, and nothing already held is revoked:
- * a seat that exists keeps working whatever a later engine declares.
+ * A person's door also refuses a role whose stored holder is `system` (#2447), whatever this host
+ * knows: the holder a role definition carries is the reservation delivered with the role, so a
+ * host that registers no module (and so reserves nothing) still keeps a system-held role from a
+ * person. The provisioning owner seat and the owner hand-over are person doors too (#2447).
+ *
+ * Nothing already held is revoked: a seat that exists keeps working whatever a later engine
+ * declares. A refusal is of the write it was asked for, and writes nothing.
  *
  * The person's refusal is also `canAssign`'s, which is the bound on taking a role away as well as
  * on giving it, so it is worded for both: no person's bound covers such a role.
  */
 export function reservedRoleRefusal(
-  role: { key: string; permissions: readonly string[]; holder?: 'person' | 'system' },
+  role: RoleShape,
   reserved: ReadonlySet<string>,
   door: 'person' | 'platform',
 ): string | null {
+  if (door === 'person' && role.holder === 'system') {
+    return (
+      `role '${role.key}' is declared holder: 'system', a role for a system principal: no person's bound covers it, to ` +
+      `give the role or to take it back (K-55)`
+    );
+  }
   const held = role.permissions.filter((p) => reserved.has(p));
   if (held.length === 0) return null;
   const keys = held.join(', ');
@@ -55,6 +66,94 @@ export function reservedRoleRefusal(
     `role '${role.key}' holds ${keys}, reserved to a system principal, beside ${others.join(', ')}: a role carries ` +
     `a reserved key only when every key it holds is one (a system-held role, K-55)`
   );
+}
+
+/** A role as the reserved-key rule reads it: a definition, a stored row, or a projected one. */
+export interface RoleShape {
+  key: string;
+  permissions: readonly string[];
+  holder?: 'person' | 'system';
+}
+
+/**
+ * What a host knows about keys (#2447): `reserved`, every key a module it registers or lists (and,
+ * at a Cloudflare scope node, the scope class's) marks `holder: 'system'`; `declared`, every key
+ * those modules declare at all. A declared key that is not reserved is a person's key.
+ */
+export interface HostReservations {
+  reserved: ReadonlySet<string>;
+  declared: ReadonlySet<string>;
+}
+
+/**
+ * Why `role` may not be DEFINED for a tenant whose other roles are `tenantRoles`, or null (#2447):
+ * the write a role definition makes, judged before it is made, so a role that passed a door when
+ * it was assigned cannot be widened afterwards with a key no person may hold.
+ *
+ * The keys judged reserved are the host's, plus every key one of the tenant's OTHER system-held
+ * roles holds: K-55 lets a system-held role hold reserved keys only, so its keys are reserved, and
+ * the stored holder (#2444) is how a host that registers no modules learns the reservation at all.
+ *
+ * - A person's role (holder omitted or `person`) carrying a reserved key is refused.
+ * - A system-held role carrying a key a person may hold is refused: one the host's modules declare
+ *   unmarked, or one a person's role of the tenant already holds.
+ *
+ * **A key the host knows nothing about is admitted, deliberately (fail-open).** A host judges only
+ * the reservations of modules it knows and of the tenant's system-held roles. Refusing every key it
+ * cannot place would refuse every role a module-less host is given; the push (`substrat push`, the
+ * registry boundary) is where the vertical's whole surface is judged. So a key reserved only
+ * through a schedule's `permissions`, which no system-held role of the tenant holds, is not caught
+ * on a host that does not register its module (the control plane verifying a pushed registry's
+ * marks is #2446).
+ *
+ * A refusal writes nothing, and so revokes nothing: a seat of the role as it was stored keeps
+ * working, and a definition that narrows a role is never refused for what it takes out.
+ */
+export function reservedRoleDefinitionRefusal(
+  role: RoleShape,
+  host: HostReservations,
+  tenantRoles: readonly RoleShape[],
+): string | null {
+  const others = tenantRoles.filter((r) => r.key !== role.key);
+  if (role.holder === 'system') {
+    const personsKeys = new Map<string, string>();
+    for (const r of others) if (r.holder !== 'system') for (const p of r.permissions) if (!personsKeys.has(p)) personsKeys.set(p, r.key);
+    const offences = role.permissions.flatMap((p) => {
+      if (host.reserved.has(p)) return [];
+      if (host.declared.has(p)) return [`${p} (declared for a person by a module this host registers)`];
+      const holder = personsKeys.get(p);
+      return holder ? [`${p} (held by the person's role '${holder}')`] : [];
+    });
+    if (offences.length === 0) return null;
+    return (
+      `role '${role.key}' is declared holder: 'system' but holds ${offences.join(', ')}: a system-held role holds only ` +
+      `keys reserved to a system principal (K-55)`
+    );
+  }
+  const bySystemRole = new Map<string, string>();
+  for (const r of others) if (r.holder === 'system') for (const p of r.permissions) if (!bySystemRole.has(p)) bySystemRole.set(p, r.key);
+  const held = role.permissions.flatMap((p) => {
+    if (host.reserved.has(p)) return [`${p} (${RESERVED_BY})`];
+    const by = bySystemRole.get(p);
+    return by ? [`${p} (held by the system-held role '${by}')`] : [];
+  });
+  if (held.length === 0) return null;
+  return (
+    `role '${role.key}' is a person's role and would hold ${held.join(', ')}, reserved to a system principal: take the key ` +
+    `out, or declare a role made only of reserved keys holder: 'system' (K-55)`
+  );
+}
+
+/**
+ * `reservedRoleDefinitionRefusal` over a whole role set defined at once (a provision's or a
+ * restore's projection), each role judged against the rest of the set. The first refusal, or null.
+ */
+export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostReservations): string | null {
+  for (const role of roles) {
+    const refusal = reservedRoleDefinitionRefusal(role, host, roles);
+    if (refusal) return refusal;
+  }
+  return null;
 }
 
 /**
@@ -102,6 +201,11 @@ const RESERVED_BY = "a module this host registers or lists in its `permissions`,
  */
 export function noteReservedKeys(reserved: Set<string>, manifest: DeclaredManifest): void {
   for (const key of reservedKeysOf([{ manifest: { id: manifest.id, permissions: manifest.permissions ?? [] } }]).keys()) reserved.add(key);
+}
+
+/** #2447: add every key `manifest` declares, marked or not, to a host's `declared` set (`HostReservations`). */
+export function noteDeclaredKeys(declared: Set<string>, manifest: DeclaredManifest): void {
+  for (const p of manifest.permissions ?? []) declared.add(p.key);
 }
 
 /** A manifest as far as a reservation and the declared-module check read it. */

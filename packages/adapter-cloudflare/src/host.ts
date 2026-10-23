@@ -510,9 +510,11 @@ import {
   assertBoundOperations,
   registerTrashTargets,
   assertModuleDeclared,
+  noteDeclaredKeys,
   noteReservedKeys,
   reservedGrantRefusal,
   reservedRoleRefusal,
+  reservedRoleSetRefusal,
   reservedShapeRefusal,
   type DeclaredPermissions,
   type PurgePass,
@@ -822,7 +824,12 @@ interface ControlPlaneStub {
     | { ok: true; status: string; vertical: string | null }
     | { ok: false; code: ErrorCode | null; message: string }
   >;
-  defineRole(tenantId: string, role: RoleDefinition): Promise<RoleDefinition | null>;
+  /** #2447: judged in the unit against `reservation` and the tenant's other roles; a refusal writes nothing. */
+  defineRole(
+    tenantId: string,
+    role: RoleDefinition,
+    reservation?: { reserved: string[]; declared: string[] },
+  ): Promise<{ before: RoleDefinition | null } | { refused: string }>;
   listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
   getRole(tenantId: string, key: string): Promise<RoleDefinition | undefined>;
   writeTenantTuple(
@@ -2882,6 +2889,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly moduleIds = new Set<string>();
   /** #2430: what a registered module declares `holder: 'system'` — `assignRole`'s refusal reads it. */
   private readonly reservedKeys = new Set<string>();
+  /** #2447: every key a registered or listed module declares, marked or not — a role definition reads it. */
+  private readonly declaredKeys = new Set<string>();
   /** #2430: the declared permission surface `registerModule` holds each module to, when given. */
   private readonly permissions: DeclaredPermissions | undefined;
   /**
@@ -2982,7 +2991,10 @@ export class CloudflareScopeHost implements ScopeHost {
     this.servicePrincipals = options.servicePrincipals;
     this.permissions = options.permissions;
     // #2430: what the declared surface reserves holds here too, whatever is registered under its ids.
-    for (const m of options.permissions?.modules ?? []) noteReservedKeys(this.reservedKeys, m.manifest);
+    for (const m of options.permissions?.modules ?? []) {
+      noteReservedKeys(this.reservedKeys, m.manifest);
+      noteDeclaredKeys(this.declaredKeys, m.manifest);
+    }
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
@@ -4402,6 +4414,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.crossVertical.register(manifest, registration.imports);
     this.moduleIds.add(manifest.id);
     noteReservedKeys(this.reservedKeys, manifest);
+    noteDeclaredKeys(this.declaredKeys, manifest);
     if (manifest.schedules && manifest.schedules.length > 0) {
       this.moduleSchedules.set(manifest.id, manifest.schedules);
     }
@@ -7544,7 +7557,12 @@ export class CloudflareScopeHost implements ScopeHost {
       canStoreSecrets: isSecretBoxConfigured(this.secretBox),
       defineRole: async (actor, tenantId, role) => {
         const parsed = roleDefinition.parse(role);
-        const before = await this.cp.defineRole(tenantId, parsed);
+        // #2447: judged in the ControlPlaneDO's unit, against this host's keys and the tenant's other
+        // roles, so a role assigned through a door cannot be widened afterwards. A refusal writes
+        // nothing, so a seat of the role as it was stored keeps working.
+        const defined = await this.cp.defineRole(tenantId, parsed, this.reservation());
+        if ('refused' in defined) throw substratError('forbidden', defined.refused);
+        const before = defined.before;
         await this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
         await this.fanOut(tenantId); // role definitions are projected into the tenant's scopes
       },

@@ -460,6 +460,8 @@ export const INDEX_VALUE_EXPORTS = [
   'noSealingKeyMessage',
   'noopConnectorCallRecorder',
   'normalizeUploadMediaType',
+  // #2447: each adapter's set of keys its registered modules declare, marked or not.
+  'noteDeclaredKeys',
   // #2430: each adapter's set of keys its registered modules reserve to a system principal.
   'noteReservedKeys',
   'noteUncheckedCompletion',
@@ -571,8 +573,12 @@ export const INDEX_VALUE_EXPORTS = [
   'requiredEntitlementFor',
   // #2430: the refusal both adapters' raw grant doors and `ctx.grant` answer for a reserved key.
   'reservedGrantRefusal',
+  // #2447: the refusal both adapters' role definitions (defineRole, a projected role set) answer.
+  'reservedRoleDefinitionRefusal',
   // #2430: the one refusal both adapters' role doors (and the ControlPlaneDO's membership unit) answer.
   'reservedRoleRefusal',
+  // #2447: `reservedRoleDefinitionRefusal` over a role set defined at once.
+  'reservedRoleSetRefusal',
   // #2430: the refusal both adapters' reconcile of declared entity-grant shapes answers.
   'reservedShapeRefusal',
   'resolveAttachmentTextBounds',
