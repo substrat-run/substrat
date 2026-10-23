@@ -110,6 +110,13 @@ catalog:
   # below forces this same version onto every transitive copy too, by reference.
   hono: ^4.13.13
 
+  # The HTML sanitizer the builder studio's web app imports directly and that
+  # `monaco-editor` pins by EXACT version for its markdown/hover rendering (0.56.0 → 3.4.8,
+  # 0.57.0 → 3.4.15), so a monaco bump cannot move it. `overrides:` below forces this
+  # version onto monaco's copy by reference, which is how the critical advisory
+  # GHSA-cg2g-xh64-v4q7 (>=3.4.4 <=3.4.16, patched in 3.4.17) left the tree.
+  dompurify: ^3.4.17
+
 onlyBuiltDependencies:
   - esbuild
   - workerd
@@ -133,6 +140,11 @@ overrides:
   #     `tools/override-advisories.accept.json` with a reason and an expiry.
   # The same step asserts that hono and better-sqlite3 each resolve to one version.
   hono: 'catalog:'
+
+  # dompurify is forced to the catalog version for a different reason than hono: not type
+  # identity but a patched floor. `monaco-editor` pins its own copy by exact version, and
+  # the latest monaco release still pins a vulnerable one, so only an override reaches it.
+  dompurify: 'catalog:'
 
 # On why `strictPeerDependencies` is NOT set here, which is a measured decision
 # rather than an omission.
