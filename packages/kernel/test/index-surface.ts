@@ -323,6 +323,8 @@ export const INDEX_VALUE_EXPORTS = [
   'domainEventOf',
   'driverDeclarationsOf',
   'dumpMetaValue',
+  // #2447: a dump's stored roles and seats, which a restore's role set is judged against.
+  'dumpRoleState',
   'dumpRowsInsert',
   'effectiveOutcomes',
   'effectiveRoleGrantQuery',

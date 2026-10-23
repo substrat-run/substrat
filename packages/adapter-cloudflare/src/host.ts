@@ -518,6 +518,8 @@ import {
   reservedRoleSetRefusal,
   reservedShapeRefusal,
   SEAT_HOLDING_SCOPE_STATUSES,
+  dumpRoleState,
+  type DumpTable,
   type DeclaredPermissions,
   type PurgePass,
   type AsyncLinePass,
@@ -11861,16 +11863,23 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * #2447: why `roles` may not be defined on `scopeId`, judged as a set against this host's
-   * reservations joined with the scope class's, or null. A restore asks it before it imports a
-   * dump, which replaces whatever the scope stores now, so no stored role is judged against here:
-   * `projectRolesLocal` judges again after the import, against what the dump brought.
+   * reservations joined with the scope class's, or null. A restore asks it before it imports a dump,
+   * which replaces whatever the scope stores now, so what the set is judged against is the DUMP's
+   * roles and seats for `dump.tenantId` (`dumpRoleState`), when the caller has the dump in hand. A
+   * staged restore has not (its pages are already in the scope), so it is judged as a set alone
+   * here, and `projectRolesLocal` judges again after the import, against what the dump brought.
    */
-  async roleSetRefusalLocal(scopeId: ScopeId, roles: RoleDefinition[]): Promise<string | null> {
+  async roleSetRefusalLocal(
+    scopeId: ScopeId,
+    roles: RoleDefinition[],
+    dump?: { tenantId: TenantId; tables: readonly DumpTable[] },
+  ): Promise<string | null> {
     const here = await this.scopeStub(scopeId).reservationHere();
-    return reservedRoleSetRefusal(roles, {
-      reserved: new Set([...this.reservedKeys, ...here.reserved]),
-      declared: new Set([...this.declaredKeys, ...here.declared]),
-    });
+    return reservedRoleSetRefusal(
+      roles,
+      { reserved: new Set([...this.reservedKeys, ...here.reserved]), declared: new Set([...this.declaredKeys, ...here.declared]) },
+      dump ? dumpRoleState(dump.tables, dump.tenantId, new Date().toISOString()) : undefined,
+    );
   }
 
   /**

@@ -215,6 +215,41 @@ export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostRe
 export const SCOPE_SEATED_ROLES_SQL =
   "SELECT DISTINCT substr(relation, 6) AS role_key FROM _substrat_tuples WHERE relation LIKE 'role:%' AND subject NOT LIKE 'system:%' AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)";
 
+/** A scope dump's table, as a restore carries it: its name, its columns, and its rows in that order. */
+export interface DumpTable {
+  name: string;
+  columns: readonly string[];
+  rows: readonly (readonly unknown[])[];
+}
+
+/**
+ * #2447: what a scope dump stores for a tenant's roles, and the role keys anyone but a system
+ * principal holds a live seat in there (scope-level, or tenant-level as projected) — the same
+ * reading as `SCOPE_SEATED_ROLES_SQL` and `TENANT_SEATED_ROLES_SQL`, over a dump's rows instead of a
+ * table. A restore judges the role set its repair defines against it before it imports the dump.
+ */
+export function dumpRoleState(tables: readonly DumpTable[], tenantId: string, now: string): StoredRoles {
+  const read = (name: string) => {
+    const t = tables.find((x) => x.name === name);
+    return t ? t.rows.map((r) => Object.fromEntries(t.columns.map((c, i) => [c, r[i]])) as Record<string, unknown>) : [];
+  };
+  const live = (r: Record<string, unknown>) => r.revoked_at == null && (r.expires_at == null || String(r.expires_at) > now);
+  const roles = read('_substrat_roles')
+    .filter((r) => r.tenant_id === tenantId && r.revoked_at == null)
+    .map((r): RoleShape => ({
+      key: String(r.role_key),
+      permissions: JSON.parse(String(r.permissions)) as string[],
+      ...(r.holder === 'person' || r.holder === 'system' ? { holder: r.holder as 'person' | 'system' } : {}),
+    }));
+  const seats = [...read('_substrat_tuples'), ...read('_substrat_tenant_tuples').filter((r) => r.tenant_id === tenantId)];
+  const seated = new Set(
+    seats
+      .filter((r) => String(r.relation).startsWith('role:') && !String(r.subject).startsWith('system:') && live(r))
+      .map((r) => String(r.relation).slice('role:'.length)),
+  );
+  return { roles, seated };
+}
+
 /**
  * #2447: the scope statuses whose seats count as held when a role definition is judged: every one
  * but `reaped` (whose storage is gone). An archived scope comes back on unarchive with its seats, so

@@ -191,6 +191,19 @@ describe('a restore judges the role set its repair defines before it imports any
       expect(admitting.calls).toEqual(expect.arrayContaining([restorer, 'projectRolesLocal']));
     }
   });
+
+  it('hands the whole restore’s dump to the pre-check, so it is judged against the dump’s roles and seats (round 2)', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      roleSetRefusalLocal: async (_s, _r, dump) => {
+        seen.push(dump);
+        return null;
+      },
+    });
+    const tables = [{ name: '_substrat_tuples', ddl: 'CREATE TABLE _substrat_tuples (x)', columns: ['subject'], rows: [['principal:p']] }];
+    expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables })).status).toBe(200);
+    expect(seen).toEqual([{ tenantId: TENANT, tables }]);
+  });
 });
 
 describe('mountPlatformSurface — the error envelope (#510 regression)', () => {

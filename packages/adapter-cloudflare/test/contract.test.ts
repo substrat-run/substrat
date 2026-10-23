@@ -662,6 +662,21 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       );
       expect(await local.roleSetRefusalLocal(scope, [member, runner])).toBeNull();
       expect(await rolesOf(scope)).toEqual([]);
+      // Round 2: judged against the dump's own seats, which the scope will store once it is imported.
+      const tenant = tenantId.parse(ulid());
+      const flipped = { key: 'staffer', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+      const dump = {
+        tenantId: tenant,
+        tables: [
+          {
+            name: '_substrat_tuples',
+            columns: ['subject', 'relation', 'object', 'expires_at', 'revoked_at'],
+            rows: [[`principal:${ulid()}`, 'role:staffer', `scope:${scope}`, null, null]],
+          },
+        ],
+      };
+      expect(await local.roleSetRefusalLocal(scope, [member, flipped], dump)).toMatch(/role 'staffer' is held by someone who is not a system principal/);
+      expect(await local.roleSetRefusalLocal(scope, [member, flipped])).toBeNull();
     });
 
     it('the owner hand-over’s person door refuses a system-held role that the platform’s door admits', async () => {

@@ -12,6 +12,7 @@ import {
   reservedRoleRefusal,
   reservedRoleSetRefusal,
   reservedShapeRefusal,
+  dumpRoleState,
 } from '../src/reserved-roles.js';
 
 const manifest = (id: string, permissions: { key: string; description: string; holder?: 'system' }[]) =>
@@ -265,5 +266,50 @@ describe('reservedRoleSetRefusal against what the scope stores (#2447 round 1)',
     expect(reservedRoleSetRefusal(roles, host, stored)).toMatch(/role 'staff' is held by someone who is not a system principal/);
     expect(reservedRoleSetRefusal(roles, host, { ...stored, seated: new Set() })).toBeNull();
     expect(reservedRoleSetRefusal(roles, host)).toBeNull();
+  });
+});
+
+describe('dumpRoleState (#2447 round 2)', () => {
+  const now = '2026-10-24T00:00:00.000Z';
+  const tables = [
+    {
+      name: '_substrat_roles',
+      columns: ['tenant_id', 'role_key', 'permissions', 'source', 'holder', 'revoked_at'],
+      rows: [
+        ['t1', 'staffer', '["a:use"]', 'vertical', 'person', null],
+        ['t1', 'gone', '["a:use"]', 'vertical', null, '2026-01-01T00:00:00.000Z'],
+        ['t2', 'other', '["a:use"]', 'vertical', 'system', null],
+      ],
+    },
+    {
+      name: '_substrat_tuples',
+      columns: ['subject', 'relation', 'object', 'expires_at', 'revoked_at'],
+      rows: [
+        ['principal:p1', 'role:staffer', 'scope:s', null, null],
+        ['principal:p2', 'role:ghost', 'scope:s', null, null],
+        ['system:@m', 'role:sys', 'scope:s', null, null],
+        ['principal:p3', 'role:revoked', 'scope:s', null, '2026-01-01T00:00:00.000Z'],
+        ['principal:p4', 'role:expired', 'scope:s', '2026-01-01T00:00:00.000Z', null],
+        ['principal:p5', 'granted:a:use', 'scope:s', null, null],
+      ],
+    },
+    {
+      name: '_substrat_tenant_tuples',
+      columns: ['tenant_id', 'subject', 'relation', 'object', 'expires_at', 'revoked_at'],
+      rows: [
+        ['t1', 'principal:p6', 'role:tenantwide', 'tenant:t1', null, null],
+        ['t2', 'principal:p7', 'role:elsewhere', 'tenant:t2', null, null],
+      ],
+    },
+  ];
+
+  it('reads the tenant’s live roles and the role keys a non-system principal holds a live seat in', () => {
+    const state = dumpRoleState(tables, 't1', now);
+    expect(state.roles).toEqual([{ key: 'staffer', permissions: ['a:use'], holder: 'person' }]);
+    expect([...state.seated].sort()).toEqual(['ghost', 'staffer', 'tenantwide']);
+  });
+
+  it('reads a dump with none of those tables as storing nothing', () => {
+    expect(dumpRoleState([], 't1', now)).toEqual({ roles: [], seated: new Set() });
   });
 });
