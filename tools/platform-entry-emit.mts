@@ -45,8 +45,9 @@ const SWEEPER_INTERVAL_MS = 120_000;
 /** Refuse a bundle past its ceiling: it would mean a runtime dependency crept in. */
 const SWEEPER_CEILING_BYTES = 32_000;
 /**
- * The entry's, raised from the sweeper's 32 000 for the wire-signing verifier (about 21 KB with the
- * envelope's own checks): still an order of magnitude below what a schema library would add.
+ * The entry's, raised from the 32 000 both bundles shared, for the wire-signing verifier (about
+ * 21 KB with the envelope's own checks): still an order of magnitude below what a schema library
+ * would add.
  */
 const ENTRY_CEILING_BYTES = 52_000;
 
