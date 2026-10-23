@@ -241,6 +241,30 @@ describe('a page is as full as it would be without the wire line', () => {
       expect(queries).toHaveLength(2);
     });
 
+    describe('with no wire line, as every deployment in legacy-only reads', () => {
+      /** One busy service's own lines, each a millisecond apart, none of them a wire line. */
+      const plain = (service: string, n: number, offset = 0): Line[] =>
+        Array.from({ length: n }, (_, i): Line => ({
+          timestamp: now - 1_000_000 + i * 10 + offset,
+          source: { message: `line ${i}` },
+          $metadata: { id: `01P${service}x${i}`, requestId: `req-${service}-${i}`, service, message: `${service} line ${i}` },
+        }));
+
+      it.each([
+        ['the fleet view', undefined, 1],
+        ['one service', ['acme-widgets'], 1],
+        ['20 services, one of them busy', Array.from({ length: 20 }, (_, s) => `acme-widgets-v${s}`), 20],
+      ] as const)('%s: a full page costs one query a service, and nothing more', async (_, services, cost) => {
+        const busyService = services?.[0] ?? 'acme-widgets';
+        const lines = [...plain(busyService, 300), ...(services ?? []).slice(1).flatMap((s, n) => plain(s, 5, n + 1))];
+        const { reader, queries } = backend(() => lines);
+        const { events, incomplete } = await reader.recentLogs({ services: services ? [...services] : undefined, hours: 24, limit: 100 });
+        expect(events.map((e) => e.timestamp)).toEqual(lines.map((l) => l.timestamp).sort((a, b) => b - a).slice(0, 100));
+        expect(incomplete).toBe(false);
+        expect(queries).toHaveLength(cost);
+      });
+    });
+
     it('a window with less than a page in it is answered whole, in one query', async () => {
       const lines = busy().slice(0, 30);
       const { reader, queries } = backend(() => lines);

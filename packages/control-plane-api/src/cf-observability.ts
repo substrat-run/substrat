@@ -1997,9 +1997,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       await Promise.all(pending.map(read));
       const merged = answer();
       // A walk's unread lines are no newer than its oldest read one, so it can change the answer
-      // only while that line is not older than the answer's last (or the answer is short).
+      // only while that line is newer than the answer's last (or the answer is short). Not "as
+      // new": the walk holding the answer's last line could add only lines of that same instant,
+      // whose order against it is arbitrary anyway, and every full page would cost a second query.
       const cutoff = merged.length < limit ? -Infinity : rawTime(merged[merged.length - 1]!);
-      const reaches = (w: (typeof walks)[number]) => w.oldest >= cutoff;
+      const reaches = (w: (typeof walks)[number]) => w.oldest > cutoff;
       const wanted = walks.filter((w) => w.more && reaches(w)).sort((a, b) => b.oldest - a.oldest);
       const roundsLeft = round + 1 < MAX_FILL_ROUNDS;
       pending = roundsLeft ? wanted.slice(0, budget) : [];
