@@ -151,7 +151,11 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     );
     expect(res.status).toBe(401);
     expect(res.headers.get('content-type')).toBe('application/problem+json');
-    expect(await res.json()).toMatchObject({ status: 401, detail: 'unauthorized', error: 'unauthorized' });
+    expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(problem.safeParse(body).success).toBe(true);
+    expect(body).toMatchObject({ status: 401, detail: 'unauthorized', error: 'unauthorized' });
+    expect(body.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
   });
 
   it('a thrown 401 rendered by onError carries the id in the problem body, equal to the header', async () => {
