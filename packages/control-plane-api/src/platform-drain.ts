@@ -757,7 +757,18 @@ async function admitManager(
  */
 export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequestHandler {
   return async (ctx, request) => {
-    const payload = provisionTenantPayload.parse(request.payload);
+    // Terminal, like the other refusals here: a payload that does not parse never will, and a
+    // throw would leave it pending and retried every pass until the attempt ceiling.
+    const parsed = provisionTenantPayload.safeParse(request.payload);
+    if (!parsed.success) {
+      const fields = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+      return {
+        status: 'failed',
+        error: `provision-tenant payload is malformed: ${fields}`,
+        failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      };
+    }
+    const payload = parsed.data;
     const admitted = await admitManager(
       deps,
       ctx,

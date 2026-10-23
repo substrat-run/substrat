@@ -948,6 +948,44 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(configured?.entries).toEqual([{ key: 'ISSUER_DOMAIN', value: 'auth.customer-1.example' }]);
   });
 
+  it.each(['Crm', '', 'a/b/c'])(
+    'settles a payload whose vertical is %j failed at once, as validation_failed, creating nothing',
+    async (vertical) => {
+      const newTenant = ulid();
+      const base = payloadFor(newTenant, ulid());
+      const req = intent('provision-tenant', { payload: { ...base, instance: { ...base.instance, vertical } } });
+      const { client, settled } = fakeTransport([req]);
+
+      const report = await drainScopePlatformRequests(client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, {
+        'provision-tenant': provisionTenantHandler(deps()),
+      });
+
+      // Terminal on the first pass: not left pending to be retried every pass up to the ceiling.
+      expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+      expect(settled).toEqual([
+        expect.objectContaining({
+          id: req.id,
+          status: 'failed',
+          lastError: expect.stringMatching(/^provision-tenant payload is malformed: instance\.vertical: /),
+          failure: { origin: 'platform', code: 'validation_failed', permission: null },
+        }),
+      ]);
+      expect((await host.admin.listTenants(staff)).some((t) => t.id === newTenant)).toBe(false);
+    },
+  );
+
+  it('drains a payload whose vertical is a slug to done', async () => {
+    const newTenant = ulid();
+    const newScope = ulid();
+    const req = intent('provision-tenant', { payload: payloadFor(newTenant, newScope) });
+    const { client, settled } = fakeTransport([req]);
+    const report = await drainScopePlatformRequests(client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, {
+      'provision-tenant': provisionTenantHandler(deps()),
+    });
+    expect(report).toEqual({ drained: 1, done: 1, failed: 0, pending: 0 });
+    expect(settled[0]).toMatchObject({ id: req.id, status: 'done' });
+  });
+
   it('converges on a re-drain: same proposed ids, every step an idempotent no-op', async () => {
     const newTenant = ulid();
     const newScope = ulid();
