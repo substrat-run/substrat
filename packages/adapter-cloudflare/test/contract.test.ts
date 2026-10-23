@@ -968,6 +968,10 @@ schedulePlatformRequestsContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
+}, async (_tenant, scope, sql, params = []) => {
+  await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+    state.storage.sql.exec(sql, ...(params as SqlStorageValue[]));
+  });
 });
 
 // #1577: the resumable-run driver, on the DURABLE half of D-14 — the run record and

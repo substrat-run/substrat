@@ -367,6 +367,12 @@ export interface PurgePass {
   lapFailed?: number;
   /** Why the scope ran no purge at all this pass (`purgeHeldBy`), when its gate held it. */
   held?: string;
+  /**
+   * #2440: platform requests the purges that committed enqueued, when a scope that runs the purges
+   * out of the caller's sight reports them (the Durable Object does; the SQLite host counts through
+   * the stub it invokes with). Absent means none, or a scope running code older than this field.
+   */
+  platformRequests?: number;
 }
 
 /** A pass the scope's gate held: nothing selected, nothing tried, the lap where it was. */
