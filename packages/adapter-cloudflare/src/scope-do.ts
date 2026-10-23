@@ -5015,7 +5015,10 @@ export function defineScopeDO(
      * the checker expands it (`controlPlaneReader`), against the keys this class's modules reserve.
      * A role the tenant does not define is left to the door's own answer for it. A person's door reads
      * the role even when this class reserves nothing (#2447): a role stored `holder: 'system'` is
-     * never a person's, whatever this class knows.
+     * never a person's, whatever this class knows. Accepted cost: on a class that reserves nothing, an
+     * invite, a role change and a `canAssign` read the role here and again for the bound, which on a
+     * scope still reading the shared directory is one more ControlPlaneDO round trip per call. These
+     * doors are a person acting, not a hot path, so one read is not threaded through both.
      */
     async reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
       if (door === 'platform' && this.reservedKeys.size === 0) return null;
