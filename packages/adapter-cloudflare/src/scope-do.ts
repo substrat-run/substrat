@@ -1863,11 +1863,10 @@ export function defineScopeDO(
 
     /**
      * This scope's attachment bytes (#2501): what its attachment rows sum to
-     * (`ATTACHMENT_BYTES_SQL`). Read without migrating, as `databaseSize` is: a scope whose spine
-     * was never made holds no attachment, so it reads 0.
+     * (`ATTACHMENT_BYTES_SQL`). Read without migrating, as `databaseSize` is. The constructor lays
+     * the spine, so the table is always there, and a copy wiped of its rows reads 0.
      */
     attachmentBytes(): number {
-      if (!this.hasTable('_substrat_attachments')) return 0;
       return (this.sql.exec(ATTACHMENT_BYTES_SQL).toArray()[0] as { bytes: number }).bytes;
     }
 
