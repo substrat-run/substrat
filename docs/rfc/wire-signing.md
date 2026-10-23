@@ -455,8 +455,9 @@ step 6, withdraws the credential.
 - **The gates.**
   - The control plane refuses to set an environment to `signed-only` unless the report is clean,
     the standby keys are listed everywhere, the cutover criterion holds (§8: no legacy
-    acceptance, no `dual-mismatch`, no `fault`, and no `refused:*` outside expected noise from
-    clients that send nothing), and the informational headers (§5) reach a request admitted on
+    acceptance, no `dual-mismatch`, no `fault`, and no `refused:*`, read on `reason` whatever the
+    `outcome`, outside expected noise from clients that send nothing), and the informational
+    headers (§5) reach a request admitted on
     its envelope alone, signed or listed, in the router and in every live version's entry.
   - It refuses to drop a public key unless every live version carries its replacement, except on
     the break-glass path (§6).
@@ -493,7 +494,12 @@ step 6, withdraws the credential.
 - **Every verification is counted** by environment, issuer, kind and outcome: `signed-accepted`,
   `legacy-accepted`, `refused:<reason>` (one per reason in `WIRE_REFUSAL_REASONS`),
   `dual-mismatch`, and `fault` (a verifier throw, §3.4, named by kind: `keys`, `no-nonce-store`,
-  `nonce-store`, `verifier`). The count is one line per judged request, `{ substrat: 'wire', … }`
+  `nonce-store`, `verifier`). On the line, `outcome` says how the request was served and `reason`
+  why its envelope was refused, and a counter reads each on its own: `refused:<reason>` counts every
+  line whose `reason` is set, whatever its `outcome`. In `dual` an envelope refused beside a valid
+  legacy credential is served by that credential and written `legacy-accepted` with its `reason`
+  (§5), so `outcome: 'refused'`, which only a request neither credential proved carries, counts
+  only some of the refusals. The count is one line per judged request, `{ substrat: 'wire', … }`
   (contracts' `WireVerificationLine`), written by the platform's entry beside the invocation line
   (#1893) and sharing its request id, so it can be read per deployment and per tenant as well as in
   total. A line of its own rather than a field on the invocation line: the verifier runs outside
@@ -516,7 +522,8 @@ step 6, withdraws the credential.
   pages, and the fix is at the signer: its standby key (§6).
 - **The cutover criterion** for an environment: a clean readiness report, and over a window with
   traffic on every live version (a week is proposed) zero `legacy-accepted`, zero `dual-mismatch`,
-  zero `fault`, and zero `refused:*` outside expected noise from clients that send nothing. §7's
+  zero `fault`, and zero `refused:*` (a line with a `reason`, whatever its `outcome`) outside
+  expected noise from clients that send nothing. §7's
   gate on `signed-only` reads exactly this. Reasons appear in counters only, never in an answer.
 
 ## 9. Rollout that breaks no live app
@@ -534,7 +541,7 @@ step 6, withdraws the credential.
 |---|---|---|---|
 | 0 | This PR: RFC, K-58 draft, primitives. Nothing wired. | delete the files | the envelope format and the plan |
 | 1 | The verifier, `dual`-capable, inert without key lists, in the platform's entry module (Q2) | revert the package | a pushed demo with no keys behaves exactly as before |
-| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The router's signer decides, by name, how the informational headers it sends (the field-coverage sample, a peer call's parent request id) reach a request admitted on its envelope alone: signed as claims, or listed by the entry as carrying no authority (§5). Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and nothing is refused, each read from the environment's own log query (below) |
+| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The router's signer decides, by name, how the informational headers it sends (the field-coverage sample, a peer call's parent request id) reach a request admitted on its envelope alone: signed as claims, or listed by the entry as carrying no authority (§5). Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and no envelope is refused (no `reason` but the untouched vertical's `missing`, whatever the `outcome`), each read from the environment's own log query (below) |
 | 3 | The fleet re-uploaded so every live version the entry wraps carries the verifier and the lists. Readiness report and tooling. A version uploaded without the entry is not reached by any re-upload, and is named in the report until its author pushes again (§7). | none needed: `dual` accepts legacy | the report is clean, or lists only named exceptions, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
 | 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included, field coverage still arming and peer-call lines still naming their parent (§5) |
@@ -547,10 +554,19 @@ straight from the environment's Workers Logs, through Cloudflare's own query (th
 builder, or the account's telemetry query API, the one `cf-observability.ts` calls): the events
 whose `substrat` is `wire`, over the window since the canary was given its lists, counted by
 `outcome`, with `reason` and `fault` beside it, for each deployment's script (`$metadata.service`).
-The check is the table's, read there: the re-pushed demo's script counts `signed-accepted`, the
-untouched vertical's counts `legacy-accepted`, and no script counts `refused`. Of the faults, only
-`no-nonce-store` on a call that keeps nonces is expected before follow-on 5; any other fails the
-check. The person who checks records the query and its counts on the step's pull request.
+The check is the table's, read on `reason` and `fault` as well as `outcome`: in `dual` an envelope
+refused beside a valid legacy credential is written `legacy-accepted` with its `reason`, never
+`refused` (§8), so a check on `outcome` alone would pass a canary whose envelopes fail some of the
+time. It holds when, over the window:
+
+- the re-pushed demo's script counts `signed-accepted` (more than zero), and zero lines with any
+  `reason`, zero `legacy-accepted`, zero `refused` and zero `dual-mismatch`;
+- the untouched vertical's script counts `legacy-accepted`, every one with `reason` `missing`, and
+  zero lines with any other `reason`, zero `refused` and zero `dual-mismatch`;
+- every script counts zero `fault`, except `no-nonce-store` on a call that keeps nonces, which is
+  expected until follow-on 5.
+
+The person who checks records the query and its counts on the step's pull request.
 Follow-on 4 replaces this reading with the report's own query, over the same lines; from step 3 on,
 the report is what every later check and §7's gate read.
 
