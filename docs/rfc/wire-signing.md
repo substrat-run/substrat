@@ -6,8 +6,9 @@ description: One-way trust between the platform and a deployed vertical. The rou
 
 # RFC: wire signing
 
-**Status:** proposed, argued and not agreed · **Decision:** K-58, proposed (the number is
-provisional until the records ahead of it merge) · **Primitives:**
+**Status:** proposed, argued and not agreed · **Decision:** K-58, proposed. Its text is the
+[appendix](#appendix-the-k-58-record-provisional) until the records numbered ahead of it merge,
+since the decision log refuses a gap in its numbering. The number is provisional until then · **Primitives:**
 `packages/contracts/src/wire-signing.ts`, with shared vectors in
 `packages/contracts/test/vectors/wire-envelope.json` · **Precedent:**
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
@@ -432,3 +433,92 @@ count stops the rollout.
   node's own Ed25519 and SHA-256 as well as with the module.
 - **Not shown.** The verifier running on workerd. Follow-on 1 carries that test, the way K-52's
   entry was shown on workerd before it was relied on.
+
+## Appendix: the K-58 record (provisional)
+
+> **Provisional.** This is the text of the proposed decision record K-58, in the
+> decision-record format. It lives here, not under `docs/decisions/`, until the records numbered
+> ahead of it merge, because the decision log refuses a gap in its numbering. It then moves to
+> `docs/decisions/` unchanged except for its number if that has to change, with `status:
+> proposed`, `amends: []` and the title below, and this appendix is removed. If ratified, it
+> amends [K-27](../decisions/K-027-the-router-presents-a-shared-secret-and-the-vertical-verifie.md)
+> (the router's shared secret) and
+> [K-31](../decisions/K-031-provisioning-is-control-plane-driven-pull-the-vertical-s-sel.md) (the
+> same shape for the control plane's calls). Until then both stand as written, and nothing in the
+> platform behaves differently.
+
+### K-58: A call from the platform to a vertical carries an Ed25519 envelope, a deployed vertical holds public keys only, and its calls up to the control plane give way to its outbox
+
+**Every call the router or the control plane makes to a deployed vertical is to carry one
+Ed25519 envelope, and a deployed vertical is to hold public keys only.** The envelope is fifteen
+lines of UTF-8 joined by `\n`, with no trailing newline. The lines are:
+
+- the tag `substrat-wire/1`;
+- the issuer, `router` or `platform`;
+- the kind: `route` for an end user's request the router resolved, `call` for a call to an
+  internal endpoint;
+- the key id and the target deployment;
+- the tenant and scope, the surface and the vertical;
+- the method, the SHA-256 of the request's pathname and search, and the SHA-256 of a call's
+  exact body;
+- the issue and expiry times, and a 16-byte nonce.
+
+Which fields an (issuer, kind) pair carries is a closed table. The router signs routes and its
+own calls, and the control plane signs calls only. A route carries its tenant, scope and surface
+and binds no body. A call binds its body. An envelope lives at most 120 seconds, with 30 seconds
+of skew. A deployment checks it in one function, `verifyWireEnvelope`
+(`@substrat-run/contracts/wire-signing`), in one fixed order. Every failure of the caller's returns
+the same refusal, and only a counter hears the reason. A call that changes state also spends its
+nonce in the scope's own object, after every other check has passed.
+
+**The scheme is K-52's.** The scope-store envelope's functions supply the key id, the private
+and public key forms and the list form. They also supply the refusals: of a small-order point, of
+a non-canonical spelling, and of a key listed for two signers. The key tool and the rotation
+runbook are the store's too. The keys themselves are new pairs, one for the router and one for
+the control plane, and each private key is held only by its signer.
+
+**An environment moves through three states: `legacy-only`, `dual` and `signed-only`.** `dual`
+accepts a valid signature or the legacy secret, so a deployment can learn to verify before
+anything relies on it. Signers send the envelope beside the legacy headers until the very end. An
+environment becomes `signed-only` only when three things hold: every live version carries the
+verifier and the key lists, as the uploader records them; the counters show no legacy
+acceptance; and a person flips it. Each step reverts on its own.
+
+**The up-channel goes.** What a vertical needs from the control plane it writes to its own
+outbox, and the platform pulls it:
+
+- outbound email becomes the existing email intent;
+- a connection consent link is minted by the dashboard and recorded as an intent;
+- the prompt to drain a scope sooner is dropped, or reduced to a wake that carries no identifier.
+
+Once those are gone and every environment is `signed-only`, the shared secrets are retired from
+every path into a vertical.
+
+#### Evidence and limits
+
+- **Implemented and tested:** the primitives only, with the shared vectors above. Every guard was
+  removed in turn, and a test failed each time.
+- **Not built:** the verifier's wiring, the signers, and the uploader's injection of the key
+  lists and the capability record. Nor are the readiness report and its gate, the nonce store,
+  the counters, or the up-channel removals. Each is a follow-on (§10).
+- **Not shown:** the verifier running on workerd.
+
+#### Why
+
+**A shared secret cannot tell callers apart, and it is as strong as its weakest holder.** A check
+against a shared value learns that the caller holds it, never who the caller is. Every deployment
+holds the value because every deployment must verify it. So a credential held by a deployment is
+as strong as the platform's own, and rotating it is a change to the whole fleet at once.
+
+**Signing separates the power to sign from the power to verify.** This is K-52's argument, made
+again for the other direction. A deployment that verifies with a public key holds nothing that
+signs, and each signer can sign only as itself.
+
+**Dual first, because nothing live may break.** Every deployment in the field verifies the old
+way today. Deploy a verifier that accepts either before any signer relies on it, and the order
+of deploys stops mattering. Counters then show when the old way has stopped being used, which is
+evidence rather than a guess.
+
+**The up-channel has to go for the secrets to go.** A vertical that still calls up to the control
+plane with a credential the control plane accepts still holds one. Pull, through the outbox, is
+the direction K-31 already chose for provisioning.
