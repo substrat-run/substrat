@@ -336,7 +336,8 @@ step 6, withdraws the credential.
   envelope), the request is **not** refused: it is answered through the legacy headers, as today,
   counted as `dual-mismatch` and surfaced (Q9). A non-zero count is a router defect, and it blocks
   the move to `signed-only` (§7). Only in `signed-only`, where the envelope alone decides admission,
-  can a disagreement refuse anything. When neither credential proves a request, `dual` hands it on
+  can a disagreement refuse anything; there the envelope's identity is served, and the disagreement
+  is still counted as `dual-mismatch`, so the router-defect signal outlives the flip. When neither credential proves a request, `dual` hands it on
   untouched and the vertical's own checks answer it as they do today, so `dual` refuses nothing
   new; the envelope's refusal is counted all the same.
 - **One identity per request, the same at the entry and in the vertical.** The entry passes

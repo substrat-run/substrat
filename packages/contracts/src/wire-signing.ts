@@ -760,8 +760,12 @@ export type WireLegacyCredential = 'valid' | 'invalid' | 'absent';
 export interface WireVerificationLine {
   readonly substrat: 'wire';
   readonly state: Exclude<WireState, 'legacy-only'>;
-  /** The issuer and kind the request was judged as. */
-  readonly issuer: WireIssuer;
+  /**
+   * Who signed: the issuer the envelope was verified as. An envelope not verified is the endpoint's
+   * one issuer, or `null` at an endpoint that admits two, since its claim is not trusted.
+   */
+  readonly issuer: WireIssuer | null;
+  /** The kind the endpoint takes. */
   readonly kind: WireKind;
   readonly outcome: WireOutcome;
   /** Why the envelope was refused, beside `legacy-accepted` and `refused`; otherwise null. */

@@ -216,13 +216,15 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     // store a nonce would be claimed in. The verifier checks both against the signed bytes.
     const claimed = call ? decodeWireEnvelope(request.headers.get(WIRE_ENVELOPE_HEADER) ?? '')?.claims : undefined;
     const issuer = claimed && endpoint.issuers.includes(claimed.iss) ? claimed.iss : endpoint.issuers[0]!;
+    /** The envelope's claims, once verified: until then nothing on the line is taken from it. */
+    let claims: WireClaims | undefined;
 
     const line = (outcome: WireOutcome, legacy: WireLegacyCredential, extra: Partial<WireVerificationLine> = {}) => {
       const v = e['SUBSTRAT_VERSION_ID'];
       const record: WireVerificationLine = {
         substrat: 'wire',
         state,
-        issuer,
+        issuer: claims?.iss ?? (endpoint.issuers.length === 1 ? endpoint.issuers[0]! : null),
         kind: endpoint.kind,
         outcome,
         reason: null,
@@ -309,7 +311,6 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       : { iss: 'router', kind: 'route', aud, method, target };
 
     let reason: WireRefusalReason | null = null;
-    let claims: WireClaims | undefined;
     try {
       const verdict = await verifyWireEnvelope({
         headers: request.headers,
@@ -328,15 +329,14 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     }
     // An envelope that passed everything else, on a call that keeps nonces with no store to keep
     // them in: a static fault, reached only now, as a claim is always the last check.
-    if (claims && keepsNonces && !store) return staticFault('no-nonce-store', servedAs(legacy.identity));
+    if (claims && keepsNonces && !store) return staticFault('no-nonce-store', servedAs(legacy.identity ?? claims));
 
+    // Two valid credentials naming different requests: a router defect to count in every state (Q9),
+    // whichever of them decides what is served.
+    const mismatched = !!claims && !!legacy.identity && !sameIdentity(legacy.identity, claims);
     if (state === 'dual' && legacy.credential === 'valid') {
       // Served exactly as today, as the legacy credential says; the envelope is only counted.
-      const outcome: WireOutcome = !claims
-        ? 'legacy-accepted'
-        : legacy.identity && !sameIdentity(legacy.identity, claims)
-          ? 'dual-mismatch'
-          : 'signed-accepted';
+      const outcome: WireOutcome = !claims ? 'legacy-accepted' : mismatched ? 'dual-mismatch' : 'signed-accepted';
       line(outcome, 'valid', { reason, ...servedAs(legacy.identity ?? claims ?? null) });
       return serve(downstream, env, ctx);
     }
@@ -354,7 +354,7 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     } catch {
       return faulted('verifier', legacy.credential);
     }
-    line('signed-accepted', legacy.credential, servedAs(claims));
+    line(mismatched ? 'dual-mismatch' : 'signed-accepted', legacy.credential, servedAs(claims));
     return serve(proven, env, ctx);
   }
 

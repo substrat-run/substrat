@@ -398,7 +398,8 @@ describe('dual, a call to the internal surface', () => {
     const dual = gated();
     const served = await dual.fetch(new Request(url, { method: 'POST', headers, body }), envOf('dual'));
     expect(await bodyOf(served)).toBe(body);
-    expect(dual.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid' });
+    // The envelope passed every check before the claim, so the fault is filed under what it named.
+    expect(dual.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid', issuer: 'platform', tenantId: scope.tenantId ?? null, scopeId: scope.scopeId ?? null });
     const signedOnly = gated();
     expect((await signedOnly.fetch(new Request(url, { method: 'POST', headers, body }), envOf('signed-only'))).status).toBe(503);
     expect(signedOnly.seen).toEqual([]);
@@ -438,10 +439,14 @@ describe('dual, a call to the internal surface', () => {
     const routerCall = (url: string) => sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url });
     // A peer invocation runs an operation, so it keeps nonces: an envelope that passes every check
     // reaches the nonce store, which this version lacks, and is counted as that fault.
+    // The line names the issuer it verified; a refused envelope's own claim is not taken.
+    const expired = { iat: NOW - 200, exp: NOW - 100 };
     const cases: Array<[string, Record<string, string>, Record<string, unknown>]> = [
-      [INVOKE, await routerCall(INVOKE), { outcome: 'fault', fault: 'no-nonce-store' }],
-      [INVOKE, await callEnvelope(INVOKE, body), { outcome: 'fault', fault: 'no-nonce-store' }],
+      [INVOKE, await routerCall(INVOKE), { outcome: 'fault', fault: 'no-nonce-store', issuer: 'router' }],
+      [INVOKE, await callEnvelope(INVOKE, body), { outcome: 'fault', fault: 'no-nonce-store', issuer: 'platform' }],
       [PROVISION, await routerCall(PROVISION), { outcome: 'refused', reason: 'issuer', issuer: 'platform' }],
+      [INVOKE, await sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url: INVOKE, ...expired }), { outcome: 'refused', reason: 'expired', issuer: null }],
+      [INVOKE, await callEnvelope(INVOKE, body, expired), { outcome: 'refused', reason: 'expired', issuer: null }],
     ];
     for (const [url, envelope, line] of cases) {
       const g = gated();
@@ -544,7 +549,12 @@ describe('signed-only: the envelope alone decides', () => {
     const res = await g.fetch(new Request(URL_ROUTE, { headers }), envOf('signed-only'));
     expect(res.status).toBe(200);
     expect(await nodeOf(res)).toEqual({ tenantId: TENANT, scopeId: SCOPE, surface: 'app', verticalSlug: VERTICAL });
-    expect(g.wire()[0]).toMatchObject({ state: 'signed-only', outcome: 'signed-accepted', legacy: 'valid', scopeId: SCOPE });
+    // The two disagree: still the router defect the counter shows, after the flip as before it.
+    expect(g.wire()[0]).toMatchObject({ state: 'signed-only', outcome: 'dual-mismatch', legacy: 'valid', scopeId: SCOPE });
+    // Its twin: legacy headers that agree are plain acceptance.
+    const agreeing = gated();
+    await agreeing.fetch(new Request(URL_ROUTE, { headers: { ...legacyRoute(), ...(await routeEnvelope()) } }), envOf('signed-only'));
+    expect(agreeing.wire()[0]).toMatchObject({ state: 'signed-only', outcome: 'signed-accepted', legacy: 'valid' });
   });
 
   it('every refusal is the same status and the same body, and the vertical never runs', async () => {
