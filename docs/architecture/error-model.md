@@ -347,8 +347,16 @@ already answer their expected refusal as a value.
      `x-substrat-live` values are unchanged, as is the `error` sentence everywhere except
      those three 500s, which no longer carry it; the 101 upgrades are untouched. `test/live-reads.test.ts` holds the media type, status,
      header and detail of each refusal, the DO's own ones by fetching the stub directly.
+   - **`apps/builder` — built.** The node server (`server.ts`) and the worker plus the agent DO
+     (`worker.ts`, `agent.ts`) refuse through `src/problem.ts`: `validation_failed`, `unauthenticated`,
+     `forbidden`, `not_found` and `conflict` where the status fits the taxonomy, `about:blank` for the
+     422, 500 and 503. Statuses and sentences are unchanged and `error` rides beside `detail`, so
+     `web/src/api.ts` still reads them. A 500 from an unhandled throw carries no `detail` (the message is
+     logged, not sent), and the 422 for a bad provider relays a message only for the provider error class.
+     `test/refusals-problem.test.ts` holds the documents and the three files to writing no bare
+     `{ error` again.
    - **Still open, surface by surface:** the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
-     builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
+     dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
      problems (#2192). A repo-wide source gate waits until a second surface is converted.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
      `problemDetail` (#971) and every surface answers `detail`. The members carried beside

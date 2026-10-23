@@ -36,6 +36,7 @@ import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { meteringModule } from '@substrat-run/engine-metering';
 import { studioUsage } from './metering.js';
+import { refuse } from './problem.js';
 // The membership read and its per-isolate cache — parsed against the schema the
 // control plane's directory answer is declared as (teams.ts, part of #971).
 import { teamsFor, type Team } from './teams.js';
@@ -157,7 +158,7 @@ app.use('*', async (c, next) => {
 			const idp = c.req.query('idp') === 'alt' ? '&idp=alt' : '';
 			return c.redirect(`/api/auth/login?returnTo=${encodeURIComponent(new URL(c.req.url).pathname)}${idp}`);
 		}
-		return c.json({ error: 'not signed in' }, 401);
+		return refuse(401, 'not signed in');
 	}
 	const { staff, refused } = await staffAccessOf(c.env, user);
 	// Staff are decided by the one D1 read above — no directory walk on their
@@ -173,7 +174,7 @@ app.use('*', async (c, next) => {
 			if (c.req.header('accept')?.includes('text/html')) {
 				return c.html(deniedPage(detail), 403);
 			}
-			return c.json({ error: detail }, 403);
+			return refuse(403, detail);
 		}
 	}
 	c.set('user' as never, user as never);
@@ -199,7 +200,7 @@ async function usableTeams(c: Context<{ Bindings: Env }>): Promise<Team[]> {
  * so it is STAFF-ONLY: a team's builder must not see other teams' spend. */
 app.get('/api/usage', async (c) => {
 	if (!(c.get('staff' as never) as boolean)) {
-		return c.json({ error: 'usage is staff-only until it is per-team' }, 403);
+		return refuse(403, 'usage is staff-only until it is per-team');
 	}
 	return c.json(await studioUsage(c.env));
 });
@@ -226,10 +227,10 @@ app.get('/api/me', async (c) => {
  */
 app.all('/api/*', async (c) => {
 	const selected = c.req.header(TENANT_HEADER)?.trim();
-	if (!selected) return c.json({ error: `${TENANT_HEADER} header (a team id) is required` }, 400);
+	if (!selected) return refuse(400, `${TENANT_HEADER} header (a team id) is required`);
 	const teams = await usableTeams(c);
 	const team = teams.find((t) => t.id === selected);
-	if (!team) return c.json({ error: `not a member of team '${selected}'` }, 403);
+	if (!team) return refuse(403, `not a member of team '${selected}'`);
 	const id = c.env.BUILDER_AGENT.idFromName(team.id);
 	return await c.env.BUILDER_AGENT.get(id).fetch(c.req.raw);
 });

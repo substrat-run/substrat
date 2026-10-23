@@ -41,6 +41,8 @@ import {
 	workspaceBrief,
 	type GateSpec,
 } from '@substrat-run/builder-workspace';
+import { PROBLEM_CONTENT_TYPE, type Problem } from '@substrat-run/contracts';
+import { internalProblem, providerRefusal, refusalProblem } from './problem.js';
 import { devStatus, startDev, stopDev } from './devserver.js';
 import { loadEnvFiles } from './env.js';
 import { providerCatalog } from './hosting.js';
@@ -140,6 +142,16 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 	res.end(JSON.stringify(body));
 }
 
+/** A refusal: an RFC 9457 problem document (`problem.ts`), same status and sentence as before. */
+function sendProblem(res: ServerResponse, problem: Problem): void {
+	res.writeHead(problem.status, { 'content-type': PROBLEM_CONTENT_TYPE });
+	res.end(JSON.stringify(problem));
+}
+
+function refuse(res: ServerResponse, status: number, detail: string): void {
+	sendProblem(res, refusalProblem(status, detail));
+}
+
 async function readBody(req: IncomingMessage): Promise<string> {
 	let data = '';
 	for await (const chunk of req) data += chunk;
@@ -223,7 +235,7 @@ async function handleProjects(res: ServerResponse): Promise<void> {
 }
 
 async function handleCreateProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
-	if (busy) return json(res, 409, { error: 'a turn is running' });
+	if (busy) return refuse(res, 409, 'a turn is running');
 	const { name } = JSON.parse(await readBody(req)) as { name?: string };
 	const projectName = name?.trim() || 'Untitled';
 	const reg = await loadRegistry(ws);
@@ -236,11 +248,11 @@ async function handleCreateProject(req: IncomingMessage, res: ServerResponse): P
 }
 
 async function handleSelectProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
-	if (busy) return json(res, 409, { error: 'a turn is running' });
+	if (busy) return refuse(res, 409, 'a turn is running');
 	const { id } = JSON.parse(await readBody(req)) as { id?: string };
 	const reg = await loadRegistry(ws);
 	const entry = reg.projects.find((p) => p.id === id);
-	if (!entry) return json(res, 404, { error: `no project ${id}` });
+	if (!entry) return refuse(res, 404, `no project ${id}`);
 	reg.currentId = entry.id;
 	await saveRegistry(ws, reg);
 	await activate(entry);
@@ -249,10 +261,10 @@ async function handleSelectProject(req: IncomingMessage, res: ServerResponse): P
 
 async function handleRenameProject(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const { name } = JSON.parse(await readBody(req)) as { name?: string };
-	if (!name?.trim()) return json(res, 400, { error: 'name required' });
+	if (!name?.trim()) return refuse(res, 400, 'name required');
 	const reg = await loadRegistry(ws);
 	const entry = reg.projects.find((p) => p.id === cur.entry.id);
-	if (!entry) return json(res, 500, { error: 'current project missing from registry' });
+	if (!entry) return refuse(res, 500, 'current project missing from registry');
 	rename(entry, name.trim(), 'user');
 	await saveRegistry(ws, reg);
 	rename(cur.entry, name.trim(), 'user');
@@ -271,10 +283,10 @@ async function applyAiName(name: string): Promise<void> {
 }
 
 async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<void> {
-	if (busy) return json(res, 409, { error: 'a turn is already running' });
+	if (busy) return refuse(res, 409, 'a turn is already running');
 
 	const { message } = JSON.parse(await readBody(req)) as { message?: string };
-	if (!message?.trim()) return json(res, 400, { error: 'message required' });
+	if (!message?.trim()) return refuse(res, 400, 'message required');
 
 	let generator: VerticalGenerator;
 	const phase = await detectPhase(cur.projectWs);
@@ -287,7 +299,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			lanes.push({ ...plan, generator: await makeGenerator(modelSpec, phase, plan.lane) });
 		}
 	} catch (err) {
-		return json(res, 422, { error: err instanceof ProviderError ? err.message : String(err) });
+		return sendProblem(res, providerRefusal(err, err instanceof ProviderError));
 	}
 
 	busy = true;
@@ -430,7 +442,7 @@ async function handleSnapshot(res: ServerResponse): Promise<void> {
 			skipped: snap.skipped,
 		});
 	} catch {
-		json(res, 404, { error: 'no snapshot yet' });
+		refuse(res, 404, 'no snapshot yet');
 	}
 }
 
@@ -445,13 +457,13 @@ async function handleFiles(url: URL, res: ServerResponse): Promise<void> {
 	// were not: the root workspace only refuses a path that leaves the REPO, so this
 	// route served any file in the checkout to whoever asked for it (#1225).
 	const rel = underProject(path, cur.entry.dir);
-	if (rel === null) return json(res, 403, { error: `reads are limited to ${cur.entry.dir}/` });
+	if (rel === null) return refuse(res, 403, `reads are limited to ${cur.entry.dir}/`);
 	try {
 		// Through the PROJECT-rooted workspace, so the read is confined twice — the
 		// second jail is what judges a symlink pointing out of the project.
 		json(res, 200, { path, entries: await cur.projectWs.listFiles(rel) });
 	} catch {
-		json(res, 404, { error: `no such directory: ${path}` });
+		refuse(res, 404, `no such directory: ${path}`);
 	}
 }
 
@@ -461,26 +473,26 @@ async function handleFiles(url: URL, res: ServerResponse): Promise<void> {
  */
 async function handleFileRead(url: URL, res: ServerResponse): Promise<void> {
 	const path = url.searchParams.get('path');
-	if (!path) return json(res, 400, { error: 'path required' });
+	if (!path) return refuse(res, 400, 'path required');
 	const rel = underProject(path, cur.entry.dir);
-	if (rel === null) return json(res, 403, { error: `reads are limited to ${cur.entry.dir}/` });
+	if (rel === null) return refuse(res, 403, `reads are limited to ${cur.entry.dir}/`);
 	try {
 		json(res, 200, { path, content: await cur.projectWs.readFile(rel) });
 	} catch {
-		json(res, 404, { error: `no such file: ${path}` });
+		refuse(res, 404, `no such file: ${path}`);
 	}
 }
 
 async function handleFileWrite(req: IncomingMessage, res: ServerResponse): Promise<void> {
 	const { path, content } = JSON.parse(await readBody(req)) as { path?: string; content?: string };
-	if (!path || content === undefined) return json(res, 400, { error: 'path and content required' });
+	if (!path || content === undefined) return refuse(res, 400, 'path and content required');
 	// Writes are confined to the current project — everything else is foreign
 	// work the studio must not touch (same rule the commit scope enforces).
 	// Judged on the normalised path, never the text: a `..` segment after the
 	// project prefix otherwise lands anywhere in the repo (#1225).
 	const rel = withinProject(path, cur.entry.dir);
 	if (rel === null) {
-		return json(res, 403, { error: `writes are limited to ${cur.entry.dir}/` });
+		return refuse(res, 403, `writes are limited to ${cur.entry.dir}/`);
 	}
 	await cur.projectWs.writeFile(rel, content);
 	json(res, 200, { ok: true });
@@ -488,18 +500,18 @@ async function handleFileWrite(req: IncomingMessage, res: ServerResponse): Promi
 
 async function handleModels(url: URL, res: ServerResponse): Promise<void> {
 	const provider = url.searchParams.get('provider');
-	if (!provider) return json(res, 400, { error: 'provider required' });
+	if (!provider) return refuse(res, 400, 'provider required');
 	try {
 		json(res, 200, { provider, models: await listModels(provider) });
 	} catch (err) {
-		json(res, 422, { error: err instanceof ProviderError ? err.message : String(err) });
+		sendProblem(res, providerRefusal(err, err instanceof ProviderError));
 	}
 }
 
 async function handleSetModel(req: IncomingMessage, res: ServerResponse): Promise<void> {
-	if (busy) return json(res, 409, { error: 'cannot switch model mid-turn' });
+	if (busy) return refuse(res, 409, 'cannot switch model mid-turn');
 	const { spec } = JSON.parse(await readBody(req)) as { spec?: string };
-	if (!spec) return json(res, 400, { error: 'spec required (provider:model)' });
+	if (!spec) return refuse(res, 400, 'spec required (provider:model)');
 	try {
 		// Validates provider, credential, endpoint; an auto spec validates via its
 		// strong member (both members share provider + credential by construction).
@@ -509,7 +521,7 @@ async function handleSetModel(req: IncomingMessage, res: ServerResponse): Promis
 		// neutral (§5.2), so a session can continue on another model.
 		json(res, 200, { spec, endpoint: resolved.endpoint, endpointSource: resolved.endpointSource });
 	} catch (err) {
-		json(res, 422, { error: err instanceof ProviderError ? err.message : String(err) });
+		sendProblem(res, providerRefusal(err, err instanceof ProviderError));
 	}
 }
 
@@ -569,7 +581,7 @@ const server = createServer((req, res) => {
 				const { action } = JSON.parse(await readBody(req)) as { action?: string };
 				if (action === 'start') return json(res, 200, await startDev(ROOT, cur.entry.dir));
 				if (action === 'stop') return json(res, 200, await stopDev());
-				return json(res, 400, { error: 'action must be start or stop' });
+				return refuse(res, 400, 'action must be start or stop');
 			}
 			case 'POST /api/gates':
 				return json(res, 200, await runGates(ws, cur.entry.dir, cur.gateSet));
@@ -592,12 +604,15 @@ const server = createServer((req, res) => {
 				return json(res, 200, { ok: true });
 			}
 			default:
-				return json(res, 404, { error: `no route: ${route}` });
+				return refuse(res, 404, `no route: ${route}`);
 		}
 	};
 
 	handler().catch((err: unknown) => {
-		if (!res.headersSent) json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+		if (!res.headersSent) {
+			console.error('[builder] unhandled request failure', err);
+			sendProblem(res, internalProblem());
+		}
 		else res.end();
 	});
 });

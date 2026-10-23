@@ -1,0 +1,93 @@
+/**
+ * The builder's refusals are problem documents (#113, item 6).
+ *
+ * Neither server stands up in a unit test (one is a `node:http` handler over module-level
+ * state, the other a Durable Object needing a sandbox), so this holds the two halves the
+ * way `file-routes.test.ts` does: the document every route builds, run against the
+ * producer in `src/problem.ts`; and a source scan that no route in the three entry points
+ * answers a bare `{ error }` again.
+ */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PROBLEM_CONTENT_TYPE, PROBLEM_TYPE_BLANK, problem, problemDetail } from '@substrat-run/contracts';
+import { internalProblem, providerRefusal, refuse, refusalProblem } from '../src/problem.js';
+
+/** [status, a sentence one of the routes really answers, the taxonomy code or undefined for about:blank] */
+const SITES = [
+	[400, 'name required', 'validation_failed'],
+	[401, 'not signed in', 'unauthenticated'],
+	[403, 'reads are limited to .builder/projects/x/', 'forbidden'],
+	[404, 'no snapshot yet', 'not_found'],
+	[409, 'a turn is already running', 'conflict'],
+	[500, 'current project missing from registry', undefined],
+	[503, 'not hosted yet: /api/dev (preview processes) lands with the #626 follow-ups', undefined],
+] as const;
+
+describe('refuse() answers a problem document at every status the builder uses', () => {
+	it.each(SITES)('%i keeps its status and sentence', async (status, sentence, code) => {
+		const res = refuse(status, sentence);
+		expect(res.status).toBe(status);
+		expect(res.headers.get('content-type')).toBe(PROBLEM_CONTENT_TYPE);
+		const doc = await res.json();
+		expect(problem.safeParse(doc).success).toBe(true);
+		expect(doc).toMatchObject({ status, detail: sentence });
+		// The sentence web/src/api.ts reads today, until the duplicate is dropped.
+		expect(doc.error).toBe(doc.detail);
+		expect(problemDetail(doc)).toBe(sentence);
+		if (code) expect(doc.code).toBe(code);
+		else expect(doc).toMatchObject({ type: PROBLEM_TYPE_BLANK });
+	});
+
+	it('names a real title, not the class-wide phrase', () => {
+		for (const [status, sentence] of SITES) {
+			expect(['Request failed', 'Server error']).not.toContain(refusalProblem(status, sentence).title);
+		}
+	});
+});
+
+describe('unreviewed throws are not relayed', () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it('a 500 carries no detail and no error sentence', () => {
+		const doc = internalProblem();
+		expect(problem.safeParse(doc).success).toBe(true);
+		expect(doc).toMatchObject({ status: 500, code: 'internal' });
+		expect(doc.detail).toBeUndefined();
+		expect(doc.error).toBeUndefined();
+	});
+
+	it('a provider error keeps its own message on the 422', () => {
+		const doc = providerRefusal(new Error('ANTHROPIC_API_KEY is not set'), true);
+		expect(doc).toMatchObject({ status: 422, detail: 'ANTHROPIC_API_KEY is not set', error: 'ANTHROPIC_API_KEY is not set' });
+	});
+
+	it('any other throw is logged, and its message stays off the wire', () => {
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const doc = providerRefusal(new Error('connect ECONNREFUSED 10.0.0.7:5432'), false);
+		expect(doc.status).toBe(422);
+		expect(JSON.stringify(doc)).not.toContain('ECONNREFUSED');
+		expect(log).toHaveBeenCalledOnce();
+	});
+});
+
+/** Whole-file, whitespace-normalised: a wrapped `json(\n  { error: … })` is the same offence. */
+function bareErrorCalls(src: string): string[] {
+	const flat = src.replace(/\s+/g, ' ');
+	return [...flat.matchAll(/(?:\bjson|\.json|\.body|\.text)\(\s*(?:\d+,\s*|res,\s*\d+,\s*)?\{\s*error\b[^)]{0,80}/g)].map((m) => m[0]);
+}
+
+describe('no route in server.ts, agent.ts or worker.ts answers a bare { error } again', () => {
+	it('sees the wrapped and the two-argument forms', () => {
+		expect(bareErrorCalls("return json(res, 409, { error: 'x' });")).toHaveLength(1);
+		expect(bareErrorCalls("return json(422, {\n error: 'x',\n });")).toHaveLength(1);
+		expect(bareErrorCalls("return c.json({ error: 'x' }, 403);")).toHaveLength(1);
+		expect(bareErrorCalls("return refuse(409, 'x');")).toEqual([]);
+		expect(bareErrorCalls('return json(200, { ok: true });')).toEqual([]);
+	});
+
+	it.each(['../src/server.ts', '../src/agent.ts', '../src/worker.ts'])('%s', (file) => {
+		const src = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
+		expect(bareErrorCalls(src)).toEqual([]);
+	});
+});
