@@ -72,9 +72,11 @@ export interface WireGateOptions<Env> {
   /**
    * Where a call that changes state spends its nonce: the scope object's store (RFC §4, Q4), a
    * follow-on. Until one is given, such a call cannot be verified, and is counted as the
-   * `no-nonce-store` fault.
+   * `no-nonce-store` fault. It is reached only when the nonce is claimed, after every other check
+   * has passed, and for the scope the verified envelope names; a throw, or an answer that is not a
+   * store, is the store's failure.
    */
-  readonly nonceCache?: (env: Env, scopeId: string) => WireNonceCache | undefined;
+  readonly nonceCache?: (env: Env, scopeId: string) => WireNonceCache;
   /** Milliseconds since the epoch. The wall clock unless a test injects one. */
   readonly clock?: () => number;
   /** How long a nonce claim may take before it counts as the store's failure. */
@@ -120,14 +122,19 @@ class GateFault extends Error {
   }
 }
 
-/** The store a call claims through, bounded in time, with a throw or a timeout read as the store's failure. */
-function boundedCache(cache: WireNonceCache, timeoutMs: number): WireNonceCache {
+/**
+ * The store a call claims through, reached only when the verifier claims: a claim is its last
+ * check, after the signature and the scope pin, so nothing is asked of the store for an envelope
+ * refused for anything else. Bounded in time, with a throw (reaching the store included), an answer
+ * that is not a store, or a timeout read as the store's failure.
+ */
+function claimedThrough(reach: () => WireNonceCache, timeoutMs: number): WireNonceCache {
   return {
     async claim(nonce, until) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         return await Promise.race([
-          cache.claim(nonce, until),
+          reach().claim(nonce, until),
           new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new Error('the nonce store did not answer in time')), timeoutMs);
           }),
@@ -292,14 +299,12 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     // A call's replay policy is its endpoint's (RFC §4), never inferred from the envelope. One that
     // keeps nonces spends its nonce in the store of the scope it names, so it pins that scope. With
     // no scope named, or no store, it is verified in full and then counted as this version's fault.
+    // The store is reached only at the claim: by then the verifier has held the signed scope to the
+    // pin, so `pinned` is the scope the verified envelope names, never only the unverified one's.
     const keepsNonces = call && wireReplayOf(method, pathname) === 'nonce';
     const pinned = keepsNonces ? (claimed?.scopeId ?? undefined) : undefined;
-    let store: WireNonceCache | undefined;
-    try {
-      store = pinned === undefined ? undefined : options.nonceCache?.(env, pinned);
-    } catch {
-      return faulted('nonce-store', legacy.credential);
-    }
+    const reach = options.nonceCache;
+    const store = pinned !== undefined && reach ? claimedThrough(() => reach(env, pinned), timeoutMs) : undefined;
     const expected: WireExpectation = call
       ? {
           iss: issuer,
@@ -308,7 +313,7 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
           method,
           target,
           body: readBody,
-          replay: store ? boundedCache(store, timeoutMs) : 'none',
+          replay: store ?? 'none',
           scopeId: store ? pinned : undefined,
         }
       : { iss: 'router', kind: 'route', aud, method, target };

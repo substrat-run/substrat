@@ -480,9 +480,70 @@ describe('dual, a call to the internal surface', () => {
       const nonceCache = vi.fn((_env: Env, _scope: string) => ({ claim }));
       const { res, g } = await scopedCall(envOf('dual'), { nonceCache });
       expect(res.status).toBe(200);
+      expect(nonceCache).toHaveBeenCalledTimes(1);
       expect(nonceCache).toHaveBeenCalledWith(expect.anything(), SCOPE);
       expect(claim).toHaveBeenCalledWith(expect.any(String), NOW + 60 + 30);
       expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted' });
+    });
+
+    it('reaches the store only at the claim: after the body is read, so after every check before it', async () => {
+      let pulled = false;
+      const reachedAfterBody: boolean[] = [];
+      const g = gated({ nonceCache: () => (reachedAfterBody.push(pulled), { claim: () => true }) });
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            pulled = true;
+            controller.enqueue(new TextEncoder().encode('{"x":1}'));
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      const headers = { ...callHeaders(true), ...(await callEnvelope(PROVISION, '{"x":1}', { tenantId: TENANT, scopeId: SCOPE })) };
+      await g.fetch(new Request(PROVISION, { method: 'POST', headers, body, duplex: 'half' } as RequestInit), envOf('dual'));
+      expect(reachedAfterBody).toEqual([true]);
+      expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted' });
+    });
+
+    /** Envelopes for the scoped call that fail before the claim, each naming a scope in its unverified claims. */
+    const refusedBeforeTheClaim: Array<[string, (body: string) => Promise<Record<string, string>>]> = [
+      ['missing', async () => ({})],
+      [
+        'signature',
+        // The header names another scope; the signature is the genuine envelope's.
+        async (body) => ({
+          ...(await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: OTHER_SCOPE })),
+          [WIRE_SIGNATURE_HEADER]: (await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE }))[WIRE_SIGNATURE_HEADER]!,
+        }),
+      ],
+      ['kid', async (body) => callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE }, stranger)],
+      ['audience', async (body) => callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE, aud: 'another-deployment' })],
+      ['expired', async (body) => callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE, iat: NOW - 200, exp: NOW - 100 })],
+      ['body', async () => callEnvelope(PROVISION, '{"signed":"another body"}', { tenantId: TENANT, scopeId: SCOPE })],
+    ];
+
+    it.each(refusedBeforeTheClaim)('an envelope refused for %s never reaches the store, and a store that throws cannot change its answer', async (reason, envelope) => {
+      const body = '{"x":1}';
+      for (const state of ['dual', 'signed-only']) {
+        const nonceCache = vi.fn((_env: Env, _scope: string): WireNonceCache => {
+          throw new Error('the store must not be reached');
+        });
+        const g = gated({ nonceCache });
+        const headers = { ...callHeaders(true), ...(await envelope(body)) };
+        const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body }), envOf(state));
+        expect(nonceCache).not.toHaveBeenCalled();
+        if (state === 'dual') {
+          // Served through the legacy credential, as it would be with no store at all.
+          expect(res.status).toBe(200);
+          expect(await bodyOf(res)).toBe(body);
+          expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason, fault: null });
+        } else {
+          expect(res.status).toBe(401);
+          expect(await res.text()).toBe(WIRE_REFUSAL_BODY);
+          expect(g.wire()[0]).toMatchObject({ outcome: 'refused', reason, fault: null });
+        }
+      }
     });
 
     it('a spent nonce is refused as a replay, which the legacy credential still serves in dual', async () => {
@@ -515,16 +576,22 @@ describe('dual, a call to the internal surface', () => {
       expect(WIRE_CLAIM_TIMEOUT_MS).toBe(1000);
     });
 
-    it('a store that cannot even be reached is the store’s failure, counted and answered as one', async () => {
-      const { res, g } = await scopedCall(envOf('dual'), {
-        nonceCache: () => {
+    it.each([
+      [
+        'cannot even be reached',
+        () => {
           throw new Error('no binding');
         },
-      });
-      expect(res.status).toBe(503);
-      expect(await res.text()).toBe(WIRE_FAULT_BODY);
-      expect(g.seen).toEqual([]);
-      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
+      ],
+      ['answers with no store', () => undefined as unknown as WireNonceCache],
+    ])('a store that %s, for an envelope that passed every other check, is the store’s failure, counted and answered as one', async (_, nonceCache) => {
+      for (const state of ['dual', 'signed-only']) {
+        const { res, g } = await scopedCall(envOf(state), { nonceCache });
+        expect(res.status).toBe(503);
+        expect(await res.text()).toBe(WIRE_FAULT_BODY);
+        expect(g.seen).toEqual([]);
+        expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
+      }
     });
   });
 

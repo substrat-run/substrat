@@ -313,8 +313,11 @@ payload (Q7).
 
 The primitives define the cache interface only. Its storage is a follow-on. The entry (step 1)
 already holds a call to it: a call that keeps nonces and names a scope claims its nonce in that
-scope, through a seam the store will fill, bounded at a second. With the seam empty, or no scope
-named, such a call meets §3.4's statically absent store.
+scope, through a seam the store will fill, bounded at a second. The seam is reached only when the
+nonce is claimed, which is the verifier's last check: after the signature, the body and the scope
+pin, so only for the scope the verified envelope names, and never for an envelope refused for
+anything else. A throw from reaching it is the store's failure (§3.4). With the seam empty, or no
+scope named, such a call meets §3.4's statically absent store.
 
 ## 5. Verifier states
 
@@ -566,9 +569,12 @@ never rebuilt keeps the up-calls it was built with.
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step
    2's check reads those calls as faults, not refusals, and no environment can pass the gate to
-   `signed-only`. Its PR decides two things more:
-   - the store a claim goes through is reached only after the envelope's signature verifies, and
-     for the scope the verified envelope names, never for a scope read from the unverified one;
+   `signed-only`. Its PR keeps one thing the seam already holds, and decides one more:
+   - the store a claim goes through is reached only at the claim, after the envelope's signature
+     and every other check verify, and for the scope the verified envelope names, never for a scope
+     read from the unverified one. The entry's seam (`nonceCache`) is called there and nowhere
+     earlier, and its suite holds that a store is never reached for an envelope refused before the
+     claim, so the store fills the seam without moving it;
    - a call that names a scope whose own object may not exist (a preview client's, or a configure
      call naming a preview or its parent) needs an explicit answer for where its nonce is spent.
    It also counts an unscoped call that keeps nonces under a fault kind of its own (§4).
