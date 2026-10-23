@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,9 +18,10 @@ import { SqliteScopeHost } from '../src/index.js';
 /**
  * A streamed attachment upload on the pure adapter (#2498): the body reaches the per-tenant
  * directory as it is read, hashed and counted on the way, and the row is written after the
- * object, as for a buffer. The producer measures its own lead over what the store has read each
- * time it is asked for a chunk, and the store reads slowly, as a disk or a network does, so a
- * step that collected the body first would show as a lead of the whole body.
+ * object, as for a buffer. The producer measures its own lead over the bytes that have reached
+ * the object file on disk each time it is asked for a chunk, and the store is fed slowly, as a
+ * network would feed it, so any step that collected the body first, the store included, would
+ * show as a lead of the whole body.
  */
 describe('streamed attachment upload (pure adapter)', () => {
   let dir: string | undefined;
@@ -35,7 +36,12 @@ describe('streamed attachment upload (pure adapter)', () => {
 
   const CHUNK = 64 * 1024;
   const chunkOf = (i: number): Uint8Array => new Uint8Array(CHUNK).fill(i % 251);
-  const flow = { produced: 0, consumed: 0, maxLead: 0 };
+  /** `read` is what the store was fed; the lead is measured against bytes on disk. */
+  const flow = { produced: 0, read: 0, maxLead: 0 };
+
+  /** Bytes in the object files under the store directory: what the store has actually written. */
+  const onDisk = (): number =>
+    dir === undefined ? 0 : objectFiles().reduce((n, f) => n + statSync(join(dir!, f)).size, 0);
 
   /** `chunks` chunks, each made only when asked for. */
   const producer = (chunks: number): ReadableStream<Uint8Array> => {
@@ -46,7 +52,7 @@ describe('streamed attachment upload (pure adapter)', () => {
           if (i === chunks) return controller.close();
           const chunk = chunkOf(i++);
           flow.produced += chunk.byteLength;
-          flow.maxLead = Math.max(flow.maxLead, flow.produced - flow.consumed);
+          flow.maxLead = Math.max(flow.maxLead, flow.produced - onDisk());
           controller.enqueue(chunk);
         },
       },
@@ -54,7 +60,7 @@ describe('streamed attachment upload (pure adapter)', () => {
     );
   };
 
-  /** Every chunk a streamed put reads passes through here first, one macrotask apart. */
+  /** Every chunk a streamed put is fed passes through here first, one macrotask apart. */
   const slowReader = (store: TenantBlobStore): TenantBlobStore => ({
     ...store,
     put: (key, body, opts) => {
@@ -65,7 +71,7 @@ describe('streamed attachment upload (pure adapter)', () => {
           async pull(controller) {
             const { done, value } = await source.read();
             if (done) return controller.close();
-            flow.consumed += value!.byteLength;
+            flow.read += value!.byteLength;
             await new Promise((resolve) => setTimeout(resolve, 0));
             controller.enqueue(value!);
           },
@@ -78,7 +84,7 @@ describe('streamed attachment upload (pure adapter)', () => {
   });
 
   const world = async () => {
-    Object.assign(flow, { produced: 0, consumed: 0, maxLead: 0 });
+    Object.assign(flow, { produced: 0, read: 0, maxLead: 0 });
     dir = mkdtempSync(join(tmpdir(), 'substrat-attach-stream-'));
     const host = new SqliteScopeHost({
       dir,
@@ -120,8 +126,9 @@ describe('streamed attachment upload (pure adapter)', () => {
     const { host, t, s, editor } = await world();
     const att = await host.attachments(editor, t, s);
     const streamed = await att.upload(upload({ stream: producer(64), length: 64 * CHUNK }));
-    // Read slowly, one chunk in flight: collecting the 4 MiB first would lead by all of it.
-    expect(flow.maxLead).toBeLessThanOrEqual(2 * CHUNK);
+    // Written as it arrives, a couple of chunks in flight: a store or a step before it that
+    // collected the 4 MiB before writing would lead by all of it.
+    expect(flow.maxLead).toBeLessThanOrEqual(3 * CHUNK);
 
     const whole = new Uint8Array(64 * CHUNK);
     for (let i = 0; i < 64; i++) whole.set(chunkOf(i), i * CHUNK);
@@ -156,7 +163,7 @@ describe('streamed attachment upload (pure adapter)', () => {
     const att = await host.attachments(reader, t, s);
     await expect(att.upload(upload({ stream: producer(4), length: 4 * CHUNK }))).rejects.toThrow();
     // The bytes were read (object first), then compensated away when the gate refused.
-    expect(flow.consumed).toBe(4 * CHUNK);
+    expect(flow.read).toBe(4 * CHUNK);
     expect(objectFiles()).toEqual([]);
   });
 });
