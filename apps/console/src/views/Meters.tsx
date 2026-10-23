@@ -313,8 +313,8 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
             {Object.values(EXCLUSION_LABEL).join(', ')}. The samples are kept thirteen months, but
             nothing prices them as byte-days yet. Reads emit nothing at all, so an exact API count
             cannot come from the event spine. The platform keeps a daily estimate of requests per
-            tenant, vertical and scope, taken from the router's sampled datapoints; this view does
-            not show it yet.
+            tenant, vertical and scope, taken from the router's sampled datapoints. It is served
+            at the staff API's /meters/requests, and nothing on this page reads it.
           </li>
           <li>
             <strong>Meter 4 (network transactions).</strong> Needs the cross-tenant order flow, which
