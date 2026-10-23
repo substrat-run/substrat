@@ -271,7 +271,7 @@ export const provisionTenantPayload = z.object({
   }),
   /** The tenant's FIRST scope. `vertical` comes from the payload, never inherited. */
   instance: z.object({
-    vertical: z.string().min(1),
+    vertical: verticalSlug,
     scopeId: z.string().min(1),
     slug: z.string().min(1),
     name: z.string().min(1),

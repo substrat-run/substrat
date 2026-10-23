@@ -855,7 +855,9 @@ const provisionScopeBody = z.object({
   slug: z.string().optional(),
   kind: z.string().optional(),
   name: z.string().optional(),
-  vertical: z.string().nullable().optional(),
+  // The registry's grammar, as `resolveScopeRecord` holds it too: null or absent is "no vertical",
+  // and an empty string is refused here rather than stored.
+  vertical: verticalSlug.nullable().optional(),
   storageShape: storageShape.optional(),
   // The gate: only `global` is accepted until `eu`/`us` enforcement exists (K-32).
   // A request naming a jurisdiction we cannot yet honour is refused at the Zod

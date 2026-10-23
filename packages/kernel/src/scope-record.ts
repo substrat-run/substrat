@@ -1,4 +1,4 @@
-import { slug as slugSchema } from '@substrat-run/contracts';
+import { slug as slugSchema, substratError, verticalSlug } from '@substrat-run/contracts';
 import type { Jurisdiction, StorageShape } from '@substrat-run/contracts';
 import type { ProvisionScopeInput } from './scope-host.js';
 
@@ -25,9 +25,9 @@ export interface ResolvedScopeRecord {
  * the contract tests — which run the same suite against both adapters — would
  * still pass, because each adapter would be consistent with itself.
  *
- * The slug is parsed rather than trusted (the boundary rule): an invalid slug
- * fails here, at provisioning, instead of at the first `listScopes` read, when
- * the scope already exists and the caller is someone else.
+ * The slug and the vertical are parsed rather than trusted (the boundary rule): an
+ * invalid one fails here, at provisioning, instead of at the first `listScopes`
+ * read, when the scope already exists and the caller is someone else.
  */
 export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRecord {
   // A ULID lowercases into a valid slug ([0-9a-hjkmnp-tv-z]), so the default is
@@ -37,7 +37,7 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
     slug,
     kind: input.kind ?? 'scope',
     name: input.name ?? slug,
-    vertical: input.vertical ?? null,
+    vertical: verticalOf(input.vertical),
     storageShape: input.storageShape ?? 'A',
     // No jurisdiction stated means `global` — unconstrained, the honest name for
     // what an un-pinned scope already is (K-32). The old default was `null`, which
@@ -49,4 +49,19 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
     forkedAt: input.forkedAt ?? null,
     expiresAt: input.expiresAt ?? null,
   };
+}
+
+/**
+ * The vertical a scope runs, as the registry names it (`verticalSlug`), or null for none.
+ * An empty or whitespace-only string is not "no vertical": it is refused like any other
+ * value the registry grammar does not admit, since the directory's own `scope` schema
+ * reads it back as a parse error.
+ */
+function verticalOf(vertical: string | null | undefined): string | null {
+  if (vertical === undefined || vertical === null) return null;
+  if (verticalSlug.safeParse(vertical).success) return vertical;
+  const message = 'must be a vertical slug: lowercase letters, digits and hyphens, optionally prefixed by an owner slug and one /';
+  throw substratError('validation_failed', `provisionScope: vertical ${message}`, {
+    errors: [{ path: 'vertical', message }],
+  });
 }
