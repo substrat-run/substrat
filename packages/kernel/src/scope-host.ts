@@ -4870,8 +4870,8 @@ export async function attachmentSha256(body: Uint8Array): Promise<string> {
  * written, as before. A stream is hashed and counted while the store reads it, so it is never
  * held whole; `sha256` is the adapter's running digest, since the kernel has none of its own.
  *
- * A store that answers without reading the stream to its end has its object deleted and the
- * write refused: no record may witness bytes nobody saw.
+ * A streamed write that fails, or whose store answers without reading the stream to its end, has
+ * its object deleted and is refused: no record may witness bytes nobody saw.
  */
 export async function putAttachmentBytes(
   store: TenantBlobStore,
@@ -4886,10 +4886,13 @@ export async function putAttachmentBytes(
     return witness;
   }
   const witnessed = witnessedStream(body, sha256());
-  await store.put(key, witnessed.body, { contentType });
   try {
+    await store.put(key, witnessed.body, { contentType });
     return witnessed.witness();
   } catch (err) {
+    // Deleted whether the put failed or answered early: a store can commit the declared bytes
+    // and still reject when the stream errors behind them (R2 does, for a body longer than it
+    // declared). The key is fresh and no row names it yet, so the delete is always safe.
     await store.delete(key).catch(() => {});
     throw err;
   }

@@ -182,6 +182,21 @@ describe('putAttachmentBytes (#2498)', () => {
     expect(deleted).toEqual(['k']);
   });
 
+  it('a store that committed the bytes and then rejected has the object deleted', async () => {
+    const { store, objects, deleted } = memoryStore();
+    const put = store.put;
+    store.put = async (key, body, opts) => {
+      await put(key, body, opts);
+      throw new Error('connection lost after commit');
+    };
+    const { stream } = producer(2);
+    await expect(
+      putAttachmentBytes(store, 'k', { stream, length: 2 * CHUNK }, 'application/pdf', nodeSha256),
+    ).rejects.toThrow(/after commit/);
+    expect(deleted).toEqual(['k']);
+    expect(objects.has('k')).toBe(false);
+  });
+
   it('a stream carrying another length than it declared is refused by the store write', async () => {
     const { store } = memoryStore();
     const { stream } = producer(3);
