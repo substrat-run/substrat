@@ -70,6 +70,7 @@ export type {
   ScopeFilter,
   ScopeHost,
   ScopeListing,
+  UnreadableScopeRow,
   ScopeStub,
   ScopeStubOptions,
   InvokeOptions,
