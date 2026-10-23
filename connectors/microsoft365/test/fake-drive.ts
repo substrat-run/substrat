@@ -1,5 +1,5 @@
 import { URL } from 'node:url';
-import type { FetchLike } from '@substrat-run/kernel';
+import { isSizedByteStream, type FetchLike } from '@substrat-run/kernel';
 import { quickXorHash } from '../src/quickxor.js';
 
 /**
@@ -161,6 +161,8 @@ export class FakeDrive {
 
   fetch: FetchLike = async (input, init) => {
     const body = init?.body;
+    // The connector sends buffers today; a streamed body (#2498) would need this fake to read it.
+    if (isSizedByteStream(body)) throw new Error('the fake drive takes buffered bodies only');
     const call: Call = {
       method: init?.method ?? 'GET',
       url: input,
