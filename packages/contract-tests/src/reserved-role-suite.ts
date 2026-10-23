@@ -21,6 +21,12 @@ import { RSV_RUN, RSV_USE, reservedRoleMod, unmarkedReservedRoleMod } from './re
  * - So is a connection grant (`grantToConnection`), at either node: a connection acts for the
  *   external provider holding its token. Nothing is recorded for a later provision to deliver.
  * - Each refusal writes nothing: the principal holds nothing afterwards.
+ * - A role DEFINITION is judged too (#2447): `defineRole` refuses a person's role carrying a
+ *   reserved key and a system-held role carrying a person's key, so a role cannot be widened after
+ *   it was assigned; a seat holding a key reserved after it was seated keeps working, through a
+ *   refused redefinition and a fan-out. A host that registers no reserving module learns the
+ *   reservation from the tenant's system-held roles, admits a key it knows nothing about
+ *   (fail-open), and its person's doors refuse a role stored `holder: 'system'`.
  *
  * And the host option `permissions`: a host given its declared surface refuses to register a
  * module the surface leaves out, and holds the reservations the surface declares whatever is
