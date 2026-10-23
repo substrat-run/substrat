@@ -12,6 +12,7 @@ import {
   WIRE_PLATFORM_KEYS_VAR,
   WIRE_ROUTER_KEYS_VAR,
   WIRE_SIGNATURE_HEADER,
+  WIRE_REPLAY_FREE_CALLS,
   WIRE_STATE_VAR,
   wireEndpoint,
   wireRequestBinding,
@@ -147,6 +148,8 @@ async function sign(key: WireSigningKey, input: Omit<WireEnvelopeInput, 'method'
 
 const URL_ROUTE = 'https://acme.example/api/things?page=2';
 const PROVISION = 'https://vertical/internal/provision';
+/** A call that takes a body and changes nothing, so keeps no nonce. */
+const QUERY = 'https://vertical/internal/query';
 
 /** A route envelope for `URL_ROUTE` naming the router's identity, unless told otherwise. */
 const routeEnvelope = (over: Partial<WireEnvelopeInput> & { url?: string; method?: string } = {}, key = router) =>
@@ -384,13 +387,32 @@ describe('dual, a call to the internal surface', () => {
     }
   });
 
-  it('a call that names no scope keeps no nonce memory: verified on its window alone', async () => {
-    const g = gated();
+  it.each([
+    ['a scope named', PROVISION, { tenantId: TENANT, scopeId: SCOPE }],
+    ['no scope named', PROVISION, {}],
+    ['an endpoint the table has never heard of', 'https://vertical/internal/brand-new-verb', {}],
+    ['another spelling of a replay-free endpoint', 'https://vertical/internal/%71uery', {}],
+  ])('a call that changes state keeps nonces with %s: fail closed, the counted fault', async (_, url, scope) => {
     const body = '{"ping":true}';
-    const headers = { ...callHeaders(true), ...(await callEnvelope(PROVISION, body)) };
-    const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body }), envOf('dual'));
-    expect(await bodyOf(res)).toBe(body);
-    expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted', tenantId: null, scopeId: null });
+    const headers = { ...callHeaders(true), ...(await callEnvelope(url, body, scope)) };
+    const dual = gated();
+    const served = await dual.fetch(new Request(url, { method: 'POST', headers, body }), envOf('dual'));
+    expect(await bodyOf(served)).toBe(body);
+    expect(dual.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid' });
+    const signedOnly = gated();
+    expect((await signedOnly.fetch(new Request(url, { method: 'POST', headers, body }), envOf('signed-only'))).status).toBe(503);
+    expect(signedOnly.seen).toEqual([]);
+  });
+
+  it.each(WIRE_REPLAY_FREE_CALLS)('a call the table lists as changing nothing keeps no nonce: %s', async (path) => {
+    const url = `https://vertical${path}`;
+    const nonceCache = vi.fn();
+    const g = gated({ nonceCache });
+    const headers = { ...callHeaders(true), ...(await callEnvelope(url, '{}', { tenantId: TENANT, scopeId: SCOPE })) };
+    const res = await g.fetch(new Request(url, { method: 'POST', headers, body: '{}' }), envOf('signed-only'));
+    expect(res.status).toBe(200);
+    expect(nonceCache).not.toHaveBeenCalled();
+    expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted', fault: null });
   });
 
   it('an envelope signed over another body is refused for the body, and the legacy credential still serves it', async () => {
@@ -404,7 +426,7 @@ describe('dual, a call to the internal surface', () => {
   it('an envelope alone admits a call: the vertical’s own internal gate passes and the body arrives intact', async () => {
     const g = gated();
     const body = '{"ping":true}';
-    const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers: await callEnvelope(PROVISION, body), body }), envOf('dual'));
+    const res = await g.fetch(new Request(QUERY, { method: 'POST', headers: await callEnvelope(QUERY, body), body }), envOf('dual'));
     expect(res.status).toBe(200);
     expect(await bodyOf(res)).toBe(body);
     expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted', legacy: 'absent' });
@@ -414,15 +436,17 @@ describe('dual, a call to the internal surface', () => {
     const INVOKE = 'https://vertical/internal/vertical-invoke';
     const body = '{"operation":"x"}';
     const routerCall = (url: string) => sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url });
-    const cases: Array<[string, Record<string, string>, string]> = [
-      [INVOKE, await routerCall(INVOKE), 'signed-accepted'],
-      [INVOKE, await callEnvelope(INVOKE, body), 'signed-accepted'],
-      [PROVISION, await routerCall(PROVISION), 'refused'],
+    // A peer invocation runs an operation, so it keeps nonces: an envelope that passes every check
+    // reaches the nonce store, which this version lacks, and is counted as that fault.
+    const cases: Array<[string, Record<string, string>, Record<string, unknown>]> = [
+      [INVOKE, await routerCall(INVOKE), { outcome: 'fault', fault: 'no-nonce-store' }],
+      [INVOKE, await callEnvelope(INVOKE, body), { outcome: 'fault', fault: 'no-nonce-store' }],
+      [PROVISION, await routerCall(PROVISION), { outcome: 'refused', reason: 'issuer', issuer: 'platform' }],
     ];
-    for (const [url, envelope, outcome] of cases) {
+    for (const [url, envelope, line] of cases) {
       const g = gated();
       await g.fetch(new Request(url, { method: 'POST', headers: envelope, body }), envOf('dual'));
-      expect(g.wire()[0]).toMatchObject({ outcome, ...(outcome === 'refused' ? { reason: 'issuer', issuer: 'platform' } : {}) });
+      expect(g.wire()[0]).toMatchObject(line);
     }
   });
 
@@ -517,13 +541,13 @@ describe('signed-only: the envelope alone decides', () => {
     expect([...answers]).toEqual([`401 ${PROBLEM_CONTENT_TYPE} ${WIRE_REFUSAL_BODY}`]);
   });
 
-  it('a call that needs a nonce store this version lacks is the fixed 503; one that names no scope is served', async () => {
+  it('a call that needs a nonce store this version lacks is the fixed 503; one that changes nothing is served', async () => {
     const body = '{}';
     const scoped = gated();
     const res = await scoped.fetch(new Request(PROVISION, { method: 'POST', headers: await callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE }), body }), envOf('signed-only'));
     expect(res.status).toBe(503);
-    const unscoped = gated();
-    const twin = await unscoped.fetch(new Request(PROVISION, { method: 'POST', headers: await callEnvelope(PROVISION, body), body }), envOf('signed-only'));
+    const replayFree = gated();
+    const twin = await replayFree.fetch(new Request(QUERY, { method: 'POST', headers: await callEnvelope(QUERY, body, { tenantId: TENANT, scopeId: SCOPE }), body }), envOf('signed-only'));
     expect(twin.status).toBe(200);
   });
 
@@ -601,8 +625,8 @@ describe('a call’s body is read only once its envelope has passed every cheape
       },
       { highWaterMark: 0 },
     );
-    const headers = { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(PROVISION, '{"ping":true}')) };
-    const res = await g.fetch(new Request(PROVISION, { method: 'POST', headers, body, duplex: 'half' } as RequestInit), envOf('dual'));
+    const headers = { [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(QUERY, '{"ping":true}')) };
+    const res = await g.fetch(new Request(QUERY, { method: 'POST', headers, body, duplex: 'half' } as RequestInit), envOf('dual'));
     expect(pulled).toBe(true);
     expect(await bodyOf(res)).toBe('{"ping":true}');
     expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted' });

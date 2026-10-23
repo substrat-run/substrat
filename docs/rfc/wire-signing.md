@@ -297,11 +297,19 @@ payload (Q7).
   outright in `signed-only`. So the router's bounded retry and every platform retry re-sign.
 - **A call that names no scope** has no scope object to hold a cache. Such a call must be a read
   or idempotent (`replay: 'none'`). Any that is not is named in the PR that wires it.
+- **The policy is the endpoint's, in a table, and never inferred** (`wireReplayOf`): a call with a
+  safe method (`GET`, `HEAD`, `OPTIONS`), or to one of the endpoints `WIRE_REPLAY_FREE_CALLS` lists
+  as taking a body and changing nothing, keeps no nonce. Step 1 lists `/internal/query`,
+  `/internal/redrain-count`, `/internal/lifecycle-flow`, `/internal/operation-series` and
+  `/internal/connector-grants`, each by the exact path the platform calls. Every other call keeps
+  nonces, a new endpoint included, whatever its envelope names: one that names no scope has no store
+  to spend a nonce in, and is its deployment's fault (§3.4), never `'none'`. So a signer that leaves
+  the scope off a call that changes state fails closed rather than losing its replay protection.
 
 The primitives define the cache interface only. Its storage is a follow-on. The entry (step 1)
-already holds a call to it: any method but `GET`, `HEAD` and `OPTIONS` on an envelope that names a
-scope claims its nonce in that scope, through a seam the store will fill, bounded at a second. With
-the seam empty, such a call meets §3.4's statically absent store.
+already holds a call to it: a call that keeps nonces and names a scope claims its nonce in that
+scope, through a seam the store will fill, bounded at a second. With the seam empty, or no scope
+named, such a call meets §3.4's statically absent store.
 
 ## 5. Verifier states
 

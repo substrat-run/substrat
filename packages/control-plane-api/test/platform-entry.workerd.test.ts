@@ -308,7 +308,7 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
 
   it('dual: a call’s body is read to be verified and still reaches the vertical byte for byte', async () => {
     const d = checked({ ...lists, [WIRE_STATE_VAR]: 'dual' });
-    const url = 'https://vertical/internal/provision';
+    const url = 'https://vertical/internal/query';
     const body = JSON.stringify({ note: 'é'.repeat(70_000) });
     const issued = await signWireEnvelope(platform, { iss: 'platform', kind: 'call', aud: AUD, ...wireRequestBinding({ method: 'POST', url }), body });
     const res = await d.mf.dispatchFetch(url, {

@@ -709,6 +709,31 @@ export function wireEndpoint(pathname: string): WireEndpoint {
 }
 
 /**
+ * The internal calls that take a body but change nothing, so a call to one keeps no nonce memory
+ * (RFC §4): each only reads the scope it names. Named by the exact path the platform calls, so any
+ * other spelling of one keeps nonces.
+ */
+export const WIRE_REPLAY_FREE_CALLS: readonly string[] = Object.freeze([
+  '/internal/query',
+  '/internal/redrain-count',
+  '/internal/lifecycle-flow',
+  '/internal/operation-series',
+  '/internal/connector-grants',
+]);
+
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * A call's replay policy as its endpoint states it (RFC §4), never inferred from what an envelope
+ * names: `'none'` for a safe method or a call {@link WIRE_REPLAY_FREE_CALLS} lists, and `'nonce'`
+ * for every other call, a new endpoint included, whether or not its envelope names a scope. A call
+ * that keeps nonces and names no scope has no store to spend one in, which is its deployment's fault.
+ */
+export function wireReplayOf(method: string, pathname: string): 'none' | 'nonce' {
+  return SAFE_METHODS.has(method.toUpperCase()) || WIRE_REPLAY_FREE_CALLS.includes(pathname) ? 'none' : 'nonce';
+}
+
+/**
  * How one request fared (RFC §8). `legacy-accepted` is an envelope refused beside a legacy
  * credential that was valid, and carries the refusal's reason; `refused` is an envelope refused
  * with no valid legacy credential beside it.

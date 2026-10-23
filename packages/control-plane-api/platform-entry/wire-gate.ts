@@ -34,6 +34,7 @@ import {
   WIRE_ROUTER_KEYS_VAR,
   WIRE_STATE_VAR,
   wireEndpoint,
+  wireReplayOf,
   wireRequestBinding,
   wireStateOf,
   wireVerificationKeys,
@@ -110,22 +111,12 @@ const SURFACE = 'x-substrat-surface';
 const VERTICAL = 'x-substrat-vertical';
 const ROUTER_CREDENTIAL = 'x-substrat-router';
 
-/** RFC §4: a call that changes state keeps nonces; these do not change state. */
-const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-
 /** The deployment's own fault, by kind. Thrown inside the gate, never past it. */
 class GateFault extends Error {
   constructor(readonly fault: WireFault) {
     super(fault);
   }
 }
-
-/** A call that needs a nonce store, on a deployment that has none: found only when the claim is due. */
-const NO_NONCE_STORE: WireNonceCache = {
-  claim() {
-    throw new GateFault('no-nonce-store');
-  },
-};
 
 /** The store a call claims through, bounded in time, with a throw or a timeout read as the store's failure. */
 function boundedCache(cache: WireNonceCache, timeoutMs: number): WireNonceCache {
@@ -218,7 +209,8 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     const e = env as Record<string, unknown>;
     const aud = textOf(e[WIRE_AUDIENCE_VAR]);
     const { method, target } = wireRequestBinding(request);
-    const endpoint = wireEndpoint(new URL(request.url).pathname);
+    const pathname = new URL(request.url).pathname;
+    const endpoint = wireEndpoint(pathname);
     const call = endpoint.kind === 'call';
     // Read before it is verified, only to choose which issuer to judge a call as and which scope's
     // store a nonce would be claimed in. The verifier checks both against the signed bytes.
@@ -292,9 +284,11 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       return body;
     };
 
-    // A call that changes state spends its nonce in the scope's own store, so it pins that scope.
-    // One that names no scope has no store to spend it in, and is held to its window alone.
-    const pinned = call && !SAFE_METHODS.has(method) ? (claimed?.scopeId ?? undefined) : undefined;
+    // A call's replay policy is its endpoint's (RFC §4), never inferred from the envelope. One that
+    // keeps nonces spends its nonce in the store of the scope it names, so it pins that scope. With
+    // no scope named, or no store, it is verified in full and then counted as this version's fault.
+    const keepsNonces = call && wireReplayOf(method, pathname) === 'nonce';
+    const pinned = keepsNonces ? (claimed?.scopeId ?? undefined) : undefined;
     const store = pinned === undefined ? undefined : options.nonceCache?.(env, pinned);
     const expected: WireExpectation = call
       ? {
@@ -304,8 +298,8 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
           method,
           target,
           body: readBody,
-          replay: pinned === undefined ? 'none' : store ? boundedCache(store, timeoutMs) : NO_NONCE_STORE,
-          scopeId: pinned,
+          replay: store ? boundedCache(store, timeoutMs) : 'none',
+          scopeId: store ? pinned : undefined,
         }
       : { iss: 'router', kind: 'route', aud, method, target };
 
@@ -324,12 +318,12 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       });
       if (verdict.ok) claims = verdict.claims;
     } catch (error) {
-      const fault = error instanceof GateFault ? error.fault : 'verifier';
-      // A store this version does not have is a static fault. A store that exists and fails is the
-      // platform's failure in every state.
-      if (fault === 'no-nonce-store') return staticFault(fault, servedAs(legacy.identity));
-      return faulted(fault, legacy.credential);
+      // A store that exists and fails is the platform's failure in every state.
+      return faulted(error instanceof GateFault ? error.fault : 'verifier', legacy.credential);
     }
+    // An envelope that passed everything else, on a call that keeps nonces with no store to keep
+    // them in: a static fault, reached only now, as a claim is always the last check.
+    if (claims && keepsNonces && !store) return staticFault('no-nonce-store', servedAs(legacy.identity));
 
     if (state === 'dual' && legacy.credential === 'valid') {
       // Served exactly as today, as the legacy credential says; the envelope is only counted.

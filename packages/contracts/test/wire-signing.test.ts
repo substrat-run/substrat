@@ -27,6 +27,8 @@ import {
   WIRE_SIGNATURE_HEADER,
   wireDigest,
   wireEndpoint,
+  wireReplayOf,
+  WIRE_REPLAY_FREE_CALLS,
   wireEnvelopeShape,
   WireKeyError,
   wireRequestBinding,
@@ -981,5 +983,22 @@ describe('a call’s body given as a reader', () => {
   it('a read that answers null, or other bytes, is refused for the body', async () => {
     expect(await reason({ vector: CALL, expected: { body: reader(null).read } })).toBe('body');
     expect(await reason({ vector: CALL, expected: { body: reader('tampered').read } })).toBe('body');
+  });
+});
+
+describe('wireReplayOf: a call’s replay policy, as its endpoint states it', () => {
+  it('a safe method keeps no nonce, in any case', () => {
+    for (const method of ['GET', 'HEAD', 'OPTIONS', 'get', 'Head']) expect(wireReplayOf(method, '/internal/provision')).toBe('none');
+  });
+
+  it('a call the table lists as changing nothing keeps no nonce', () => {
+    for (const path of WIRE_REPLAY_FREE_CALLS) expect(wireReplayOf('POST', path)).toBe('none');
+    expect(WIRE_REPLAY_FREE_CALLS).toEqual(['/internal/query', '/internal/redrain-count', '/internal/lifecycle-flow', '/internal/operation-series', '/internal/connector-grants']);
+  });
+
+  it('every other call keeps nonces: an unlisted one, a new one, another spelling of a listed one', () => {
+    for (const path of ['/internal/provision', '/internal/vertical-invoke', '/internal/brand-new-verb', '/internal/%71uery', '/internal/query/', '/INTERNAL/query']) {
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) expect(wireReplayOf(method, path)).toBe('nonce');
+    }
   });
 });
