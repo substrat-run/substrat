@@ -41,7 +41,14 @@ import {
 	workspaceBrief,
 	type GateSpec,
 } from '@substrat-run/builder-workspace';
-import { providerRefusal, refusalProblem, sendProblem, unhandledProblem } from './problem.js';
+import {
+	providerMessage,
+	providerRefusal,
+	refusalProblem,
+	sendProblem,
+	turnFailure,
+	unhandledProblem,
+} from './problem.js';
 import { devStatus, startDev, stopDev } from './devserver.js';
 import { loadEnvFiles } from './env.js';
 import { providerCatalog } from './hosting.js';
@@ -61,7 +68,6 @@ import {
 	DEFAULT_MODEL,
 	explainProviderError,
 	listModels,
-	ProviderError,
 	resolveModel,
 } from './providers.js';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
@@ -201,7 +207,7 @@ async function handleSession(res: ServerResponse): Promise<void> {
 		endpoint = resolved.endpoint;
 		endpointSource = resolved.endpointSource;
 	} catch (err) {
-		modelError = err instanceof ProviderError ? err.message : String(err);
+		modelError = providerMessage(err);
 	}
 	json(res, 200, {
 		root: ws.root,
@@ -403,11 +409,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 		// turn stays whole even though the UI lane read only its own.
 		cur.state.history.push(...transcript.map(({ role, text }) => ({ role, text })));
 	} catch (err) {
-		emit({
-			type: 'error',
-			message: err instanceof Error ? err.message : String(err),
-			fatal: true,
-		});
+		emit({ type: 'error', message: turnFailure(err), fatal: true });
 	} finally {
 		clearInterval(heartbeat);
 		// Persist the session — this is what "pick up where we were" is.

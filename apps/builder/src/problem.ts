@@ -43,15 +43,42 @@ export function internalProblem(): Problem {
 }
 
 /**
- * The 422 a bad provider choice answers. Only the provider error class carries a message
- * written for the user (a missing credential, an unknown provider); any other throw's
- * message is unreviewed and is logged, not relayed.
+ * What the client reads for a provider throw outside the provider error class. Such a
+ * throw is a transient failure as often as a fault (a `listModels` fetch that never
+ * connected rejects with a bare `TypeError`), so the sentence claims neither.
  */
-export function providerRefusal(err: unknown): Problem {
+export const PROVIDER_FAILED = 'the model provider request failed; the cause is in the server log';
+
+/** What the client reads when a turn throws: the stream's fatal `error` event. */
+export const TURN_FAILED = 'the turn stopped on an unexpected error; the cause is in the server log';
+
+/**
+ * The client's sentence for a provider throw — the 422s and `/api/session`'s `modelError`.
+ * Only the provider error class carries a message written for the user (a missing
+ * credential, an unknown provider); any other throw's message is unreviewed and is
+ * logged, not relayed.
+ */
+export function providerMessage(err: unknown): string {
 	// The one class both runtimes throw: providers.ts and providers-worker.ts re-export it.
-	if (err instanceof ProviderError) return problemForStatus(422, err.message);
-	console.error('[builder] provider setup failed', err);
-	return problemForStatus(422, 'the model provider could not be set up');
+	if (err instanceof ProviderError) return err.message;
+	console.error('[builder] model provider request failed', err);
+	return PROVIDER_FAILED;
+}
+
+/** The 422 a bad provider choice answers. */
+export function providerRefusal(err: unknown): Problem {
+	return problemForStatus(422, providerMessage(err));
+}
+
+/**
+ * The fatal `error` event's message when a turn throws. A provider error mid-turn (a
+ * phase's model resolving) keeps its reviewed message; anything else is the sandbox's,
+ * the repo's or a bug's, and is logged, not streamed.
+ */
+export function turnFailure(err: unknown): string {
+	if (err instanceof ProviderError) return err.message;
+	console.error('[builder] turn failed', err);
+	return TURN_FAILED;
 }
 
 /** A problem on the wire — the one place both runtimes take the media type from. */

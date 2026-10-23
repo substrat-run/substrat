@@ -15,10 +15,14 @@ import { Hono } from 'hono';
 import {
 	internalProblem,
 	orUnhandled,
+	PROVIDER_FAILED,
+	providerMessage,
 	providerRefusal,
 	refuse,
 	refusalProblem,
 	sendProblem,
+	TURN_FAILED,
+	turnFailure,
 	unhandledResponse,
 } from '../src/problem.js';
 import { resolveModel } from '../src/providers.js';
@@ -192,6 +196,69 @@ describe('an unhandled throw answers the 500 problem document on the hosted path
 		expect(agent.replace(/\s+/g, ' ')).toContain(
 			'override async fetch(req: Request): Promise<Response> { return orUnhandled(() => this.#route(req)); }',
 		);
+	});
+});
+
+/**
+ * The same rule past the refusals (#113 review): `/api/session`'s `modelError` and the
+ * turn stream's fatal `error` event relayed any throw's message, in both runtimes.
+ */
+describe("a throw's message reaches the client only when it is the provider error class", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	function providerThrow(): unknown {
+		try {
+			resolveModelHosted({}, 'anthropic:claude-opus-5');
+		} catch (err) {
+			return err;
+		}
+		throw new Error('the hosted resolver accepted a spec with no credential');
+	}
+
+	it("modelError: a provider error's own message", () => {
+		const err = providerThrow();
+		expect(providerMessage(err)).toBe((err as Error).message);
+	});
+
+	it('modelError: a transient network failure is logged and reads as neither a setup fault nor its text', () => {
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const message = providerMessage(new TypeError('fetch failed: getaddrinfo ENOTFOUND api.internal'));
+		expect(message).toBe(PROVIDER_FAILED);
+		expect(message).not.toMatch(/set up|configur|ENOTFOUND/);
+		expect(log).toHaveBeenCalledOnce();
+	});
+
+	it('the 422 and modelError say the same sentence for the same throw', () => {
+		vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const err = new TypeError('fetch failed');
+		expect(providerRefusal(err).detail).toBe(providerMessage(err));
+	});
+
+	it('the fatal turn event: a sandbox or repo throw is logged, not streamed', () => {
+		const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		const message = turnFailure(new Error('git bundle create failed: /workspace/.builder/projects/acme'));
+		expect(message).toBe(TURN_FAILED);
+		expect(log).toHaveBeenCalledOnce();
+	});
+
+	it("the fatal turn event: a phase's model failing to resolve keeps its reviewed message", () => {
+		const err = providerThrow();
+		expect(turnFailure(err)).toBe((err as Error).message);
+	});
+
+	it.each(['../src/server.ts', '../src/agent.ts', '../src/worker.ts'])(
+		'%s reads no throw message itself — problem.ts is the one door',
+		(file) => {
+			const src = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
+			expect(src).not.toMatch(/\.message\b/);
+			expect(src).not.toMatch(/String\(\s*(?:err|e|error)\s*\)/);
+		},
+	);
+
+	it.each(['../src/server.ts', '../src/agent.ts'])('%s answers modelError and the fatal event through it', (file) => {
+		const src = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
+		expect(src).toContain('modelError = providerMessage(err);');
+		expect(src).toContain("emit({ type: 'error', message: turnFailure(err), fatal: true });");
 	});
 });
 

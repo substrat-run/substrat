@@ -43,7 +43,14 @@ import {
 	type Workspace,
 } from '@substrat-run/builder-workspace/edge';
 import { editToolFor, resolveAutoSpec, samplingFor } from './model-pairs.js';
-import { orUnhandled, problemResponse, providerRefusal, refuse } from './problem.js';
+import {
+	orUnhandled,
+	problemResponse,
+	providerMessage,
+	providerRefusal,
+	refuse,
+	turnFailure,
+} from './problem.js';
 import type { BuildPhase } from './phase.js';
 import {
 	buildWriteGuard,
@@ -540,11 +547,7 @@ export class BuilderAgent extends DurableObject<Env> {
 
 				state.history.push(...transcript);
 			} catch (err) {
-				emit({
-					type: 'error',
-					message: err instanceof Error ? err.message : String(err),
-					fatal: true,
-				});
+				emit({ type: 'error', message: turnFailure(err), fatal: true });
 			} finally {
 				clearInterval(heartbeat);
 				await this.ctx.storage.put(`state:${entry.id}`, state);
@@ -586,7 +589,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				try {
 					endpoint = resolveModelHosted(this.env, modelSpec).endpoint;
 				} catch (err) {
-					modelError = err instanceof Error ? err.message : String(err);
+					modelError = providerMessage(err);
 				}
 				return json(200, {
 					root: REPO,
