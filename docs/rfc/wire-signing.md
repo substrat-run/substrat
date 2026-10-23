@@ -427,8 +427,9 @@ step 6, withdraws the credential.
   install, every preview, and every version a scope is bound to. For each it shows whether it
   verifies, which key lists it carries (the standby keys included), which state it is in, and
   which up-calls its bundle can make. A version the uploader sent without the platform's entry
-  module (the entry's own skip rules leave some older bundles unwrapped) cannot verify, and the
-  report counts it as not ready, by name.
+  module (the entry's own skip rules leave some older bundles unwrapped) cannot verify, and
+  neither can one whose default export has no `fetch` (a class entrypoint, which carries the entry
+  but is handed back ungated, Q2). The report counts each as not ready, by name.
 - **The gates.**
   - The control plane refuses to set an environment to `signed-only` unless the report is clean,
     the standby keys are listed everywhere, and the cutover criterion holds (§8: no legacy
@@ -455,9 +456,10 @@ step 6, withdraws the credential.
   that workflow is not gated: it is §8's page, and is fixed by rolling forward.
 - **Versions that block a gate are named, with a notice and a date,** and each kind has its own
   outcome there. Their authors get the notice and the date by which to push again.
-  - A version uploaded **without the entry** cannot verify and cannot take a per-deployment value,
-    since both need the entry. It blocks `signed-only` until it is reached by the verifier-only
-    wrapper Q2 leaves to follow-on 1, or it is retired at its date.
+  - A version uploaded **without the entry**, or whose default export has **no `fetch`**, cannot
+    verify and cannot take a per-deployment value, since both need the entry's gate. It blocks
+    `signed-only` until it is pushed again, or it is retired at its date (step 1 builds no
+    verifier-only wrapper, Q2).
   - A version **never rebuilt** blocks the withdrawal of the credentials (step 7) until it is
     moved to a per-deployment value for both legacy checks and its up-calls (Q10), or it is
     retired at its date.
@@ -575,15 +577,21 @@ of a bundle, it reaches that deployment at its next upload, including versions w
 push again. K-52 already put the store's checks in the platform's entry and never in the code
 behind it.
 
-Two kinds of deployment are not reached that way, and the plan says so rather than assuming
+Three kinds of deployment are not reached that way, and the plan says so rather than assuming
 them away:
 
 - **A version the uploader sends without the entry.** The entry's own skip rules leave some
   older bundles unwrapped (one that already writes its invocation line itself, for instance).
   Such a version never verifies, so its environment cannot go `signed-only` while it is live.
   It blocks the flip, by name, until its author pushes again (§7). A wrapper for the verifier
-  alone, which would not follow the entry's skip rules, could reach it. That is follow-on 1's
-  choice, recorded there.
+  alone, which would not follow the entry's skip rules, could reach it. That was follow-on 1's
+  choice, and step 1 does not build one: the verifier rides the entry, and such a version blocks
+  by name until it is pushed again or retired.
+- **A version whose default export has no `fetch`** (a class entrypoint). The entry is uploaded in
+  front of it, but its stamp and its verifier both hand such an export back untouched: its `fetch`
+  is a method of a class the runtime instantiates, which the entry could only reach by subclassing
+  the vertical's own class. So it carries the entry and verifies nothing. The capability record
+  must not mark it as verifying, and it blocks the flip by name, as above.
 - **A version never rebuilt.** It keeps the up-call code it was built with (§9, step 6), so step 6
   is never complete for it. It also keeps its own legacy checks on the down-channel, on a routed
   request and on a platform call, which refuse everything once the credentials are withdrawn. So

@@ -192,7 +192,8 @@ const servedAs = (who: { readonly tenantId: string | null; readonly scopeId: str
 
 /**
  * Wrap the stamp's `fetch` with the verifier. Its other handlers pass through as they are, and a
- * worker with no `fetch` comes back untouched, as `withInvocationLog` does.
+ * worker with no `fetch` (a class entrypoint) comes back untouched, as `withInvocationLog` does:
+ * such a version carries the entry but verifies nothing, and RFC Q2 and §7 name it as not ready.
  */
 export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOptions<Env>): GatedWorker<Env> {
   const inner = (worker as GatedWorker<Env> | undefined)?.fetch;
