@@ -115,6 +115,9 @@ Roles a host defines and seats itself are held to the same rule:
 
 Not covered yet:
 
+- a role defined on a Cloudflare coordinator for a tenant that has no scope yet: it is judged by
+  the coordinator's modules alone, since the scope class's reservations are read from one of the
+  tenant's scopes, and the first scope's projection of it is not judged again;
 - a grant a host seats or composes itself, such as the owner grants an install gives the owner
   on a host that does not register the vertical's modules (push refuses a reserved key there);
 - on a shared control plane, the directory record of a connection grant for a scope your
