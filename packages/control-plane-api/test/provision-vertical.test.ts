@@ -64,9 +64,33 @@ describe('POST /scopes — the vertical is a vertical slug', () => {
     expect(await res.json()).toMatchObject({ id: scope, vertical: stored });
   });
 
+  it.each([
+    ['kind', ''],
+    ['kind', '  '],
+    ['name', ''],
+    ['name', '\t'],
+  ] as const)('refuses %s %j with a validation_failed problem naming the field', async (field, value) => {
+    const scope = scopeId.parse(ulid());
+    const provision = vi.spyOn(host, 'provisionScope');
+    const res = await post({ tenantId: tenant, scopeId: scope, vertical: 'housing', [field]: value });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code?: string; errors?: { path: string }[] };
+    expect(body.code).toBe('validation_failed');
+    expect(body.errors?.map((e) => e.path)).toEqual([field]);
+    expect(provision).not.toHaveBeenCalled();
+    expect(await host.admin.getScopeRecord(staff, tenant, scope)).toBeUndefined();
+  });
+
+  it('provisions with a kind and a name, stored as sent', async () => {
+    const scope = scopeId.parse(ulid());
+    const res = await post({ tenantId: tenant, scopeId: scope, vertical: 'housing', kind: 'brf', name: ' Brf Vasastan ' });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ id: scope, kind: 'brf', name: ' Brf Vasastan ' });
+  });
+
   it('lists every scope it provisioned', async () => {
     const res = await app.request(`/scopes?tenantId=${tenant}`, { headers: auth });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { entries: unknown[] }).entries).toHaveLength(5);
+    expect(((await res.json()) as { entries: unknown[] }).entries).toHaveLength(6);
   });
 });

@@ -438,7 +438,7 @@ export function scopeHostContractSuite(
       );
     });
 
-    describe('the vertical a scope is provisioned with is a vertical slug', () => {
+    describe('provisioning takes a vertical slug and a non-empty kind and name', () => {
       const tenant = tenantId.parse(ulid());
       beforeAll(async () => {
         await host.admin.createTenant(staff, { id: tenant, slug: 'vertical-grammar', name: 'Vertical grammar' });
@@ -466,6 +466,36 @@ export function scopeHostContractSuite(
         const scope = scopeId.parse(ulid());
         await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, ...(vertical === undefined ? {} : { vertical }) });
         expect((await host.admin.getScopeRecord(staff, tenant, scope))?.vertical).toBe(stored);
+      });
+
+      it.each([
+        ['kind', ''],
+        ['kind', '   '],
+        ['kind', '\t'],
+        ['name', ''],
+        ['name', '   '],
+        ['name', '\n'],
+      ] as const)('refuses %s %j as validation_failed naming the field, and stores nothing', async (field, value) => {
+        const scope = scopeId.parse(ulid());
+        await expectRefusal(
+          host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'todo', [field]: value }),
+          'validation_failed',
+          new RegExp(`^provisionScope: ${field} `),
+        );
+        expect(await host.admin.getScopeRecord(staff, tenant, scope)).toBeUndefined();
+      });
+
+      it.each([
+        ['given', { kind: 'brf', name: 'Brf Vasastan' }, { kind: 'brf', name: 'Brf Vasastan' }],
+        ['given with spaces around them, as sent', { kind: ' brf ', name: ' Brf ' }, { kind: ' brf ', name: ' Brf ' }],
+        ['absent, as the defaults', {}, { kind: 'scope' }],
+      ] as const)('provisions with kind and name %s', async (_case, given, stored) => {
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'todo', ...given });
+        const row = await host.admin.getScopeRecord(staff, tenant, scope);
+        expect(row).toMatchObject(stored);
+        // An absent name defaults to the slug, which defaults to the lowercased id.
+        if (!('name' in given)) expect(row?.name).toBe(scope.toLowerCase());
       });
 
       it('refuses an invalid vertical on a re-provision of an existing scope too', async () => {

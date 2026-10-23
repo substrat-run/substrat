@@ -32,12 +32,13 @@ export function unreadableScopeRowContractSuite(
     let live: ScopeId;
     let preview: ScopeId;
     let archived: ScopeId;
-    let blank: ScopeId;
-    let second: ScopeId;
+    /** One row per column the `scope` schema reads as non-empty, each stored empty below. */
+    const planted: Record<'vertical' | 'kind' | 'name', ScopeId> = { vertical: '' as ScopeId, kind: '' as ScopeId, name: '' as ScopeId };
+    const columns = ['vertical', 'kind', 'name'] as const;
 
-    /** The stored `vertical` of one row, written as given. Both values are literals of this suite. */
-    const writeVertical = (scope: ScopeId, vertical: 'todo' | '') =>
-      exec(host, `UPDATE scopes SET vertical = '${vertical}' WHERE scope_id = '${scope}'`);
+    /** One column of one row, written as given. Every value is a literal of this suite. */
+    const write = (scope: ScopeId, column: (typeof columns)[number], value: string) =>
+      exec(host, `UPDATE scopes SET ${column} = '${value}' WHERE scope_id = '${scope}'`);
 
     const provision = async (extra: Record<string, unknown> = {}): Promise<ScopeId> => {
       const s = scopeId.parse(ulid());
@@ -55,13 +56,11 @@ export function unreadableScopeRowContractSuite(
       preview = await provision({ kind: 'preview', expiresAt: '2000-01-01T00:00:00.000Z' });
       archived = await provision();
       await host.admin.archiveScope(staff, t, archived);
-      blank = await provision();
-      second = await provision();
+      for (const column of columns) planted[column] = await provision();
     });
 
     afterAll(async () => {
-      await writeVertical(blank, 'todo');
-      await writeVertical(second, 'todo');
+      for (const column of columns) await write(planted[column], column, 'restored');
       await fixture.cleanup();
     });
 
@@ -71,12 +70,12 @@ export function unreadableScopeRowContractSuite(
       expect(readable).toEqual({ scopes: strict, unreadable: [] });
     });
 
-    describe('with two rows that do not read as scopes', () => {
+    describe('with rows that do not read as scopes', () => {
       beforeAll(async () => {
-        // The stored shape provisioning used to accept, which the `scope` schema reads back as a
-        // parse error. Two of them, so "named once" is about phases and not about there being one.
-        await writeVertical(blank, '');
-        await writeVertical(second, '');
+        // The stored shapes provisioning used to accept, which the `scope` schema reads back as a
+        // parse error: an empty vertical, kind or name. Several, so "named once" is about phases
+        // and not about there being one.
+        for (const column of columns) await write(planted[column], column, '');
       });
 
       it('leaves listScopes strict', async () => {
@@ -87,7 +86,9 @@ export function unreadableScopeRowContractSuite(
         const { scopes, unreadable } = await host.admin.listScopesReadable!(staff, { tenantId: t });
         expect(scopes.map((s) => s.id).sort()).toEqual([live, preview, archived].sort());
         expect(unreadable.sort((a, b) => a.scopeId.localeCompare(b.scopeId))).toEqual(
-          [blank, second].sort().map((s) => ({ scopeId: s, tenantId: t, fields: ['vertical'] })),
+          columns
+            .map((column) => ({ scopeId: planted[column], tenantId: t, fields: [column] }))
+            .sort((a, b) => a.scopeId.localeCompare(b.scopeId)),
         );
       });
 
@@ -119,8 +120,10 @@ export function unreadableScopeRowContractSuite(
         expect(report.eventDrain).not.toBeNull();
         // Each row once, however many phases met it, by id and field and nothing of the row.
         const rows = report.errors.filter((e) => e.kind === 'scope-row');
-        expect(rows.map((e) => e.id).sort()).toEqual([blank, second].sort());
-        for (const e of rows) expect(e.error).toMatch(new RegExp(`tenant ${t} .*\\(vertical\\)`));
+        expect(rows.map((e) => e.id).sort()).toEqual(columns.map((c) => planted[c]).sort());
+        for (const column of columns) {
+          expect(rows.find((e) => e.id === planted[column])?.error).toMatch(new RegExp(`tenant ${t} .*\\(${column}\\)`));
+        }
         expect(report.errors.filter((e) => e.kind !== 'scope-row')).toEqual([]);
       });
     });
