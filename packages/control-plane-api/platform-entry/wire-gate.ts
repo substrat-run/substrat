@@ -289,7 +289,12 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     // no scope named, or no store, it is verified in full and then counted as this version's fault.
     const keepsNonces = call && wireReplayOf(method, pathname) === 'nonce';
     const pinned = keepsNonces ? (claimed?.scopeId ?? undefined) : undefined;
-    const store = pinned === undefined ? undefined : options.nonceCache?.(env, pinned);
+    let store: WireNonceCache | undefined;
+    try {
+      store = pinned === undefined ? undefined : options.nonceCache?.(env, pinned);
+    } catch {
+      return faulted('nonce-store', legacy.credential);
+    }
     const expected: WireExpectation = call
       ? {
           iss: issuer,
@@ -343,8 +348,14 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     }
     // The envelope alone admits it, in `dual` (no valid legacy credential beside it) or in
     // `signed-only`: the vertical is handed the identity the envelope proved, and no other.
+    let proven: Request;
+    try {
+      proven = provenAs(downstream, claims, env, options);
+    } catch {
+      return faulted('verifier', legacy.credential);
+    }
     line('signed-accepted', legacy.credential, servedAs(claims));
-    return serve(provenAs(downstream, claims, env, options), env, ctx);
+    return serve(proven, env, ctx);
   }
 
   return {

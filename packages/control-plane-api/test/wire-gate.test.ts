@@ -509,6 +509,31 @@ describe('dual, a call to the internal surface', () => {
       expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
       expect(WIRE_CLAIM_TIMEOUT_MS).toBe(1000);
     });
+
+    it('a store that cannot even be reached is the store’s failure, counted and answered as one', async () => {
+      const { res, g } = await scopedCall(envOf('dual'), {
+        nonceCache: () => {
+          throw new Error('no binding');
+        },
+      });
+      expect(res.status).toBe(503);
+      expect(await res.text()).toBe(WIRE_FAULT_BODY);
+      expect(g.seen).toEqual([]);
+      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
+    });
+  });
+
+  it('a request the gate cannot hand on as the envelope proved it is the fixed 503, counted, and never the vertical’s', async () => {
+    const g = gated({
+      routerSecret: () => {
+        throw new Error('unreadable');
+      },
+    });
+    const res = await g.fetch(new Request(URL_ROUTE, { headers: await routeEnvelope() }), envOf('dual'));
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe(WIRE_FAULT_BODY);
+    expect(g.seen).toEqual([]);
+    expect(g.wire()).toEqual([expect.objectContaining({ outcome: 'fault', fault: 'verifier' })]);
   });
 });
 
