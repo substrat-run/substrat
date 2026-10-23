@@ -600,6 +600,57 @@ describe('signed-only: the envelope alone decides', () => {
   });
 });
 
+describe('the router’s prefix, as the vertical sees it', () => {
+  /** Headers under the prefix that no envelope signs, in mixed case. */
+  const unsigned = {
+    'X-Substrat-Field-Coverage': '01JZ0000000000000000FLD001',
+    'X-SUBSTRAT-EXTRA': 'forged',
+    'x-Substrat-Parent-Request-Id': '01JZ0000000000000000PAR001',
+  };
+  const prefixed = (r: Request) => [...r.headers.keys()].filter((name) => name.startsWith('x-substrat-')).sort();
+  /** A routed request carrying an envelope, the unsigned headers, and identity headers sent twice, in two cases. */
+  async function crowded(legacy: Record<string, string>) {
+    const headers = new Headers({ ...unsigned, ...legacy, ...(await routeEnvelope()) });
+    headers.append('x-substrat-scope', OTHER_SCOPE);
+    headers.append('X-Substrat-Tenant', '01JZ0000000000000000TEN002');
+    return new Request(URL_ROUTE, { headers });
+  }
+  const IDENTITY = ['x-substrat-router', 'x-substrat-scope', 'x-substrat-surface', 'x-substrat-tenant', 'x-substrat-vertical'];
+
+  it.each(['dual', 'signed-only'])('%s, an envelope alone: only what it proved, whatever was sent beside it', async (state) => {
+    for (const legacy of [{}, legacyRoute()]) {
+      const g = gated();
+      const res = await g.fetch(await crowded(legacy), envOf(state));
+      expect(res.status).toBe(200);
+      const seen = g.seen[0]!;
+      expect(prefixed(seen)).toEqual(IDENTITY);
+      expect(seen.headers.get('x-substrat-tenant')).toBe(TENANT);
+      expect(seen.headers.get('x-substrat-scope')).toBe(SCOPE);
+      expect(seen.headers.get('x-substrat-vertical')).toBe(VERTICAL);
+      expect(await nodeOf(res)).toEqual({ tenantId: TENANT, scopeId: SCOPE, surface: 'app', verticalSlug: VERTICAL });
+    }
+  });
+
+  it('an envelope alone admitting a call: only the credential, and nothing it did not sign', async () => {
+    const g = gated();
+    const headers = new Headers({ ...unsigned, ...(await callEnvelope(QUERY, '{}')) });
+    headers.append('x-substrat-tenant', TENANT);
+    const res = await g.fetch(new Request(QUERY, { method: 'POST', headers, body: '{}' }), envOf('dual'));
+    expect(res.status).toBe(200);
+    expect(prefixed(g.seen[0]!)).toEqual([PLATFORM_SECRET_HEADER]);
+  });
+
+  it.each(['legacy-only', 'dual'])('%s, a valid legacy credential: the request goes on exactly as it came, as today', async (state) => {
+    const g = gated();
+    const request = new Request(URL_ROUTE, { headers: { ...unsigned, ...legacyRoute(), ...(await routeEnvelope()) } });
+    await g.fetch(request, state === 'legacy-only' ? legacyEnv() : envOf(state));
+    expect(g.seen[0]).toBe(request);
+    expect(prefixed(g.seen[0]!)).toEqual(
+      ['x-substrat-extra', 'x-substrat-field-coverage', 'x-substrat-parent-request-id', 'x-substrat-wire-envelope', 'x-substrat-wire-signature', ...IDENTITY].sort(),
+    );
+  });
+});
+
 describe('time, and the counter, as the gate holds them', () => {
   const scopedHeaders = async () => ({ [PLATFORM_SECRET_HEADER]: CALL_VALUE, ...(await callEnvelope(PROVISION, '{}', { tenantId: TENANT, scopeId: SCOPE })) });
 

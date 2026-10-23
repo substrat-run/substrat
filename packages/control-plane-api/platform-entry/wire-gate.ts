@@ -104,6 +104,8 @@ export const WIRE_FAULT_BODY =
   '{"type":"about:blank","title":"Service unavailable","status":503,"detail":"this request could not be verified","error":"this request could not be verified"}';
 const problem = (body: string, status: number) => new Response(body, { status, headers: { 'content-type': 'application/problem+json' } });
 
+/** The prefix the router strips from every inbound request before it asserts its own headers. */
+const ASSERTED_PREFIX = 'x-substrat-';
 /** The identity headers the router asserts, and its credential beside them. */
 const TENANT = 'x-substrat-tenant';
 const SCOPE = 'x-substrat-scope';
@@ -372,11 +374,17 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
 
 /**
  * The request as the vertical is to see it when the envelope alone admitted it: carrying the
- * identity the envelope proved, in the form every version of the vertical's own checks reads.
+ * identity the envelope proved, in the form every version of the vertical's own checks reads, and
+ * nothing else under the prefix the router reserves. Every inbound `x-substrat-*` header goes, in
+ * any letter case and however often it was sent, so no header the envelope did not sign reaches
+ * the vertical as the platform's word.
  */
 function provenAs<Env>(request: Request, claims: WireClaims, env: Env, options: WireGateOptions<Env>): Request {
   const headers = new Headers(request.headers);
-  const put = (name: string, value: string | null | undefined) => (value ? headers.set(name, value) : headers.delete(name));
+  for (const name of [...headers.keys()]) if (name.startsWith(ASSERTED_PREFIX)) headers.delete(name);
+  const put = (name: string, value: string | null | undefined) => {
+    if (value) headers.set(name, value);
+  };
   if (claims.kind === 'route') {
     put(TENANT, claims.tenantId);
     put(SCOPE, claims.scopeId);
@@ -384,6 +392,7 @@ function provenAs<Env>(request: Request, claims: WireClaims, env: Env, options: 
     put(VERTICAL, claims.vertical);
     put(ROUTER_CREDENTIAL, options.routerSecret(env));
   } else {
+    put(VERTICAL, claims.vertical);
     put(PLATFORM_SECRET_HEADER, options.platformSecret(env));
   }
   return new Request(request, { headers });

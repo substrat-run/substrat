@@ -351,6 +351,12 @@ step 6, withdraws the credential.
   - from `signed-only` on, the verified envelope's identity, and the legacy headers are not read
     for it.
 
+  Whenever the envelope alone admits a request, the vertical sees exactly one identity, the
+  envelope's, and no other header under the router's `x-substrat-` prefix: one the envelope did
+  not sign is dropped, in any case and however often it was sent. That includes the informational
+  ones the router adds (a field-coverage sample, a peer call's parent id), which such a request
+  goes without until a later step signs them or lists them as carrying no authority.
+
   A version built against an older vertical-host still reads the router's legacy headers for that
   identity at steps 5 and 6, which is safe only because the router still sends both and
   `dual-mismatch` was zero at the flip; after step 7 such a version needs Q10's values or blocks
