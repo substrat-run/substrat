@@ -156,7 +156,7 @@ export {
 } from './scope-copy-ledger.js';
 export {
   byteLengthOf,
-  fetchStreamBody,
+  knownLengthBody,
   isSizedByteStream,
   witnessedStream,
   type ByteBody,
@@ -173,6 +173,7 @@ export {
   assertRedrainWindow,
   attachmentBlobKey,
   attachmentSha256,
+  putAttachmentBytes,
   consumersFor,
   entitlementDenial,
   requiredEntitlementFor,

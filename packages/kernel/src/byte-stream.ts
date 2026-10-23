@@ -175,13 +175,14 @@ export function witnessedStream(body: SizedByteStream, digest: IncrementalSha256
 type FixedLengthStreamCtor = new (length: number) => { readable: unknown; writable: unknown };
 
 /**
- * `body` as the runtime's `fetch` takes a stream of known length, plus the request fields that
- * go with it. On workerd that is a `FixedLengthStream`, which sends a `Content-Length` rather
- * than a chunked body. Elsewhere (Node's fetch) it is the stream itself with `duplex: 'half'`
- * and the length as a header. Either way the declared length is held: a stream that carries
- * more or fewer bytes errors the request.
+ * `body` as the runtime takes a stream of known length, plus the request fields a `fetch` needs
+ * with it. On workerd that is a `FixedLengthStream`, which a `fetch` sends with a
+ * `Content-Length` rather than chunked, and which R2's `put` accepts (it refuses a stream of
+ * unknown length). Elsewhere (Node's fetch) it is the stream itself with `duplex: 'half'` and the
+ * length as a header. Either way the declared length is held: a stream that carries more or
+ * fewer bytes errors the request or the write.
  */
-export function fetchStreamBody(body: SizedByteStream): {
+export function knownLengthBody(body: SizedByteStream): {
   body: unknown;
   headers: Record<string, string>;
   duplex?: 'half';

@@ -43,6 +43,12 @@ export const attachmentRecord = z.object({
 export type AttachmentRecord = z.infer<typeof attachmentRecord>;
 
 /**
+ * A record without what only its bytes can say (#2498): an upload judges these fields before it
+ * writes a byte, and a streamed body's `size` and `sha256` are known only once it has been read.
+ */
+export const attachmentRecordFields = attachmentRecord.omit({ size: true, sha256: true });
+
+/**
  * The spine events attachment mutations emit (#473) — kernel-emitted, fat payload (the
  * full `attachmentRecord`), so a consumer (a timeline projection, attachment GC) never
  * needs a cross-module read. `entity` on the envelope is the OWNING entity, so timelines

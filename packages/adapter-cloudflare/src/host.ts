@@ -50,6 +50,7 @@ import {
   sweepRunsPayload,
   modelUsageEntry,
   attachmentRecord,
+  attachmentRecordFields,
   type AttachmentRecord,
   type UploadLinkView,
   type BlobStoreHandle,
@@ -291,6 +292,7 @@ import {
   type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
+  putAttachmentBytes,
   entitlementDenial,
   requiredEntitlementFor,
   type OperationEntitlement,
@@ -554,7 +556,7 @@ import {
   liveWithinOf,
 } from './live-reads.js';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
-import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
+import { blobStoreBucketName, r2TenantBlobStore, workerdSha256, type R2BlobStores } from './r2.js';
 import type {
   AccessLogRow,
   AuditLogQuery,
@@ -4924,20 +4926,22 @@ export class CloudflareScopeHost implements ScopeHost {
       upload: async (input) => {
         const id = ulid();
         const key = attachmentBlobKey(scopeId, id);
-        const record = attachmentRecord.parse({
+        const fields = {
           id,
           entity: input.entity,
           filename: input.filename,
           contentType: input.contentType,
-          size: input.body.byteLength,
-          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy,
           createdAt: new Date().toISOString(),
-        });
+        };
+        // Judged before a byte moves, so a record this surface would refuse lands no object.
+        attachmentRecordFields.parse(fields);
         // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
         // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
-        await store.put(key, input.body, { contentType: input.contentType });
+        // A streamed body is hashed and counted as R2 reads it (#2498).
+        const witness = await putAttachmentBytes(store, key, input.body, input.contentType, workerdSha256);
+        const record = attachmentRecord.parse({ ...fields, ...witness });
         return unwrapReply(await compensatingRefusal(store, key, () =>
           stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
         ));
