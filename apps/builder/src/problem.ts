@@ -104,7 +104,7 @@ export function turnFailure(err: unknown): string {
 }
 
 /** A problem on the wire — the one place both runtimes take the media type from. */
-export function problemWire(problem: Problem): {
+function problemWire(problem: Problem): {
 	status: number;
 	headers: Record<string, string>;
 	body: string;
