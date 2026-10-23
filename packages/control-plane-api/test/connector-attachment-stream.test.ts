@@ -37,9 +37,20 @@ function expectedSha256(chunks: number): string {
   return hash.digest('hex');
 }
 
-/** A body made one chunk at a time, on demand, counting what it has handed out. */
+/**
+ * How far a body's producer has got ahead of its consumer. The producer measures it each time it
+ * is asked for a chunk, so a hop that drains the producer before the consumer reads (a buffer)
+ * shows as a lead of the whole body, however the bytes are later handed on.
+ */
+interface Flow {
+  produced: number;
+  consumed: number;
+  maxLead: number;
+}
+
+/** A body made one chunk at a time, on demand, measuring its lead over `flow.consumed`. */
 function producer(chunks: number) {
-  const state = { produced: 0 };
+  const state: Flow = { produced: 0, consumed: 0, maxLead: 0 };
   let i = 0;
   const stream = new ReadableStream<Uint8Array>(
     {
@@ -50,6 +61,7 @@ function producer(chunks: number) {
         }
         const chunk = chunkOf(i++);
         state.produced += chunk.byteLength;
+        state.maxLead = Math.max(state.maxLead, state.produced - state.consumed);
         controller.enqueue(chunk);
       },
     },
@@ -68,14 +80,13 @@ interface Landed {
   filename: string;
 }
 
-function world(produced: { produced: number }, overrides: Partial<VerticalScopeHost> = {}) {
+function world(flow: Flow, overrides: Partial<VerticalScopeHost> = {}) {
   const landed: Landed[] = [];
   const host = {
     connectorAttachmentUploadLocal: async (...args: unknown[]) => {
       const upload = args[3] as { filename: string; body: ByteBody };
       const hash = createHash('sha256');
       let size = 0;
-      let maxLead = 0;
       if (isSizedByteStream(upload.body)) {
         const reader = upload.body.stream.getReader();
         for (;;) {
@@ -83,8 +94,8 @@ function world(produced: { produced: number }, overrides: Partial<VerticalScopeH
           if (done) break;
           if (!value) continue;
           size += value.byteLength;
+          flow.consumed = size;
           hash.update(value);
-          maxLead = Math.max(maxLead, produced.produced - size);
         }
       } else {
         size = upload.body.byteLength;
@@ -95,7 +106,7 @@ function world(produced: { produced: number }, overrides: Partial<VerticalScopeH
         declared: isSizedByteStream(upload.body) ? upload.body.length : upload.body.byteLength,
         size,
         sha256: hash.digest('hex'),
-        maxLead,
+        maxLead: flow.maxLead,
         filename: upload.filename,
       });
       return { id: 'att1', filename: upload.filename, size };
@@ -144,7 +155,7 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
   });
 
   it('the positive twin: a buffer still takes the multipart route and arrives as a buffer', async () => {
-    const { client, landed } = world({ produced: 0 });
+    const { client, landed } = world(producer(0).state);
     const bytes = new TextEncoder().encode('the sealed pdf bytes');
     await client.connectorUploadAttachment(upload(bytes));
     expect(landed[0]).toMatchObject({ streamed: false, size: bytes.byteLength });
@@ -180,7 +191,7 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
   });
 
   it("the route's own 404 (an unknown scope) stays a 404 refusal, not a re-push", async () => {
-    const { client } = world({ produced: 0 }, {
+    const { client } = world(producer(0).state, {
       connectorAttachmentUploadLocal: async () => {
         throw substratError('not_found', `unknown scope ${s}`);
       },
@@ -195,7 +206,7 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
   });
 
   it('a stream route call without the platform secret reaches no host', async () => {
-    const { landed } = world({ produced: 0 });
+    const { landed } = world(producer(0).state);
     const app = new Hono<{ Bindings: Env }>();
     mountPlatformSurface<Env>(app, {
       platformSecret: (env) => env.PLATFORM_SECRET,
