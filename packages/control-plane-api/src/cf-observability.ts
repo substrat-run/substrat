@@ -498,6 +498,23 @@ function withoutOutputFields(e: Record<string, unknown>): Record<string, unknown
 }
 
 /**
+ * The events of a telemetry `events` answer, as every reader in this module receives them.
+ *
+ * The list is unwrapped: the view has nested it one level deeper across API revisions, so
+ * both shapes are accepted rather than pinning whichever was current at writing. And the
+ * platform's wire-signing line (`substrat: 'wire'`, RFC wire-signing §8) is left out, here
+ * and only here, so no reader can return one: it is the platform's counter, it carries a
+ * refusal's reason, and it shares a request's id, which is how a tenant's view finds the
+ * lines it shows. No reader today needs it; one that does (the readiness report, RFC §10
+ * follow-on 4) is to read it through a query of its own that opts in by name.
+ */
+function telemetryEvents(result: { events?: { events?: unknown[] } | unknown[] } | undefined): Array<Record<string, unknown>> {
+  const outer = result?.events;
+  const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
+  return events.filter((e) => ((e['source'] ?? {}) as Record<string, unknown>)['substrat'] !== 'wire');
+}
+
+/**
  * One backend event → the seam's neutral `RecentLogEvent`.
  *
  * Shared by the service-grain and tenant-grain readers so a field learned in one is not
@@ -1695,19 +1712,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       }),
     );
 
-    // Merge, de-duplicate, drop the router's own access log and the platform's wire-signing
-    // counter, then apply the caller's level/search filters HERE rather than in phase one — a
-    // filter pushed into phase one would have hidden the stamped line whose request id is the
-    // only way to reach the line the caller is actually looking for.
+    // Merge, de-duplicate, drop the router's own access log, then apply the caller's
+    // level/search filters HERE rather than in phase one — a filter pushed into phase one
+    // would have hidden the stamped line whose request id is the only way to reach the
+    // line the caller is actually looking for.
     const byId = new Map<string, Record<string, unknown>>();
     // A `ctx.log` line can arrive twice — directly, and as a sibling of its invocation —
     // and the event id is what folds the two into one row.
     for (const e of [...stamped, ...sibling.flat(), ...(await moduleLines)]) {
       const source = (e['source'] ?? {}) as Record<string, unknown>;
       if (source['router'] === 'request') continue;
-      // RFC wire-signing §8: the entry's verdict on a request, with its reason, shares the
-      // request's id; it is the platform's counter, never a line of the tenant's.
-      if (source['substrat'] === 'wire') continue;
       const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
       const id = typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e);
       byId.set(id, e);
@@ -1838,8 +1852,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       result?: { events?: { events?: unknown[] } | unknown[] };
     };
     if (json.success === false) throw telemetryFailure(502, text);
-    const outer = json.result?.events;
-    return (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
+    return telemetryEvents(json.result);
   }
 
   /** Read a complete sampled span, or refuse it; a truncated page must never mean zero fields. */
@@ -1901,13 +1914,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
       throw new Error(`Cloudflare telemetry query failed: ${message}`);
     }
-    // The events view has nested the list one level deeper across API revisions —
-    // accept both rather than pinning to whichever shape was current at writing.
-    const outer = json.result?.events;
-    const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
-      Record<string, unknown>
-    >;
-    return events.map((e) => projectEvent(e));
+    return telemetryEvents(json.result).map((e) => projectEvent(e));
   }
 
   /**
@@ -1959,10 +1966,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
       throw new Error(`Cloudflare span query failed: ${message}`);
     }
-    const outer = json.result?.events;
-    const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
-      Record<string, unknown>
-    >;
+    const events = telemetryEvents(json.result);
     const spans = events.map((e) => {
       const source = (e['source'] ?? {}) as Record<string, unknown>;
       const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;

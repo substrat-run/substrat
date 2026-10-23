@@ -483,9 +483,14 @@ step 6, withdraws the credential.
   the stamp, so the invocation line's grammar and the code that writes it are unchanged, and a call
   to the internal surface, a refusal and a fault, which write no invocation line, are counted too.
   It names outcomes, ids and the legacy credential's state (`valid`, `invalid`, `absent`), never a
-  header, a credential, a body or an error's text, and none is written in `legacy-only`. The
-  tenant's log view, which admits every line sharing a request id with the tenant's own invocation
-  line, drops it: it is the platform's counter, so its reason reaches no log line a tenant reads.
+  header, a credential, a body or an error's text, and none is written in `legacy-only`. No
+  observability reader returns it: the one function every reader takes its log events through
+  (`telemetryEvents` in control-plane-api's Cloudflare reader) leaves it out, so neither the
+  tenant's view, which admits every line sharing a request id with the tenant's own invocation
+  line, nor the service-grain view a tenant reads for its own services, nor the request list
+  shows it. It is the platform's counter, so its reason reaches no log line a tenant reads. No
+  reader needs it today; the readiness report (follow-on 4) is to read it through a query of its
+  own that opts in by name.
 - **The signers count** envelopes signed and signing failures. A signer whose key will not import
   keeps sending the legacy headers and raises an alarm. Where every environment it signs for is
   still `dual`, that is degraded but serving. In a `signed-only` environment it is an outage that
