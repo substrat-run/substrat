@@ -80,10 +80,12 @@ type Handler = OperationHandler<never, unknown>;
 type Key = Parameters<Parameters<Handler>[0]['check']>[0];
 const P = (key: (typeof PERMISSIONS)[number]) => key as Key;
 
-const adder = (table: string): Handler =>
+// The statements are written out per table, never built from a name: a writer whose target is
+// computed is one `lint:attachment-writers` cannot see into.
+const adder = (insert: string): Handler =>
   (async (ctx, i: { id: string; name: string }) => {
     assertAllowed(await ctx.check(P('purgetwo:write')));
-    ctx.sql.exec(`INSERT INTO ${table} (id, name) VALUES (?, ?)`, [i.id, i.name]);
+    ctx.sql.exec(insert, [i.id, i.name]);
     return { ok: true };
   }) as Handler;
 const trasher = (entityType: string): Handler =>
@@ -92,12 +94,12 @@ const trasher = (entityType: string): Handler =>
     await ctx.trash(ref);
     return { ok: true };
   }) as Handler;
-const purger = (entityType: string, table: string, key: (typeof PERMISSIONS)[number]): Handler =>
+const purger = (entityType: string, select: string, remove: string, key: (typeof PERMISSIONS)[number]): Handler =>
   (async (ctx, i: { rowId: string }) => {
     assertAllowed(await ctx.check(P(key), { entityType, entityId: i.rowId }));
-    const row = ctx.sql.query<{ name: string }>(`SELECT name FROM ${table} WHERE id = ?`, [i.rowId])[0];
+    const row = ctx.sql.query<{ name: string }>(select, [i.rowId])[0];
     if (!row) return { ok: false };
-    ctx.sql.exec(`DELETE FROM ${table} WHERE id = ?`, [i.rowId]);
+    ctx.sql.exec(remove, [i.rowId]);
     if (row.name !== QUIET_TWO_ROW) ctx.requestPlatform({ kind: PURGE_TWO_KIND, payload: { rowId: i.rowId } });
     return { ok: true };
   }) as Handler;
@@ -132,12 +134,22 @@ export const purgeTwoMod: ModuleRegistration = {
   ],
   ...testOperations(
     {
-      'purgetwo/add-a': adder('purgetwo_a'),
-      'purgetwo/add-b': adder('purgetwo_b'),
+      'purgetwo/add-a': adder('INSERT INTO purgetwo_a (id, name) VALUES (?, ?)'),
+      'purgetwo/add-b': adder('INSERT INTO purgetwo_b (id, name) VALUES (?, ?)'),
       'purgetwo/trash-a': trasher('pa'),
       'purgetwo/trash-b': trasher('pb'),
-      'purgetwo/purge-a': purger('pa', 'purgetwo_a', 'purgetwo:purge-a'),
-      'purgetwo/purge-b': purger('pb', 'purgetwo_b', 'purgetwo:purge-b'),
+      'purgetwo/purge-a': purger(
+        'pa',
+        'SELECT name FROM purgetwo_a WHERE id = ?',
+        'DELETE FROM purgetwo_a WHERE id = ?',
+        'purgetwo:purge-a',
+      ),
+      'purgetwo/purge-b': purger(
+        'pb',
+        'SELECT name FROM purgetwo_b WHERE id = ?',
+        'DELETE FROM purgetwo_b WHERE id = ?',
+        'purgetwo:purge-b',
+      ),
     },
     { inputs: operationInputsOf(purgeTwoOperations) },
   ),
