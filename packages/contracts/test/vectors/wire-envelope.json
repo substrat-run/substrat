@@ -280,9 +280,9 @@
       "reason": "malformed"
     },
     {
-      "name": "a scope-store envelope",
-      "header": "MQpjYWxsZXIKZlg1WWkzek5CcDAKc3Vic3RyYXQtc3RvcmUtZ3JhcGgtdmVydGljYWwKdGVuYW50L3ZlcnRpY2FsL3Njb3BlL2dyYXBoCnJlYWQKN2ZkZjg2NTJiNDI3ZjdkNThiOGIwYzE5N2RjOGQ4MDgzZGQ2MDY0NGI2NzYxZWZjNGQxYzNjODAwYjlmNjQyNgoxNzAwMDAwMDAwCkFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
-      "signature": "9HQF1WNplPco-byNA5Ip8ZsdHlcvuM1sjrL_Nnj0ITdDAyTm3AKjuEyCyRSbzfY09_4i1m-tUPp5rSLqEyPKBw",
+      "name": "a scope-store envelope, signed by the router's wire key under its own kid",
+      "header": "MQpjYWxsZXIKSWY0eDM2RlVvbUUKdG9kbwp0ZW5hbnQvdG9kby9zY29wZS9ncmFwaApyZWFkCmQwOWVjMWQ3NDFhZDlhYTgzNzY1YTE5YWU2ZmE0YjM3MzdiMDAxM2FmZGFjNDczNjU1ZjA1MWRmM2ViNDJiNWYKMTcwMDAwMDAwMApBQUFBQUFBQUFBQUFBQUFBQUFBQUFB",
+      "signature": "Ow1owxt8pUDZewUSZKAcDzVG6do9jL87tTwlF-laOl2tdnZm2UdbKgqcy6yYjS8shpVPiWCMizNgJxdrmZj8Aw",
       "expected": {
         "iss": "router",
         "kind": "route",
@@ -341,19 +341,23 @@
   "invalidKeyLists": [
     {
       "name": "a small-order point (the identity)",
+      "reason": "small-order",
       "router": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     },
     {
       "name": "a non-canonical spelling of a listed key",
+      "reason": "non-canonical",
       "router": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURp"
     },
     {
       "name": "one key listed for both issuers",
+      "reason": "both-issuers",
       "router": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
       "platform": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw,11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
     },
     {
       "name": "the same key twice",
+      "reason": "duplicate",
       "router": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo,11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
     }
   ]

@@ -58,7 +58,12 @@ const fixture = JSON.parse(readFileSync(new URL('./vectors/wire-envelope.json', 
     readonly now: number;
     readonly reason: WireRefusalReason;
   }[];
-  readonly invalidKeyLists: readonly { readonly name: string; readonly router?: string; readonly platform?: string }[];
+  readonly invalidKeyLists: readonly {
+    readonly name: string;
+    readonly reason: 'small-order' | 'non-canonical' | 'both-issuers' | 'duplicate';
+    readonly router?: string;
+    readonly platform?: string;
+  }[];
 };
 const storeVector = JSON.parse(readFileSync(new URL('./vectors/scope-store-envelope.json', import.meta.url), 'utf8')) as {
   readonly canonical: string;
@@ -89,8 +94,10 @@ interface Check {
   readonly expected?: Partial<WireExpectation> & { readonly body?: WireBytes };
   readonly now?: number;
   readonly keys?: WireVerificationKeys;
-  /** A call's replay policy, as a cache; the vector's own expectation says `'none'`. */
+  /** A call's replay policy, as a cache (its scope pinned); the vector's own expectation says `'none'`. */
   readonly nonces?: WireNonceCache;
+  /** When the nonce is claimed, after the body is read. Defaults to `now`. */
+  readonly claimAt?: number;
 }
 
 /** Verify a vector (or what replaces part of it), collecting the reasons `onRefusal` hears. */
@@ -100,8 +107,13 @@ async function check(input: Check = {}) {
   const verdict = await verifyWireEnvelope({
     headers: headersOf(input.header === undefined ? vector.header : input.header, input.signature === undefined ? vector.signature : input.signature),
     keys: input.keys ?? (await keysOf()),
-    expected: { ...expectationOf(vector), ...(input.nonces ? { replay: input.nonces } : {}), ...input.expected } as WireExpectation,
+    expected: {
+      ...expectationOf(vector),
+      ...(input.nonces ? { replay: input.nonces, scopeId: vector.input.scopeId } : {}),
+      ...input.expected,
+    } as WireExpectation,
     nowSeconds: input.now ?? vector.input.iat,
+    clockSeconds: () => input.claimAt ?? input.now ?? vector.input.iat,
     onRefusal: (reason) => reasons.push(reason),
   });
   return { verdict, reasons };
@@ -206,9 +218,15 @@ describe('wire envelope: the shared vectors', () => {
     const malleable = fixture.invalid.find((v) => v.name.startsWith('S + L'))!;
     const publicKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: fixture.keys.router.publicKey }, format: 'jwk' });
     expect(nodeVerify(null, Buffer.from(malleable.header, 'base64url'), publicKey, Buffer.from(malleable.signature, 'base64url'))).toBe(false);
-    for (const list of fixture.invalidKeyLists) {
-      await expect(wireVerificationKeys(list), list.name).rejects.toThrow();
+    const message = { 'small-order': /small-order/, 'non-canonical': /canonical/, 'both-issuers': /both issuers/, duplicate: /twice/ };
+    expect(new Set(fixture.invalidKeyLists.map((l) => l.reason))).toEqual(new Set(Object.keys(message)));
+    for (const { name, reason, ...list } of fixture.invalidKeyLists) {
+      await expect(wireVerificationKeys(list), name).rejects.toThrow(message[reason]);
     }
+    // The store-format negative is signed by the router's wire key under its listed kid, so only the
+    // protocol is wrong with it: domain separation is what refuses it.
+    const store = fixture.invalid.find((v) => v.name.startsWith('a scope-store envelope'))!;
+    expect(parseScopeStoreEnvelope(Buffer.from(store.header, 'base64url').toString('utf8'))?.kid).toBe(fixture.keys.router.kid);
   });
 
   it('carries what the router asserted on a route, and nulls what a call does not name', async () => {
@@ -352,6 +370,8 @@ describe('wire envelope: what the signature binds', () => {
     expect(await reason(await as({ body: '' }, CALL))).toBe('body');
     // An untyped caller that passes no body is refused, even for a call whose signed body is empty.
     expect(await reason({ vector: UNSCOPED, expected: { body: undefined } })).toBe('body');
+    // Nor is the null of a body read that failed read as an empty body.
+    expect(await reason({ vector: UNSCOPED, expected: { body: null as unknown as string } })).toBe('body');
     // A call's body as bytes binds the same as the same text.
     expect((await check({ vector: CALL, expected: { body: new TextEncoder().encode(CALL.input.body as string) } })).verdict).toMatchObject({ ok: true });
     // Pinned tenant and scope are compared; unpinned they are reported, not judged.
@@ -365,6 +385,9 @@ describe('wire envelope: what the signature binds', () => {
     expect(wireRequestBinding({ method: 'patch', url: 'https://todo.example/a/b?c=1&d=%20#frag' })).toEqual({ method: 'PATCH', target: '/a/b?c=1&d=%20' });
     expect(wireRequestBinding({ method: 'GET', url: 'https://todo.example/a?' })).toEqual({ method: 'GET', target: '/a' });
     expect(wireRequestBinding({ method: 'GET', url: 'https://todo.example' })).toEqual({ method: 'GET', target: '/' });
+    // Any HTTP method token signs and verifies, not only letters.
+    const search = await signed(ROUTE, { method: 'M-SEARCH' });
+    expect((await check({ header: search.header, signature: search.signature, expected: { method: 'M-SEARCH' } })).verdict).toMatchObject({ ok: true });
     // End to end: the signer binds the request it sends, the verifier the request it receives.
     const sent = new Request('https://router.example/api/lists?page=2', { method: 'GET' });
     const issued = await signed(ROUTE, wireRequestBinding(sent));
@@ -457,6 +480,11 @@ describe('wire envelope: who signs', () => {
     const router = fixture.keys.router.publicKey;
     const built = await keysOf();
     expect(Object.isFrozen(built)).toBe(true);
+    // The returned maps are for reading: adding the router's key to the platform's map afterwards does
+    // not let the router's key sign as the platform.
+    (built.platform as Map<string, string>).set(fixture.keys.router.kid, fixture.keys.router.publicKey);
+    const asPlatform = await signed(CALL, {}, 'router');
+    expect(await reason({ vector: CALL, header: asPlatform.header, signature: asPlatform.signature, keys: built })).toBe('kid');
     // Any other key set is the deployment's fault, not the caller's: a throw, before any header is read,
     // that no refusal counter hears.
     for (const keys of [{ router: new Map(built.router), platform: new Map(built.platform) }, { ...built }]) {
@@ -551,6 +579,8 @@ describe('wire envelope: malformed input', () => {
       [CALL, 8, 'todo'], // the platform names no vertical
       [ROUTE, 9, 'get'],
       [ROUTE, 9, 'A'.repeat(17)],
+      [ROUTE, 9, 'GET POST'], // a token holds no space
+      [ROUTE, 9, 'GET/1'], // nor a separator
       [ROUTE, 10, 'A'.repeat(64)],
       [ROUTE, 10, ''],
       [ROUTE, 11, CALL.canonical.split('\n')[11]!], // a route binds no body
@@ -668,6 +698,43 @@ describe('wire envelope: replay', () => {
       }
       expect(heard).toEqual([]);
     }
+  });
+
+  it('a replay claimed after `until` is refused, even by a cache that has rightly forgotten the nonce', async () => {
+    // A cache that keeps its contract: it forgets a nonce once its own clock passes `until`.
+    let cacheNow = CALL.input.iat;
+    const spent = new Map<string, number>();
+    const pruning: WireNonceCache = {
+      claim(nonce, until) {
+        for (const [n, u] of spent) if (cacheNow > u) spent.delete(n);
+        if (cacheNow > until || spent.has(nonce)) return false;
+        spent.set(nonce, until);
+        return true;
+      },
+    };
+    const until = CALL.input.exp + WIRE_CLOCK_SKEW_SECONDS;
+    expect((await check({ vector: CALL, nonces: pruning })).verdict).toMatchObject({ ok: true });
+    // The replay arrives inside the window (exp + 28) but its body is slow: claimed at exp + 100.
+    cacheNow = CALL.input.exp + 100;
+    expect(await reason({ vector: CALL, nonces: pruning, now: CALL.input.exp + 28, claimAt: CALL.input.exp + 100 })).toBe('replay');
+    // The verifier refuses it before asking, so the outcome does not depend on the cache's clock.
+    const asked: number[] = [];
+    const forgetful: WireNonceCache = { claim: (_n, u) => (asked.push(u), true) };
+    expect(await reason({ vector: CALL, nonces: forgetful, now: CALL.input.exp + 28, claimAt: until + 1 })).toBe('replay');
+    expect(asked).toEqual([]);
+    // The twin: a claim made at `until` itself is still asked, and accepted once.
+    expect((await check({ vector: CALL, nonces: forgetful, now: CALL.input.exp + 28, claimAt: until })).verdict).toMatchObject({ ok: true });
+    expect(asked).toEqual([until]);
+  });
+
+  it('a call that keeps nonces pins its scope, or fails closed as the deployment\'s fault', async () => {
+    const { cache, claims } = memoryNonces();
+    await expect(
+      verifyWireEnvelope({ headers: headersOf(CALL.header, CALL.signature), keys: await keysOf(), expected: { ...expectationOf(CALL), replay: cache } as WireExpectation, nowSeconds: CALL.input.iat, clockSeconds: () => CALL.input.iat }),
+    ).rejects.toThrow(/pins the scope/);
+    expect(claims).toEqual([]);
+    // An unscoped call cannot keep nonces: it is refused for the scope the endpoint pins.
+    expect(await reason({ vector: UNSCOPED, nonces: cache, expected: { scopeId: ROUTE.input.scopeId! } })).toBe('scope');
   });
 
   it('only a claim of exactly true accepts: 1, "false", "true", undefined, an object and false all refuse', async () => {

@@ -38,8 +38,9 @@
  *
  * Every refusal of a caller is the same value, {@link WIRE_REFUSED}: a caller cannot tell a wrong
  * audience from a bad signature, and neither can whoever it answers. The reason goes to
- * `onRefusal`, for metrics only. A fault of the deployment's own (a key set it built some other
- * way, a nonce cache that cannot answer) throws instead.
+ * `onRefusal`, for metrics only. A fault of the deployment's own throws instead: a key set it
+ * built some other way, a call expectation with no replay policy (or a cache with no pinned
+ * scope), and a nonce cache that cannot answer.
  *
  * Imports nothing but its sibling subpath `scope-store-envelope.ts`, which imports nothing, so
  * an entry bundle that imports this subpath pulls in no schema and no zod.
@@ -129,7 +130,8 @@ export interface WireClaims {
 const LINES = 15;
 /** The ULID grammar the router asserts and vertical-host's `ROUTED_ID` reads. */
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
-const METHOD = /^[A-Z]{1,16}$/;
+/** An HTTP method token (RFC 9110 `tchar`) with its letters upper-cased, as `wireRequestBinding` gives it. */
+const METHOD = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 // At most 15 digits, no sign and no leading zero: the text `String(n)` gives for an integer below 10^15.
 const SECONDS = /^(0|[1-9]\d{0,14})$/;
@@ -374,7 +376,12 @@ export interface WireVerificationKeys {
   readonly platform: ReadonlyMap<string, string>;
 }
 
-const PREPARED = new WeakSet<WireVerificationKeys>();
+/**
+ * The verifier's own copy of each key set it was handed, by the object returned. The returned maps
+ * are for reading; a caller that mutates one (`keys.platform.set(…)`) changes nothing the verifier
+ * uses, so the both-issuers refusal cannot be undone after the fact.
+ */
+const PREPARED = new WeakMap<WireVerificationKeys, { readonly router: ReadonlyMap<string, string>; readonly platform: ReadonlyMap<string, string> }>();
 
 /**
  * Each issuer's public keys, from the configured lists: raw Ed25519 keys, base64url, separated
@@ -389,8 +396,9 @@ export async function wireVerificationKeys(config: { readonly router?: string; r
   if (router.some((key) => platform.includes(key))) throw new Error('a wire public key is listed for both issuers');
   // The list parser refused a key listed twice, and canonical spelling makes equal text equal bytes.
   const byKid = async (keys: readonly string[]) => new Map(await Promise.all(keys.map(async (key) => [await scopeStoreKeyId(key), key] as const)));
-  const keys: WireVerificationKeys = Object.freeze({ router: await byKid(router), platform: await byKid(platform) });
-  PREPARED.add(keys);
+  const own = Object.freeze({ router: await byKid(router), platform: await byKid(platform) });
+  const keys: WireVerificationKeys = Object.freeze({ router: new Map(own.router), platform: new Map(own.platform) });
+  PREPARED.set(keys, own);
   return keys;
 }
 
@@ -403,8 +411,11 @@ export interface WireNonceCache {
   /**
    * Record `nonce` as spent until `until` (Unix seconds) and answer whether it was unspent. It
    * answers `true` at most once per nonce while recorded, concurrent claims included, and may
-   * forget a nonce after `until`. Only `true` itself is acceptance: any other answer refuses. A
-   * cache that cannot answer throws, and the verifier never reads a throw as acceptance.
+   * forget a nonce after `until`, and a claim made after `until` by its own clock answers `false`:
+   * that is what makes forgetting safe. The verifier also refuses, without asking, a claim it would
+   * make after `until` by its own clock (a slow body). Only `true` itself is acceptance: any other
+   * answer refuses. A cache that cannot answer throws, and the verifier never reads a throw as
+   * acceptance. The entry bounds each claim in time and treats a timeout as that throw.
    */
   claim(nonce: string, until: number): boolean | Promise<boolean>;
 }
@@ -484,14 +495,21 @@ export type WireVerdict = WireAccepted | WireRefused;
  * Returns {@link WIRE_REFUSED} for every failure of the caller's. `onRefusal` hears the reason; a
  * throw or a rejection from it is ignored. The deployment's own faults throw instead, so no counter
  * files them under a caller, and they are checked before anything else: a key set
- * {@link wireVerificationKeys} did not build, and a call expectation whose replay policy is neither
- * `'none'` nor a cache. A throw from the cache propagates too.
+ * {@link wireVerificationKeys} did not build, a call expectation whose replay policy is neither
+ * `'none'` nor a cache, and a cache with no pinned `scopeId` (a cache lives in one scope's object,
+ * so the endpoint pins the scope it claims through). A throw from the cache propagates too.
  */
 export async function verifyWireEnvelope(input: {
   readonly headers: { get(name: string): string | null };
   readonly keys: WireVerificationKeys;
   readonly expected: WireExpectation;
+  /** When the request arrived: what the envelope's window is judged against. */
   readonly nowSeconds: number;
+  /**
+   * The time now, read again just before a nonce is claimed, after the body has been read. A claim
+   * that would come after the cache may have forgotten the nonce is refused. Defaults to the wall clock.
+   */
+  readonly clockSeconds?: () => number;
   /** Whatever it returns is ignored; a promise it returns is awaited by nobody and its rejection caught. */
   readonly onRefusal?: (reason: WireRefusalReason) => unknown;
 }): Promise<WireVerdict> {
@@ -505,10 +523,14 @@ export async function verifyWireEnvelope(input: {
     return WIRE_REFUSED;
   };
   const { expected, keys, nowSeconds } = input;
-  if (!PREPARED.has(keys)) throw new TypeError('verifyWireEnvelope takes the key set wireVerificationKeys built');
+  const own = PREPARED.get(keys);
+  if (!own) throw new TypeError('verifyWireEnvelope takes the key set wireVerificationKeys built');
   const replay = expected.kind === 'call' ? expected.replay : 'none';
   if (replay !== 'none' && typeof (replay as Partial<WireNonceCache> | undefined)?.claim !== 'function') {
     throw new TypeError("a call's expectation states its replay policy: 'none' or a nonce cache");
+  }
+  if (replay !== 'none' && expected.scopeId === undefined) {
+    throw new TypeError('a call that keeps nonces pins the scope whose object holds them');
   }
   const header = input.headers.get(WIRE_ENVELOPE_HEADER);
   const signature = input.headers.get(WIRE_SIGNATURE_HEADER);
@@ -526,7 +548,7 @@ export async function verifyWireEnvelope(input: {
   if (!claims) return refuse('malformed');
   if (claims.iss !== expected.iss) return refuse('issuer');
   if (claims.kind !== expected.kind) return refuse('kind');
-  const publicKey = keys[claims.iss].get(claims.kid);
+  const publicKey = own[claims.iss].get(claims.kid);
   if (!publicKey) return refuse('kid');
   if (!(await verifyScopeStoreEnvelope(publicKey, canonical, signature))) return refuse('signature');
   if (claims.aud !== expected.aud) return refuse('audience');
@@ -536,12 +558,19 @@ export async function verifyWireEnvelope(input: {
   if (!(nowSeconds <= claims.exp + WIRE_CLOCK_SKEW_SECONDS)) return refuse('expired');
   if (claims.method !== expected.method) return refuse('method');
   if (claims.targetDigest !== (await wireDigest(expected.target))) return refuse('target');
-  // The type requires a call's body; an untyped caller that leaves it out is refused, not trusted.
-  if (expected.kind === 'call' && (expected.body === undefined || claims.bodyDigest !== (await wireDigest(expected.body)))) {
+  // The type requires a call's body; an untyped caller that leaves it out, or hands over the null of
+  // a body read that failed, is refused, never read as an empty body.
+  if (expected.kind === 'call' && (expected.body == null || claims.bodyDigest !== (await wireDigest(expected.body)))) {
     return refuse('body');
   }
   if (expected.tenantId !== undefined && claims.tenantId !== expected.tenantId) return refuse('scope');
   if (expected.scopeId !== undefined && claims.scopeId !== expected.scopeId) return refuse('scope');
-  if (replay !== 'none' && (await replay.claim(claims.nonce, claims.exp + WIRE_CLOCK_SKEW_SECONDS)) !== true) return refuse('replay');
+  if (replay !== 'none') {
+    const until = claims.exp + WIRE_CLOCK_SKEW_SECONDS;
+    const claimedAt = (input.clockSeconds ?? (() => Date.now() / 1000))();
+    // A cache may forget the nonce after `until`, so a claim made later could not see a replay.
+    if (!(claimedAt <= until)) return refuse('replay');
+    if ((await replay.claim(claims.nonce, until)) !== true) return refuse('replay');
+  }
   return { ok: true, claims };
 }
