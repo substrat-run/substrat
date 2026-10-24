@@ -37,6 +37,8 @@ describe('the drain files an intent failure as a pair (#2554)', () => {
     kind,
     payload: {},
     requestedBy: principalId.parse(ulid()),
+    impersonation: null,
+    failure: null,
     status: 'pending',
     attempts,
     lastError: null,
