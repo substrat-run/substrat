@@ -569,6 +569,8 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     // Staff read both halves, the store's own text included.
     expect(said.detail).toContain('reconcile refused: the store is not bound');
     expect(said.detail).toContain('something private');
+    // Filed as a pair here, under the reference the answer carries.
+    expect(said.reference).toMatch(/^[0-9A-Z]{26}$/);
     const rows = await vi.waitFor(async () => {
       const r = await host.admin.listOpsFailures(staff, { reference: said.reference } as never);
       expect(r.length).toBe(2);
