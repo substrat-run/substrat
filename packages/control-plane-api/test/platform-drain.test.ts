@@ -816,6 +816,31 @@ describe('provisionSiblingHandler — provisions a sibling of the drained scope'
     expect(captured?.owner).toBe(owner);
     expect(captured?.entitlements?.find((e) => e.entitlementKey === 'demo-vert')).toMatchObject({ quota: 5 });
   });
+
+  it.each([
+    ['a whitespace-only name, refused by the payload', { slug: 'courts', name: '   ' }, /^provision-sibling payload is malformed: name: /],
+    ['a slug provisioning does not admit, refused by the provision', { slug: 'Not A Slug', name: 'Courts' }, /./],
+  ])('settles %s failed at once, as validation_failed, creating nothing', async (_case, fields, error) => {
+    const req = intent('provision-sibling', { payload: { ...fields, owner } });
+    const { client, settled } = fakeTransport([req]);
+    const before = (await host.admin.listScopes(staff, { tenantId: t })).length;
+
+    const report = await drainScopePlatformRequests(client, { tenantId: t, scopeId: parent, vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE }, {
+      'provision-sibling': provisionSiblingHandler({ host, actor: staff, resolveVerticalForScope: async () => fakeVertical }),
+    });
+
+    // Terminal on the first pass: not left pending to be retried every pass up to the ceiling.
+    expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+    expect(settled).toEqual([
+      expect.objectContaining({
+        id: req.id,
+        status: 'failed',
+        lastError: expect.stringMatching(error),
+        failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      }),
+    ]);
+    expect(await host.admin.listScopes(staff, { tenantId: t })).toHaveLength(before);
+  });
 });
 
 describe('archiveScopeHandler — archives a sibling named in the intent', () => {
@@ -948,31 +973,39 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(configured?.entries).toEqual([{ key: 'ISSUER_DOMAIN', value: 'auth.customer-1.example' }]);
   });
 
-  it.each(['Crm', '', 'a/b/c'])(
-    'settles a payload whose vertical is %j failed at once, as validation_failed, creating nothing',
-    async (vertical) => {
-      const newTenant = ulid();
-      const base = payloadFor(newTenant, ulid());
-      const req = intent('provision-tenant', { payload: { ...base, instance: { ...base.instance, vertical } } });
-      const { client, settled } = fakeTransport([req]);
+  type Payload = ReturnType<typeof payloadFor>;
+  it.each([
+    ['vertical Crm', (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: 'Crm' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
+    ["vertical ''", (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: '' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
+    ['vertical a/b/c', (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: 'a/b/c' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
+    ['a whitespace-only instance name', (p: Payload) => ({ ...p, instance: { ...p.instance, name: '   ' } }), /^provision-tenant payload is malformed: instance\.name: /],
+    // These parse as a payload; the writes below them would refuse them, so the check before
+    // any write does.
+    ['an instance slug provisioning does not admit', (p: Payload) => ({ ...p, instance: { ...p.instance, slug: 'Main Site' } }), /./],
+    ['a tenant slug createTenant does not admit', (p: Payload) => ({ ...p, tenant: { ...p.tenant, slug: 'Customer One' } }), /./],
+    ['a tenant id that is not one', (p: Payload) => ({ ...p, tenant: { ...p.tenant, id: 'not-a-tenant-id' } }), /./],
+  ])('settles a payload with %s failed at once, as validation_failed, creating and granting nothing', async (_case, change, error) => {
+    const newTenant = ulid();
+    const req = intent('provision-tenant', { payload: change(payloadFor(newTenant, ulid())) });
+    const { client, settled } = fakeTransport([req]);
 
-      const report = await drainScopePlatformRequests(client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, {
-        'provision-tenant': provisionTenantHandler(deps()),
-      });
+    const report = await drainScopePlatformRequests(client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, {
+      'provision-tenant': provisionTenantHandler(deps()),
+    });
 
-      // Terminal on the first pass: not left pending to be retried every pass up to the ceiling.
-      expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
-      expect(settled).toEqual([
-        expect.objectContaining({
-          id: req.id,
-          status: 'failed',
-          lastError: expect.stringMatching(/^provision-tenant payload is malformed: instance\.vertical: /),
-          failure: { origin: 'platform', code: 'validation_failed', permission: null },
-        }),
-      ]);
-      expect((await host.admin.listTenants(staff)).some((t) => t.id === newTenant)).toBe(false);
-    },
-  );
+    // Terminal on the first pass: not left pending to be retried every pass up to the ceiling.
+    expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+    expect(settled).toEqual([
+      expect.objectContaining({
+        id: req.id,
+        status: 'failed',
+        lastError: expect.stringMatching(error),
+        failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      }),
+    ]);
+    expect((await host.admin.listTenants(staff)).some((t) => t.id === newTenant)).toBe(false);
+    expect(await host.admin.listEntitlements(staff, tenantId.parse(newTenant))).toEqual([]);
+  });
 
   it('drains a payload whose vertical is a slug to done', async () => {
     const newTenant = ulid();

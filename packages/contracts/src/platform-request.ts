@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, platformRequestId, scopeId, verticalSlug } from './ids.js';
+import { instant, platformRequestId, scopeId, scopeText, verticalSlug } from './ids.js';
 import { actor, domainEvent } from './events.js';
 import { impersonationStamp } from './impersonation.js';
 import { errorCode } from './errors.js';
@@ -190,7 +190,7 @@ export const MAX_PENDING_PLATFORM_REQUESTS = 32;
  */
 export const provisionSiblingPayload = z.object({
   slug: z.string().min(1),
-  name: z.string().min(1),
+  name: scopeText,
   owner: z.string().min(1),
 });
 export type ProvisionSiblingPayload = z.infer<typeof provisionSiblingPayload>;
@@ -274,7 +274,7 @@ export const provisionTenantPayload = z.object({
     vertical: verticalSlug,
     scopeId: z.string().min(1),
     slug: z.string().min(1),
-    name: z.string().min(1),
+    name: scopeText,
     owner: z.string().min(1),
   }),
   /** SKUs to grant the new tenant + project into the scope (#310). */

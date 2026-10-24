@@ -129,6 +129,14 @@ export type PermissionKey = z.infer<typeof permissionKey>;
 export const slug = z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
 
 /**
+ * A scope's `kind` or `name` as provisioning takes it: any string with something other than
+ * whitespace in it. Not trimmed, so the value stored is the one sent. One schema for every place
+ * that accepts one (the kernel's `resolveScopeRecord`, `POST /scopes`, the provision-tenant and
+ * provision-sibling payloads), so a payload cannot pass a value the kernel then refuses.
+ */
+export const scopeText = z.string().refine((s) => s.trim().length > 0, { message: 'must not be empty or whitespace' });
+
+/**
  * A VERTICAL's registry id (builder-plane.md §2). A bare `slug`, optionally prefixed by
  * an owning tenant's slug: `<tenantSlug>/<name>`. The prefix makes a customer-chosen name
  * globally unique BY CONSTRUCTION — no claim race on the bare word — while a platform

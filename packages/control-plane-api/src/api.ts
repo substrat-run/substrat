@@ -86,6 +86,7 @@ import {
   roleKey as roleKeySchema,
   peerSwitch,
   verticalSlug,
+  scopeText,
   systemSwitch,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
@@ -848,13 +849,6 @@ function narrowToCaller<T extends { tenantId: string }>(
 // re-run"). Minting server-side would be friendlier and would silently turn a
 // retry into a second tenant. This surface is a transport; it does not invent
 // semantics on top of HostAdmin.
-
-/**
- * A `kind` or `name` as `resolveScopeRecord` takes it: absent means the default, and an empty or
- * whitespace-only one is refused rather than defaulted. Not trimmed, so the value stored is the
- * one sent, as in the kernel.
- */
-const scopeText = z.string().refine((s) => s.trim().length > 0, { message: 'must not be empty or whitespace' });
 
 const provisionScopeBody = z.object({
   tenantId: tenantIdSchema,

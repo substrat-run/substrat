@@ -1,4 +1,4 @@
-import { slug as slugSchema, substratError, verticalSlug } from '@substrat-run/contracts';
+import { scopeText, slug as slugSchema, substratError, verticalSlug } from '@substrat-run/contracts';
 import type { Jurisdiction, Scope, StorageShape } from '@substrat-run/contracts';
 import type { ProvisionScopeInput, ScopeListing } from './scope-host.js';
 
@@ -91,7 +91,7 @@ function failedFieldsOf(err: unknown): string[] {
 /** A `kind` or `name` as given, null when absent; an empty or whitespace-only one is refused. */
 function textOf(field: 'kind' | 'name', value: string | null | undefined): string | null {
   if (value === undefined || value === null) return null;
-  if (value.trim().length > 0) return value;
+  if (scopeText.safeParse(value).success) return value;
   return refuse(field, 'must not be empty or whitespace');
 }
 

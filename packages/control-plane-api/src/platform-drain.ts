@@ -3,9 +3,11 @@ import {
   isPrimaryScope,
   lifecycleRefusal,
   platformIntentFailureMessage,
+  resolveScopeRecord,
   ulid,
   type ConnectorHandler,
   type OpsFailureInput,
+  type ProvisionScopeInput,
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { isTerminalDispatchFailure } from './provider-error.js';
@@ -27,6 +29,9 @@ import {
   SWEEP_RUNS_KIND,
   isUndecodablePlatformRequest,
   platformRequestId,
+  createTenantInput,
+  errorCodeOf,
+  type z,
   type PlatformActorId,
   type PlatformRequest,
   type PlatformRequestFailure,
@@ -476,7 +481,9 @@ export async function provisionSiblingScope(
  */
 export function provisionSiblingHandler(deps: ProvisionSiblingDeps): PlatformRequestHandler {
   return async (ctx, request) => {
-    const payload = provisionSiblingPayload.parse(request.payload);
+    const parsed = provisionSiblingPayload.safeParse(request.payload);
+    if (!parsed.success) return malformedPayload('provision-sibling', parsed.error);
+    const payload = parsed.data;
     const prior = request.result;
     const scopeId =
       prior && typeof prior === 'object' && 'scopeId' in prior
@@ -496,8 +503,34 @@ export function provisionSiblingHandler(deps: ProvisionSiblingDeps): PlatformReq
         : { status: 'failed', result: { scopeId }, error: r.error };
     } catch (e) {
       if (e instanceof ControlPlaneError) return { status: 'pending', result: { scopeId }, error: e.message };
-      throw e;
+      // The sibling's own provision refusing its input (a slug or name it does not admit) is
+      // refused the same way on every pass: terminal, not retried to the attempt ceiling.
+      return inputRefusal(e, { scopeId });
     }
+  };
+}
+
+/** The attribution of a request refused for its own input: ours, and the input's to fix. */
+const INPUT_REFUSED = { origin: 'platform', code: 'validation_failed', permission: null } as const;
+
+/** A payload that does not parse, settled `failed` at once: it never will parse. */
+function malformedPayload(kind: string, error: z.ZodError): PlatformRequestOutcome {
+  const fields = error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+  return { status: 'failed', error: `${kind} payload is malformed: ${fields}`, failure: INPUT_REFUSED };
+}
+
+/**
+ * `e` as a terminal outcome when it refuses the request's own input (`validation_failed`, which a
+ * parse of it reads as too): the same input is refused on every pass, so retrying it only spends
+ * attempts. Anything else is rethrown, and the drain keeps the request pending as before.
+ */
+function inputRefusal(e: unknown, result?: Record<string, unknown>): PlatformRequestOutcome {
+  if (errorCodeOf(e) !== 'validation_failed') throw e;
+  return {
+    status: 'failed',
+    ...(result ? { result } : {}),
+    error: e instanceof Error ? e.message : String(e),
+    failure: INPUT_REFUSED,
   };
 }
 
@@ -760,15 +793,29 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     // Terminal, like the other refusals here: a payload that does not parse never will, and a
     // throw would leave it pending and retried every pass until the attempt ceiling.
     const parsed = provisionTenantPayload.safeParse(request.payload);
-    if (!parsed.success) {
-      const fields = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
-      return {
-        status: 'failed',
-        error: `provision-tenant payload is malformed: ${fields}`,
-        failure: { origin: 'platform', code: 'validation_failed', permission: null },
-      };
-    }
+    if (!parsed.success) return malformedPayload('provision-tenant', parsed.error);
     const payload = parsed.data;
+    // The whole input, checked BEFORE anything is written, by the same rules the writes below
+    // apply: an input they would refuse settles here and creates nothing, rather than leaving a
+    // tenant and its entitlements behind a scope that is never provisioned.
+    let tenantId: TenantId;
+    let scopeId: ScopeId;
+    let scopeInput: ProvisionScopeInput;
+    try {
+      tenantId = tenantIdSchema.parse(payload.tenant.id);
+      scopeId = scopeIdSchema.parse(payload.instance.scopeId);
+      createTenantInput.parse({ id: tenantId, slug: payload.tenant.slug, name: payload.tenant.name, provisionedByTenant: ctx.tenantId });
+      scopeInput = {
+        tenantId,
+        scopeId,
+        slug: payload.instance.slug,
+        name: payload.instance.name,
+        vertical: payload.instance.vertical,
+      };
+      resolveScopeRecord(scopeInput);
+    } catch (e) {
+      return inputRefusal(e);
+    }
     const admitted = await admitManager(
       deps,
       ctx,
@@ -778,8 +825,6 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     if ('refusal' in admitted) return admitted.refusal;
     const { host, actor } = deps;
     const admin = host.admin;
-    const tenantId = tenantIdSchema.parse(payload.tenant.id);
-    const scopeId = scopeIdSchema.parse(payload.instance.scopeId);
     try {
       await admin.createTenant(actor, {
         id: tenantId,
@@ -801,13 +846,12 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     for (const grant of payload.entitlements) {
       await admin.grantEntitlement(actor, tenantId, grant.key, { plan: grant.plan });
     }
-    await host.provisionScope(actor, {
-      tenantId,
-      scopeId,
-      slug: payload.instance.slug,
-      name: payload.instance.name,
-      vertical: payload.instance.vertical,
-    } as Parameters<ScopeHost['provisionScope']>[1]);
+    try {
+      await host.provisionScope(actor, scopeInput);
+    } catch (e) {
+      // Checked above, so a refusal here is the host's own: still the input's, still terminal.
+      return inputRefusal(e, { tenantId, scopeId });
+    }
     const created = await adoptServingForProvisioning(
       host,
       actor,
