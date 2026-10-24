@@ -1,9 +1,17 @@
 import type { DashboardClient, FindingEntry, FindingRuleEntry } from './api.generated';
+import { mockExplanations } from './explanations';
 
 /** The preview's inbox (DEV_MOCK): one finding in each tab, acted on in memory only. */
 export type FindingsClient = Pick<
   DashboardClient,
-  'listFindings' | 'setFindingStatus' | 'listFindingRules' | 'createFindingRule' | 'revokeFindingRule'
+  | 'listFindings'
+  | 'setFindingStatus'
+  | 'listFindingRules'
+  | 'createFindingRule'
+  | 'revokeFindingRule'
+  | 'explanationsStatus'
+  | 'getFindingExplanation'
+  | 'writeFindingExplanation'
 >;
 
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
@@ -41,7 +49,18 @@ export function mockFindingsClient(): FindingsClient {
   let rules: FindingRuleEntry[] = [
     { id: 'R1', tenantId: 'MOCKTEAM', kind: null, operation: 'helpdesk/get-ticket', code: 'not_found', subject: null, expiresAt: new Date(Date.now() + 5 * 86_400_000).toISOString(), reason: 'Crawler noise', createdBy: 'you', createdAt: ago(1000) },
   ];
+  const explanations = mockExplanations();
   return {
+    explanationsStatus: async () => explanations.get('status'),
+    getFindingExplanation: async ({ id }) => explanations.get(`finding:${id}`),
+    writeFindingExplanation: async ({ id }) => {
+      const f = entries.find((e) => e.id === id)!;
+      return explanations.write(
+        `finding:${id}`,
+        `${f.title} has happened ${f.count} times since it was first seen. The refusals come from the app's own code rather than the platform or a supplier${f.likelyCause ? `, and they began shortly after ${f.likelyCause.version} went live, which is the likely cause` : ''}.`,
+        `${f.count} failure records`,
+      );
+    },
     listFindings: async ({ status, limit = 100, cursor }) => {
       // Like the plane: keyset-paged. Filtered, `lastSeen` descending with `id` ascending on a tie, and a
       // cursor names the last row read by its sort key, so a row that moved tab between pages shifts nothing.

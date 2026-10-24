@@ -45,7 +45,7 @@ import {
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
-import { appEvent, appRow, installStep, memberRow } from './rows.js';
+import { appEvent, appRow, explanationProvenance, installStep, memberRow } from './rows.js';
 
 // The rows the module shares, declared where module code may import them (`rows.ts`); the
 // browser client's schemas are read off this file's exports, so they stay exported here.
@@ -124,6 +124,46 @@ export const findingRow = findingEntry.extend({
   codes: z.array(z.string()),
   evidence: orNull(findingEvidence, 'findings.evidence'),
   likelyCause: orNull(findingLikelyCause.extend({ kind: z.string() }), 'findings.likelyCause'),
+});
+
+/**
+ * What a page reads beside AI-written text (#1749): whether the deployment offers it at all, the
+ * newest text filed for the subject, and the day's budget. `current` is false when the facts the
+ * text was written from have moved since (a new occurrence, a moved count), and the page then
+ * shows it as written against older data, beside a rewrite. Nothing here calls a model; only
+ * the POST does, so a page load costs nothing.
+ *
+ * `reason` is why it is not offered: `off` (the deployment has not turned it on) or
+ * `not-configured` (turned on, and the model it names cannot run here).
+ */
+export const explanationView = z.object({
+  available: z.boolean(),
+  reason: z.string().nullable(),
+  /** Who runs the model and what is sent there: the disclosure shown beside the button. */
+  disclosure: z.object({ vendor: z.string(), location: z.string(), sent: z.string() }).nullable(),
+  explanation: z
+    .object({ text: z.string(), provenance: explanationProvenance, writtenAt: z.string(), current: z.boolean() })
+    .nullable(),
+  budget: z
+    .object({
+      person: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }),
+      team: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }),
+    })
+    .nullable(),
+});
+
+/**
+ * Which finding: its id, plus the status and kind the page last saw it under. The plane lists
+ * findings and does not get one, so these narrow the walk to the tab it is in; they are hints,
+ * and a finding that moved tab is still found.
+ */
+const findingExplanationInput = z.object({ id: z.string().min(1), status: z.string().max(32).optional(), kind: z.string().max(32).optional() });
+
+/** The process map a note is about: the app's scope, the lifecycle and the period, as the map reads them. */
+const processNoteInput = z.object({
+  scopeId: z.string().min(1),
+  entity: z.string().min(1).max(128),
+  period: z.enum(['24h', '7d', '30d']),
 });
 
 /** A suppress rule (contracts `findingRuleEntry`). Its `kind` and `code` are the plane's, as on a finding. */
@@ -1013,5 +1053,37 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ ruleId: z.string().min(1) }),
     output: findingRuleRow,
     http: { method: 'DELETE', path: '/findings/rules/{ruleId}' },
+  },
+
+  // -- AI-written text (#1749) ------------------------------------------------
+  'dashboard/explanations-status': {
+    summary: 'Whether this deployment writes AI text, and the caller’s budget for today',
+    input: z.object({}),
+    output: explanationView,
+    http: { method: 'GET', path: '/explanations' },
+  },
+  'dashboard/get-finding-explanation': {
+    summary: "The newest AI explanation of one of this team's findings, and today's budget",
+    input: findingExplanationInput,
+    output: explanationView,
+    http: { method: 'GET', path: '/findings/{id}/explanation' },
+  },
+  'dashboard/write-finding-explanation': {
+    summary: "Write an AI explanation of one of this team's findings from its evidence",
+    input: findingExplanationInput,
+    output: explanationView,
+    http: { method: 'POST', path: '/findings/{id}/explanation' },
+  },
+  'dashboard/get-process-note': {
+    summary: "The newest AI note under one app's process map, and today's budget",
+    input: processNoteInput,
+    output: explanationView,
+    http: { method: 'GET', path: '/apps/{scopeId}/processes/note' },
+  },
+  'dashboard/write-process-note': {
+    summary: "Write an AI note under one app's process map from its replayed counts",
+    input: processNoteInput,
+    output: explanationView,
+    http: { method: 'POST', path: '/apps/{scopeId}/processes/note' },
   },
 });

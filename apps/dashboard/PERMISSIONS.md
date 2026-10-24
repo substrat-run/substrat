@@ -68,8 +68,10 @@ shapes.
 | `dashboard/delete-app-env` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/delete-app-snapshot` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/delete-team` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/explanation-budget` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/export-app-data` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/get-app-auth` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/get-explanation` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/init-team` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
 | `dashboard/install-steps` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/invite-link` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
@@ -88,6 +90,7 @@ shapes.
 | `dashboard/record-install-step` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/remove-member` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
 | `dashboard/resend-invite` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/reserve-explanation` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/restore-app-data` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/restore-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
 | `dashboard/resume-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
@@ -95,6 +98,7 @@ shapes.
 | `dashboard/revoke-invite` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
 | `dashboard/set-app-auth` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/set-app-env` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/settle-explanation` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/snapshot-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/unbind-app-hostname` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/update-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |

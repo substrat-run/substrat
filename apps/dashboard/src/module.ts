@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { appEvent, appRow, installStep, memberRow } from './rows.js';
+import { appEvent, appRow, explanationProvenance, explanationRow, installStep, memberRow } from './rows.js';
 import {
   CURSOR_FIELD_SEPARATOR,
   defineOperations,
@@ -433,6 +433,35 @@ export const dashboardMigrations = [
       DROP TABLE dashboard_members;
       ALTER TABLE dashboard_members_0014 RENAME TO dashboard_members;
       CREATE INDEX dashboard_members_by_status ON dashboard_members (status);
+    `,
+  },
+  {
+    version: '0015-explanations',
+    sql: `
+      -- AI-written text (#1749): a finding's explanation and a process map's note, filed in the
+      -- team's own scope. A row is RESERVED before the model is called, so today's rows are the
+      -- day's budget whether the call then succeeds or not, and two requests cannot both pass a
+      -- read of the count and both pay: the reservation is the count. It is then settled 'filed'
+      -- (the text, the digest of the facts it was written from, the provenance the page renders)
+      -- or 'failed'. The usage columns are the model host's line for the call: the dashboard's
+      -- scopes have no platform-intent drain, so this row is where the platform's spend on them
+      -- is recorded, failed calls included.
+      CREATE TABLE dashboard_explanations (
+        id             TEXT PRIMARY KEY,
+        subject        TEXT NOT NULL,
+        status         TEXT NOT NULL CHECK (status IN ('reserved','filed','failed')),
+        digest         TEXT,
+        text           TEXT,
+        provenance     TEXT,
+        model          TEXT,
+        input_tokens   INTEGER,
+        output_tokens  INTEGER,
+        list_usd       TEXT,
+        written_by     TEXT NOT NULL,
+        written_at     TEXT NOT NULL
+      );
+      CREATE INDEX dashboard_explanations_by_subject ON dashboard_explanations (subject, status, written_at);
+      CREATE INDEX dashboard_explanations_by_written ON dashboard_explanations (written_at);
     `,
   },
 ];
@@ -1629,6 +1658,163 @@ const ok = z.object({ ok: z.literal(true) });
 /** A member the caller is to act on: their principal and the role they held. */
 const memberRef = z.object({ principal: z.string(), roleKey: z.string() });
 
+// ---------------------------------------------------------------------------
+// AI-written text (#1749)
+// ---------------------------------------------------------------------------
+
+/**
+ * The daily ceilings on AI-written text, per UTC day. The platform pays for the model call, so
+ * the bound is the platform's: a person can explain a morning's findings, and a team cannot turn
+ * the dashboard into a free model endpoint. `explain.ts` reads the same numbers.
+ */
+export const EXPLANATION_LIMITS = { perPersonPerDay: 20, perTeamPerDay: 100 } as const;
+
+/** How long a written text is kept (RFC assistant §16 Q5's proposed default). Pruned on write. */
+export const EXPLANATION_RETENTION_DAYS = 90;
+
+const explanationBudget = z.object({
+  person: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }),
+  team: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }),
+});
+export type ExplanationBudget = z.infer<typeof explanationBudget>;
+
+const explanationSubjectInput = z.object({ subject: z.string().min(1).max(512) });
+
+const settleExplanationInput = z.object({
+  id: z.string().min(1),
+  outcome: z.enum(['filed', 'failed']),
+  /** The model host's line, when the call answered; null when it never did. */
+  usage: z
+    .object({
+      model: z.string().min(1),
+      inputTokens: z.number().int().nonnegative(),
+      outputTokens: z.number().int().nonnegative(),
+      listUsd: z.string().nullable(),
+    })
+    .nullable(),
+  /** What a `filed` settlement files. Required for it, refused for `failed`. */
+  filed: z
+    .object({
+      digest: z.string().regex(/^[0-9a-f]{64}$/),
+      text: z.string().min(1).max(2000),
+      provenance: explanationProvenance,
+    })
+    .nullable(),
+});
+
+const getExplanationOutput = z.object({ explanation: explanationRow.nullable() });
+
+interface ExplanationDbRow {
+  id: string;
+  subject: string;
+  digest: string;
+  text: string;
+  provenance: string;
+  written_by: string;
+  written_at: string;
+}
+
+/** Midnight UTC of the invocation's day, in the ISO text every row is stamped with. */
+const dayStartOf = (now: string) => `${now.slice(0, 10)}T00:00:00.000Z`;
+
+/** Today's rows, reserved, filed and failed alike: each is a model call the platform paid for or may yet. */
+function budgetIn(ctx: OperationContext): ExplanationBudget {
+  const since = dayStartOf(ctx.now());
+  const count = (sql: string, params: SqlValue[]) => ctx.sql.query<{ n: number }>(sql, params)[0]?.n ?? 0;
+  return {
+    person: {
+      used: count('SELECT COUNT(*) AS n FROM dashboard_explanations WHERE written_at >= ? AND written_by = ?', [since, String(ctx.principal)]),
+      limit: EXPLANATION_LIMITS.perPersonPerDay,
+    },
+    team: {
+      used: count('SELECT COUNT(*) AS n FROM dashboard_explanations WHERE written_at >= ?', [since]),
+      limit: EXPLANATION_LIMITS.perTeamPerDay,
+    },
+  };
+}
+
+/** How much of today's AI-written text the caller and the team have left. Reads only. */
+const explanationBudgetOp: OperationHandler<undefined, ExplanationBudget> = async (ctx) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  return budgetIn(ctx);
+};
+
+/**
+ * Take one unit of today's budget before a model call: the route's model-host guard. The count
+ * and the insert are one transaction in the team's scope, which runs one invocation at a time,
+ * so a hundred parallel requests at 19 of 20 reserve one and are refused ninety-nine times
+ * before any of them reaches the model. Prunes what is past retention in the same write.
+ */
+const reserveExplanationOp: OperationHandler<z.infer<typeof explanationSubjectInput>, { id: string }> = async (ctx, input) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  const b = budgetIn(ctx);
+  if (b.person.used >= b.person.limit || b.team.used >= b.team.limit) {
+    const who = b.person.used >= b.person.limit ? 'you have' : 'this team has';
+    throw substratError('rate_limited', `${who} used today’s AI explanations; they reset at midnight UTC`);
+  }
+  const id = ulid();
+  const now = ctx.now();
+  ctx.sql.exec(
+    `INSERT INTO dashboard_explanations (id, subject, status, written_by, written_at) VALUES (?, ?, 'reserved', ?, ?)`,
+    [id, input.subject, String(ctx.principal), now],
+  );
+  ctx.sql.exec(`DELETE FROM dashboard_explanations WHERE written_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?, ?)`, [
+    now,
+    `-${EXPLANATION_RETENTION_DAYS} days`,
+  ]);
+  return { id };
+};
+
+/**
+ * Settle a reservation: `filed` with the text, or `failed`. Either way the usage line is kept
+ * when the call answered, so a paid call that produced nothing to show is still on record. Only
+ * the person who reserved it may settle it, and only once.
+ */
+const settleExplanationOp: OperationHandler<z.infer<typeof settleExplanationInput>, { settled: boolean }> = async (ctx, input) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  if ((input.outcome === 'filed') !== (input.filed !== null)) {
+    throw substratError('validation_failed', 'a filed settlement carries the text, and a failed one does not');
+  }
+  const f = input.filed;
+  const u = input.usage;
+  ctx.sql.exec(
+    `UPDATE dashboard_explanations
+        SET status = ?, digest = ?, text = ?, provenance = ?, model = ?, input_tokens = ?, output_tokens = ?, list_usd = ?
+      WHERE id = ? AND written_by = ? AND status = 'reserved'`,
+    [
+      input.outcome,
+      f?.digest ?? null,
+      f?.text ?? null,
+      f ? JSON.stringify(f.provenance) : null,
+      u?.model ?? null,
+      u?.inputTokens ?? null,
+      u?.outputTokens ?? null,
+      u?.listUsd ?? null,
+      input.id,
+      String(ctx.principal),
+    ],
+  );
+  const settled = ctx.sql.query<{ status: string }>('SELECT status FROM dashboard_explanations WHERE id = ? AND written_by = ?', [
+    input.id,
+    String(ctx.principal),
+  ])[0];
+  return { settled: settled?.status === input.outcome };
+};
+
+/** The newest text filed for a subject, or null when none has been. */
+const getExplanationOp: OperationHandler<z.infer<typeof explanationSubjectInput>, z.infer<typeof getExplanationOutput>> = async (
+  ctx,
+  input,
+) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  const row = ctx.sql.query<ExplanationDbRow>(
+    `SELECT id, subject, digest, text, provenance, written_by, written_at FROM dashboard_explanations
+     WHERE subject = ? AND status = 'filed' ORDER BY written_at DESC, id DESC LIMIT 1`,
+    [input.subject],
+  )[0];
+  return { explanation: row ? explanationRow.parse({ ...row, provenance: JSON.parse(row.provenance) as unknown }) : null };
+};
+
 /**
  * The keys these operations may declare. A literal tuple rather than `Object.values(DASHBOARD_PERM)`:
  * that is typed as the brand, the same for every key, and would admit a foreign key.
@@ -1729,6 +1915,29 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     permission: DASHBOARD_PERM.provisionApp,
     input: recordInstallStepInput,
     output: ok,
+  },
+  'dashboard/explanation-budget': {
+    summary: 'Read how much of today’s AI-written text the caller and the team have left',
+    permission: DASHBOARD_PERM.read,
+    output: explanationBudget,
+  },
+  'dashboard/reserve-explanation': {
+    summary: 'Take one unit of today’s AI-text budget before a model call, or be refused',
+    permission: DASHBOARD_PERM.read,
+    input: explanationSubjectInput,
+    output: z.object({ id: z.string() }),
+  },
+  'dashboard/settle-explanation': {
+    summary: 'Settle a reserved AI text as filed, with its text and usage, or as failed',
+    permission: DASHBOARD_PERM.read,
+    input: settleExplanationInput,
+    output: z.object({ settled: z.boolean() }),
+  },
+  'dashboard/get-explanation': {
+    summary: 'Read the newest AI-written explanation filed for a subject',
+    permission: DASHBOARD_PERM.read,
+    input: explanationSubjectInput,
+    output: getExplanationOutput,
   },
   'dashboard/install-steps': {
     summary: 'Read the steps recorded for an app’s install',
@@ -1972,5 +2181,9 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/restore-connect-link': restoreConnectLinkOp,
     'dashboard/revoke-connect-link': revokeConnectLinkOp,
     'dashboard/list-connect-links': listConnectLinksOp,
+    'dashboard/explanation-budget': explanationBudgetOp,
+    'dashboard/reserve-explanation': reserveExplanationOp,
+    'dashboard/settle-explanation': settleExplanationOp,
+    'dashboard/get-explanation': getExplanationOp,
   }),
 };

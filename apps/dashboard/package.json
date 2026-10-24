@@ -15,6 +15,7 @@
         "ChannelHistoryRow": "channelHistoryRow",
         "DeployFailureRow": "deployFailureRow",
         "DeploymentRow": "deploymentRow",
+        "ExplanationView": "explanationView",
         "FailureGroupRow": "failureGroupRow",
         "FindingEntry": "findingRow",
         "FindingRuleEntry": "findingRuleRow",

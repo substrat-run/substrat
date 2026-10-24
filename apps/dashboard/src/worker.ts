@@ -22,17 +22,17 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
+import { FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
-import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
+import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, type appEvent, type domainRow, type installAppInput, type memberRow } from './routes.js';
+import { dashboardRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
-import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
+import { dashboardManifest, dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
 import { resolveBrowsableScope } from './browsable-scope.js';
 import { allApps, appByScopeId, walkAll } from './walk-all.js';
 import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
@@ -48,7 +48,27 @@ import { deriveAppOverlays, overlayWindow } from './overlays.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
-import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer } from './process-map.js';
+import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer, type ProcessPeriod } from './process-map.js';
+import { createModelHost, ProviderError, type ModelHost } from '@substrat-run/vertical-host/model';
+import {
+  DEFAULT_EXPLANATION_MODEL,
+  EXPLANATION_SENT,
+  cleanText,
+  factsDigest,
+  failuresOf,
+  findingFacts,
+  findingPrompt,
+  findingProvenance,
+  findingSubject,
+  processFacts,
+  processPrompt,
+  processProvenance,
+  processSubject,
+  noteIsCurrent,
+  sweepsOf,
+  type ExplanationSubject,
+  type Provenance,
+} from './explain.js';
 import { businessGrid, businessRows, lifecycleMovesOf, type BusinessVolumesAnswer, type BusinessUnavailable } from './business-volumes.js';
 import { placesReconcile, reconcilePlaces } from './places.js';
 import { deriveOperationHealth } from './operation-health.js';
@@ -198,6 +218,22 @@ interface Env extends OidcEnv, EmailIdentityEnv {
    * desk is a supported deployment, not a half-configured one.
    */
   SUPPORT_DESK_ORIGIN?: string;
+  /**
+   * AI-written text (#1749): a finding's explanation and a process map's note. `'1'` turns it
+   * on; anything else, or absent, answers `available: false` with `reason: 'off'`, and no model
+   * is ever called. A flag because it sends tenants' redacted error text to a model provider,
+   * which the sub-processor list has to say before a deployment turns it on (RFC assistant
+   * §16 Q13).
+   */
+  AI_EXPLANATIONS?: string;
+  /** The model it writes with, as `provider:modelId`. Absent ⇒ `DEFAULT_EXPLANATION_MODEL`, a Workers AI row. */
+  AI_EXPLANATIONS_MODEL?: string;
+  /**
+   * The Workers AI binding. The account that owns the script is billed and no credential sits on
+   * it, which is why the platform pays for these calls through it. Typed `unknown` because the
+   * model host validates what it is handed.
+   */
+  AI?: unknown;
   SUPPORT_WIDGET_SECRET?: string;
   /**
    * The Fortnox Developer Portal client pair (#1220) — PLATFORM secrets, one pair for
@@ -1686,30 +1722,47 @@ app.get('/api/apps/:scopeId/processes', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const { appRow, scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const periodParam = c.req.query('period') ?? '7d';
   if (!isProcessPeriod(periodParam)) throw new HTTPException(400, { message: `unknown period: ${periodParam}` });
-  const period = periodParam;
+  return c.json((await processMapIn(dash, cp, c.req.param('scopeId'), periodParam, c.req.query('entity'))).answer);
+});
+
+/**
+ * The process map's read, shared by the map's route and its note's (#1749): the note is
+ * written from exactly the replay the map draws, through the same browsable-scope check, so it
+ * can say nothing about a scope the map would refuse.
+ */
+async function processMapIn(
+  dash: Pick<ScopeStub, 'invoke'>,
+  cp: TenantNarrowedControlPlane,
+  requestedScope: string,
+  period: ProcessPeriod,
+  entityParam: string | undefined,
+): Promise<{ answer: ProcessMapAnswer; scope: ScopeId }> {
+  const { appRow, scope } = await resolveBrowsableScope(dash, cp, requestedScope);
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scope)]);
   const { runningId } = versionPair(deployment, boundVersionId);
-  const answer = (over: Partial<ProcessMapAnswer>): ProcessMapAnswer => ({
-    versionId: runningId,
-    processes: [],
-    entity: null,
-    lifecycle: null,
-    period,
-    current: null,
-    previous: null,
-    unavailable: null,
-    ...over,
+  const answer = (over: Partial<ProcessMapAnswer>): { answer: ProcessMapAnswer; scope: ScopeId } => ({
+    scope,
+    answer: {
+      versionId: runningId,
+      processes: [],
+      entity: null,
+      lifecycle: null,
+      period,
+      current: null,
+      previous: null,
+      unavailable: null,
+      ...over,
+    },
   });
-  if (runningId === null) return c.json(answer({ unavailable: 'no-version' }));
+  if (runningId === null) return answer({ unavailable: 'no-version' });
   const model = await cp.versionModel(appRow.vertical_slug, runningId);
   const processes = declaredProcesses(model);
-  const entity = c.req.query('entity') ?? processes[0]?.entity ?? null;
+  const entity = entityParam ?? processes[0]?.entity ?? null;
   const lifecycle = entity === null ? undefined : model?.lifecycles?.[entity];
   if (entity === null || lifecycle === undefined) {
-    if (processes.length === 0) return c.json(answer({ processes, unavailable: 'no-lifecycles' }));
+    if (processes.length === 0) return answer({ processes, unavailable: 'no-lifecycles' });
     throw new HTTPException(404, { message: `no declared lifecycle for entity: ${entity}` });
   }
   const windows = processWindows(period, Date.now());
@@ -1718,16 +1771,16 @@ app.get('/api/apps/:scopeId/processes', async (c) => {
       cp.lifecycleFlow(scope, { entityType: entity, lifecycle, ...windows.current }),
       cp.lifecycleFlow(scope, { entityType: entity, lifecycle, ...windows.previous, stuckLimit: 1 }),
     ]);
-    return c.json(answer({ processes, entity, lifecycle, current, previous }));
+    return answer({ processes, entity, lifecycle, current, previous });
   } catch (e) {
     // 404: a control plane or vertical without the route. 502: a vertical script that
     // falls through to its SPA shell for an `/internal/*` path it predates.
     if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 502)) {
-      return c.json(answer({ processes, entity, lifecycle, unavailable: 'not-yet-available' }));
+      return answer({ processes, entity, lifecycle, unavailable: 'not-yet-available' });
     }
     throw e;
   }
-});
+}
 
 /**
  * The per-version comparison (#1236): how the version this app RUNS behaves
@@ -4928,6 +4981,256 @@ async function findingsPlane({ c, host, node }: TeamContext, may: 'read' | 'mana
   return controlPlaneFor(c.env, node.tenantId, node.principal);
 }
 
+// -- AI-written text (#1749) ---------------------------------------------------
+
+type ExplanationView = z.infer<typeof explanationView>;
+type Explainer = { host: ModelHost; spec: string } | { off: 'off' | 'not-configured' };
+
+/**
+ * The model the dashboard writes with, or why it writes nothing. Built per request, because the
+ * guard is the caller's own reservation: a spent budget is refused by the model host BEFORE any
+ * bytes go out, so it costs the platform nothing.
+ */
+function explainerFor(env: Env, guard?: () => Promise<void>): Explainer {
+  if (env.AI_EXPLANATIONS !== '1') return { off: 'off' };
+  const host = createModelHost({
+    env: env as unknown as Record<string, string | undefined>,
+    ...(env.AI ? { aiBinding: env.AI } : {}),
+    sent: EXPLANATION_SENT,
+    ...(guard ? { guard } : {}),
+  });
+  const spec = env.AI_EXPLANATIONS_MODEL || DEFAULT_EXPLANATION_MODEL;
+  try {
+    return host.status(spec).configured ? { host, spec } : { off: 'not-configured' };
+  } catch {
+    // An unknown provider in the var: a deployment mistake, said as such rather than a 500 per page.
+    return { off: 'not-configured' };
+  }
+}
+
+const offView = (reason: 'off' | 'not-configured'): ExplanationView => ({ available: false, reason, disclosure: null, explanation: null, budget: null });
+
+/**
+ * Refuse a write on a deployment that offers nothing, or answer the read's `available: false`,
+ * BEFORE any evidence is read: with the flag off (production today) a click costs nothing.
+ */
+function offAnswer(env: Env, write: boolean): ExplanationView | null {
+  const ex = explainerFor(env);
+  if (!('off' in ex)) return null;
+  if (write) {
+    throw new HTTPException(409, { message: ex.off === 'off' ? 'AI explanations are not turned on for this deployment' : 'the model AI explanations name cannot run here' });
+  }
+  return offView(ex.off);
+}
+
+/**
+ * What the page reads beside a subject: the newest text filed for it, whether it still holds
+ * (`current`, the caller's rule for this kind of subject; null for a page with no subject), and
+ * the day's budget. Reads only; nothing here reaches a model.
+ */
+async function explanationViewIn(
+  dash: ScopeStub,
+  env: Env,
+  subject: ExplanationSubject | null,
+  current: (filed: { digest: string; written_at: string }) => boolean,
+): Promise<ExplanationView> {
+  const ex = explainerFor(env);
+  if ('off' in ex) return offView(ex.off);
+  const [filed, budget] = await Promise.all([
+    subject === null
+      ? Promise.resolve({ explanation: null })
+      : (dash.invoke('dashboard/get-explanation', { subject }) as Promise<{ explanation: { digest: string; text: string; provenance: Provenance; written_at: string } | null }>),
+    dash.invoke('dashboard/explanation-budget', {}) as Promise<ExplanationBudget>,
+  ]);
+  const { hosting } = ex.host.status(ex.spec);
+  const e = filed.explanation;
+  return {
+    available: true,
+    reason: null,
+    disclosure: { vendor: hosting.vendor, location: hosting.location, sent: EXPLANATION_SENT },
+    explanation: e ? { text: e.text, provenance: e.provenance, writtenAt: e.written_at, current: current(e) } : null,
+    budget,
+  };
+}
+
+/**
+ * Write one text. The model host's guard RESERVES a unit of today's budget in the team's scope,
+ * so the count and the spend cannot part: every call that reaches the model has a row, settled
+ * `filed` with its text and usage, or `failed` with whatever usage the call reported.
+ * The prompt is built from `facts` alone, so what is sent is exactly the allowlist.
+ */
+async function writeExplanationIn(
+  ctx: TeamContext,
+  dash: ScopeStub,
+  input: {
+    subject: ExplanationSubject;
+    facts: unknown;
+    prompt: { system: string; prompt: string };
+    operation: string;
+    provenance: (at: { writtenAt: string; model: string }) => Provenance;
+    current: (filed: { digest: string; written_at: string }) => boolean;
+  },
+): Promise<ExplanationView> {
+  const { c, node } = ctx;
+  let reservation: string | null = null;
+  const ex = explainerFor(c.env, async () => {
+    reservation = ((await dash.invoke('dashboard/reserve-explanation', { subject: input.subject })) as { id: string }).id;
+  });
+  if ('off' in ex) return offAnswer(c.env, true)!;
+  const settle = (outcome: 'filed' | 'failed', usage: ModelUsageLine | null, filed: unknown = null) =>
+    reservation === null
+      ? Promise.resolve()
+      : dash.invoke('dashboard/settle-explanation', {
+          id: reservation,
+          outcome,
+          usage: usage && { model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, listUsd: usage.listUsd },
+          filed,
+        });
+  const digest = await factsDigest(input.facts);
+  let run;
+  try {
+    run = await ex.host.run({
+      spec: ex.spec,
+      attribution: {
+        tenant: node.tenantId,
+        scope: node.scopeId,
+        vertical: dashboardManifest.id,
+        version: dashboardManifest.version,
+        operation: input.operation,
+      },
+      system: input.prompt.system,
+      prompt: input.prompt.prompt,
+      maxOutputTokens: 400,
+      temperature: 0.2,
+    });
+  } catch (e) {
+    // The reservation's refusal (a spent budget) is the caller's answer as it stands.
+    if (reservation === null && isSubstratError(e)) throw e;
+    await settle('failed', null);
+    // Anything else (a provider error, a rate limit or a timeout upstream) is the model's side,
+    // and the tenant is told so; the detail, which can name platform configuration, stays in the log.
+    console.warn(JSON.stringify({ msg: 'ai explanation failed', operation: input.operation, error: e instanceof Error ? e.message : String(e) }));
+    throw new HTTPException(502, { message: 'the model could not answer; try again in a while' });
+  }
+  const text = cleanText(run.text);
+  if (!text) {
+    await settle('failed', run.line);
+    throw new HTTPException(502, { message: 'the model answered with nothing to show; try again in a while' });
+  }
+  await settle('filed', run.line, { digest, text, provenance: input.provenance({ writtenAt: run.line.at, model: run.label }) });
+  return explanationViewIn(dash, c.env, input.subject, input.current);
+}
+
+/**
+ * One of the team's findings, by id. The plane lists and does not get, so this walks the list,
+ * bounded at four full pages. The page passes the status and kind it last saw as hints: the walk
+ * over that tab finds the row in a page or two, and an unfiltered walk is the fallback for a
+ * finding that moved tab since.
+ */
+async function findingIn(cp: TenantNarrowedControlPlane, id: string, hint: { status?: string; kind?: string }): Promise<FindingEntry> {
+  const known = <T extends string>(set: readonly T[], v: string | undefined) => (v !== undefined && (set as readonly string[]).includes(v) ? (v as T) : undefined);
+  const status = known(findingStatus.options, hint.status);
+  const kind = known(findingKind.options, hint.kind);
+  const walks = status || kind ? [{ ...(status ? { status } : {}), ...(kind ? { kind } : {}) }, {}] : [{}];
+  for (const filter of walks) {
+    let cursor: string | undefined;
+    for (let i = 0; i < 4; i++) {
+      const page = await cp.listFindings({ ...filter, limit: FINDINGS_LIMIT_MAX, ...(cursor ? { cursor } : {}) });
+      if (page === null) throw new HTTPException(404, { message: 'findings are not available on this control plane' });
+      const found = page.entries.find((f) => f.id === id);
+      if (found) return found;
+      if (page.nextCursor === null) break;
+      cursor = page.nextCursor;
+    }
+  }
+  throw new HTTPException(404, { message: 'no such finding' });
+}
+
+/**
+ * A finding and the facts about it a model may read, from the evidence it names: its failure
+ * records since it was first seen, narrowed by the operation and code its fingerprint is made of
+ * (tenant-pinned by the plane), or its sweep runs.
+ */
+async function findingFactsIn(cp: TenantNarrowedControlPlane, id: string, hint: { status?: string; kind?: string }) {
+  const f = await findingIn(cp, id, hint);
+  let failures: OpsFailureEntry[] = [];
+  let complete = true;
+  if (f.evidence?.source === 'ops-failures') {
+    const read = await cp.readOpsFailures({
+      ...(f.scopeId ? { scopeId: f.scopeId } : {}),
+      ...(f.vertical ? { vertical: f.vertical } : {}),
+      ...(f.operation ? { operation: f.operation } : {}),
+      ...(f.codes.length === 1 ? { code: f.codes[0] } : {}),
+      since: f.firstSeen,
+      limit: 400,
+    });
+    failures = failuresOf(f, read.entries);
+    complete = read.complete;
+  }
+  const sweeps =
+    f.evidence?.source === 'sweep-runs' ? sweepsOf(f, await cp.listSweepRuns({ kind: f.evidence.kind, unit: f.evidence.unit, limit: 100 })) : [];
+  return { finding: f, facts: findingFacts(f, failures, sweeps, complete) };
+}
+
+async function findingExplanationIn(ctx: TeamContext, input: { id: string; status?: string; kind?: string }, write: boolean): Promise<ExplanationView> {
+  const cp = await findingsPlane(ctx, 'read');
+  const off = offAnswer(ctx.c.env, write);
+  if (off) return off;
+  const { finding, facts } = await findingFactsIn(cp, input.id, input);
+  const dash = await teamScope(ctx);
+  const subject = findingSubject(finding.id);
+  const digest = await factsDigest(facts);
+  const current = (filed: { digest: string }) => filed.digest === digest;
+  if (!write) return explanationViewIn(dash, ctx.c.env, subject, current);
+  const until = new Date().toISOString();
+  return writeExplanationIn(ctx, dash, {
+    subject,
+    facts,
+    prompt: findingPrompt(facts),
+    operation: 'dashboard/write-finding-explanation',
+    provenance: (at) => findingProvenance(finding, facts, { ...at, until }),
+    current,
+  });
+}
+
+async function processNoteIn(
+  ctx: TeamContext,
+  input: { scopeId: string; entity: string; period: ProcessPeriod },
+  write: boolean,
+): Promise<ExplanationView> {
+  const off = offAnswer(ctx.c.env, write);
+  if (off) return off;
+  const dash = await teamScope(ctx);
+  // A note's facts roll with the clock, so it is current for a slice of its period, not by digest.
+  const current = (filed: { written_at: string }) => noteIsCurrent(input.period, filed.written_at, Date.now());
+  if (!write) {
+    // The read needs only the scope check, not the replay: the filed note is what is shown.
+    const { scope } = await resolveBrowsableScope(dash, teamPlane(ctx), input.scopeId);
+    return explanationViewIn(dash, ctx.c.env, processSubject(scope, input.entity, input.period), current);
+  }
+  const { answer, scope } = await processMapIn(dash, teamPlane(ctx), input.scopeId, input.period, input.entity);
+  const replayed = answer.current;
+  if (!replayed) {
+    throw new HTTPException(409, { message: `there is no replay to write a note from (${answer.unavailable ?? 'no counts'})` });
+  }
+  const facts = processFacts(input.entity, input.period, replayed, answer.previous);
+  return writeExplanationIn(ctx, dash, {
+    subject: processSubject(scope, input.entity, input.period),
+    facts,
+    prompt: processPrompt(facts),
+    operation: 'dashboard/write-process-note',
+    provenance: (at) => processProvenance(scope, replayed, at),
+    current,
+  });
+}
+
+/** Whether this deployment writes AI text, and the caller's budget: one read for a whole page. */
+async function explanationsStatusIn(ctx: TeamContext): Promise<ExplanationView> {
+  const off = offAnswer(ctx.c.env, false);
+  if (off) return off;
+  return explanationViewIn(await teamScope(ctx), ctx.c.env, null, () => false);
+}
+
 /** The team's dashboard scope, reached as the caller — where every member operation runs its own check. */
 function teamScope({ host, node }: TeamContext) {
   return host.getScope(node.principal, node.tenantId, node.scopeId);
@@ -5430,6 +5733,11 @@ const routeHandlers = {
   }),
   'dashboard/create-finding-rule': async (ctx, rule) => (await findingsPlane(ctx, 'manage')).createFindingRule(rule),
   'dashboard/revoke-finding-rule': async (ctx, { ruleId }) => (await findingsPlane(ctx, 'manage')).revokeFindingRule(ruleId),
+  'dashboard/explanations-status': async (ctx) => explanationsStatusIn(ctx),
+  'dashboard/get-finding-explanation': async (ctx, input) => findingExplanationIn(ctx, input, false),
+  'dashboard/write-finding-explanation': async (ctx, input) => findingExplanationIn(ctx, input, true),
+  'dashboard/get-process-note': async (ctx, input) => processNoteIn(ctx, input, false),
+  'dashboard/write-process-note': async (ctx, input) => processNoteIn(ctx, input, true),
   'dashboard/install-app': async (ctx, body) => installAppIn(ctx, body),
   'dashboard/remove-app': async (ctx, { id }) => {
     await removeAppIn(ctx, id);

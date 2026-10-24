@@ -3,6 +3,7 @@ import { Badge, Button, Dialog, Input, Select, Tabs } from '@substrat-run/ui';
 import { ApiError, type FindingEntry, type FindingRuleEntry } from '../lib/api.generated';
 import { relativeTime, untilTime } from '../lib/format';
 import { card } from '../components/ui';
+import { AiText, useAiOffered } from '../components/AiText';
 import {
   EXPIRY_CHOICES,
   FINDING_TABS,
@@ -75,6 +76,9 @@ export function Findings({
   onTab: (tab: FindingStatus) => void;
 }) {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
+  // #1749: asked once for the page; a deployment that writes no AI text draws no toggle.
+  const aiStatus = useCallback(() => client.explanationsStatus({}), [client]);
+  const aiOffered = useAiOffered(aiStatus) === true;
   // One message for the last action that failed, over the list it failed on.
   const [actionError, setActionError] = useState('');
   // Every finding or rule with a request in flight: one row's work never frees or spins another's.
@@ -230,6 +234,8 @@ export function Findings({
               busy={busy.has(f.id)}
               onMove={(to) => void move(f, to)}
               onSuppress={() => { setActionError(''); setSuppressing(f); }}
+              client={client}
+              aiOffered={aiOffered}
             />
           ))
         )}
@@ -301,14 +307,24 @@ function FindingRow({
   busy,
   onMove,
   onSuppress,
+  client,
+  aiOffered,
 }: {
   f: FindingEntry;
   canManage: boolean;
   busy: boolean;
   onMove: (to: FindingMove) => void;
   onSuppress: () => void;
+  client: FindingsClient;
+  aiOffered: boolean;
 }) {
   const moves = movesFrom(f.status);
+  // #1749: closed until asked, so a page of findings reads no evidence it does not show.
+  const [explaining, setExplaining] = useState(false);
+  // The status and kind narrow the server's walk to this finding's tab.
+  const { id, status, kind } = f;
+  const loadExplanation = useCallback(() => client.getFindingExplanation({ id, status, kind }), [client, id, status, kind]);
+  const writeExplanation = useCallback(() => client.writeFindingExplanation({ id, status, kind }), [client, id, status, kind]);
   return (
     <div
       role="group"
@@ -335,6 +351,14 @@ function FindingRow({
         {f.status === 'suppressed' && f.ruleId && (
           <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Held by a suppress rule; revoke the rule below to let it open again.</div>
         )}
+        {aiOffered && (
+          <div>
+            <Button variant="ghost" size="sm" onClick={() => setExplaining((x) => !x)}>
+              {explaining ? 'Hide AI explanation' : 'AI explanation'}
+            </Button>
+          </div>
+        )}
+        {aiOffered && explaining && <AiText load={loadExplanation} write={writeExplanation} writeLabel="Explain this finding" />}
       </div>
       {canManage && (moves.length > 0 || canSuppress(f.status)) && (
         <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>

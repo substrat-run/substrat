@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { Button, Select, Tabs } from '@substrat-run/ui';
-import { api, type AppRow, type LifecycleFlowResult, type ProcessMapView, type ProcessPeriod } from '../lib/api';
+import { api, teamApi, type AppRow, type LifecycleFlowResult, type ProcessMapView, type ProcessPeriod } from '../lib/api';
+import { AiText, useAiOffered } from '../components/AiText';
+import { mockExplanations } from '../lib/explanations';
 import { card } from '../components/ui';
 import { DEV_MOCK } from '../lib/mock';
 import { mockProcessView } from '../lib/mock-processes';
@@ -161,6 +163,7 @@ export function ProcessMap({ teamId, app, entity, period, sel, compare, nonce, o
           <Legend />
           <Diagram layout={layout} current={current} selection={selection} onSelect={select} />
           <Footnote flow={current} />
+          <ProcessNote teamId={teamId} scopeId={app.app_scope_id} entity={view.entity} period={period} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: '1 1 340px', minWidth: 0 }}>
           <SidePanel
@@ -186,6 +189,43 @@ export function ProcessMap({ teamId, app, entity, period, sel, compare, nonce, o
           onClose={() => setHistory(null)}
         />
       )}
+    </div>
+  );
+}
+
+/** The preview's notes (DEV_MOCK), one store for the page. */
+const MOCK_NOTES = mockExplanations();
+
+/**
+ * The AI note under the diagram (#1749), closed until asked: opening it reads the filed note
+ * (a second replay of the same window, server-side), and writing one is a model call.
+ */
+function ProcessNote({ teamId, scopeId, entity, period }: { teamId: string; scopeId: string; entity: string; period: ProcessPeriod }) {
+  const [open, setOpen] = useState(false);
+  const status = useCallback(() => (DEV_MOCK ? MOCK_NOTES.get('status') : teamApi(teamId).explanationsStatus({})), [teamId]);
+  const offered = useAiOffered(status);
+  const subject = `process:${scopeId}:${entity}:${period}`;
+  const load = useCallback(
+    () => (DEV_MOCK ? MOCK_NOTES.get(subject) : teamApi(teamId).getProcessNote({ scopeId, entity, period })),
+    [teamId, scopeId, entity, period, subject],
+  );
+  const write = useCallback(
+    () =>
+      DEV_MOCK
+        ? MOCK_NOTES.write(subject, `Most ${entity} records move on within a day; the ones that wait longest sit in their first state. Fewer started this period than the one before.`, '128 events, 40 records')
+        : teamApi(teamId).writeProcessNote({ scopeId, entity, period }),
+    [teamId, scopeId, entity, period, subject],
+  );
+  // A deployment that writes no AI text draws no toggle (#1749).
+  if (offered !== true) return null;
+  return (
+    <div style={{ padding: '8px 16px 14px', display: 'grid', gap: 8 }}>
+      <div>
+        <Button variant="ghost" size="sm" onClick={() => setOpen((x) => !x)}>
+          {open ? 'Hide AI note' : 'AI note'}
+        </Button>
+      </div>
+      {open && <AiText key={subject} load={load} write={write} writeLabel="Write a note on this process" />}
     </div>
   );
 }

@@ -351,6 +351,8 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'DELETE /apps/{id} dashboard/remove-app',
       'POST /apps dashboard/install-app',
       'POST /apps/{scopeId}/email-sender dashboard/set-app-email-sender',
+      // #1749: files an AI note in the team's scope; its team-from-path refusal is in explanations-route.test.ts.
+      'POST /apps/{scopeId}/processes/note dashboard/write-process-note',
       'POST /apps/{scopeId}/resume dashboard/resume-app',
       'POST /apps/{scopeId}/retry dashboard/retry-app',
     ]);

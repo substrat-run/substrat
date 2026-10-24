@@ -77,6 +77,10 @@
 	// still succeeds and only the email is dropped. Override the sender with
 	//   wrangler secret put EMAIL_FROM      # default no-reply@send.substrat.net
 	"send_email": [{ "name": "EMAIL" }],
+	// Workers AI for AI-written text (#1749): the account that owns this script is billed and no
+	// credential sits on it. Bound everywhere; whether anything calls it is AI_EXPLANATIONS, which
+	// is off in production until the sub-processor position (RFC assistant §16 Q13) is confirmed.
+	"ai": { "binding": "AI" },
 	// Workers Logs: persisted, queryable console.* + uncaught exceptions. The floor
 	// of prod debuggability — `wrangler tail` and the dashboard's Logs view. Without
 	// it the OIDC callback's failure reason (now logged) would go nowhere.
@@ -137,9 +141,11 @@
 				// Scope-local permissions (#1343): TEST earns this before prod does.
 				// Off in prod (absent above) — flipping it changes how a live app
 				// answers ctx.check, so it is a config decision, not a deploy.
-				"SCOPE_LOCAL_PERMISSIONS": "1" // differs
+				"SCOPE_LOCAL_PERMISSIONS": "1", // differs
+				"AI_EXPLANATIONS": "1" // differs: TEST writes AI explanations; production waits on Q13
 			},
 			"send_email": [{ "name": "EMAIL" }],
+			"ai": { "binding": "AI" },
 			"observability": { "enabled": true }
 		}
 	}

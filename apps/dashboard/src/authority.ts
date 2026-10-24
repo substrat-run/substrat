@@ -124,6 +124,13 @@ export interface OpsFailureRead {
    * installation's rows and answer "nothing" for the one asked about.
    */
   scopeId?: string;
+  /**
+   * The operation and the taxonomy code: two of the three parts of a failure's fingerprint, the
+   * narrowing a finding's evidence needs (#1749). Without them a capped read of a noisy scope
+   * fills with other failures and the finding's own rows fall out of the window.
+   */
+  operation?: string;
+  code?: string;
   since?: string;
   until?: string;
   limit?: number;
@@ -1744,7 +1751,14 @@ export class TenantNarrowedControlPlane {
   readOpsFailures(filter: OpsFailureRead = {}): Promise<ListRead<OpsFailureEntry>> {
     return this.walkList<OpsFailureEntry>(
       '/ops-failures',
-      { vertical: filter.vertical, scopeId: filter.scopeId, since: filter.since, until: filter.until },
+      {
+        vertical: filter.vertical,
+        scopeId: filter.scopeId,
+        operation: filter.operation,
+        code: filter.code,
+        since: filter.since,
+        until: filter.until,
+      },
       filter.limit,
     );
   }
