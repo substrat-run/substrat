@@ -115,6 +115,10 @@ Roles a host defines and seats itself are held to the same rule:
   retirements are not applied there while the scope runs the new code. To clear it, take those
   seats back in each such scope, or ship a release that keeps the role a person's. Refusing the
   change at push or promote is part of #2446.
+- **The same happens to a system-held role a release drops and a later one adds back** while
+  its host principal is still seated: the scope cannot tell that seat from a person's, since what
+  kind of principal holds a seat is not recorded. Keep the role defined across releases, or take
+  the host principal's seat back in each such scope and give it again once the role is back.
 - **Nothing is revoked.** A refused definition or seat writes nothing, so a seat that already
   holds a key reserved after it was seated keeps working. A directory fan-out of a stored
   definition is projected as it is and not judged again, since dropping the role there would

@@ -205,13 +205,13 @@ describe('reservedRoleDefinitionRefusal against the stored row of the same key (
 
   it('refuses a seated person’s role becoming holder: system', () => {
     expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:use'], 'person')], true)).toMatch(
-      /^role 'r' is held by someone who is not a system principal \(stored as a person's role\), so it cannot be declared holder: 'system'/,
+      /^role 'r' is held by a principal \(stored as a person's role\), so it cannot be declared holder: 'system'/,
     );
   });
 
   it('refuses a system-held definition of a seated key with NO stored definition (round 2: a projection dropped its row)', () => {
     expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [], true)).toMatch(
-      /^role 'r' is held by someone who is not a system principal \(with no definition stored\), so it cannot be declared holder: 'system'/,
+      /^role 'r' is held by a principal \(with no definition stored\), so it cannot be declared holder: 'system'/,
     );
   });
 
@@ -261,7 +261,7 @@ describe('reservedRoleSetRefusal against what the scope stores (#2447 round 1)',
   it('refuses a set that flips a seated stored person’s role to holder: system; twin with no seat passes', () => {
     const roles = [{ key: 'staff', permissions: ['a:run'], holder: 'system' as const }];
     const stored = { roles: [{ key: 'staff', permissions: ['a:use'], holder: 'person' as const }], seated: new Set(['staff']) };
-    expect(reservedRoleSetRefusal(roles, host, stored)).toMatch(/role 'staff' is held by someone who is not a system principal/);
+    expect(reservedRoleSetRefusal(roles, host, stored)).toMatch(/role 'staff' is held by a principal/);
     expect(reservedRoleSetRefusal(roles, host, { ...stored, seated: new Set() })).toBeNull();
     expect(reservedRoleSetRefusal(roles, host)).toBeNull();
   });

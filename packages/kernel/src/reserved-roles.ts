@@ -108,9 +108,11 @@ export interface HostReservations {
  *   stored role's keys counted as reserved: the stored holder is the evidence, and a redefinition
  *   does not erase it.
  * - **A system-held definition of a key anyone but a system principal holds a seat in** is refused
- *   unless a system-held definition is stored for it: the seats were made through a person's door
- *   (or before any definition, or under one a projection since dropped), and relabelling the role
- *   would make them a system principal's. Taking the seats back first, or defining a new key, is the
+ *   unless a system-held definition is stored for it. What kind of principal holds a seat is not
+ *   recorded, so a seat made before any definition, under a person's definition, or under one a
+ *   projection since dropped may be a person's, and relabelling the role would make it a system
+ *   principal's. A K-55 host principal's seat in a system-held role a release dropped and a later
+ *   one adds back cannot be told apart from that, so it is refused too. Taking the seats back first, or defining a new key, is the
  *   way. The seats decide for a role stored before the holder was recorded (#2480: no holder) too:
  *   it may be declared `holder: 'system'` only while nobody but a system principal holds a seat in
  *   it, since an upgrade admitted beside such a seat would let a later system-held definition add
@@ -145,9 +147,10 @@ export function reservedRoleDefinitionRefusal(
     // a person's seat would leave a system-held row a later definition widens unjudged by its seats.
     if (stored?.holder !== 'system' && seated) {
       return (
-        `role '${role.key}' is held by someone who is not a system principal (${stored ? 'stored as a person\'s role' : 'with no definition stored'}), ` +
-        `so it cannot be declared holder: 'system': those seats were made through a person\'s door, and a system-held role is a ` +
-        `system principal\'s. Take its seats back first, or define the system-held role under a new key (K-55)`
+        `role '${role.key}' is held by a principal (${stored ? 'stored as a person\'s role' : 'with no definition stored'}), so it cannot ` +
+        `be declared holder: 'system': what kind of principal holds a seat is not recorded, so the seat may be a person\'s. Take ` +
+        `that seat back in each scope first (a host principal\'s seat can be given again after), keep the role defined across ` +
+        `releases, or define the system-held role under a new key (K-55)`
       );
     }
     const personsKeys = new Map<string, string>();

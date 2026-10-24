@@ -615,7 +615,7 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       await local.assignScopeRole(scope, who, 'staffer');
       const refused = await failure(reconcile([member, flipped('staffer'), idle]));
       expect(errorCodeOf(refused)).toBe('forbidden');
-      expect(refused?.message).toMatch(/role 'staffer' is held by someone who is not a system principal/);
+      expect(refused?.message).toMatch(/role 'staffer' is held by a principal/);
       const repair = await failure(local.projectRolesLocal(tenant, scope, [member, flipped('staffer'), idle]));
       expect(errorCodeOf(repair)).toBe('forbidden');
       const holderOf = (key: string) =>
@@ -649,7 +649,7 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       // Release 3 defines it holder: system: refused as well, nothing written.
       const refused = await failure(release([member, system]));
       expect(errorCodeOf(refused)).toBe('forbidden');
-      expect(refused?.message).toMatch(/role 'staffer' is held by someone who is not a system principal \(with no definition stored\)/);
+      expect(refused?.message).toMatch(/role 'staffer' is held by a principal \(with no definition stored\)/);
       // Named by scope as well as role, so staff can find every scope a release is refused at (SF4).
       expect(refused?.message).toContain(`tenant ${tenant}, scope ${scope}: the vertical's roles cannot be defined here`);
       expect(await rowOf()).toEqual([]);
@@ -668,13 +668,34 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       const system = (key: string) => ({ key, permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const });
       const refused = await failure(release([member, system('ops'), system('idle')]));
       expect(errorCodeOf(refused)).toBe('forbidden');
-      expect(refused?.message).toMatch(/role 'ops' is held by someone who is not a system principal/);
+      expect(refused?.message).toMatch(/role 'ops' is held by a principal/);
       // The twin: the unseated legacy row upgrades.
       await release([member, system('idle')]);
       const holderOf = (key: string) =>
         runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
           (state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, key).toArray()[0] as { holder: string } | undefined)?.holder);
       expect(await holderOf('idle')).toBe('system');
+    });
+
+    it('a system-held role dropped and added back is refused while its host principal is seated, saying what is true; taking the seat back admits it (round 3)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await release([member, runner]);
+      const hostPrincipal = principalId.parse(ulid());
+      await local.assignScopeRole(scope, hostPrincipal, 'runner'); // the platform's door, K-55's shape
+      await release([member, runner]); // an identical re-apply is admitted
+      await release([member]); // the role dropped; the seat stays
+      const refused = await failure(release([member, runner]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'runner' is held by a principal \(with no definition stored\).*the seat may be a person's/);
+      expect(refused?.message).toMatch(/Take that seat back in each scope first \(a host principal's seat can be given again after\)/);
+      expect(refused?.message).not.toMatch(/made through a person's door/);
+      // The remedy the text names: take the seat back, add the role back, seat it again.
+      await local.revokeScopeRole(scope, hostPrincipal, 'runner');
+      await release([member, runner]);
+      await local.assignScopeRole(scope, hostPrincipal, 'runner');
     });
 
     it('roleSetRefusalLocal answers the refusal a restore asks before importing, writing nothing; its twin answers null (round 1)', async () => {
@@ -697,7 +718,7 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
           },
         ],
       };
-      expect(await local.roleSetRefusalLocal(scope, [member, flipped], dump)).toMatch(/role 'staffer' is held by someone who is not a system principal/);
+      expect(await local.roleSetRefusalLocal(scope, [member, flipped], dump)).toMatch(/role 'staffer' is held by a principal/);
       expect(await local.roleSetRefusalLocal(scope, [member, flipped])).toBeNull();
     });
 

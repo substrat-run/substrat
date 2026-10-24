@@ -374,7 +374,7 @@ export function reservedRoleContractSuite(
         await expectRefusal(
           host.admin.defineRole(staff, t1, { key: 'staffer', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
           'forbidden',
-          /role 'staffer' is held by someone who is not a system principal \(stored as a person's role\), so it cannot be declared holder: 'system'/,
+          /role 'staffer' is held by a principal \(stored as a person's role\), so it cannot be declared holder: 'system'/,
         );
         expect(await stored('staffer')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
         expect(await holds(bob, RSV_RUN)).toBe(false);
@@ -387,7 +387,7 @@ export function reservedRoleContractSuite(
         await expectRefusal(
           host.admin.defineRole(staff, t1, { key: 'staffer-t', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
           'forbidden',
-          /held by someone who is not a system principal/,
+          /held by a principal/,
         );
       });
 
@@ -398,7 +398,7 @@ export function reservedRoleContractSuite(
         await expectRefusal(
           host.admin.defineRole(staff, t1, { key: 'ghost', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
           'forbidden',
-          /role 'ghost' is held by someone who is not a system principal \(with no definition stored\)/,
+          /role 'ghost' is held by a principal \(with no definition stored\)/,
         );
         expect(await stored('ghost')).toBeUndefined();
         expect(await holds(bob, RSV_RUN)).toBe(false);
@@ -417,7 +417,7 @@ export function reservedRoleContractSuite(
         await expectRefusal(
           host.admin.defineRole(staff, t1, { key: 'shelved', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
           'forbidden',
-          /role 'shelved' is held by someone who is not a system principal/,
+          /role 'shelved' is held by a principal/,
         );
         await host.admin.unarchiveScope(staff, t1, shelf);
         expect(await host.listScopeRoleHolders(t1, shelf, bob)).toEqual([{ principal: bob, roleKey: 'shelved' }]);
