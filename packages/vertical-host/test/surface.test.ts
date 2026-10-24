@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { NO_APPLICATION_DETAIL, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
-import { ORPHAN_SWEEP_UNLICENSED, type ByteBody } from '@substrat-run/kernel';
+import { ORPHAN_SWEEP_UNLICENSED, scopeNotHeldRefusal, type ByteBody } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
 
@@ -654,6 +654,19 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const refused = await appWith(older).request(url, { headers: authed() }, ENV);
     expect(refused.status).toBe(501);
     expect((await refused.json()).error).toMatch(/database size/);
+  });
+
+  // #2541: a scope the deployment does not hold is the host's refusal, and the route lets it through
+  // as a 409 on both size reads: not a 404, which the platform reads as "this deployment predates
+  // the route", and not a 200 with a size of 0.
+  it.each(['database-size', 'attachment-size'])('answers 409 on /internal/%s for a scope the host does not hold', async (route) => {
+    const refuse = async (): Promise<number> => {
+      throw substratError('conflict', scopeNotHeldRefusal(SCOPE));
+    };
+    const host = fakeHost({ databaseSizeLocal: refuse, attachmentSizeLocal: refuse });
+    const res = await appWith(host).request(`/internal/${route}?scopeId=${SCOPE}`, { headers: authed() }, ENV);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe(scopeNotHeldRefusal(SCOPE));
   });
 
   // #2501: a scope's attachment bytes for the storage gauge, behind exactly the gate its siblings

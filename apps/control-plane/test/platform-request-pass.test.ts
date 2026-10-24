@@ -9,6 +9,7 @@ import {
   scopeId,
   tenantId,
   type ScopeId,
+  type ScopeStatus,
   type TenantId,
 } from '@substrat-run/contracts';
 import { ControlPlaneError, VerticalClient, drainScopePlatformRequests } from '@substrat-run/control-plane-api';
@@ -17,6 +18,7 @@ import {
   StorageReadUnsupported,
   globalFetch,
   runPlatformSweep,
+  scopeNotHeldRefusal,
   ulid,
   type PlatformSweepReport,
 } from '@substrat-run/kernel';
@@ -456,6 +458,60 @@ describe('storageReaderFor (#1524)', () => {
     }
   });
 
+  it("skips a deployment's 'not held' 409 only for a scope the directory has reaped, archived or lost, and keeps every other status an error (#2541)", async () => {
+    const s = scope('todo');
+    const notHeld = () => Response.json({ error: scopeNotHeldRefusal(s.id) }, { status: 409 });
+    const reader = (record: () => Promise<{ status: ScopeStatus } | undefined>) =>
+      storageReaderFor(
+        async () => new VerticalClient({ fetch: (async () => notHeld()) as unknown as typeof fetch, platformSecret: 'secret' }),
+        record,
+      );
+    for (const status of ['reaped', 'archived'] as const) {
+      await expect(reader(async () => ({ status }))(s)).resolves.toBeNull();
+    }
+    await expect(reader(async () => undefined)(s)).resolves.toBeNull();
+    for (const status of ['provisioning', 'active', 'suspended', 'archiving'] as const) {
+      const err = await reader(async () => ({ status }))(s).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect(err).not.toBeInstanceOf(StorageReadUnsupported);
+    }
+    // Without a directory to ask, the answer is an error, as before.
+    expect(await answeredBy(notHeld)(s).catch((e: unknown) => e)).toBeInstanceOf(ControlPlaneError);
+    // A 409 that is some other conflict is never taken for it, whatever the directory says.
+    const other = storageReaderFor(
+      async () =>
+        new VerticalClient({
+          fetch: (async () => Response.json({ error: 'something else conflicted' }, { status: 409 })) as unknown as typeof fetch,
+          platformSecret: 'secret',
+        }),
+      async () => undefined,
+    );
+    expect(await other(s).catch((e: unknown) => e)).toBeInstanceOf(ControlPlaneError);
+  });
+
+  it('a failing directory read is an error of that scope, never a skip', async () => {
+    const s = scope('todo');
+    const read = storageReaderFor(
+      async () =>
+        new VerticalClient({
+          fetch: (async () => Response.json({ error: scopeNotHeldRefusal(s.id) }, { status: 409 })) as unknown as typeof fetch,
+          platformSecret: 'secret',
+        }),
+      async () => Promise.reject(new Error('directory unavailable')),
+    );
+    await expect(read(s)).rejects.toThrow(/directory unavailable/);
+  });
+
+  it('asks the directory only after a not-held answer', async () => {
+    let asked = 0;
+    const read = storageReaderFor(
+      async () => new VerticalClient({ fetch: (async () => Response.json({ bytes: 4_096 })) as unknown as typeof fetch, platformSecret: 'secret' }),
+      async () => ((asked += 1), undefined),
+    );
+    await expect(read(scope('todo'))).resolves.toBe(4_096);
+    expect(asked).toBe(0);
+  });
+
   it('skips a scope bound to no vertical, without resolving anything', async () => {
     let resolved = 0;
     const read = storageReaderFor(async () => {
@@ -504,6 +560,23 @@ describe('attachmentReaderFor (#2501)', () => {
     const read = attachmentReaderFor(async () => ((resolved += 1), undefined));
     await expect(read(scope(null))).resolves.toBeNull();
     expect(resolved).toBe(0);
+  });
+
+  it("applies the same rule to the attachment read: skipped for archived, an error for active or a failing directory (#2541)", async () => {
+    const s = scope('todo');
+    const client = () =>
+      new VerticalClient({
+        fetch: (async () => Response.json({ error: scopeNotHeldRefusal(s.id) }, { status: 409 })) as unknown as typeof fetch,
+        platformSecret: 'secret',
+      });
+    await expect(attachmentReaderFor(async () => client(), async () => ({ status: 'archived' as const }))(s)).resolves.toBeNull();
+    await expect(attachmentReaderFor(async () => client(), async () => undefined)(s)).resolves.toBeNull();
+    for (const status of ['provisioning', 'active', 'suspended', 'archiving'] as const) {
+      expect(await attachmentReaderFor(async () => client(), async () => ({ status }))(s).catch((e: unknown) => e)).toBeInstanceOf(ControlPlaneError);
+    }
+    await expect(attachmentReaderFor(async () => client(), async () => Promise.reject(new Error('directory unavailable')))(s)).rejects.toThrow(
+      /directory unavailable/,
+    );
   });
 
   it('shares one deployment lookup per scope with the database read, through oncePerScope', async () => {

@@ -289,6 +289,7 @@ import {
   purgeDueOf,
   purgeHeldBy,
   lifecycleRefusal,
+  scopeNotHeldRefusal,
   type PurgeGateFacts,
   type PurgePass,
   purgeOnlyKeysOf,
@@ -1963,6 +1964,13 @@ type TupleReadRow = { subject: string; relation: string; expires_at: string | nu
  * it refuses another process.
  */
 const PROCESS_HOST_DIRS = new Map<string, { lock: Database.Database; hosts: number }>();
+
+/** A scope database's size in bytes: allocated pages, free ones included, which is what the file costs on disk (#1524). */
+const databaseBytesOf = (db: Database.Database): number =>
+  (db.pragma('page_count', { simple: true }) as number) * (db.pragma('page_size', { simple: true }) as number);
+
+/** What a scope database's attachment rows sum to (#2501). */
+const attachmentBytesOf = (db: Database.Database): number => (db.prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number }).bytes;
 
 /**
  * #119: claim a host directory for this process, for one live `SqliteScopeHost`. The first host in
@@ -5851,6 +5859,36 @@ export class SqliteScopeHost implements ScopeHost {
       ? [...new Set((this.runtime(tenantId, scopeId).db.prepare(SCOPE_SEATED_ROLES_SQL).all(this.clock()) as { role_key: string }[]).map((r) => r.role_key))]
       : [];
     return { roles, seated };
+  }
+
+  /**
+   * The scope database's size in bytes, asked by scope id alone (#2541): the Cloudflare host's
+   * `databaseSizeLocal`, which a vertical's `/internal/database-size` calls. Counts as
+   * `scopeDatabaseSize` does. A scope this host does not hold is refused before any store is opened.
+   */
+  async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
+    return databaseBytesOf(this.heldReadDb(scopeId));
+  }
+
+  /** What the scope's attachment rows sum to (#2501), asked by scope id alone: refused as the size is (#2541). */
+  async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
+    return attachmentBytesOf(this.heldReadDb(scopeId));
+  }
+
+  /**
+   * The read connection of a scope this host holds, for a read that names only the scope id (#2541),
+   * with the directory read ONCE. Refused `conflict` before anything is opened: no row, a reaped one
+   * (a tombstone whose store is gone), or a scope with no store open or on disk (archived straight
+   * from provisioning, as the Cloudflare host's object holding nothing is), since `runtime()` would
+   * create the store those leave absent.
+   */
+  private heldReadDb(scopeId: ScopeId): Database.Database {
+    const row = this.directory.prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { tenant_id: string; status: string }
+      | undefined;
+    const stored = row !== undefined && (this.scopes.has(`${row.tenant_id}/${scopeId}`) || existsSync(join(this.dir, `${row.tenant_id}__${scopeId}.sqlite`)));
+    if (!row || row.status === 'reaped' || !stored) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+    return this.readDb(this.runtime(row.tenant_id as TenantId, scopeId));
   }
 
   /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */
@@ -10807,10 +10845,7 @@ export class SqliteScopeHost implements ScopeHost {
       scopeDatabaseSize: async (actor, tenantId, scopeId) => {
         // #1524: the SQLite twin of a DO's `databaseSize`. It counts allocated pages,
         // free ones included, which is what the file costs on disk, not the live row bytes.
-        const db = this.scopeReadDbFor(tenantId, scopeId);
-        const pages = db.pragma('page_count', { simple: true }) as number;
-        const pageSize = db.pragma('page_size', { simple: true }) as number;
-        const bytes = pages * pageSize;
+        const bytes = databaseBytesOf(this.scopeReadDbFor(tenantId, scopeId));
         this.recordAccess(actor, 'scopeDatabaseSize', { tenantId, scopeId }, null, 1);
         return bytes;
       },
@@ -10820,7 +10855,7 @@ export class SqliteScopeHost implements ScopeHost {
         return sizes;
       },
       scopeAttachmentBytes: async (actor, tenantId, scopeId) => {
-        const { bytes } = this.scopeReadDbFor(tenantId, scopeId).prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number };
+        const bytes = attachmentBytesOf(this.scopeReadDbFor(tenantId, scopeId));
         this.recordAccess(actor, 'scopeAttachmentBytes', { tenantId, scopeId }, null, 1);
         return bytes;
       },
