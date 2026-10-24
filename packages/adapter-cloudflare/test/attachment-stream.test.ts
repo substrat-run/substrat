@@ -177,11 +177,29 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
     expect(await objectsUnder(s)).toEqual([]);
   });
 
-  it('a refused write lands the object first, then deletes it', async () => {
+  it('a caller who may not write is refused before the first byte is read (#2516)', async () => {
     const { host, t, s, reader } = await world();
     const att = await host.attachments(reader, t, s);
     await expect(att.upload(upload({ stream: producer(2), length: 2 * MiB }))).rejects.toThrow();
+    // Nothing was pulled from the producer or reached the bucket: no object to delete.
+    expect(flow.produced).toBe(0);
+    expect(flow.reached).toBe(0);
+    expect(await att.list(item)).toEqual([]);
+    expect(await objectsUnder(s)).toEqual([]);
+  });
+
+  it('its twin: a caller who may write is let through and the object lands first, as before', async () => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    const rec = await att.upload(upload({ stream: producer(2), length: 2 * MiB }));
     expect(flow.reached).toBe(2 * MiB);
+    expect(await objectsUnder(s)).toEqual([attachmentBlobKey(s, rec.id)]);
+  });
+
+  it('a refused buffered write still lands its object and then deletes it (the pre-check is for streams)', async () => {
+    const { host, t, s, reader } = await world();
+    const att = await host.attachments(reader, t, s);
+    await expect(att.upload(upload(new Uint8Array(MiB)))).rejects.toThrow();
     expect(await objectsUnder(s)).toEqual([]);
   });
 
