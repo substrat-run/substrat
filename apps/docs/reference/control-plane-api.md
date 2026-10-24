@@ -89,7 +89,11 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   and closes the hand-over. A repeat after that answers `outcome: 'done'` and changes nothing. It refuses with `409`, changing nothing, when the seat is still unclaimed, `from`
   is not the owner of record, no login is bound to `to`, `to` holds no role in the instance
   (grant one first: an entity-narrowed grant is not a role), or another hand-over on the same
-  instance is still unfinished (resend that one first). A hand-over that can no longer finish,
+  instance is still unfinished (resend that one first). It answers `501`, changing nothing, for
+  a scope no vertical serves or an app that keeps no owner seat, for a deployment whose scope host
+  cannot seat a new owner (redeploy it), and for one whose scope host cannot judge the new owner's
+  seat as a person's: an adapter older than the `@substrat-run/vertical-host` beside it, which
+  is upgraded with it (#2531). A hand-over that can no longer finish,
   because `to` was removed after it started, is refused on every resend and blocks any other.
   Staff close it with `{ from, to, abandon: true }` on the same route. It closes only that open
   hand-over, and only when it is wedged like this — one that can still finish is refused

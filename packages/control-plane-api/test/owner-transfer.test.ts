@@ -483,6 +483,8 @@ describe('the owner hand-over, end to end through the vertical surface (#1665)',
       platformSecret: (env) => env.PLATFORM_SECRET,
       hostFor: () =>
         ({
+          // #2531: the person's door the hand-over asks first; a host without it answers 501.
+          scopeRoleRefusal: async () => null,
           assignScopeRole: async (_s: string, p: string) => void world.seats.add(p),
           revokeScopeRole: async (_s: string, p: string) => world.seats.delete(p),
           hasScopeRoleLocal: async (_t: string, _s: string, p: string) => world.members.has(p),

@@ -5,6 +5,10 @@ import { runInDurableObject } from 'cloudflare:test';
  * The ScopeDO's own `projectRole` / `projectTenantTuple` / `revokeProjectedRole` RPCs had no
  * shipped caller and wrote whatever they were handed unjudged, so they were removed (#2531);
  * a suite that needs a row no host path writes seeds it here instead.
+ *
+ * Each write goes straight to `state.storage.sql`, outside the ScopeDO's own paths: it takes no
+ * place in the DO's task queue, moves no write revision and writes no receipt, so it is for
+ * seeding state before the case runs, never for standing in for a write under test.
  */
 type Scope = DurableObjectStub;
 

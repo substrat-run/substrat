@@ -2586,6 +2586,8 @@ export function mountPlatformSurface<Env extends object>(
   //
   // `from` loses the owner ROLE at scope level only: its login stays bound and any other grant
   // it holds stays, so a former owner who should keep working is re-invited or re-granted.
+  /** The scope-host verbs the hand-over calls, required: each is optional on a host, and a 501 says which is missing. */
+  type HandOverVerbs = Required<Pick<VerticalScopeHost, 'assignScopeRole' | 'revokeScopeRole' | 'hasScopeRoleLocal' | 'scopeRoleRefusal'>>;
   app.post('/internal/owner-transfer', async (c) => {
     const body = ownerTransferBody.parse(await c.req.json());
     const ref = { tenantId: body.tenantId, scopeId: body.scopeId };
@@ -2621,14 +2623,14 @@ export function mountPlatformSurface<Env extends object>(
     if (!deps.transferOwner || !deps.completeOwnerTransfer) {
       throw new HTTPException(501, { message: 'this vertical keeps no owner seat' });
     }
-    const host = deps.hostFor(c.env);
-    if (!host.assignScopeRole || !host.revokeScopeRole || !host.hasScopeRoleLocal) {
+    const served = deps.hostFor(c.env);
+    if (!served.assignScopeRole || !served.revokeScopeRole || !served.hasScopeRoleLocal) {
       return refuseStatus(c, 501, 'this deployment cannot seat a new owner (#1665) — redeploy it. Nothing was moved.');
     }
     // #2531: a scope host without `scopeRoleRefusal` predates the person's door (#2447, the same
     // release), so it would ignore the `'person'` below and seat through the platform's door. Fail
     // closed rather than seat unjudged: the pair is upgraded together.
-    if (!host.scopeRoleRefusal) {
+    if (!served.scopeRoleRefusal) {
       return refuseStatus(
         c,
         501,
@@ -2636,6 +2638,7 @@ export function mountPlatformSurface<Env extends object>(
           '@substrat-run/vertical-host and redeploy. Nothing was moved.',
       );
     }
+    const host = served as VerticalScopeHost & HandOverVerbs;
     // A bound login is not enough: `to` must still hold a role here. A member removed by
     // revoking their role keeps the binding, and handing them the scope would seat someone
     // the scope already let go. Read before step 1 and decided by the directory, which judges
