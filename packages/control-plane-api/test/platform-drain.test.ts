@@ -1102,6 +1102,19 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(ungranted.error).toMatch(/declares no `provisions`/);
   });
 
+  it.each([
+    ['an instance slug provisioning does not admit', (p: ReturnType<typeof payloadFor>) => ({ ...p, instance: { ...p.instance, slug: 'Main Site' } })],
+    ['a tenant slug createTenant does not admit', (p: ReturnType<typeof payloadFor>) => ({ ...p, tenant: { ...p.tenant, slug: 'Customer One' } })],
+  ])('answers an ungranted manager with the capability refusal (#455), not %s', async (_case, change) => {
+    await host.admin.registerVertical(staff, { slug: 'ungranted-console', name: 'Ungranted', source: 'cli' });
+    const outcome = await provisionTenantHandler(deps())(
+      { ...ctx, vertical: 'ungranted-console' },
+      intent('provision-tenant', { payload: change(payloadFor(ulid(), ulid())) }),
+    );
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/tenant-provisioner capability/) });
+    expect(outcome.failure).toBeUndefined();
+  });
+
   it('distinguishes declared-but-ungranted (#455): the request awaits the staff grant', async () => {
     await host.admin.registerVertical(staff, {
       slug: 'requested-console',

@@ -810,9 +810,18 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     const parsed = provisionTenantPayload.safeParse(request.payload);
     if (!parsed.success) return malformedPayload('provision-tenant', parsed.error);
     const payload = parsed.data;
+    const admitted = await admitManager(
+      deps,
+      ctx,
+      payload.entitlements.map((e) => e.key),
+      payload.instance.vertical,
+    );
+    if ('refusal' in admitted) return admitted.refusal;
     // The whole input, checked BEFORE anything is written, by the same rules the writes below
     // apply: an input they would refuse settles here and creates nothing, rather than leaving a
-    // tenant and its entitlements behind a scope that is never provisioned.
+    // tenant and its entitlements behind a scope that is never provisioned. After the capability
+    // check above, so a manager that may not provision at all is told that (#455), not what is
+    // wrong with a payload it could not have sent anyway.
     const checked = checkedBeforeWrites(() => {
       const tenantId = tenantIdSchema.parse(payload.tenant.id);
       const scopeId = scopeIdSchema.parse(payload.instance.scopeId);
@@ -829,13 +838,6 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     });
     if (!checked.ok) return checked.refusal;
     const { tenantId, scopeId, scopeInput } = checked.value;
-    const admitted = await admitManager(
-      deps,
-      ctx,
-      payload.entitlements.map((e) => e.key),
-      payload.instance.vertical,
-    );
-    if ('refusal' in admitted) return admitted.refusal;
     const { host, actor } = deps;
     const admin = host.admin;
     try {
