@@ -159,6 +159,8 @@ describe('topLevelIds: the walk reads what a parse reads, for every body JSON.st
     for (const value of [[{ tenantId: T, scopeId: S }], 'tenantId', 7, null]) expect(topLevelIds(bytes(value))).toEqual({});
     expect(topLevelIds(new TextEncoder().encode('  \n {"tenantId":"' + T + '","scopeId":"' + S + '"}'))).toEqual({ tenantId: T, scopeId: S });
     expect(topLevelIds(new TextEncoder().encode('{"tenantId":"' + T))).toEqual({});
+    // The walk ends with the object: a second one after it, which no parse admits, is never read.
+    expect(topLevelIds(new TextEncoder().encode(`{"a":1}{"tenantId":"${T}","scopeId":"${S}"}`))).toEqual({});
   });
 
   it('names what a parse names over thousands of seeded bodies, compact and indented', () => {

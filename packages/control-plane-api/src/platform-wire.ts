@@ -83,7 +83,8 @@ export function topLevelIds(bytes: Uint8Array): { tenantId?: unknown; scopeId?: 
         if (settle(text)) return found;
       }
     } else if (OPENS.has(b)) {
-      if (depth === 1 && pending !== null && settle(null)) return found;
+      // Only ever pending at depth 1, so a nested value settles the top-level key it is the value of.
+      if (pending !== null && settle(null)) return found;
       depth++;
       if (depth === 1) expectKey = true;
     } else if (CLOSES.has(b)) {
