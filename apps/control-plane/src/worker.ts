@@ -168,6 +168,7 @@ import {
 import {
   ControlPlaneError,
   VerticalClient,
+  platformSignedFetch,
   isRouteMiss,
   sweepScopeAttachments,
   hostedCrossVerticalReach,
@@ -632,6 +633,26 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   STORE_PLATFORM_KEY?: string;
   /**
+   * The control plane's `sign` flag (RFC wire-signing §5, step 2): `on` puts a `call` envelope
+   * beside the legacy header on every call this worker makes to a deployment
+   * (`verticalClientAt`). Anything else is off, and every call goes out as before.
+   */
+  WIRE_SIGN?: string;
+  /**
+   * PKCS8 Ed25519 private key, base64url, for wire issuer `platform` (RFC wire-signing §6): its
+   * own pair, not the store key. A deployment holds only the public half. Read only while
+   * `WIRE_SIGN` is on; unset or unusable then, calls go unsigned and each says so in its line.
+   */
+  WIRE_PLATFORM_KEY?: string;
+  /**
+   * The public halves a deployment verifies each wire issuer with (RFC wire-signing §6): raw
+   * Ed25519 keys, base64url, comma-separated, the key in use and a standby. Not secret. Held here
+   * because this worker uploads deployments; nothing reads them until the uploader injects them
+   * (RFC §9 step 2, follow-on 3), so today no deployment is given them.
+   */
+  WIRE_ROUTER_PUBLIC_KEYS?: string;
+  WIRE_PLATFORM_PUBLIC_KEYS?: string;
+  /**
    * The public halves a store script verifies with (#2287): raw Ed25519 keys, base64url,
    * comma-separated, one list per audience, read through `scopeStorePublicKeysFrom`. Not secret. The
    * store upload writes them into each store script; a list so a key can rotate.
@@ -1003,17 +1024,25 @@ function resolveVerticalFor(
     // that's where a new scope's data DO must be born, or the router (which resolves
     // scopes to the serving script) would serve empty storage.
     const serving = await host.admin.verticalServing(actor, slug).catch(() => null);
-    if (serving) {
-      const fetcher = dispatch.get(serving.ref);
-      return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
-    }
+    if (serving) return verticalClientAt(env, dispatch, serving.ref, secret);
     const prod = (await host.admin.listChannels(actor, slug)).find((c) => c.channel === 'prod');
     if (!prod) return undefined;
     const version = await host.admin.getVersion(actor, prod.versionId, slug);
     if (!version?.deploymentRef) return undefined;
-    const fetcher = dispatch.get(version.deploymentRef);
-    return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
+    return verticalClientAt(env, dispatch, version.deploymentRef, secret);
   };
+}
+
+/**
+ * The client for the deployment the namespace knows as `ref`. RFC wire-signing step 2: while the
+ * control plane's `WIRE_SIGN` is on, every call carries a `call` envelope for that same `ref`,
+ * beside the legacy header; off, which is the default, the client is exactly what it was. Every
+ * call the control plane makes to a deployment is made through a client from here.
+ */
+function verticalClientAt(env: Env, dispatch: DispatchNamespace, ref: string, secret: string): VerticalClient {
+  const fetcher = dispatch.get(ref);
+  const fetch = platformSignedFetch({ sign: env.WIRE_SIGN, key: env.WIRE_PLATFORM_KEY }, ref, fetcher.fetch.bind(fetcher));
+  return new VerticalClient({ fetch, platformSecret: secret });
 }
 
 /** Resolve a vertical by a KNOWN dispatch script name (#286) — scopes on the stable
@@ -1024,10 +1053,7 @@ function resolveVerticalRefFor(
   const dispatch = env.DISPATCH;
   const secret = env.PLATFORM_SECRET;
   if (!dispatch || !secret) return undefined;
-  return async (deploymentRef) => {
-    const fetcher = dispatch.get(deploymentRef);
-    return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
-  };
+  return async (deploymentRef) => verticalClientAt(env, dispatch, deploymentRef, secret);
 }
 
 /**
@@ -1047,8 +1073,7 @@ function resolveVerticalVersionFor(
     const host = hostFor(env);
     const version = await host.admin.getVersion(actor, versionId, slug);
     if (!version?.deploymentRef) return undefined;
-    const fetcher = dispatch.get(version.deploymentRef);
-    return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret });
+    return verticalClientAt(env, dispatch, version.deploymentRef, secret);
   };
 }
 
@@ -1666,7 +1691,7 @@ function patchScriptBindingsFor(env: Env) {
  * drain (both the periodic sweep and the router-kick endpoint) and its provision-sibling
  * handler. Returns `undefined` when no deployment is bound (nothing to drain).
  */
-function resolveVerticalForScopeFor(
+export function resolveVerticalForScopeFor(
   env: Env,
 ): (scope: {
   vertical: string | null;

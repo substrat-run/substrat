@@ -113,6 +113,15 @@ const MANIFEST = {
       // them in. A list, so a key rotates as: add the new public key, switch the signer, drop the old.
       STORE_CALLER_PUBLIC_KEYS: 'STORE_CALLER_PUBLIC_KEYS',
       STORE_PLATFORM_PUBLIC_KEYS: 'STORE_PLATFORM_PUBLIC_KEYS',
+      // RFC wire-signing (K-58): the control plane's own wire key, issuer `platform`. Not the
+      // store key. Read only while WIRE_SIGN is `on`. Runbook: secrets/wire-keys.md.
+      WIRE_PLATFORM_KEY: 'WIRE_PLATFORM_KEY',
+      // The control plane's `sign` flag: `on` signs its calls to a deployment. Unset is off.
+      WIRE_SIGN: 'WIRE_PLATFORM_SIGN',
+      // Not secret: the raw public keys a deployment verifies each issuer with, the key in use and a
+      // standby. The control plane uploads deployments, so it holds both lists.
+      WIRE_ROUTER_PUBLIC_KEYS: 'WIRE_ROUTER_PUBLIC_KEYS',
+      WIRE_PLATFORM_PUBLIC_KEYS: 'WIRE_PLATFORM_PUBLIC_KEYS',
       PUSH_TOKEN_SECRET: 'CP_PUSH_TOKEN_SECRET',
       // A DEDICATED value (#1602) — never the push-token secret and never
       // PLATFORM_SECRET, same reasoning as PUSH_TOKEN_SECRET above but its own key,
@@ -258,6 +267,11 @@ const MANIFEST = {
       ROUTER_SECRET: 'ROUTER_SECRET',
       // PKCS8 Ed25519, base64url. Signs audience `caller`. Optional until a store driver is served.
       STORE_CALLER_KEY: 'STORE_CALLER_KEY',
+      // RFC wire-signing (K-58): the router's own wire key, issuer `router`. Not the store key.
+      // Read only while WIRE_SIGN is `on`. Runbook: secrets/wire-keys.md.
+      WIRE_ROUTER_KEY: 'WIRE_ROUTER_KEY',
+      // The router's `sign` flag: `on` signs every dispatch and peer invocation. Unset is off.
+      WIRE_SIGN: 'WIRE_ROUTER_SIGN',
     },
   },
   // id.substrat.net (#1544): the platform's own OAuth client per upstream. A provider whose
@@ -294,6 +308,20 @@ const STORE_KEY_AUDIENCES = {
 };
 /** The worker that uploads store scripts, and so holds both public-key lists. */
 const STORE_KEY_UPLOADER = 'control-plane';
+
+/**
+ * The wire envelope's keys (RFC wire-signing §6, K-58), the same shape as the store's, one signer
+ * per issuer: the router signs `router`, the control plane `platform`. Each list carries the key in
+ * use and a standby whose private half is held offline. The control plane uploads deployments, so
+ * it alone maps both lists. `pnpm wire-keys` generates and checks these; `tools/secrets-coverage.mjs`
+ * holds the manifest, both env templates and secrets/README.md to them.
+ */
+const WIRE_KEY_ISSUERS = {
+  router: { privateKey: 'WIRE_ROUTER_KEY', signer: 'router', publicKeys: 'WIRE_ROUTER_PUBLIC_KEYS' },
+  platform: { privateKey: 'WIRE_PLATFORM_KEY', signer: 'control-plane', publicKeys: 'WIRE_PLATFORM_PUBLIC_KEYS' },
+};
+/** The worker that uploads deployments, and so holds both wire public-key lists. */
+const WIRE_KEY_UPLOADER = 'control-plane';
 
 /**
  * Canonical keys the file carries that NO worker should ever receive → `key: why`.
@@ -802,4 +830,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
 }
 
-export { MANIFEST, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER, parseEnvText };
+export { MANIFEST, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER, WIRE_KEY_ISSUERS, WIRE_KEY_UPLOADER, parseEnvText };

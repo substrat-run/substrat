@@ -46,6 +46,7 @@ export type {
 // (`./browser`): a bundler resolving the root entry would pull the whole server.
 export * from './browser.js';
 export { VerticalClient, AUDITED_CALL_DEADLINE_MS, isRouteMiss } from './vertical-client.js';
+export { platformSignedFetch, type PlatformWireSettings } from './platform-wire.js';
 export {
   advanceCopyJob,
   copyJobId,

@@ -15,6 +15,10 @@
 // it changes without a code deploy, and never with a vertical re-push:
 //   wrangler secret put FIELD_COVERAGE_SAMPLE_RATE      # `wrangler secret delete` turns it off
 //
+// Optional (RFC wire-signing, step 2): the router's wire key and its `sign` flag. Off unless
+// WIRE_SIGN is exactly `on`; off, the router sends what it sent before. Pushed with
+// scripts/secrets.mjs as WIRE_ROUTER_KEY and WIRE_ROUTER_SIGN; runbook secrets/wire-keys.md.
+//
 // Then bind hostnames with `HostAdmin.bindHostname` (console, or the control-plane
 // API) and set them `active`. Until a hostname is bound and active, the router
 // answers 404 — a name it does not know is a name it will not serve.

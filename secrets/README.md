@@ -123,6 +123,11 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `STORE_PLATFORM_KEY` | `STORE_PLATFORM_KEY` | — | — |
 | `STORE_CALLER_KEY` | — | — | `STORE_CALLER_KEY` |
 | `STORE_CALLER_PUBLIC_KEYS` / `STORE_PLATFORM_PUBLIC_KEYS` | same names | — | — |
+| `WIRE_PLATFORM_KEY` | `WIRE_PLATFORM_KEY` | — | — |
+| `WIRE_ROUTER_KEY` | — | — | `WIRE_ROUTER_KEY` |
+| `WIRE_ROUTER_PUBLIC_KEYS` / `WIRE_PLATFORM_PUBLIC_KEYS` | same names | — | — |
+| `WIRE_PLATFORM_SIGN` | `WIRE_SIGN` | — | — |
+| `WIRE_ROUTER_SIGN` | — | — | `WIRE_SIGN` |
 
 The social relay (`id.substrat.net`, #1544) takes one OAuth client per upstream, under
 `RELAY_GOOGLE_*`, `RELAY_GITHUB_*` and `RELAY_APPLE_*` in the file and the unprefixed names
@@ -136,6 +141,16 @@ plane, which writes them into every store script it uploads. `generate` does not
 since a random token is not a key: [store-keys.md](./store-keys.md) is their runbook, and
 `pnpm lint:secrets-coverage` holds these rows, both templates and the manifest to one
 inventory (`STORE_KEY_AUDIENCES` in `scripts/secrets.mjs`).
+
+The four `WIRE_*` keys sign and verify the wire envelope ([RFC wire-signing](../docs/rfc/wire-signing.md),
+K-58): the router signs issuer `router`, the control plane issuer `platform`, each with its own
+pair, never the store key. The two public lists are not secret and live on the control plane;
+each carries the key in use and a standby whose private half is held offline. `WIRE_ROUTER_SIGN`
+and `WIRE_PLATFORM_SIGN` are each signer's `sign` flag, off unless set to `on`; once `on` has been
+pushed, turning one off takes an explicit `off` (a blank line is skipped by `push`, which deletes
+nothing).
+[wire-keys.md](./wire-keys.md) is their runbook, and the same check holds them to
+`WIRE_KEY_ISSUERS` in `scripts/secrets.mjs`.
 
 `PLATFORM_SECRET` and `ROUTER_SECRET` are also injected into every pushed vertical by
 the control plane's WfP uploader — verticals need no secret setup of their own, but the

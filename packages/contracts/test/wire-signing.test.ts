@@ -17,7 +17,13 @@ import {
   importWireSigningKey,
   parseWireEnvelope,
   signWireEnvelope,
+  signWireRequest,
   verifyWireEnvelope,
+  WIRE_UNSIGNED_HEADERS,
+  wireSignerOf,
+  wireSigningKeyOf,
+  wireSigningOn,
+  wireUnsignedHeadersOf,
   WIRE_CLOCK_SKEW_SECONDS,
   WIRE_ENVELOPE_HEADER,
   WIRE_ENVELOPE_LIFETIME_SECONDS,
@@ -30,6 +36,7 @@ import {
   wireReplayOf,
   WIRE_REPLAY_FREE_CALLS,
   wireEnvelopeShape,
+  WireClaimsError,
   WireKeyError,
   wireRequestBinding,
   wireStateOf,
@@ -41,6 +48,7 @@ import {
   WIRE_STATES,
   type WireBodyReader,
   type WireBytes,
+  type WireClaims,
   type WireEnvelopeInput,
   type WireExpectation,
   type WireIssuer,
@@ -48,6 +56,7 @@ import {
   type WireRefusalReason,
   type WireVerificationKeys,
 } from '../src/wire-signing.js';
+import { FIELD_COVERAGE_HEADER, PARENT_REQUEST_ID_HEADER } from '../src/invocation-record.js';
 
 interface Vector {
   readonly name: string;
@@ -693,6 +702,19 @@ describe('wire envelope: the encoder', () => {
     await expect(signWireEnvelope(key, { ...route, iat: -5, exp: 10 })).rejects.toThrow(/time/);
     await expect(signWireEnvelope(key, { ...route, nonce: 'n' })).rejects.toThrow(/malformed/);
   });
+
+  it('every refusal is the encoder’s own class, which a signer counts as `claims` (RFC §8)', async () => {
+    const key = await importWireSigningKey(fixture.keys.router.privateKeyPkcs8);
+    const claims = parseWireEnvelope(ROUTE.canonical)!;
+    for (const patch of [{ vertical: '' }, { vertical: 'a\nb' }, { iat: -1 }, { v: 2 }, { scopeId: null }]) {
+      expect(() => canonicalWireEnvelope({ ...claims, ...patch } as WireClaims), JSON.stringify(patch)).toThrow(WireClaimsError);
+    }
+    const { body: _body, ...bodiless } = ROUTER_CALL.input;
+    for (const input of [{ ...ROUTE.input, body: '' }, bodiless, { ...ROUTE.input, iat: 10, exp: 500 }, { ...ROUTE.input, method: 'get' }]) {
+      await expect(signWireEnvelope(key, input)).rejects.toThrow(WireClaimsError);
+    }
+    expect(new WireClaimsError('x')).toBeInstanceOf(Error);
+  });
 });
 
 describe('wire envelope: replay', () => {
@@ -1003,5 +1025,168 @@ describe('wireReplayOf: a call’s replay policy, as its endpoint states it', ()
     for (const path of ['/internal/provision', '/internal/vertical-invoke', '/internal/brand-new-verb', '/internal/%71uery', '/internal/query/', '/INTERNAL/query']) {
       for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) expect(wireReplayOf(method, path)).toBe('nonce');
     }
+  });
+});
+
+describe('the signers: their flag, their key, and an envelope on a request (RFC §9, step 2)', () => {
+  it('wireSigningOn: only `on` turns a signer on; every doubt is off', () => {
+    for (const value of ['on', ' on', 'on\n']) expect(wireSigningOn(value), JSON.stringify(value)).toBe(true);
+    for (const value of [undefined, null, '', 'off', 'ON', 'On', '1', 'true', 'yes', true, 1]) expect(wireSigningOn(value), JSON.stringify(value)).toBe(false);
+  });
+
+  it('wireSigningKeyOf: imported once per value, and replaced when the value changes', async () => {
+    const [a, b] = await Promise.all([generateScopeStoreKeyPair(), generateScopeStoreKeyPair()]);
+    const first = wireSigningKeyOf(a.privateKey);
+    expect(wireSigningKeyOf(a.privateKey)).toBe(first);
+    expect((await first).publicKey).toBe(a.publicKey);
+    const second = wireSigningKeyOf(b.privateKey);
+    expect(second).not.toBe(first);
+    expect((await second).kid).toBe((await importWireSigningKey(b.privateKey)).kid);
+  });
+
+  it('wireSigningKeyOf: a value that will not import rejects with its reason, never its text', async () => {
+    const bad = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const error = await wireSigningKeyOf(bad).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(WireKeyError);
+    expect((error as WireKeyError).reason).toBe('not-pkcs8-v1');
+    expect(String((error as Error).message)).not.toContain(bad);
+    // The same rejection is kept for the same value, rather than imported again.
+    expect(wireSigningKeyOf(bad)).toBe(wireSigningKeyOf(bad));
+  });
+
+  it('signWireRequest, a route: the envelope beside every header, the body neither bound nor read', async () => {
+    const key = await importWireSigningKey(fixture.keys.router.privateKeyPkcs8);
+    const request = new Request('https://acme.example/api/things?page=2#frag', { method: 'POST', body: 'upload', headers: { cookie: 'a=1', 'x-substrat-router': 'legacy' } });
+    const signed = await signWireRequest(key, request, { iss: 'router', kind: 'route', aud: 'acme', tenantId: ROUTE.input.tenantId!, scopeId: ROUTE.input.scopeId!, surface: 'app' });
+    expect(signed.headers.get('cookie')).toBe('a=1');
+    expect(signed.headers.get('x-substrat-router')).toBe('legacy');
+    expect(await signed.text()).toBe('upload');
+    const claims = decodeWireEnvelope(signed.headers.get(WIRE_ENVELOPE_HEADER)!)!.claims;
+    expect(claims).toMatchObject({ iss: 'router', kind: 'route', aud: 'acme', method: 'POST', targetDigest: await wireDigest('/api/things?page=2'), bodyDigest: null });
+    const verdict = await verifyWireEnvelope({
+      headers: signed.headers,
+      keys: await keysOf(),
+      expected: { iss: 'router', kind: 'route', aud: 'acme', ...wireRequestBinding(signed) },
+      nowSeconds: claims.iat,
+    });
+    expect(verdict.ok).toBe(true);
+  });
+
+  it('signWireRequest, a call: the exact body bound and handed on; an absent body is the empty one', async () => {
+    const key = await importWireSigningKey(fixture.keys.platform.privateKeyPkcs8);
+    const body = JSON.stringify({ note: 'é'.repeat(5) });
+    const post = await signWireRequest(key, new Request('https://vertical/internal/query', { method: 'POST', body }), { iss: 'platform', kind: 'call', aud: 'acme' });
+    const bytes = await post.arrayBuffer();
+    expect(new TextDecoder().decode(bytes)).toBe(body);
+    const claims = decodeWireEnvelope(post.headers.get(WIRE_ENVELOPE_HEADER)!)!.claims;
+    expect(claims.bodyDigest).toBe(await wireDigest(body));
+    const verify = async (request: Request, received: WireBytes) =>
+      verifyWireEnvelope({
+        headers: request.headers,
+        keys: await keysOf(),
+        expected: { iss: 'platform', kind: 'call', aud: 'acme', ...wireRequestBinding(request), body: received, replay: 'none' },
+        nowSeconds: claims.iat,
+      } as never);
+    expect((await verify(post, bytes)).ok).toBe(true);
+    const get = await signWireRequest(key, new Request('https://vertical/internal/system-grants?scopeId=x'), { iss: 'platform', kind: 'call', aud: 'acme' });
+    expect(get.body).toBeNull();
+    expect(decodeWireEnvelope(get.headers.get(WIRE_ENVELOPE_HEADER)!)!.claims.bodyDigest).toBe(await wireDigest(''));
+  });
+
+  it('signWireRequest replaces an envelope already on the request, and each call is a fresh nonce', async () => {
+    const key = await importWireSigningKey(fixture.keys.platform.privateKeyPkcs8);
+    const make = () => new Request('https://vertical/internal/query', { method: 'POST', body: '{}', headers: { [WIRE_ENVELOPE_HEADER]: 'stale', [WIRE_SIGNATURE_HEADER]: 'stale' } });
+    const [a, b] = await Promise.all([make(), make()].map((r) => signWireRequest(key, r, { iss: 'platform', kind: 'call', aud: 'acme' })));
+    expect(a!.headers.get(WIRE_ENVELOPE_HEADER)).not.toBe('stale');
+    expect(decodeWireEnvelope(a!.headers.get(WIRE_ENVELOPE_HEADER)!)!.claims.nonce).not.toBe(decodeWireEnvelope(b!.headers.get(WIRE_ENVELOPE_HEADER)!)!.claims.nonce);
+  });
+
+  it('signWireRequest refuses claims no verifier would accept, and a pair the table does not admit', async () => {
+    const key = await importWireSigningKey(fixture.keys.platform.privateKeyPkcs8);
+    const request = () => new Request('https://vertical/internal/query', { method: 'POST', body: '{}' });
+    await expect(signWireRequest(key, request(), { iss: 'platform', kind: 'call', aud: '' })).rejects.toThrow();
+    await expect(signWireRequest(key, request(), { iss: 'platform', kind: 'route', aud: 'acme' })).rejects.toThrow();
+    await expect(signWireRequest(key, request(), { iss: 'platform', kind: 'call', aud: 'acme', tenantId: ROUTE.input.tenantId! })).rejects.toThrow();
+    // Its twin: the same request with admissible claims is signed.
+    await expect(signWireRequest(key, request(), { iss: 'platform', kind: 'call', aud: 'acme', tenantId: ROUTE.input.tenantId!, scopeId: ROUTE.input.scopeId! })).resolves.toBeInstanceOf(Request);
+  });
+});
+
+describe('wireSignerOf: one signer decision for the router and the control plane (RFC §5, §8)', () => {
+  const call = () => new Request('https://vertical/internal/provision', { method: 'POST', body: '{"a":1}' });
+  const CALL_CLAIMS = { iss: 'platform', kind: 'call', aud: 'acme' } as const;
+
+  it('is null while the flag is off, whatever the key', () => {
+    for (const sign of [undefined, '', 'off', 'ON']) expect(wireSignerOf({ sign, key: fixture.keys.platform.privateKeyPkcs8 })).toBeNull();
+    expect(wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })).toBeTypeOf('function');
+  });
+
+  it('with no key, hands the very request back unread, failed as unset', async () => {
+    const request = call();
+    const result = await wireSignerOf({ sign: 'on' })!(request, CALL_CLAIMS);
+    expect(result).toEqual({ request, outcome: 'failed', reason: 'unset' });
+    expect(request.bodyUsed).toBe(false);
+  });
+
+  it('with a key that will not import, hands the very request back unread, with the key form’s reason', async () => {
+    const request = call();
+    const result = await wireSignerOf({ sign: 'on', key: 'AAAA' })!(request, CALL_CLAIMS);
+    expect(result).toEqual({ request, outcome: 'failed', reason: 'not-pkcs8-v1' });
+    expect(request.bodyUsed).toBe(false);
+  });
+
+  it('signs, adding the pair `named` reads off the bytes it read once', async () => {
+    const seen: string[] = [];
+    const named = (_: Request, body: ArrayBuffer | undefined) => (seen.push(new TextDecoder().decode(body)), { tenantId: ROUTE.input.tenantId!, scopeId: ROUTE.input.scopeId! });
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(call(), CALL_CLAIMS, named);
+    expect(result.outcome).toBe('signed');
+    expect(seen).toEqual(['{"a":1}']);
+    expect(decodeWireEnvelope(result.request.headers.get(WIRE_ENVELOPE_HEADER)!)!.claims).toMatchObject({ tenantId: ROUTE.input.tenantId, bodyDigest: await wireDigest('{"a":1}') });
+    expect(await result.request.text()).toBe('{"a":1}');
+  });
+
+  it('claims the encoder refuses, after the body was read: the request comes back whole, failed as claims', async () => {
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(call(), { ...CALL_CLAIMS, aud: '' });
+    expect(result).toMatchObject({ outcome: 'failed', reason: 'claims' });
+    expect(result.request.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
+    expect(await result.request.text()).toBe('{"a":1}');
+  });
+
+  it('any other throw after the body was read is `error`, never `claims`: the request still comes back whole', async () => {
+    const named = () => {
+      throw new TypeError('not a claims refusal');
+    };
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(call(), CALL_CLAIMS, named);
+    expect(result).toMatchObject({ outcome: 'failed', reason: 'error' });
+    expect(result.request.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
+    expect(await result.request.text()).toBe('{"a":1}');
+  });
+
+  it('a body that cannot be read fails the signing, not the request: handed back, failed as error', async () => {
+    const broken = new ReadableStream<Uint8Array>({ pull: (controller) => controller.error(new Error('gone')) });
+    const request = new Request('https://vertical/internal/provision', { method: 'POST', body: broken, duplex: 'half' } as RequestInit);
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(request, CALL_CLAIMS);
+    expect(result).toEqual({ request, outcome: 'failed', reason: 'error' });
+  });
+});
+
+describe('WIRE_UNSIGNED_HEADERS: the router headers listed as carrying no authority (RFC §5)', () => {
+  const ID = '01JZ0000000000000000CVG001';
+
+  it('names exactly the field-coverage sample on a route and the parent request id on a call, spelled as their readers spell them', () => {
+    expect(WIRE_UNSIGNED_HEADERS).toEqual({ [FIELD_COVERAGE_HEADER]: 'route', [PARENT_REQUEST_ID_HEADER]: 'call' });
+  });
+
+  it('hands on a listed header only on its own kind, and only as one ULID', () => {
+    const headers = new Headers({ [FIELD_COVERAGE_HEADER]: ID, [PARENT_REQUEST_ID_HEADER]: ID, 'x-substrat-extra': ID });
+    expect(wireUnsignedHeadersOf('route', headers)).toEqual([[FIELD_COVERAGE_HEADER, ID]]);
+    expect(wireUnsignedHeadersOf('call', headers)).toEqual([[PARENT_REQUEST_ID_HEADER, ID]]);
+    for (const value of ['', ID.toLowerCase(), `${ID} ${ID}`, `${ID},${ID}`, ID.slice(1), `${ID}0`, 'IIIIIIIIIIIIIIIIIIIIIIIIII']) {
+      expect(wireUnsignedHeadersOf('route', new Headers({ [FIELD_COVERAGE_HEADER]: value })), JSON.stringify(value)).toEqual([]);
+    }
+    const twice = new Headers();
+    twice.append(PARENT_REQUEST_ID_HEADER, ID);
+    twice.append(PARENT_REQUEST_ID_HEADER, ID);
+    expect(wireUnsignedHeadersOf('call', twice)).toEqual([]);
   });
 });
