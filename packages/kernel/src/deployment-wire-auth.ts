@@ -36,9 +36,11 @@ export const DEPLOYMENT_WIRE_AUTH_DDL = `
  *
  * A tenant reach follows the vertical's current owner: it is resolved at read time, so whoever owns
  * the slug then reads every record the table holds for it, and a tenant that no longer owns it reads
- * none. No host path moves the owner of a registered vertical today; an owner changes by deleting the
- * vertical, which removes its records, and registering the slug again. A record written while no
- * tenant owned the slug is read by the tenant that owns it at read time. Key ids are not secrets.
+ * none. Apart from a whole-directory restore (`restoreDirectory`), which replaces the owners and the
+ * records together from one dump, no host path moves the owner of a registered vertical today: an
+ * owner changes by deleting the vertical, which removes its records, and registering the slug again.
+ * A record written while no tenant owned the slug is read by the tenant that owns it at read time. Key
+ * ids are not secrets.
  */
 export type DeploymentWireAuthReach = { readonly tenantId: TenantId } | { readonly fleet: true };
 
@@ -61,6 +63,10 @@ const refused = (message: string) => substratError('validation_failed', message)
 export const WIRE_AUTH_FILTER_TEXT_MAX = 256;
 
 const FILTER_KEYS: ReadonlySet<string> = new Set(['reach', 'verticalSlug', 'limit', 'cursor', 'order']);
+
+/** The longest caller-supplied key name a refusal echoes, so its text stays bounded. */
+const ECHOED_KEY_MAX = 64;
+const echoedKey = (key: string): string => (key.length > ECHOED_KEY_MAX ? `${key.slice(0, ECHOED_KEY_MAX)}…` : key);
 const REACH_REFUSAL = 'a capability-record read names its reach: one tenant ({ tenantId }) or the fleet ({ fleet: true }), exactly one';
 
 /**
@@ -78,24 +84,27 @@ export function assertWireAuthFilter(filter: unknown): DeploymentWireAuthFilter 
   if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
     throw refused('a capability-record read needs a filter naming its reach and its limit');
   }
-  const f = filter as Record<string, unknown>;
-  const extra = Object.keys(f).filter((key) => !FILTER_KEYS.has(key));
-  if (extra.length > 0) throw refused(`a capability-record read takes reach, verticalSlug, limit, cursor and order; not ${extra.slice(0, 3).join(', ')}`);
-  const r = f['reach'];
+  // Own properties only: a field inherited from a prototype, a polluted one included, is not the caller's.
+  const own = (o: object, key: string): unknown => (Object.hasOwn(o, key) ? (o as Record<string, unknown>)[key] : undefined);
+  const extra = Object.keys(filter).filter((key) => !FILTER_KEYS.has(key));
+  if (extra.length > 0) {
+    throw refused(`a capability-record read takes reach, verticalSlug, limit, cursor and order; not ${extra.slice(0, 3).map(echoedKey).join(', ')}`);
+  }
+  const r = own(filter, 'reach');
   if (typeof r !== 'object' || r === null || Array.isArray(r)) throw refused(REACH_REFUSAL);
   const keys = Object.keys(r);
   if (keys.length !== 1) throw refused(REACH_REFUSAL);
-  const value = (r as Record<string, unknown>)[keys[0]!];
+  const value = own(r, keys[0]!);
   let reach: DeploymentWireAuthReach;
   if (keys[0] === 'fleet' && value === true) reach = { fleet: true };
   else if (keys[0] === 'tenantId' && tenantId.safeParse(value).success) reach = { tenantId: tenantId.parse(value) };
   else throw refused(REACH_REFUSAL);
-  const limit = f['limit'];
+  const limit = own(filter, 'limit');
   if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > LIST_PAGE_MAX) {
     throw refused(`limit must be an integer from 1 to ${LIST_PAGE_MAX}, got ${typeof limit === 'number' ? String(limit) : typeof limit}`);
   }
   const text = (name: 'verticalSlug' | 'cursor'): string | undefined => {
-    const v = f[name];
+    const v = own(filter, name);
     if (v === undefined) return undefined;
     if (typeof v !== 'string' || v.length === 0 || v.length > WIRE_AUTH_FILTER_TEXT_MAX) {
       throw refused(`${name} must be a string of 1 to ${WIRE_AUTH_FILTER_TEXT_MAX} characters`);
@@ -104,7 +113,7 @@ export function assertWireAuthFilter(filter: unknown): DeploymentWireAuthFilter 
   };
   const verticalSlug = text('verticalSlug');
   const cursor = text('cursor');
-  const order = f['order'];
+  const order = own(filter, 'order');
   if (order !== undefined && order !== 'asc' && order !== 'desc') throw refused('order must be asc or desc');
   return {
     reach,

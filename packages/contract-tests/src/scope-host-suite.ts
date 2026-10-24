@@ -11401,6 +11401,46 @@ export function scopeHostContractSuite(
         expect(await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: 1, cursor: next[0]!.deploymentRef })).toEqual([]);
       });
 
+      it('reads only the filter’s own fields, and echoes an unknown key no longer than its bound', async () => {
+        const a = slugOf('wire-own');
+        await put(a, 'archive', null, record(), '19:00:00');
+        await put(a, 'serving', null, record(), '19:00:01');
+        const refs = (rows: { deploymentRef: string }[]) => rows.map((r) => r.deploymentRef);
+
+        // An inherited cursor or order is not the caller's: it is neither applied nor judged, and the
+        // judged copy that is logged carries none of it.
+        const inherited = Object.assign(Object.create({ cursor: `${a}-serving`, order: 'sideways' }) as object, {
+          reach: { fleet: true },
+          limit: LIST_PAGE_MAX,
+          verticalSlug: a,
+        });
+        expect(refs(await host.admin.listWireAuth!(staff, inherited as never))).toEqual([`${a}-archive`, `${a}-serving`]);
+        const logged = (await host.admin.accessLog(staff, { method: 'listWireAuth' })).filter((e) => (e.params ?? '').includes(a));
+        expect(logged.map((e) => e.params)).toEqual([JSON.stringify({ reach: { fleet: true }, verticalSlug: a, limit: LIST_PAGE_MAX })]);
+
+        // A reach or a limit only inherited is no reach or limit at all, and an inherited tenant is no tenant.
+        for (const bad of [
+          Object.create({ reach: { fleet: true }, limit: 10 }) as object,
+          Object.assign(Object.create({ limit: 10 }) as object, { reach: { fleet: true }, verticalSlug: a }),
+          Object.assign(Object.create({ reach: { fleet: true } }) as object, { limit: 10, verticalSlug: a }),
+          { reach: Object.create({ tenantId: ulid() }) as object, limit: 10, verticalSlug: a },
+          { reach: Object.create({ fleet: true }) as object, limit: 10, verticalSlug: a },
+        ]) {
+          await expectRefusal(host.admin.listWireAuth!(staff, bad as never), 'validation_failed');
+        }
+
+        // An unknown key is named in the refusal, cut to its bound with an ellipsis.
+        const longKey = 'k'.repeat(400);
+        const error = await host.admin.listWireAuth!(staff, { reach: { fleet: true }, limit: 10, [longKey]: 1 } as never).then(
+          () => null,
+          (e: unknown) => e,
+        );
+        expect(errorCodeOf(error)).toBe('validation_failed');
+        const message = (error as Error).message;
+        expect(message).toContain(`${'k'.repeat(64)}…`);
+        expect(message).not.toContain('k'.repeat(65));
+      });
+
       it('logs a tenant’s read against that tenant and the fleet’s against none, the judged filter with its reach first', async () => {
         const owner = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: owner, slug: `wire-log-${owner.slice(-6).toLowerCase()}`, name: 'Wire Log' });

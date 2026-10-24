@@ -127,8 +127,9 @@ records themselves are reachable only through the host API today, until the read
 A read of the records (`listWireAuth`) is always one page and names its reach: one tenant's
 verticals or the whole fleet. A tenant reach follows the vertical's current owner, resolved when the
 read runs: the tenant that owns the slug then reads every record held for it, and one that no longer
-owns it reads none. An owner changes only by deleting the vertical, which removes its records, and
-registering the slug again.
+owns it reads none. Apart from a whole-directory restore, which replaces the owners and the records
+together from one dump, an owner changes only by deleting the vertical, which removes its records,
+and registering the slug again.
 
 ## Turning signing off
 
