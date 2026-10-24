@@ -181,6 +181,7 @@ import {
   type ImportState,
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
   connectorAttachmentMetaBytes,
@@ -1034,6 +1035,37 @@ const connectorAttachmentMeta = z.object({
 const connectorAttachmentStreamMeta = connectorAttachmentMeta.extend({
   size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
+
+/**
+ * Read a multipart body into a `FormData`, holding what is buffered to `limit` bytes (#2538).
+ * The count is of bytes as they arrive, so a body with no `Content-Length` (chunked) or one that
+ * understates it stops at the bound all the same: the read is cancelled and `null` comes back,
+ * never a partial form. A request with no body is parsed as it always was.
+ */
+async function readFormWithin(req: Request, limit: number): Promise<FormData | null> {
+  if (req.body === null) return req.formData();
+  let seen = 0;
+  let over = false;
+  const counted = req.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        seen += chunk.byteLength;
+        if (seen > limit) {
+          over = true;
+          controller.error(new Error('multipart body over its bound'));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+  try {
+    return await new Response(counted, { headers: { 'content-type': req.headers.get('content-type') ?? '' } }).formData();
+  } catch (e) {
+    if (over) return null;
+    throw e;
+  }
+}
 
 /**
  * `JSON.stringify` whose output is printable ASCII, so it can ride a header whatever the
@@ -1972,7 +2004,19 @@ export function mountPlatformSurface<Env extends object>(
   // The bytes leg (#574): multipart, because provider artifacts (a sealed signed PDF)
   // cannot ride a JSON invoke. `meta` is a JSON string field, `body` the raw blob.
   app.post('/internal/connector-attachment', async (c) => {
-    const form = await c.req.formData();
+    // This route buffers the body, so it is held to the stream route's size bound before and while
+    // it is read (#2538). A `Content-Length` over the file bound plus the multipart envelope is
+    // refused unread; a body without one, or that understates it, is cut off at the same count; and
+    // the file part is judged on its own size once parsed, so the sentence names the file's bytes.
+    const ceiling = CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES;
+    const length = Number(c.req.header('content-length'));
+    if (Number.isFinite(length) && length > ceiling) {
+      return refuseStatus(c, 413, connectorAttachmentSizeRefusal(length));
+    }
+    const form = await readFormWithin(c.req.raw, ceiling);
+    if (form === null) {
+      return refuseStatus(c, 413, connectorAttachmentSizeRefusal(ceiling + 1));
+    }
     const metaRaw = form.get('meta');
     if (typeof metaRaw !== 'string') {
       throw new HTTPException(400, { message: 'connector-attachment needs a `meta` JSON field' });
@@ -1985,6 +2029,9 @@ export function mountPlatformSurface<Env extends object>(
     const blob = form.get('body');
     if (blob === null || typeof blob === 'string') {
       throw new HTTPException(400, { message: 'connector-attachment needs a `body` file field' });
+    }
+    if (blob.size > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
+      return refuseStatus(c, 413, connectorAttachmentSizeRefusal(blob.size));
     }
     const record = await deps.hostFor(c.env).connectorAttachmentUploadLocal(
       meta.connectionId,

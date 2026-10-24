@@ -880,7 +880,9 @@ export class VerticalClient {
     const { body, ...meta } = input;
     if (isSizedByteStream(body)) return this.connectorStreamAttachment(meta, body);
     const metaJson = JSON.stringify(meta);
-    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson));
+    // The buffer is already held, so its length is known and the route's size bound is judged
+    // here, before it is copied into a form (#2538). A file this large is meant for the stream.
+    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson), body.byteLength);
     const form = new FormData();
     form.append('meta', metaJson);
     form.append('body', new Blob([body as BlobPart], { type: input.contentType }), input.filename);
@@ -899,7 +901,7 @@ export class VerticalClient {
 
   /**
    * Hold an upload to the bounds the far end holds it to (#2516), so it is refused here, with
-   * nothing sent, in the words the route would use. `declared` is a streamed body's length.
+   * nothing sent, in the words the route would use. `declared` is the body's length.
    */
   private assertWithinAttachmentBounds(verb: string, metaBytes: number, declared?: number): void {
     if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {

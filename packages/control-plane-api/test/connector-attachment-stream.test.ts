@@ -6,6 +6,7 @@ import {
   ATTACHMENT_FIELD_MAX,
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
   connectorAttachmentMetaBytes,
   PLATFORM_SECRET_HEADER,
@@ -469,5 +470,76 @@ describe('mountPlatformSurface — the bounds on a connector upload (#2516)', ()
     expect((await streamPost(app, metaOf(name, CHUNK), producer(1).stream)).status).toBe(201);
     expect((await multipartPost(app, metaOf(name))).status).toBe(201);
     expect(reached).toHaveLength(2);
+  });
+
+  describe('the multipart route and the buffered client path hold the same size bound (#2538)', () => {
+    const boundary = 'substrat-test-boundary';
+    const raw = (app: Hono<{ Bindings: Env }>, headers: Record<string, string>, body: BodyInit) =>
+      app.request(
+        '/internal/connector-attachment',
+        {
+          method: 'POST',
+          headers: { [PLATFORM_SECRET_HEADER]: SECRET, 'content-type': `multipart/form-data; boundary=${boundary}`, ...headers },
+          body,
+          ...(body instanceof ReadableStream ? { duplex: 'half' } : {}),
+        } as RequestInit,
+        ENV,
+      );
+    const ceiling = CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES;
+
+    it('a Content-Length over the bound is a 413 with the stream route\'s sentence, and no byte is read', async () => {
+      const { app, reached } = surface();
+      const res = await raw(app, { 'content-length': String(ceiling + 1) }, 'x');
+      expect(res.status).toBe(413);
+      expect(await res.text()).toContain(connectorAttachmentSizeRefusal(ceiling + 1));
+      expect(reached).toEqual([]);
+    });
+
+    it('a body with no Content-Length is cut off at the bound: the producer is stopped, not drained', async () => {
+      const { app, reached } = surface();
+      const source = producer(Math.ceil(ceiling / CHUNK) + 64);
+      const res = await raw(app, {}, source.stream);
+      expect(res.status).toBe(413);
+      expect(await res.text()).toContain('over the 99614720-byte bound on a connector upload');
+      expect(reached).toEqual([]);
+      expect(source.state.produced).toBeLessThan(ceiling + 8 * CHUNK);
+    });
+
+    it('a file one byte over the bound is a 413 once parsed; exactly at the bound it is stored', async () => {
+      const { app, reached } = surface();
+      const send = (size: number) => {
+        const form = new FormData();
+        form.append('meta', JSON.stringify(metaOf('big.pdf')));
+        form.append('body', new Blob([new Uint8Array(size)]), 'big.pdf');
+        return app.request('/internal/connector-attachment', { method: 'POST', headers: { [PLATFORM_SECRET_HEADER]: SECRET }, body: form }, ENV);
+      };
+      const over = await send(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1);
+      expect(over.status).toBe(413);
+      expect(await over.text()).toContain(connectorAttachmentSizeRefusal(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1));
+      expect(reached).toEqual([]);
+      expect((await send(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES)).status).toBe(201);
+      expect(reached).toHaveLength(1);
+    });
+
+    it('the client refuses a buffer over the bound with the same 413 and sends nothing; one at the bound is sent', async () => {
+      const sent: number[] = [];
+      const client = new VerticalClient({
+        fetch: (async () => {
+          sent.push(1);
+          return new Response(JSON.stringify({ id: 'att1' }), { status: 201 });
+        }) as typeof fetch,
+        platformSecret: SECRET,
+      });
+      const err = await client
+        .connectorUploadAttachment(upload(new Uint8Array(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1)))
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect((err as ControlPlaneError).status).toBe(413);
+      expect((err as ControlPlaneError).message).toContain(connectorAttachmentSizeRefusal(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1));
+      expect((err as ControlPlaneError).message).toContain('Nothing was sent');
+      expect(sent).toEqual([]);
+      await client.connectorUploadAttachment(upload(new Uint8Array(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES))).catch(() => undefined);
+      expect(sent).toHaveLength(1);
+    });
   });
 });

@@ -310,10 +310,20 @@ export function connectorAttachmentMetaRefusal(bytes: number): string {
  */
 export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 95 * 1024 * 1024;
 
-/** The one sentence every end uses to refuse a declared size over {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}. */
+/**
+ * What the multipart route's body may carry beyond the file (#2538): the `meta` field (at most
+ * {@link CONNECTOR_ATTACHMENT_META_MAX_BYTES} once encoded, never more raw), the part headers and
+ * the boundaries, with room to spare. A body over the file bound plus this is refused unread.
+ */
+export const CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES = 16 * 1024;
+
+/**
+ * The one sentence every end uses to refuse a size over {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}:
+ * a streamed upload's declared size, a buffered one's byte length (#2538).
+ */
 export function connectorAttachmentSizeRefusal(declared: number): string {
   return (
     `the attachment declares ${declared} bytes, over the ${CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}-byte ` +
-    `bound on a streamed connector upload`
+    `bound on a connector upload`
   );
 }
