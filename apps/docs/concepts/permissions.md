@@ -122,6 +122,13 @@ Roles a host defines and seats itself are held to the same rule:
   its host principal is still seated: the scope cannot tell that seat from a person's, since what
   kind of principal holds a seat is not recorded. Keep the role defined across releases, or take
   the host principal's seat back in each such scope and give it again once the role is back.
+- **A system-held role stored before holders were recorded** (adapter 0.154 or 0.155, never
+  reconciled under 0.156 to 0.159, or a dump taken before 2026-10-21) cannot be upgraded while
+  its host principal holds a seat: no seat can be told to be a system principal's. A reconcile is
+  refused on every pass until you take that seat back, reconcile, and seat it again. A restore of
+  such a dump is refused (409, nothing restored), and since a seat inside a dump cannot be taken
+  back first, the only way is a new role key. No vertical in this repository uses a system-held
+  role.
 - **Nothing is revoked.** A refused definition or seat writes nothing, so a seat that already
   holds a key reserved after it was seated keeps working. A directory fan-out of a stored
   definition is projected as it is and not judged again, since dropping the role there would

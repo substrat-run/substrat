@@ -147,9 +147,9 @@ export function reservedRoleDefinitionRefusal(
     // a person's seat would leave a system-held row a later definition widens unjudged by its seats.
     if (stored?.holder !== 'system' && seated) {
       return (
-        `role '${role.key}' is held by a principal (${stored ? 'stored as a person\'s role' : 'with no definition stored'}), so it cannot ` +
-        `be declared holder: 'system': what kind of principal holds a seat is not recorded, so the seat may be a person\'s. Take ` +
-        `that seat back in each scope first (a host principal\'s seat can be given again after), keep the role defined across ` +
+        `role '${role.key}' is held by a principal (${storedAs(stored)}), so it cannot be declared holder: 'system': what kind ` +
+        `of principal holds a seat is not recorded, so the seat may be a person\'s. Take that seat back first, wherever it is ` +
+        `held (a scope, or the tenant; a host principal\'s seat can be given again after), keep the role defined across ` +
         `releases, or define the system-held role under a new key (K-55)`
       );
     }
@@ -180,6 +180,13 @@ export function reservedRoleDefinitionRefusal(
     `role '${role.key}' is a person's role and would hold ${held.join(', ')}, reserved to a system principal: take the key ` +
     `out, or declare a role made only of reserved keys holder: 'system' (K-55)`
   );
+}
+
+/** How the seated-key refusal names the stored row of the key, so it says only what is true of it. */
+function storedAs(stored: RoleShape | undefined): string {
+  if (!stored) return 'with no definition stored';
+  if (stored.holder === undefined) return 'stored with no holder, from before holders were recorded (#2480)';
+  return "stored as a person's role";
 }
 
 /** What a host stores for a tenant's roles where a role set is defined, and which of them are seated. */

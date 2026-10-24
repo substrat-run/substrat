@@ -739,7 +739,9 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       const system = (key: string) => ({ key, permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const });
       const refused = await failure(release([member, system('ops'), system('idle')]));
       expect(errorCodeOf(refused)).toBe('forbidden');
-      expect(refused?.message).toMatch(/role 'ops' is held by a principal/);
+      // Round 4: a holder-less row is named as what it is, not as a person's role.
+      expect(refused?.message).toMatch(/role 'ops' is held by a principal \(stored with no holder, from before holders were recorded \(#2480\)\)/);
+      expect(refused?.message).not.toMatch(/stored as a person's role/);
       // The twin: the unseated legacy row upgrades.
       await release([member, system('idle')]);
       const holderOf = (key: string) =>
@@ -761,7 +763,7 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       const refused = await failure(release([member, runner]));
       expect(errorCodeOf(refused)).toBe('forbidden');
       expect(refused?.message).toMatch(/role 'runner' is held by a principal \(with no definition stored\).*the seat may be a person's/);
-      expect(refused?.message).toMatch(/Take that seat back in each scope first \(a host principal's seat can be given again after\)/);
+      expect(refused?.message).toMatch(/Take that seat back first, wherever it is held \(a scope, or the tenant; a host principal's seat can be given again after\)/);
       expect(refused?.message).not.toMatch(/made through a person's door/);
       // The remedy the text names: take the seat back, add the role back, seat it again.
       await local.revokeScopeRole(scope, hostPrincipal, 'runner');

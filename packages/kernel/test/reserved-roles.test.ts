@@ -231,6 +231,13 @@ describe('reservedRoleDefinitionRefusal against the stored row of the same key (
     }
   });
 
+  it('names a holder-less row as what it is, not a person’s role (round 4)', () => {
+    const refusal = reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:run'])], true);
+    expect(refusal).toMatch(/^role 'r' is held by a principal \(stored with no holder, from before holders were recorded \(#2480\)\), so it cannot be declared holder: 'system'/);
+    expect(refusal).not.toMatch(/stored as a person's role/);
+    expect(refusal).toMatch(/Take that seat back first, wherever it is held \(a scope, or the tenant;/);
+  });
+
   it('twin: a legacy holder-less row nobody but a system principal holds may become holder: system (#2480)', () => {
     expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:run'])], false)).toBeNull();
   });
