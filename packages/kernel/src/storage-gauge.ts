@@ -187,8 +187,7 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
   let recorded = 0;
   for (const r of readings) {
     const readAt = new Date(r.readAt).toISOString();
-    const bytes = r.bytes;
-    const ok = bytes !== null && Number.isInteger(bytes) && bytes >= 0;
+    const ok = r.bytes !== null && Number.isInteger(r.bytes) && r.bytes >= 0;
     sql(
       `INSERT INTO _substrat_scope_storage_attempts (scope_id, tenant_id, attempted_at, error)
        SELECT scope_id, tenant_id, ?, ? FROM scopes
@@ -198,36 +197,31 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
       [readAt, r.error ?? null, r.scopeId, r.tenantId],
     );
     if (!ok) continue;
-    recorded += recordDaySample(sql, '_substrat_scope_storage', r, bytes, readAt);
+    recorded += sql(
+      `INSERT INTO _substrat_scope_storage (scope_id, day, tenant_id, bytes, read_at)
+       SELECT scope_id, ?, tenant_id, ?, ? FROM scopes
+        WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
+       ON CONFLICT (scope_id, day) DO UPDATE SET bytes = excluded.bytes, read_at = excluded.read_at
+        WHERE excluded.read_at >= _substrat_scope_storage.read_at
+       RETURNING 1`,
+      [storageGaugeDay(readAt), r.bytes, readAt, r.scopeId, r.tenantId],
+    ).length;
     if (r.stores) recordScopeStoreRows(sql, r, readAt);
     if (r.attachments !== undefined && Number.isInteger(r.attachments) && r.attachments >= 0) {
-      recordDaySample(sql, '_substrat_scope_attachment_storage', r, r.attachments, readAt);
+      // The database sample's rule: the day's latest reading, never replaced by an older one. Its
+      // own literal statement, not one shared with the table above: lint:attachment-writers reads
+      // every INSERT's target, and a computed one is a writer it cannot see.
+      sql(
+        `INSERT INTO _substrat_scope_attachment_storage (scope_id, day, tenant_id, bytes, read_at)
+         SELECT scope_id, ?, tenant_id, ?, ? FROM scopes
+          WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
+         ON CONFLICT (scope_id, day) DO UPDATE SET bytes = excluded.bytes, read_at = excluded.read_at
+          WHERE excluded.read_at >= _substrat_scope_attachment_storage.read_at`,
+        [storageGaugeDay(readAt), r.attachments, readAt, r.scopeId, r.tenantId],
+      );
     }
   }
   return recorded;
-}
-
-/**
- * One scope's day sample in a `(scope_id, day)` table: the day's latest reading, never replaced by
- * an older one, and written only for a scope that holds a store under the tenant named. Returns
- * whether a row was written.
- */
-function recordDaySample(
-  sql: RedactionSql,
-  table: '_substrat_scope_storage' | '_substrat_scope_attachment_storage',
-  reading: ScopeStorageReadingInput,
-  bytes: number,
-  readAt: string,
-): number {
-  return sql(
-    `INSERT INTO ${table} (scope_id, day, tenant_id, bytes, read_at)
-     SELECT scope_id, ?, tenant_id, ?, ? FROM scopes
-      WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
-     ON CONFLICT (scope_id, day) DO UPDATE SET bytes = excluded.bytes, read_at = excluded.read_at
-      WHERE excluded.read_at >= ${table}.read_at
-     RETURNING 1`,
-    [storageGaugeDay(readAt), bytes, readAt, reading.scopeId, reading.tenantId],
-  ).length;
 }
 
 /**
