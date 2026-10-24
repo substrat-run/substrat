@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,6 +87,25 @@ describe('a stored vertical that is not a slug is copied as stored', () => {
     });
     expect(res.status).toBe(201);
     expect(await res.json()).toMatchObject({ id: sibling, vertical, status: 'active' });
+  });
+
+  it('provisions a caller-named slug as input, whatever source the body claims', async () => {
+    // A valid slug, so the body parse admits it and the claim is the only thing under test: the
+    // provision the route makes must still read as a caller's ('input'), not a copy.
+    const scope = scopeId.parse(ulid());
+    const provision = vi.spyOn(host, 'provisionScope');
+    try {
+      const res = await colocated.request('/scopes', {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ tenantId: tenant, scopeId: scope, vertical: 'todo', verticalSource: 'copy' }),
+      });
+      expect(res.status).toBe(201);
+      expect(provision).toHaveBeenCalledTimes(1);
+      expect(provision.mock.calls[0]![1].verticalSource ?? 'input').toBe('input');
+    } finally {
+      provision.mockRestore();
+    }
   });
 
   it.each(STORED)('refuses %j named by a caller, even one claiming it is a copy', async (vertical) => {
