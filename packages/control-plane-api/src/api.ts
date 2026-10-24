@@ -2153,6 +2153,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // `undefined` (`throw undefined`, a bare rejection), and that throw deserves an
   // `unknown` attribution, not a skipped one. Only true omission skips.
   const NO_CAUSE = Symbol('no-cause');
+  /**
+   * #2540: the one kind of tenant row whose reference is an upstream trace handle. A failed upload
+   * of a builder's own bundle answers the builder the upload's text verbatim, handle included, and
+   * the CLI prints that handle for its lookup (#559), so the row keeps it as before. Every other
+   * row filed under a tenant carries the platform's own reference. Named, never inferred from text.
+   */
+  const UPSTREAM_REFERENCE_KEPT: ReadonlySet<string> = new Set(['deploy.upload']);
   // The throws a step already recorded, so the 5xx backstop below does not record them twice.
   const recordedCauses = new WeakSet<object>();
   // The writes still in flight. A Worker may end once its response is sent, and a write nobody
@@ -2171,7 +2178,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A row with no tenant is staff's, and takes the handle as its reference, as before.
     const handle = upstreamHandleIn(entry.message);
     const shaped: OpsFailureInput =
-      entry.tenantId && entry.detail == null && handle
+      entry.tenantId && UPSTREAM_REFERENCE_KEPT.has(entry.operation)
+        ? { ...entry, reference: entry.reference ?? handle }
+        : entry.tenantId && entry.detail == null && handle
         ? {
             ...entry,
             reference: entry.reference && entry.reference !== handle ? entry.reference : ulid(),

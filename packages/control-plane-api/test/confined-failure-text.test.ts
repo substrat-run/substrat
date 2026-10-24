@@ -37,6 +37,8 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
   let app: ReturnType<typeof createControlPlaneApi>;
   /** Set to make the serving upload (the in-place serve) of `slug` throw `error`. */
   let serveFails: { slug: string; error: Error } | null = null;
+  /** Set to make every bundle upload (a push) throw this. */
+  let uploadFails: Error | null = null;
   const logged: unknown[][] = [];
 
   /** Set to make every deployment's reconcile answer with this. */
@@ -68,6 +70,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
       tenantTokenSecret: TENANT_SECRET,
       deployVertical: async (ref: string) => {
         if (serveFails && ref === stableDeploymentRefFor(serveFails.slug)) throw serveFails.error;
+        if (uploadFails) throw uploadFails;
       },
       fetchVerticalModules: async () => [
         { name: 'worker.js', content: new Uint8Array([1]), contentType: 'application/javascript+module' },
@@ -84,6 +87,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
   });
   afterEach(() => {
     serveFails = null;
+    uploadFails = null;
     reconcileFails = null;
     vi.restoreAllMocks();
   });
@@ -540,6 +544,34 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     }
     const byForged = await app.request(`/ops-failures?reference=${forged}`, { headers: auth });
     expect(((await byForged.json()) as { entries: unknown[] }).entries).toEqual([]);
+  });
+
+  it('a failed upload of a builder’s own bundle keeps the upstream handle it was answered as its row’s reference (#559)', async () => {
+    const { pin, t, b } = await setup('upload');
+    const upstream = `cf${ulid().toLowerCase()}`;
+    const said = `WfP upload failed (500): internal error; reference = ${upstream}`;
+    uploadFails = new Error(said);
+    const fd = new FormData();
+    fd.set('manifest', JSON.stringify(await heldManifest(manifest('0.2.0'))));
+    fd.set('tenant', pin);
+    fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
+    const res = await app.request('/verticals/crm/deploy', { method: 'POST', headers: { [DEV_ACTOR_HEADER]: staff }, body: fd });
+    expect(res.status).toBe(502);
+    // The builder is answered the upload's own text, handle included.
+    expect(((await res.json()) as { detail: string }).detail).toBe(said);
+    type Row = { tenantId: string | null; reference: string | null; operation: string };
+    const listed = async (query: string, headers: Record<string, string>) =>
+      ((await (await app.request(`/ops-failures?${query}`, { headers })).json()) as { entries: Row[] }).entries;
+    // One row, the owner's, under the handle the CLI printed — the one row filed so (`deploy.upload`).
+    const rows = await vi.waitFor(async () => {
+      const r = await listed(`reference=${upstream}`, auth);
+      expect(r.length).toBe(1);
+      return r;
+    });
+    expect(rows[0]).toMatchObject({ tenantId: t, reference: upstream, operation: 'deploy.upload' });
+    // The builder finds its own row by that handle; another tenant never does.
+    expect((await listed(`tenantId=${t}&reference=${upstream}`, await tokenFor('/tenant-tokens', t))).map((r) => r.operation)).toEqual(['deploy.upload']);
+    expect(await listed(`tenantId=${b}&reference=${upstream}`, await tokenFor('/tenant-tokens', b))).toEqual([]);
   });
 
   it('an own install’s failure whose text carries an upstream handle: the tenant row’s reference is the platform’s', async () => {
