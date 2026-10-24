@@ -23,6 +23,19 @@ const newDir = () => {
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+/** A fresh host's directory file, opened raw, with the kernel helpers' statement runner over it. */
+const rawDirectory = async () => {
+  const dir = newDir();
+  await new SqliteScopeHost({ dir }).close();
+  const raw = new Database(join(dir, '_directory.sqlite'));
+  const sql = (statement: string, params: readonly (string | number | null)[]) => {
+    const stmt = raw.prepare(statement);
+    if (stmt.reader) return stmt.all(...params) as unknown[];
+    stmt.run(...params);
+    return [];
+  };
+  return { raw, sql };
+};
 
 describe('vertical ownership history on a directory file (#2501)', () => {
   it('a start over verticals with no period opens one each, from its created_at, and only once', async () => {
@@ -49,16 +62,7 @@ describe('vertical ownership history on a directory file (#2501)', () => {
   });
 
   it('holds at most one open period of a slug; a closed one beside it is fine', async () => {
-    const dir = newDir();
-    const host = new SqliteScopeHost({ dir });
-    await host.close();
-    const raw = new Database(join(dir, '_directory.sqlite'));
-    const sql = (statement: string, params: readonly (string | number | null)[]) => {
-      const stmt = raw.prepare(statement);
-      if (stmt.reader) return stmt.all(...params) as unknown[];
-      stmt.run(...params);
-      return [];
-    };
+    const { raw, sql } = await rawDirectory();
     try {
       raw.prepare(`INSERT INTO _substrat_vertical_owners (slug, owner, since, until) VALUES ('acme-crm', NULL, '2026-01-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z')`).run();
       openVerticalOwnerRow(sql, 'acme-crm', null, '2026-03-01T00:00:00.000Z');
@@ -69,16 +73,7 @@ describe('vertical ownership history on a directory file (#2501)', () => {
   });
 
   it('a slug deleted and registered again within one millisecond opens its second period, listed after the first', async () => {
-    const dir = newDir();
-    const host = new SqliteScopeHost({ dir });
-    await host.close();
-    const raw = new Database(join(dir, '_directory.sqlite'));
-    const sql = (statement: string, params: readonly (string | number | null)[]) => {
-      const stmt = raw.prepare(statement);
-      if (stmt.reader) return stmt.all(...params) as unknown[];
-      stmt.run(...params);
-      return [];
-    };
+    const { raw, sql } = await rawDirectory();
     const at = '2026-03-01T00:00:00.000Z';
     const [a, b] = ['01JZ00000000000000000000WA', '01JZ00000000000000000000WB'];
     try {
