@@ -30,6 +30,34 @@ That leaves one gap. An [MCP](./mcp.md) client calling an operation has no cooki
 bearer for the vertical's own route, and a file of any real size cannot go through a tool call
 as base64. Upload links close it.
 
+## Bounds on what an upload names
+
+Every door that stores a file judges the strings that describe it before a byte is written, and
+refuses one that is too long: a filename over 512 characters, a content type over 255, an entity
+type over 128, an entity id over 255 or a creator over 128 (counted in UTF-16 units, the unit
+JavaScript's `length` counts). A connector reads the record back through a response header, and
+these bounds keep it small however many of those characters are non-ASCII. A file stored before
+the bounds is still read back; if a string on it is long enough to overflow the header, that
+string is cut to its bound and ends in `…` (a content type is sent as `application/octet-stream`; a creator recorded as a JSON actor, once cut,
+is no longer valid JSON, and the `…` marks it),
+and everything else about the file is exact. A link's entity is held to the same bounds when the
+link is minted.
+
+## Streamed bodies
+
+`upload` takes the bytes as a buffer or as a sized stream, `{ stream, length }`, where `length` is
+what the producer declares. A stream goes to the blob store as it is read, and its sha256 and size
+are taken on the way, so a file never has to fit in memory. The declared length is held: a stream
+that carries more or fewer bytes lands nothing. A connector reading a provider file passes the
+response's `body` on this way, with the length from the provider's own record of the file:
+`Content-Length` counts the bytes as sent, which for a compressed response is not the file.
+
+Streaming bounds memory, not time. A connection's `fetch` runs under the connector's `timeoutMs`
+(30 seconds unless the registration says otherwise), and the timeout covers reading the response
+body too, so a provider file must arrive whole within it. One that does not errors the stream,
+and the upload lands no object and no row. A connector that moves large files declares a larger
+`timeoutMs`.
+
 ## Bytes that no row points at
 
 The bytes go to the store before the row is written, so a few paths leave an object that no row

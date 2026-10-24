@@ -37,6 +37,7 @@ import {
   wireReplayOf,
   wireRequestBinding,
   wireStateOf,
+  wireUnsignedHeadersOf,
   wireVerificationKeys,
   type WireClaims,
   type WireExpectation,
@@ -405,11 +406,14 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
  * identity the envelope proved, in the form every version of the vertical's own checks reads, and
  * nothing else under the prefix the router reserves. Every inbound `x-substrat-*` header goes, in
  * any letter case and however often it was sent, so no header the envelope did not sign reaches
- * the vertical as the platform's word.
+ * the vertical as the platform's word. The one exception is the headers listed as carrying no
+ * authority (RFC §5, contracts' `WIRE_UNSIGNED_HEADERS`): each is handed on, on its own kind of
+ * request, when its value passes its reader's own check, and dropped otherwise.
  */
 function provenAs<Env>(request: Request, claims: WireClaims, env: Env, options: WireGateOptions<Env>): Request {
   const headers = new Headers(request.headers);
   for (const name of [...headers.keys()]) if (name.startsWith(ASSERTED_PREFIX)) headers.delete(name);
+  for (const [name, value] of wireUnsignedHeadersOf(claims.kind, request.headers)) headers.set(name, value);
   const put = (name: string, value: string | null | undefined) => {
     if (value) headers.set(name, value);
   };

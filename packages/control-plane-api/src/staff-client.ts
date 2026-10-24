@@ -43,6 +43,7 @@ import type {
   ScopeStatus,
   StorageMeterReading,
   RequestRollupReading,
+  MeterDaysReading,
   SweepRunEntry,
   SweepRunKind,
   SystemGrantsStatusEntry,
@@ -61,7 +62,7 @@ import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 
 import type { ClientProvisionScopeInput, RebindReview } from '@substrat-run/control-plane-client';
 import type { DoNamespaceRecord } from './do-namespaces.js';
-import type { ConnectorCallsBucket } from './observability.js';
+import { logsIncompleteOf, type ConnectorCallsBucket } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 
@@ -116,6 +117,17 @@ export interface RecentLogEvent {
   service: string | null;
   outcome: string | null;
   raw: unknown;
+}
+
+/** What `recentLogsRead` answers: the lines, and whether the plane said it may be missing some. */
+export interface RecentLogsRead {
+  events: RecentLogEvent[];
+  /**
+   * `true` when the plane set `x-substrat-logs-incomplete: 1` beside the list: the read stopped
+   * before it could vouch for the whole window, so the page may be incomplete or missing newer
+   * lines. `false` is its absence — the plane saying nothing, which for a complete page is all it says.
+   */
+  incomplete: boolean;
 }
 
 /**
@@ -383,6 +395,11 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   readRequestRollup = (
     q: { tenantId?: TenantId; scopeId?: ScopeId; vertical?: string; since?: string; until?: string; limit?: number } = {},
   ): Promise<RequestRollupReading> => this.call(`/meters/requests${query({ ...q })}`);
+  // Meter days (#2501): meters 1 and 2 per tenant as the first scheduled pass of each UTC day found
+  // them, over an inclusive window of days (by default the 31 days ending today), and which of
+  // those days were taken. Omit `tenantId` for the fleet.
+  readMeterDays = (q: { tenantId?: TenantId; since?: string; until?: string; limit?: number } = {}): Promise<MeterDaysReading> =>
+    this.call(`/meters/days${query({ ...q })}`);
   // Meter 3 (#1054) — model usage, the one D-30 could not compute: the lines the
   // `model-usage` intents drained into the directory, folded per (tenant, vertical,
   // model) with the platform's margin applied at read time. Defaults to the current
@@ -734,8 +751,22 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // (master-plan §5.3).
   serviceMetrics = (hours: number): Promise<ServiceMetricsRow[]> =>
     this.call(`/observability/metrics${query({ hours })}`);
-  recentLogs = (q: { service?: string; level?: string; hours?: number; limit?: number } = {}): Promise<RecentLogEvent[]> =>
-    this.call(`/observability/logs${query({ ...q })}`);
+  /**
+   * The lines and what their body cannot carry: the plane's `x-substrat-logs-incomplete`
+   * header (#2520). A caller that renders the page says so when `incomplete` is set.
+   */
+  recentLogsRead = async (
+    q: { service?: string; level?: string; hours?: number; limit?: number } = {},
+  ): Promise<RecentLogsRead> => {
+    const res = await this.send(`/observability/logs${query({ ...q })}`);
+    return {
+      events: (await res.json()) as RecentLogEvent[],
+      incomplete: logsIncompleteOf(res.headers),
+    };
+  };
+  /** The bare list of `recentLogsRead`, for a caller that does not render `incomplete`. */
+  recentLogs = async (q: { service?: string; level?: string; hours?: number; limit?: number } = {}): Promise<RecentLogEvent[]> =>
+    (await this.recentLogsRead(q)).events;
   /** Observed-vs-declared outbound egress for a vertical's deployed versions (#859). */
   verticalEgress = (slug: string, q: { hours?: number; limit?: number } = {}): Promise<EgressReport> =>
     this.call(`/verticals/${seg(slug)}/egress${query({ ...q })}`);

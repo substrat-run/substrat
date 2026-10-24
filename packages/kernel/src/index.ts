@@ -69,6 +69,8 @@ export type {
   ScopedSql,
   ScopeFilter,
   ScopeHost,
+  ScopeListing,
+  UnreadableScopeRow,
   ScopeStub,
   ScopeStubOptions,
   InvokeOptions,
@@ -155,15 +157,28 @@ export {
   type ScopeScriptCopyRow,
 } from './scope-copy-ledger.js';
 export {
+  isSizedByteStream,
+  knownLengthInit,
+  knownLengthStream,
+  type ByteBody,
+  type ByteStream,
+  type ByteStreamRead,
+  type ByteStreamReader,
+  type IncrementalSha256,
+  type SizedByteStream,
+} from './byte-stream.js';
+export {
   SCOPE_COPY_LEASE_MS,
   assertRedrainWindow,
   attachmentBlobKey,
   attachmentSha256,
+  putAttachmentBytes,
   consumersFor,
   entitlementDenial,
   requiredEntitlementFor,
   backoffAt,
   globalFetch,
+  fetchLikeOf,
   executorOutcomeOf,
   parseValidationRecords,
   resolveRetryPolicy,
@@ -221,7 +236,7 @@ export {
 export type { SealingKeyPair, SealingPublicKey } from './sealed-box.js';
 export { createSubjectKeys } from './subject-keys.js';
 export type { SubjectKeyRecords, SubjectKeyRow, SubjectKeys } from './subject-keys.js';
-export { resolveScopeRecord } from './scope-record.js';
+export { readableScopes, resolveScopeRecord } from './scope-record.js';
 export type { ResolvedScopeRecord } from './scope-record.js';
 export {
   assertAllowed,
@@ -581,7 +596,29 @@ export { SHAPE_MARKER_INDEX_DDL, SHAPE_MARKER_READS_PER_ROW, grantEntityShapeIn,
 export type { ShapeCursor, ShapePass } from './entity-grant-shape.js';
 export { ENTITY_UNBIND_OPERATION, unbindEntityHolderBounded } from './entity-binding.js';
 export { applyScopeRoleChange, changeScopeRole, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
-export { assertModuleDeclared, noteReservedKeys, reservedGrantRefusal, reservedRoleRefusal, reservedShapeRefusal, type DeclaredPermissions } from './reserved-roles.js';
+export {
+  assertModuleDeclared,
+  noteDeclaredKeys,
+  noteReservedKeys,
+  registryReservations,
+  releaseRolesAskScopes,
+  releaseRoleSetRefusal,
+  reservedGrantRefusal,
+  reservedRoleDefinitionRefusal,
+  reservedRoleRefusal,
+  reservedRoleSetRefusal,
+  reservedShapeRefusal,
+  SCOPE_SEATED_ROLES_SQL,
+  SEAT_HOLDING_SCOPE_STATUSES,
+  TENANT_SEATED_ROLES_SQL,
+  dumpRoleState,
+  type DeclaredPermissions,
+  type DumpTable,
+  type HostReservations,
+  type RoleShape,
+  type RoleState,
+  type StoredRoles,
+} from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 export { isLifecycleWrite, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, writeLifecycle } from './scope-lifecycle.js';
@@ -875,6 +912,7 @@ export type {
 } from './job-run.js';
 export {
   runPlatformSweep,
+  UNREADABLE_SCOPE_ROWS_NAMED,
   startPlatformSweeper,
   StorageReadUnsupported,
   PROVISION_RECONCILE_BATCH,
@@ -908,6 +946,9 @@ export type {
   StorageGaugeSweepReport,
   RequestRollupSweepOptions,
   RequestRollupSweepReport,
+  MeterSnapshotSweepOptions,
+  MeterSnapshotSweepReport,
+  FailingRun,
   CandidatesHint,
   CrossVerticalEdge,
   CrossVerticalOptions,
@@ -980,6 +1021,7 @@ export type {
 export {
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
   listScopeStoreStorageRows,
@@ -1004,6 +1046,19 @@ export {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
 } from './request-rollup.js';
+export {
+  METER_DAYS_DDL,
+  METER_DAYS_LIMIT_DEFAULT,
+  METER_DAYS_LIMIT_MAX,
+  listMeterDayRows,
+  listMeterDayTakeRows,
+  pruneMeterDayRows,
+  recordMeterDayRows,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
+  type MeterDayTakeResult,
+} from './meter-days.js';
 
 export {
   moduleLog,

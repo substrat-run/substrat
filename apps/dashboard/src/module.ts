@@ -9,6 +9,7 @@ import {
   pageOf,
   permissionKey,
   substratError,
+  verticalSlug,
   type Page,
   type PagedInput,
   type PermissionKey,
@@ -571,7 +572,7 @@ const provisionAppInput = z.object({
   /** The scope id the app will run under (minted by the caller). */
   appScopeId: z.string().min(1),
   /** Which vertical this app runs — 'meridian', 'callout', … (catalog slug). */
-  verticalSlug: z.string().min(1),
+  verticalSlug,
   name: z.string().min(1),
 });
 

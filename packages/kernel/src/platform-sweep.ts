@@ -21,10 +21,11 @@ import type {
   ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeFilter, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
-import { BILLING_ROLLUP_RETENTION_MONTHS } from './billing-retention.js';
+import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon, utcDayOf } from './billing-retention.js';
+import { METER_DAYS_PRUNE_BATCH, METER_SNAPSHOT_TIMEOUT_MS } from './meter-days.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
   REQUEST_ROLLUP_LOOKBACK_DAYS,
@@ -35,10 +36,9 @@ import {
   REQUEST_ROLLUP_SETTLE_MS,
   isRequestRollupSaturated,
   requestRollupDueDays,
-  requestRollupHorizon,
   type RequestDayCount,
 } from './request-rollup.js';
-import { assertRowLimit, backoffAt, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
+import { assertRowLimit, backoffAt, fetchLikeOf, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';
@@ -360,6 +360,13 @@ export interface PlatformSweepOptions {
    */
   requestRollup?: RequestRollupSweepOptions;
   /**
+   * Keep each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass (#2501).
+   * UNSET (the default) skips the phase, as does a host without `recordMeterDay` and
+   * `listMeterDayTakes`: the rows are kept for the billing horizon, so a deployment opts in. See
+   * {@link MeterSnapshotSweepOptions}.
+   */
+  meterSnapshot?: MeterSnapshotSweepOptions;
+  /**
    * Collect attachment bytes no row names (#2314), a bounded window of scopes per pass. UNSET (the
    * default) skips the phase: the sweep deletes tenant bytes, so a deployment opts in, and opts in
    * to a dry run first. See {@link OrphanAttachmentSweepOptions}.
@@ -570,6 +577,8 @@ export interface PlatformSweepReport {
   orphanAttachments?: OrphanAttachmentSweepReport | null;
   /** What the request-rollup phase read and pruned (#2501). Null when the phase is off. */
   requestRollup?: RequestRollupSweepReport | null;
+  /** What the meter-snapshot phase took and pruned (#2501). Null when the phase is off. */
+  meterSnapshot?: MeterSnapshotSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -602,7 +611,13 @@ export interface PlatformSweepReport {
       | 'attachment-sweep'
       // #2501: one day's request rollup failed. Nothing of the day is written, and the day is
       // tried again once `RequestRollupSweepOptions.retryMs` has passed.
-      | 'request-rollup';
+      | 'request-rollup'
+      // #2501: the day's meter snapshot failed. Nothing of it is written, and the next pass of the
+      // same day tries again.
+      | 'meter-snapshot'
+      // A directory row that does not read as a scope: every phase of the pass stepped over it.
+      // Named once per pass by its id and the fields that failed (`scopeReaderFor`).
+      | 'scope-row';
     id: string;
     error: string;
   }[];
@@ -765,6 +780,17 @@ export interface RequestRollupSweepOptions {
   now?: () => string;
 }
 
+/**
+ * A run of identical failures of a billing phase (#2501): the error, when the run began, and how
+ * many attempts it holds. A run reaches the failure digest once, when it begins; this is how a
+ * standing failure stays visible after that.
+ */
+export interface FailingRun {
+  error: string;
+  since: string;
+  failures: number;
+}
+
 /** What the request-rollup phase did in one pass (#2501). */
 export interface RequestRollupSweepReport {
   /** Days due this pass. */
@@ -787,7 +813,7 @@ export interface RequestRollupSweepReport {
    * Null once a read succeeds, and when no attempt has failed. So a standing failure stays visible
    * on every pass it lasts, after its one digest.
    */
-  streak: { error: string; since: string; failures: number } | null;
+  streak: FailingRun | null;
   /** Days found saturated (`RequestRollupSaturated`): recorded as such, not read again, and not a reason to stop. */
   saturated: number;
   /** Which days those were. */
@@ -795,6 +821,55 @@ export interface RequestRollupSweepReport {
   /** Rows the read days wrote. */
   recorded: number;
   /** Day rows past retention deleted. */
+  pruned: number;
+}
+
+/**
+ * How the meter-snapshot phase takes a day (#2501). It reads only the directory, in one
+ * transaction (`HostAdmin.recordMeterDay`), so opting in with `{}` is enough.
+ *
+ * A pass takes the snapshot of the UTC day it runs in, unless the day already has one, so the
+ * first pass of the day is the one whose reading stands. An attempt that fails writes nothing of
+ * the day, records the failure, and the next pass of the same day tries again: there is no outside
+ * budget to spare, and the earlier in the day the snapshot is, the closer it is to the day's start.
+ * A day no pass managed to take keeps its failed record and no rows; a later day cannot take it.
+ */
+export interface MeterSnapshotSweepOptions {
+  /**
+   * How long the snapshot may take, in ms. Past it the attempt counts as failed. It decides what the
+   * pass reports, not when the directory finishes: on the hosted directory the failure record waits
+   * behind the snapshot's transaction in the same Durable Object, so the pass is held until that
+   * ends. A snapshot that commits late still stands, is reported as failed once, and the next pass
+   * finds the day taken. Default `METER_SNAPSHOT_TIMEOUT_MS`.
+   */
+  timeoutMs?: number;
+  /** How many months of snapshot rows are kept; null keeps them all. Default `BILLING_ROLLUP_RETENTION_MONTHS`. */
+  retentionMonths?: number | null;
+  /** Snapshot rows past retention deleted per pass. Default `METER_DAYS_PRUNE_BATCH`. */
+  pruneBatch?: number;
+  /** The instant the pass snapshots at. Default the wall clock. */
+  now?: () => string;
+}
+
+/** What the meter-snapshot phase did in one pass (#2501). */
+export interface MeterSnapshotSweepReport {
+  /** The UTC day this pass snapshots, or null when the pass's instant was not one. */
+  day: string | null;
+  /** Whether this pass took the day's snapshot. False on every later pass of the day. */
+  taken: boolean;
+  /** The tenant rows this pass's snapshot wrote. */
+  tenants: number;
+  /** Whether this pass's attempt failed (0 or 1), and whether that failure repeated the attempt before it. */
+  failed: number;
+  repeated: number;
+  /**
+   * The run of identical failures that stands at the end of this pass: its error, when it began,
+   * and how many attempts it holds. Every pass of a day not yet taken makes an attempt, so a
+   * standing failure is on the report of every pass it lasts, though it reaches the digest only on
+   * the pass its run began. Null once a snapshot is taken, and when no attempt has failed.
+   */
+  streak: FailingRun | null;
+  /** Snapshot rows past retention deleted. */
   pruned: number;
 }
 
@@ -1203,13 +1278,7 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   if (rollup?.batch !== undefined && !(Number.isInteger(rollup.batch) && rollup.batch >= 0)) {
     throw substratError('validation_failed', `requestRollup.batch must be a non-negative integer, got ${String(rollup.batch)}`);
   }
-  if (rollup?.retentionMonths !== undefined) {
-    try {
-      requestRollupHorizon(0, rollup.retentionMonths);
-    } catch (err) {
-      throw substratError('validation_failed', `requestRollup.retentionMonths: ${message(err)}`);
-    }
-  }
+  if (rollup?.retentionMonths !== undefined) assertBillingRetention('requestRollup.retentionMonths', rollup.retentionMonths);
   // Each of these corrupts the kept history silently rather than failing: a lookback past what
   // Analytics Engine keeps records aged-out days as days without traffic, and a negative settle
   // reads the open day and freezes it. So they are refused here, before anything is read.
@@ -1226,10 +1295,11 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
       throw substratError('validation_failed', `requestRollup.${name} must be a non-negative number of ms, got ${String(ms)}`);
     }
   }
-  const timeout = rollup?.readTimeoutMs;
-  if (timeout !== undefined && !(Number.isFinite(timeout) && timeout > 0)) {
-    throw substratError('validation_failed', `requestRollup.readTimeoutMs must be a positive number of ms, got ${String(timeout)}`);
-  }
+  if (rollup?.readTimeoutMs !== undefined) assertPositiveMs('requestRollup.readTimeoutMs', rollup.readTimeoutMs);
+  const snapshot = options.meterSnapshot;
+  if (snapshot?.pruneBatch !== undefined) assertRowLimit('meterSnapshot.pruneBatch', snapshot.pruneBatch);
+  if (snapshot?.retentionMonths !== undefined) assertBillingRetention('meterSnapshot.retentionMonths', snapshot.retentionMonths);
+  if (snapshot?.timeoutMs !== undefined) assertPositiveMs('meterSnapshot.timeoutMs', snapshot.timeoutMs);
   const orphans = options.orphanAttachments;
   if (orphans?.batch !== undefined && !(Number.isInteger(orphans.batch) && orphans.batch >= 0)) {
     throw substratError('validation_failed', `orphanAttachments.batch must be a non-negative integer, got ${String(orphans.batch)}`);
@@ -1237,6 +1307,71 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   if (orphans && orphans.mode !== 'dry-run' && orphans.mode !== 'delete') {
     throw substratError('validation_failed', `orphanAttachments.mode must be 'dry-run' or 'delete', got ${String(orphans.mode)}`);
   }
+}
+
+/** A billing retention option, refused unless `billingRollupHorizon` takes it. */
+function assertBillingRetention(name: string, months: number | null): void {
+  try {
+    billingRollupHorizon(0, months);
+  } catch (err) {
+    throw substratError('validation_failed', `${name}: ${message(err)}`);
+  }
+}
+
+/** A deadline option, refused unless it is a positive, finite number of ms. */
+function assertPositiveMs(name: string, ms: number): void {
+  if (!(Number.isFinite(ms) && ms > 0)) {
+    throw substratError('validation_failed', `${name} must be a positive number of ms, got ${String(ms)}`);
+  }
+}
+
+/**
+ * How many unreadable directory rows one pass names before it only says there are more: the
+ * sweep's `errors`, and the hostname reconcile's `unreadableScopes`, so each pass's report stays
+ * bounded however many rows a directory holds.
+ */
+export const UNREADABLE_SCOPE_ROWS_NAMED = 20;
+
+/** How a pass reads the directory's scopes: `listScopes`'s rows, minus any it cannot read. */
+type ScopeReader = (filter?: ScopeFilter) => Promise<Scope[]>;
+
+/**
+ * The scope read every fleet-wide phase of one pass shares. One row that does not parse used to
+ * throw out of `listScopes` for the whole list, and since no phase reads the directory inside a
+ * try, out of the pass: every phase after it went unrun until the row was fixed by hand. Read
+ * through `listScopesReadable`, the row is stepped over, and named in `errors` ONCE per pass
+ * however many phases met it, by its id and the fields that failed, never their values. At most
+ * `UNREADABLE_SCOPE_ROWS_NAMED` are named, then one line says there are more. A host that
+ * predates `listScopesReadable` is read through `listScopes`, strict as before.
+ */
+function scopeReaderFor(admin: HostAdmin, actor: PlatformActorId, report: Pick<PlatformSweepReport, 'errors'>): ScopeReader {
+  const readable = admin.listScopesReadable?.bind(admin);
+  if (!readable) return (filter) => admin.listScopes(actor, filter);
+  const named = new Set<string>();
+  let capped = false;
+  return async (filter) => {
+    const { scopes, unreadable } = await readable(actor, filter);
+    for (const row of unreadable) {
+      if (capped) break;
+      if (named.has(row.scopeId)) continue;
+      if (named.size < UNREADABLE_SCOPE_ROWS_NAMED) {
+        named.add(row.scopeId);
+        report.errors.push({
+          kind: 'scope-row',
+          id: row.scopeId,
+          error: `the directory row of tenant ${row.tenantId} does not read as a scope (${row.fields.join(', ')}); stepped over this pass`,
+        });
+      } else {
+        capped = true;
+        report.errors.push({
+          kind: 'scope-row',
+          id: '*',
+          error: `more than ${UNREADABLE_SCOPE_ROWS_NAMED} directory rows do not read as a scope; only the first ${UNREADABLE_SCOPE_ROWS_NAMED} are named this pass`,
+        });
+      }
+    }
+    return scopes;
+  };
 }
 
 export async function runPlatformSweep(
@@ -1266,8 +1401,12 @@ export async function runPlatformSweep(
     storage: null,
     orphanAttachments: null,
     requestRollup: null,
+    meterSnapshot: null,
     errors: [],
   };
+  // Every fleet-wide read of the directory below goes through this, so one unreadable row is
+  // stepped over by each phase and named once. The tenant reap does not: see there.
+  const listScopes = scopeReaderFor(host.admin, options.actor, report);
 
   // -- migration reconciliation (kernel-design §5.3, #49) ---------------------
   // FIRST, deliberately: `drainDue` wakes scopes (and wake migrates lazily), so
@@ -1294,9 +1433,7 @@ export async function runPlatformSweep(
     const now = new Date().toISOString();
     // `provisioning` included: a scope stuck there because its migration failed
     // is precisely a straggler (the pure adapter's getScope makes the same call).
-    const listed = await host.admin.listScopes(options.actor, {
-      status: ['active', 'provisioning'],
-    });
+    const listed = await listScopes({ status: ['active', 'provisioning'] });
     const fleet = migrationFleet(listed);
 
     // Due = behind and never-failed (wake it — that IS the sweep's job), or
@@ -1379,7 +1516,7 @@ export async function runPlatformSweep(
   const viaPlatformDrain = Boolean(options.drainPlatformRequestsFn);
 
   if (options.drainRetries !== false) {
-    const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
+    const scopes = await listScopes({ status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
       if (failedThisPass.has(s.id)) return; // fails closed — draining is only noise
       try {
@@ -1405,7 +1542,7 @@ export async function runPlatformSweep(
   const drainedThisPass = new Map<string, PlatformRequestDrain>();
   const drain = options.drainPlatformRequestsFn;
   if (drain) {
-    const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
+    const scopes = await listScopes({ status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
       if (failedThisPass.has(s.id)) {
         report.platformRequestTotals.skipped += 1;
@@ -1432,7 +1569,7 @@ export async function runPlatformSweep(
     typeof host.admin.recordScopeStorage === 'function' &&
     typeof host.admin.listScopeStorageAttempts === 'function'
   ) {
-    report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, reachedThisPass, report);
+    report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, reachedThisPass, report, listScopes);
   }
 
   // -- provision reconcile (#1172, #1653) -------------------------------------
@@ -1456,7 +1593,7 @@ export async function runPlatformSweep(
       unsupported: { count: 0, scopeIds: [] },
       deferred: 0,
     };
-    const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+    const scopes = (await listScopes({ status: 'active' })).filter(
       (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
     const serving = await servingPointersFor(host.admin, options.actor, scopes);
@@ -1536,7 +1673,7 @@ export async function runPlatformSweep(
       // Primaries only (`isPrimaryScope`, #2005) — a fork, a snapshot or a preview of either
       // kind is a copy or a throwaway; firing its schedules would run real recurring side
       // effects off it. Lineage alone (`forkedFrom === null`) let a clean-room preview through.
-      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(isPrimaryScope);
+      const scopes = (await listScopes({ status: 'active' })).filter(isPrimaryScope);
       await mapBounded(scopes, concurrency, async (s) => {
         if (failedThisPass.has(s.id)) return;
         let touched = false;
@@ -1614,7 +1751,7 @@ export async function runPlatformSweep(
     const freshRegs = host.registeredFreshness().filter((r) => r.freshness.length > 0);
     if (freshRegs.length > 0) {
       // The same primaries the schedule phase fires on (#2005).
-      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(isPrimaryScope);
+      const scopes = (await listScopes({ status: 'active' })).filter(isPrimaryScope);
       await mapBounded(scopes, concurrency, async (s) => {
         if (failedThisPass.has(s.id)) return;
         // ONCE per scope, not once per module: the evaluator aggregates every
@@ -1647,7 +1784,7 @@ export async function runPlatformSweep(
   // After the migration phase and skipping what failed there, like every phase that reaches a
   // vertical. Opt-in, and its own window per pass: it lists a bucket prefix and wakes a scope.
   if (options.orphanAttachments) {
-    const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+    const scopes = (await listScopes({ status: 'active' })).filter(
       (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
     report.orphanAttachments = await sweepOrphanAttachmentWindow(host, options, options.orphanAttachments, scopes, report);
@@ -1662,7 +1799,7 @@ export async function runPlatformSweep(
     // `deleteSnapshot` re-checks this same predicate, so a mislabeled row fails closed there,
     // never silently deletes.
     const now = new Date().toISOString();
-    const scopes = await host.admin.listScopes(options.actor);
+    const scopes = await listScopes();
     const expired = scopes.filter(
       (s) => (s.forkedFrom !== null || s.kind === 'preview') && s.expiresAt !== null && s.expiresAt <= now,
     );
@@ -1691,7 +1828,7 @@ export async function runPlatformSweep(
     const cutoff = new Date(
       Date.now() - options.reapArchivedAfterDays * 86_400_000,
     ).toISOString();
-    const archived = await host.admin.listScopes(options.actor, { status: ['archived'] });
+    const archived = await listScopes({ status: ['archived'] });
     const due = archived.filter((s) => s.archivedAt !== null && s.archivedAt <= cutoff);
     const reap =
       options.reapScopeFn ??
@@ -1737,6 +1874,11 @@ export async function runPlatformSweep(
         // Co-located default: reap every one of the tenant's scopes through the scope
         // seam (archive-if-needed first — reapScope only accepts `archived`), then clear
         // the tenant's directory rows. A scope already `reaped` is skipped.
+        //
+        // STRICT, unlike every other read in this pass: `reapTenant` below clears the tenant's
+        // directory, so a scope this loop stepped over would never have its storage reaped and
+        // would lose the rows that find it. A row that does not parse fails this tenant's reap
+        // instead, into `errors` as `reap-tenant`, and the tenant waits for the row to be fixed.
         const scopes = await host.admin.listScopes(options.actor, { tenantId });
         for (const s of scopes) {
           if (s.status === 'reaped') continue;
@@ -1758,7 +1900,7 @@ export async function runPlatformSweep(
   }
 
   const connections = await host.admin.listConnections(options.actor, {});
-  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency) : null;
+  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency, listScopes) : null;
   await mapBounded(connections, concurrency, async (c) => {
     // #1232: the connection's durable sweep record. A connection row carries no
     // scope (a connection spans scopes by construction) and no version.
@@ -1799,7 +1941,8 @@ export async function runPlatformSweep(
       report.connectionLandings.failed += landed.failed.length;
     }
     try {
-      const result = await sweeper(host, c.id, { fetch: options.fetch });
+      // #2498: a sized stream body the connector sends reaches the injected fetch converted.
+      const result = await sweeper(host, c.id, { fetch: fetchLikeOf(options.fetch) });
       const answer = options.connectionLandings?.binders[c.provider] ? connectorSweepAnswerOf(result) : null;
       report.connectionsSwept += 1;
       // #2316: a resolved sweep is not a landed one. A scope the connector could not land in, or a
@@ -1830,7 +1973,7 @@ export async function runPlatformSweep(
   // own outbox. An import is never re-emitted into the consumer's outbox, so the two phases
   // never ship the same event twice.
   if (options.crossVertical) {
-    report.crossVertical = await sweepCrossVertical(host, options, options.crossVertical, failedThisPass, report);
+    report.crossVertical = await sweepCrossVertical(host, options, options.crossVertical, failedThisPass, report, listScopes);
   }
 
   // -- drain each scope's domain events to Tier 2 (#1334, master-plan §5.3) ---
@@ -1848,7 +1991,7 @@ export async function runPlatformSweep(
     const configured = options.eventDrainBatch ?? EVENT_DRAIN_BATCH;
     const budget =
       Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : EVENT_DRAIN_BATCH;
-    const drainable = await host.admin.listScopes(options.actor, { status: 'active' });
+    const drainable = await listScopes({ status: 'active' });
     await mapBounded(drainable, concurrency, async (s) => {
       try {
         const { shipped, skipped } = await drainScopeEvents(host, options, sink, {
@@ -1900,6 +2043,19 @@ export async function runPlatformSweep(
     }
   }
 
+  // -- the daily meter snapshot (#2501) -----------------------------------------
+  // After all the scheduled work, so the day's reading is the directory as this pass leaves it,
+  // reaps included, and just before the request rollup: the snapshot is one directory transaction,
+  // and a slow Analytics Engine answer must not push its reading later in the day. Its one read of
+  // the day records is shipped by the access-log drain below, in the same pass.
+  if (
+    options.meterSnapshot &&
+    typeof host.admin.recordMeterDay === 'function' &&
+    typeof host.admin.listMeterDayTakes === 'function'
+  ) {
+    report.meterSnapshot = await sweepMeterSnapshot(host.admin, options.actor, options.meterSnapshot, report);
+  }
+
   // -- the daily request rollup (#2501) ----------------------------------------
   // After all the scheduled work, deliberately: it waits on Analytics Engine, an outside service,
   // and nothing in the pass depends on it, so a slow answer must not hold back the work that has
@@ -1941,6 +2097,7 @@ async function sweepCrossVertical(
   cv: CrossVerticalOptions,
   failedThisPass: ReadonlySet<string>,
   report: Pick<PlatformSweepReport, 'errors'>,
+  listScopes: ScopeReader,
   /** Run only this producer's outgoing edges (the router kick). Absent: every edge. */
   only?: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<CrossVerticalReport> {
@@ -1975,7 +2132,7 @@ async function sweepCrossVertical(
   // A producer-scoped run reads only that tenant's scopes: both ends of an edge are in one
   // tenant, so nothing outside it can be a consumer of this producer or change how it resolves.
   const scopes = (
-    await host.admin.listScopes(options.actor, { status: 'active', ...(only ? { tenantId: only.tenantId } : {}) })
+    await listScopes({ status: 'active', ...(only ? { tenantId: only.tenantId } : {}) })
   ).filter((s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null);
   // The kick names a scope, and the edges run are the ones whose producer RESOLVES to it. A
   // fork, a preview, a second install or a scope of another tenant is not a producer, so a
@@ -2134,7 +2291,8 @@ export async function runCrossVerticalFrom(
   producer: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<{ crossVertical: CrossVerticalReport; errors: PlatformSweepReport['errors'] }> {
   const report: Pick<PlatformSweepReport, 'errors'> = { errors: [] };
-  const crossVertical = await sweepCrossVertical(host, options, options.crossVertical, new Set(), report, producer);
+  const listScopes = scopeReaderFor(host.admin, options.actor, report);
+  const crossVertical = await sweepCrossVertical(host, options, options.crossVertical, new Set(), report, listScopes, producer);
   return { crossVertical, errors: report.errors };
 }
 
@@ -2803,6 +2961,7 @@ async function sweepStorageGauge(
   gauge: StorageGaugeSweepOptions,
   reachedThisPass: ReadonlyMap<string, Scope>,
   report: PlatformSweepReport,
+  listScopes: ScopeReader,
 ): Promise<StorageGaugeSweepReport> {
   const out: StorageGaugeSweepReport = {
     reached: reachedThisPass.size,
@@ -2824,7 +2983,7 @@ async function sweepStorageGauge(
       // Not one archived before it ever held data (`holdsStore`): reading it would create the
       // spine it never had, and bill it.
       const resting = (
-        await admin.listScopes(options.actor, { status: STORED_SCOPE_STATUSES.filter((s) => s !== 'active') })
+        await listScopes({ status: STORED_SCOPE_STATUSES.filter((s) => s !== 'active') })
       ).filter(holdsStore);
       out.resting = resting.length;
       const candidates = [...reachedThisPass.values(), ...resting.filter((s) => !reachedThisPass.has(s.id))];
@@ -2905,6 +3064,38 @@ async function sweepStorageGauge(
   return out;
 }
 
+/** The newest attempt on record, as the run it leaves: `error` is null when it succeeded or none was made. */
+interface PreviousAttempt {
+  error: string | null;
+  since: string | null;
+  failures: number;
+}
+
+const NO_ATTEMPT: PreviousAttempt = { error: null, since: null, failures: 0 };
+
+/** The newest of a ledger's attempts (#2501), and the run of identical failures it belongs to when it failed. */
+function previousAttempt(
+  attempts: readonly { attemptedAt: string; error: string | null; failingSince: string | null; failingCount: number | null }[],
+): PreviousAttempt {
+  let newest: (typeof attempts)[number] | undefined;
+  for (const a of attempts) if (newest === undefined || a.attemptedAt > newest.attemptedAt) newest = a;
+  return newest ? { error: newest.error, since: newest.failingSince ?? newest.attemptedAt, failures: newest.failingCount ?? 1 } : NO_ATTEMPT;
+}
+
+/**
+ * A failure's run (#2501): the previous attempt's run carried on when this failure repeats its error,
+ * a new run begun `at` otherwise. A repeated failure is a standing one, which reached the failure
+ * digest when its run began; the run keeps its start and length on the ledger and in the report,
+ * where the pass's log line shows them.
+ */
+function extendRun(previous: PreviousAttempt, error: string, at: string): { run: FailingRun; repeated: boolean } {
+  const repeated = error === previous.error;
+  return {
+    repeated,
+    run: { error, since: repeated && previous.since ? previous.since : at, failures: repeated ? previous.failures + 1 : 1 },
+  };
+}
+
 /**
  * One pass of the request-rollup phase (#2501): read the oldest due days one at a time, record
  * each day's counts or its failure, then prune past retention. A failed day writes nothing of the
@@ -2937,24 +3128,15 @@ async function sweepRequestRollup(
     const nowMs = Date.parse(now());
     if (batch > 0) {
       const reads = await admin.listRequestRollupDays!(actor);
-      // The newest attempt before this pass: its error (null when it succeeded or none was made),
-      // and, when it failed, the run of identical failures it belongs to. A saturated day is a
-      // state of that day, not a failure of the read, so it belongs to no run.
-      let previous: { error: string | null; since: string | null; failures: number } = { error: null, since: null, failures: 0 };
-      let newest = '';
-      for (const r of reads) {
-        if (!r.saturated && r.attemptedAt > newest) {
-          newest = r.attemptedAt;
-          previous = { error: r.error, since: r.failingSince ?? r.attemptedAt, failures: r.failingCount ?? 1 };
-        }
-      }
+      // A saturated day is a state of that day, not a failure of the read, so it belongs to no run.
+      let previous = previousAttempt(reads.filter((r) => !r.saturated));
       const due = requestRollupDueDays({
         nowMs,
         reads,
         lookbackDays: rollup.lookbackDays ?? REQUEST_ROLLUP_LOOKBACK_DAYS,
         settleMs: rollup.settleMs ?? REQUEST_ROLLUP_SETTLE_MS,
         retryMs: rollup.retryMs ?? REQUEST_ROLLUP_RETRY_MS,
-        horizon: requestRollupHorizon(nowMs, months),
+        horizon: billingRollupHorizon(nowMs, months),
       });
       const take = due.slice(0, batch);
       out.due = due.length;
@@ -2972,7 +3154,7 @@ async function sweepRequestRollup(
           out.recorded += (await admin.recordRequestDay!(actor, { day, attemptedAt: now(), counts })).recorded;
           out.read += 1;
           // A read that succeeds ends any run, so a failure later in this pass starts a new one.
-          previous = { error: null, since: null, failures: 0 };
+          previous = NO_ATTEMPT;
         } catch (err) {
           const error = message(err);
           const attemptedAt = now();
@@ -2985,22 +3167,14 @@ async function sweepRequestRollup(
             continue;
           }
           out.failed += 1;
-          // A standing failure goes into the failure digest when its run begins, not on every pass
-          // it lasts. Each attempt carries the run on, so its start and length stay on the ledger
-          // and in `streak`, where the pass's log line shows them.
-          const repeated = error === previous.error;
-          const streak = {
-            error,
-            since: repeated && previous.since ? previous.since : attemptedAt,
-            failures: repeated ? previous.failures + 1 : 1,
-          };
-          out.streak = streak;
+          const { run, repeated } = extendRun(previous, error, attemptedAt);
+          out.streak = run;
           if (repeated) out.repeated += 1;
           else report.errors.push({ kind: 'request-rollup', id: day, error });
           // The failure is the day's attempt, so the day waits `retryMs` rather than taking a slot
           // on every pass. If even this write fails, the day is simply due again next pass.
           await admin
-            .recordRequestDay!(actor, { day, attemptedAt, error, failingSince: streak.since, failingCount: streak.failures })
+            .recordRequestDay!(actor, { day, attemptedAt, error, failingSince: run.since, failingCount: run.failures })
             .catch(() => undefined);
           // The next day would most likely fail the same way, and each read is a fleet-wide query
           // against the account's shared budget: one failure ends the pass's reads.
@@ -3030,6 +3204,68 @@ async function sweepRequestRollup(
     // A directory read or the prune failed: whatever days were recorded stay recorded, and the
     // next pass finds the rest due.
     report.errors.push({ kind: 'request-rollup', id: 'directory', error: message(err) });
+  }
+  return out;
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * One pass of the meter-snapshot phase (#2501): take the snapshot of the UTC day the pass runs in,
+ * unless the day already has one, then prune past retention. A failed attempt writes nothing of the
+ * day and is recorded, and the next pass of the day tries again. A failure that repeats the attempt
+ * before it, across days too, is a standing one: reported when its run began, and not again until
+ * a snapshot is taken.
+ */
+async function sweepMeterSnapshot(
+  admin: HostAdmin,
+  actor: PlatformActorId,
+  snapshot: MeterSnapshotSweepOptions,
+  report: PlatformSweepReport,
+): Promise<MeterSnapshotSweepReport> {
+  const out: MeterSnapshotSweepReport = { day: null, taken: false, tenants: 0, failed: 0, repeated: 0, streak: null, pruned: 0 };
+  const months = snapshot.retentionMonths === undefined ? BILLING_ROLLUP_RETENTION_MONTHS : snapshot.retentionMonths;
+  const now = snapshot.now ?? (() => new Date().toISOString());
+  try {
+    const at = new Date(now()).toISOString();
+    const day = at.slice(0, 10);
+    out.day = day;
+    // The attempt before this pass is today's, or yesterday's when today has none: one a day at the
+    // least while the phase runs, so two days hold it.
+    const takes = await admin.listMeterDayTakes!(actor, { since: utcDayOf(Date.parse(at) - DAY_MS), until: day });
+    // A day already taken is not tried again, so a later pass of the day can never report a failure
+    // about a snapshot that stands. The directory checks again inside its own transaction, which is
+    // what settles two passes racing for the same day.
+    if (!takes.some((t) => t.day === day && t.takenAt !== null)) {
+      try {
+        const taken = await withinDeadline(
+          admin.recordMeterDay!(actor, { at }),
+          snapshot.timeoutMs ?? METER_SNAPSHOT_TIMEOUT_MS,
+          'the meter snapshot',
+        );
+        out.taken = taken.taken;
+        out.tenants = taken.tenants;
+      } catch (err) {
+        const error = message(err);
+        out.failed = 1;
+        const { run, repeated } = extendRun(previousAttempt(takes), error, at);
+        out.streak = run;
+        if (repeated) out.repeated = 1;
+        else report.errors.push({ kind: 'meter-snapshot', id: day, error });
+        // The attempt's own instant, so its record lands on its day even when the deadline ran past
+        // midnight. If even this write fails, the next pass simply tries again.
+        await admin
+          .recordMeterDay!(actor, { at, error, failingSince: run.since, failingCount: run.failures })
+          .catch(() => undefined);
+      }
+    }
+    if (typeof admin.pruneMeterDays === 'function') {
+      out.pruned = await admin.pruneMeterDays(actor, snapshot.pruneBatch ?? METER_DAYS_PRUNE_BATCH, months);
+    }
+  } catch (err) {
+    // A directory read or the prune failed: a snapshot already taken stays taken, and the next pass
+    // tries the day again if it was not.
+    report.errors.push({ kind: 'meter-snapshot', id: 'directory', error: message(err) });
   }
   return out;
 }

@@ -117,15 +117,18 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   const tenant = tenantId.parse(ulid());
   const scope = scopeId.parse(ulid());
   const owner = principalId.parse(ulid());
+  // #2447: the local paths judge the role set they define, so a person's role of a key the scope class
+  // reserves is refused there. Keys the class knows nothing about (admitted, fail-open), held apart
+  // so no system-held role's key is a person's, carry the holder through to the door unjudged.
   await host.provisionScopeLocal({
     tenantId: tenant,
     scopeId: scope,
     owner,
     roles: [
       { key: 'owner', permissions: [permissionKey.parse('perm:use')], source: 'vertical', holder: 'person' },
-      { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical' },
-      { key: 'unknown', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
-      { key: 'system', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
+      { key: 'runner', permissions: [permissionKey.parse('zzz:run')], source: 'vertical' },
+      { key: 'unknown', permissions: [permissionKey.parse('zzz:run')], source: 'vertical', holder: 'unknown' as never },
+      { key: 'system', permissions: [permissionKey.parse('zzz:sys')], source: 'vertical', holder: 'system' },
     ],
     ownerRoleKey: 'owner',
   });
@@ -134,7 +137,7 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   const roleDoor = async (key: string) => {
     const role = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
       createLocalControlPlaneReader(state.storage.sql).getRole(tenant, key));
-    return reservedRoleRefusal(role!, new Set(['rsv:run']), 'platform');
+    return reservedRoleRefusal(role!, new Set(['zzz:run', 'zzz:sys']), 'platform');
   };
   expect(await holders()).toEqual([
     { role_key: 'owner', holder: 'person' }, { role_key: 'runner', holder: 'person' },
@@ -146,9 +149,9 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   expect(await roleDoor('system')).toBeNull();
 
   await host.projectRolesLocal(tenant, scope, [
-    { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical' },
-    { key: 'unknown', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
-    { key: 'system', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
+    { key: 'runner', permissions: [permissionKey.parse('zzz:run')], source: 'vertical' },
+    { key: 'unknown', permissions: [permissionKey.parse('zzz:run')], source: 'vertical', holder: 'unknown' as never },
+    { key: 'system', permissions: [permissionKey.parse('zzz:sys')], source: 'vertical', holder: 'system' },
   ]);
   expect(await holders()).toEqual([
     { role_key: 'runner', holder: 'person' }, { role_key: 'system', holder: 'system' },
@@ -158,4 +161,33 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   expect(await roleDoor('runner')).toMatch(/must declare holder: 'system'/);
   expect(await roleDoor('unknown')).toMatch(/must declare holder: 'system'/);
   expect(await roleDoor('system')).toBeNull();
+});
+
+// #2447 (CodeRabbit on #2525): the legacy `defineRole` a coordinator from before #2447 calls keeps
+// its shape, the previous role or null, and THROWS a refusal, so that coordinator cannot read a
+// refusal as the previous role and audit a change that never happened. The judged answer, as data,
+// is `defineRoleOrRefusal`'s.
+it('the legacy defineRole throws a refusal and writes nothing; its twin answers the previous role, as before', async () => {
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`role-legacy-${ulid()}`)) as unknown as {
+    defineRole(tenantId: string, role: { key: string; permissions: string[]; source: 'vertical'; holder?: 'system' }): Promise<unknown>;
+    defineRoleOrRefusal(tenantId: string, role: { key: string; permissions: string[]; source: 'vertical'; holder?: 'system' }): Promise<unknown>;
+    getRole(tenantId: string, key: string): Promise<{ key: string; permissions: string[]; holder?: 'person' | 'system' } | undefined>;
+  };
+  const tenant = ulid();
+  // A system-held role whose key a person's role may then not hold (the tenant's own evidence).
+  expect(await stub.defineRole(tenant, { key: 'runner', permissions: ['lgc:run'], source: 'vertical', holder: 'system' })).toBeNull();
+  await expect(() => stub.defineRole(tenant, { key: 'crew', permissions: ['lgc:use', 'lgc:run'], source: 'vertical' })).rejects.toThrow(
+    /role 'crew' is a person's role and would hold lgc:run \(held by the system-held role 'runner'\)/,
+  );
+  expect(await stub.getRole(tenant, 'crew')).toBeUndefined();
+  // The twin: a definition that passes answers the previous role (none, then the first), never a wrapper.
+  expect(await stub.defineRole(tenant, { key: 'crew', permissions: ['lgc:use'], source: 'vertical' })).toBeNull();
+  expect(await stub.defineRole(tenant, { key: 'crew', permissions: ['lgc:use', 'lgc:other'], source: 'vertical' })).toMatchObject({
+    key: 'crew',
+    permissions: ['lgc:use'],
+  });
+  // The current coordinator's method answers the same refusal as data.
+  expect(await stub.defineRoleOrRefusal(tenant, { key: 'crew', permissions: ['lgc:run'], source: 'vertical' })).toEqual({
+    refused: expect.stringMatching(/role 'crew' is a person's role and would hold lgc:run/),
+  });
 });

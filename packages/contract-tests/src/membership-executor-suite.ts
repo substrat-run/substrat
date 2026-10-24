@@ -67,22 +67,25 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       w.fixture = await makeFixture();
       w.host = w.fixture.host;
       w.host.registerModule(membershipFixtureMod);
-      // #2430: a module reserving `rsv:run`, so an invite for a role carrying it meets the refusal.
-      w.host.registerModule(reservedRoleMod);
       // `baseDelayMs: 0` so the backstop case can retry inside a test.
       registerMembershipExecutor(intercepting(w.host, w, opts.hold, opts.legacy), { actor: staff, retry: { baseDelayMs: 0 }, orgs: opts.orgs });
       const { host, t } = w;
       await host.admin.createTenant(staff, { id: t, slug: `invitefix-${t.slice(-10).toLowerCase()}`, name: 'Invitefix' });
       await host.admin.grantEntitlement(staff, t, 'invitefix');
+      // #2430: a role carrying a reserved key beside a person's, so the refusal at the invite is the
+      // reservation's. #2447 refuses defining such a role once the key is reserved — by a module
+      // registered here, or (Cloudflare) by the scope class of one of the tenant's scopes — so it is
+      // defined first, before the reserving module and before any scope: a role from before an
+      // engine reserved its key.
+      await host.admin.defineRole(staff, t, { key: 'reserved', permissions: [INVITEFIX_A, RSV_RUN], source: 'vertical' });
+      host.registerModule(reservedRoleMod);
       for (const s of [w.s, w.s2]) {
         await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
         await host.admin.activateScope(staff, t, s);
       }
       await host.admin.defineRole(staff, t, { key: 'lead', permissions: [INVITEFIX_A, INVITEFIX_B], source: 'vertical' });
       await host.admin.defineRole(staff, t, { key: 'member', permissions: [INVITEFIX_A], source: 'vertical' });
-      // #2430: a role carrying a reserved key beside a person's, and the reserved-only role that
-      // lets alice cover it, so the bound passes and the refusal is the reservation's.
-      await host.admin.defineRole(staff, t, { key: 'reserved', permissions: [INVITEFIX_A, RSV_RUN], source: 'vertical' });
+      // #2430: the reserved-only role that lets alice cover `reserved`, so the bound passes.
       await host.admin.defineRole(staff, t, { key: 'runner', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
       await host.admin.createOrg(staff, { id: w.org, tenantId: t, slug: 'team', name: 'Team' });
       await host.admin.assignRole(staff, { principalId: w.alice, roleKey: 'lead', node: { tenantId: t, scopeId: null } });

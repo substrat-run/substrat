@@ -7,6 +7,7 @@ import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-e
 import {
   importWireSigningKey,
   signWireEnvelope,
+  signWireRequest,
   WIRE_AUDIENCE_VAR,
   WIRE_ENVELOPE_HEADER,
   WIRE_PLATFORM_KEYS_VAR,
@@ -281,6 +282,34 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
     expect(res.status).toBe(200);
     const answer = (await res.json()) as Answer;
     expect(answer).toMatchObject({ node: { tenantId: routed['x-substrat-tenant'] }, stamped: true });
+    await expect.poll(() => d.invocation()?.['tenantId']).toBe(routed['x-substrat-tenant']);
+    expect(d.wire()).toEqual([]);
+  });
+
+  it('step 2, no key lists yet: the signers’ own requests are served as before, a call’s body byte for byte, and no wire line', async () => {
+    const d = checked({});
+    // Built by `signWireRequest`, the one function the router and the control plane sign with.
+    const route = await signWireRequest(router, new Request(ROUTE, { headers: routed }), {
+      iss: 'router',
+      kind: 'route',
+      aud: AUD,
+      tenantId: routed['x-substrat-tenant'],
+      scopeId: routed['x-substrat-scope'],
+      surface: 'app',
+      vertical: 'acme/widgets',
+    });
+    const routeRes = await d.mf.dispatchFetch(route.url, { headers: Object.fromEntries(route.headers) });
+    expect(routeRes.status).toBe(200);
+    expect(((await routeRes.json()) as Answer).node).toMatchObject({ tenantId: routed['x-substrat-tenant'] });
+    const body = JSON.stringify({ note: 'é'.repeat(1000) });
+    const call = await signWireRequest(
+      platform,
+      new Request('https://vertical/internal/query', { method: 'POST', headers: { 'x-substrat-platform': CALL_VALUE }, body }),
+      { iss: 'platform', kind: 'call', aud: AUD },
+    );
+    const callRes = await d.mf.dispatchFetch(call.url, { method: 'POST', headers: Object.fromEntries(call.headers), body: await call.text() });
+    expect(callRes.status).toBe(200);
+    expect(((await callRes.json()) as Answer).body).toBe(body);
     await expect.poll(() => d.invocation()?.['tenantId']).toBe(routed['x-substrat-tenant']);
     expect(d.wire()).toEqual([]);
   });

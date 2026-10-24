@@ -1,6 +1,6 @@
-import { slug as slugSchema } from '@substrat-run/contracts';
-import type { Jurisdiction, StorageShape } from '@substrat-run/contracts';
-import type { ProvisionScopeInput } from './scope-host.js';
+import { scopeText, slug as slugSchema, substratError, verticalSlug } from '@substrat-run/contracts';
+import type { Jurisdiction, Scope, StorageShape } from '@substrat-run/contracts';
+import type { ProvisionScopeInput, ScopeListing } from './scope-host.js';
 
 /** The directory columns `provisionScope` writes, with every optional resolved. */
 export interface ResolvedScopeRecord {
@@ -25,9 +25,11 @@ export interface ResolvedScopeRecord {
  * the contract tests — which run the same suite against both adapters — would
  * still pass, because each adapter would be consistent with itself.
  *
- * The slug is parsed rather than trusted (the boundary rule): an invalid slug
- * fails here, at provisioning, instead of at the first `listScopes` read, when
- * the scope already exists and the caller is someone else.
+ * The slug, kind, name and vertical are parsed rather than trusted (the boundary
+ * rule): an invalid one fails here, at provisioning, instead of at the first
+ * `listScopes` read, when the scope already exists and the caller is someone else.
+ * A default stands in only for an absent value: an empty or whitespace-only `kind`
+ * or `name` is refused, never defaulted.
  */
 export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRecord {
   // A ULID lowercases into a valid slug ([0-9a-hjkmnp-tv-z]), so the default is
@@ -35,9 +37,9 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
   const slug = slugSchema.parse(input.slug ?? input.scopeId.toLowerCase());
   return {
     slug,
-    kind: input.kind ?? 'scope',
-    name: input.name ?? slug,
-    vertical: input.vertical ?? null,
+    kind: textOf('kind', input.kind) ?? 'scope',
+    name: textOf('name', input.name) ?? slug,
+    vertical: verticalOf(input.vertical, input.verticalSource ?? 'input'),
     storageShape: input.storageShape ?? 'A',
     // No jurisdiction stated means `global` — unconstrained, the honest name for
     // what an un-pinned scope already is (K-32). The old default was `null`, which
@@ -49,4 +51,69 @@ export function resolveScopeRecord(input: ProvisionScopeInput): ResolvedScopeRec
     forkedAt: input.forkedAt ?? null,
     expiresAt: input.expiresAt ?? null,
   };
+}
+
+/**
+ * Map directory rows to `Scope`s the way `HostAdmin.listScopesReadable` answers: a row `map`
+ * throws on is named in `unreadable` by its stored ids and the fields that failed, and the rest
+ * are returned in order. One implementation for both adapters, so they name a bad row alike.
+ */
+export function readableScopes<R extends { scope_id: unknown; tenant_id: unknown }>(
+  rows: readonly R[],
+  map: (row: R) => Scope,
+): ScopeListing {
+  const out: ScopeListing = { scopes: [], unreadable: [] };
+  for (const row of rows) {
+    try {
+      out.scopes.push(map(row));
+    } catch (err) {
+      out.unreadable.push({ scopeId: storedId(row.scope_id), tenantId: storedId(row.tenant_id), fields: failedFieldsOf(err) });
+    }
+  }
+  return out;
+}
+
+/** A stored id as text, bounded: a corrupt row's id column is not trusted to be a ULID. */
+const storedId = (value: unknown): string => String(value).slice(0, 64);
+
+/** The top-level field names a parse failure names, without the values it read. */
+function failedFieldsOf(err: unknown): string[] {
+  const issues = (err as { issues?: unknown } | null)?.issues;
+  if (!Array.isArray(issues)) return ['row'];
+  const fields = new Set<string>();
+  for (const issue of issues as { path?: unknown }[]) {
+    const head = Array.isArray(issue.path) ? issue.path[0] : undefined;
+    fields.add(typeof head === 'string' ? head : 'row');
+  }
+  return fields.size > 0 ? [...fields] : ['row'];
+}
+
+/** A `kind` or `name` as given, null when absent; an empty or whitespace-only one is refused. */
+function textOf(field: 'kind' | 'name', value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  if (scopeText.safeParse(value).success) return value;
+  return refuse(field, 'must not be empty or whitespace');
+}
+
+/**
+ * The vertical a scope runs, or null for none.
+ *
+ * One a caller names (`'input'`) is held to the registry's grammar (`verticalSlug`), so an empty
+ * or whitespace-only string is refused like any other value it does not admit. One copied from
+ * a scope that already exists (`'copy'`) is that scope's stored value, held only to what the
+ * directory's `scope` schema reads (non-empty), as it was before the grammar was held here: a
+ * stored `Todo` still lists, so its scope can still be snapshotted or given a sibling.
+ */
+function verticalOf(vertical: string | null | undefined, source: 'input' | 'copy'): string | null {
+  if (vertical === undefined || vertical === null) return null;
+  if (source === 'copy') return vertical.length > 0 ? vertical : refuse('vertical', 'must not be empty');
+  if (verticalSlug.safeParse(vertical).success) return vertical;
+  return refuse('vertical', 'must be a vertical slug: lowercase letters, digits and hyphens, optionally prefixed by an owner slug and one /');
+}
+
+/** The standard refusal for one provisioning field, naming it. */
+function refuse(field: 'kind' | 'name' | 'vertical', message: string): never {
+  throw substratError('validation_failed', `provisionScope: ${field} ${message}`, {
+    errors: [{ path: field, message }],
+  });
 }

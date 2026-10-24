@@ -1,8 +1,9 @@
 /**
- * The signed envelope the router and the control plane are to put on a call to a vertical
- * (RFC wire-signing, K-58 proposed). Nothing in the repo signs one yet. The platform's entry
- * module verifies one, inert until a deployment is given key lists (RFC §9, step 1), and the
- * shared-secret checks in `wire-auth.ts` and vertical-host's `readRoutedNode` are unchanged.
+ * The signed envelope the router and the control plane put on a call to a vertical (RFC
+ * wire-signing, K-58 proposed). Each signs only while its `sign` flag is on and its key is set
+ * (RFC §9, step 2), beside the legacy headers, which stay. The platform's entry module verifies
+ * one, inert until a deployment is given key lists (step 1), and the shared-secret checks in
+ * `wire-auth.ts` and vertical-host's `readRoutedNode` are unchanged.
  *
  * Ed25519 over a canonical encoding, the scheme the scope-store envelope already uses (K-52),
  * with its conventions reused rather than restated: the key id, the raw public key lists, the
@@ -42,9 +43,10 @@
  * built some other way, a call expectation with no replay policy (or a cache with no pinned
  * scope), and a nonce cache that cannot answer.
  *
- * Imports nothing but its sibling subpath `scope-store-envelope.ts`, which imports nothing, so
- * an entry bundle that imports this subpath pulls in no schema and no zod.
+ * Imports nothing but its siblings `scope-store-envelope.ts` and `invocation-record.ts`, which
+ * import nothing, so an entry bundle that imports this subpath pulls in no schema and no zod.
  */
+import { FIELD_COVERAGE_HEADER, PARENT_REQUEST_ID_HEADER, parentRequestIdOf } from './invocation-record.js';
 import {
   base64UrlToBytes,
   bytesToBase64Url,
@@ -219,14 +221,23 @@ export function decodeWireEnvelope(header: string): { readonly canonical: string
   return claims ? { canonical, claims } : undefined;
 }
 
-/** Fifteen lines, no trailing newline. Throws on a field the parser would refuse. */
+/**
+ * The encoder's refusal of claims no verifier would accept: a field the parser would refuse, a body
+ * where the pair binds none or none where it binds one, a lifetime past the maximum. Its own class, so
+ * a signer counts it as `claims` and every other throw as `error` (RFC §8).
+ */
+export class WireClaimsError extends Error {
+  override readonly name = 'WireClaimsError';
+}
+
+/** Fifteen lines, no trailing newline. Throws {@link WireClaimsError} on a field the parser would refuse. */
 export function canonicalWireEnvelope(claims: WireClaims): string {
-  if (claims.v !== WIRE_ENVELOPE_VERSION) throw new Error(`unknown wire envelope version ${claims.v}`);
+  if (claims.v !== WIRE_ENVELOPE_VERSION) throw new WireClaimsError(`unknown wire envelope version ${claims.v}`);
   for (const time of [claims.iat, claims.exp]) {
-    if (!Number.isSafeInteger(time) || time < 0) throw new Error('a wire envelope time is not a non-negative integer');
+    if (!Number.isSafeInteger(time) || time < 0) throw new WireClaimsError('a wire envelope time is not a non-negative integer');
   }
   const optional = (value: string | null) => {
-    if (value === '') throw new Error('a wire envelope field is empty: an absent field is null');
+    if (value === '') throw new WireClaimsError('a wire envelope field is empty: an absent field is null');
     return value ?? '';
   };
   const lines = [
@@ -246,9 +257,9 @@ export function canonicalWireEnvelope(claims: WireClaims): string {
     String(claims.exp),
     claims.nonce,
   ];
-  if (lines.some((line) => line.includes('\n'))) throw new Error('a wire envelope field contains a newline');
+  if (lines.some((line) => line.includes('\n'))) throw new WireClaimsError('a wire envelope field contains a newline');
   const canonical = lines.join('\n');
-  if (!parseWireEnvelope(canonical)) throw new Error('a wire envelope field is malformed');
+  if (!parseWireEnvelope(canonical)) throw new WireClaimsError('a wire envelope field is malformed');
   return canonical;
 }
 
@@ -352,16 +363,16 @@ export interface IssuedWireEnvelope {
   readonly signature: string;
 }
 
-/** Build, digest and sign one envelope. Throws on an input no verifier would accept. */
+/** Build, digest and sign one envelope. Throws {@link WireClaimsError} on an input no verifier would accept. */
 export async function signWireEnvelope(key: WireSigningKey, input: WireEnvelopeInput): Promise<IssuedWireEnvelope> {
   // A pair the table does not admit fails in the encoder below, as malformed.
   const body = wireEnvelopeShape(input.iss, input.kind)?.body;
-  if (body === 'absent' && input.body !== undefined) throw new Error(`a ${input.kind} envelope binds no body`);
+  if (body === 'absent' && input.body !== undefined) throw new WireClaimsError(`a ${input.kind} envelope binds no body`);
   // `== null`, as the verifier reads it: a null body is a read that failed, never the empty body.
-  if (body === 'required' && input.body == null) throw new Error(`a ${input.kind} envelope binds its body: pass it, empty or not`);
+  if (body === 'required' && input.body == null) throw new WireClaimsError(`a ${input.kind} envelope binds its body: pass it, empty or not`);
   const iat = input.iat ?? Math.floor(Date.now() / 1000);
   const exp = input.exp ?? iat + WIRE_ENVELOPE_LIFETIME_SECONDS;
-  if (!lifetimeAdmitted(iat, exp)) throw new Error('a wire envelope lives for at most the maximum lifetime, and ends after it starts');
+  if (!lifetimeAdmitted(iat, exp)) throw new WireClaimsError('a wire envelope lives for at most the maximum lifetime, and ends after it starts');
   const claims: WireClaims = {
     v: 1,
     iss: input.iss,
@@ -779,4 +790,146 @@ export interface WireVerificationLine {
   readonly scopeId: string | null;
   /** The platform's `SUBSTRAT_VERSION_ID`, as on the invocation line. */
   readonly versionId: string | null;
+}
+
+/*
+ * The signers (RFC §5, §9 step 2): the router signs a route and its own calls, the control plane
+ * signs its calls. Both decide through {@link wireSignerOf}, so they read their flag and their key,
+ * put an envelope on a request and fall back when they cannot in exactly one way. The legacy
+ * headers stay.
+ */
+
+/**
+ * Whether a signer's `sign` flag (RFC §5) is on: exactly `on`, around whitespace. Absent, empty or
+ * anything else is off, so a signer nobody configured adds nothing to any request.
+ */
+export function wireSigningOn(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() === 'on';
+}
+
+/** One isolate's signing key, imported once per configured value. */
+let importedKey: { readonly pkcs8: string; readonly key: Promise<WireSigningKey> } | undefined;
+
+/**
+ * {@link importWireSigningKey}, once per isolate for a given value: the signer's key is imported on
+ * the first request that needs it and reused after. A value that will not import keeps rejecting,
+ * with the same {@link WireKeyError}, until the value changes.
+ */
+export function wireSigningKeyOf(pkcs8: string): Promise<WireSigningKey> {
+  if (importedKey?.pkcs8 !== pkcs8) importedKey = { pkcs8, key: importWireSigningKey(pkcs8) };
+  return importedKey.key;
+}
+
+/** What a signer names on one request, beside what the request itself says: its method, target and body. */
+export type WireRequestClaims = Omit<WireEnvelopeInput, 'method' | 'target' | 'body'>;
+
+/**
+ * The request with one fresh envelope on it ({@link WIRE_ENVELOPE_HEADER} and
+ * {@link WIRE_SIGNATURE_HEADER}), every other header kept as it was. The method and target are read
+ * with {@link wireRequestBinding}, as the verifier reads them. A call binds the request's exact body,
+ * read whole here and handed on as the same bytes (an absent body is the empty one, as the verifier
+ * reads it); a route binds none, and its body is not read. Sign each attempt: a resend carries a
+ * spent nonce (RFC §4).
+ */
+export async function signWireRequest(key: WireSigningKey, request: Request, claims: WireRequestClaims): Promise<Request> {
+  return signedWith(key, request, claims, await bodyToBind(request, claims.kind));
+}
+
+/** A call's body, read once to be bound; a route binds none and its body is not read. */
+const bodyToBind = async (request: Request, kind: WireKind) => (kind === 'call' && request.body !== null ? request.arrayBuffer() : undefined);
+
+/** {@link signWireRequest} over a body already read (`undefined` for a route, or an absent body). */
+async function signedWith(key: WireSigningKey, request: Request, claims: WireRequestClaims, body: ArrayBuffer | undefined): Promise<Request> {
+  const { method, target } = wireRequestBinding(request);
+  const issued = await signWireEnvelope(key, { ...claims, method, target, ...(claims.kind === 'call' ? { body: body ?? '' } : {}) });
+  const headers = new Headers(request.headers);
+  headers.set(WIRE_ENVELOPE_HEADER, issued.header);
+  headers.set(WIRE_SIGNATURE_HEADER, issued.signature);
+  return new Request(request, body === undefined ? { headers } : { headers, body });
+}
+
+/**
+ * What a signer did with one request (RFC §8): signed it, or sent it as it came because it could
+ * not, saying why: `unset` (no key), the key form's refusal (a {@link WireKeyError} reason), `claims`
+ * (claims the encoder refuses), or `error` (anything else).
+ */
+export type WireSignResult =
+  | { readonly request: Request; readonly outcome: 'signed' }
+  | { readonly request: Request; readonly outcome: 'failed'; readonly reason: string };
+
+/**
+ * One signer's decision for one request. `named`, when given, adds the tenant and scope the call's
+ * own body names, read from the bytes the signer already holds.
+ */
+export type WireSigner = (
+  request: Request,
+  claims: WireRequestClaims,
+  named?: (request: Request, body: ArrayBuffer | undefined) => { readonly tenantId: string; readonly scopeId: string } | null,
+) => Promise<WireSignResult>;
+
+/**
+ * A signer's whole decision (RFC §5, §8): `null` while its `sign` flag is off, which is the default,
+ * so nothing is read and nothing is signed. On, each request is signed afresh with the key, imported
+ * once per isolate. A signer that cannot sign never fails the request: it is handed back with its
+ * legacy headers and its whole body (a call's body is read once, and the request rebuilt from those
+ * bytes when signing fails after reading it), and the result says why, never with the key.
+ */
+export function wireSignerOf(settings: { readonly sign?: unknown; readonly key?: string }): WireSigner | null {
+  if (!wireSigningOn(settings.sign)) return null;
+  const pkcs8 = settings.key;
+  if (!pkcs8) return async (request) => ({ request, outcome: 'failed', reason: 'unset' });
+  return async (request, claims, named) => {
+    let key: WireSigningKey;
+    try {
+      key = await wireSigningKeyOf(pkcs8);
+    } catch (error) {
+      return { request, outcome: 'failed', reason: error instanceof WireKeyError ? error.reason : 'error' };
+    }
+    let body: ArrayBuffer | undefined;
+    try {
+      body = await bodyToBind(request, claims.kind);
+      return { request: await signedWith(key, request, { ...claims, ...named?.(request, body) }, body), outcome: 'signed' };
+    } catch (error) {
+      // `claims` only for the encoder's own refusal; a body that cannot be read, a throw from
+      // `named`, the rebuild or the signing call is `error`. A body read before the failure goes
+      // back on the request, so it is sent whole.
+      const reason = error instanceof WireClaimsError ? 'claims' : 'error';
+      return { request: body === undefined ? request : new Request(request, { body }), outcome: 'failed', reason };
+    }
+  };
+}
+
+/**
+ * The headers the router adds that the envelope does not sign, listed by name as carrying no
+ * authority (RFC §5, decided in step 2), with the kind of request each rides on and the check its
+ * own reader applies: the field-coverage sample on a route (the dispatch id that arms the
+ * per-response field walk, one ULID as vertical-host reads it) and a peer call's parent request id
+ * on a call (which links the target's line to the request that made it, read by
+ * {@link parentRequestIdOf}). Each is a claim its reader already treats as one: the walk's report
+ * counts only when the router's own line names its dispatch id, and the parent id only relates two
+ * lines. So when the envelope alone admits a request, the entry hands each on, on its own kind of
+ * request, when its value passes that check, and drops it otherwise, as it drops every other
+ * `x-substrat-*` header the envelope did not sign. Signing them instead would take a new envelope
+ * version (`substrat-wire/2`).
+ */
+const UNSIGNED: readonly (readonly [name: string, kind: WireKind, valid: (value: string) => boolean])[] = Object.freeze([
+  [FIELD_COVERAGE_HEADER, 'route', (value: string) => ULID.test(value)],
+  [PARENT_REQUEST_ID_HEADER, 'call', (value: string) => parentRequestIdOf(value) !== undefined],
+]);
+
+/** The listed headers by name, each with the kind of request it rides on. */
+export const WIRE_UNSIGNED_HEADERS: Readonly<Record<string, WireKind>> = Object.freeze(Object.fromEntries(UNSIGNED.map(([name, kind]) => [name, kind])));
+
+/**
+ * The listed headers ({@link WIRE_UNSIGNED_HEADERS}) a request of `kind` hands on, as name and value:
+ * only those listed for that kind, and only a value its reader's check accepts. A header sent twice
+ * reads as both values joined, which is not one id, so it is dropped whole.
+ */
+export function wireUnsignedHeadersOf(kind: WireKind, headers: { get(name: string): string | null }): [name: string, value: string][] {
+  const kept: [string, string][] = [];
+  for (const [name, on, valid] of UNSIGNED) {
+    const value = on === kind ? headers.get(name) : null;
+    if (value !== null && valid(value)) kept.push([name, value]);
+  }
+  return kept;
 }

@@ -40,6 +40,7 @@ import {
   REBIND_REVIEW_REASONS,
   promotionAcknowledgement,
   versionOrigin,
+  verticalSlug,
   z,
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
@@ -183,7 +184,7 @@ const findingRuleIn = z
 
 /** What the install form posts. */
 export const installAppInput = z.object({
-  verticalSlug: z.string().min(1),
+  verticalSlug,
   name: z.string().min(1),
   /** The Identity section's choice (vertical-auth-detach.md §2.4). Absent ⇒ builtin. */
   auth: appAuthChoiceBody.optional(),

@@ -21,6 +21,12 @@ import { RSV_RUN, RSV_USE, reservedRoleMod, unmarkedReservedRoleMod } from './re
  * - So is a connection grant (`grantToConnection`), at either node: a connection acts for the
  *   external provider holding its token. Nothing is recorded for a later provision to deliver.
  * - Each refusal writes nothing: the principal holds nothing afterwards.
+ * - A role DEFINITION is judged too (#2447): `defineRole` refuses a person's role carrying a
+ *   reserved key and a system-held role carrying a person's key, so a role cannot be widened after
+ *   it was assigned; a seat holding a key reserved after it was seated keeps working, through a
+ *   refused redefinition and a fan-out. A host that registers no reserving module learns the
+ *   reservation from the tenant's system-held roles, admits a key it knows nothing about
+ *   (fail-open), and its person's doors refuse a role stored `holder: 'system'`.
  *
  * And the host option `permissions`: a host given its declared surface refuses to register a
  * module the surface leaves out, and holds the reservations the surface declares whatever is
@@ -37,11 +43,17 @@ export function reservedRoleContractSuite(
     const s1 = scopeId.parse(ulid());
     const staff = platformActorId.parse(ulid());
     const alice = principalId.parse(ulid()); // holds rsv:use tenant-wide, and rsv:run through a reserved-only role
+    const legacy = principalId.parse(ulid()); // seated in `mixed` before rsv:run was reserved here (#2447)
+    /** A key no module here declares: a host admits it (fail-open), so it fills out a role's list. */
+    const RSV_EXTRA = 'rsv:extra' as PermissionKey;
     const person = () => principalId.parse(ulid());
     const entity = () => ({ entityType: 'rsvdoc', entityId: ulid() });
     const RSV = moduleId.parse('@test/reserved-role');
     /** How a person's door refuses: worded for `canAssign`'s removal bound as well as for an assignment. */
     const NO_BOUND = "no person's bound covers it, to give the role or to take it back";
+    /** A person's door on `roleKey`: for the reserved key it holds, or (#2447) for its stored `holder: 'system'`. */
+    const personRefusal = (roleKey: string) =>
+      new RegExp(`role '${roleKey}' (holds rsv:run, reserved to a system principal|is declared holder: 'system', a role for a system principal): ${NO_BOUND}`);
 
     const holds = async (who: PrincipalId, permission: PermissionKey, on?: { entityType: string; entityId: string }) => {
       const stub = await host.getScope(who, t1, s1);
@@ -51,17 +63,22 @@ export function reservedRoleContractSuite(
     beforeAll(async () => {
       fixture = await makeFixture();
       host = fixture.host;
-      host.registerModule(reservedRoleMod);
       host.registerModule(permMod); // its `perm/probe` reports what a principal holds
       await host.admin.createTenant(staff, { id: t1, slug: 'reserved-role-tenant', name: 'Reserved' });
+      // #2447: a role definition is judged when it is written, so the roles below that a person may
+      // not hold exist the one way they still can: defined before the module reserving rsv:run was
+      // registered here (a key an engine reserves in a later version). `legacy` is seated then too.
+      await host.admin.defineRole(staff, t1, { key: 'mixed', permissions: [RSV_USE, RSV_RUN], source: 'vertical' });
+      await host.admin.defineRole(staff, t1, { key: 'person-runner', permissions: [RSV_RUN], source: 'vertical' });
+      await host.admin.defineRole(staff, t1, { key: 'wide', permissions: [RSV_USE, RSV_RUN, RSV_EXTRA], source: 'vertical' });
+      await host.admin.assignRole(staff, { principalId: legacy, roleKey: 'mixed', node: { tenantId: t1, scopeId: null } });
+      host.registerModule(reservedRoleMod);
       await host.admin.grantEntitlement(staff, t1, 'perm');
       await host.admin.grantEntitlement(staff, t1, 'rsv');
       await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'rsv-vertical' });
       await host.admin.activateScope(staff, t1, s1);
       await host.admin.defineRole(staff, t1, { key: 'member', permissions: [RSV_USE], source: 'vertical' });
-      await host.admin.defineRole(staff, t1, { key: 'mixed', permissions: [RSV_USE, RSV_RUN], source: 'vertical' });
       await host.admin.defineRole(staff, t1, { key: 'runner', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
-      await host.admin.defineRole(staff, t1, { key: 'person-runner', permissions: [RSV_RUN], source: 'vertical' });
       await host.admin.grant(staff, { principalId: alice, permission: RSV_USE, node: { tenantId: t1, scopeId: null }, grantedBy: alice });
       // The platform door admits a role made only of reserved keys, so alice can hold rsv:run.
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'runner', node: { tenantId: t1, scopeId: null } });
@@ -129,7 +146,7 @@ export function reservedRoleContractSuite(
           await expectRefusal(
             host.assignScopeRoleBounded(t1, s1, alice, who, roleKey),
             'forbidden',
-            new RegExp(`role '${roleKey}' holds rsv:run, reserved to a system principal: ${NO_BOUND}`),
+            personRefusal(roleKey),
           );
           expect(await host.listScopeRoleHolders(t1, s1, who)).toEqual([]);
           expect(await holds(who, RSV_RUN)).toBe(false);
@@ -147,7 +164,7 @@ export function reservedRoleContractSuite(
         async (roleKey) => {
           const who = person();
           await host.assignScopeRoleBounded(t1, s1, alice, who, 'member');
-          await expectRefusal(host.changeScopeRoleBounded(t1, s1, alice, who, 'member', roleKey), 'forbidden', new RegExp(`role '${roleKey}' holds rsv:run.*${NO_BOUND}`));
+          await expectRefusal(host.changeScopeRoleBounded(t1, s1, alice, who, 'member', roleKey), 'forbidden', personRefusal(roleKey));
           expect(await host.listScopeRoleHolders(t1, s1, who)).toEqual([{ principal: who, roleKey: 'member' }]);
         },
       );
@@ -160,7 +177,7 @@ export function reservedRoleContractSuite(
       it('…and so does ctx.canAssign, inside an operation, for a caller who holds every key of the role', async () => {
         const as = await host.getScope(alice, t1, s1);
         await expectRefusal(as.invoke('perm/can-assign', { roleKey: 'mixed' }), 'forbidden', new RegExp(`role 'mixed' holds rsv:run.*${NO_BOUND}`));
-        await expectRefusal(as.invoke('perm/can-assign', { roleKey: 'runner' }), 'forbidden', new RegExp(`role 'runner' holds rsv:run.*${NO_BOUND}`));
+        await expectRefusal(as.invoke('perm/can-assign', { roleKey: 'runner' }), 'forbidden', personRefusal('runner'));
         expect(await as.invoke('perm/can-assign', { roleKey: 'member' })).toEqual({ covered: true, missing: [] });
       });
 
@@ -280,6 +297,227 @@ export function reservedRoleContractSuite(
       });
     });
 
+    describe('role definitions (#2447)', () => {
+      const stored = async (key: string) => (await host.admin.listRoles(staff, { tenantId: t1 })).find((r) => r.key === key)?.permissions;
+
+      it('refuses defining a person’s role carrying a reserved key, and writes nothing; its twin is defined', async () => {
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'crew', permissions: [RSV_USE, RSV_RUN], source: 'vertical' }),
+          'forbidden',
+          /role 'crew' is a person's role and would hold rsv:run \(a module this host registers/,
+        );
+        expect(await stored('crew')).toBeUndefined();
+        await host.admin.defineRole(staff, t1, { key: 'crew', permissions: [RSV_USE], source: 'vertical' });
+        expect(await stored('crew')).toEqual([RSV_USE]);
+      });
+
+      it('refuses widening a role after it was assigned: the seat keeps exactly what it held', async () => {
+        const who = person();
+        await host.admin.defineRole(staff, t1, { key: 'grows', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: who, roleKey: 'grows', node: { tenantId: t1, scopeId: s1 } });
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'grows', permissions: [RSV_USE, RSV_RUN], source: 'vertical' }),
+          'forbidden',
+          /role 'grows' is a person's role and would hold rsv:run/,
+        );
+        expect(await stored('grows')).toEqual([RSV_USE]);
+        expect(await holds(who, RSV_USE)).toBe(true);
+        expect(await holds(who, RSV_RUN)).toBe(false);
+      });
+
+      it('revokes nothing: a seat holding a key reserved after it was seated keeps working, through a refused redefinition and a fan-out', async () => {
+        expect(await holds(legacy, RSV_RUN)).toBe(true);
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'mixed', permissions: [RSV_USE, RSV_RUN], source: 'vertical' }),
+          'forbidden',
+          /role 'mixed' is a person's role and would hold rsv:run/,
+        );
+        // A tenant-level assignment fans the stored roles out to the scopes; the stored definition
+        // is projected as it is, never re-judged, so the seat is not narrowed or dropped by it.
+        await host.admin.assignRole(staff, { principalId: person(), roleKey: 'member', node: { tenantId: t1, scopeId: null } });
+        expect(await stored('mixed')).toEqual([RSV_USE, RSV_RUN]);
+        expect(await holds(legacy, RSV_RUN)).toBe(true);
+        expect(await holds(legacy, RSV_USE)).toBe(true);
+      });
+
+      it('a narrowing is never refused for the key it takes out, only for a reserved key it still holds', async () => {
+        // `wide` [rsv:use, rsv:run, rsv:extra] predates the reservation (the first hook).
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'wide', permissions: [RSV_USE, RSV_RUN], source: 'vertical' }),
+          'forbidden',
+          /role 'wide' is a person's role and would hold rsv:run/,
+        );
+        expect(await stored('wide')).toEqual([RSV_USE, RSV_RUN, RSV_EXTRA]);
+        await host.admin.defineRole(staff, t1, { key: 'wide', permissions: [RSV_USE], source: 'vertical' });
+        expect(await stored('wide')).toEqual([RSV_USE]);
+      });
+
+      it('refuses a system-held role holding a key a registered module declares for a person; its twin is defined', async () => {
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'wide-runner', permissions: [RSV_RUN, RSV_USE], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'wide-runner' is declared holder: 'system' but holds rsv:use \(declared for a person by a module this host registers\)/,
+        );
+        expect(await stored('wide-runner')).toBeUndefined();
+        await host.admin.defineRole(staff, t1, { key: 'wide-runner', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
+        expect(await stored('wide-runner')).toEqual([RSV_RUN]);
+      });
+    });
+
+    describe('a holder change, judged against the stored role and its seats (#2447 round 1)', () => {
+      const stored = async (key: string) => (await host.admin.listRoles(staff, { tenantId: t1 })).find((r) => r.key === key);
+
+      it('refuses making a seated person’s role holder: system, and writes nothing: its seat keeps what it held', async () => {
+        const bob = person();
+        await host.admin.defineRole(staff, t1, { key: 'staffer', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: bob, roleKey: 'staffer', node: { tenantId: t1, scopeId: s1 } });
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'staffer', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'staffer' is held by a principal \(stored as a person's role\), so it cannot be declared holder: 'system'/,
+        );
+        expect(await stored('staffer')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
+        expect(await holds(bob, RSV_RUN)).toBe(false);
+        expect(await holds(bob, RSV_USE)).toBe(true);
+      });
+
+      it('…and refuses it for a tenant-level seat too', async () => {
+        await host.admin.defineRole(staff, t1, { key: 'staffer-t', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: person(), roleKey: 'staffer-t', node: { tenantId: t1, scopeId: null } });
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'staffer-t', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /held by a principal/,
+        );
+      });
+
+      it('refuses a system-held definition of a key someone holds with NO definition stored (round 2)', async () => {
+        // A seat made before any definition of its key: the platform's door seats an undefined role.
+        const bob = person();
+        await host.admin.assignRole(staff, { principalId: bob, roleKey: 'ghost', node: { tenantId: t1, scopeId: s1 } });
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'ghost', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'ghost' is held by a principal \(with no definition stored\)/,
+        );
+        expect(await stored('ghost')).toBeUndefined();
+        expect(await holds(bob, RSV_RUN)).toBe(false);
+        // Its twin: a person's definition of that key is judged as a first one, and defined.
+        await host.admin.defineRole(staff, t1, { key: 'ghost', permissions: [RSV_USE], source: 'vertical' });
+      });
+
+      it('counts the seats of an archived scope, which unarchive brings back (round 2)', async () => {
+        const shelf = scopeId.parse(ulid());
+        const bob = person();
+        await host.provisionScope(staff, { tenantId: t1, scopeId: shelf, vertical: 'rsv-vertical' });
+        await host.admin.activateScope(staff, t1, shelf);
+        await host.admin.defineRole(staff, t1, { key: 'shelved', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: bob, roleKey: 'shelved', node: { tenantId: t1, scopeId: shelf } });
+        await host.admin.archiveScope(staff, t1, shelf);
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'shelved', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'shelved' is held by a principal/,
+        );
+        await host.admin.unarchiveScope(staff, t1, shelf);
+        expect(await host.listScopeRoleHolders(t1, shelf, bob)).toEqual([{ principal: bob, roleKey: 'shelved' }]);
+        expect(await stored('shelved')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
+      });
+
+      it('counts a seat in a scope archived straight from provisioning; unarchive brings it back unchanged (round 4)', async () => {
+        const early = scopeId.parse(ulid());
+        const bob = person();
+        await host.provisionScope(staff, { tenantId: t1, scopeId: early, vertical: 'rsv-vertical' }); // never activated
+        await host.admin.defineRole(staff, t1, { key: 'esc', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: bob, roleKey: 'esc', node: { tenantId: t1, scopeId: early } });
+        await host.admin.archiveScope(staff, t1, early);
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'esc', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'esc' is held by a principal/,
+        );
+        await host.admin.unarchiveScope(staff, t1, early);
+        expect(await host.listScopeRoleHolders(t1, early, bob)).toEqual([{ principal: bob, roleKey: 'esc' }]);
+        expect(await stored('esc')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
+        const probe = await host.getScope(bob, t1, early);
+        expect((await probe.invoke<{ allowed: boolean }>('perm/probe', { permission: RSV_RUN })).allowed).toBe(false);
+      });
+
+      it('twin: the same change to a role nobody holds is judged as a first definition, and admitted', async () => {
+        await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
+        expect(await stored('idle')).toMatchObject({ permissions: [RSV_RUN], holder: 'system' });
+      });
+    });
+
+    describe('a host that registers no module reserving the key (#2447)', () => {
+      let bare: ScopeHostFixture;
+      const t = tenantId.parse(ulid());
+      const other = tenantId.parse(ulid());
+      const roster = async (tenant: typeof t) => (await bare.host.admin.listRoles(staff, { tenantId: tenant })).map((r) => r.key).sort();
+
+      beforeAll(async () => {
+        bare = await makeFixture();
+        bare.host.registerModule(permMod); // declares nothing of rsv
+        for (const [id, slug] of [[t, 'rsv-bare'], [other, 'rsv-bare-other']] as const) {
+          await bare.host.admin.createTenant(staff, { id, slug: `${slug}-${id.slice(-8).toLowerCase()}`, name: 'Bare' });
+        }
+        await bare.host.admin.defineRole(staff, t, { key: 'host-runner', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
+        await bare.host.admin.defineRole(staff, t, { key: 'member', permissions: [RSV_USE], source: 'vertical' });
+      });
+
+      afterAll(async () => {
+        await bare?.cleanup();
+      });
+
+      it('learns the reservation from the tenant’s system-held roles: a person’s role carrying one of their keys is refused', async () => {
+        await expectRefusal(
+          bare.host.admin.defineRole(staff, t, { key: 'crew', permissions: [RSV_USE, RSV_RUN], source: 'vertical' }),
+          'forbidden',
+          /role 'crew' is a person's role and would hold rsv:run \(held by the system-held role 'host-runner'\)/,
+        );
+        expect(await roster(t)).toEqual(['host-runner', 'member']);
+      });
+
+      it('fails open on a key it knows nothing about: with no system-held role holding it, the same role is defined', async () => {
+        await bare.host.admin.defineRole(staff, other, { key: 'crew', permissions: [RSV_USE, RSV_RUN], source: 'vertical' });
+        expect(await roster(other)).toEqual(['crew']);
+      });
+
+      it('judges a system-held role redefined as a person’s with its stored keys reserved (#2447 round 1); its twin is defined', async () => {
+        // A key only this role holds, so its own stored definition is the only evidence there is.
+        const SOLO = 'rsv:solo' as PermissionKey;
+        await bare.host.admin.defineRole(staff, t, { key: 'solo-runner', permissions: [SOLO], source: 'vertical', holder: 'system' });
+        await expectRefusal(
+          bare.host.admin.defineRole(staff, t, { key: 'solo-runner', permissions: [SOLO], source: 'vertical' }),
+          'forbidden',
+          /role 'solo-runner' is a person's role and would hold rsv:solo \(held by its stored system-held definition\)/,
+        );
+        expect((await bare.host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'solo-runner')?.holder).toBe('system');
+        await bare.host.admin.defineRole(staff, t, { key: 'solo-runner', permissions: [RSV_USE], source: 'vertical' });
+        expect((await bare.host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'solo-runner')?.holder).toBe('person');
+      });
+
+      it('a person’s door refuses the system-held role from its stored holder alone; its twin applies', async () => {
+        const boss = person();
+        await bare.host.admin.assignRole(staff, { principalId: boss, roleKey: 'member', node: { tenantId: t, scopeId: null } });
+        const add = (roleKey: string) =>
+          bare.host.admin.applyMembership(staff, {
+            op: 'add',
+            tenantId: t,
+            principal: person(),
+            roleKey,
+            boundedBy: boss,
+            unlessRemovedSince: instant.parse(new Date(Date.now() - 60_000).toISOString()),
+          });
+        expect(await add('host-runner')).toEqual({
+          applied: false,
+          reserved: expect.stringMatching(new RegExp(`role 'host-runner' is declared holder: 'system', a role for a system principal: ${NO_BOUND}`)),
+        });
+        expect(await add('member')).toEqual({ applied: true });
+      });
+    });
+
     describe('the declared permission surface (`permissions`)', () => {
       it('refuses to register a module the surface leaves out, naming it', async () => {
         const other = await makeFixture({ permissions: { modules: [{ manifest: { id: '@test/elsewhere' } }] } });
@@ -307,11 +545,11 @@ export function reservedRoleContractSuite(
         try {
           declared.host.registerModule(unmarkedReservedRoleMod);
           await declared.host.admin.createTenant(staff, { id: t, slug: `rsv-union-${t.slice(-10).toLowerCase()}`, name: 'Union' });
-          await declared.host.admin.defineRole(staff, t, { key: 'mixed', permissions: [RSV_USE, RSV_RUN], source: 'vertical' });
+          // #2447: the role definition is where the held reservation now refuses first.
           await expectRefusal(
-            declared.host.admin.assignRole(staff, { principalId: person(), roleKey: 'mixed', node: { tenantId: t, scopeId: null } }),
+            declared.host.admin.defineRole(staff, t, { key: 'mixed', permissions: [RSV_USE, RSV_RUN], source: 'vertical' }),
             'forbidden',
-            /role 'mixed' holds rsv:run, reserved to a system principal/,
+            /role 'mixed' is a person's role and would hold rsv:run/,
           );
         } finally {
           await declared.cleanup();

@@ -728,13 +728,15 @@ describe('the router’s prefix, as the vertical sees it', () => {
     }
   });
 
-  it('an envelope alone admitting a call: only the credential, and nothing it did not sign', async () => {
+  it('an envelope alone admitting a call: only the credential and the listed parent id, and nothing else it did not sign', async () => {
     const g = gated();
     const headers = new Headers({ ...unsigned, ...(await callEnvelope(QUERY, '{}')) });
     headers.append('x-substrat-tenant', TENANT);
     const res = await g.fetch(new Request(QUERY, { method: 'POST', headers, body: '{}' }), envOf('dual'));
     expect(res.status).toBe(200);
-    expect(prefixed(g.seen[0]!)).toEqual([PLATFORM_SECRET_HEADER]);
+    // The parent id is listed as carrying no authority on a call (RFC §5); the field-coverage
+    // value here is not a ULID, and the rest are not listed.
+    expect(prefixed(g.seen[0]!)).toEqual(['x-substrat-parent-request-id', PLATFORM_SECRET_HEADER]);
   });
 
   it('a peer invocation the router signs is handed the vertical it names, and no other; a call that names none gets none', async () => {
@@ -754,6 +756,76 @@ describe('the router’s prefix, as the vertical sees it', () => {
     const twin = gated(stored);
     expect((await twin.fetch(new Request(INVOKE, { method: 'POST', headers: platformSigned, body }), envOf('dual'))).status).toBe(200);
     expect(twin.seen[0]!.headers.has('x-substrat-vertical')).toBe(false);
+  });
+
+  describe('the headers listed as carrying no authority (RFC §5, step 2)', () => {
+    const COVERAGE = '01JZ0000000000000000CVG001';
+    const PARENT = '01JZ0000000000000000PAR001';
+    const INVOKE = 'https://vertical/internal/vertical-invoke';
+    const stored = { nonceCache: () => ({ claim: () => true }) };
+
+    it.each(['dual', 'signed-only'])('%s, a route admitted on its envelope alone: a field-coverage ULID is handed on, nothing else unsigned is', async (state) => {
+      const g = gated();
+      const headers = new Headers({ ...(await routeEnvelope()), 'X-Substrat-Field-Coverage': COVERAGE, 'x-substrat-parent-request-id': PARENT, 'x-substrat-extra': COVERAGE });
+      expect((await g.fetch(new Request(URL_ROUTE, { headers }), envOf(state))).status).toBe(200);
+      const seen = g.seen[0]!;
+      expect(seen.headers.get('x-substrat-field-coverage')).toBe(COVERAGE);
+      // The parent id rides a call, never a route, and a header nobody listed is still dropped.
+      expect(prefixed(seen)).toEqual([...IDENTITY, 'x-substrat-field-coverage'].sort());
+    });
+
+    it.each([
+      ['not a ULID', 'not-a-dispatch-id'],
+      ['lower case', COVERAGE.toLowerCase()],
+      ['empty', ''],
+    ])('a field-coverage value that fails its reader’s check (%s) is dropped', async (_, value) => {
+      const g = gated();
+      const headers = new Headers({ ...(await routeEnvelope()), 'x-substrat-field-coverage': value });
+      await g.fetch(new Request(URL_ROUTE, { headers }), envOf('signed-only'));
+      expect(g.seen[0]!.headers.has('x-substrat-field-coverage')).toBe(false);
+      expect(prefixed(g.seen[0]!)).toEqual(IDENTITY);
+    });
+
+    it('a field-coverage header sent twice is dropped whole, even when both values are ULIDs', async () => {
+      const g = gated();
+      const headers = new Headers(await routeEnvelope());
+      headers.append('x-substrat-field-coverage', COVERAGE);
+      headers.append('X-Substrat-Field-Coverage', COVERAGE);
+      await g.fetch(new Request(URL_ROUTE, { headers }), envOf('signed-only'));
+      expect(g.seen[0]!.headers.has('x-substrat-field-coverage')).toBe(false);
+    });
+
+    it('a peer invocation admitted on its envelope alone: a parent-id ULID is handed on; a field-coverage header and a bad parent id are not', async () => {
+      const body = '{"operation":"x"}';
+      const envelope = await sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url: INVOKE, vertical: VERTICAL, tenantId: TENANT, scopeId: SCOPE });
+      const g = gated(stored);
+      const headers = new Headers({ ...envelope, 'X-Substrat-Parent-Request-Id': PARENT, 'x-substrat-field-coverage': COVERAGE });
+      expect((await g.fetch(new Request(INVOKE, { method: 'POST', headers, body }), envOf('signed-only'))).status).toBe(200);
+      expect(g.seen[0]!.headers.get('x-substrat-parent-request-id')).toBe(PARENT);
+      expect(prefixed(g.seen[0]!)).toEqual(['x-substrat-parent-request-id', PLATFORM_SECRET_HEADER, 'x-substrat-vertical'].sort());
+
+      const twin = gated(stored);
+      const bad = new Headers({ ...envelope, 'x-substrat-parent-request-id': `${PARENT},${PARENT}` });
+      await twin.fetch(new Request(INVOKE, { method: 'POST', headers: bad, body }), envOf('signed-only'));
+      expect(twin.seen[0]!.headers.has('x-substrat-parent-request-id')).toBe(false);
+    });
+
+    it('signed-only, through the real stamp: a sampled route still arms the field walk, and an unsampled one does not', async () => {
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      // What the operation route asks before it walks a response: the stamp's armed dispatch id.
+      const armed = (request: Request) =>
+        (globalThis as unknown as Record<symbol, WeakMap<object, { fieldCoverageId?: string }> | undefined>)[Symbol.for('substrat.invocation-stamp')]?.get(request)
+          ?.fieldCoverageId ?? null;
+      const stamped = withInvocationLog<Env>(
+        { fetch: (request: Request) => Response.json({ armed: armed(request) }) } as unknown as Parameters<typeof withInvocationLog<Env>>[0],
+        { routerSecret: (env) => env['ROUTER_SECRET'] },
+      ) as GatedWorker<Env>;
+      const g = gated({}, { worker: stamped, seen: [] });
+      const sampled = await g.fetch(new Request(URL_ROUTE, { headers: { ...(await routeEnvelope()), 'x-substrat-field-coverage': COVERAGE } }), envOf('signed-only'));
+      expect(await sampled.json()).toEqual({ armed: COVERAGE });
+      const unsampled = await g.fetch(new Request(URL_ROUTE, { headers: await routeEnvelope() }), envOf('signed-only'));
+      expect(await unsampled.json()).toEqual({ armed: null });
+    });
   });
 
   it.each(['legacy-only', 'dual'])('%s, a valid legacy credential: the request goes on exactly as it came, as today', async (state) => {

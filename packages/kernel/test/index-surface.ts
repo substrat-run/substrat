@@ -105,6 +105,10 @@ export const INDEX_VALUE_EXPORTS = [
   'MEMBERSHIP_REMOVAL_SKEW_MS',
   'MEMBER_ADD_REQUESTED',
   'MEMBER_REMOVE_REQUESTED',
+  // #2501: the daily meter snapshot, shared by both directories.
+  'METER_DAYS_DDL',
+  'METER_DAYS_LIMIT_DEFAULT',
+  'METER_DAYS_LIMIT_MAX',
   // #2349: the uploader's binding name, and the set digest both sides compute.
   'MIGRATIONS_DIGEST_BINDING',
   'MIGRATION_DIGEST_FENCE_DDL',
@@ -153,7 +157,11 @@ export const INDEX_VALUE_EXPORTS = [
   'SCHEDULE_STATE_REBUILD',
   'SCOPE_COPY_LEASE_MS',
   'SCOPE_SCRIPT_COPY_COLUMNS',
+  // #2447: the role keys a scope seats anyone but a system principal in — a role set is judged against it.
+  'SCOPE_SEATED_ROLES_SQL',
   'SCOPE_STORAGE_DDL',
+  // #2447: the scope statuses whose seats a role definition is judged against, on both adapters.
+  'SEAT_HOLDING_SCOPE_STATUSES',
   'SECURE_DELETE_MIN_SQLITE',
   'SERVES_NOW_CONDITION',
   'SERVES_NOW_PREDICATE',
@@ -180,8 +188,13 @@ export const INDEX_VALUE_EXPORTS = [
   'StateColumnLost',
   'StorageReadUnsupported',
   'TABLE_OWNERS_DDL',
+  // #2447: the same for a tenant's tenant-level tuples.
+  'TENANT_SEATED_ROLES_SQL',
   'UNCHECKED_OPERATION_FINDING',
   'UNCHECKED_OPERATION_TEMPLATE',
+  // The sweep's cap on unreadable directory rows named per pass, which the control plane's
+  // hostname reconcile applies too.
+  'UNREADABLE_SCOPE_ROWS_NAMED',
   'UNRECORDED_OUTCOME_LOG',
   'UNSAFE_allowAllChecker',
   'UPLOAD_LINK_DDL',
@@ -317,6 +330,8 @@ export const INDEX_VALUE_EXPORTS = [
   'domainEventOf',
   'driverDeclarationsOf',
   'dumpMetaValue',
+  // #2447: a dump's stored roles and seats, which a restore's role set is judged against.
+  'dumpRoleState',
   'dumpRowsInsert',
   'effectiveOutcomes',
   'effectiveRoleGrantQuery',
@@ -341,6 +356,8 @@ export const INDEX_VALUE_EXPORTS = [
   'facetEvents',
   'fenceAttachmentSweep',
   'fencedTables',
+  // #2498: a runtime fetch as a FetchLike, converting a sized stream body; both hosts wrap their injected fetch.
+  'fetchLikeOf',
   'findingOfOpsFailure',
   'findingOfSweepRun',
   'finishStoreDriverRolloutIn',
@@ -394,6 +411,8 @@ export const INDEX_VALUE_EXPORTS = [
   'isPrimaryScopeRow',
   'isSearchIndexTable',
   'isSecretBoxConfigured',
+  // #2498: the streamed-body helpers the adapters, the platform's vertical client and test fakes use.
+  'isSizedByteStream',
   'isSpineTable',
   'isSupersededOutcome',
   'isUnreachableParent',
@@ -404,6 +423,9 @@ export const INDEX_VALUE_EXPORTS = [
   'jobRunListLimit',
   'jobRunOf',
   'kernelJobFor',
+  // #2498: a sized stream as the runtime's fetch and R2 take it; the R2 store and the vertical client use it.
+  'knownLengthInit',
+  'knownLengthStream',
   'legacyStoreDriverConflict',
   'legacyStoreDriverRenames',
   'licensedOrphanIds',
@@ -414,6 +436,8 @@ export const INDEX_VALUE_EXPORTS = [
   'listFindings',
   'listIndexMigrations',
   'listIndexPlans',
+  'listMeterDayRows',
+  'listMeterDayTakeRows',
   'listQuery',
   'listRequestDayRows',
   'listRequestRollupDayRows',
@@ -460,6 +484,8 @@ export const INDEX_VALUE_EXPORTS = [
   'noSealingKeyMessage',
   'noopConnectorCallRecorder',
   'normalizeUploadMediaType',
+  // #2447: each adapter's set of keys its registered modules declare, marked or not.
+  'noteDeclaredKeys',
   // #2430: each adapter's set of keys its registered modules reserve to a system principal.
   'noteReservedKeys',
   'noteUncheckedCompletion',
@@ -494,6 +520,7 @@ export const INDEX_VALUE_EXPORTS = [
   'promoteReviewRefusalOf',
   'provisionedVersionsParams',
   'pruneFindings',
+  'pruneMeterDayRows',
   'pruneRequestDayRows',
   'pruneScopeStorageRows',
   'publishedMigrationDigest',
@@ -502,6 +529,8 @@ export const INDEX_VALUE_EXPORTS = [
   'purgeOnlyKeysOf',
   'purgeReportOf',
   'purgeStillDue',
+  // #2498: both adapters land an upload's bytes through it, a buffer or a stream.
+  'putAttachmentBytes',
   'queueAttachmentTextBackfill',
   'reachesWithin',
   'readAttachmentText',
@@ -520,6 +549,9 @@ export const INDEX_VALUE_EXPORTS = [
   'readScopeTimeline',
   'readTimeline',
   'readUndrainedOutbox',
+  // Both adapters' `listScopesReadable` map directory rows through it, so they name an
+  // unreadable row alike.
+  'readableScopes',
   'reassertActionOf',
   'reassertEntry',
   'reassertOffRow',
@@ -531,6 +563,7 @@ export const INDEX_VALUE_EXPORTS = [
   'recordAttachmentText',
   'recordAuditOutcome',
   'recordConnectorCall',
+  'recordMeterDayRows',
   'recordOrphanSweepLicence',
   'recordOwnershipSteps',
   'recordRequestDayRows',
@@ -560,6 +593,10 @@ export const INDEX_VALUE_EXPORTS = [
   'registerMembershipExecutor',
   'registerTrashTargets',
   'registryImportCandidates',
+  // #2446: the reservation a pushed registry marks, and the promote's question of a scope it moves.
+  'registryReservations',
+  'releaseRoleSetRefusal',
+  'releaseRolesAskScopes',
   'releaseStoreDriverHoldIn',
   'repairDerivedObjects',
   'replayFor',
@@ -571,8 +608,12 @@ export const INDEX_VALUE_EXPORTS = [
   'requiredEntitlementFor',
   // #2430: the refusal both adapters' raw grant doors and `ctx.grant` answer for a reserved key.
   'reservedGrantRefusal',
+  // #2447: the refusal both adapters' role definitions (defineRole, a projected role set) answer.
+  'reservedRoleDefinitionRefusal',
   // #2430: the one refusal both adapters' role doors (and the ControlPlaneDO's membership unit) answer.
   'reservedRoleRefusal',
+  // #2447: `reservedRoleDefinitionRefusal` over a role set defined at once.
+  'reservedRoleSetRefusal',
   // #2430: the refusal both adapters' reconcile of declared entity-grant shapes answers.
   'reservedShapeRefusal',
   'resolveAttachmentTextBounds',
@@ -583,6 +624,7 @@ export const INDEX_VALUE_EXPORTS = [
   'resolveVerticalInstanceFrom',
   'restoreConnectLinkRow',
   'restoreSwitchRecord',
+  'retireScopeStorage',
   'revokeBecomeCapabilityAsPrincipal',
   'revokeCapabilityAsPlatform',
   'revokeConnectLinkRow',

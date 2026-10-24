@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { NO_APPLICATION_DETAIL, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
-import { ORPHAN_SWEEP_UNLICENSED } from '@substrat-run/kernel';
+import { ORPHAN_SWEEP_UNLICENSED, type ByteBody } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
 
@@ -159,6 +159,50 @@ describe('mountPlatformSurface — the platform-secret gate', () => {
       ENV,
     );
     expect(res.status).toBe(200);
+  });
+});
+
+describe('a restore judges the role set its repair defines before it imports anything (#2447 round 1)', () => {
+  const post = (host: VerticalScopeHost, path: string, body: object) =>
+    appWith(host).request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, ENV);
+
+  it('refuses with a 409 and imports nothing, on /internal/restore and /internal/restore-staged; its twin restores and repairs', async () => {
+    for (const [path, body, restorer] of [
+      ['/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] }, 'restoreScopeLocal'],
+      ['/internal/restore-staged', { tenantId: TENANT, scopeId: SCOPE, stageId: 'stage-1' }, 'restoreStagedScopeLocal'],
+    ] as const) {
+      const refusing = fakeHost({
+        restoreStagedScopeLocal: async () => ({ tables: 3 }) as never,
+        roleSetRefusalLocal: async () => "role 'staff' is a person's role and would hold rsv:run",
+      });
+      const res = await post(refusing, path, body);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/the vertical's roles cannot be defined here: role 'staff'.*Nothing was restored/);
+      expect(refusing.calls).not.toContain(restorer);
+      expect(refusing.calls).not.toContain('projectRolesLocal');
+      const admitting = fakeHost({
+        restoreStagedScopeLocal: async () => {
+          admitting.calls.push('restoreStagedScopeLocal');
+          return { tables: 3 } as never;
+        },
+        roleSetRefusalLocal: async () => null,
+      });
+      expect((await post(admitting, path, body)).status).toBe(200);
+      expect(admitting.calls).toEqual(expect.arrayContaining([restorer, 'projectRolesLocal']));
+    }
+  });
+
+  it('hands the whole restore’s dump to the pre-check, so it is judged against the dump’s roles and seats (round 2)', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      roleSetRefusalLocal: async (_s, _r, dump) => {
+        seen.push(dump);
+        return null;
+      },
+    });
+    const tables = [{ name: '_substrat_tuples', ddl: 'CREATE TABLE _substrat_tuples (x)', columns: ['subject'], rows: [['principal:p']] }];
+    expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables })).status).toBe(200);
+    expect(seen).toEqual([{ tenantId: TENANT, tables }]);
   });
 });
 
@@ -561,6 +605,35 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const older = fakeHost({ loadMarkerLocal: undefined });
     expect((await appWith(older).request('/internal/load-marker?scopeId=' + SCOPE, { headers: authed() }, ENV)).status).toBe(501);
     expect(older.calls).toHaveLength(0);
+  });
+
+  // #2446: what a promote judges the incoming version's roles against. Behind the same gate as every
+  // sibling, read-only, and a host without the method answers 501, which the platform reads as a
+  // failed read (the route exists), never as "predates the route".
+  it('serves a scope’s role state behind the gate, and 501s on a host that cannot report one', async () => {
+    const url = `/internal/role-state?tenantId=${TENANT}&scopeId=${SCOPE}`;
+    const asked: string[] = [];
+    const state = { roles: [{ key: 'member', permissions: ['a:use'], holder: 'person' as const }], seated: ['member'] };
+    const host = fakeHost({
+      roleStateLocal: async (t, s) => {
+        asked.push(`${t}/${s}`);
+        return state;
+      },
+    });
+    const ok = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual(state);
+    expect(asked).toEqual([`${TENANT}/${SCOPE}`]);
+
+    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
+    expect((await appWith(host).request(url, { headers: { [PLATFORM_SECRET_HEADER]: 'nope' } }, ENV)).status).toBe(403);
+    expect((await appWith(host).request(`/internal/role-state?tenantId=${TENANT}&scopeId=nope`, { headers: authed() }, ENV)).status).toBe(400);
+    expect((await appWith(host).request(url, { method: 'POST', headers: authed() }, ENV)).status).toBe(404);
+    expect(asked).toHaveLength(1);
+
+    const refused = await appWith(fakeHost()).request(url, { headers: authed() }, ENV);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/cannot report its role state/);
   });
 
   // #1524: the size behind the on-demand storage reading. It sits behind the same
@@ -1606,7 +1679,7 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
   });
 
   it('connector-attachment: multipart meta + bytes reach the host intact', async () => {
-    let seen: { upload?: { filename: string; contentType: string; body: Uint8Array } } = {};
+    let seen: { upload?: { filename: string; contentType: string; body: ByteBody } } = {};
     const host = fakeHost({
       connectorAttachmentUploadLocal: async (_c, _t, _s, upload) => {
         seen = { upload };
@@ -1636,7 +1709,9 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(((await res.json()) as { id: string }).id).toBe('att1');
     expect(seen.upload!.filename).toBe('sealed.pdf');
     expect(seen.upload!.contentType).toBe('application/pdf');
-    expect(new TextDecoder().decode(seen.upload!.body)).toBe('pdf bytes');
+    // The multipart route still hands the host a buffer; only the stream route hands a stream (#2498).
+    expect(seen.upload!.body).toBeInstanceOf(Uint8Array);
+    expect(new TextDecoder().decode(seen.upload!.body as Uint8Array)).toBe('pdf bytes');
   });
 
   /**
@@ -1687,6 +1762,308 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     // `eventId` is absent here, which is the pre-#726 shape: no delivery named, so the
     // far end falls back to the ordinary grant check rather than admitting anything.
     expect(asked).toEqual([CONN, TENANT, SCOPE, 'att-1', undefined]);
+  });
+
+  /**
+   * #2519: both upload routes store any non-empty filename and content type, and a response
+   * header refuses anything outside Latin-1. The route answered those with a thrown error, so a
+   * stored file could not be read back. Every stored value must now come back unchanged, in the
+   * record header the client parses, and the ordinary file (the positive twin) stays as it was.
+   */
+  it.each([
+    ['ASCII', 'avtal.pdf', 'application/pdf', true],
+    ['Latin-1', 'avtal åäö.pdf', 'application/pdf', true],
+    ['non-Latin-1 (en dash)', 'avtal – final.pdf', 'application/pdf', true],
+    ['CJK', '契約書.pdf', 'application/pdf', true],
+    ['emoji (surrogate pair)', 'signed 📝.pdf', 'application/pdf', true],
+    ['lone surrogate', 'broken \ud83d.pdf', 'application/pdf', true],
+    ['quotes and backslash', 'say "hi" \\ it\'s.pdf', 'application/pdf', true],
+    ['CRLF', 'line\r\nbreak: injected.pdf', 'application/pdf', true],
+    ['DEL and NUL', 'del\u007f nul\u0000.pdf', 'application/pdf', true],
+    ['percent', '100% %41.pdf', 'application/pdf', true],
+    ['non-Latin-1 content type', 'avtal.pdf', 'text/plain; name="–"', false],
+    ['CRLF content type', 'avtal.pdf', 'text/plain\r\nx-injected: 1', false],
+    ['edge whitespace content type', 'avtal.pdf', ' application/pdf ', false],
+  ])('connector-attachment GET: reads back a stored %s unchanged', async (_name, filename, contentType, keepsType) => {
+    const bytes = new TextEncoder().encode('%PDF-1.4 the avtal');
+    const record = {
+      id: 'att-1',
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      filename,
+      contentType,
+      size: bytes.byteLength,
+      sha256: 'a'.repeat(64),
+      visibility: 'customer',
+      createdBy: CONN,
+      createdAt: '2026-08-17T00:00:00.000Z',
+    };
+    const host = fakeHost({
+      connectorAttachmentOpenLocal: async () => ({ record, body: bytes, contentType }),
+    });
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
+      { headers: authed() },
+      ENV,
+    );
+
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    // Printable ASCII only, and plain JSON: the form a reader that predates the fix parses.
+    expect(raw).toMatch(/^[\x20-\x7e]*$/);
+    expect(JSON.parse(raw)).toEqual(record);
+    // The response's own type is the stored one when a header accepts it, else the opaque default.
+    // A type a header carries is sent as stored; one it refuses falls back to the opaque default.
+    const sent = res.headers.get('content-type')!;
+    expect(sent).toBe(keepsType ? contentType : 'application/octet-stream');
+    expect(() => new Headers({ 'content-type': sent })).not.toThrow();
+  });
+
+  /**
+   * The longest a record made under the upload bounds can be (`ATTACHMENT_FIELD_MAX`): every
+   * bounded string at its cap, each unit a non-BMP character that escapes to 6 bytes. It has to
+   * come back whole and under 8.2 KiB, or a stored file is unreadable again (#2519).
+   */
+  it('connector-attachment GET: a record at every upload bound reads back whole, under 8.2 KiB', async () => {
+    const units = (n: number, ch: string) => ch.repeat(n);
+    const record = {
+      id: 'att-1',
+      entity: { entityType: units(128, '\u2013'), entityId: units(255, '\u2013') },
+      filename: units(256, '\ud83d\udcdd'), // 512 UTF-16 units
+      contentType: 'text/' + units(250, '\u2013'), // 255 units
+      size: 1,
+      sha256: 'a'.repeat(64),
+      visibility: 'customer',
+      createdBy: units(128, '\u2013'),
+      createdAt: '2026-08-17T00:00:00.000Z',
+    };
+    expect(record.filename).toHaveLength(512);
+    const host = fakeHost({
+      connectorAttachmentOpenLocal: async () => ({ record, body: new Uint8Array(1), contentType: record.contentType }),
+    });
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    expect(raw.length).toBeLessThan(8.2 * 1024);
+    expect(JSON.parse(raw)).toEqual(record);
+  });
+
+  /**
+   * A row stored before the upload bounds can hold any string of any length in any field the
+   * header carries. Each, alone and all together, must still read back: the bytes and every exact
+   * field intact, the over-long string brought to its bound and marked as cut.
+   */
+  const LEGACY_RECORD = {
+    id: 'att-1',
+    entity: { entityType: 'protocol', entityId: 'p1' },
+    filename: 'avtal.pdf',
+    contentType: 'application/pdf',
+    size: 8,
+    sha256: 'a'.repeat(64),
+    visibility: 'customer',
+    createdBy: CONN,
+    createdAt: '2026-08-17T00:00:00.000Z',
+  };
+  const readBack = async (record: typeof LEGACY_RECORD) => {
+    const bytes = new TextEncoder().encode('%PDF-1.4');
+    const host = fakeHost({ connectorAttachmentOpenLocal: async () => ({ record, body: bytes, contentType: record.contentType }) });
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
+      { headers: authed() },
+      ENV,
+    );
+    return { res, bytes };
+  };
+
+  it.each([
+    ['filename', 'ASCII', (n: number) => 'n'.repeat(n)],
+    ['filename', 'non-BMP', (n: number) => '\ud83d\udcdd'.repeat(n / 2)],
+    ['filename', 'CJK', (n: number) => '\u5951'.repeat(n)],
+    ['entityType', 'en dash', (n: number) => '\u2013'.repeat(n)],
+    ['entityId', 'en dash', (n: number) => '\u2013'.repeat(n)],
+    ['createdBy', 'en dash', (n: number) => '\u2013'.repeat(n)],
+  ] as const)('connector-attachment GET: a stored %s of 10k %s units still reads back, cut to its bound', async (field, _kind, make) => {
+    const stored = make(10_000);
+    const record =
+      field === 'entityType' || field === 'entityId'
+        ? { ...LEGACY_RECORD, entity: { ...LEGACY_RECORD.entity, [field]: stored } }
+        : { ...LEGACY_RECORD, [field]: stored };
+    const { res, bytes } = await readBack(record);
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    expect(raw.length).toBeLessThanOrEqual(10 * 1024);
+    const read = JSON.parse(raw) as typeof record;
+    const got = field === 'entityType' || field === 'entityId' ? (read.entity as Record<string, string>)[field]! : (read as unknown as Record<string, string>)[field]!;
+    const max = { filename: 512, entityType: 128, entityId: 255, createdBy: 128 }[field];
+    // Marked as cut, within its bound, and a prefix of the stored value on a character boundary.
+    expect(got.endsWith('\u2026')).toBe(true);
+    expect(got.length).toBeLessThanOrEqual(max);
+    expect(got.length).toBeGreaterThan(max - 3);
+    const kept = got.slice(0, -1);
+    expect(stored.startsWith(kept)).toBe(true);
+    expect(kept).toBe([...kept].join(''));
+    // Everything else is exact.
+    expect({ ...read, filename: '', entity: {}, createdBy: '' }).toEqual({ ...record, filename: '', entity: {}, createdBy: '' });
+  });
+
+  it('connector-attachment GET: a stored content type of 2,000 units reads back as the opaque default', async () => {
+    const { res, bytes } = await readBack({ ...LEGACY_RECORD, contentType: 'text/' + '\u2013'.repeat(2_000) });
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    expect(raw.length).toBeLessThanOrEqual(10 * 1024);
+    expect(JSON.parse(raw)).toEqual({ ...LEGACY_RECORD, contentType: 'application/octet-stream' });
+  });
+
+  it('connector-attachment GET: a stored ASCII content type of 30k units does not become a 30k response header', async () => {
+    const { res, bytes } = await readBack({ ...LEGACY_RECORD, contentType: 'text/' + 'a'.repeat(30_000) });
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+    expect(res.headers.get('x-substrat-attachment')!.length).toBeLessThanOrEqual(10 * 1024);
+  });
+
+  it('connector-attachment GET: a JSON-encoded creator cut to its bound is still read, as a marked string', async () => {
+    // A connection's creator is a JSON actor. Cut, it is no longer JSON, and says so with its end.
+    const createdBy = JSON.stringify({ connection: 'c'.repeat(10_000) });
+    const { res } = await readBack({ ...LEGACY_RECORD, createdBy });
+    expect(res.status).toBe(200);
+    const read = JSON.parse(res.headers.get('x-substrat-attachment')!) as { createdBy: string };
+    expect(read.createdBy.endsWith('\u2026')).toBe(true);
+    expect(read.createdBy).toHaveLength(128);
+    expect(() => JSON.parse(read.createdBy)).toThrow();
+  });
+
+  it('connector-attachment GET: every field long at once still reads back under the bound', async () => {
+    const long = '\ud83d\udcdd'.repeat(10_000);
+    const { res } = await readBack({
+      ...LEGACY_RECORD,
+      entity: { entityType: long, entityId: long },
+      filename: long,
+      contentType: long,
+      createdBy: long,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-substrat-attachment')!.length).toBeLessThanOrEqual(10 * 1024);
+  });
+
+  it('connector-attachment GET: a stored record that does not parse is a server error, not a 400', async () => {
+    const { res } = await readBack({ ...LEGACY_RECORD, sha256: 'not-a-digest' });
+    expect(res.status).toBe(500);
+  });
+
+  it('connector-attachment GET: a stored record that fits the header is sent exactly as stored, even over the upload bounds', async () => {
+    const record = { ...LEGACY_RECORD, filename: 'x'.repeat(600) };
+    const { res } = await readBack(record);
+    expect(JSON.parse(res.headers.get('x-substrat-attachment')!)).toEqual(record);
+  });
+
+  it('connector-attachment: a filename of exactly 512 units and a content type of 255 are still stored', async () => {
+    // The twin of the refusals below: the same request shape, one unit shorter, lands.
+    const host = fakeHost({ connectorAttachmentUploadLocal: async () => ({ id: 'att1' }) as never });
+    const form = new FormData();
+    form.append(
+      'meta',
+      JSON.stringify({
+        connectionId: CONN,
+        tenantId: TENANT,
+        scopeId: SCOPE,
+        entity: { entityType: 'protocol', entityId: 'p1' },
+        visibility: 'customer',
+        filename: 'a'.repeat(512),
+        contentType: 'a'.repeat(255),
+      }),
+    );
+    form.append('body', new Blob(['x']));
+    const res = await appWith(host).request(
+      '/internal/connector-attachment',
+      { method: 'POST', headers: authed(), body: form },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it('connector-attachment-stream: a CJK filename of exactly 512 units and a content type of 255 are still stored', async () => {
+    // The streamed route carries the metadata URI-encoded (up to 9 bytes a unit), so its at-limit
+    // twin is the widest header it sees: 767 CJK units, about 7 KB.
+    let landed: { filename: string; contentType: string } | undefined;
+    const host = fakeHost({
+      connectorAttachmentUploadLocal: async (...args: unknown[]) => {
+        landed = args[3] as { filename: string; contentType: string };
+        return { id: 'att1' } as never;
+      },
+    });
+    const meta = {
+      connectionId: CONN,
+      tenantId: TENANT,
+      scopeId: SCOPE,
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      visibility: 'customer',
+      filename: '\u5951'.repeat(512),
+      contentType: 'text/' + '\u5951'.repeat(250),
+      size: 1,
+    };
+    const res = await appWith(host).request(
+      '/internal/connector-attachment-stream',
+      {
+        method: 'POST',
+        headers: { ...authed(), 'x-substrat-attachment-meta': encodeURIComponent(JSON.stringify(meta)) },
+        body: 'x',
+      },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+    expect(landed!.filename).toBe(meta.filename);
+    expect(landed!.contentType).toBe(meta.contentType);
+  });
+
+  it.each([
+    ['filename', { filename: 'a'.repeat(513), contentType: 'application/pdf' }, 'filename'],
+    ['content type', { filename: 'a.pdf', contentType: 'a'.repeat(256) }, 'contentType'],
+  ])('connector-attachment: a %s over its cap is refused before anything is stored', async (_name, over, field) => {
+    let stored = 0;
+    const host = fakeHost({
+      connectorAttachmentUploadLocal: async () => {
+        stored++;
+        return {} as never;
+      },
+    });
+    const meta = {
+      connectionId: CONN,
+      tenantId: TENANT,
+      scopeId: SCOPE,
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      visibility: 'customer',
+      ...over,
+    };
+    const form = new FormData();
+    form.append('meta', JSON.stringify(meta));
+    form.append('body', new Blob(['x']));
+    const multipart = await appWith(host).request(
+      '/internal/connector-attachment',
+      { method: 'POST', headers: authed(), body: form },
+      ENV,
+    );
+    expect(multipart.status).toBe(400);
+    // The 400 is this cap's, not another parse failure: it names the field.
+    expect(await multipart.text()).toContain(field);
+    const streamed = await appWith(host).request(
+      '/internal/connector-attachment-stream',
+      {
+        method: 'POST',
+        headers: { ...authed(), 'x-substrat-attachment-meta': encodeURIComponent(JSON.stringify({ ...meta, size: 1 })) },
+        body: 'x',
+      },
+      ENV,
+    );
+    expect(streamed.status).toBe(400);
+    expect(await streamed.text()).toContain(field);
+    expect(stored).toBe(0);
   });
 
   /**
@@ -2439,7 +2816,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
 
   /** One scope's owner state: the record, the last hand-over, members, owner-role holders. */
   function world(
-    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[] } = {},
+    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[]; seatRefusal?: string } = {},
   ) {
     const w = {
       record: init.record === undefined ? A : init.record,
@@ -2450,6 +2827,10 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       /** Who holds SOME live role in the scope (a member role), besides the owner seats. */
       roles: new Set(init.roles ?? [A, B, C]),
       steps: [] as string[],
+      /** #2447: each owner role the hand-over asked the person's door about, before any step. */
+      judged: [] as string[],
+      /** #2447: what the person's door answers for the owner role; null admits it. */
+      seatRefusal: init.seatRefusal ?? null,
       /** Throw on the named step, once — the failure "between" steps. */
       failOn: null as null | Step,
     };
@@ -2507,8 +2888,13 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       return 'abandoned' as const;
     };
     const host = fakeHost({
-      assignScopeRole: async (_s, principal, roleKey) => {
-        w.steps.push(`assign ${principal} ${roleKey}`);
+      // #2447: the person's door the hand-over asks first, and passes to the seat.
+      scopeRoleRefusal: async (_s, roleKey, door) => {
+        w.judged.push(`${roleKey} ${door}`);
+        return w.seatRefusal;
+      },
+      assignScopeRole: async (_s, principal, roleKey, door) => {
+        w.steps.push(`assign ${principal} ${roleKey}${door ? ` (${door})` : ''}`);
         failIf('assign');
         w.seats.add(principal);
       },
@@ -2540,8 +2926,51 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const res = await send({ ...REF, from: A, to: B });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
-    expect(w.steps).toEqual(['record', `assign ${B} admin`, `revoke ${A} admin`, 'complete']);
+    expect(w.judged).toEqual(['admin person']);
+    expect(w.steps).toEqual(['record', `assign ${B} admin (person)`, `revoke ${A} admin`, 'complete']);
     expect(state()).toEqual({ record: B, seats: [B], last: { from: A, to: B, state: 'done' } });
+  });
+
+  it('refuses, before the record moves, an owner role the person’s door refuses (#2447) — nothing is seated or revoked', async () => {
+    const { w, send, state } = world({ seatRefusal: "role 'admin' is declared holder: 'system', a role for a system principal" });
+    const res = await send({ ...REF, from: A, to: B });
+    // A 409: the status the platform audits as "refused, nothing written" (round 1).
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/the owner role cannot be handed to a person: role 'admin' is declared holder: 'system'.*Nothing was moved/);
+    expect(w.judged).toEqual(['admin person']);
+    expect(w.steps).toEqual([]);
+    expect(state()).toEqual({ record: A, seats: [A], last: null });
+  });
+
+  it('a repeat of a finished hand-over stays a 200 that writes nothing, even once the owner role is refused (#2447 round 1)', async () => {
+    const { w, send, state } = world();
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    w.seatRefusal = "role 'admin' is declared holder: 'system'";
+    w.steps = [];
+    const again = await send({ ...REF, from: A, to: B });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'done', fromRevoked: false });
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([B]);
+  });
+
+  it('a resend of an open hand-over whose seat is now refused says the record moved, and seats nothing (#2447 round 1)', async () => {
+    const { w, send, state } = world();
+    w.failOn = 'assign'; // step 1 ran: the record names B, the hand-over is open
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false);
+    w.seatRefusal = "role 'admin' is declared holder: 'system'";
+    w.steps = [];
+    const resend = await send({ ...REF, from: A, to: B });
+    expect(resend.status).toBe(409);
+    const { error } = (await resend.json()) as { error: string };
+    expect(error).toMatch(/the owner record names .*, but the owner role cannot be seated in a person: .*Nothing was seated or revoked/);
+    expect(error).not.toMatch(/Nothing was moved/);
+    // It names the ways out that work in this state, not an abandon this state refuses (round 2).
+    expect(error).toMatch(/finishes on a resend once the owner role can be seated in a person again/);
+    expect(error).toMatch(/cannot be abandoned while .* still holds a role here/);
+    expect(w.steps).toEqual(['record']);
+    expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'pending' } });
+    expect((await send({ ...REF, from: A, to: B, abandon: true })).status).toBe(409); // `healthy`, as the message says
   });
 
   it('a repeat of a finished hand-over is a 200 that seats and revokes nothing', async () => {

@@ -1782,3 +1782,50 @@ describe('the paged copy verbs answer within PAGE_CALL_DEADLINE_MS (#2450)', () 
     await expect(client.discardStagedScope(s, 'stage-1')).resolves.toBeUndefined();
   });
 });
+
+/**
+ * #2446: the role-state read a promote judges a release against. A 404 (no route) and the
+ * deployment's own 501 (no host method) are its proof that it predates the read (`'predates'`, which
+ * the promote moves unjudged and counts); everything else that is not a well-shaped answer is a
+ * failure, which refuses the promote.
+ */
+describe('VerticalClient.roleState (#2446)', () => {
+  const t = tenantId.parse('01JZ0000000000000000TEN001');
+  const input = { tenantId: t, scopeId: s };
+  const answering = (res: () => Response, seen: { path: string; search: string; secret: string | null }[] = []) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        const url = new URL(u);
+        seen.push({ path: url.pathname, search: url.search, secret: new Headers(init?.headers).get(PLATFORM_SECRET_HEADER) });
+        return res();
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+  const state = { roles: [{ key: 'member', permissions: ['a:use'], holder: 'person' }], seated: ['member'] };
+
+  it('gets the state by tenant and scope, platform-authenticated, and reads it', async () => {
+    const seen: { path: string; search: string; secret: string | null }[] = [];
+    await expect(answering(() => new Response(JSON.stringify(state), { status: 200 }), seen).roleState(input)).resolves.toEqual(state);
+    expect(seen).toEqual([{ path: '/internal/role-state', search: `?tenantId=${t}&scopeId=${s}`, secret: 'secret' }]);
+  });
+
+  it.each([
+    ['a 404: the route is not there', () => new Response('404 Not Found', { status: 404 })],
+    ['its own 501: the route is there, its scope host predates the method', () => new Response(JSON.stringify({ error: 'cannot report' }), { status: 501 })],
+  ])('%s is the deployment saying it predates the read', async (_name, res) => {
+    await expect(answering(res).roleState(input)).resolves.toBe('predates');
+  });
+
+  it.each([
+    ['a 401 (the platform credential refused)', () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }), 401],
+    ['a 403 (the platform gate refused)', () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }), 403],
+    ['a 500', () => new Response('boom', { status: 500 }), 500],
+    ['an HTML 200', spaShell, 502],
+    ['truncated JSON', truncated('{"roles":'), 502],
+    ['a wrong-shaped 200', () => new Response(JSON.stringify({ roles: 'none' }), { status: 200 }), 502],
+  ])('%s is a failure, never "predates"', async (_name, res, status) => {
+    const err = (await answering(res).roleState(input).then(() => null, (e: unknown) => e)) as ControlPlaneError;
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err.status).toBe(status);
+  });
+});

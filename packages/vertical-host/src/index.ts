@@ -30,6 +30,7 @@ import { externalInput, externalJson } from './wire.js';
 import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
   type CarriedAway,
+  type RoleState,
   type KeptCopy,
   type LoadMarker,
   type CopyRestoreFence,
@@ -42,6 +43,7 @@ import {
   type SubjectRedactionCounts,
   type OrphanSweepReport,
   type OrphanSweepRequest,
+  type ByteBody,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
@@ -57,7 +59,6 @@ import {
   permissionKey as permissionKeyOf,
   moduleId as moduleIdOf,
   switchedOffInUnit,
-  entityRef,
   visibility,
   instant,
   entitlementGrant,
@@ -178,10 +179,15 @@ import {
   type ImportBatch,
   type ImportResult,
   type ImportState,
+  CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
   entityGrantShape,
+  ATTACHMENT_FIELD_MAX,
+  attachmentRecord,
+  attachmentUploadFields,
+  type AttachmentRecord,
   type EntityGrantShape,
 } from '@substrat-run/contracts';
 
@@ -320,6 +326,25 @@ export interface VerticalScopeHost {
     loadStamp?: string | null,
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
+  /**
+   * #2447: why the vertical's role set may not be defined on `scopeId`, or null — the question
+   * `projectRolesLocal` asks, asked by a restore BEFORE it imports the dump, so a refused set leaves
+   * the scope as it was rather than restored without its role repair. Optional: a host without it is
+   * held only by `projectRolesLocal`'s own refusal, after the import.
+   */
+  roleSetRefusalLocal?(
+    scopeId: ScopeId,
+    roles: RoleDefinition[],
+    /** The dump about to be imported, when the caller has it: the set is judged against its roles and seats. */
+    dump?: { tenantId: TenantId; tables: { name: string; columns: string[]; rows: unknown[][] }[] },
+  ): Promise<string | null>;
+  /**
+   * #2446: the roles `scopeId` stores for `tenantId` and the role keys anyone but a system principal
+   * holds a live seat in there (`RoleState`), what `projectRolesLocal` judges a role set against.
+   * Optional: a host without it answers the route 501, which a promote counts as a deployment built
+   * before the read and moves unjudged, as it does one without the route.
+   */
+  roleStateLocal?(tenantId: TenantId, scopeId: ScopeId): Promise<RoleState>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
    *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
@@ -489,7 +514,8 @@ export interface VerticalScopeHost {
       filename: string;
       contentType: string;
       visibility: Visibility;
-      body: Uint8Array;
+      /** A sized stream from `/internal/connector-attachment-stream` (#2498). */
+      body: ByteBody;
     },
   ): Promise<unknown>;
   /** The outbound read (#711) — the vertical's own document, handed back by id.
@@ -600,7 +626,13 @@ export interface VerticalScopeHost {
    * invite flow. OPTIONAL like the switches: a host without them answers 501 at
    * `/internal/owner-transfer` before the record moves, so no hand-over is ever half-started.
    */
-  assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void>;
+  assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string, door?: 'person' | 'platform'): Promise<void>;
+  /**
+   * #2447: why `roleKey` may not be seated at scope level through `door`, or null — asked by the
+   * hand-over before the record moves, so a refused seat leaves nothing half-done. Optional: a host
+   * without it is held only by `assignScopeRole`'s own door, after the record moved.
+   */
+  scopeRoleRefusal?(scopeId: ScopeId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
   revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
   /** Does `principal` hold a role the scope can expand? The hand-over's check on `to` (#1665). */
   hasScopeRoleLocal?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean>;
@@ -979,11 +1011,84 @@ const connectorAttachmentMeta = z.object({
   connectionId: connectionIdOf,
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
-  entity: entityRef,
-  filename: z.string().min(1),
-  contentType: z.string().min(1),
+  // The bounds every door applies (`attachmentUploadFields`), so a refusal comes here as a 400
+  // naming the field rather than from the host's own judge (#2519).
+  entity: attachmentUploadFields.shape.entity,
+  filename: attachmentUploadFields.shape.filename,
+  contentType: attachmentUploadFields.shape.contentType,
   visibility,
 });
+
+/** The `/internal/connector-attachment-stream` metadata header (#2498): `meta`, plus the body's declared size. */
+const connectorAttachmentStreamMeta = connectorAttachmentMeta.extend({
+  size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+
+/**
+ * `JSON.stringify` whose output is printable ASCII, so it can ride a header whatever the
+ * strings in it hold (#2519). JSON already escapes a control character or a lone surrogate;
+ * what is left outside 0x20–0x7e (a non-ASCII character, DEL) becomes a `\uXXXX` escape, which
+ * `JSON.parse` reads back to the same value. The result is still plain JSON, so a reader that
+ * predates this parses it unchanged.
+ */
+function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[^\x20-\x7e]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * The most bytes the record header of a read-back may carry before its strings are cut (#2519). A
+ * record made under `ATTACHMENT_FIELD_MAX` is under 8.2 KiB however it is escaped, so only a row
+ * stored before those bounds can reach it, and a server's header limit starts at 16 KiB.
+ */
+const CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES = 10 * 1024;
+
+/** `text` cut to at most `max` UTF-16 units on a code-point boundary, the cut marked with `…`. */
+function cutTo(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let kept = '';
+  for (const point of text) {
+    if (kept.length + point.length > max - 1) break;
+    kept += point;
+  }
+  return `${kept}\u2026`;
+}
+
+/**
+ * The record as the read-back header carries it: {@link asciiJson}, and, when a row stored before
+ * the upload bounds makes that too large, every string the header holds brought to its bound. A
+ * header past the server's limit would make that file unreadable. A cut name or id ends in `…` so
+ * it does not read as the stored one; a content type, which a cut would change the meaning of, is
+ * replaced by `application/octet-stream`. The bytes, size, sha256, visibility and dates are exact,
+ * and a record within the bounds is never touched.
+ */
+function recordHeader(record: AttachmentRecord): string {
+  const whole = asciiJson(record);
+  if (whole.length <= CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES) return whole;
+  const max = ATTACHMENT_FIELD_MAX;
+  return asciiJson({
+    ...record,
+    entity: {
+      entityType: cutTo(record.entity.entityType, max.entityType),
+      entityId: cutTo(record.entity.entityId, max.entityId),
+    },
+    filename: cutTo(record.filename, max.filename),
+    contentType: record.contentType.length <= max.contentType ? record.contentType : 'application/octet-stream',
+    createdBy: cutTo(record.createdBy, max.createdBy),
+  });
+}
+
+/**
+ * A content type a response header accepts, else `application/octet-stream` (#2519). Both upload
+ * routes store any non-empty string, and a header refuses anything outside printable ASCII or
+ * with edge whitespace, and a stored row can hold one of any length, so over the upload bound it
+ * falls back too. The record header carries the stored type (itself cut to the bound, see
+ * {@link recordHeader}).
+ */
+function headerSafeContentType(contentType: string): string {
+  // Bounded like the upload: a row stored before the bound can hold a type of any length.
+  if (contentType.length > ATTACHMENT_FIELD_MAX.contentType) return 'application/octet-stream';
+  return /^[\x21-\x7e]([\x20-\x7e]*[\x21-\x7e])?$/.test(contentType) ? contentType : 'application/octet-stream';
+}
 
 /** `/internal/system-switch` body (#1666) — the far end of `revokeFromSystem` / `restoreToSystem`. */
 const systemSwitchBody = z.object({
@@ -1232,6 +1337,10 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/restore', async (c) => {
     const body = restoreBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
+    // #2447: the role set the repair below defines, judged before the dump is imported, against the
+    // dump's own roles and seats, which are what the scope will store.
+    const roleRefusal = (await host.roleSetRefusalLocal?.(body.scopeId, deps.roles, { tenantId: body.tenantId, tables: body.tables })) ?? null;
+    if (roleRefusal) throw new HTTPException(409, { message: `scope ${body.scopeId}: the vertical's roles cannot be defined here: ${roleRefusal}. Nothing was restored.` });
     const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
@@ -1274,6 +1383,11 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(c.env);
     if (!host.restoreStagedScopeLocal) return refuseStatus(c, 501, 'this deployment restores a scope only whole (#2450) — redeploy it');
     const body = restoreStagedBody.parse(await c.req.json());
+    // #2447: the role set the repair below defines, judged before the dump is imported. The staged
+    // pages are already in the scope, not in hand, so the set is judged alone here; `projectRolesLocal`
+    // judges again after the import, against them.
+    const roleRefusal = (await host.roleSetRefusalLocal?.(body.scopeId, deps.roles)) ?? null;
+    if (roleRefusal) throw new HTTPException(409, { message: `scope ${body.scopeId}: the vertical's roles cannot be defined here: ${roleRefusal}. Nothing was restored.` });
     const result = await host.restoreStagedScopeLocal(body.scopeId, body.stageId, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
@@ -1577,6 +1691,15 @@ export function mountPlatformSurface<Env extends object>(
     c.json(await deps.hostFor(c.env).appliedMigrationsLocal(scopeIdOf.parse(c.req.query('scopeId')))),
   );
 
+  // #2446: the roles this scope stores for the tenant and the role keys seated there — what this
+  // deployment's reconcile judges a role set against. A promote reads it to judge the incoming
+  // version's set before it moves the scope. Read-only; it names role keys, never a principal.
+  app.get('/internal/role-state', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.roleStateLocal) return refuseStatus(c, 501, 'this deployment cannot report its role state (#2446): its scope host predates roleStateLocal — upgrade the adapter beside vertical-host');
+    return c.json(await host.roleStateLocal(tenantIdOf.parse(c.req.query('tenantId')), scopeIdOf.parse(c.req.query('scopeId'))));
+  });
+
   // #1524: one scope's database size, for the console's on-demand storage reading.
   // Metadata only, and no scope bytes cross. The read wakes the scope's DO, which is why
   // the platform asks only when a person opens the card and pages what it asks for.
@@ -1851,6 +1974,35 @@ export function mountPlatformSurface<Env extends object>(
     return c.json(record as Record<string, unknown>, 201);
   });
 
+  // The bytes leg, streamed (#2498): the request body is the file, handed to the upload as a
+  // sized stream so it reaches the bucket as it arrives and is never held here. The metadata
+  // rides a header, the multipart `meta` plus the `size` the body declares; a body that carries
+  // a different number of bytes lands nothing. Same gate and same far-end check as the route above.
+  app.post('/internal/connector-attachment-stream', async (c) => {
+    const raw = c.req.header(CONNECTOR_ATTACHMENT_META_HEADER);
+    if (raw === undefined) {
+      throw new HTTPException(400, { message: `connector-attachment-stream needs a ${CONNECTOR_ATTACHMENT_META_HEADER} header` });
+    }
+    const meta = connectorAttachmentStreamMeta.parse(JSON.parse(decodeURIComponent(raw)));
+    const stream = c.req.raw.body;
+    if (stream === null && meta.size > 0) {
+      throw new HTTPException(400, { message: `connector-attachment-stream declared ${meta.size} bytes and sent no body` });
+    }
+    const record = await deps.hostFor(c.env).connectorAttachmentUploadLocal(
+      meta.connectionId,
+      meta.tenantId,
+      meta.scopeId,
+      {
+        entity: meta.entity,
+        filename: meta.filename,
+        contentType: meta.contentType,
+        visibility: meta.visibility,
+        body: stream === null ? new Uint8Array(0) : { stream, length: meta.size },
+      },
+    );
+    return c.json(record as Record<string, unknown>, 201);
+  });
+
   // The bytes leg, OUTBOUND (#711): the platform runs this vertical's signing
   // connector and has to send the document the vertical rendered — but the metadata
   // row is in this deployment's ScopeDO and the object in this deployment's R2, so
@@ -1877,9 +2029,18 @@ export function mountPlatformSurface<Env extends object>(
         c.req.query('eventId'),
       );
     if (!opened) return c.body(null, 404);
+    // Both values are caller-supplied strings (#2519): a filename or content type outside
+    // Latin-1 would make `Headers` throw and leave a stored file unreadable. The record stays
+    // plain JSON, which every reader already parses; the type the client reads is the record's.
+    // A stored row that does not parse is the deployment's fault, not the caller's: 500, not the
+    // 400 a parse failure on the request would be.
+    const record = attachmentRecord.safeParse(opened.record);
+    if (!record.success) {
+      throw new HTTPException(500, { message: 'connector-attachment: the stored attachment record is malformed' });
+    }
     return c.body(opened.body as unknown as ArrayBuffer, 200, {
-      'content-type': opened.contentType,
-      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: JSON.stringify(opened.record),
+      'content-type': headerSafeContentType(opened.contentType),
+      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: recordHeader(record.data),
     });
   });
 
@@ -2377,6 +2538,16 @@ export function mountPlatformSurface<Env extends object>(
     // revoking their role keeps the binding, and handing them the scope would seat someone
     // the scope already let go. Read before step 1 and decided by the directory, which judges
     // an open hand-over first so a refusal names the real state; a refusal writes nothing.
+    // #2447: the successor is a person, so the owner role is seated through the person's door — asked
+    // before the record moves, so a refusal (a role carrying a key reserved to a system principal)
+    // writes nothing and the owner of record stays who it was. A 409, the status the platform audits
+    // as "refused, nothing written". When the record already names `to` (a finished hand-over's
+    // repeat, or a resend of an open one), the record's own answer decides first, below.
+    const seatRefusal = (await host.scopeRoleRefusal?.(body.scopeId, deps.ownerRoleKey, 'person')) ?? null;
+    const recorded = seatRefusal && deps.resolveOwner ? await deps.resolveOwner(c.env, ref) : null;
+    if (seatRefusal && recorded !== body.to) {
+      throw new HTTPException(409, { message: `scope ${body.scopeId}: the owner role cannot be handed to a person: ${seatRefusal}. Nothing was moved.` });
+    }
     const toHoldsRole = await host.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to);
     const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, { ...pair, toHoldsRole }));
     if (record.outcome === 'refused') {
@@ -2389,7 +2560,18 @@ export function mountPlatformSurface<Env extends object>(
     }
     const answer = { scopeId: body.scopeId, from: body.from, owner: body.to, outcome: record.outcome };
     if (record.outcome === 'done') return c.json({ ...answer, fromRevoked: false } satisfies OwnerTransferResult);
-    await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey);
+    if (seatRefusal) {
+      // The record names `to` already and the seat is refused, so nothing more is written. An open
+      // hand-over's resend is a refusal (409); a record this call moved (a race with the read above)
+      // is not "nothing written", so it is a 500, which the platform audits as `failed`.
+      const message =
+        `scope ${body.scopeId}: the owner record names ${body.to}, but the owner role cannot be seated in a person: ` +
+        `${seatRefusal}. Nothing was seated or revoked. The hand-over stays open and finishes on a resend once the owner ` +
+        `role can be seated in a person again (a release whose owner role carries no key reserved to a system principal). ` +
+        `It cannot be abandoned while ${body.to} still holds a role here; take that role back first to abandon it.`;
+      throw new HTTPException(record.outcome === 'already' ? 409 : 500, { message });
+    }
+    await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey, 'person');
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
     if (!(await deps.completeOwnerTransfer(c.env, ref, pair))) {
       // Seated and revoked, but the hand-over was no longer the open one to close: it was

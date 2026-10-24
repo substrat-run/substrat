@@ -43,6 +43,44 @@ export const attachmentRecord = z.object({
 export type AttachmentRecord = z.infer<typeof attachmentRecord>;
 
 /**
+ * A record without what only its bytes can say (#2498): an upload judges these fields before it
+ * writes a byte, and a streamed body's `size` and `sha256` are known only once it has been read.
+ */
+export const attachmentRecordFields = attachmentRecord.omit({ size: true, sha256: true });
+/** The fields as a caller hands them over, before they are judged. */
+export type AttachmentRecordFields = z.input<typeof attachmentRecordFields>;
+
+/**
+ * The longest each caller-supplied string of a NEW attachment may be, in UTF-16 units (#2519). A
+ * connector reads a record back through a response header, where a non-ASCII unit costs up to 6
+ * bytes escaped, so the strings it carries are bounded where the record is made: at 512 + 255 +
+ * 128 + 255 + 128 units the record is under 8.2 KiB. 512 keeps a realistic 400-character path
+ * storable. {@link attachmentRecord} itself is NOT capped: it is also what a stored row is parsed
+ * against, and a row written before these bounds must stay readable.
+ */
+export const ATTACHMENT_FIELD_MAX = {
+  filename: 512,
+  contentType: 255,
+  entityType: 128,
+  entityId: 255,
+  createdBy: 128,
+} as const;
+
+/**
+ * {@link attachmentRecordFields} as an upload judges it: the same fields, each bounded by
+ * {@link ATTACHMENT_FIELD_MAX}. One judge for every door that stores an attachment.
+ */
+export const attachmentUploadFields = attachmentRecordFields.extend({
+  entity: z.object({
+    entityType: z.string().min(1).max(ATTACHMENT_FIELD_MAX.entityType),
+    entityId: z.string().min(1).max(ATTACHMENT_FIELD_MAX.entityId),
+  }),
+  filename: z.string().min(1).max(ATTACHMENT_FIELD_MAX.filename),
+  contentType: z.string().min(1).max(ATTACHMENT_FIELD_MAX.contentType),
+  createdBy: z.string().min(1).max(ATTACHMENT_FIELD_MAX.createdBy),
+});
+
+/**
  * The spine events attachment mutations emit (#473) — kernel-emitted, fat payload (the
  * full `attachmentRecord`), so a consumer (a timeline projection, attachment GC) never
  * needs a cross-module read. `entity` on the envelope is the OWNING entity, so timelines
@@ -140,7 +178,9 @@ export const uploadLinkFilename = z
 /** `ctx.attachments.mintUploadUrl`'s input. */
 export const uploadLinkMintInput = z
   .object({
-    entity: entityRef,
+    // Bounded like an upload (#2519): a link for an entity no redemption could store is refused
+    // at the mint, to the minter, not at the redemption, to the uploader.
+    entity: attachmentUploadFields.shape.entity,
     /** Fixes the stored name. Absent: the uploader names the file (`?filename=` or `Content-Disposition`). */
     filename: uploadLinkFilename.optional(),
     /** Narrows the target's `maxBytes`; a larger value is refused, not clamped. */

@@ -1,5 +1,6 @@
 export { testOperations, type RawDerivedMaps } from './test-operations.js';
 export { scopeHostContractSuite, scopeAdminAuditTransactionSuite } from './scope-host-suite.js';
+export { directoryAdminAuditTransactionSuite, type DirectoryAuditFixture } from './directory-audit-suite.js';
 export { derivedDigestOf, heldMigrations, heldVersion } from './held-migrations.js';
 export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite.js';
 export { permissionContractSuite } from './permission-suite.js';
@@ -46,6 +47,10 @@ export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
 export { inertScopeContractSuite } from './inert-scope-suite.js';
+// One directory row that does not read as a scope never stops a fleet-wide pass.
+export { unreadableScopeRowContractSuite } from './unreadable-scope-row-suite.js';
+// A copy (a snapshot) takes the vertical its source stores; a caller's is held to the grammar.
+export { storedVerticalCopyContractSuite } from './stored-vertical-copy-suite.js';
 // connections.md §3.5.4: a vertical's mailed connect link — single-use, revocable, expiring.
 export { connectLinkContractSuite } from './connect-link-suite.js';
 export { causedByContractSuite, scopeCausedByContractSuite } from './caused-by-suite.js';
@@ -54,6 +59,7 @@ export { causedByMod } from './caused-by-module.js';
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 // #2430: a key reserved to a system principal at the role doors, and the declared module list.
 export { reservedRoleContractSuite } from './reserved-role-suite.js';
+export { roleStateContractSuite } from './role-state-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
 export { scopeStoreContractSuite } from './scope-store-suite.js';
 // #2213: what a driver's own runner passes, and the trivial driver both suites run.

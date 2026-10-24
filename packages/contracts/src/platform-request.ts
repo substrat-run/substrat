@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { instant, platformRequestId, scopeId, verticalSlug } from './ids.js';
+import { instant, platformRequestId, principalId, scopeId, scopeText, verticalSlug } from './ids.js';
 import { actor, domainEvent } from './events.js';
 import { impersonationStamp } from './impersonation.js';
 import { errorCode } from './errors.js';
@@ -190,8 +190,10 @@ export const MAX_PENDING_PLATFORM_REQUESTS = 32;
  */
 export const provisionSiblingPayload = z.object({
   slug: z.string().min(1),
-  name: z.string().min(1),
-  owner: z.string().min(1),
+  name: scopeText,
+  // The id provisioning seats as the owner, so a payload naming anything else is refused here,
+  // before the platform writes a row for it.
+  owner: principalId,
 });
 export type ProvisionSiblingPayload = z.infer<typeof provisionSiblingPayload>;
 
@@ -271,11 +273,11 @@ export const provisionTenantPayload = z.object({
   }),
   /** The tenant's FIRST scope. `vertical` comes from the payload, never inherited. */
   instance: z.object({
-    vertical: z.string().min(1),
+    vertical: verticalSlug,
     scopeId: z.string().min(1),
     slug: z.string().min(1),
-    name: z.string().min(1),
-    owner: z.string().min(1),
+    name: scopeText,
+    owner: principalId,
   }),
   /** SKUs to grant the new tenant + project into the scope (#310). */
   entitlements: z.array(entitlementSelection),

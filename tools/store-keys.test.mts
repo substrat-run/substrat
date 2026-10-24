@@ -87,10 +87,10 @@ test('the RFC 8032 vectors derive the fixed public keys and kids through the sig
 test('doctor: a good set has no findings, is steady, and marks each signer', async () => {
   const report = await doctor(good);
   assert.deepEqual(report.findings, []);
-  assert.equal(report.audiences.caller.phase, 'steady');
-  assert.equal(report.audiences.caller.signer?.kid, A.kid);
-  assert.deepEqual(report.audiences.caller.listed?.map((k) => k.kid), [A.kid]);
-  assert.equal(report.audiences.platform.signer?.kid, B.kid);
+  assert.equal(report.members['caller']!.phase, 'steady');
+  assert.equal(report.members['caller']!.signer?.kid, A.kid);
+  assert.deepEqual(report.members['caller']!.listed?.map((k) => k.kid), [A.kid]);
+  assert.equal(report.members['platform']!.signer?.kid, B.kid);
 });
 
 test('doctor: a missing list and a missing private key are errors', async () => {
@@ -117,7 +117,7 @@ test('doctor: bad list entries are named by position', async () => {
 test('doctor: an alias of a listed key is caught as not canonical, and as no second key', async () => {
   const report = await doctor({ ...good, STORE_CALLER_PUBLIC_KEYS: `${A.public},${alias(A.public)}` });
   assert.ok(report.findings.some((f) => /entry 2 is not canonical/.test(f.check)));
-  assert.equal(report.audiences.caller.listed?.length, 1);
+  assert.equal(report.members['caller']!.listed?.length, 1);
 });
 
 test('doctor: a key in both lists is an error, compared as bytes', async () => {
@@ -153,13 +153,24 @@ test('doctor: an unusable private key is an error naming the check', async () =>
 test('doctor: the rotation phase follows the staged key', async () => {
   const staged = [{ label: 'new.key', text: `STORE_CALLER_KEY=${C.private}\n` }];
   const two = { ...good, STORE_CALLER_PUBLIC_KEYS: `${A.public},${C.public}` };
-  assert.equal((await doctor(two)).audiences.caller.phase, 'two-listed');
-  assert.equal((await doctor(two, staged)).audiences.caller.phase, 'listed');
-  assert.equal((await doctor({ ...two, STORE_CALLER_KEY: C.private }, staged)).audiences.caller.phase, 'switched');
+  assert.equal((await doctor(two)).members['caller']!.phase, 'two-listed');
+  assert.equal((await doctor(two, staged)).members['caller']!.phase, 'listed');
+  assert.equal((await doctor({ ...two, STORE_CALLER_KEY: C.private }, staged)).members['caller']!.phase, 'switched');
   // Staged but not listed yet: a warning, not an error.
   const report = await doctor(good, staged);
   assert.ok(report.findings.some((f) => f.level === 'warn' && /is not in STORE_CALLER_PUBLIC_KEYS yet/.test(f.check)));
   assert.equal(report.findings.filter((f) => f.level === 'error').length, 0);
+});
+
+test('doctor: one listed key that is also the staged one is steady, not a rotation to finish', async () => {
+  const report = await doctor(good, [{ label: 'done.key', text: `STORE_CALLER_KEY=${A.private}\n` }]);
+  assert.equal(report.members['caller']!.phase, 'steady');
+  assert.match(rotatePlan(report, 'caller', 'prod'), /→ 1\./);
+});
+
+test('rotate: two listed keys and no staged one are named as two, as the plan has always said', async () => {
+  const plan = rotatePlan(await doctor({ ...good, STORE_CALLER_PUBLIC_KEYS: `${A.public},${C.public}` }), 'caller', 'prod');
+  assert.match(plan, /^Two keys are listed and no staged key was given/m);
 });
 
 test('doctor: a staged key listed for the other audience, or equal to its signer, is an error', async () => {

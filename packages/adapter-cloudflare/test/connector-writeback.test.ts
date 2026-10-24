@@ -8,7 +8,7 @@ import {
   scopeId,
   tenantId,
 } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { isSizedByteStream, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost, type ConnectorDelegation } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -209,7 +209,10 @@ describe('connector write-back (#574)', () => {
     it('twin: a live scope serves all three doors', async () => {
       await invoke();
       landed = (await upload('live.pdf')).id;
-      expect(await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).not.toBeNull();
+      const opened = await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed);
+      expect(opened).not.toBeNull();
+      // #2519: the client reads the type from the record, so the object must carry the same one.
+      expect(opened!.contentType).toBe(opened!.record.contentType);
     });
 
     it('held: invoke, land and open each refuse in the directory\'s words, and nothing lands', async () => {
@@ -249,7 +252,7 @@ describe('connector write-back (#574)', () => {
           entity: a.upload.entity,
           filename: a.upload.filename,
           contentType: a.upload.contentType,
-          size: a.upload.body.byteLength,
+          size: isSizedByteStream(a.upload.body) ? a.upload.body.length : a.upload.body.byteLength,
           sha256: 'x'.repeat(64),
           visibility: a.upload.visibility,
           createdBy: a.connectionId,

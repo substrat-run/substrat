@@ -1,4 +1,4 @@
-import { observabilityBucketMinutes, resolveObservabilityWindow, TENANT_METRICS_LIMIT } from '@substrat-run/control-plane-api';
+import { LOGS_INCOMPLETE_HEADER, observabilityBucketMinutes, resolveObservabilityWindow, TENANT_METRICS_LIMIT } from '@substrat-run/control-plane-api';
 import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 /**
  * The Dashboard — the tenant-facing self-service surface, as a Cloudflare Worker.
@@ -4429,7 +4429,7 @@ async function observabilityLogsIn({ c, node }: TeamContext) {
   const limit = Number(c.req.query('limit') ?? '100');
   const level = c.req.query('level') || undefined;
   const search = c.req.query('search') || undefined;
-  return cpObservability(() =>
+  const { events, incomplete } = await cpObservability(() =>
     cp.observabilityLogs({
       services,
       level,
@@ -4438,6 +4438,10 @@ async function observabilityLogsIn({ c, node }: TeamContext) {
       limit: Number.isFinite(limit) ? limit : 100,
     }),
   );
+  // The body stays the list the web client has always read; a page the plane said may be
+  // incomplete says so beside it, as the plane does (#2520).
+  if (incomplete) c.header(LOGS_INCOMPLETE_HEADER, '1');
+  return events;
 }
 
 /**

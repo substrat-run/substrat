@@ -84,11 +84,82 @@ At runtime, a host reads the reservations off the modules it registers and the m
 A role made only of reserved keys must declare `holder: 'system'`, or the platform door
 refuses it; roles defined before the migration are unaffected until redefined.
 
+Roles a host defines and seats itself are held to the same rule:
+
+- **Defining a role** (`defineRole`, and the role set a provision or a restore projects into a
+  scope) is refused when a person's role would hold a reserved key, or a system-held role a key
+  a person may hold. A redefinition is judged against the role it replaces: a key it adds
+  meets the same rule; a system-held role redefined as a person's counts its old keys as
+  reserved; and a role cannot be declared `holder: 'system'` while anyone but a system principal
+  holds a seat in it, unless it is already stored system-held. That holds when its stored row is
+  a person's, a row from before the holder was recorded, or gone altogether (a seat can outlive
+  its row), and it counts seats in archived scopes too. A first definition of a role nobody
+  holds is judged by its keys alone. So a role assigned through a door cannot be
+  widened afterwards, by a key or by a holder change. A definition is never refused for a key
+  it takes out, only for a reserved key it still holds.
+- **The owner's seat**, which a provision gives the owner of record, and **the owner
+  hand-over** go through the person's door: a role carrying a reserved key, or one declared
+  `holder: 'system'`, is refused. The hand-over asks before the owner record moves.
+- **Every person's door refuses a role declared `holder: 'system'`**, from the holder the role
+  is stored with, even on a host that registers none of the modules.
+- **A host that registers no modules** learns a reservation from the tenant's system-held roles:
+  their keys count as reserved when a role is defined there.
+- **A key the host knows nothing about is admitted, deliberately.** A host judges only the
+  modules it knows and the tenant's system-held roles; refusing every key it cannot place would
+  refuse every role a module-less host is given. Push is where your whole surface is judged. A
+  key reserved only through a schedule's `permissions`, which no system-held role holds, is
+  therefore not caught on a host that does not register its module; the control plane checking
+  the registry's marks against the engines it knows is #2446.
+- **A release that makes a person's role system-held while people hold it passes push**, because
+  push cannot see who holds a role, **and its promote is refused.** When a release declares a
+  system-held role, promoting it to prod first asks every scope the promote would move onto it for
+  the roles it stores and which of them are held there, and judges the release's roles the way
+  each scope's reconcile would. If any scope would refuse them, the promote answers 409 and
+  nothing is served, adopted or moved. Take those seats back, or ship a release that keeps the
+  role a person's, and promote again. A release with no system-held role is judged by no scope.
+  A promote that would move more scopes than one promote reads is refused with a 503; the
+  platform's staff can raise that limit, or promote with an acknowledgement that skips the read
+  and is recorded in the promote's audit log.
+  A deployment too old to answer the question is moved unjudged and counted in the promote's
+  answer (`roleStateUnread`); any other failed read refuses the promote. Every one of these answers
+  names only your own scopes; other tenants' scopes appear as counts.
+- **Where the promote could not judge a scope**, or a seat was made after it asked, that scope's
+  reconcile still refuses the release, on every pass, naming the tenant, the scope and the role,
+  at every scope where a person holds a seat in that role (an archived scope included). Nothing
+  is written, but that scope's **whole** reconcile is held: the release's other roles, its new
+  schedules' grants, delivered connection grants and entity-grant retirements are not applied
+  there while the scope runs the new code. To clear it, take those seats back in each such scope,
+  or ship a release that keeps the role a person's.
+- **The same happens to a system-held role a release drops and a later one adds back** while
+  its host principal is still seated: the scope cannot tell that seat from a person's, since what
+  kind of principal holds a seat is not recorded. Keep the role defined across releases, or take
+  the host principal's seat back in each such scope and give it again once the role is back.
+- **A system-held role stored before holders were recorded** (adapter 0.154 or 0.155, never
+  reconciled under 0.156 to 0.159, or a dump taken before 2026-10-21) cannot be upgraded while
+  its host principal holds a seat: no seat can be told to be a system principal's. A reconcile is
+  refused on every pass until you take that seat back, reconcile, and seat it again. A restore of
+  such a dump is refused (409, nothing restored), and since a seat inside a dump cannot be taken
+  back first, the only way is a new role key. No vertical in this repository uses a system-held
+  role.
+- **Nothing is revoked.** A refused definition or seat writes nothing, so a seat that already
+  holds a key reserved after it was seated keeps working. A directory fan-out of a stored
+  definition is projected as it is and not judged again, since dropping the role there would
+  revoke its seats. `lint:role-seat-paths` refuses a host path that seats or defines a role
+  without asking.
+
 Not covered yet:
 
-- a role or grant a host seats or composes itself;
-- a role definition widened after it was assigned;
-- a role or grant conferred on a host that registers no modules;
+- on Cloudflare, a scope archived straight from provisioning whose record shows no migration
+  applied is not read (reading would create its storage), so a definition that scope could decide
+  is refused, naming it. The migration count is not proof the scope was never used: a vertical
+  with no migrations of its own records none and can still hold a seat there. While it is the
+  tenant's only scope, every role definition is refused until you unarchive or reap it (both work;
+  a reap needs no hostname). No product path reaches this today;
+- a role defined on a Cloudflare coordinator for a tenant that has no scope yet: it is judged by
+  the coordinator's modules alone, since the scope class's reservations are read from one of the
+  tenant's scopes, and the first scope's projection of it is not judged again;
+- a grant a host seats or composes itself, such as the owner grants an install gives the owner
+  on a host that does not register the vertical's modules (push refuses a reserved key there);
 - on a shared control plane, the directory record of a connection grant for a scope your
   deployment serves, and of a tenant-wide one: the plane cannot see your deployment's
   reservations, so it records the grant. The grant confers nothing, since your deployment

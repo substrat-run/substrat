@@ -10,6 +10,8 @@ import {
   facetRecencyContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  unreadableScopeRowContractSuite,
+  storedVerticalCopyContractSuite,
   connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
@@ -31,6 +33,7 @@ import {
   connectorTestFetch,
   permissionContractSuite,
   reservedRoleContractSuite,
+  roleStateContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -39,6 +42,7 @@ import {
   adminRowFaultSql,
   adminActionFaultSql,
   scopeAdminAuditTransactionSuite,
+  directoryAdminAuditTransactionSuite,
   switchRecordFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
@@ -106,6 +110,19 @@ scopeAdminAuditTransactionSuite('adapter-sqlite', async () => {
   };
 });
 
+directoryAdminAuditTransactionSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-directory-audit-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    directorySql: async (sql: string) => (host as unknown as { directory: { exec(sql: string): void } }).directory.exec(sql),
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
 // #2005: a fork or a preview causes no outbound effects. Allow-all, like the scope-host
 // suite: what this pins is whether an effect RUNS, not who may ask for one.
 inertScopeContractSuite('adapter-sqlite', async () => {
@@ -124,6 +141,44 @@ inertScopeContractSuite('adapter-sqlite', async () => {
     },
   };
 });
+
+// One directory row that does not read as a scope never stops a fleet-wide pass.
+unreadableScopeRowContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-unreadable-row-'));
+    const host = new SqliteScopeHost({ dir });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (host, sql) => {
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+  },
+);
+
+// A copy takes the vertical its source stores; a caller's is held to the registry grammar.
+storedVerticalCopyContractSuite(
+  'adapter-sqlite',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-stored-vertical-'));
+    const host = new SqliteScopeHost({ dir });
+    return {
+      host,
+      cleanup: async () => {
+        await host.close();
+        rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  },
+  async (host, sql) => {
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+  },
+);
 
 // connections.md §3.5.4: a vertical's mailed connect link, in the directory.
 connectLinkContractSuite(
@@ -229,6 +284,20 @@ membershipExecutorContractSuite('adapter-sqlite', async () => {
   });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2446: the role state a promote judges a release against, read as the Cloudflare host reads it.
+roleStateContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-role-state-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    roleState: (t, s) => host.roleStateLocal(t, s),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
