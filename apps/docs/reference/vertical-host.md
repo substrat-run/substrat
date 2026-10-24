@@ -75,8 +75,10 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   raw bytes, with the record in a header), and the `connection:<id>` grant tuple the first
   three are checked against. Both upload routes hold the metadata to
   `CONNECTOR_ATTACHMENT_META_MAX_BYTES` (8 KiB once URI-encoded) and answer one `400` for
-  more; the stream route also refuses a declared size over
-  `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (95 MiB) with a `413`, before it reads a byte, and a
+  more. Both also hold the file to `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (95 MiB) and answer
+  one `413` for more: the stream route from the declared size, before it reads a byte, and the
+  multipart route from `Content-Length` before it buffers anything, or, for a body without one,
+  by cutting the read off at that size plus a 16 KiB multipart envelope (#2538). A
   streamed upload asks the connection's write gate before the first byte is read, so a
   connection that may not write stores no object (#2516).
   Each is authorized in the scope's own DO like any other caller, and the grant has no
