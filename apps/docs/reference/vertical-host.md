@@ -82,7 +82,7 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   `CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES` (16 MiB, a memory limit, since a buffered file is
   resident several times over), judged from `Content-Length` before it buffers anything or, for a
   body without one, by cutting the read off at that size plus a 16 KiB multipart envelope (#2538);
-  the answer tells the caller to use a streamed upload. A
+  the multipart route's answer tells the caller to use a streamed upload. A
   streamed upload asks the connection's write gate before the first byte is read, so a
   connection that may not write stores no object (#2516). The multipart route cannot: it buffers
   the body first, because the gate needs the parsed `meta`, so its bound is the only thing held

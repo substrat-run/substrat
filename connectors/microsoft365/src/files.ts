@@ -37,7 +37,7 @@ import {
   type FileSourceChange,
   type FileSourceWriteRequest,
 } from '@substrat-run/contracts';
-import type { ConnectorHandler, ConnectorOptions, ScopeHost } from '@substrat-run/kernel';
+import { connectorUploadBody, type ConnectorHandler, type ConnectorOptions, type ScopeHost } from '@substrat-run/kernel';
 import {
   MICROSOFT365_PROVIDER,
   nowOf,
@@ -611,7 +611,8 @@ export async function syncMicrosoft365Scope(
           filename: p.entry.name,
           contentType: item.file?.mimeType ?? 'application/octet-stream',
           visibility: 'internal',
-          body,
+          // A file over the buffered bound goes by the streamed route (#2538).
+          body: connectorUploadBody(body),
         });
         await scope.invoke(
           binding.operation,

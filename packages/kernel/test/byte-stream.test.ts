@@ -5,6 +5,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   attachmentSha256,
+  connectorUploadBody,
   fetchLikeOf,
   globalFetch,
   isSizedByteStream,
@@ -378,5 +379,33 @@ describe('globalFetch with a sized stream body (#2498)', () => {
     } finally {
       await s.close();
     }
+  });
+});
+
+describe('connectorUploadBody (#2538)', () => {
+  const BOUND = 16 * 1024 * 1024;
+
+  it('keeps a buffer at or under the buffered bound as the buffer itself', () => {
+    const at = new Uint8Array(BOUND);
+    expect(connectorUploadBody(at)).toBe(at);
+  });
+
+  it('hands a buffer over the bound as a sized stream carrying exactly its bytes', async () => {
+    const bytes = new Uint8Array(BOUND + 5).map((_, i) => i % 251);
+    const body = connectorUploadBody(bytes);
+    expect(isSizedByteStream(body)).toBe(true);
+    if (!isSizedByteStream(body)) return;
+    expect(body.length).toBe(bytes.byteLength);
+    const reader = body.stream.getReader();
+    const hash = createHash('sha256');
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value!.byteLength;
+      hash.update(value!);
+    }
+    expect(size).toBe(bytes.byteLength);
+    expect(hash.digest('hex')).toBe(createHash('sha256').update(bytes).digest('hex'));
   });
 });

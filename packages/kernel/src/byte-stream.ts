@@ -13,6 +13,8 @@
  * without either being required.
  */
 
+import { CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES } from '@substrat-run/contracts';
+
 /** One read from a {@link ByteStreamReader}: a chunk, or the end. */
 export interface ByteStreamRead {
   readonly done: boolean;
@@ -39,6 +41,33 @@ export interface SizedByteStream {
 
 /** A body a byte seam takes: the whole buffer, as before, or a sized stream. */
 export type ByteBody = Uint8Array | SizedByteStream;
+
+/**
+ * Bytes a connector already holds, in the shape a connector upload takes (#2538): the buffer itself
+ * up to {@link CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES}, and above it a {@link SizedByteStream} of the
+ * same bytes, which the platform sends by the streamed route instead of refusing. It does not shrink
+ * what the connector holds; it keeps a file the connector could fetch landing end to end.
+ */
+export function connectorUploadBody(bytes: Uint8Array): ByteBody {
+  if (bytes.byteLength <= CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES) return bytes;
+  const CHUNK = 1024 * 1024;
+  let at = 0;
+  const stream = new ReadableStream(
+    {
+      async pull(controller) {
+        if (at >= bytes.byteLength) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(bytes.subarray(at, Math.min(at + CHUNK, bytes.byteLength)));
+        at += CHUNK;
+      },
+      async cancel() {},
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, length: bytes.byteLength };
+}
 
 /** Is `body` a sized stream rather than a buffer? */
 export function isSizedByteStream(body: unknown): body is SizedByteStream {

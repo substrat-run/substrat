@@ -1,5 +1,7 @@
 ---
 "@substrat-run/contracts": minor
+"@substrat-run/kernel": minor
+"@substrat-run/connector-scrive": patch
 "@substrat-run/vertical-host": minor
 "@substrat-run/control-plane-api": minor
 ---
@@ -10,5 +12,8 @@ The buffered connector upload is held to a size bound before it is buffered (#25
 - **The multipart route.** `POST /internal/connector-attachment` refuses a `Content-Length` over 16 MiB plus a 16 KiB multipart envelope (`CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES`) with a `413` before it buffers anything. A body with no `Content-Length`, or one that understates it, is cut off at the same count while it is read, and a file part over 16 MiB is refused once parsed. Until now the route read a body of any size into the worker's memory.
 - **The client.** `VerticalClient.connectorUploadAttachment` refuses a buffer over 16 MiB with a `413` and sends nothing.
 - **The sentences.** Each `413` says to use the streaming upload above 16 MiB. The body-level refusals name the request body, not the attachment (`connectorAttachmentBodyRefusal`); the file part and the client use `connectorAttachmentBufferedRefusal`; the stream route's sentence is unchanged.
+- **Connectors.** `connectorUploadBody` (kernel) hands a connector's bytes to an upload as the buffer up to the bound and as a sized stream above it. The Microsoft 365 file sync (files up to 50 MiB) and the Scrive sealed PDF use it, so a file over 16 MiB keeps landing by the streamed route.
+
+Rollout: on a deployment that predates the streamed route (#2498), a 16–95 MiB upload has no working path until the vertical is re-pushed: the client refuses a buffer that large, and the stream route answers 501 "redeploy".
 
 A multipart upload over 16 MiB, which the route accepted until now, is refused. Use a streamed body for a file that large.

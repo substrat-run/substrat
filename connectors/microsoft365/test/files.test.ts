@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   connectionId,
   moduleManifest,
   permissionKey,
@@ -13,7 +14,7 @@ import {
   tenantId,
   type ConnectionId,
 } from '@substrat-run/contracts';
-import { assertAllowed, ulid, webCryptoSecretBox, type OperationHandler } from '@substrat-run/kernel';
+import { assertAllowed, isSizedByteStream, ulid, webCryptoSecretBox, type ByteBody, type OperationHandler } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { testOperations } from '@substrat-run/contract-tests';
 import {
@@ -491,6 +492,27 @@ describe('reads: the sync lands what is in the folder', () => {
     const everything = JSON.stringify(w.landed) + (await w.state()) + JSON.stringify([...log.mock.calls, ...warn.mock.calls]);
     for (const name of OUTSIDE_NAMES) expect(everything).not.toContain(name);
     expect(everything).not.toContain(w.leadership);
+  });
+
+  it('a file over the buffered upload bound is landed by a sized stream, one at the bound as a buffer (#2538)', async () => {
+    const w = await world();
+    w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+    w.drive.put(w.general, 'edge.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES).fill(7));
+    w.drive.put(w.general, 'small.txt', 'small');
+    await w.bind();
+    const bodies = new Map<string, ByteBody>();
+    const real = w.host.getConnectorAttachments.bind(w.host);
+    vi.spyOn(w.host, 'getConnectorAttachments').mockImplementation(async (...args) => {
+      const inner = await real(...args);
+      return { ...inner, upload: (input) => (bodies.set(input.filename, input.body), inner.upload(input)) };
+    });
+    await w.sync();
+    expect(isSizedByteStream(bodies.get('big.bin'))).toBe(true);
+    expect((bodies.get('big.bin') as { length: number }).length).toBe(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1);
+    expect(bodies.get('edge.bin')).toBeInstanceOf(Uint8Array);
+    expect(bodies.get('small.txt')).toBeInstanceOf(Uint8Array);
+    const big = w.landed.find((c) => c.change === 'content' && c.path === 'big.bin');
+    expect(big).toBeDefined();
   });
 
   it('follows adds, edits, renames, moves and deletes from Teams', async () => {
