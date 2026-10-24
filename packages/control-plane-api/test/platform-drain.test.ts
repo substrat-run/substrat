@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,8 @@ import {
   PROVISION_TENANT_KIND,
   SET_ENTITLEMENTS_KIND,
   SWEEP_RUNS_KIND,
+  substratError,
+  z,
 } from '@substrat-run/contracts';
 import {
   drainScopePlatformRequests,
@@ -816,6 +818,54 @@ describe('provisionSiblingHandler — provisions a sibling of the drained scope'
     expect(captured?.owner).toBe(owner);
     expect(captured?.entitlements?.find((e) => e.entitlementKey === 'demo-vert')).toMatchObject({ quota: 5 });
   });
+
+  it.each([
+    ['a whitespace-only name, refused by the payload', { slug: 'courts', name: '   ' }, /^provision-sibling payload is malformed: name: /],
+    ['a slug provisioning does not admit, refused by the provision', { slug: 'Not A Slug', name: 'Courts' }, /./],
+    ['an owner that is not a principal, refused by the payload', { slug: 'courts', name: 'Courts', owner: 'not-a-principal' }, /^provision-sibling payload is malformed: owner: /],
+  ])('settles %s failed at once, as validation_failed, creating nothing', async (_case, fields, error) => {
+    const req = intent('provision-sibling', { payload: { owner, ...fields } });
+    const { client, settled } = fakeTransport([req]);
+    const before = (await host.admin.listScopes(staff, { tenantId: t })).length;
+
+    const report = await drainScopePlatformRequests(client, { tenantId: t, scopeId: parent, vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE }, {
+      'provision-sibling': provisionSiblingHandler({ host, actor: staff, resolveVerticalForScope: async () => fakeVertical }),
+    });
+
+    // Terminal on the first pass: not left pending to be retried every pass up to the ceiling.
+    expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+    expect(settled).toEqual([
+      expect.objectContaining({
+        id: req.id,
+        status: 'failed',
+        lastError: expect.stringMatching(error),
+        failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      }),
+    ]);
+    expect(await host.admin.listScopes(staff, { tenantId: t })).toHaveLength(before);
+  });
+
+  // Past the pre-write check, a throw keeps its old classification whatever it says: only that
+  // check's refusal is terminal, so a failure once the sibling's provision has begun is retried.
+  it.each([
+    ['a validation_failed refusal', substratError('validation_failed', 'provisionScope: name must not be empty or whitespace')],
+    ['a parse failure', new z.ZodError([{ code: 'custom', path: ['vertical'], message: 'stored row does not parse', input: '' }])],
+    ['any other throw', new Error('directory unavailable')],
+  ] as const)('a sibling provision failing with %s stays pending, and the next pass finishes it', async (_case, thrown) => {
+    const req = intent('provision-sibling', { payload: { slug: `site-${ulid().slice(-8).toLowerCase()}`, name: 'Site', owner } });
+    const handler = { 'provision-sibling': provisionSiblingHandler({ host, actor: staff, resolveVerticalForScope: async () => fakeVertical }) };
+    const drainCtx = { tenantId: t, scopeId: parent, vertical: 'demo-vert', scope: INSTALL, lifecycle: LIVE };
+    const first = fakeTransport([req]);
+    const provision = vi.spyOn(host, 'provisionScope').mockRejectedValueOnce(thrown);
+    try {
+      expect(await drainScopePlatformRequests(first.client, drainCtx, handler)).toMatchObject({ pending: 1, failed: 0 });
+    } finally {
+      provision.mockRestore();
+    }
+    expect(first.settled[0]).toMatchObject({ id: req.id, status: 'pending' });
+    const next = fakeTransport([{ ...req, attempts: 1 }]);
+    expect(await drainScopePlatformRequests(next.client, drainCtx, handler)).toMatchObject({ done: 1 });
+  });
 });
 
 describe('archiveScopeHandler — archives a sibling named in the intent', () => {
@@ -948,6 +998,79 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(configured?.entries).toEqual([{ key: 'ISSUER_DOMAIN', value: 'auth.customer-1.example' }]);
   });
 
+  type Payload = ReturnType<typeof payloadFor>;
+  it.each([
+    ['vertical Crm', (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: 'Crm' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
+    ["vertical ''", (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: '' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
+    ['vertical a/b/c', (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: 'a/b/c' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
+    ['a whitespace-only instance name', (p: Payload) => ({ ...p, instance: { ...p.instance, name: '   ' } }), /^provision-tenant payload is malformed: instance\.name: /],
+    ['an owner that is not a principal', (p: Payload) => ({ ...p, instance: { ...p.instance, owner: 'not-a-principal' } }), /^provision-tenant payload is malformed: instance\.owner: /],
+    // These parse as a payload; the writes below them would refuse them, so the check before
+    // any write does.
+    ['an instance slug provisioning does not admit', (p: Payload) => ({ ...p, instance: { ...p.instance, slug: 'Main Site' } }), /./],
+    ['a tenant slug createTenant does not admit', (p: Payload) => ({ ...p, tenant: { ...p.tenant, slug: 'Customer One' } }), /./],
+    ['a tenant id that is not one', (p: Payload) => ({ ...p, tenant: { ...p.tenant, id: 'not-a-tenant-id' } }), /./],
+  ])('settles a payload with %s failed at once, as validation_failed, creating and granting nothing', async (_case, change, error) => {
+    const newTenant = ulid();
+    const req = intent('provision-tenant', { payload: change(payloadFor(newTenant, ulid())) });
+    const { client, settled } = fakeTransport([req]);
+
+    const report = await drainScopePlatformRequests(client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, {
+      'provision-tenant': provisionTenantHandler(deps()),
+    });
+
+    // Terminal on the first pass: not left pending to be retried every pass up to the ceiling.
+    expect(report).toEqual({ drained: 1, done: 0, failed: 1, pending: 0 });
+    expect(settled).toEqual([
+      expect.objectContaining({
+        id: req.id,
+        status: 'failed',
+        lastError: expect.stringMatching(error),
+        failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      }),
+    ]);
+    expect((await host.admin.listTenants(staff)).some((t) => t.id === newTenant)).toBe(false);
+    expect(await host.admin.listEntitlements(staff, tenantId.parse(newTenant))).toEqual([]);
+    expect(await host.admin.listScopes(staff, { tenantId: tenantId.parse(newTenant) })).toEqual([]);
+  });
+
+  // Once the tenant is written, a throw keeps its old classification whatever it says: a refusal
+  // settled terminal there would leave a tenant no later pass finishes. The pre-write check above
+  // is the only place an input refusal is terminal.
+  it.each([
+    ['a validation_failed refusal', substratError('validation_failed', 'provisionScope: name must not be empty or whitespace')],
+    ['a parse failure', new z.ZodError([{ code: 'custom', path: ['vertical'], message: 'stored row does not parse', input: '' }])],
+    ['any other throw', new Error('directory unavailable')],
+  ] as const)('a scope provision failing after the tenant exists with %s stays pending, and the next pass finishes it', async (_case, thrown) => {
+    const newTenant = ulid();
+    const newScope = ulid();
+    const req = intent('provision-tenant', { payload: payloadFor(newTenant, newScope) });
+    const handler = { 'provision-tenant': provisionTenantHandler(deps()) };
+    const first = fakeTransport([req]);
+    const provision = vi.spyOn(host, 'provisionScope').mockRejectedValueOnce(thrown);
+    try {
+      expect(await drainScopePlatformRequests(first.client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, handler)).toMatchObject({ pending: 1, failed: 0 });
+    } finally {
+      provision.mockRestore();
+    }
+    expect(first.settled[0]).toMatchObject({ id: req.id, status: 'pending' });
+    expect((await host.admin.listTenants(staff)).some((t) => t.id === newTenant)).toBe(true);
+    const next = fakeTransport([{ ...req, attempts: 1 }]);
+    expect(await drainScopePlatformRequests(next.client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, handler)).toMatchObject({ done: 1 });
+  });
+
+  it('drains a payload whose vertical is a slug to done', async () => {
+    const newTenant = ulid();
+    const newScope = ulid();
+    const req = intent('provision-tenant', { payload: payloadFor(newTenant, newScope) });
+    const { client, settled } = fakeTransport([req]);
+    const report = await drainScopePlatformRequests(client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, {
+      'provision-tenant': provisionTenantHandler(deps()),
+    });
+    expect(report).toEqual({ drained: 1, done: 1, failed: 0, pending: 0 });
+    expect(settled[0]).toMatchObject({ id: req.id, status: 'done' });
+  });
+
   it('converges on a re-drain: same proposed ids, every step an idempotent no-op', async () => {
     const newTenant = ulid();
     const newScope = ulid();
@@ -977,6 +1100,19 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(ungranted.status).toBe('failed');
     expect(ungranted.error).toMatch(/tenant-provisioner capability/);
     expect(ungranted.error).toMatch(/declares no `provisions`/);
+  });
+
+  it.each([
+    ['an instance slug provisioning does not admit', (p: ReturnType<typeof payloadFor>) => ({ ...p, instance: { ...p.instance, slug: 'Main Site' } })],
+    ['a tenant slug createTenant does not admit', (p: ReturnType<typeof payloadFor>) => ({ ...p, tenant: { ...p.tenant, slug: 'Customer One' } })],
+  ])('answers an ungranted manager with the capability refusal (#455), not %s', async (_case, change) => {
+    await host.admin.registerVertical(staff, { slug: 'ungranted-console', name: 'Ungranted', source: 'cli' });
+    const outcome = await provisionTenantHandler(deps())(
+      { ...ctx, vertical: 'ungranted-console' },
+      intent('provision-tenant', { payload: change(payloadFor(ulid(), ulid())) }),
+    );
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.stringMatching(/tenant-provisioner capability/) });
+    expect(outcome.failure).toBeUndefined();
   });
 
   it('distinguishes declared-but-ungranted (#455): the request awaits the staff grant', async () => {

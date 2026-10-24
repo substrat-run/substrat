@@ -268,6 +268,21 @@ describe('declared connection landings (#2316)', () => {
     expect(await audited('bindConnectionScope')).toBe(3);
   });
 
+  it("lands beside a directory row in the tenant that does not read as a scope, which the pass names once", async () => {
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    const unreadable = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: unreadable, jurisdiction: 'eu', vertical: SLUG });
+    await host.admin.activateScope(staff, t, unreadable);
+    (host as unknown as { directory: { exec(q: string): void } }).directory.exec(`UPDATE scopes SET vertical = '' WHERE scope_id = '${unreadable}'`);
+    const plan = await connect('planima');
+
+    const report = await pass();
+
+    expect(report.connectionLandings).toEqual({ granted: 1, bound: 1, failed: 0 });
+    expect(lastRun(plan)).toMatchObject({ outcome: 'ok' });
+    expect(report.errors).toEqual([{ kind: 'scope-row', id: unreadable, error: expect.stringMatching(/\(vertical\)/) }]);
+  });
+
   it('writes nothing on a pass that finds everything in place, and keeps the sync cursor', async () => {
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
     const plan = await connect('planima');

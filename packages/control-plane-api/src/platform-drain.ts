@@ -3,9 +3,11 @@ import {
   isPrimaryScope,
   lifecycleRefusal,
   platformIntentFailureMessage,
+  resolveScopeRecord,
   ulid,
   type ConnectorHandler,
   type OpsFailureInput,
+  type ProvisionScopeInput,
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { isTerminalDispatchFailure } from './provider-error.js';
@@ -27,6 +29,9 @@ import {
   SWEEP_RUNS_KIND,
   isUndecodablePlatformRequest,
   platformRequestId,
+  createTenantInput,
+  errorCodeOf,
+  type z,
   type PlatformActorId,
   type PlatformRequest,
   type PlatformRequestFailure,
@@ -418,6 +423,7 @@ export async function provisionSiblingScope(
     slug: input.slug,
     name: input.name,
     vertical: parent.vertical,
+    verticalSource: 'copy',
     jurisdiction: parent.jurisdiction ?? undefined,
   } as Parameters<ScopeHost['provisionScope']>[1]);
   const created = await adoptServingForProvisioning(
@@ -475,12 +481,22 @@ export async function provisionSiblingScope(
  */
 export function provisionSiblingHandler(deps: ProvisionSiblingDeps): PlatformRequestHandler {
   return async (ctx, request) => {
-    const payload = provisionSiblingPayload.parse(request.payload);
+    const parsed = provisionSiblingPayload.safeParse(request.payload);
+    if (!parsed.success) return malformedPayload('provision-sibling', parsed.error);
+    const payload = parsed.data;
     const prior = request.result;
-    const scopeId =
-      prior && typeof prior === 'object' && 'scopeId' in prior
-        ? scopeIdSchema.parse((prior as { scopeId: string }).scopeId)
-        : scopeIdSchema.parse(ulid());
+    // The sibling's own input, checked before `provisionSiblingScope` writes its row, by the rules
+    // that write applies: one it would refuse settles here and leaves no row behind.
+    const checked = checkedBeforeWrites(() => {
+      const scopeId =
+        prior && typeof prior === 'object' && 'scopeId' in prior
+          ? scopeIdSchema.parse((prior as { scopeId: string }).scopeId)
+          : scopeIdSchema.parse(ulid());
+      resolveScopeRecord({ tenantId: ctx.tenantId, scopeId, slug: payload.slug, name: payload.name });
+      return scopeId;
+    });
+    if (!checked.ok) return checked.refusal;
+    const scopeId = checked.value;
     try {
       const r = await provisionSiblingScope(deps, {
         tenantId: ctx.tenantId,
@@ -494,10 +510,43 @@ export function provisionSiblingHandler(deps: ProvisionSiblingDeps): PlatformReq
         ? { status: 'done', result: { scopeId } }
         : { status: 'failed', result: { scopeId }, error: r.error };
     } catch (e) {
+      // After the writes have begun, a throw is classified as it always was: a vertical's refusal
+      // is transient, and anything else leaves the request pending. A refusal settled terminal here
+      // could leave a half-provisioned sibling that no later pass finishes.
       if (e instanceof ControlPlaneError) return { status: 'pending', result: { scopeId }, error: e.message };
       throw e;
     }
   };
+}
+
+/** The attribution of a request refused for its own input: ours, and the input's to fix. */
+const INPUT_REFUSED = { origin: 'platform', code: 'validation_failed', permission: null } as const;
+
+/** A payload that does not parse, settled `failed` at once: it never will parse. */
+function malformedPayload(kind: string, error: z.ZodError): PlatformRequestOutcome {
+  const fields = error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+  return { status: 'failed', error: `${kind} payload is malformed: ${fields}`, failure: INPUT_REFUSED };
+}
+
+/**
+ * A request's input, checked before its handler writes anything: `check` parses and resolves, and
+ * performs no I/O. A `validation_failed` from it (a parse failure reads as one) refuses the input
+ * itself, which is refused the same way on every pass, so it settles `failed` at once rather than
+ * spending attempts. This is the ONLY place such a refusal is terminal: once a handler has begun
+ * writing, a throw keeps its old classification, so a parse failing on a stored row mid-provision
+ * leaves the request pending to be finished, not a half-written tenant or scope settled for good.
+ * Anything else `check` throws is rethrown.
+ */
+function checkedBeforeWrites<T>(check: () => T): { ok: true; value: T } | { ok: false; refusal: PlatformRequestOutcome } {
+  try {
+    return { ok: true, value: check() };
+  } catch (e) {
+    if (errorCodeOf(e) !== 'validation_failed') throw e;
+    return {
+      ok: false,
+      refusal: { status: 'failed', error: e instanceof Error ? e.message : String(e), failure: INPUT_REFUSED },
+    };
+  }
 }
 
 export interface ArchiveScopeDeps {
@@ -756,7 +805,11 @@ async function admitManager(
  */
 export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequestHandler {
   return async (ctx, request) => {
-    const payload = provisionTenantPayload.parse(request.payload);
+    // Terminal, like the other refusals here: a payload that does not parse never will, and a
+    // throw would leave it pending and retried every pass until the attempt ceiling.
+    const parsed = provisionTenantPayload.safeParse(request.payload);
+    if (!parsed.success) return malformedPayload('provision-tenant', parsed.error);
+    const payload = parsed.data;
     const admitted = await admitManager(
       deps,
       ctx,
@@ -764,10 +817,29 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
       payload.instance.vertical,
     );
     if ('refusal' in admitted) return admitted.refusal;
+    // The whole input, checked BEFORE anything is written, by the same rules the writes below
+    // apply: an input they would refuse settles here and creates nothing, rather than leaving a
+    // tenant and its entitlements behind a scope that is never provisioned. After the capability
+    // check above, so a manager that may not provision at all is told that (#455), not what is
+    // wrong with a payload it could not have sent anyway.
+    const checked = checkedBeforeWrites(() => {
+      const tenantId = tenantIdSchema.parse(payload.tenant.id);
+      const scopeId = scopeIdSchema.parse(payload.instance.scopeId);
+      createTenantInput.parse({ id: tenantId, slug: payload.tenant.slug, name: payload.tenant.name, provisionedByTenant: ctx.tenantId });
+      const scopeInput: ProvisionScopeInput = {
+        tenantId,
+        scopeId,
+        slug: payload.instance.slug,
+        name: payload.instance.name,
+        vertical: payload.instance.vertical,
+      };
+      resolveScopeRecord(scopeInput);
+      return { tenantId, scopeId, scopeInput };
+    });
+    if (!checked.ok) return checked.refusal;
+    const { tenantId, scopeId, scopeInput } = checked.value;
     const { host, actor } = deps;
     const admin = host.admin;
-    const tenantId = tenantIdSchema.parse(payload.tenant.id);
-    const scopeId = scopeIdSchema.parse(payload.instance.scopeId);
     try {
       await admin.createTenant(actor, {
         id: tenantId,
@@ -789,13 +861,9 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
     for (const grant of payload.entitlements) {
       await admin.grantEntitlement(actor, tenantId, grant.key, { plan: grant.plan });
     }
-    await host.provisionScope(actor, {
-      tenantId,
-      scopeId,
-      slug: payload.instance.slug,
-      name: payload.instance.name,
-      vertical: payload.instance.vertical,
-    } as Parameters<ScopeHost['provisionScope']>[1]);
+    // Past the first write, so a throw keeps its old classification (pending, retried): the
+    // tenant exists, and a later pass is what finishes it.
+    await host.provisionScope(actor, scopeInput);
     const created = await adoptServingForProvisioning(
       host,
       actor,

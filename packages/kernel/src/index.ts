@@ -69,6 +69,8 @@ export type {
   ScopedSql,
   ScopeFilter,
   ScopeHost,
+  ScopeListing,
+  UnreadableScopeRow,
   ScopeStub,
   ScopeStubOptions,
   InvokeOptions,
@@ -234,7 +236,7 @@ export {
 export type { SealingKeyPair, SealingPublicKey } from './sealed-box.js';
 export { createSubjectKeys } from './subject-keys.js';
 export type { SubjectKeyRecords, SubjectKeyRow, SubjectKeys } from './subject-keys.js';
-export { resolveScopeRecord } from './scope-record.js';
+export { readableScopes, resolveScopeRecord } from './scope-record.js';
 export type { ResolvedScopeRecord } from './scope-record.js';
 export {
   assertAllowed,
@@ -888,6 +890,7 @@ export type {
 } from './job-run.js';
 export {
   runPlatformSweep,
+  UNREADABLE_SCOPE_ROWS_NAMED,
   startPlatformSweeper,
   StorageReadUnsupported,
   PROVISION_RECONCILE_BATCH,

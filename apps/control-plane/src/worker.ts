@@ -2606,19 +2606,33 @@ export default {
     // domain (→ active/failed) and retry any `pending` custom bind whose create never landed.
     // This is what makes issuance self-heal without a human flipping status by hand. It
     // needs a CF-for-SaaS zone; without one (dev/self-host) the provisioner is undefined
-    // and the pass is skipped. Contained per-row, so a bad domain never sinks the sweep.
+    // and the pass is skipped. Contained per-row, so a bad domain never sinks the sweep, and
+    // contained as a step like the backup and the prune below: a read that throws for the whole
+    // step is logged, and the steps after it still run.
     const provisioner = provisionHostnameFor(env);
     if (provisioner) {
-      const bases = platformBaseDomains(env);
-      const hostnameReport = await reconcilePendingHostnames({
-        admin: host.admin,
-        actor: SWEEP_ACTOR,
-        provisioner,
-        isCustom: (h) => isCustomHostname(h, bases),
-        onActivated: relayOnActivatedFor(env),
-      });
-      if (hostnameReport.activated || hostnameReport.failed || hostnameReport.created || hostnameReport.healed || hostnameReport.orphaned || hostnameReport.errors.length) {
-        console.log('hostname-reconcile', hostnameReport);
+      try {
+        const bases = platformBaseDomains(env);
+        const hostnameReport = await reconcilePendingHostnames({
+          admin: host.admin,
+          actor: SWEEP_ACTOR,
+          provisioner,
+          isCustom: (h) => isCustomHostname(h, bases),
+          onActivated: relayOnActivatedFor(env),
+        });
+        if (
+          hostnameReport.activated ||
+          hostnameReport.failed ||
+          hostnameReport.created ||
+          hostnameReport.healed ||
+          hostnameReport.orphaned ||
+          hostnameReport.errors.length ||
+          hostnameReport.unreadableScopes.length
+        ) {
+          console.log('hostname-reconcile', hostnameReport);
+        }
+      } catch (err) {
+        console.error('hostname-reconcile failed', err instanceof Error ? err.message : String(err));
       }
     }
 

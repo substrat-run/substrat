@@ -3244,6 +3244,17 @@ export interface HostAdmin {
   /** The scope inventory. Ordered by scope_id (ULID = chronological); cursor = scope id. */
   listScopes(actor: PlatformActorId, filter?: ScopeFilter): Promise<Scope[]>;
   /**
+   * `listScopes` for a fleet-wide pass: the same rows in the same order, except that a row which
+   * does not read as a `Scope` is named in `unreadable` instead of failing the whole list. A
+   * healthy directory answers exactly what `listScopes` does, with `unreadable` empty.
+   *
+   * `listScopes` stays strict: a console or a route showing the directory should fail loudly on
+   * a row it cannot read. A pass over every scope (`runPlatformSweep`) should step over that one
+   * row and say so, which is what this read is for. Optional, so a host that predates it is read
+   * through `listScopes`.
+   */
+  listScopesReadable?(actor: PlatformActorId, filter?: ScopeFilter): Promise<ScopeListing>;
+  /**
    * The tenant-store ledger (#301): every platform-minted per-tenant store, optionally
    * narrowed by tenant and/or vertical. The deploy path reads `{ vertical }` to derive
    * the D1 bindings that must ride every serving-script upload (a re-deploy must never
@@ -4806,6 +4817,15 @@ export interface ProvisionScopeInput {
   name?: string;
   /** Which vertical's deployment executes this scope. Defaults to null. */
   vertical?: string | null;
+  /**
+   * Where `vertical` came from, which decides what it is held to. `'input'` (the default): a
+   * caller named it, and it must be a `verticalSlug`. `'copy'`: it is the stored vertical of a
+   * scope that already exists and this one copies (a snapshot, a sibling), taken as the directory
+   * reads it (any non-empty string), so a scope stored before the grammar was held at provisioning
+   * can still be copied. Platform code sets `'copy'` only with a value it read from the directory;
+   * no request body carries it.
+   */
+  verticalSource?: 'input' | 'copy';
   storageShape?: StorageShape;
   jurisdiction?: Jurisdiction;
   /**
@@ -5225,6 +5245,24 @@ export interface ScopeFilter extends ListPage {
   /** One status or any of several — the console's All / Suspended / Archived tabs. */
   status?: ScopeStatus | ScopeStatus[];
   vertical?: string;
+}
+
+/**
+ * A directory row that does not read as a `Scope`. Its ids as stored and the names of the
+ * fields that did not parse, and nothing else of the row: the ids are what an operator needs to
+ * find it, and its contents are not this report's to repeat.
+ */
+export interface UnreadableScopeRow {
+  scopeId: string;
+  tenantId: string;
+  /** Top-level `Scope` field names that did not parse; `['row']` when the failure names none. */
+  fields: string[];
+}
+
+/** What `HostAdmin.listScopesReadable` answers. */
+export interface ScopeListing {
+  scopes: Scope[];
+  unreadable: UnreadableScopeRow[];
 }
 
 /**

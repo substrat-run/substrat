@@ -438,6 +438,74 @@ export function scopeHostContractSuite(
       );
     });
 
+    describe('provisioning takes a vertical slug and a non-empty kind and name', () => {
+      const tenant = tenantId.parse(ulid());
+      beforeAll(async () => {
+        await host.admin.createTenant(staff, { id: tenant, slug: 'vertical-grammar', name: 'Vertical grammar' });
+      });
+
+      it.each(['', '   ', '\t', 'Todo', 'my_vertical', 'a/b/c', '/todo', 'todo/', '-todo', 'todo-', 'to do'])(
+        'refuses %j as validation_failed and stores nothing',
+        async (vertical) => {
+          const scope = scopeId.parse(ulid());
+          await expectRefusal(host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical }), 'validation_failed', /vertical/);
+          expect(await host.admin.getScopeRecord(staff, tenant, scope)).toBeUndefined();
+          // The directory still reads whole: nothing unparsable was written.
+          await expect(host.admin.listScopes(staff, { tenantId: tenant })).resolves.toBeInstanceOf(Array);
+        },
+      );
+
+      it.each([
+        ['a bare slug', 'todo', 'todo'],
+        ['digits', 'ticket0', 'ticket0'],
+        ['a leading digit', '2do', '2do'],
+        ['an owner prefix', 'acme/todo', 'acme/todo'],
+        ['null', null, null],
+        ['no vertical at all', undefined, null],
+      ] as const)('provisions with %s and stores it as given', async (_name, vertical, stored) => {
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, ...(vertical === undefined ? {} : { vertical }) });
+        expect((await host.admin.getScopeRecord(staff, tenant, scope))?.vertical).toBe(stored);
+      });
+
+      it.each([
+        ['kind', ''],
+        ['kind', '   '],
+        ['kind', '\t'],
+        ['name', ''],
+        ['name', '   '],
+        ['name', '\n'],
+      ] as const)('refuses %s %j as validation_failed naming the field, and stores nothing', async (field, value) => {
+        const scope = scopeId.parse(ulid());
+        await expectRefusal(
+          host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'todo', [field]: value }),
+          'validation_failed',
+          new RegExp(`^provisionScope: ${field} `),
+        );
+        expect(await host.admin.getScopeRecord(staff, tenant, scope)).toBeUndefined();
+      });
+
+      it.each([
+        ['given', { kind: 'brf', name: 'Brf Vasastan' }, { kind: 'brf', name: 'Brf Vasastan' }],
+        ['given with spaces around them, as sent', { kind: ' brf ', name: ' Brf ' }, { kind: ' brf ', name: ' Brf ' }],
+        ['absent, as the defaults', {}, { kind: 'scope' }],
+      ] as const)('provisions with kind and name %s', async (_case, given, stored) => {
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'todo', ...given });
+        const row = await host.admin.getScopeRecord(staff, tenant, scope);
+        expect(row).toMatchObject(stored);
+        // An absent name defaults to the slug, which defaults to the lowercased id.
+        if (!('name' in given)) expect(row?.name).toBe(scope.toLowerCase());
+      });
+
+      it('refuses an invalid vertical on a re-provision of an existing scope too', async () => {
+        const scope = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'todo' });
+        await expectRefusal(host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: '' }), 'validation_failed');
+        expect((await host.admin.getScopeRecord(staff, tenant, scope))?.vertical).toBe('todo');
+      });
+    });
+
     it('fails closed on a mismatched (tenantId, scopeId) pair (K-3)', async () => {
       await expect(host.getScope(alice, t2, s1)).rejects.toThrow();
       await expect(host.getScope(alice, t1, scopeId.parse(ulid()))).rejects.toThrow();

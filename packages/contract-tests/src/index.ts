@@ -47,6 +47,10 @@ export { erasureOtherMod, erasureSquatterMod } from './erasure-module.js';
 export { scheduleContractSuite } from './schedule-suite.js';
 // #2005: forks and previews cause no outbound effects — the in-scope doors.
 export { inertScopeContractSuite } from './inert-scope-suite.js';
+// One directory row that does not read as a scope never stops a fleet-wide pass.
+export { unreadableScopeRowContractSuite } from './unreadable-scope-row-suite.js';
+// A copy (a snapshot) takes the vertical its source stores; a caller's is held to the grammar.
+export { storedVerticalCopyContractSuite } from './stored-vertical-copy-suite.js';
 // connections.md §3.5.4: a vertical's mailed connect link — single-use, revocable, expiring.
 export { connectLinkContractSuite } from './connect-link-suite.js';
 export { causedByContractSuite, scopeCausedByContractSuite } from './caused-by-suite.js';

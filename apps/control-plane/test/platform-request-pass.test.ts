@@ -1,5 +1,5 @@
-import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { env, runInDurableObject } from 'cloudflare:test';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import {
   platformActorId,
@@ -596,6 +596,64 @@ describe('requestRollupLogOf: a standing rollup failure stays in the pass log (#
       recorded: 0,
       failing: { error: expect.stringMatching(/HTTP 403/), since: '2034-03-10T12:00:00.000Z', failures: 2 },
     });
+  });
+});
+
+/**
+ * The hostname reconcile is one step of the scheduled pass, and a throw for the whole step (here,
+ * a hostname row its read cannot parse) is logged as that step's failure: the steps after it, the
+ * directory backup and the stored-copy prune, still run. Driven through the real `scheduled`
+ * against the real directory, with a Cloudflare-for-SaaS zone configured so the step runs at all,
+ * and a recording backup bucket so the backup step is observed without touching the shared one.
+ */
+describe('the scheduled pass runs the steps after a failed hostname reconcile', () => {
+  const staff = platformActorId.parse(ulid());
+  const cp = () => env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane'));
+  const hostname = `unparsable-${ulid().toLowerCase()}.global.substrat.run`;
+
+  /** A bucket the backup step writes to, recording each key it puts. */
+  const recordingBucket = (puts: string[]) => ({
+    put: async (key: string) => void puts.push(key),
+    get: async () => null,
+    delete: async () => {},
+    list: async () => ({ objects: [], truncated: false }),
+  });
+
+  beforeAll(async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+  });
+
+  it('logs the hostname step as failed and still takes the directory backup', async () => {
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    await host.admin.createTenant(staff, { id: t, slug: `hostname-step-${t.slice(-8).toLowerCase()}`, name: 'Hostname step' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'todo' });
+    // A row the hostname read cannot parse: a status outside the enum.
+    await runInDurableObject(cp(), (_i, state) => {
+      state.storage.sql.exec(
+        "INSERT INTO hostnames (hostname, tenant_id, scope_id, surface, status, created_at) VALUES (?, ?, ?, 'app', 'unparsable', ?)",
+        hostname, t, s, new Date().toISOString(),
+      );
+    });
+    const errors = vi.spyOn(console, 'error');
+    const puts: string[] = [];
+    try {
+      await worker.scheduled({} as ScheduledController, {
+        ...env,
+        CF_API_TOKEN: 'test-token',
+        CF_SAAS_ZONE_ID: 'test-zone',
+        DIRECTORY_BACKUPS: recordingBucket(puts),
+      } as never);
+      expect(errors).toHaveBeenCalledWith('hostname-reconcile failed', expect.any(String));
+      // The directory copy, written after the hostname step (the bucket also takes other objects).
+      expect(puts.filter((k) => k.startsWith('directory/'))).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+      await runInDurableObject(cp(), (_i, state) => {
+        state.storage.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
+      });
+    }
   });
 });
 

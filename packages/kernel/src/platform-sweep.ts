@@ -21,7 +21,7 @@ import type {
   ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeFilter, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
 import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
 import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon, utcDayOf } from './billing-retention.js';
@@ -614,7 +614,10 @@ export interface PlatformSweepReport {
       | 'request-rollup'
       // #2501: the day's meter snapshot failed. Nothing of it is written, and the next pass of the
       // same day tries again.
-      | 'meter-snapshot';
+      | 'meter-snapshot'
+      // A directory row that does not read as a scope: every phase of the pass stepped over it.
+      // Named once per pass by its id and the fields that failed (`scopeReaderFor`).
+      | 'scope-row';
     id: string;
     error: string;
   }[];
@@ -1322,6 +1325,55 @@ function assertPositiveMs(name: string, ms: number): void {
   }
 }
 
+/**
+ * How many unreadable directory rows one pass names before it only says there are more: the
+ * sweep's `errors`, and the hostname reconcile's `unreadableScopes`, so each pass's report stays
+ * bounded however many rows a directory holds.
+ */
+export const UNREADABLE_SCOPE_ROWS_NAMED = 20;
+
+/** How a pass reads the directory's scopes: `listScopes`'s rows, minus any it cannot read. */
+type ScopeReader = (filter?: ScopeFilter) => Promise<Scope[]>;
+
+/**
+ * The scope read every fleet-wide phase of one pass shares. One row that does not parse used to
+ * throw out of `listScopes` for the whole list, and since no phase reads the directory inside a
+ * try, out of the pass: every phase after it went unrun until the row was fixed by hand. Read
+ * through `listScopesReadable`, the row is stepped over, and named in `errors` ONCE per pass
+ * however many phases met it, by its id and the fields that failed, never their values. At most
+ * `UNREADABLE_SCOPE_ROWS_NAMED` are named, then one line says there are more. A host that
+ * predates `listScopesReadable` is read through `listScopes`, strict as before.
+ */
+function scopeReaderFor(admin: HostAdmin, actor: PlatformActorId, report: Pick<PlatformSweepReport, 'errors'>): ScopeReader {
+  const readable = admin.listScopesReadable?.bind(admin);
+  if (!readable) return (filter) => admin.listScopes(actor, filter);
+  const named = new Set<string>();
+  let capped = false;
+  return async (filter) => {
+    const { scopes, unreadable } = await readable(actor, filter);
+    for (const row of unreadable) {
+      if (capped) break;
+      if (named.has(row.scopeId)) continue;
+      if (named.size < UNREADABLE_SCOPE_ROWS_NAMED) {
+        named.add(row.scopeId);
+        report.errors.push({
+          kind: 'scope-row',
+          id: row.scopeId,
+          error: `the directory row of tenant ${row.tenantId} does not read as a scope (${row.fields.join(', ')}); stepped over this pass`,
+        });
+      } else {
+        capped = true;
+        report.errors.push({
+          kind: 'scope-row',
+          id: '*',
+          error: `more than ${UNREADABLE_SCOPE_ROWS_NAMED} directory rows do not read as a scope; only the first ${UNREADABLE_SCOPE_ROWS_NAMED} are named this pass`,
+        });
+      }
+    }
+    return scopes;
+  };
+}
+
 export async function runPlatformSweep(
   host: ScopeHost,
   options: PlatformSweepOptions,
@@ -1352,6 +1404,9 @@ export async function runPlatformSweep(
     meterSnapshot: null,
     errors: [],
   };
+  // Every fleet-wide read of the directory below goes through this, so one unreadable row is
+  // stepped over by each phase and named once. The tenant reap does not: see there.
+  const listScopes = scopeReaderFor(host.admin, options.actor, report);
 
   // -- migration reconciliation (kernel-design §5.3, #49) ---------------------
   // FIRST, deliberately: `drainDue` wakes scopes (and wake migrates lazily), so
@@ -1378,9 +1433,7 @@ export async function runPlatformSweep(
     const now = new Date().toISOString();
     // `provisioning` included: a scope stuck there because its migration failed
     // is precisely a straggler (the pure adapter's getScope makes the same call).
-    const listed = await host.admin.listScopes(options.actor, {
-      status: ['active', 'provisioning'],
-    });
+    const listed = await listScopes({ status: ['active', 'provisioning'] });
     const fleet = migrationFleet(listed);
 
     // Due = behind and never-failed (wake it — that IS the sweep's job), or
@@ -1463,7 +1516,7 @@ export async function runPlatformSweep(
   const viaPlatformDrain = Boolean(options.drainPlatformRequestsFn);
 
   if (options.drainRetries !== false) {
-    const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
+    const scopes = await listScopes({ status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
       if (failedThisPass.has(s.id)) return; // fails closed — draining is only noise
       try {
@@ -1489,7 +1542,7 @@ export async function runPlatformSweep(
   const drainedThisPass = new Map<string, PlatformRequestDrain>();
   const drain = options.drainPlatformRequestsFn;
   if (drain) {
-    const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
+    const scopes = await listScopes({ status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
       if (failedThisPass.has(s.id)) {
         report.platformRequestTotals.skipped += 1;
@@ -1516,7 +1569,7 @@ export async function runPlatformSweep(
     typeof host.admin.recordScopeStorage === 'function' &&
     typeof host.admin.listScopeStorageAttempts === 'function'
   ) {
-    report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, reachedThisPass, report);
+    report.storage = await sweepStorageGauge(host.admin, options, options.storageGauge, reachedThisPass, report, listScopes);
   }
 
   // -- provision reconcile (#1172, #1653) -------------------------------------
@@ -1540,7 +1593,7 @@ export async function runPlatformSweep(
       unsupported: { count: 0, scopeIds: [] },
       deferred: 0,
     };
-    const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+    const scopes = (await listScopes({ status: 'active' })).filter(
       (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
     const serving = await servingPointersFor(host.admin, options.actor, scopes);
@@ -1620,7 +1673,7 @@ export async function runPlatformSweep(
       // Primaries only (`isPrimaryScope`, #2005) — a fork, a snapshot or a preview of either
       // kind is a copy or a throwaway; firing its schedules would run real recurring side
       // effects off it. Lineage alone (`forkedFrom === null`) let a clean-room preview through.
-      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(isPrimaryScope);
+      const scopes = (await listScopes({ status: 'active' })).filter(isPrimaryScope);
       await mapBounded(scopes, concurrency, async (s) => {
         if (failedThisPass.has(s.id)) return;
         let touched = false;
@@ -1698,7 +1751,7 @@ export async function runPlatformSweep(
     const freshRegs = host.registeredFreshness().filter((r) => r.freshness.length > 0);
     if (freshRegs.length > 0) {
       // The same primaries the schedule phase fires on (#2005).
-      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(isPrimaryScope);
+      const scopes = (await listScopes({ status: 'active' })).filter(isPrimaryScope);
       await mapBounded(scopes, concurrency, async (s) => {
         if (failedThisPass.has(s.id)) return;
         // ONCE per scope, not once per module: the evaluator aggregates every
@@ -1731,7 +1784,7 @@ export async function runPlatformSweep(
   // After the migration phase and skipping what failed there, like every phase that reaches a
   // vertical. Opt-in, and its own window per pass: it lists a bucket prefix and wakes a scope.
   if (options.orphanAttachments) {
-    const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+    const scopes = (await listScopes({ status: 'active' })).filter(
       (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
     );
     report.orphanAttachments = await sweepOrphanAttachmentWindow(host, options, options.orphanAttachments, scopes, report);
@@ -1746,7 +1799,7 @@ export async function runPlatformSweep(
     // `deleteSnapshot` re-checks this same predicate, so a mislabeled row fails closed there,
     // never silently deletes.
     const now = new Date().toISOString();
-    const scopes = await host.admin.listScopes(options.actor);
+    const scopes = await listScopes();
     const expired = scopes.filter(
       (s) => (s.forkedFrom !== null || s.kind === 'preview') && s.expiresAt !== null && s.expiresAt <= now,
     );
@@ -1775,7 +1828,7 @@ export async function runPlatformSweep(
     const cutoff = new Date(
       Date.now() - options.reapArchivedAfterDays * 86_400_000,
     ).toISOString();
-    const archived = await host.admin.listScopes(options.actor, { status: ['archived'] });
+    const archived = await listScopes({ status: ['archived'] });
     const due = archived.filter((s) => s.archivedAt !== null && s.archivedAt <= cutoff);
     const reap =
       options.reapScopeFn ??
@@ -1821,6 +1874,11 @@ export async function runPlatformSweep(
         // Co-located default: reap every one of the tenant's scopes through the scope
         // seam (archive-if-needed first — reapScope only accepts `archived`), then clear
         // the tenant's directory rows. A scope already `reaped` is skipped.
+        //
+        // STRICT, unlike every other read in this pass: `reapTenant` below clears the tenant's
+        // directory, so a scope this loop stepped over would never have its storage reaped and
+        // would lose the rows that find it. A row that does not parse fails this tenant's reap
+        // instead, into `errors` as `reap-tenant`, and the tenant waits for the row to be fixed.
         const scopes = await host.admin.listScopes(options.actor, { tenantId });
         for (const s of scopes) {
           if (s.status === 'reaped') continue;
@@ -1842,7 +1900,7 @@ export async function runPlatformSweep(
   }
 
   const connections = await host.admin.listConnections(options.actor, {});
-  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency) : null;
+  const landings = options.connectionLandings ? new LandingPass(host, options.actor, options.connectionLandings, concurrency, listScopes) : null;
   await mapBounded(connections, concurrency, async (c) => {
     // #1232: the connection's durable sweep record. A connection row carries no
     // scope (a connection spans scopes by construction) and no version.
@@ -1915,7 +1973,7 @@ export async function runPlatformSweep(
   // own outbox. An import is never re-emitted into the consumer's outbox, so the two phases
   // never ship the same event twice.
   if (options.crossVertical) {
-    report.crossVertical = await sweepCrossVertical(host, options, options.crossVertical, failedThisPass, report);
+    report.crossVertical = await sweepCrossVertical(host, options, options.crossVertical, failedThisPass, report, listScopes);
   }
 
   // -- drain each scope's domain events to Tier 2 (#1334, master-plan §5.3) ---
@@ -1933,7 +1991,7 @@ export async function runPlatformSweep(
     const configured = options.eventDrainBatch ?? EVENT_DRAIN_BATCH;
     const budget =
       Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : EVENT_DRAIN_BATCH;
-    const drainable = await host.admin.listScopes(options.actor, { status: 'active' });
+    const drainable = await listScopes({ status: 'active' });
     await mapBounded(drainable, concurrency, async (s) => {
       try {
         const { shipped, skipped } = await drainScopeEvents(host, options, sink, {
@@ -2039,6 +2097,7 @@ async function sweepCrossVertical(
   cv: CrossVerticalOptions,
   failedThisPass: ReadonlySet<string>,
   report: Pick<PlatformSweepReport, 'errors'>,
+  listScopes: ScopeReader,
   /** Run only this producer's outgoing edges (the router kick). Absent: every edge. */
   only?: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<CrossVerticalReport> {
@@ -2073,7 +2132,7 @@ async function sweepCrossVertical(
   // A producer-scoped run reads only that tenant's scopes: both ends of an edge are in one
   // tenant, so nothing outside it can be a consumer of this producer or change how it resolves.
   const scopes = (
-    await host.admin.listScopes(options.actor, { status: 'active', ...(only ? { tenantId: only.tenantId } : {}) })
+    await listScopes({ status: 'active', ...(only ? { tenantId: only.tenantId } : {}) })
   ).filter((s): s is Scope & { vertical: string } => isPrimaryScope(s) && s.vertical !== null);
   // The kick names a scope, and the edges run are the ones whose producer RESOLVES to it. A
   // fork, a preview, a second install or a scope of another tenant is not a producer, so a
@@ -2232,7 +2291,8 @@ export async function runCrossVerticalFrom(
   producer: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<{ crossVertical: CrossVerticalReport; errors: PlatformSweepReport['errors'] }> {
   const report: Pick<PlatformSweepReport, 'errors'> = { errors: [] };
-  const crossVertical = await sweepCrossVertical(host, options, options.crossVertical, new Set(), report, producer);
+  const listScopes = scopeReaderFor(host.admin, options.actor, report);
+  const crossVertical = await sweepCrossVertical(host, options, options.crossVertical, new Set(), report, listScopes, producer);
   return { crossVertical, errors: report.errors };
 }
 
@@ -2901,6 +2961,7 @@ async function sweepStorageGauge(
   gauge: StorageGaugeSweepOptions,
   reachedThisPass: ReadonlyMap<string, Scope>,
   report: PlatformSweepReport,
+  listScopes: ScopeReader,
 ): Promise<StorageGaugeSweepReport> {
   const out: StorageGaugeSweepReport = {
     reached: reachedThisPass.size,
@@ -2922,7 +2983,7 @@ async function sweepStorageGauge(
       // Not one archived before it ever held data (`holdsStore`): reading it would create the
       // spine it never had, and bill it.
       const resting = (
-        await admin.listScopes(options.actor, { status: STORED_SCOPE_STATUSES.filter((s) => s !== 'active') })
+        await listScopes({ status: STORED_SCOPE_STATUSES.filter((s) => s !== 'active') })
       ).filter(holdsStore);
       out.resting = resting.length;
       const candidates = [...reachedThisPass.values(), ...resting.filter((s) => !reachedThisPass.has(s.id))];

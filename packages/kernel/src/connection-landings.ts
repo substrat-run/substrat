@@ -8,7 +8,7 @@ import type {
   ScopeId,
   TenantId,
 } from '@substrat-run/contracts';
-import type { ScopeHost } from './scope-host.js';
+import type { ScopeFilter, ScopeHost } from './scope-host.js';
 import { runningFactsOf } from './export-break.js';
 import { isPrimaryScope } from './scope-identity.js';
 import { message } from './map-bounded.js';
@@ -109,6 +109,12 @@ export class LandingPass {
     private readonly actor: PlatformActorId,
     private readonly input: ConnectionLandingOptionsInput,
     private readonly concurrency: number,
+    /**
+     * How the pass reads a tenant's scopes: the sweep's own reader, so a directory row that does
+     * not read as a scope is stepped over here too and named once with the pass's others, rather
+     * than failing every landing in its tenant.
+     */
+    private readonly listScopes: (filter: ScopeFilter) => Promise<Scope[]>,
   ) {}
 
   /** Grant and bind what `connection`'s installs declare for its provider, and say what happened. */
@@ -179,7 +185,7 @@ export class LandingPass {
     let found = this.targets.get(key);
     if (!found) {
       found = (async () => {
-        const scopes = (await this.host.admin.listScopes(this.actor, { tenantId })).filter(
+        const scopes = (await this.listScopes({ tenantId })).filter(
           (s) => s.vertical === vertical && s.status === 'active' && isPrimaryScope(s),
         );
         if (scopes.length === 0) return [];
