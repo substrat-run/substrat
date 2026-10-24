@@ -125,7 +125,9 @@ export interface ScopeStorageAttempt {
  * Filter for `listScopeStorage`. `latest` returns one row per stored scope, its most
  * recent day, and ignores `since`/`until`/`limit`: that set is bounded by the scope count,
  * the same as `listScopes`. Otherwise it is history, ordered (scope, day), `since`/`until`
- * inclusive UTC days, at most `limit` rows.
+ * inclusive UTC days, at most `limit` rows. History also holds a reaped scope's days (#2515),
+ * which count against `limit` as any row does; there is no cursor, so a tenant with many
+ * reaped scopes reaches the cap sooner and the scopes sorting last can be cut off.
  */
 export interface ScopeStorageFilter {
   tenantId?: TenantId;

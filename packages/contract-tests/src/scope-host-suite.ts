@@ -10862,6 +10862,8 @@ export function scopeHostContractSuite(
         await host.admin.archiveScope(staff, tr, reaped);
         await host.admin.reapScope(staff, tr, reaped);
 
+        // Right after the reap all three days are there, the old one included: the reap deleted none.
+        expect((await host.admin.listScopeStorage!(staff, { scopeId: reaped })).map((r) => r.bytes)).toEqual([5, 2, 3]);
         // The month it was reaped in is still readable for the tenant, scope by scope.
         const history = await host.admin.listScopeStorage!(staff, { tenantId: tr, since: day(-1, '00:00:00').slice(0, 10) });
         expect(history.filter((r) => r.scopeId === reaped).map((r) => r.bytes)).toEqual([2, 3]);
@@ -10875,7 +10877,7 @@ export function scopeHostContractSuite(
           sampled: 1,
           total: 1, // the tombstone is not in the denominator
         });
-        // Retention takes the one past thirteen months, and only it.
+        // Retention, not the reap, takes the one past thirteen months, and only it.
         while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
         expect((await host.admin.listScopeStorage!(staff, { scopeId: reaped })).map((r) => r.bytes)).toEqual([2, 3]);
       });

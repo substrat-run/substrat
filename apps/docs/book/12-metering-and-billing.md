@@ -169,7 +169,8 @@ every scope that holds data, archived and suspended ones included, since their s
 kept until they are reaped. The scheduled pass samples each scope at most once a day. A
 serving scope is read only when another part of the same pass already woke it; a scope that
 is not serving is read anyway, since nothing else wakes it. The pass keeps one sample per
-scope per day for thirteen months, and a reaped scope's days stay for the same thirteen months, so the month it was reaped in can still be billed. The figure says how many scopes it covers, how old its
+scope per day for thirteen months, and a reaped scope's days stay for the same thirteen
+months, so the month it was reaped in can still be billed. The figure says how many scopes it covers, how old its
 oldest sample is and how many scopes' last read failed, and it is called a total only when it
 covers every scope, none is failing and every sample is under two days old.
 

@@ -8,9 +8,9 @@ import { SqliteScopeHost } from '../src/index.js';
 
 /**
  * #1524: fork delete DELETEs a scope's storage samples and its attempt row; a reap (#2515) keeps the
- * samples and deletes the attempt row. Every read of either
- * also joins on scope status, so the shared contract suite cannot see whether the rows are
- * gone or only hidden; this reads the directory tables themselves.
+ * samples and deletes the attempt row. The latest, attempt and meter reads join on scope status,
+ * so the shared contract suite cannot see whether those rows are gone or only hidden; this reads
+ * the directory tables themselves.
  */
 describe('storage gauge rows at reap (#1524)', () => {
   it('measures a legacy archived row whose archived_from_status is NULL, as before the column existed', async () => {
