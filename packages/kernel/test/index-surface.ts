@@ -325,7 +325,7 @@ export const INDEX_VALUE_EXPORTS = [
   'denialSummaryQuery',
   'denialTotalsQuery',
   'denyAllChecker',
-  // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
+  // RFC wire-signing §7: the capability record's read, which the adapters' listWireAuth runs.
   'deploymentWireAuthOf',
   'deriveMigrationDigestsBatch',
   'deriveVersionMigrationDigest',
@@ -370,7 +370,7 @@ export const INDEX_VALUE_EXPORTS = [
   'forgetScopeStorage',
   'forgetSwitchesOf',
   'forgetVerticalScopeStores',
-  // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
+  // RFC wire-signing §7: the capability record's forget, run with deleteVertical.
   'forgetVerticalWireAuth',
   'frozenClock',
   'generateSealingKeyPair',
@@ -740,7 +740,7 @@ export const INDEX_VALUE_EXPORTS = [
   'withRecorded',
   'withheldKeysFor',
   'withheldNote',
-  // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
+  // RFC wire-signing §7: the capability record's write, which the adapters' recordWireAuth runs.
   'writeDeploymentWireAuth',
   'writeExplicitTupleIn',
   'writeLifecycle',

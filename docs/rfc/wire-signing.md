@@ -682,7 +682,7 @@ never rebuilt keeps the up-calls it was built with.
      `canary:<vertical>` gives them to that one vertical's deployments, its versions' scripts and
      its serving script; `fleet` gives them to every one. A setting it cannot read, a second
      vertical in a canary included, gives none and is logged with the reason.
-   - **The lists are judged first** by `wireUploadBindings`, through the same `wireVerificationKeys`
+   - **The lists are judged first** by `wireUploadSettings`, through the same `wireVerificationKeys`
      the entry loads them with, with each list holding at least one key and the audience one the
      encoder carries. Lists it refuses are not given, and the log names the problem, never a key.
    - **Every upload records**, given lists or not (§7), after the upload succeeded. A record that

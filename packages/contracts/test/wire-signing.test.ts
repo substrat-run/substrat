@@ -26,6 +26,7 @@ import {
   wireUnsignedHeadersOf,
   WIRE_CLOCK_SKEW_SECONDS,
   WIRE_ENVELOPE_HEADER,
+  WIRE_ENVELOPE_VERSION,
   WIRE_ENVELOPE_LIFETIME_SECONDS,
   WIRE_ENVELOPE_MAX_LIFETIME_SECONDS,
   WIRE_REFUSAL_REASONS,
@@ -40,7 +41,7 @@ import {
   WireKeyError,
   wireRequestBinding,
   wireStateOf,
-  wireUploadBindings,
+  wireUploadSettings,
   wireVerificationKeys,
   WIRE_UPLOAD_STATE,
   WIRE_AUDIENCE_VAR,
@@ -59,6 +60,7 @@ import {
   type WireVerificationKeys,
 } from '../src/wire-signing.js';
 import { FIELD_COVERAGE_HEADER, PARENT_REQUEST_ID_HEADER } from '../src/invocation-record.js';
+import { wireAuthRecord } from '../src/control-plane.js';
 
 interface Vector {
   readonly name: string;
@@ -890,38 +892,47 @@ describe('wire envelope: replay', () => {
   });
 });
 
-describe('wireUploadBindings: what an upload gives a deployment, judged as its verifier loads it (RFC §5, §6)', () => {
+describe('wireUploadSettings: what an upload gives a deployment, judged as its verifier loads it (RFC §5, §6)', () => {
   const router = fixture.keys.router.publicKey;
   const platform = fixture.keys.platform.publicKey;
 
-  it('both lists as given, trimmed, the deployment’s own name and `dual`, all plain configuration, with each list’s kids', async () => {
-    const given = await wireUploadBindings({ routerKeys: ` ${router} `, platformKeys: platform, audience: 'acme-serving' });
-    expect(given.bindings).toEqual([
-      { type: 'plain_text', name: WIRE_ROUTER_KEYS_VAR, text: router },
-      { type: 'plain_text', name: WIRE_PLATFORM_KEYS_VAR, text: platform },
-      { type: 'plain_text', name: WIRE_AUDIENCE_VAR, text: 'acme-serving' },
-      { type: 'plain_text', name: WIRE_STATE_VAR, text: 'dual' },
+  it('both lists as given, trimmed, the deployment’s own name and `dual`, with each list’s kids', async () => {
+    const given = await wireUploadSettings({ routerKeys: ` ${router} `, platformKeys: platform, audience: 'acme-serving' });
+    expect(given.settings).toEqual([
+      { name: WIRE_ROUTER_KEYS_VAR, text: router },
+      { name: WIRE_PLATFORM_KEYS_VAR, text: platform },
+      { name: WIRE_AUDIENCE_VAR, text: 'acme-serving' },
+      { name: WIRE_STATE_VAR, text: 'dual' },
     ]);
     expect(WIRE_UPLOAD_STATE).toBe('dual');
     expect(given.routerKids).toEqual([fixture.keys.router.kid]);
     expect(given.platformKids).toEqual([fixture.keys.platform.kid]);
     // Exactly what the entry then loads and reads as `dual`.
-    const env = Object.fromEntries(given.bindings.map((b) => [b.name, b.text]));
+    const env = Object.fromEntries(given.settings.map((b) => [b.name, b.text]));
     const keys = await wireVerificationKeys({ router: env[WIRE_ROUTER_KEYS_VAR], platform: env[WIRE_PLATFORM_KEYS_VAR] });
     expect([...keys.router.keys()]).toEqual(given.routerKids);
     expect(wireStateOf({ routerKeys: env[WIRE_ROUTER_KEYS_VAR], platformKeys: env[WIRE_PLATFORM_KEYS_VAR], state: env[WIRE_STATE_VAR] })).toBe('dual');
   });
 
+  it('the capability record’s schema names the very version and states this module does', () => {
+    const given = { envelope: WIRE_ENVELOPE_VERSION, entrySkipped: null, audience: 'a', routerKids: ['k'], platformKids: ['k'], withheld: null };
+    for (const state of WIRE_STATES.filter((s) => s !== 'legacy-only')) expect(wireAuthRecord.safeParse({ ...given, state }).success, state).toBe(true);
+    expect(wireAuthRecord.safeParse({ ...given, state: 'off' }).success).toBe(false);
+    expect(wireAuthRecord.safeParse({ ...given, state: 'dual', envelope: WIRE_ENVELOPE_VERSION + 1 }).success).toBe(false);
+    const none = { envelope: WIRE_ENVELOPE_VERSION, entrySkipped: null, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'unconfigured' };
+    expect(wireAuthRecord.safeParse(none).success).toBe(true);
+  });
+
   it('refuses what the verifier would refuse, a missing list, and an audience the encoder would not carry', async () => {
-    await expect(wireUploadBindings({ routerKeys: router, platformKeys: `${platform},${router}`, audience: 'a' })).rejects.toThrow(/both issuers/);
-    await expect(wireUploadBindings({ routerKeys: router, platformKeys: '', audience: 'a' })).rejects.toThrow(/at least one key/);
-    await expect(wireUploadBindings({ routerKeys: '  ', platformKeys: platform, audience: 'a' })).rejects.toThrow(/at least one key/);
-    await expect(wireUploadBindings({ routerKeys: `${router},AAAA`, platformKeys: platform, audience: 'a' })).rejects.toThrow();
-    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: '' })).rejects.toThrow(/audience/);
-    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: 'a'.repeat(256) })).rejects.toThrow(/audience/);
-    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: 'a\nb' })).rejects.toThrow(/audience/);
+    await expect(wireUploadSettings({ routerKeys: router, platformKeys: `${platform},${router}`, audience: 'a' })).rejects.toThrow(/both issuers/);
+    await expect(wireUploadSettings({ routerKeys: router, platformKeys: '', audience: 'a' })).rejects.toThrow(/at least one key/);
+    await expect(wireUploadSettings({ routerKeys: '  ', platformKeys: platform, audience: 'a' })).rejects.toThrow(/at least one key/);
+    await expect(wireUploadSettings({ routerKeys: `${router},AAAA`, platformKeys: platform, audience: 'a' })).rejects.toThrow();
+    await expect(wireUploadSettings({ routerKeys: router, platformKeys: platform, audience: '' })).rejects.toThrow(/audience/);
+    await expect(wireUploadSettings({ routerKeys: router, platformKeys: platform, audience: 'a'.repeat(256) })).rejects.toThrow(/audience/);
+    await expect(wireUploadSettings({ routerKeys: router, platformKeys: platform, audience: 'a\nb' })).rejects.toThrow(/audience/);
     // Its twin: the longest name the encoder carries is given.
-    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: 'a'.repeat(255) })).resolves.toBeDefined();
+    await expect(wireUploadSettings({ routerKeys: router, platformKeys: platform, audience: 'a'.repeat(255) })).resolves.toBeDefined();
   });
 });
 

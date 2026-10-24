@@ -10367,7 +10367,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       listWireAuth: async (actor, filter = {}) => {
         const rows = deploymentWireAuthOf(switchSqlOf(this.directory), filter);
-        this.recordAccess(actor, 'listWireAuth', {}, { ...filter }, rows.length);
+        this.recordAccess(actor, 'listWireAuth', {}, filter, rows.length);
         return rows;
       },
       setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {

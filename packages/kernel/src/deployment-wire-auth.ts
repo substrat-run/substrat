@@ -10,8 +10,10 @@
  * A vertical's rows go with the vertical (`forgetVerticalWireAuth`), so none outlives what it
  * describes.
  */
-import { deploymentWireAuth, type DeploymentWireAuth, type WireAuthRecord } from '@substrat-run/contracts';
+import { deploymentWireAuth, type DeploymentWireAuth } from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
+
+export type { DeploymentWireAuthInput } from '@substrat-run/contracts';
 
 /** Interpolated into both adapters' directory DDL, so the two spell one table. */
 export const DEPLOYMENT_WIRE_AUTH_DDL = `
@@ -25,23 +27,17 @@ export const DEPLOYMENT_WIRE_AUTH_DDL = `
   CREATE INDEX IF NOT EXISTS vertical_wire_auth_slug ON vertical_wire_auth (vertical_slug);
 `;
 
-/** What one upload records for the script it went to. */
-export interface DeploymentWireAuthInput {
-  readonly deploymentRef: string;
-  readonly verticalSlug: string;
-  readonly versionId: string | null;
-  readonly record: WireAuthRecord;
-  readonly recordedAt: string;
-}
-
 /** Which records a read returns: every one, or one vertical's. */
 export interface DeploymentWireAuthFilter {
   readonly verticalSlug?: string;
 }
 
-/** Record an upload's capability for its script, replacing the script's earlier record. */
-export function writeDeploymentWireAuth(db: SwitchSql, input: DeploymentWireAuthInput): void {
-  const row = deploymentWireAuth.parse(input);
+/**
+ * Record an upload's capability for its script, replacing the script's earlier record. Takes the row
+ * the adapter parsed (`deploymentWireAuth`) before it reached here: on Cloudflare that parse runs
+ * before the call into the directory's object, so a refusal keeps its code across the RPC.
+ */
+export function writeDeploymentWireAuth(db: SwitchSql, row: DeploymentWireAuth): void {
   db.run(
     `INSERT INTO vertical_wire_auth (deployment_ref, vertical_slug, version_id, record, recorded_at)
        VALUES (?, ?, ?, ?, ?)
@@ -59,19 +55,17 @@ export function writeDeploymentWireAuth(db: SwitchSql, input: DeploymentWireAuth
 }
 
 /** The stored records, by script name. A row that does not parse throws: it is a corrupt directory, not a fact. */
-export function deploymentWireAuthOf(db: SwitchSql, filter: DeploymentWireAuthFilter = {}): DeploymentWireAuth[] {
-  const rows =
-    filter.verticalSlug === undefined
-      ? db.all('SELECT deployment_ref, vertical_slug, version_id, record, recorded_at FROM vertical_wire_auth ORDER BY deployment_ref')
-      : db.all(
-          'SELECT deployment_ref, vertical_slug, version_id, record, recorded_at FROM vertical_wire_auth WHERE vertical_slug = ? ORDER BY deployment_ref',
-          filter.verticalSlug,
-        );
+export function deploymentWireAuthOf(db: SwitchSql, filter: DeploymentWireAuthFilter): DeploymentWireAuth[] {
+  const by = filter.verticalSlug === undefined ? [] : [filter.verticalSlug];
+  const rows = db.all(
+    `SELECT deployment_ref, vertical_slug, version_id, record, recorded_at FROM vertical_wire_auth${by.length ? ' WHERE vertical_slug = ?' : ''} ORDER BY deployment_ref`,
+    ...by,
+  );
   return rows.map((r) =>
     deploymentWireAuth.parse({
       deploymentRef: r['deployment_ref'],
       verticalSlug: r['vertical_slug'],
-      versionId: r['version_id'] ?? null,
+      versionId: r['version_id'],
       record: JSON.parse(String(r['record'])),
       recordedAt: r['recorded_at'],
     }),

@@ -108,7 +108,6 @@ import {
   forgetVerticalWireAuth,
   writeDeploymentWireAuth,
   type DeploymentWireAuthFilter,
-  type DeploymentWireAuthInput,
   STORE_DRIVER_RELEASES_DDL,
   legacyStoreDriverConflict,
   legacyStoreDriverRenames,
@@ -3524,9 +3523,9 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** One upload's capability record (RFC wire-signing §7, Q8), replacing the script's earlier one. */
-  recordWireAuth(input: DeploymentWireAuthInput, audit?: AdminEntryInput): void {
+  recordWireAuth(row: DeploymentWireAuth, audit?: AdminEntryInput): void {
     this.writeAndAudit(() => {
-      writeDeploymentWireAuth(this.kernelSql, input);
+      writeDeploymentWireAuth(this.kernelSql, row);
       return true;
     }, audit);
   }

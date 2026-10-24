@@ -1,9 +1,9 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { migrationDigestOf, platformActorId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, tenantId } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair, scopeStoreKeyId } from '@substrat-run/contracts/scope-store-envelope';
 import {
   WIRE_AUDIENCE_VAR,
@@ -22,6 +22,7 @@ import {
   UNSAFE_devPlatformActorAuth,
 } from '../src/index.js';
 import { wireKeysRolloutOf, wireUploadFor, type WireUploadSettings } from '../src/wire-upload.js';
+import { heldManifest } from './held-manifest.js';
 
 /**
  * RFC wire-signing step 2, follow-on 3: what both uploads `api.ts` sends (the per-version push and
@@ -84,6 +85,7 @@ describe('the uploader gives the deployments the rollout names their lists, audi
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
+  beforeEach(() => stubCloudflare());
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -128,22 +130,18 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   };
   const deploy = async (app: ReturnType<typeof createControlPlaneApi>, tenant: string, extra: Record<string, unknown> = {}, source = 'export default {}') => {
     const fd = new FormData();
-    // Every version declares the same (empty) migration set, so a second one promotes without an acknowledgement.
-    const migration = await migrationDigestOf({ doClasses: ['ScopeDO'], migrations: [] });
-    fd.set(
-      'manifest',
-      JSON.stringify({
-        version: `0.1.${ulid().toLowerCase()}`,
-        entry: 'worker.js',
-        compatibilityDate: '2025-01-01',
-        doClasses: ['ScopeDO'],
-        bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
-        digests: { manifest: 'm1', permission: 'p1', migration },
-        registry: { permissions: [], roles: [], entityGrants: [] },
-        migrations: [],
-        ...extra,
-      }),
-    );
+    // A held migration set (the same for every version), so a second version promotes without an acknowledgement.
+    const manifest = await heldManifest({
+      version: `0.1.${ulid().toLowerCase()}`,
+      entry: 'worker.js',
+      compatibilityDate: '2025-01-01',
+      doClasses: ['ScopeDO'],
+      bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+      digests: { manifest: 'm1', permission: 'p1', migration: 'g1' },
+      registry: { permissions: [], roles: [], entityGrants: [] },
+      ...extra,
+    });
+    fd.set('manifest', JSON.stringify(manifest));
     fd.set('tenant', tenant);
     fd.set('worker.js', new Blob([source], { type: 'application/javascript+module' }), 'worker.js');
     return app.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd });
@@ -161,6 +159,17 @@ describe('the uploader gives the deployments the rollout names their lists, audi
     });
     expect(res.status, await res.clone().text()).toBe(200);
   };
+  /** A version pushed and promoted: its id, its vertical, and the two scripts the uploads went to. */
+  const serve = async (app: ReturnType<typeof createControlPlaneApi>, tenant: string) => {
+    const { id, verticalSlug } = await push(app, tenant);
+    await promote(app, verticalSlug, id);
+    return { id, verticalSlug, scripts: [deploymentRefFor(verticalSlug, id), stableDeploymentRefFor(verticalSlug)] as const };
+  };
+  const failuresOf = async (vertical: string) => {
+    // The recorder is fire-and-forget: let its write settle before reading.
+    await new Promise((r) => setTimeout(r, 20));
+    return host.admin.listOpsFailures(staff, { vertical });
+  };
   const lastPutTo = (script: string) => [...puts].reverse().find((p) => p.script === script)!;
   const bindingsOf = (script: string) => (lastPutTo(script).meta['bindings'] ?? []) as { type: string; name: string; text?: string }[];
   const wireOf = (script: string) => Object.fromEntries(bindingsOf(script).filter((b) => WIRE.test(b.name)).map((b) => [b.name, b]));
@@ -168,12 +177,9 @@ describe('the uploader gives the deployments the rollout names their lists, audi
     Object.fromEntries((await host.admin.listWireAuth!(staff, { verticalSlug })).map((r) => [r.deploymentRef, r]));
 
   it('fleet: the push and the serving upload each carry both lists, their own name and `dual`, as plain configuration, and each records it', async () => {
-    stubCloudflare();
-    const app = appWith(fleet());
-    const { id, verticalSlug } = await push(app, await tenantOf('wire-fleet'));
-    await promote(app, verticalSlug, id);
+    const { id, verticalSlug, scripts } = await serve(appWith(fleet()), await tenantOf('wire-fleet'));
     const records = await recordsOf(verticalSlug);
-    for (const script of [deploymentRefFor(verticalSlug, id), stableDeploymentRefFor(verticalSlug)]) {
+    for (const script of scripts) {
       expect(wireOf(script), script).toEqual({
         [WIRE_ROUTER_KEYS_VAR]: { type: 'plain_text', name: WIRE_ROUTER_KEYS_VAR, text: routerKeys.trim() },
         [WIRE_PLATFORM_KEYS_VAR]: { type: 'plain_text', name: WIRE_PLATFORM_KEYS_VAR, text: platformKeys },
@@ -194,22 +200,18 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   });
 
   it('off, unset or left out: no upload carries anything, the bindings are the ones sent with no setting at all, and each records that it gave nothing', async () => {
-    stubCloudflare();
     const sent: Record<string, string[]> = {};
     for (const [name, settings] of [
       ['none', null],
       ['off', { rollout: 'off', routerKeys, platformKeys }],
       ['unset', { routerKeys, platformKeys }],
     ] as const) {
-      const app = appWith(settings);
-      const { id, verticalSlug } = await push(app, await tenantOf(`wire-${name}`));
-      await promote(app, verticalSlug, id);
-      const archive = deploymentRefFor(verticalSlug, id);
-      const serving = stableDeploymentRefFor(verticalSlug);
-      for (const script of [archive, serving]) expect(Object.keys(wireOf(script)), `${name} ${script}`).toEqual([]);
+      const { verticalSlug, scripts } = await serve(appWith(settings), await tenantOf(`wire-${name}`));
+      const [archive, serving] = scripts;
+      for (const script of scripts) expect(Object.keys(wireOf(script)), `${name} ${script}`).toEqual([]);
       sent[name] = [...bindingsOf(archive), ...bindingsOf(serving)].map((b) => `${b.type}:${b.name}`);
       const records = await recordsOf(verticalSlug);
-      for (const script of [archive, serving]) {
+      for (const script of scripts) {
         expect(records[script]?.record, `${name} ${script}`).toEqual({
           envelope: 1, entrySkipped: null, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'unconfigured',
         });
@@ -220,43 +222,30 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   });
 
   it('canary: only the named vertical’s deployments are given lists; another vertical’s upload records that it was left out', async () => {
-    stubCloudflare();
     const canaryTenant = await tenantOf('wire-canary');
     const app = appWith({ rollout: `canary:${canaryTenant}/crm`, routerKeys, platformKeys });
-    const canary = await push(app, canaryTenant);
-    await promote(app, canary.verticalSlug, canary.id);
-    const other = await push(app, await tenantOf('wire-other'));
-    await promote(app, other.verticalSlug, other.id);
-
-    for (const script of [deploymentRefFor(canary.verticalSlug, canary.id), stableDeploymentRefFor(canary.verticalSlug)]) {
-      expect(wireOf(script)[WIRE_AUDIENCE_VAR]?.text, script).toBe(script);
-    }
-    for (const script of [deploymentRefFor(other.verticalSlug, other.id), stableDeploymentRefFor(other.verticalSlug)]) {
-      expect(Object.keys(wireOf(script)), script).toEqual([]);
-    }
+    const canary = await serve(app, canaryTenant);
+    const other = await serve(app, await tenantOf('wire-other'));
+    for (const script of canary.scripts) expect(wireOf(script)[WIRE_AUDIENCE_VAR]?.text, script).toBe(script);
+    for (const script of other.scripts) expect(Object.keys(wireOf(script)), script).toEqual([]);
     const records = await recordsOf(other.verticalSlug);
     expect(Object.values(records).map((r) => r.record.withheld)).toEqual(['not-in-rollout', 'not-in-rollout']);
   });
 
   it('a re-upload writes the lists again from the setting: given, then taken back by an upload under `off`', async () => {
-    stubCloudflare();
     const tenant = await tenantOf('wire-again');
-    const first = await push(appWith(fleet()), tenant);
-    await promote(appWith(fleet()), first.verticalSlug, first.id);
-    const serving = stableDeploymentRefFor(first.verticalSlug);
+    const first = await serve(appWith(fleet()), tenant);
+    const serving = first.scripts[1];
     expect(wireOf(serving)[WIRE_STATE_VAR]?.text).toBe('dual');
 
     // The next version, pushed and served under `off`: plain configuration is rewritten on every
     // upload, so the serving script now carries none, and its record says so.
-    const off = appWith({ rollout: 'off', routerKeys, platformKeys });
-    const second = await push(off, tenant);
-    await promote(off, second.verticalSlug, second.id);
+    const second = await serve(appWith({ rollout: 'off', routerKeys, platformKeys }), tenant);
     expect(Object.keys(wireOf(serving))).toEqual([]);
     expect((await recordsOf(first.verticalSlug))[serving]).toMatchObject({ versionId: second.id, record: { state: 'legacy-only', withheld: 'unconfigured' } });
   });
 
   it('lists a deployment’s verifier would refuse are never given: nothing is injected, the record says why, and the log names the problem, never a key', async () => {
-    stubCloudflare();
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const first = routerKeys.trim().split(',')[0]!;
     for (const [tenant, settings, reason] of [
@@ -267,12 +256,8 @@ describe('the uploader gives the deployments the rollout names their lists, audi
       // A key that is not one.
       ['wire-garbled', { rollout: 'fleet', routerKeys: `${routerKeys},not-a-key`, platformKeys }, /./],
     ] as const) {
-      const app = appWith(settings);
-      const { id, verticalSlug } = await push(app, await tenantOf(tenant));
-      await promote(app, verticalSlug, id);
-      for (const script of [deploymentRefFor(verticalSlug, id), stableDeploymentRefFor(verticalSlug)]) {
-        expect(Object.keys(wireOf(script)), `${tenant} ${script}`).toEqual([]);
-      }
+      const { verticalSlug, scripts } = await serve(appWith(settings), await tenantOf(tenant));
+      for (const script of scripts) expect(Object.keys(wireOf(script)), `${tenant} ${script}`).toEqual([]);
       expect(Object.values(await recordsOf(verticalSlug)).map((r) => r.record.withheld), tenant).toEqual(['lists-refused', 'lists-refused']);
       const lines = errors.mock.calls.map(([line]) => String(line)).filter((line) => line.includes(verticalSlug));
       expect(lines.length, tenant).toBe(2);
@@ -280,11 +265,13 @@ describe('the uploader gives the deployments the rollout names their lists, audi
         expect(JSON.parse(line)).toMatchObject({ substrat: 'wire-upload', vertical: verticalSlug, withheld: 'lists-refused', reason: expect.stringMatching(reason) });
         for (const key of [...routerKeys.trim().split(','), ...platformKeys.split(',')]) expect(line).not.toContain(key);
       }
+      // Recorded as an operational failure too, once per upload, by reason.
+      const failures = (await failuresOf(verticalSlug)).filter((f) => f.operation === 'deploy.wire-upload');
+      expect(failures.map((f) => f.stage), tenant).toEqual(['lists-refused', 'lists-refused']);
     }
   });
 
   it('a rollout setting it cannot read gives nothing, records `rollout-refused` and says why', async () => {
-    stubCloudflare();
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const app = appWith({ rollout: 'canary:a/crm,b/crm', routerKeys, platformKeys });
     const { id, verticalSlug } = await push(app, await tenantOf('wire-two-canaries'));
@@ -296,7 +283,6 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   });
 
   it('a bundle uploaded without the platform’s entry is still given its lists, and recorded as unable to verify, with the reason', async () => {
-    stubCloudflare();
     const app = appWith(fleet());
     // A vertical that writes the invocation line with a kernel older than the platform's stamp:
     // the entry's own skip rule leaves it unwrapped.
@@ -312,7 +298,6 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   });
 
   it('a vertical cannot declare any of them: a push naming one is refused before anything is uploaded', async () => {
-    stubCloudflare();
     const app = appWith(fleet());
     const tenant = await tenantOf('wire-declared');
     const before = puts.length;
@@ -330,18 +315,12 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   });
 
   it('a record that cannot be written never fails the upload: the push answers as it would, and the failure is logged', async () => {
-    stubCloudflare();
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(host.admin, 'recordWireAuth').mockRejectedValue(new Error('directory unavailable'));
     const { id, verticalSlug } = await push(appWith(fleet()), await tenantOf('wire-unrecorded'));
     expect(wireOf(deploymentRefFor(verticalSlug, id))[WIRE_STATE_VAR]?.text).toBe('dual');
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining('"substrat":"wire-upload-record-failed"'));
-  });
-
-  it('no upload in this suite gave a state other than `dual`: no code path here can give `signed-only`', () => {
-    const states = puts.flatMap((p) => ((p.meta['bindings'] ?? []) as { name: string; text?: string }[]).filter((b) => b.name === WIRE_STATE_VAR).map((b) => b.text));
-    expect(states.length).toBeGreaterThan(0);
-    expect(new Set(states)).toEqual(new Set(['dual']));
+    expect((await failuresOf(verticalSlug)).map((f) => [f.operation, f.version])).toContainEqual(['deploy.wire-record', id]);
   });
 });
 

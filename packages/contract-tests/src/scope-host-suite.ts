@@ -11020,38 +11020,43 @@ export function scopeHostContractSuite(
         withheld: null,
         ...over,
       });
+      /** A record of an upload that gave no lists, and why. */
+      const withheld = (reason: NonNullable<WireAuthRecord['withheld']>): WireAuthRecord =>
+        record({ state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: reason });
       const at = (time: string) => `2026-10-24T${time}.000Z`;
+      /** Record `rec` for the script `<vertical>-<script>`. */
+      const put = (vertical: string, script: string, versionId: string | null, rec: WireAuthRecord, time: string) =>
+        host.admin.recordWireAuth!(staff, { deploymentRef: `${vertical}-${script}`, verticalSlug: vertical, versionId, record: rec, recordedAt: at(time) });
 
       it('keeps one record per deployment, the last upload’s, and lists one vertical’s by deployment', async () => {
         const [a, b] = [slugOf('wire-a'), slugOf('wire-b')];
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: 'v1', record: record({ audience: `${a}-serving` }), recordedAt: at('10:00:00') });
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${a}-archive`, verticalSlug: a, versionId: 'v1', record: record({ audience: `${a}-archive` }), recordedAt: at('10:00:01') });
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${b}-serving`, verticalSlug: b, versionId: null, record: record({ state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'not-in-rollout' }), recordedAt: at('10:00:02') });
+        await put(a, 'serving', 'v1', record({ audience: `${a}-serving` }), '10:00:00');
+        await put(a, 'archive', 'v1', record({ audience: `${a}-archive` }), '10:00:01');
+        await put(b, 'serving', null, withheld('not-in-rollout'), '10:00:02');
         // The serving script uploaded again, for another version, given nothing this time: its record is replaced.
-        const withheld = record({ state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'lists-refused' });
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: 'v2', record: withheld, recordedAt: at('10:05:00') });
+        await put(a, 'serving', 'v2', withheld('lists-refused'), '10:05:00');
 
         expect(await host.admin.listWireAuth!(staff, { verticalSlug: a })).toEqual([
           { deploymentRef: `${a}-archive`, verticalSlug: a, versionId: 'v1', record: record({ audience: `${a}-archive` }), recordedAt: at('10:00:01') },
-          { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: 'v2', record: withheld, recordedAt: at('10:05:00') },
+          { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: 'v2', record: withheld('lists-refused'), recordedAt: at('10:05:00') },
         ]);
         const all = await host.admin.listWireAuth!(staff);
         expect(all.filter((r) => r.verticalSlug === a || r.verticalSlug === b).map((r) => r.deploymentRef)).toEqual([`${a}-archive`, `${a}-serving`, `${b}-serving`]);
         // An entry the uploader left off is recorded as such: no envelope, and why.
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${b}-serving`, verticalSlug: b, versionId: null, record: record({ envelope: null, entrySkipped: 'an older bundle' }), recordedAt: at('10:06:00') });
+        await put(b, 'serving', null, record({ envelope: null, entrySkipped: 'an older bundle' }), '10:06:00');
         expect((await host.admin.listWireAuth!(staff, { verticalSlug: b }))[0]!.record).toMatchObject({ envelope: null, entrySkipped: 'an older bundle' });
       });
 
       it('writes each record to the admin log, naming the vertical, the script and the version, never a key', async () => {
         const a = slugOf('wire-log');
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: 'v1', record: record(), recordedAt: at('11:00:00') });
+        await put(a, 'serving', 'v1', record(), '11:00:00');
         const rows = (await host.admin.auditLog(staff, { action: 'recordWireAuth' })).filter((r) => r.vertical === a);
         expect(rows).toHaveLength(1);
         expect(rows[0]!.actor).toBe(staff);
         expect(rows[0]!.after).toEqual({ vertical: a, deploymentRef: `${a}-serving`, versionId: 'v1', record: record() });
       });
 
-      it('refuses a record that does not parse, and stores nothing for it', async () => {
+      it('refuses a record that does not parse, or contradicts itself, and stores nothing for it', async () => {
         const a = slugOf('wire-bad');
         const good = { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: null, record: record(), recordedAt: at('12:00:00') };
         for (const bad of [
@@ -11061,6 +11066,13 @@ export function scopeHostContractSuite(
           { ...good, record: { ...record(), envelope: 2 } },
           { ...good, record: { ...record(), state: 'on' } },
           { ...good, record: { ...record(), withheld: 'because' } },
+          // An envelope beside a reason the entry was left off, or neither.
+          { ...good, record: record({ entrySkipped: 'an older bundle' }) },
+          { ...good, record: record({ envelope: null }) },
+          // Lists given beside a reason none were, and a reason with lists still named.
+          { ...good, record: record({ withheld: 'unconfigured' }) },
+          { ...good, record: { ...withheld('unconfigured'), routerKids: ['If4x36FUomE'] } },
+          { ...good, record: { ...withheld('unconfigured'), state: 'dual' } },
         ]) {
           await expectRefusal(host.admin.recordWireAuth!(staff, bad as never), 'validation_failed');
         }
@@ -11070,9 +11082,9 @@ export function scopeHostContractSuite(
       it('forgets a vertical’s records with the vertical', async () => {
         const a = slugOf('wire-del');
         await host.admin.registerVertical(staff, { slug: a, name: 'Wire record', source: 'cli' });
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: null, record: record(), recordedAt: at('13:00:00') });
+        await put(a, 'serving', null, record(), '13:00:00');
         const kept = slugOf('wire-kept');
-        await host.admin.recordWireAuth!(staff, { deploymentRef: `${kept}-serving`, verticalSlug: kept, versionId: null, record: record(), recordedAt: at('13:00:01') });
+        await put(kept, 'serving', null, record(), '13:00:01');
         await host.admin.deleteVertical(staff, a);
         expect(await host.admin.listWireAuth!(staff, { verticalSlug: a })).toEqual([]);
         // Another vertical's record is not touched.

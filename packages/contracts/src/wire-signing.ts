@@ -150,6 +150,8 @@ const MAX_TEXT = 255;
 
 /** An opaque field: every other field's grammar is ASCII, so this is the one place well-formedness is judged. */
 const isText = (value: string) => value.length <= MAX_TEXT && !CONTROL.test(value) && !LONE_SURROGATE.test(value);
+/** An envelope's audience, the deployment's script name: present, and text the encoder carries. */
+const isWireAudience = (value: string) => value !== '' && isText(value);
 
 /**
  * Whether `text` is the canonical base64url of exactly `length` bytes, as the store module judges
@@ -176,7 +178,7 @@ export function parseWireEnvelope(canonical: string): WireClaims | undefined {
   const shape = wireEnvelopeShape(iss, kind);
   if (!shape) return undefined;
   if (!isCanonicalBase64Url(kid, 8) || !isCanonicalBase64Url(nonce, 16)) return undefined;
-  if (aud === '' || !isText(aud)) return undefined;
+  if (!isWireAudience(aud)) return undefined;
   if ((tenantId === '') !== (scopeId === '')) return undefined;
   if (!admits(shape.scope, tenantId, (id) => ULID.test(id)) || !admits(shape.scope, scopeId, (id) => ULID.test(id))) return undefined;
   if (!admits(shape.surface, surface, isText) || !admits(shape.vertical, vertical, isText)) return undefined;
@@ -670,38 +672,31 @@ export function wireStateOf(config: { readonly routerKeys?: unknown; readonly pl
  */
 export const WIRE_UPLOAD_STATE = 'dual' satisfies WireState;
 
-/** A plain-configuration binding an upload writes into a deployment (not secret: public keys and names). */
-export interface WirePlainBinding {
-  readonly type: 'plain_text';
-  readonly name: string;
-  readonly text: string;
-}
-
 /**
- * What one upload gives the deployment it uploads as `audience` (RFC §5, §6, step 2): both key lists,
- * its own name for the audience check, and the state {@link WIRE_UPLOAD_STATE}. The lists are judged
- * first by {@link wireVerificationKeys}, the very function the entry loads them with, so an upload
- * never gives a deployment lists its verifier would refuse: it throws instead, and the caller gives
- * nothing. Each list must hold at least one key, and the audience must be one the encoder admits.
- * Answers the kids each list names, for the capability record (RFC §7, Q8).
+ * What one upload gives the deployment it uploads as `audience` (RFC §5, §6, step 2), as the settings
+ * the entry reads: both key lists, its own name for the audience check, and the state
+ * {@link WIRE_UPLOAD_STATE}. The uploader writes them as plain configuration. The lists are judged first
+ * by {@link wireVerificationKeys}, the very function the entry loads them with, so an upload never gives
+ * a deployment lists its verifier would refuse: it throws instead, and the caller gives nothing. Each
+ * list must hold at least one key, and the audience must be one the encoder admits. Answers the kids
+ * each list names, for the capability record (RFC §7, Q8).
  */
-export async function wireUploadBindings(input: { readonly routerKeys: string; readonly platformKeys: string; readonly audience: string }): Promise<{
-  readonly bindings: readonly WirePlainBinding[];
-  readonly routerKids: readonly string[];
-  readonly platformKids: readonly string[];
+export async function wireUploadSettings(input: { readonly routerKeys: string; readonly platformKeys: string; readonly audience: string }): Promise<{
+  readonly settings: readonly { readonly name: string; readonly text: string }[];
+  readonly routerKids: string[];
+  readonly platformKids: string[];
 }> {
-  if (input.audience === '' || !isText(input.audience)) throw new Error('a wire audience is a script name of 1 to 255 characters');
+  if (!isWireAudience(input.audience)) throw new Error('a wire audience is a script name of 1 to 255 characters');
   const keys = await wireVerificationKeys({ router: input.routerKeys, platform: input.platformKeys });
   const routerKids = [...keys.router.keys()];
   const platformKids = [...keys.platform.keys()];
   if (routerKids.length === 0 || platformKids.length === 0) throw new Error('each wire issuer lists at least one key');
-  const binding = (name: string, text: string): WirePlainBinding => ({ type: 'plain_text', name, text });
   return {
-    bindings: [
-      binding(WIRE_ROUTER_KEYS_VAR, input.routerKeys.trim()),
-      binding(WIRE_PLATFORM_KEYS_VAR, input.platformKeys.trim()),
-      binding(WIRE_AUDIENCE_VAR, input.audience),
-      binding(WIRE_STATE_VAR, WIRE_UPLOAD_STATE),
+    settings: [
+      { name: WIRE_ROUTER_KEYS_VAR, text: input.routerKeys.trim() },
+      { name: WIRE_PLATFORM_KEYS_VAR, text: input.platformKeys.trim() },
+      { name: WIRE_AUDIENCE_VAR, text: input.audience },
+      { name: WIRE_STATE_VAR, text: WIRE_UPLOAD_STATE },
     ],
     routerKids,
     platformKids,

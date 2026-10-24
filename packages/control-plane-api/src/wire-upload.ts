@@ -10,7 +10,7 @@
  * gives nothing. So with the setting unset, every upload is what it was before this existed.
  *
  * The lists are judged before they are given, by the function the platform's entry loads them with
- * (`wireUploadBindings`), so a deployment is never given lists its verifier would refuse: the upload
+ * (`wireUploadSettings`), so a deployment is never given lists its verifier would refuse: the upload
  * gives nothing instead, and says why. No code here can give a state other than `dual`: moving a
  * deployment to `signed-only` is the flip, a later and separate step.
  *
@@ -19,7 +19,7 @@
  * ids, or why nothing was given. The vertical never declares any of it.
  */
 import { verticalSlug, type WireAuthRecord } from '@substrat-run/contracts';
-import { wireUploadBindings, WIRE_ENVELOPE_VERSION, WIRE_UPLOAD_STATE, type WirePlainBinding } from '@substrat-run/contracts/wire-signing';
+import { wireUploadSettings, WIRE_ENVELOPE_VERSION, WIRE_UPLOAD_STATE } from '@substrat-run/contracts/wire-signing';
 import { platformEntrySkipReason } from './platform-entry.js';
 import type { VerticalBundle } from './deploy.js';
 
@@ -61,8 +61,11 @@ export function wireKeysRolloutOf(value: unknown): WireKeysRollout | { readonly 
 
 /** What one upload gives its deployment, and the record of it. */
 export interface WireUpload {
+  /** The vertical and the script the upload goes to. */
+  readonly vertical: string;
+  readonly deploymentRef: string;
   /** Plain configuration for the upload: both lists, the audience and the state, or nothing. */
-  readonly bindings: readonly WirePlainBinding[];
+  readonly bindings: readonly { readonly type: 'plain_text'; readonly name: string; readonly text: string }[];
   readonly record: WireAuthRecord;
   /** Why the setting or the lists were refused, when they were. Never a key. */
   readonly refusal: string | null;
@@ -77,46 +80,35 @@ export async function wireUploadFor(
   settings: WireUploadSettings | undefined,
   upload: { readonly vertical: string; readonly deploymentRef: string; readonly bundle: Pick<VerticalBundle, 'entry' | 'modules'> },
 ): Promise<WireUpload> {
+  const { vertical, deploymentRef } = upload;
   const skipped = platformEntrySkipReason(upload.bundle) ?? null;
+  const entry: Pick<WireAuthRecord, 'envelope' | 'entrySkipped'> = { envelope: skipped === null ? WIRE_ENVELOPE_VERSION : null, entrySkipped: skipped };
   const nothing = (withheld: NonNullable<WireAuthRecord['withheld']>, refusal: string | null = null): WireUpload => ({
+    vertical,
+    deploymentRef,
     bindings: [],
-    record: {
-      envelope: skipped === null ? WIRE_ENVELOPE_VERSION : null,
-      entrySkipped: skipped,
-      state: 'legacy-only',
-      audience: null,
-      routerKids: [],
-      platformKids: [],
-      withheld,
-    },
+    record: { ...entry, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld },
     refusal,
   });
   const rollout = wireKeysRolloutOf(settings?.rollout);
   if ('refused' in rollout) return nothing('rollout-refused', rollout.refused);
   if (rollout.kind === 'off') return nothing('unconfigured');
-  if (rollout.kind === 'canary' && rollout.vertical !== upload.vertical) return nothing('not-in-rollout');
-  let given: Awaited<ReturnType<typeof wireUploadBindings>>;
+  if (rollout.kind === 'canary' && rollout.vertical !== vertical) return nothing('not-in-rollout');
   try {
-    given = await wireUploadBindings({
+    const given = await wireUploadSettings({
       routerKeys: settings?.routerKeys ?? '',
       platformKeys: settings?.platformKeys ?? '',
-      audience: upload.deploymentRef,
+      audience: deploymentRef,
     });
+    return {
+      vertical,
+      deploymentRef,
+      bindings: given.settings.map((setting) => ({ type: 'plain_text', ...setting })),
+      record: { ...entry, state: WIRE_UPLOAD_STATE, audience: deploymentRef, routerKids: given.routerKids, platformKids: given.platformKids, withheld: null },
+      refusal: null,
+    };
   } catch (error) {
     // The list parser's messages are fixed text naming a problem, never a key.
     return nothing('lists-refused', error instanceof Error ? error.message : 'the lists did not load');
   }
-  return {
-    bindings: given.bindings,
-    record: {
-      envelope: skipped === null ? WIRE_ENVELOPE_VERSION : null,
-      entrySkipped: skipped,
-      state: WIRE_UPLOAD_STATE,
-      audience: upload.deploymentRef,
-      routerKids: [...given.routerKids],
-      platformKids: [...given.platformKids],
-      withheld: null,
-    },
-    refusal: null,
-  };
 }

@@ -234,6 +234,7 @@ import type {
   DeployVerticalFn,
   FetchVerticalAssetFn,
   FetchVerticalModulesFn,
+  InPlaceUpload,
   VerticalBundle,
 } from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
@@ -8445,37 +8446,43 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * RFC wire-signing step 2 (follow-on 3): what the upload of `slug`'s bundle to the script
-   * `deploymentRef` gives it for the envelope's verifier (`wireUploadFor`), under the control
-   * plane's own settings. A refused setting or refused lists give nothing, and are written to the
-   * error log by reason, never with a key.
+   * Upload `bundle` to the script `ref`, a deployment of `slug`, with what the control plane's
+   * settings give it for the envelope's verifier (RFC wire-signing step 2, follow-on 3:
+   * `wireUploadFor`) added to its bindings. Both uploads of a vertical's script go through here, so
+   * no upload path can leave the lists out. A refused setting or refused lists give nothing, and are
+   * logged and recorded as an operational failure by reason, never with a key. Answers what the
+   * upload gave, for its record (`recordWireUpload`).
    */
-  const wireUploadOf = async (slug: string, deploymentRef: string, bundle: Pick<VerticalBundle, 'entry' | 'modules'>): Promise<WireUpload> => {
-    const wire = await wireUploadFor(options.wireUpload, { vertical: slug, deploymentRef, bundle });
+  const deployVerticalScript = async (
+    deploy: DeployVerticalFn,
+    actor: PlatformActorId,
+    slug: string,
+    ref: string,
+    bundle: VerticalBundle,
+    inPlace?: InPlaceUpload,
+  ): Promise<WireUpload> => {
+    const wire = await wireUploadFor(options.wireUpload, { vertical: slug, deploymentRef: ref, bundle });
     if (wire.refusal !== null) {
-      console.error(JSON.stringify({ substrat: 'wire-upload', vertical: slug, deploymentRef, withheld: wire.record.withheld, reason: wire.refusal }));
+      console.error(JSON.stringify({ substrat: 'wire-upload', vertical: slug, deploymentRef: ref, withheld: wire.record.withheld, reason: wire.refusal }));
+      recordFailure({ actor, operation: 'deploy.wire-upload', stage: wire.record.withheld, vertical: slug, message: `no key lists given to ${ref}: ${wire.refusal}` });
     }
+    await deploy(ref, { ...bundle, bindings: [...bundle.bindings, ...wire.bindings] }, inPlace);
     return wire;
   };
 
   /**
    * The capability record of an upload that succeeded (RFC wire-signing §7, Q8). A write that fails
-   * never fails the upload, which is done: it is logged, and the readiness report reads a deployment
-   * with no record as unknown, never as ready.
+   * never fails the upload, which is done: it is logged and recorded as an operational failure, and
+   * the readiness report reads a deployment with no record as unknown, never as ready.
    */
-  const recordWireUpload = async (
-    admin: HostAdmin,
-    actor: PlatformActorId,
-    slug: string,
-    deploymentRef: string,
-    versionId: string,
-    wire: WireUpload,
-  ): Promise<void> => {
+  const recordWireUpload = async (admin: HostAdmin, actor: PlatformActorId, versionId: string, wire: WireUpload): Promise<void> => {
     if (!admin.recordWireAuth) return;
+    const { vertical, deploymentRef, record } = wire;
     try {
-      await admin.recordWireAuth(actor, { deploymentRef, verticalSlug: slug, versionId, record: wire.record, recordedAt: new Date().toISOString() });
+      await admin.recordWireAuth(actor, { deploymentRef, verticalSlug: vertical, versionId, record, recordedAt: new Date().toISOString() });
     } catch (error) {
-      console.error(JSON.stringify({ substrat: 'wire-upload-record-failed', vertical: slug, deploymentRef, error: error instanceof Error ? error.name : 'error' }));
+      console.error(JSON.stringify({ substrat: 'wire-upload-record-failed', vertical, deploymentRef, error: error instanceof Error ? error.name : 'error' }));
+      recordFailure({ actor, operation: 'deploy.wire-record', vertical, version: versionId, message: `the capability record of ${deploymentRef} was not written` }, error);
     }
   };
 
@@ -8522,8 +8529,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const collision = platformScriptCollision(slug) ?? (PLATFORM_SCRIPT_NAMES.has(ref) ? ref : null);
     if (collision) throw new ControlPlaneError(422, platformScriptRefusal(slug, collision));
     const modules = await options.fetchVerticalModules(version.deploymentRef);
-    // RFC wire-signing step 2: the serving script's lists, audience and state, as the rollout gives them.
-    const wire = await wireUploadOf(slug, ref, { entry: manifest.entry, modules });
     // #301 PR-2: every serving upload re-derives the per-tenant store D1 bindings from
     // the ledger and sends them WITH the bundle's own bindings — an upload's `bindings`
     // replaces the script's set, so deriving from the ledger (not from what the script
@@ -8543,7 +8548,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
     // #2210: the store scripts first, so the vertical is never served before what it reaches.
     await ensureScopeStoresOf(actor, 'serve', slug, manifest.scopeStores, async () => (await ownerOf(actor, slug)) ?? null);
-    await options.deployVertical(
+    const wire = await deployVerticalScript(
+      options.deployVertical,
+      actor,
+      slug,
       ref,
       {
         entry: manifest.entry,
@@ -8562,7 +8570,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           platformBindings: [
             ...storeBindings,
             ...(await migrationsDigestBindings(await admin.versionMigrations(actor, slug, versionId))),
-            ...wire.bindings,
           ],
         }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
@@ -8603,7 +8610,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
         : undefined,
     );
-    await recordWireUpload(admin, actor, slug, ref, versionId, wire);
+    await recordWireUpload(admin, actor, versionId, wire);
     const addedClasses = serving ? doClasses.some((cls) => !serving.doClasses.includes(cls)) : false;
     await admin.setVerticalServing(actor, slug, {
       ref,
@@ -9119,13 +9126,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // on it, so it is CF-valid and unique per version.
     const id = ulid();
     const deploymentRef = deploymentRefFor(slug, id);
-    // RFC wire-signing step 2: the archive script's lists, audience and state, as the rollout gives them.
-    const wire = await wireUploadOf(slug, deploymentRef, { entry: manifest.entry, modules });
     // #2210: the store scripts first, outside the vertical upload's try, so a store failure
     // answers as itself and the vertical is not uploaded at all.
     await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null);
+    let wire: WireUpload;
     try {
-      await options.deployVertical(deploymentRef, {
+      wire = await deployVerticalScript(options.deployVertical, c.get('actor'), slug, deploymentRef, {
         entry: manifest.entry,
         compatibilityDate: manifest.compatibilityDate,
         compatibilityFlags: manifest.compatibilityFlags,
@@ -9136,7 +9142,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           manifest,
           drivers: options.storeDrivers,
           // #2349: the migrations this push declares, which are the ones the version stores.
-          platformBindings: [...(await migrationsDigestBindings(manifest.migrations ?? null)), ...wire.bindings],
+          platformBindings: await migrationsDigestBindings(manifest.migrations ?? null),
         }),
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
@@ -9229,7 +9235,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #1902: with the sweeper decision the push made, which no later upload re-makes.
       manifestJson: JSON.stringify({ ...manifest, platformSweeper: sweeper.supply }),
     });
-    await recordWireUpload(c.var.admin, c.get('actor'), slug, deploymentRef, id, wire);
+    await recordWireUpload(c.var.admin, c.get('actor'), id, wire);
     // Same spirit as the permission-surface gate, advisory tier: when the push DECLARES
     // surfaces, name any surface that hostnames are still bound to but the declaration
     // dropped — the URL keeps resolving (routing never keys on the declaration), it just

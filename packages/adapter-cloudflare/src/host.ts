@@ -549,7 +549,7 @@ import {
   type MeterDayTakeResult,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type DeploymentWireAuthInput, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
@@ -950,7 +950,7 @@ interface ControlPlaneStub {
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit: AdminEntry,
   ): Promise<void>;
-  recordWireAuth(input: DeploymentWireAuthInput, audit: AdminEntry): Promise<void>;
+  recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<void>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
@@ -8709,7 +8709,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       listWireAuth: async (actor, filter = {}) => {
         const rows = await this.cp.listWireAuth(filter);
-        await this.recordAccess(actor, 'listWireAuth', {}, { ...filter }, rows.length);
+        await this.recordAccess(actor, 'listWireAuth', {}, filter, rows.length);
         return rows;
       },
       setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {
