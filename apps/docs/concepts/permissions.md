@@ -137,6 +137,12 @@ Roles a host defines and seats itself are held to the same rule:
 
 Not covered yet:
 
+- on Cloudflare, a scope archived straight from provisioning whose record shows no migration
+  applied is not read (reading would create its storage), so a definition that scope could decide
+  is refused, naming it. The migration count is not proof the scope was never used: a vertical
+  with no migrations of its own records none and can still hold a seat there. While it is the
+  tenant's only scope, every role definition is refused until you unarchive or reap it (both work;
+  a reap needs no hostname). No product path reaches this today;
 - a role defined on a Cloudflare coordinator for a tenant that has no scope yet: it is judged by
   the coordinator's modules alone, since the scope class's reservations are read from one of the
   tenant's scopes, and the first scope's projection of it is not judged again;

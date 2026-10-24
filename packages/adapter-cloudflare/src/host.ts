@@ -11839,9 +11839,14 @@ export class CloudflareScopeHost implements ScopeHost {
    * the platform's door seats into a provisioning scope, and unarchive brings the seat back. A DO
    * cannot be asked anything without waking it, and waking one that never ran would create storage it
    * never had (#1524), so such a scope is read only when its directory row records a migration
-   * (`schema_version` past `'0'`), which `provisionScope` writes after instantiating it. One that
-   * records none is not read, and the definition fails closed: `unreadable` names it, and the caller
-   * refuses a definition its seats or its class's reservations would decide.
+   * (`schema_version` past `'0'`). That is not a mark of instantiation: it counts the module
+   * migrations applied, and is written only when a pass applied one, so a scope of a class with no
+   * module migrations reads `'0'` though it holds a seat. One that records none is not read, and the
+   * definition fails closed where that scope could decide it: `unreadable` names it, and the caller
+   * refuses a definition its seats, or its class's reservations when no other scope gives them, would
+   * decide. So while such a scope is the tenant's only one, every definition is refused until it is
+   * unarchived or reaped. No product path reaches this today: the dashboard is the one Cloudflare
+   * caller of `defineRole`, and its class has migrations.
    *
    * A stated residual: this half is read before the ControlPlaneDO's unit, not in it, so a scope-level
    * seat made in between is not seen. The tenant-level seats and the stored roles are read in the unit.
