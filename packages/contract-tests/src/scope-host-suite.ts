@@ -11069,8 +11069,10 @@ export function scopeHostContractSuite(
           // An envelope beside a reason the entry was left off, or neither.
           { ...good, record: record({ entrySkipped: 'an older bundle' }) },
           { ...good, record: record({ envelope: null }) },
-          // Lists given beside a reason none were, and a reason with lists still named.
+          // Lists given beside a reason none were, lists given naming no key, and a reason with lists still named.
           { ...good, record: record({ withheld: 'unconfigured' }) },
+          { ...good, record: record({ routerKids: [] }) },
+          { ...good, record: record({ platformKids: [] }) },
           { ...good, record: { ...withheld('unconfigured'), routerKids: ['If4x36FUomE'] } },
           { ...good, record: { ...withheld('unconfigured'), state: 'dual' } },
         ]) {
