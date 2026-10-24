@@ -2045,6 +2045,18 @@ export function defineScopeDO(
     }
 
     /**
+     * #2541: whether this object is a scope the deployment holds, asked by a read that names only a
+     * scope id. False for a DO nothing provisioned or loaded here (never provisioned, or a reaped
+     * scope's name addressed again) and for a copy a carry wiped, whose rows went with the wipe.
+     * The two conditions `servesTenant` reads without a tenant: a provision receipt or role rows,
+     * or state (`holdsData`). Read without migrating, so a refusal leaves the DO as it found it.
+     */
+    holdsScope(): boolean {
+      if (this.carriedAwayCopy) return false;
+      return this.tenantVerdict('').verdict !== 'unknown' || this.holdsData();
+    }
+
+    /**
      * #2016: what one door into this scope needs from its storage on a CP-less host, in ONE call —
      * how `tenantId` reads against the scope (`tenantVerdict`), and the lifecycle the platform
      * delivered (#1713). The coordinator refuses a foreign pair before any guard, handler or store

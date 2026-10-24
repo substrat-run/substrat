@@ -68,6 +68,7 @@ import {
   permissionContractSuite,
   reservedRoleContractSuite,
   roleStateContractSuite,
+  sizeReadsContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -430,6 +431,30 @@ roleStateContractSuite('adapter-cloudflare', async () => {
     roleState: (t, s) => host.roleStateLocal(t, s),
     // A pushed vertical's scope stores the roles its reconcile projects, which is what a promote reads.
     projectRoles: (t, s, roles) => host.projectRolesLocal(t, s, roles),
+    cleanup: async () => host.close(),
+  };
+});
+
+// #2541: the vertical-side size reads hold the scope before they open its store. Here the host has
+// a directory, which these reads do not consult: the scope's own storage is what says it is held.
+sizeReadsContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  return {
+    host,
+    databaseSizeLocal: (s) => host.databaseSizeLocal(s),
+    attachmentSizeLocal: (s) => host.attachmentSizeLocal(s),
+    // Addressing a DO constructs it, so it is listed whatever the read decides; what a refusal must
+    // leave is an object with no state in it, which `holdsScope` would read as held.
+    storeHoldsNothing: async (_t, s) => {
+      const stub = env.SCOPE.get(env.SCOPE.idFromName(s));
+      return runInDurableObject(stub, (_i, state) =>
+        ['_substrat_meta', '_substrat_tuples', '_substrat_outbox', '_substrat_migrations', '_substrat_roles'].every(
+          (table) =>
+            state.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE name = ?`, table).toArray().length === 0 ||
+            state.storage.sql.exec(`SELECT 1 FROM ${table} LIMIT 1`).toArray().length === 0,
+        ),
+      );
+    },
     cleanup: async () => host.close(),
   };
 });

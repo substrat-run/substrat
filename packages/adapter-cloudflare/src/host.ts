@@ -510,6 +510,7 @@ import {
   INERT_SCOPE_REASON,
   lifecycleReceipt,
   lifecycleRefusal,
+  scopeNotHeldRefusal,
   isPrimaryScope,
   isPrimaryScopeRow,
   asyncInvocationId,
@@ -2053,6 +2054,8 @@ interface ScopeStubRpc {
   ): Promise<ImportResult | SystemDoorMoved>;
   /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
   servesTenant(tenantId: TenantId): Promise<boolean>;
+  /** #2541: does this deployment hold the scope at all, whichever tenant — read without migrating. */
+  holdsScope(): Promise<boolean>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
   importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved>;
   redrainEvents(drainedBefore: string): Promise<number>;
@@ -4193,14 +4196,32 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId).appliedMigrations();
   }
 
-  /** This host's own scope's database size in bytes (#1524), the vertical-host read. */
+  /**
+   * This host's own scope's database size in bytes (#1524), the vertical-host read. A scope this
+   * deployment does not hold is refused (#2541), not read as 0.
+   */
   async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
-    return this.scopeStub(scopeId).databaseSize();
+    const stub = await this.heldScopeStub(scopeId);
+    return stub.databaseSize();
   }
 
-  /** This host's own scope's attachment bytes (#2501), the vertical-host read. */
+  /** This host's own scope's attachment bytes (#2501), the vertical-host read; refused as the size is. */
   async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
-    return this.scopeStub(scopeId).attachmentBytes();
+    const stub = await this.heldScopeStub(scopeId);
+    return stub.attachmentBytes();
+  }
+
+  /**
+   * The stub of a scope this deployment holds, for a read that names only a scope id (#2541). The
+   * platform's own reads resolve the scope through the directory first; these arrive from the
+   * vertical's `/internal` routes, where nothing has, so the object asks itself. A name that holds
+   * nothing (a reaped scope's, or a sweep's due entry that was reaped since) is refused `conflict`,
+   * and the refusal reads only what is already stored, so it writes nothing of its own.
+   */
+  private async heldScopeStub(scopeId: ScopeId): Promise<ScopeStubRpc> {
+    const stub = this.scopeStub(scopeId);
+    if (!(await stub.holdsScope())) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+    return stub;
   }
 
   /**

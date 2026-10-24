@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -35,6 +35,7 @@ import {
   permissionContractSuite,
   reservedRoleContractSuite,
   roleStateContractSuite,
+  sizeReadsContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -299,6 +300,22 @@ roleStateContractSuite('adapter-sqlite', async () => {
   return {
     host,
     roleState: (t, s) => host.roleStateLocal(t, s),
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2541: the vertical-side size reads hold the scope before they open its store.
+sizeReadsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-size-reads-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    databaseSizeLocal: (s) => host.databaseSizeLocal(s),
+    attachmentSizeLocal: (s) => host.attachmentSizeLocal(s),
+    storeHoldsNothing: async (t, s) => !existsSync(join(dir, `${t}__${s}.sqlite`)),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

@@ -128,6 +128,15 @@ export function lifecycleRefusal(
 }
 
 /**
+ * #2541: the refusal text of a deployment-side read that takes a bare scope id when the deployment
+ * holds no such scope: never provisioned here, reaped, or a copy a carry wiped. Both adapters throw
+ * it as `conflict`, not `not_found`: over `/internal` a 404 means "this deployment predates the
+ * route", and the platform reads it as exactly that.
+ */
+export const scopeNotHeldRefusal = (scopeId: string): string =>
+  `scope ${scopeId} is not held by this deployment: it was never provisioned here, was reaped, or was carried away`;
+
+/**
  * The directory's record of what a deployment last acknowledged, compared with the directory's
  * own lifecycle by the heal sweep: the statuses AND the full revision, so a restore that left the
  * statuses as they were still reads as drift, and the scope is brought onto the new epoch. Never

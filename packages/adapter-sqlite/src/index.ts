@@ -289,6 +289,7 @@ import {
   purgeDueOf,
   purgeHeldBy,
   lifecycleRefusal,
+  scopeNotHeldRefusal,
   type PurgeGateFacts,
   type PurgePass,
   purgeOnlyKeysOf,
@@ -5851,6 +5852,36 @@ export class SqliteScopeHost implements ScopeHost {
       ? [...new Set((this.runtime(tenantId, scopeId).db.prepare(SCOPE_SEATED_ROLES_SQL).all(this.clock()) as { role_key: string }[]).map((r) => r.role_key))]
       : [];
     return { roles, seated };
+  }
+
+  /**
+   * The scope database's size in bytes, asked by scope id alone (#2541): the Cloudflare host's
+   * `databaseSizeLocal`, which a vertical's `/internal/database-size` calls. Counts as
+   * `scopeDatabaseSize` does. A scope this host does not hold is refused before any store is opened.
+   */
+  async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
+    const db = this.scopeReadDbFor(this.heldTenantOf(scopeId), scopeId);
+    const pages = db.pragma('page_count', { simple: true }) as number;
+    return pages * (db.pragma('page_size', { simple: true }) as number);
+  }
+
+  /** What the scope's attachment rows sum to (#2501), asked by scope id alone: refused as the size is (#2541). */
+  async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
+    const { bytes } = this.scopeReadDbFor(this.heldTenantOf(scopeId), scopeId).prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number };
+    return bytes;
+  }
+
+  /**
+   * The tenant of a scope this host holds, for a read that names only the scope id (#2541). No row,
+   * or a reaped one (a tombstone whose store is gone), is refused `conflict` before anything is opened:
+   * `runtime()` would create the store the reap removed.
+   */
+  private heldTenantOf(scopeId: ScopeId): TenantId {
+    const row = this.directory.prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { tenant_id: string; status: string }
+      | undefined;
+    if (!row || row.status === 'reaped') throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+    return row.tenant_id as TenantId;
   }
 
   /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */
