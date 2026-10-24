@@ -1337,7 +1337,9 @@ log. So the directory keeps each registration as a period.
 - **Backfilled, at start and after a restore.** Every vertical with no open period gets one from
   its own `created_at`: on each start of either directory, and inside a directory restore once the
   dump's rows are in, so a dump taken before the history comes back with one. A registration
-  before that, of a slug deleted and registered again, is in the admin log only.
+  before that, of a slug deleted and registered again, is in the admin log only. A restore also
+  keeps the periods consistent with the verticals it restores: an open period whose slug has no
+  row is closed (kept, not dropped), so the slug can be registered again.
 - **Served for a deleted slug too.** `GET /verticals/:slug/owners` (staff-only) lists every
   period, oldest first; a slug never registered has none.
 - **Kept for good.** One row per registration is tiny, and it is the record a later invoice or a
