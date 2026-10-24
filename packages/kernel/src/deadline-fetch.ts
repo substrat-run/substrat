@@ -48,6 +48,7 @@ declare const AbortController: new () => { readonly signal: unknown; abort(reaso
 declare const DOMException: new (message: string, name: string) => Error;
 declare const ReadableStream: new (
   source: {
+    start(controller: { error(reason: unknown): void }): void;
     pull(controller: { enqueue(chunk: Uint8Array): void; close(): void; error(reason: unknown): void }): Promise<void>;
     cancel(reason?: unknown): Promise<void>;
   },

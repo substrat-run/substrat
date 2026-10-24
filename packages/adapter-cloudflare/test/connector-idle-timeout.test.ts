@@ -1,7 +1,7 @@
-import { env } from 'cloudflare:test';
+import { SELF, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { connectionId, platformActorId, scopeId, tenantId, type DomainEvent } from '@substrat-run/contracts';
-import { ulid, webCryptoSecretBox, type ByteStream, type ConnectorResponse, type FetchLike } from '@substrat-run/kernel';
+import { deadlineFetch, ulid, webCryptoSecretBox, type ByteStream, type ConnectorResponse, type FetchLike } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -143,5 +143,25 @@ describe("a streamed response body through a connection's fetch, hosted (#2518)"
     expect('error' in outcome && outcome.error.name).toBe('TimeoutError');
     expect(seen.cancelled).toBe(true);
     expect(seen.signal?.aborted).toBe(true);
+  });
+
+  // workerd's own fetch and its own abort, not a stand-in's: what the runtime hands a read after the
+  // call's deadline must still be the TimeoutError the health line classifies as a timeout.
+  const stalled = () =>
+    deadlineFetch((input, init) => SELF.fetch(input, init as RequestInit) as unknown as Promise<ConnectorResponse>, 150)(
+      'https://provider.invalid/stall',
+    );
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("the first read of an untouched body, after timeoutMs, is a TimeoutError", async () => {
+    const res = await stalled();
+    await pause(400);
+    await expect((res.body as ByteStream).getReader().read()).rejects.toMatchObject({ name: 'TimeoutError' });
+  });
+
+  it('a buffered read of that body after timeoutMs is a TimeoutError too', async () => {
+    const res = await stalled();
+    await pause(400);
+    await expect(res.arrayBuffer()).rejects.toMatchObject({ name: 'TimeoutError' });
   });
 });
