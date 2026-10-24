@@ -17,7 +17,7 @@ import {
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { readRoutedNode, withInvocationLog } from '@substrat-run/vertical-host';
 import { withWireGate, type GatedWorker } from '../platform-entry/wire-gate.js';
-import { platformCallScope, platformSignedFetch } from '../src/platform-wire.js';
+import { platformCallScope, platformSignedFetch, topLevelIds } from '../src/platform-wire.js';
 import { PAGE_CALL_DEADLINE_MS, VerticalClient } from '../src/vertical-client.js';
 
 /**
@@ -104,6 +104,64 @@ describe('platformCallScope: the tenant and scope a call names itself', () => {
     expect(platformCallScope(at(URL_, 'multipart/form-data; boundary=x'), json)).toBeNull();
     expect(platformCallScope(at(URL_, 'application/octet-stream'), json)).toBeNull();
     expect(platformCallScope(at(`${URL_}?tenantId=${T}&scopeId=${S}`, 'multipart/form-data; boundary=x'), json)).toEqual({ tenantId: T, scopeId: S });
+  });
+
+  it('a page of several MiB is never parsed or decoded to name its scope, wherever its keys sit', () => {
+    const rows = Array.from({ length: 40_000 }, (_, i) => ({ id: i, note: `row ${i} "quoted" {braced} [listed] \\ tenantId`, nested: { tenantId: 'x', scopeId: 'y' } }));
+    const first = body({ tenantId: T, scopeId: S, rows });
+    const last = body({ rows, scopeId: S, tenantId: T });
+    expect(first.byteLength).toBeGreaterThan(4 * 1024 * 1024);
+    const parse = vi.spyOn(JSON, 'parse');
+    const decode = vi.spyOn(TextDecoder.prototype, 'decode');
+    expect(platformCallScope(at(URL_), first)).toEqual({ tenantId: T, scopeId: S });
+    expect(platformCallScope(at(URL_), last)).toEqual({ tenantId: T, scopeId: S });
+    expect(parse).not.toHaveBeenCalled();
+    // Only the two ids are decoded, each a ULID's 26 bytes.
+    expect(decode.mock.calls.map(([input]) => (input as Uint8Array).byteLength)).toEqual([26, 26, 26, 26]);
+  });
+});
+
+describe('topLevelIds: the walk reads what a parse reads, for every body JSON.stringify writes', () => {
+  const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+  /** What a full parse gives for the two keys: the value when it is a string of a ULID's length, else null. */
+  const parsed = (value: unknown) => {
+    const json = JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+    const read = (v: unknown) => (typeof v === 'string' && new TextEncoder().encode(v).length === 26 ? v : null);
+    return {
+      ...('tenantId' in json ? { tenantId: read(json['tenantId']) } : {}),
+      ...('scopeId' in json ? { scopeId: read(json['scopeId']) } : {}),
+    };
+  };
+
+  it.each([
+    ['both first', { tenantId: T, scopeId: S, rest: [1, 2] }],
+    ['both last, after nested look-alikes', { a: { tenantId: 'n', scopeId: 'n' }, b: [{ tenantId: T }], scopeId: S, tenantId: T }],
+    ['look-alikes inside strings', { s: '"tenantId":"01JZ0000000000000000TEN009"', t: '\\"', scopeId: S, tenantId: T }],
+    ['keys that only begin like the names', { tenantIds: T, scopeIdentity: S, tenant: T }],
+    ['non-string values', { tenantId: 7, scopeId: null, x: true }],
+    ['an object and an array as values', { tenantId: { id: T }, scopeId: [S] }],
+    ['a string of another length', { tenantId: `${T}x`, scopeId: 'short' }],
+    ['a non-ASCII string of a ULID’s byte length', { tenantId: 'é'.repeat(13), scopeId: S }],
+    ['one key only', { scopeId: S, n: -1.5e3 }],
+    ['nothing', {}],
+    ['escapes and unicode around the keys', { 'k\n"': 'v\u0000', emoji: '𝄞', tenantId: T, scopeId: S }],
+  ])('%s', (_, value) => {
+    expect(topLevelIds(bytes(value))).toEqual(parsed(value));
+  });
+
+  it('names nothing for a body that is not an object', () => {
+    for (const value of [[{ tenantId: T, scopeId: S }], 'tenantId', 7, null]) expect(topLevelIds(bytes(value))).toEqual({});
+    expect(topLevelIds(new TextEncoder().encode('  \n {"tenantId":"' + T + '","scopeId":"' + S + '"}'))).toEqual({ tenantId: T, scopeId: S });
+    expect(topLevelIds(new TextEncoder().encode('{"tenantId":"' + T))).toEqual({});
+  });
+
+  it('stops once both keys are seen: what follows them is never walked', () => {
+    // Its documented limit: the rest of a body is not validated, so a malformed tail after the
+    // two keys still names them. The control plane writes none.
+    expect(topLevelIds(new TextEncoder().encode(`{"tenantId":"${T}","scopeId":"${S}","rest":[[[`))).toEqual({ tenantId: T, scopeId: S });
+    // And a key repeated after both were seen is never reached (a parse would take the last).
+    const later = '01JZ0000000000000000TEN009';
+    expect(topLevelIds(new TextEncoder().encode(`{"tenantId":"${T}","scopeId":"${S}","tenantId":"${later}"}`))).toEqual({ tenantId: T, scopeId: S });
   });
 });
 
@@ -232,6 +290,39 @@ describe('a streamed call (#2498): never signed, and its body never read by the 
     expect(d.calls[0]!.readBefore).toBe(false);
     expect(new Headers(d.calls[0]!.init!.headers).has(WIRE_ENVELOPE_HEADER)).toBe(false);
     expect(lines).toEqual([]);
+  });
+
+  it('a Request handed whole with a body is not read either, whatever it was built from: skipped, as given', async () => {
+    const lines: string[] = [];
+    const calls: { input: RequestInfo | URL; init: RequestInit | undefined }[] = [];
+    const send = (async (input: RequestInfo | URL, init?: RequestInit) => (calls.push({ input, init }), Response.json({}))) as typeof globalThis.fetch;
+    const fetch = signed(send, active.privateKey, (l) => lines.push(l));
+    const whole = new Request('https://vertical.invalid/internal/x', { method: 'POST', body: '{"a":1}', headers: { 'x-substrat-platform': SECRET } });
+    await fetch(whole);
+    expect(calls[0]!.input).toBe(whole);
+    expect(calls[0]!.init).toBeUndefined();
+    expect(whole.bodyUsed).toBe(false);
+    expect(whole.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
+    // A null `init.body` keeps the Request's own body, as the Request constructor reads it.
+    const kept = new Request('https://vertical.invalid/internal/x', { method: 'POST', body: '{"a":1}' });
+    await fetch(kept, { body: null });
+    expect(kept.bodyUsed).toBe(false);
+    expect(lines.map((l) => JSON.parse(l) as unknown)).toEqual([
+      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'skipped', reason: 'stream' },
+      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'skipped', reason: 'stream' },
+    ]);
+  });
+
+  it('its twins by call style: a Request with no body, and a Request given a held body in `init`, are signed', async () => {
+    const r = recorder();
+    const lines: string[] = [];
+    const fetch = signed(r.fetch, active.privateKey, (l) => lines.push(l));
+    await fetch(new Request('https://vertical.invalid/internal/tables'));
+    await fetch(new Request('https://vertical.invalid/internal/x', { method: 'POST', body: 'old' }), { body: '{"a":1}' });
+    expect(claimsOf(r.sent[0]!)).toMatchObject({ method: 'GET', bodyDigest: await wireDigest('') });
+    expect(claimsOf(r.sent[1]!)).toMatchObject({ method: 'POST', bodyDigest: await wireDigest('{"a":1}') });
+    expect(await r.sent[1]!.text()).toBe('{"a":1}');
+    expect(lines.map((l) => (JSON.parse(l) as { outcome: string }).outcome)).toEqual(['signed', 'signed']);
   });
 
   it('its twin: the same attachment given as bytes rides the multipart route, and that call is signed', async () => {
