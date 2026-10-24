@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid } from '@substrat-run/kernel';
+import { UNREADABLE_SCOPE_ROWS_NAMED, ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
   createCustomHostnameProvisioner,
@@ -398,9 +398,24 @@ describe('reconcilePendingHostnames over a directory with an unreadable dead sco
     const out = await pass();
 
     expect(out.orphaned).toBe(1);
-    expect(out.unreadableScopes).toEqual([{ scopeId: dead, fields: ['vertical'] }]);
+    expect(out.unreadableScopes).toEqual([{ scopeId: dead, tenantId: tenant, fields: ['vertical'] }]);
+    expect(out.unreadableScopesUnnamed).toBe(0);
     expect(out.errors).toEqual([]);
     expect((await host.admin.listHostnames(staff)).map((h) => h.hostname)).toEqual(['live-app.global.substrat.run']);
+  });
+
+  it('names at most the sweep cap of unreadable rows a pass and counts the rest, orphaning all of them', async () => {
+    const dead: string[] = [];
+    for (let i = 0; i < UNREADABLE_SCOPE_ROWS_NAMED + 2; i++) {
+      dead.push(await scopeWithHostname(`dead-${i}.global.substrat.run`, { archive: true, storedVertical: '' }));
+    }
+
+    const out = await pass();
+
+    expect(out.unreadableScopes).toHaveLength(UNREADABLE_SCOPE_ROWS_NAMED);
+    expect(out.unreadableScopesUnnamed).toBe(2);
+    for (const u of out.unreadableScopes) expect(u).toEqual({ scopeId: expect.any(String), tenantId: tenant, fields: ['vertical'] });
+    expect(out.orphaned).toBe(dead.length);
   });
 
   it('orphans a readable archived scope the same way, naming nothing', async () => {

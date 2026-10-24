@@ -1242,8 +1242,12 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   }
 }
 
-/** How many unreadable directory rows one pass names in `errors` before it only counts them. */
-const UNREADABLE_SCOPE_ROWS_NAMED = 20;
+/**
+ * How many unreadable directory rows one pass names before it only says there are more: the
+ * sweep's `errors`, and the hostname reconcile's `unreadableScopes`, so each pass's report stays
+ * bounded however many rows a directory holds.
+ */
+export const UNREADABLE_SCOPE_ROWS_NAMED = 20;
 
 /** How a pass reads the directory's scopes: `listScopes`'s rows, minus any it cannot read. */
 type ScopeReader = (filter?: ScopeFilter) => Promise<Scope[]>;

@@ -182,6 +182,9 @@ export const INDEX_VALUE_EXPORTS = [
   'TABLE_OWNERS_DDL',
   'UNCHECKED_OPERATION_FINDING',
   'UNCHECKED_OPERATION_TEMPLATE',
+  // The sweep's cap on unreadable directory rows named per pass, which the control plane's
+  // hostname reconcile applies too.
+  'UNREADABLE_SCOPE_ROWS_NAMED',
   'UNRECORDED_OUTCOME_LOG',
   'UNSAFE_allowAllChecker',
   'UPLOAD_LINK_DDL',

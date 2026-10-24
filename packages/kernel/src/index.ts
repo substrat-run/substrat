@@ -890,6 +890,7 @@ export type {
 } from './job-run.js';
 export {
   runPlatformSweep,
+  UNREADABLE_SCOPE_ROWS_NAMED,
   startPlatformSweeper,
   StorageReadUnsupported,
   PROVISION_RECONCILE_BATCH,
