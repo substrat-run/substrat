@@ -10,7 +10,8 @@
  * A vertical's rows go with the vertical (`forgetVerticalWireAuth`), so none outlives what it
  * describes.
  */
-import { deploymentWireAuth, type DeploymentWireAuth } from '@substrat-run/contracts';
+import { deploymentWireAuth, type DeploymentWireAuth, type ListPage } from '@substrat-run/contracts';
+import { assertRowLimit } from './scope-host.js';
 import type { SwitchSql } from './system-switch.js';
 
 export type { DeploymentWireAuthInput } from '@substrat-run/contracts';
@@ -27,8 +28,12 @@ export const DEPLOYMENT_WIRE_AUTH_DDL = `
   CREATE INDEX IF NOT EXISTS vertical_wire_auth_slug ON vertical_wire_auth (vertical_slug);
 `;
 
-/** Which records a read returns: every one, or one vertical's. */
-export interface DeploymentWireAuthFilter {
+/**
+ * Which records a read returns: every one, or one vertical's, a page at a time when it asks for one
+ * (the keyset convention: by script name, `cursor` the last name of the page before). A version's
+ * script keeps its record for as long as its vertical exists, so a reader of the whole fleet pages.
+ */
+export interface DeploymentWireAuthFilter extends ListPage {
   readonly verticalSlug?: string;
 }
 
@@ -56,10 +61,24 @@ export function writeDeploymentWireAuth(db: SwitchSql, row: DeploymentWireAuth):
 
 /** The stored records, by script name. A row that does not parse throws: it is a corrupt directory, not a fact. */
 export function deploymentWireAuthOf(db: SwitchSql, filter: DeploymentWireAuthFilter): DeploymentWireAuth[] {
-  const by = filter.verticalSlug === undefined ? [] : [filter.verticalSlug];
+  const desc = filter.order === 'desc';
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (filter.verticalSlug !== undefined) {
+    where.push('vertical_slug = ?');
+    params.push(filter.verticalSlug);
+  }
+  if (filter.cursor) {
+    where.push(desc ? 'deployment_ref < ?' : 'deployment_ref > ?');
+    params.push(filter.cursor);
+  }
+  if (filter.limit !== undefined) params.push(assertRowLimit('limit', filter.limit));
   const rows = db.all(
-    `SELECT deployment_ref, vertical_slug, version_id, record, recorded_at FROM vertical_wire_auth${by.length ? ' WHERE vertical_slug = ?' : ''} ORDER BY deployment_ref`,
-    ...by,
+    'SELECT deployment_ref, vertical_slug, version_id, record, recorded_at FROM vertical_wire_auth' +
+      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY deployment_ref ${desc ? 'DESC' : 'ASC'}` +
+      (filter.limit !== undefined ? ' LIMIT ?' : ''),
+    ...params,
   );
   return rows.map((r) =>
     deploymentWireAuth.parse({

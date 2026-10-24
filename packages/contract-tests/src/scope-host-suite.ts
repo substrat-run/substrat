@@ -11090,6 +11090,26 @@ export function scopeHostContractSuite(
         expect(await host.admin.listWireAuth!(staff, { verticalSlug: a })).toEqual([]);
       });
 
+      it('reads a page at a time by script name, and each read is access-logged', async () => {
+        const a = slugOf('wire-page');
+        for (const [i, script] of ['a1', 'a2', 'a3'].entries()) await put(a, script, null, record(), `14:00:0${i}`);
+        const first = await host.admin.listWireAuth!(staff, { verticalSlug: a, limit: 2 });
+        expect(first.map((r) => r.deploymentRef)).toEqual([`${a}-a1`, `${a}-a2`]);
+        const rest = await host.admin.listWireAuth!(staff, { verticalSlug: a, limit: 2, cursor: first.at(-1)!.deploymentRef });
+        expect(rest.map((r) => r.deploymentRef)).toEqual([`${a}-a3`]);
+        expect((await host.admin.listWireAuth!(staff, { verticalSlug: a, order: 'desc', limit: 1 })).map((r) => r.deploymentRef)).toEqual([`${a}-a3`]);
+        for (const limit of [0, -1, 1.5]) await expectRefusal(host.admin.listWireAuth!(staff, { verticalSlug: a, limit }), 'validation_failed');
+
+        const reads = (await host.admin.accessLog(staff, { method: 'listWireAuth' }))
+          .map((e) => ({ actor: e.actor, params: JSON.parse(e.params ?? 'null') as Record<string, unknown>, count: e.resultCount }))
+          .filter((e) => e.params?.['verticalSlug'] === a);
+        expect(reads).toEqual([
+          { actor: staff, params: { verticalSlug: a, limit: 2 }, count: 2 },
+          { actor: staff, params: { verticalSlug: a, limit: 2, cursor: `${a}-a2` }, count: 1 },
+          { actor: staff, params: { verticalSlug: a, order: 'desc', limit: 1 }, count: 1 },
+        ]);
+      });
+
       it('forgets a vertical’s records with the vertical', async () => {
         const a = slugOf('wire-del');
         await host.admin.registerVertical(staff, { slug: a, name: 'Wire record', source: 'cli' });

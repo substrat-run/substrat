@@ -8756,6 +8756,8 @@ export class CloudflareScopeHost implements ScopeHost {
         ));
       },
       listWireAuth: async (actor, filter = {}) => {
+        // Judged here, before the call into the directory's object, so a refusal keeps its code.
+        if (filter.limit !== undefined) assertRowLimit('limit', filter.limit);
         const rows = await this.cp.listWireAuth(filter);
         await this.recordAccess(actor, 'listWireAuth', {}, filter, rows.length);
         return rows;
