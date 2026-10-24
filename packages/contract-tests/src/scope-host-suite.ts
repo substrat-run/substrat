@@ -10051,6 +10051,10 @@ export function scopeHostContractSuite(
       // #1524: a size read is refused BEFORE it reaches the storage. Addressing a reaped
       // DO to ask its size would recreate an empty database and report that as the scope.
       await expectRefusal(host.admin.scopeDatabaseSize(staff, t3, s), 'conflict', /reaped/);
+      // #2501: the attachment read is refused the same way, never answered as 0.
+      if (host.admin.scopeAttachmentBytes) {
+        await expectRefusal(host.admin.scopeAttachmentBytes(staff, t3, s), 'conflict', /reaped/);
+      }
       // Audited as reapScope against the right scope + actor.
       const reapEntry = (await host.admin.auditLog(staff, { tenantId: t3 })).find(
         (r) => r.action === 'reapScope' && r.scopeId === s,
