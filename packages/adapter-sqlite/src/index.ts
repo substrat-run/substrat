@@ -880,6 +880,7 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
+import { opsFailureReferenceWhere } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
@@ -7988,32 +7989,37 @@ export class SqliteScopeHost implements ScopeHost {
     // #1748: the evidence, its issue and its finding in ONE transaction — a detector that
     // throws takes the evidence with it, so the caller's retry observes it rather than finding
     // the row already there and the observation lost.
+    // #2540: a tenant's row with a `detail` is a pair — the tenant's row says what was answered, and
+    // a row with no tenant, which only staff read, carries the failure's own text. Counted once.
+    const detail = entry.tenantId && typeof entry.detail === 'string' ? entry.detail : null;
     this.directory.transaction(() => {
-      this.directory
-        .prepare(
-          `INSERT INTO _substrat_ops_failures
-             (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+      const insert = this.directory.prepare(
+        `INSERT INTO _substrat_ops_failures
+           (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const row = (tenantId: string | null, message: string) =>
+        insert.run(
           ulid(),
           entry.actor,
           entry.operation,
           entry.stage ?? null,
-          entry.tenantId ?? null,
+          tenantId,
           entry.scopeId ?? null,
           entry.vertical ?? null,
           entry.version ?? null,
           entry.status ?? null,
           // Bounded here, not trusted from the catch site: one runaway upstream
           // body must not become a runaway directory row (#559).
-          entry.message.slice(0, 2000),
+          message.slice(0, 2000),
           entry.reference ?? null,
           entry.origin ?? null,
           entry.code ?? null,
           fingerprint,
           at,
         );
+      if (detail !== null) row(null, detail);
+      row(entry.tenantId ?? null, entry.message);
       // Prune-on-write (#559): retention lives here, not in a cron — every insert
       // pays for its own housekeeping, so the table stays bounded even where no
       // scheduled pass runs (this adapter has none).
@@ -8047,9 +8053,12 @@ export class SqliteScopeHost implements ScopeHost {
           entry.code ?? null,
           at,
           at,
-          entry.message.slice(0, 2000),
-          entry.tenantId ?? null,
-          issueExemplarOwner(entry.tenantId ?? null),
+          // The issues are staff's (#2540): a pair's exemplar is its own text, not the tenant's
+          // sentence, and it is owned as the row it is copied from is, the platform's — so erasure
+          // reaches it on an id match, as it reaches that row.
+          (detail ?? entry.message).slice(0, 2000),
+          detail !== null ? null : (entry.tenantId ?? null),
+          issueExemplarOwner(detail !== null ? null : (entry.tenantId ?? null)),
           entry.vertical ?? null,
           entry.version ?? null,
         );
@@ -12869,8 +12878,9 @@ export class SqliteScopeHost implements ScopeHost {
           params.push(filter.fingerprint);
         }
         if (filter?.reference) {
-          where.push('reference = ?');
-          params.push(filter.reference);
+          const byReference = opsFailureReferenceWhere(filter.reference, filter.referenceInText === true);
+          where.push(byReference.sql);
+          params.push(...byReference.params);
         }
         if (filter?.since) {
           where.push('at >= ?');

@@ -5576,6 +5576,16 @@ export interface OpsFailureInput {
   message: string;
   /** The upstream provider's trace reference, when the message carried one. */
   reference?: string | null;
+  /**
+   * #2540: the failure's own text, when `message` is only what the request was answered. A row
+   * filed under a tenant is read back by that tenant, so a host given `detail` on one writes it on
+   * a second row with no tenant under the same `reference`, which only staff read, and counts the
+   * failure once: the issue takes `detail` as its last message, owned as the platform's (the row it
+   * copies), so a subject erasure reaches it on an id match. Ignored on a row with no tenant, whose
+   * `message` is staff's already. A tenant-readable row never carries an upstream trace handle: a
+   * writer keeps one only at the start of this text (`withUpstreamReference`; `referenceInText`).
+   */
+  detail?: string | null;
 }
 
 /** How long a recorded copy move owns its pending entries before a sweep may settle them (#1722). */
@@ -5642,6 +5652,12 @@ export interface OpsFailureFilter {
   fingerprint?: string;
   /** Exact match — the lookup a CI log's `reference = <id>` line lands on. */
   reference?: string;
+  /**
+   * #2540: with `reference`, also every pair whose row with no tenant names `reference = <reference>`
+   * in its text (an upstream trace handle, which a withheld failure keeps only there), both rows of
+   * it. Staff's search: the text it matches is staff's, so a confined read never sets it.
+   */
+  referenceInText?: boolean;
   since?: string;
   until?: string;
   limit?: number;

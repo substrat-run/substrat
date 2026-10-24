@@ -1088,6 +1088,41 @@ export function opsFailureFingerprint(f: {
 }
 
 /**
+ * #2540: how a withheld failure's staff row names an upstream trace handle (Cloudflare's
+ * `reference = <id>`, #559). A tenant-readable row and answer carry only the platform's own
+ * reference; the upstream's is kept at the very start of the staff row's text, so a bounded row
+ * never cuts it off and staff's reference search (an exact match at position 1) finds it.
+ */
+export function upstreamReferenceMarker(id: string): string {
+  return `[upstream reference = ${id}]`;
+}
+
+/** The upstream handle a staff row's text begins with (`upstreamReferenceMarker`), or null. */
+export function upstreamReferenceOf(message: string): string | null {
+  return /^\[upstream reference = ([a-z0-9]{1,64})\]/i.exec(message)?.[1] ?? null;
+}
+
+/**
+ * The upstream's own trace handle a failure text carries: Cloudflare's `internal error; reference
+ * = <id>` shape (#559). At most 64 characters, so a marker made from it always fits a bounded row,
+ * and never one spelled as part of a marker (`upstream reference =`), so a text cannot name its own.
+ */
+export function upstreamHandleIn(text: string): string | null {
+  return /(?<!upstream\s+)\breference\s*=\s*([a-z0-9]{1,64})(?![a-z0-9])/i.exec(text)?.[1] ?? null;
+}
+
+/**
+ * A failure's text as a staff row keeps it: anything spelling the marker's opening neutralised
+ * first, then, when the text carries an upstream handle (`upstreamHandleIn`), the marker for it
+ * first, so only a genuine handle makes one and a bounded row keeps it.
+ */
+export function withUpstreamReference(raw: string): string {
+  const neutral = raw.replace(/\[(\s*upstream\s+reference\s*=)/gi, '($1');
+  const handle = upstreamHandleIn(neutral);
+  return handle ? `${upstreamReferenceMarker(handle)} ${neutral}` : neutral;
+}
+
+/**
  * An issue's lifecycle (#1233, Sentry's shape): `new` on first sight; `resolved`
  * and `ignored` are staff verdicts; `regressed` is ingest's word only — a fresh
  * arrival on a resolved issue flips it back into attention, which is the

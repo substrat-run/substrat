@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { platformActorId, connectionId, importsOfManifestJson, scopeId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, connectionId, importsOfManifestJson, scopeId, substratError, tenantId } from '@substrat-run/contracts';
 import type { MigrationFailure, MigrationStraggler, Scope, Tenant } from '@substrat-run/contracts';
 import {
   installReconciled,
@@ -13,7 +13,7 @@ import {
   type InstallsReconciled,
 } from '../src/install-receipts.js';
 import { isPrimaryScope, runningVersionOf } from '../src/scope-identity.js';
-import { exportBreaksOf } from '../src/export-break.js';
+import { exportBreakRefusal, exportBreaksOf, isExportBreakRefusal, isExportBreakUnjudged } from '../src/export-break.js';
 import {
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
@@ -2685,6 +2685,26 @@ describe('exportBreaksOf: the promote gate fails closed (#1705 PR 3)', () => {
         },
       }),
     ).rejects.toThrow(/cannot say whom this promotion breaks.*registry down/);
+  });
+
+  it('#2540: the refusal to judge is recognisable, and the refusal for a break is not it', async () => {
+    const unjudged = await exportBreaksOf({
+      admin: admin(fleet()),
+      actor: ACTOR,
+      producer: PRODUCER,
+      outgoing,
+      incoming,
+      readImports: async () => {
+        throw new Error('registry down');
+      },
+    }).catch((e: unknown) => e);
+    expect(isExportBreakUnjudged(unjudged)).toBe(true);
+    expect(isExportBreakRefusal(unjudged)).toBe(false);
+    expect(isExportBreakUnjudged(substratError('precondition_failed', exportBreakRefusal([])))).toBe(false);
+    expect(isExportBreakUnjudged(substratError('unavailable', 'something else entirely'))).toBe(false);
+    // As it arrives across a Durable Object hop: the code's name folded into the message.
+    const hopped = Object.assign(new Error(`Substrat.unavailable: ${(unjudged as Error).message}`), { name: 'Substrat.unavailable' });
+    expect(isExportBreakUnjudged(hopped)).toBe(true);
   });
 
   it('a manifest that does not parse is not judged (the twin: no refusal, no break)', async () => {
