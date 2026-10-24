@@ -2116,15 +2116,6 @@ export function defineScopeDO(
       return this.ifHeld(() => this.introspectTables());
     }
 
-    /** `introspectTableReply` for a held scope; a refusal of the table itself still rides as data. */
-    introspectTableReplyIfHeld(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage> | null> {
-      return this.ifHeld(() => replyOf(() => this.tablePage(table, limit, offset)));
-    }
-
-    introspectQueryReplyIfHeld(sql: string): Promise<DoReply<ScopeQueryResult> | null> {
-      return this.ifHeld(() => replyOf(() => this.readOnlyQuery(sql)));
-    }
-
     undrainedEventsReadIfHeld(limit: number): Promise<UndrainedRead | null> {
       return this.ifHeld(() => this.undrainedEventsRead(limit));
     }

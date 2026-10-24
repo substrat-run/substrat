@@ -2089,8 +2089,6 @@ interface ScopeStubRpc {
   appliedMigrationsIfHeld(): Promise<AppliedMigration[] | null>;
   migrationBookmarksIfHeld(): Promise<{ bookmark: string; takenAt: string; pending: string[] }[] | null>;
   introspectTablesIfHeld(): Promise<ScopeTable[] | null>;
-  introspectTableReplyIfHeld(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage> | null>;
-  introspectQueryReplyIfHeld(sql: string): Promise<DoReply<ScopeQueryResult> | null>;
   undrainedEventsReadIfHeld(limit: number): Promise<UndrainedRead | null>;
   redrainCountIfHeld(drainedBefore: string): Promise<number | null>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
@@ -3762,14 +3760,12 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
-    return unwrapReply(
-      heldOrRefused(scopeId, await this.scopeStub(scopeId).introspectTableReplyIfHeld(input.table, input.limit, input.offset)),
-    );
+    return unwrapReply(await this.scopeStub(scopeId).introspectTableReply(input.table, input.limit, input.offset));
   }
 
   /** The SQL console's CP-less path (#219) — same trust line as the pair above. */
   async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
-    return unwrapReply(heldOrRefused(scopeId, await this.scopeStub(scopeId).introspectQueryReplyIfHeld(input.sql)));
+    return unwrapReply(await this.scopeStub(scopeId).introspectQueryReply(input.sql));
   }
 
   /**

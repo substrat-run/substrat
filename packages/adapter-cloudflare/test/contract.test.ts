@@ -550,8 +550,6 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
     await host.appliedMigrationsLocal(s);
     await host.migrationBookmarksLocal(s);
     await host.introspectScopeTables(s);
-    await host.introspectScopeTable(s, { table: '_substrat_outbox', limit: 5, offset: 0 });
-    await host.introspectScopeQuery(s, { sql: 'SELECT 1 AS one' });
     await host.undrainedEventsLocal(s, 10);
     await host.redrainCountLocal(s, new Date().toISOString());
     expect(calls).toEqual([
@@ -566,8 +564,6 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
       'appliedMigrationsIfHeld',
       'migrationBookmarksIfHeld',
       'introspectTablesIfHeld',
-      'introspectTableReplyIfHeld',
-      'introspectQueryReplyIfHeld',
       'undrainedEventsReadIfHeld',
       'redrainCountIfHeld',
     ]);

@@ -6061,14 +6061,6 @@ export class SqliteScopeHost implements ScopeHost {
     return scopeTablesOf(this.heldReadDb(scopeId));
   }
 
-  async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
-    return scopeTablePageOf(this.heldReadDb(scopeId), input);
-  }
-
-  async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
-    return scopeQueryOf(this.heldReadDb(scopeId), input);
-  }
-
   async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<UndrainedEvents> {
     return undrainedEventsFrom(this.heldReadDb(scopeId), Math.max(limit, 1));
   }

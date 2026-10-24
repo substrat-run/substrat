@@ -13,8 +13,6 @@ import {
   type InvocationEventsInput,
   type LifecycleFlowInput,
   type OperationSeriesInput,
-  type QueryScopeInput,
-  type ReadScopeTableInput,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
@@ -35,8 +33,6 @@ export interface IntrospectionReads {
   appliedMigrationsLocal(scopeId: ScopeId): Promise<unknown>;
   migrationBookmarksLocal(scopeId: ScopeId): Promise<unknown>;
   introspectScopeTables(scopeId: ScopeId): Promise<unknown>;
-  introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<unknown>;
-  introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<unknown>;
   undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<unknown>;
   redrainCountLocal(scopeId: ScopeId, drainedBefore: string): Promise<unknown>;
 }
@@ -54,8 +50,6 @@ export const introspectionReadsOf = (host: IntrospectionReads): IntrospectionRea
   appliedMigrationsLocal: (s) => host.appliedMigrationsLocal(s),
   migrationBookmarksLocal: (s) => host.migrationBookmarksLocal(s),
   introspectScopeTables: (s) => host.introspectScopeTables(s),
-  introspectScopeTable: (s, i) => host.introspectScopeTable(s, i),
-  introspectScopeQuery: (s, i) => host.introspectScopeQuery(s, i),
   undrainedEventsLocal: (s, n) => host.undrainedEventsLocal(s, n),
   redrainCountLocal: (s, b) => host.redrainCountLocal(s, b),
 });
@@ -126,8 +120,6 @@ export function introspectionReadsContractSuite(
       appliedMigrationsLocal: (s) => fixture.appliedMigrationsLocal(s),
       migrationBookmarksLocal: (s) => fixture.migrationBookmarksLocal(s),
       introspectScopeTables: (s) => fixture.introspectScopeTables(s),
-      introspectScopeTable: (s) => fixture.introspectScopeTable(s, { table: '_substrat_outbox', limit: 5, offset: 0 }),
-      introspectScopeQuery: (s) => fixture.introspectScopeQuery(s, { sql: 'SELECT 1 AS one' }),
       undrainedEventsLocal: (s) => fixture.undrainedEventsLocal(s, 10),
       redrainCountLocal: (s) => fixture.redrainCountLocal(s, new Date().toISOString()),
     };
