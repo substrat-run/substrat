@@ -513,7 +513,7 @@ describe('mountPlatformSurface — the bounds on a connector upload (#2516)', ()
       );
       return { state, stream };
     };
-    const BODY_SENTENCE = /the request body (is \d+ bytes, over|ran past) the 26230784-byte bound on a buffered connector upload .*streamed upload/;
+    const BODY_SENTENCE = /the request body (is \d+ bytes, over|ran past) the 16793600-byte bound on a buffered connector upload .*use the streaming upload above 16 MiB/;
 
     it('a Content-Length over the bound plus the envelope is a 413 naming the body, and no byte is read; exactly at it is read', async () => {
       const { app, reached } = surface();
@@ -576,7 +576,7 @@ describe('mountPlatformSurface — the bounds on a connector upload (#2516)', ()
     it('the stream route keeps its own, higher bound and sentence', async () => {
       expect(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES).toBeGreaterThan(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES);
       expect(connectorAttachmentSizeRefusal(1)).toContain('streamed connector upload');
-      expect(connectorAttachmentBufferedRefusal(1)).toContain('send it as a streamed upload');
+      expect(connectorAttachmentBufferedRefusal(1)).toContain('use the streaming upload above 16 MiB');
     });
 
     it('the client refuses a buffer over the bound with the same 413 and sends nothing; one at the bound is sent', async () => {

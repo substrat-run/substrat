@@ -316,11 +316,12 @@ export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 95 * 1024 * 1024;
  * because that one is a request-size limit and this one is a memory limit: a stream is never held, but
  * a buffered file is resident several times over at once (the raw body, the parsed form's copy, then
  * the bytes handed on; on the platform side the caller's buffer, the form's copy, the encoded request
- * and the copy read to bind its digest) against a 128 MB isolate. 25 MiB is the buffered upload-link
- * cap ({@link UPLOAD_LINK_MAX_BYTES_CEILING}), a size this repo already holds a buffered file to. Above
- * it a caller sends a streamed upload, which is the route for a large file.
+ * and the copy read to bind its digest) against a 128 MB isolate. The platform side is the tighter, at
+ * about four times the file (an estimate, not a measurement), so 16 MiB (about 64 MiB resident) keeps
+ * twice that in hand; it is below the buffered upload-link cap ({@link UPLOAD_LINK_MAX_BYTES_CEILING}).
+ * Above it a caller sends a streamed upload, which is the route for a large file.
  */
-export const CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES = 25 * 1024 * 1024;
+export const CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES = 16 * 1024 * 1024;
 
 /**
  * What the multipart route's body may carry beyond the file (#2538): the `meta` field (at most
@@ -341,7 +342,7 @@ export function connectorAttachmentSizeRefusal(declared: number): string {
 export function connectorAttachmentBufferedRefusal(bytes: number): string {
   return (
     `the attachment is ${bytes} bytes, over the ${CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES}-byte bound ` +
-    `on a buffered connector upload — send it as a streamed upload`
+    `on a buffered connector upload — use the streaming upload above ${CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES / (1024 * 1024)} MiB`
   );
 }
 
@@ -354,6 +355,6 @@ export function connectorAttachmentBodyRefusal(bytes?: number): string {
   const bound = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES;
   return (
     (bytes === undefined ? `the request body ran past the ${bound}-byte bound` : `the request body is ${bytes} bytes, over the ${bound}-byte bound`) +
-    ` on a buffered connector upload (the file plus its multipart envelope) — send it as a streamed upload`
+    ` on a buffered connector upload (the file plus its multipart envelope) — use the streaming upload above ${CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES / (1024 * 1024)} MiB`
   );
 }

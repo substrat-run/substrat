@@ -79,7 +79,7 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   bound for each because they hold the file differently: the stream route to
   `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (95 MiB, a request-size limit, since a stream is never
   held), judged from the declared size before it reads a byte; the multipart route to
-  `CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES` (25 MiB, a memory limit, since a buffered file is
+  `CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES` (16 MiB, a memory limit, since a buffered file is
   resident several times over), judged from `Content-Length` before it buffers anything or, for a
   body without one, by cutting the read off at that size plus a 16 KiB multipart envelope (#2538);
   the answer tells the caller to use a streamed upload. A
