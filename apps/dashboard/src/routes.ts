@@ -46,6 +46,7 @@ import {
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
 import { appEvent, appRow, explanationProvenance, installStep, memberRow } from './rows.js';
+import { ASK_TURN_MAX, ASK_TURNS_MAX } from './ask.js';
 
 // The rows the module shares, declared where module code may import them (`rows.ts`); the
 // browser client's schemas are read off this file's exports, so they stay exported here.
@@ -150,6 +151,19 @@ export const explanationView = z.object({
       team: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }),
     })
     .nullable(),
+});
+
+/**
+ * One question to the assistant (#2283): the conversation so far, oldest first, ending with the
+ * person's question. The browser holds it until threads are recorded; the bounds are the
+ * route's, so a long chat is cut by the page, not refused mid-sentence.
+ */
+const askInput = z.object({
+  messages: z
+    .array(z.object({ role: z.enum(['user', 'assistant']), text: z.string().min(1).max(ASK_TURN_MAX) }))
+    .min(1)
+    .max(ASK_TURNS_MAX)
+    .refine((m) => m[m.length - 1]!.role === 'user', { message: 'the last turn is the question' }),
 });
 
 /**
@@ -1056,6 +1070,15 @@ export const dashboardRoutes = defineRoutes({
   },
 
   // -- AI-written text (#1749) ------------------------------------------------
+  'dashboard/ask': {
+    summary: 'Ask the dashboard assistant a question about this team, read-only, as the assistant stream protocol',
+    input: askInput,
+    // Events of the assistant's stream protocol (`@substrat-run/contracts/assistant-stream`). Each is
+    // parsed with the protocol's strict schema before it is sent; a client reads them with
+    // `readAssistantStreamEvent`, which is forward-compatible where this declaration cannot be.
+    output: z.object({ events: z.array(z.record(z.string(), z.unknown())) }),
+    http: { method: 'POST', path: '/assistant/ask' },
+  },
   'dashboard/explanations-status': {
     summary: 'Whether this deployment writes AI text, and the caller’s budget for today',
     input: z.object({}),

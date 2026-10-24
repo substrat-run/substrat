@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Button, openSupport } from '@substrat-run/ui';
+import { Badge, Button, openSupport } from '@substrat-run/ui';
+import { foldTurn, historyFor, type AskTurn } from '../lib/ask';
+import { writtenAtLabel } from '../lib/explanations';
 import { Ic, type IconName } from '../lib/icons';
 import { useEscapeLayer } from '../lib/escape-stack';
 import { paletteItems, type PaletteContext, type PaletteGo, type PaletteGroup, type PaletteItem } from '../lib/palette';
@@ -14,12 +16,19 @@ import { paletteItems, type PaletteContext, type PaletteGo, type PaletteGroup, t
  * is in. What is offered is `paletteItems` (pure, tested) — this file draws and runs it.
  *
  * **Support** sends the reader to the support desk's own conversation, the one the bubble
- * opens, rather than drawing a second one. The design's third mode, **Ask**, is an AI
- * answer with the query it ran (#1749); there is no such answer yet, so there is no mode
- * pretending to give one.
+ * opens, rather than drawing a second one.
+ *
+ * **Ask** (#2283, #1749) is a question to the dashboard's assistant, answered from what it read
+ * through the dashboard's own reads: each answer carries the AI marker, the reads it made and
+ * when it was written. It is offered only where the deployment writes AI text (`ask` is null
+ * otherwise), and the conversation lasts as long as the overlay is open: nothing records a
+ * thread yet.
  */
 
-export type PaletteMode = 'jump' | 'support';
+export type PaletteMode = 'jump' | 'ask' | 'support';
+
+/** What the overlay calls to ask: the dashboard's `dashboard/ask` route, or the preview's stand-in. */
+export type AskFn = (input: { messages: Array<{ role: 'user' | 'assistant'; text: string }> }) => Promise<{ events: Array<Record<string, unknown>> }>;
 
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)' };
 
@@ -34,11 +43,14 @@ const ICON: Record<PaletteGroup, IconName> = {
 export function CommandPalette({
   ctx,
   initialMode = 'jump',
+  ask = null,
   onGo,
   onClose,
 }: {
   ctx: PaletteContext;
   initialMode?: PaletteMode;
+  /** The assistant, where this deployment offers it; null draws no Ask mode. */
+  ask?: AskFn | null;
   onGo: (go: PaletteGo) => void;
   onClose: () => void;
 }) {
@@ -50,6 +62,22 @@ export function CommandPalette({
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const [support, setSupport] = useState<'idle' | 'bubble' | 'none'>('idle');
+  const modes: PaletteMode[] = ask ? ['jump', 'ask', 'support'] : ['jump', 'support'];
+  const [question, setQuestion] = useState('');
+  const [turns, setTurns] = useState<AskTurn[]>([]);
+  const [asking, setAsking] = useState(false);
+  const send = () => {
+    const text = question.trim();
+    if (!ask || !text || asking) return;
+    setAsking(true);
+    setQuestion('');
+    ask({ messages: historyFor(turns, text) })
+      .then(({ events }) => setTurns((t) => [...t, foldTurn(events)]))
+      .catch((e: unknown) =>
+        setTurns((t) => [...t, { question: text, looks: [], answer: '', provenance: null, budgetExhausted: false, error: e instanceof Error ? e.message : String(e) }]),
+      )
+      .finally(() => setAsking(false));
+  };
 
   const run = (item: PaletteItem | undefined) => {
     if (!item) return;
@@ -71,7 +99,7 @@ export function CommandPalette({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Tab') {
         e.preventDefault();
-        setMode((m) => (m === 'jump' ? 'support' : 'jump'));
+        setMode((m) => modes[(modes.indexOf(m) + 1) % modes.length]!);
         input.current?.focus();
       } else if (mode === 'jump' && e.key === 'ArrowDown') {
         e.preventDefault();
@@ -82,6 +110,7 @@ export function CommandPalette({
       } else if (e.key === 'Enter') {
         e.preventDefault();
         if (mode === 'jump') run(items[sel]);
+        else if (mode === 'ask') send();
         else writeToSupport();
       }
     };
@@ -109,7 +138,7 @@ export function CommandPalette({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Jump to, or write to support"
+        aria-label={ask ? 'Jump to, ask, or write to support' : 'Jump to, or write to support'}
         onClick={(e) => e.stopPropagation()}
         style={{ width: 780, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, boxShadow: 'var(--shadow-popover)', overflow: 'hidden', display: 'flex', flexDirection: 'column', maxHeight: 'calc(100vh - 128px)' }}
       >
@@ -119,15 +148,22 @@ export function CommandPalette({
             ref={input}
             autoFocus
             // The query belongs to Jump and waits there for Tab back; Support has nothing to type into here.
-            value={mode === 'jump' ? q : ''}
+            value={mode === 'jump' ? q : mode === 'ask' ? question : ''}
             readOnly={mode === 'support'}
-            onChange={(e) => setQ(e.target.value)}
-            aria-label={mode === 'jump' ? 'Jump to' : 'Support'}
-            placeholder={mode === 'jump' ? 'Jump to an app, a process, a page — or paste a request or record id' : 'Write to Substrat support'}
+            onChange={(e) => (mode === 'ask' ? setQuestion(e.target.value) : setQ(e.target.value))}
+            aria-label={mode === 'jump' ? 'Jump to' : mode === 'ask' ? 'Ask' : 'Support'}
+            maxLength={mode === 'ask' ? 4000 : undefined}
+            placeholder={
+              mode === 'jump'
+                ? 'Jump to an app, a process, a page — or paste a request or record id'
+                : mode === 'ask'
+                  ? 'Ask about your apps — “why is the deploy failing?”'
+                  : 'Write to Substrat support'
+            }
             style={{ flex: 1, minWidth: 0, border: 0, outline: 'none', background: 'transparent', fontSize: 15, color: 'var(--text-primary)', fontFamily: 'var(--font-sans)' }}
           />
           <div role="tablist" aria-label="Mode" style={{ display: 'inline-flex', padding: 2, borderRadius: 8, background: 'var(--surface-inset)', flexShrink: 0 }}>
-            {(['jump', 'support'] as const).map((m) => (
+            {modes.map((m) => (
               <button
                 key={m}
                 type="button"
@@ -150,7 +186,7 @@ export function CommandPalette({
                   boxShadow: mode === m ? 'var(--shadow-sm)' : 'none',
                 }}
               >
-                {m === 'jump' ? 'Jump' : 'Support'}
+                {m === 'jump' ? 'Jump' : m === 'ask' ? 'Ask' : 'Support'}
               </button>
             ))}
           </div>
@@ -185,6 +221,8 @@ export function CommandPalette({
                 </div>
               ))
             )
+          ) : mode === 'ask' ? (
+            <AskThread turns={turns} asking={asking} />
           ) : (
             <div style={{ padding: '14px 20px', display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
               <div style={{ fontSize: 13.5, fontWeight: 600 }}>Substrat support</div>
@@ -201,11 +239,58 @@ export function CommandPalette({
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, height: 40, padding: '0 16px', borderTop: '1px solid var(--border-subtle)', background: 'var(--surface-inset)', fontSize: 11.5, color: 'var(--text-tertiary)', flexShrink: 0 }}>
           {mode === 'jump' && <span><Key>↑↓</Key> move</span>}
-          <span><Key>↵</Key> {mode === 'jump' ? 'open' : 'write to support'}</span>
-          <span><Key>tab</Key> {mode === 'jump' ? 'support' : 'jump'}</span>
+          <span><Key>↵</Key> {mode === 'jump' ? 'open' : mode === 'ask' ? 'ask' : 'write to support'}</span>
+          <span><Key>tab</Key> {modes[(modes.indexOf(mode) + 1) % modes.length]}</span>
           <span><Key>esc</Key> close</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The conversation so far: each question, the reads the assistant made, and its answer under the
+ * AI marker with when it was written and from how many reads. Rendered as text, so markup a
+ * model wrote is never markup.
+ */
+function AskThread({ turns, asking }: { turns: readonly AskTurn[]; asking: boolean }) {
+  if (turns.length === 0 && !asking) {
+    return (
+      <Quiet>
+        Ask about your apps, their findings and failures. The assistant reads what you can read here, and only reads: it changes
+        nothing. The conversation ends when you close this.
+      </Quiet>
+    );
+  }
+  return (
+    <div style={{ padding: '10px 20px', display: 'flex', flexDirection: 'column', gap: 14 }} aria-live="polite">
+      {turns.map((t, i) => (
+        <div key={i} data-ask-turn={i} style={{ display: 'grid', gap: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{t.question}</div>
+          {t.looks.length > 0 && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{t.looks.map((l) => l.label).join(' · ')}</div>}
+          {t.answer && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <Badge status="brand" dot={false} style={{ flexShrink: 0 }}>
+                AI
+              </Badge>
+              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: 'var(--text-primary)' }}>{t.answer}</p>
+            </div>
+          )}
+          {t.provenance && (
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+              Answered {writtenAtLabel(t.provenance.producedAt)} from {t.provenance.sources} {t.provenance.sources === 1 ? 'read' : 'reads'}
+              {t.provenance.model && <> · model {t.provenance.model.split('/').pop()}</>}
+            </div>
+          )}
+          {t.error && (
+            <div role="alert" style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+              {t.error}
+            </div>
+          )}
+          {!t.error && t.budgetExhausted && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>That was today’s last AI answer.</div>}
+        </div>
+      ))}
+      {asking && <Quiet inline>Reading…</Quiet>}
     </div>
   );
 }

@@ -24,7 +24,7 @@
  * metadata, spend limits) are layered on that row by the provider package when the
  * host asks for them; the line this produces is the same for every row.
  */
-import { generateText, type LanguageModelUsage } from 'ai';
+import { generateText, stepCountIs, tool, zodSchema, type LanguageModelUsage, type ToolSet } from 'ai';
 import {
   createModel,
   credentialsFrom,
@@ -41,7 +41,7 @@ import {
   type StepTokens,
 } from '@substrat-run/model-providers';
 import { createWorkersAI } from 'workers-ai-provider';
-import { modelAttribution, modelUsageLine, type ModelAttribution, type ModelUsageLine } from '@substrat-run/contracts';
+import { modelAttribution, modelUsageLine, type ModelAttribution, type ModelUsageLine, type z } from '@substrat-run/contracts';
 
 export type { HostingInfo, ModelAttribution, ModelUsageLine };
 export { ProviderError };
@@ -52,12 +52,52 @@ export interface ModelIntent {
   readonly attribution: ModelAttribution;
 }
 
+/** One turn of a conversation the caller keeps: what was said, by whom. */
+export interface ModelMessage {
+  readonly role: 'user' | 'assistant';
+  readonly content: string;
+}
+
+/**
+ * A tool the model may call, provider-neutral. `input` is the schema the model's arguments are
+ * parsed with before `execute` sees them; `execute` is the caller's code, which runs with the
+ * caller's own authority, so whatever it checks is what the tool checks. Its result goes back to
+ * the model as the tool's output.
+ */
+export interface ModelTool<I = unknown> {
+  readonly description: string;
+  readonly input: z.ZodType<I>;
+  readonly execute: (input: I) => Promise<unknown>;
+}
+
 export interface ModelRequest extends ModelIntent {
   readonly system?: string;
-  readonly prompt: string;
+  /** One question. Exactly one of `prompt` and `messages`. */
+  readonly prompt?: string;
+  /** A conversation, oldest first, ending with the user's turn. Exactly one of `prompt` and `messages`. */
+  readonly messages?: readonly ModelMessage[];
+  /**
+   * Tools the model may call. A call to one runs its `execute` and hands the result back, and
+   * the model goes on, up to `maxSteps` model calls in all. The guard runs ONCE, before the
+   * first: a request with tools is one decision to spend, however many steps it takes.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- each tool narrows its own input
+  readonly tools?: Readonly<Record<string, ModelTool<any>>>;
+  /** The most model calls one request may make when tools are given. Default 4, at most 8. */
+  readonly maxSteps?: number;
   readonly maxOutputTokens?: number;
   readonly temperature?: number;
 }
+
+/** One model call inside a run, and the tool calls it made: what a turn record shows. */
+export interface ModelRunStep {
+  readonly text: string;
+  readonly toolCalls: ReadonlyArray<{ readonly callId: string; readonly tool: string; readonly input: unknown }>;
+  readonly toolResults: ReadonlyArray<{ readonly callId: string; readonly tool: string; readonly output: unknown }>;
+}
+
+/** The ceiling on `maxSteps`: a run that needs more is a loop the host should be driving. */
+export const MODEL_MAX_STEPS = 8;
 
 export interface ModelRun {
   readonly text: string;
@@ -66,6 +106,8 @@ export interface ModelRun {
   readonly label: string;
   /** The one governance fact this call produced; already handed to `record`. */
   readonly line: ModelUsageLine;
+  /** Each model call the run made, in order. One step when no tools were given. */
+  readonly steps: readonly ModelRunStep[];
 }
 
 /** What a settings screen shows for a spec before anyone runs it. */
@@ -197,6 +239,14 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
     // threw, spending money that no ledger line accounted for. Parse, don't trust
     // (and the five-key limit is the whole reason this schema is `.strict()`).
     const attribution = modelAttribution.parse(request.attribution);
+    // The shape of the request, checked before anything billable too.
+    if ((request.prompt === undefined) === (request.messages === undefined)) {
+      throw new TypeError('a model request takes exactly one of `prompt` and `messages`');
+    }
+    const maxSteps = request.maxSteps ?? 4;
+    if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > MODEL_MAX_STEPS) {
+      throw new RangeError(`maxSteps must be an integer from 1 to ${MODEL_MAX_STEPS}`);
+    }
 
     // Then resolve: an unknown provider or an unconfigured row is refused before the
     // guard is consulted, so a budget is never charged for a call that could not have
@@ -216,18 +266,31 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
     // metadata and payload retention off; for every other row, nothing. The host does
     // not know which.
     const headers = requestHeadersFor(resolved.provider, { attribution: request.attribution, env: options.env });
+    const tools: ToolSet | undefined = request.tools
+      ? Object.fromEntries(
+          Object.entries(request.tools).map(([name, t]) => [
+            name,
+            // The SDK's `zodSchema` names zod's input type parameter more narrowly than ours: the same
+            // zod v4 schema at run time, so the cast changes a type, not a value.
+            tool({ description: t.description, inputSchema: zodSchema(t.input as unknown as Parameters<typeof zodSchema>[0]), execute: (input: unknown) => t.execute(input) }),
+          ]),
+        )
+      : undefined;
     const started = now();
     const result = await generateText({
       model: resolved.model,
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(request.system ? { system: request.system } : {}),
-      prompt: request.prompt,
+      ...(request.messages ? { messages: request.messages.map((m) => ({ role: m.role, content: m.content })) } : { prompt: request.prompt! }),
+      ...(tools ? { tools, stopWhen: stepCountIs(maxSteps) } : {}),
       ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: request.maxOutputTokens } : {}),
       ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
     });
     const finished = now();
 
     const tokens = stepTokensOf(result.totalUsage);
+    // Priced per step, since a rate card with tiers or cache rates prices each call on its own.
+    const stepTokens = result.steps.length > 0 ? result.steps.map((st) => stepTokensOf(st.usage)) : [tokens];
     const line = modelUsageLine.parse({
       attribution,
       model,
@@ -238,13 +301,18 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
       outputTokens: tokens.outputTokens,
       cachedInputTokens: tokens.cachedInputTokens,
       cacheWriteTokens: tokens.cacheWriteTokens,
-      listUsd: tokens.reported ? listCostOfSteps(model, [tokens]) : null,
+      listUsd: tokens.reported ? listCostOfSteps(model, stepTokens) : null,
       at: finished.toISOString(),
       elapsedMs: Math.max(0, finished.getTime() - started.getTime()),
     });
     await options.record?.(line);
 
-    return { text: result.text, finishReason: result.finishReason, label: resolved.label, line };
+    const steps: ModelRunStep[] = result.steps.map((st) => ({
+      text: st.text,
+      toolCalls: st.toolCalls.map((c) => ({ callId: c.toolCallId, tool: c.toolName, input: c.input })),
+      toolResults: st.toolResults.map((r) => ({ callId: r.toolCallId, tool: r.toolName, output: r.output })),
+    }));
+    return { text: result.text, finishReason: result.finishReason, label: resolved.label, line, steps };
   };
 
   return { status, run };

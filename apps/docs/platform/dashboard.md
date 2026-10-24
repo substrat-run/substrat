@@ -324,6 +324,21 @@ counts. Texts are kept for 90 days.
 Whether a deployment offers this is the `AI_EXPLANATIONS` setting. It is on in the test
 environment. Where it is off, the toggles are not shown.
 
+### Ask {#ask}
+
+Where AI explanations are offered, the **⌘K** overlay has a third mode, **Ask**, next to
+Jump and Support (Tab moves between them). Ask a question about your apps, their findings
+and failures, and the assistant answers in a few sentences. It reads through the dashboard's
+own reads, as you: it lists the team's apps and findings and reads one finding's evidence,
+and a part of the dashboard your role cannot read is refused to it as well. It only reads;
+it changes nothing.
+
+Each answer carries the **AI** marker, the reads it made (*Looked at 12 findings · Read one
+finding's evidence*) and when it was written. A follow-up question is asked with the
+conversation so far. The conversation lasts as long as the overlay is open: nothing records
+it yet. Each question uses one of the same daily AI answers as explanations do, however many
+reads it takes, and what is sent to the model is the same field list, redacted the same way.
+
 ## Status
 
 Built and connected — self-service sign-up bootstraps a tenant, the catalog offers real

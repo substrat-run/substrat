@@ -7,8 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { MockLanguageModelV3 } from 'ai/test';
-import { scopeId, tenantId, type ModelUsageLine } from '@substrat-run/contracts';
-import { createModelHost, stepTokensOf, type ModelIntent } from '../src/model.js';
+import { scopeId, tenantId, z, type ModelUsageLine } from '@substrat-run/contracts';
+import { createModelHost, MODEL_MAX_STEPS, stepTokensOf, type ModelIntent } from '../src/model.js';
 
 const attribution = {
   tenant: tenantId.parse('01ARZ3NDEKTSV4RRFFQ69G5FAV'),
@@ -227,5 +227,102 @@ describe('stepTokensOf', () => {
         outputTokenDetails: { textTokens: 50, reasoningTokens: undefined },
       } as never),
     ).toEqual({ reported: true, inputTokens: 1000, outputTokens: 50, cachedInputTokens: 800, cacheWriteTokens: 0 });
+  });
+});
+
+describe('run with tools (#2283)', () => {
+  const usage = (input: number, output: number) => ({
+    inputTokens: { total: input, noCache: input, cacheRead: 0, cacheWrite: undefined },
+    outputTokens: { total: output, text: output, reasoning: undefined },
+  });
+  /** A model that calls `lookup` once, then answers from what it returned. */
+  const toolModel = () => {
+    const prompts: unknown[] = [];
+    const model = new MockLanguageModelV3({
+      doGenerate: async (options: { prompt: unknown }) => {
+        prompts.push(options.prompt);
+        return (prompts.length === 1
+          ? {
+              content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'lookup', input: JSON.stringify({ id: 'F1' }) }],
+              finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+              usage: usage(1_000, 50),
+              warnings: [],
+            }
+          : {
+              content: [{ type: 'text', text: 'F1 failed 3 times.' }],
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: usage(1_200, 20),
+              warnings: [],
+            }) as never;
+      },
+    });
+    return { model, prompts };
+  };
+  const lookup = (seen: unknown[]) => ({
+    description: 'Look up a finding',
+    input: z.object({ id: z.string() }),
+    execute: async (input: { id: string }) => {
+      seen.push(input);
+      return { id: input.id, count: 3 };
+    },
+  });
+
+  it('runs a tool the model calls, hands its result back, and reports each step', async () => {
+    const { model, prompts } = toolModel();
+    const seen: unknown[] = [];
+    const lines: ModelUsageLine[] = [];
+    let guarded = 0;
+    const host = hostWith(model, { record: (l) => void lines.push(l), guard: () => void guarded++ });
+    const run = await host.run({
+      spec: 'claude-opus-5',
+      attribution,
+      messages: [
+        { role: 'user', content: 'What is F1?' },
+      ],
+      tools: { lookup: lookup(seen) },
+    });
+
+    expect(seen).toEqual([{ id: 'F1' }]);
+    expect(run.text).toBe('F1 failed 3 times.');
+    expect(run.steps).toEqual([
+      { text: '', toolCalls: [{ callId: 'c1', tool: 'lookup', input: { id: 'F1' } }], toolResults: [{ callId: 'c1', tool: 'lookup', output: { id: 'F1', count: 3 } }] },
+      { text: 'F1 failed 3 times.', toolCalls: [], toolResults: [] },
+    ]);
+    // The second model call saw the tool's output.
+    expect(JSON.stringify(prompts[1])).toContain('"count":3');
+    // One decision to spend, one line, both steps' tokens in it.
+    expect(guarded).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ inputTokens: 2_200, outputTokens: 70, reported: true });
+    expect(lines[0]!.listUsd).not.toBeNull();
+  });
+
+  it('stops at maxSteps, so a model that keeps calling tools cannot run on', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        calls += 1;
+        return {
+          content: [{ type: 'tool-call', toolCallId: `c${calls}`, toolName: 'lookup', input: JSON.stringify({ id: 'F1' }) }],
+          finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+          usage: usage(10, 1),
+          warnings: [],
+        } as never;
+      },
+    });
+    const run = await hostWith(model).run({ spec: 'claude-opus-5', attribution, prompt: 'loop', tools: { lookup: lookup([]) }, maxSteps: 2 });
+    expect(calls).toBe(2);
+    expect(run.steps).toHaveLength(2);
+  });
+
+  it('refuses a malformed request before the guard, so nothing is spent on it', async () => {
+    let guarded = 0;
+    const host = hostWith(mockModel({ input: 1, output: 1 }), { guard: () => void guarded++ });
+    await expect(host.run({ spec: 'claude-opus-5', attribution })).rejects.toThrow(/exactly one of `prompt` and `messages`/);
+    await expect(
+      host.run({ spec: 'claude-opus-5', attribution, prompt: 'a', messages: [{ role: 'user', content: 'b' }] }),
+    ).rejects.toThrow(/exactly one/);
+    await expect(host.run({ spec: 'claude-opus-5', attribution, prompt: 'a', maxSteps: MODEL_MAX_STEPS + 1 })).rejects.toThrow(/maxSteps/);
+    expect(guarded).toBe(0);
   });
 });
