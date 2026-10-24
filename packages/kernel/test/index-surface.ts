@@ -157,7 +157,11 @@ export const INDEX_VALUE_EXPORTS = [
   'SCHEDULE_STATE_REBUILD',
   'SCOPE_COPY_LEASE_MS',
   'SCOPE_SCRIPT_COPY_COLUMNS',
+  // #2447: the role keys a scope seats anyone but a system principal in — a role set is judged against it.
+  'SCOPE_SEATED_ROLES_SQL',
   'SCOPE_STORAGE_DDL',
+  // #2447: the scope statuses whose seats a role definition is judged against, on both adapters.
+  'SEAT_HOLDING_SCOPE_STATUSES',
   'SECURE_DELETE_MIN_SQLITE',
   'SERVES_NOW_CONDITION',
   'SERVES_NOW_PREDICATE',
@@ -184,6 +188,8 @@ export const INDEX_VALUE_EXPORTS = [
   'StateColumnLost',
   'StorageReadUnsupported',
   'TABLE_OWNERS_DDL',
+  // #2447: the same for a tenant's tenant-level tuples.
+  'TENANT_SEATED_ROLES_SQL',
   'UNCHECKED_OPERATION_FINDING',
   'UNCHECKED_OPERATION_TEMPLATE',
   // The sweep's cap on unreadable directory rows named per pass, which the control plane's
@@ -324,6 +330,8 @@ export const INDEX_VALUE_EXPORTS = [
   'domainEventOf',
   'driverDeclarationsOf',
   'dumpMetaValue',
+  // #2447: a dump's stored roles and seats, which a restore's role set is judged against.
+  'dumpRoleState',
   'dumpRowsInsert',
   'effectiveOutcomes',
   'effectiveRoleGrantQuery',
@@ -476,6 +484,8 @@ export const INDEX_VALUE_EXPORTS = [
   'noSealingKeyMessage',
   'noopConnectorCallRecorder',
   'normalizeUploadMediaType',
+  // #2447: each adapter's set of keys its registered modules declare, marked or not.
+  'noteDeclaredKeys',
   // #2430: each adapter's set of keys its registered modules reserve to a system principal.
   'noteReservedKeys',
   'noteUncheckedCompletion',
@@ -594,8 +604,12 @@ export const INDEX_VALUE_EXPORTS = [
   'requiredEntitlementFor',
   // #2430: the refusal both adapters' raw grant doors and `ctx.grant` answer for a reserved key.
   'reservedGrantRefusal',
+  // #2447: the refusal both adapters' role definitions (defineRole, a projected role set) answer.
+  'reservedRoleDefinitionRefusal',
   // #2430: the one refusal both adapters' role doors (and the ControlPlaneDO's membership unit) answer.
   'reservedRoleRefusal',
+  // #2447: `reservedRoleDefinitionRefusal` over a role set defined at once.
+  'reservedRoleSetRefusal',
   // #2430: the refusal both adapters' reconcile of declared entity-grant shapes answers.
   'reservedShapeRefusal',
   'resolveAttachmentTextBounds',

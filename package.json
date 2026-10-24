@@ -71,6 +71,7 @@
     "lint:review-checklist": "node tools/review-checklist.mjs",
     "lint:secret-literals": "node tools/secret-literals.mjs",
     "lint:lifecycle-writes": "node tools/lifecycle-writes.mjs",
+    "lint:role-seat-paths": "node tools/role-seat-paths.mjs",
     "lint:floating-promises": "node tools/floating-promises.mjs",
     "test:workerd-rejections": "node --test tools/vitest/workerd-rejections.test.mjs",
     "test:preloads": "node --test tools/vitest/preloads.test.mjs",
@@ -111,7 +112,8 @@
     "test:attachment-writers": "node --test tools/attachment-writers.test.mjs",
     "test:review-checklist": "node --test tools/review-checklist.test.mjs",
     "test:secret-literals": "node --test tools/secret-literals.test.mjs",
-    "test:lifecycle-writes": "node --test tools/lifecycle-writes.test.mjs"
+    "test:lifecycle-writes": "node --test tools/lifecycle-writes.test.mjs",
+    "test:role-seat-paths": "node --test tools/role-seat-paths.test.mjs"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.7",

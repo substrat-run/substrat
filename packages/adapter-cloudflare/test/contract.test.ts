@@ -316,6 +316,89 @@ scopeCausedByContractSuite('adapter-cloudflare', async () => {
   return { host, cleanup: async () => host.close() };
 });
 
+// #2447 (review round 1): most deployed scope classes reserve nothing, so the person's doors at a
+// scope node must not short-circuit on an empty reservation: a role stored `holder: 'system'` is
+// still no person's. `CausedByScopeDO` registers no module reserving a key, which is that shape.
+describe('a scope class that reserves nothing: its person’s doors read the stored holder (#2447)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const caller = principalId.parse(ulid());
+  const host = new CloudflareScopeHost({ scope: env.CAUSED_BY_SCOPE, controlPlane: env.CONTROL_PLANE });
+  const RUN = permissionKey.parse('nor:run');
+  const USE = permissionKey.parse('nor:use');
+  const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as Error);
+  const SYSTEM_HELD = /role 'runner' is declared holder: 'system', a role for a system principal: no person's bound covers it/;
+
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `nor-${t.slice(-10).toLowerCase()}`, name: 'Reserves nothing' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'nor-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.defineRole(staff, t, { key: 'runner', permissions: [RUN], source: 'vertical', holder: 'system' });
+    await host.admin.defineRole(staff, t, { key: 'member', permissions: [USE], source: 'vertical' });
+  });
+  afterAll(() => host.close());
+
+  it('assignScopeRoleBounded refuses the system-held role and seats nothing; its twin is answered by the bound', async () => {
+    const who = principalId.parse(ulid());
+    const refused = await failure(host.assignScopeRoleBounded(t, s, caller, who, 'runner'));
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(SYSTEM_HELD);
+    expect(await host.listScopeRoleHolders(t, s, who)).toEqual([]);
+    // The twin: a person's role reaches the bound, which answers coverage instead of a refusal.
+    expect(await host.assignScopeRoleBounded(t, s, caller, who, 'member')).toMatchObject({ covered: false });
+  });
+
+  it('changeScopeRoleBounded refuses moving someone into it, leaving the role they held', async () => {
+    const who = principalId.parse(ulid());
+    await host.admin.assignRole(staff, { principalId: who, roleKey: 'member', node: { tenantId: t, scopeId: s } });
+    const refused = await failure(host.changeScopeRoleBounded(t, s, caller, who, 'member', 'runner'));
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(SYSTEM_HELD);
+    expect(await host.listScopeRoleHolders(t, s, who)).toEqual([{ principal: who, roleKey: 'member' }]);
+  });
+
+  it('canAssign refuses it; its twin answers coverage', async () => {
+    const refused = await failure(host.canAssign(t, s, caller, 'runner'));
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(SYSTEM_HELD);
+    expect(await host.canAssign(t, s, caller, 'member')).toMatchObject({ covered: false });
+  });
+});
+
+// #2447 (review round 3): a scope's projected copy of the tenant-level tuples is not where seats are
+// counted. The fan-out skips an archived scope, so its copy goes stale; the tenant-level seats are
+// the ControlPlaneDO's, read in its own unit.
+describe('an archived scope’s stale projected tenant tuples are not seats (#2447)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeLocalPermissions: true });
+  const USE = permissionKey.parse('rsv:use');
+  const RUN = permissionKey.parse('rsv:run');
+  afterAll(() => host.close());
+
+  it('a tenant-level seat taken back while the scope was archived blocks nothing; a live one still does', async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `stale-${t.slice(-10).toLowerCase()}`, name: 'Stale' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'stale-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    for (const key of ['stale', 'live']) await host.admin.defineRole(staff, t, { key, permissions: [USE], source: 'vertical' });
+    const who = principalId.parse(ulid());
+    for (const key of ['stale', 'live']) await host.admin.assignRole(staff, { principalId: who, roleKey: key, node: { tenantId: t, scopeId: null } });
+    await host.admin.archiveScope(staff, t, s);
+    await host.admin.unassignRole(staff, { principalId: who, roleKey: 'stale', node: { tenantId: t, scopeId: null } });
+    // The archived scope's projection still names the seat; the directory does not.
+    await host.admin.defineRole(staff, t, { key: 'stale', permissions: [RUN], source: 'vertical', holder: 'system' });
+    expect((await host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'stale')?.holder).toBe('system');
+    // The twin: a tenant-level seat that is still live is counted, in the ControlPlaneDO's unit.
+    const refused = await host.admin
+      .defineRole(staff, t, { key: 'live', permissions: [RUN], source: 'vertical', holder: 'system' })
+      .then(() => undefined, (e: unknown) => e as Error);
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(/role 'live' is held by a principal/);
+  });
+});
+
 // #1184: the membership executor, on the DEFAULT tuple checker — the bound is a set
 // comparison an allow-all checker would answer "covered" for everything. Its executors run
 // here on the coordinator; the fixture module is in `contractTestModules`, so the ScopeDO has it.
@@ -349,9 +432,98 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
 
   beforeAll(async () => {
     await host.admin.createTenant(staff, { id: t, slug: `rsv-front-${t.slice(-10).toLowerCase()}`, name: 'Front' });
+    // #2447: a definition joins the scope class's reservations once the tenant has a scope, so these
+    // roles, which hold the class's reserved key, are defined first: a tenant with no scope yet is
+    // judged by this coordinator's modules alone, which reserve nothing (a stated residual).
+    await host.admin.defineRole(staff, t, { key: 'mixed', permissions: MIXED, source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'cp-mixed', permissions: MIXED, source: 'vertical' });
+    await host.admin.defineRole(staff, t, { key: 'cp-member', permissions: [MIXED[0]!], source: 'vertical' });
     await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'rsv-front' });
     await host.admin.activateScope(staff, t, s);
-    await host.admin.defineRole(staff, t, { key: 'mixed', permissions: MIXED, source: 'vertical' });
+  });
+
+  it('defineRole judges the scope class’s reservations, not only the coordinator’s (#2447 round 1); an unreserved key is admitted', async () => {
+    const refused = await host.admin
+      .defineRole(staff, t, { key: 'mixed-2', permissions: MIXED, source: 'vertical' })
+      .then(() => undefined, (e: unknown) => e as Error);
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(/role 'mixed-2' is a person's role and would hold rsv:run/);
+    expect((await host.admin.listRoles(staff, { tenantId: t })).some((r) => r.key === 'mixed-2')).toBe(false);
+    await host.admin.defineRole(staff, t, { key: 'mixed-2', permissions: [MIXED[0]!, permissionKey.parse('rsv:other')], source: 'vertical' });
+  });
+
+  describe('a tenant whose only scope was archived straight from provisioning (#2447 round 4)', () => {
+    const tenantWithEarlyScope = async () => {
+      const tn = tenantId.parse(ulid());
+      const early = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: tn, slug: `rsv-early-${tn.slice(-10).toLowerCase()}`, name: 'Early' });
+      await host.provisionScope(staff, { tenantId: tn, scopeId: early, vertical: 'rsv-front' }); // never activated
+      await host.admin.archiveScope(staff, tn, early);
+      return { tn, early };
+    };
+    const refusalOf = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as Error);
+
+    it('still reads the scope class’s reservations there: a mixed person’s role is refused; an unreserved key is admitted', async () => {
+      const { tn } = await tenantWithEarlyScope();
+      const refused = await refusalOf(host.admin.defineRole(staff, tn, { key: 'mixed-3', permissions: MIXED, source: 'vertical' }));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'mixed-3' is a person's role and would hold rsv:run/);
+      await host.admin.defineRole(staff, tn, { key: 'mixed-3', permissions: [MIXED[0]!], source: 'vertical' });
+    });
+
+    it('fails closed for a system-held definition its seats could decide, even beside an active scope; unarchived, the seat itself refuses it (round 5)', async () => {
+      const { tn, early } = await tenantWithEarlyScope();
+      const live = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: tn, scopeId: live, vertical: 'rsv-front' });
+      await host.admin.activateScope(staff, tn, live);
+      // A person seated in `esc` there (unarchived to seat it), then the scope archived again and its row
+      // made to read as archived straight from provisioning with no migration recorded.
+      await host.admin.unarchiveScope(staff, tn, early);
+      await host.admin.defineRole(staff, tn, { key: 'esc', permissions: [MIXED[0]!], source: 'vertical' });
+      await host.admin.assignRole(staff, { principalId: principalId.parse(ulid()), roleKey: 'esc', node: { tenantId: tn, scopeId: early } });
+      await host.admin.archiveScope(staff, tn, early);
+      await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_instance, state) => {
+        state.storage.sql.exec('UPDATE scopes SET archived_from_status = ?, schema_version = ? WHERE scope_id = ?', 'provisioning', '0', early);
+      });
+      const system = { key: 'esc', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+      const refused = await refusalOf(host.admin.defineRole(staff, tn, system));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toContain(`role 'esc' cannot be judged: scope ${early} was archived straight from provisioning and records no migration`);
+      // The twin: unarchived, the scope is read, and its seat refuses the same definition for what it is.
+      await host.admin.unarchiveScope(staff, tn, early);
+      const seated = await refusalOf(host.admin.defineRole(staff, tn, system));
+      expect(errorCodeOf(seated)).toBe('forbidden');
+      expect(seated?.message).toMatch(/role 'esc' is held by a principal/);
+    });
+
+    it('fails closed when that scope records no migration (its DO may never have run), naming it; unarchived, the same definition is judged', async () => {
+      const { tn, early } = await tenantWithEarlyScope();
+      await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_instance, state) => {
+        state.storage.sql.exec('UPDATE scopes SET schema_version = ? WHERE scope_id = ?', '0', early);
+      });
+      for (const role of [
+        { key: 'sys', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const },
+        { key: 'plain', permissions: [MIXED[0]!], source: 'vertical' as const },
+      ]) {
+        const refused = await refusalOf(host.admin.defineRole(staff, tn, role));
+        expect(errorCodeOf(refused)).toBe('forbidden');
+        expect(refused?.message).toContain(`role '${role.key}' cannot be judged: scope ${early} was archived straight from provisioning and records no migration`);
+      }
+      await host.admin.unarchiveScope(staff, tn, early);
+      await host.admin.defineRole(staff, tn, { key: 'sys', permissions: [MIXED[1]!], source: 'vertical', holder: 'system' });
+      await host.admin.defineRole(staff, tn, { key: 'plain', permissions: [MIXED[0]!], source: 'vertical' });
+    });
+  });
+
+  it('…so a seated role is not widened: the refused definition writes nothing, and nothing is fanned out (#2447 round 1)', async () => {
+    const who = principalId.parse(ulid());
+    await host.admin.defineRole(staff, t, { key: 'grows', permissions: [MIXED[0]!], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: who, roleKey: 'grows', node: { tenantId: t, scopeId: s } });
+    const widened = await host.admin
+      .defineRole(staff, t, { key: 'grows', permissions: MIXED, source: 'vertical' })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(widened)).toBe('forbidden');
+    expect((await host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'grows')?.permissions).toEqual([MIXED[0]]);
   });
   afterAll(() => host.close());
 
@@ -500,17 +672,18 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     // A CP-less host, as a deployed vertical's is: `provisionScopeLocal` writes the receipt and the roles.
     const local = new CloudflareScopeHost({ scope: env.SCOPE });
     const owned = scopeId.parse(ulid());
+    const tenant = tenantId.parse(ulid());
     try {
       await local.provisionScopeLocal({
-        tenantId: tenantId.parse(ulid()),
+        tenantId: tenant,
         scopeId: owned,
         owner: principalId.parse(ulid()),
-        roles: [
-          { key: 'mixed', permissions: MIXED, source: 'vertical' },
-          { key: 'member', permissions: [MIXED[0]!], source: 'vertical' },
-        ],
+        roles: [{ key: 'member', permissions: [MIXED[0]!], source: 'vertical' }],
         ownerRoleKey: 'member',
       });
+      // #2447: a provision refuses defining `mixed` here, so it reaches the scope as a row projected
+      // before the key was reserved would.
+      await projector(owned).projectRole(tenant, { key: 'mixed', permissions: MIXED, source: 'vertical' });
       const refused = await local.assignScopeRole(owned, principalId.parse(ulid()), 'mixed').then(() => undefined, (e: unknown) => e);
       expect(errorCodeOf(refused)).toBe('forbidden');
       await local.assignScopeRole(owned, principalId.parse(ulid()), 'member');
@@ -519,14 +692,203 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     }
   });
 
+  // #2447: the roles a CP-less provision or restore defines, and the owner's seat in them, judged
+  // against the scope class's reservations though the coordinator has none.
+  describe('roles a host defines and seats itself (#2447)', () => {
+    const member = { key: 'member', permissions: [MIXED[0]!], source: 'vertical' as const };
+    const runner = { key: 'runner', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+    const receiptOf = (scope: ScopeId) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+        state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray(),
+      );
+    const rolesOf = (scope: ScopeId) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) => {
+        const has = state.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_substrat_roles'`).toArray().length > 0;
+        return has ? (state.storage.sql.exec(`SELECT role_key FROM _substrat_roles ORDER BY role_key`).toArray() as { role_key: string }[]).map((r) => r.role_key) : [];
+      });
+    const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as Error);
+    let local: CloudflareScopeHost;
+    beforeAll(() => {
+      local = new CloudflareScopeHost({ scope: env.SCOPE }); // CP-less, as a deployed vertical's host is
+    });
+    afterAll(() => local.close());
+    const provision = (scope: ScopeId, roles: RoleDefinition[], ownerRoleKey: string) =>
+      local.provisionScopeLocal({ tenantId: tenantId.parse(ulid()), scopeId: scope, owner: principalId.parse(ulid()), roles, ownerRoleKey });
+
+    it('provisionScopeLocal refuses a role set with a person’s role carrying the reserved key, writing nothing; its twin provisions', async () => {
+      const refusedScope = scopeId.parse(ulid());
+      const refused = await failure(provision(refusedScope, [member, { key: 'mixed', permissions: MIXED, source: 'vertical' }], 'member'));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'mixed' is a person's role and would hold rsv:run/);
+      expect(await receiptOf(refusedScope)).toEqual([]);
+      expect(await rolesOf(refusedScope)).toEqual([]);
+      const twin = scopeId.parse(ulid());
+      await provision(twin, [member, runner], 'member');
+      expect(await receiptOf(twin)).toHaveLength(1);
+      expect(await rolesOf(twin)).toEqual(['member', 'runner']);
+    });
+
+    it('provisionScopeLocal refuses seating the owner, a person, in a system-held role, writing nothing; its twin seats', async () => {
+      const refusedScope = scopeId.parse(ulid());
+      const refused = await failure(provision(refusedScope, [member, runner], 'runner'));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/^the owner's seat: role 'runner' is declared holder: 'system'/);
+      expect(await receiptOf(refusedScope)).toEqual([]);
+      const twin = scopeId.parse(ulid());
+      await provision(twin, [member, runner], 'member');
+      expect(await receiptOf(twin)).toHaveLength(1);
+    });
+
+    it('projectRolesLocal (a restore’s repair) refuses the same role set and projects nothing; its twin projects', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const refused = await failure(local.projectRolesLocal(tenant, scope, [member, { key: 'mixed', permissions: MIXED, source: 'vertical' }]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(await rolesOf(scope)).toEqual([]);
+      await local.projectRolesLocal(tenant, scope, [member, runner]);
+      expect(await rolesOf(scope)).toEqual(['member', 'runner']);
+    });
+
+    it('a reconcile, and a restore’s repair, refuse making a seated stored person’s role holder: system (round 1); an unseated one changes', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const staffer = { key: 'staffer', permissions: [MIXED[0]!], source: 'vertical' as const };
+      const idle = { key: 'idle', permissions: [MIXED[0]!], source: 'vertical' as const };
+      const flipped = (key: string) => ({ key, permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const });
+      const reconcile = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await reconcile([member, staffer, idle]);
+      const who = principalId.parse(ulid());
+      await local.assignScopeRole(scope, who, 'staffer');
+      const refused = await failure(reconcile([member, flipped('staffer'), idle]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'staffer' is held by a principal/);
+      const repair = await failure(local.projectRolesLocal(tenant, scope, [member, flipped('staffer'), idle]));
+      expect(errorCodeOf(repair)).toBe('forbidden');
+      const holderOf = (key: string) =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+          (state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, key).toArray()[0] as { holder: string } | undefined)?.holder);
+      expect(await holderOf('staffer')).toBe('person');
+      // The twin: the role nobody holds may change holder.
+      await reconcile([member, staffer, flipped('idle')]);
+      expect(await holderOf('idle')).toBe('system');
+    });
+
+    it('a release that drops a seated role and a later one that defines it holder: system are refused, like the flip straight after (round 2)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const staffer = { key: 'staffer', permissions: [MIXED[0]!], source: 'vertical' as const };
+      const system = { key: 'staffer', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      const rowOf = () =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+          state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, 'staffer').toArray());
+      // Release 1: a person's role, and someone seated in it.
+      await release([member, staffer]);
+      const who = principalId.parse(ulid());
+      await local.assignScopeRole(scope, who, 'staffer');
+      // The twin: release 3 straight after release 1 is refused.
+      expect(errorCodeOf(await failure(release([member, system])))).toBe('forbidden');
+      // Release 2 drops the role: its row goes, the seat stays.
+      await release([member]);
+      expect(await rowOf()).toEqual([]);
+      // Release 3 defines it holder: system: refused as well, nothing written.
+      const refused = await failure(release([member, system]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'staffer' is held by a principal \(with no definition stored\)/);
+      // Named by scope as well as role, so staff can find every scope a release is refused at (SF4).
+      expect(refused?.message).toContain(`tenant ${tenant}, scope ${scope}: the vertical's roles cannot be defined here`);
+      expect(await rowOf()).toEqual([]);
+    });
+
+    it('a reconcile refuses making a seated legacy holder-less role system-held, with the same keys; an unseated one upgrades (round 3)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await release([member]);
+      // Rows from before #2444: projected with no holder.
+      for (const key of ['ops', 'idle']) await projector(scope).projectRole(tenant, { key, permissions: [MIXED[1]!], source: 'vertical' });
+      const who = principalId.parse(ulid());
+      await local.assignScopeRole(scope, who, 'ops');
+      const system = (key: string) => ({ key, permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const });
+      const refused = await failure(release([member, system('ops'), system('idle')]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      // Round 4: a holder-less row is named as what it is, not as a person's role.
+      expect(refused?.message).toMatch(/role 'ops' is held by a principal \(stored with no holder, from before holders were recorded \(#2480\)\)/);
+      expect(refused?.message).not.toMatch(/stored as a person's role/);
+      // The twin: the unseated legacy row upgrades.
+      await release([member, system('idle')]);
+      const holderOf = (key: string) =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+          (state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, key).toArray()[0] as { holder: string } | undefined)?.holder);
+      expect(await holderOf('idle')).toBe('system');
+    });
+
+    it('a system-held role dropped and added back is refused while its host principal is seated, saying what is true; taking the seat back admits it (round 3)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await release([member, runner]);
+      const hostPrincipal = principalId.parse(ulid());
+      await local.assignScopeRole(scope, hostPrincipal, 'runner'); // the platform's door, K-55's shape
+      await release([member, runner]); // an identical re-apply is admitted
+      await release([member]); // the role dropped; the seat stays
+      const refused = await failure(release([member, runner]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'runner' is held by a principal \(with no definition stored\).*the seat may be a person's/);
+      expect(refused?.message).toMatch(/Take that seat back first, wherever it is held \(a scope, or the tenant; a host principal's seat can be given again after\)/);
+      expect(refused?.message).not.toMatch(/made through a person's door/);
+      // The remedy the text names: take the seat back, add the role back, seat it again.
+      await local.revokeScopeRole(scope, hostPrincipal, 'runner');
+      await release([member, runner]);
+      await local.assignScopeRole(scope, hostPrincipal, 'runner');
+    });
+
+    it('roleSetRefusalLocal answers the refusal a restore asks before importing, writing nothing; its twin answers null (round 1)', async () => {
+      const scope = scopeId.parse(ulid());
+      expect(await local.roleSetRefusalLocal(scope, [member, { key: 'mixed', permissions: MIXED, source: 'vertical' }])).toMatch(
+        /role 'mixed' is a person's role and would hold rsv:run/,
+      );
+      expect(await local.roleSetRefusalLocal(scope, [member, runner])).toBeNull();
+      expect(await rolesOf(scope)).toEqual([]);
+      // Round 2: judged against the dump's own seats, which the scope will store once it is imported.
+      const tenant = tenantId.parse(ulid());
+      const flipped = { key: 'staffer', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+      const dump = {
+        tenantId: tenant,
+        tables: [
+          {
+            name: '_substrat_tuples',
+            columns: ['subject', 'relation', 'object', 'expires_at', 'revoked_at'],
+            rows: [[`principal:${ulid()}`, 'role:staffer', `scope:${scope}`, null, null]],
+          },
+        ],
+      };
+      expect(await local.roleSetRefusalLocal(scope, [member, flipped], dump)).toMatch(/role 'staffer' is held by a principal/);
+      expect(await local.roleSetRefusalLocal(scope, [member, flipped])).toBeNull();
+    });
+
+    it('the owner hand-over’s person door refuses a system-held role that the platform’s door admits', async () => {
+      const scope = scopeId.parse(ulid());
+      await provision(scope, [member, runner], 'member');
+      expect(await local.scopeRoleRefusal(scope, 'runner', 'person')).toMatch(/role 'runner' is declared holder: 'system'/);
+      expect(await local.scopeRoleRefusal(scope, 'member', 'person')).toBeNull();
+      const who = principalId.parse(ulid());
+      expect(errorCodeOf(await failure(local.assignScopeRole(scope, who, 'runner', 'person')))).toBe('forbidden');
+      expect(await grantedTo(scope, `principal:${who}`)).toEqual([]);
+      // The twin: the platform's door seats a system-held role, K-55's shape.
+      await local.assignScopeRole(scope, who, 'runner');
+    });
+  });
+
   // A scope with no receipt names its tenants only through its role rows, and the role is judged as
   // the checker reads it. These rows say the opposite of the control plane's definitions — a stale
   // projection — so which source decided is what each answer shows.
   describe('assignScopeRole on a scope with no provisioning receipt', () => {
-    beforeAll(async () => {
-      await host.admin.defineRole(staff, t, { key: 'cp-mixed', permissions: MIXED, source: 'vertical' });
-      await host.admin.defineRole(staff, t, { key: 'cp-member', permissions: [MIXED[0]!], source: 'vertical' });
-    });
+    // `cp-mixed` and `cp-member` are defined in the describe's first hook, before the tenant's scope.
     /** A scope from before receipts: role rows projected for `t`, no receipt. */
     const stale = async () => {
       const bare = scopeId.parse(ulid());

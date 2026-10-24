@@ -322,6 +322,18 @@ export interface VerticalScopeHost {
     loadStamp?: string | null,
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
+  /**
+   * #2447: why the vertical's role set may not be defined on `scopeId`, or null — the question
+   * `projectRolesLocal` asks, asked by a restore BEFORE it imports the dump, so a refused set leaves
+   * the scope as it was rather than restored without its role repair. Optional: a host without it is
+   * held only by `projectRolesLocal`'s own refusal, after the import.
+   */
+  roleSetRefusalLocal?(
+    scopeId: ScopeId,
+    roles: RoleDefinition[],
+    /** The dump about to be imported, when the caller has it: the set is judged against its roles and seats. */
+    dump?: { tenantId: TenantId; tables: { name: string; columns: string[]; rows: unknown[][] }[] },
+  ): Promise<string | null>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
    *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
@@ -603,7 +615,13 @@ export interface VerticalScopeHost {
    * invite flow. OPTIONAL like the switches: a host without them answers 501 at
    * `/internal/owner-transfer` before the record moves, so no hand-over is ever half-started.
    */
-  assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void>;
+  assignScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string, door?: 'person' | 'platform'): Promise<void>;
+  /**
+   * #2447: why `roleKey` may not be seated at scope level through `door`, or null — asked by the
+   * hand-over before the record moves, so a refused seat leaves nothing half-done. Optional: a host
+   * without it is held only by `assignScopeRole`'s own door, after the record moved.
+   */
+  scopeRoleRefusal?(scopeId: ScopeId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
   revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
   /** Does `principal` hold a role the scope can expand? The hand-over's check on `to` (#1665). */
   hasScopeRoleLocal?(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId): Promise<boolean>;
@@ -1240,6 +1258,10 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/restore', async (c) => {
     const body = restoreBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
+    // #2447: the role set the repair below defines, judged before the dump is imported, against the
+    // dump's own roles and seats, which are what the scope will store.
+    const roleRefusal = (await host.roleSetRefusalLocal?.(body.scopeId, deps.roles, { tenantId: body.tenantId, tables: body.tables })) ?? null;
+    if (roleRefusal) throw new HTTPException(409, { message: `scope ${body.scopeId}: the vertical's roles cannot be defined here: ${roleRefusal}. Nothing was restored.` });
     const result = await host.restoreScopeLocal(body.scopeId, body.tables, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
@@ -1282,6 +1304,11 @@ export function mountPlatformSurface<Env extends object>(
     const host = deps.hostFor(c.env);
     if (!host.restoreStagedScopeLocal) return refuseStatus(c, 501, 'this deployment restores a scope only whole (#2450) — redeploy it');
     const body = restoreStagedBody.parse(await c.req.json());
+    // #2447: the role set the repair below defines, judged before the dump is imported. The staged
+    // pages are already in the scope, not in hand, so the set is judged alone here; `projectRolesLocal`
+    // judges again after the import, against them.
+    const roleRefusal = (await host.roleSetRefusalLocal?.(body.scopeId, deps.roles)) ?? null;
+    if (roleRefusal) throw new HTTPException(409, { message: `scope ${body.scopeId}: the vertical's roles cannot be defined here: ${roleRefusal}. Nothing was restored.` });
     const result = await host.restoreStagedScopeLocal(body.scopeId, body.stageId, {
       switchedOff: body.switchedOff,
       tenantHeld: body.tenantHeld,
@@ -2414,6 +2441,16 @@ export function mountPlatformSurface<Env extends object>(
     // revoking their role keeps the binding, and handing them the scope would seat someone
     // the scope already let go. Read before step 1 and decided by the directory, which judges
     // an open hand-over first so a refusal names the real state; a refusal writes nothing.
+    // #2447: the successor is a person, so the owner role is seated through the person's door — asked
+    // before the record moves, so a refusal (a role carrying a key reserved to a system principal)
+    // writes nothing and the owner of record stays who it was. A 409, the status the platform audits
+    // as "refused, nothing written". When the record already names `to` (a finished hand-over's
+    // repeat, or a resend of an open one), the record's own answer decides first, below.
+    const seatRefusal = (await host.scopeRoleRefusal?.(body.scopeId, deps.ownerRoleKey, 'person')) ?? null;
+    const recorded = seatRefusal && deps.resolveOwner ? await deps.resolveOwner(c.env, ref) : null;
+    if (seatRefusal && recorded !== body.to) {
+      throw new HTTPException(409, { message: `scope ${body.scopeId}: the owner role cannot be handed to a person: ${seatRefusal}. Nothing was moved.` });
+    }
     const toHoldsRole = await host.hasScopeRoleLocal(body.tenantId, body.scopeId, body.to);
     const record = ownerTransferRecord.parse(await deps.transferOwner(c.env, ref, { ...pair, toHoldsRole }));
     if (record.outcome === 'refused') {
@@ -2426,7 +2463,18 @@ export function mountPlatformSurface<Env extends object>(
     }
     const answer = { scopeId: body.scopeId, from: body.from, owner: body.to, outcome: record.outcome };
     if (record.outcome === 'done') return c.json({ ...answer, fromRevoked: false } satisfies OwnerTransferResult);
-    await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey);
+    if (seatRefusal) {
+      // The record names `to` already and the seat is refused, so nothing more is written. An open
+      // hand-over's resend is a refusal (409); a record this call moved (a race with the read above)
+      // is not "nothing written", so it is a 500, which the platform audits as `failed`.
+      const message =
+        `scope ${body.scopeId}: the owner record names ${body.to}, but the owner role cannot be seated in a person: ` +
+        `${seatRefusal}. Nothing was seated or revoked. The hand-over stays open and finishes on a resend once the owner ` +
+        `role can be seated in a person again (a release whose owner role carries no key reserved to a system principal). ` +
+        `It cannot be abandoned while ${body.to} still holds a role here; take that role back first to abandon it.`;
+      throw new HTTPException(record.outcome === 'already' ? 409 : 500, { message });
+    }
+    await host.assignScopeRole(body.scopeId, body.to, deps.ownerRoleKey, 'person');
     const fromRevoked = await host.revokeScopeRole(body.scopeId, body.from, deps.ownerRoleKey);
     if (!(await deps.completeOwnerTransfer(c.env, ref, pair))) {
       // Seated and revoked, but the hand-over was no longer the open one to close: it was

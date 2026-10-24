@@ -117,7 +117,9 @@ import {
   type RoleBound,
   type ScopeRoleHolder,
   assertModuleDeclared,
+  noteDeclaredKeys,
   noteReservedKeys,
+  SCOPE_SEATED_ROLES_SQL,
   reservedGrantRefusal,
   reservedRoleRefusal,
   reservedShapeRefusal,
@@ -1384,7 +1386,11 @@ export function defineScopeDO(
   for (const registration of modules) assertModuleDeclared(options.permissions, registration.manifest.id);
   // What the declared surface reserves holds in every instance too, whatever registers under its ids.
   const declaredReserved = new Set<string>();
-  for (const m of options.permissions?.modules ?? []) noteReservedKeys(declaredReserved, m.manifest);
+  const declaredListed = new Set<string>();
+  for (const m of options.permissions?.modules ?? []) {
+    noteReservedKeys(declaredReserved, m.manifest);
+    noteDeclaredKeys(declaredListed, m.manifest);
+  }
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
     private readonly sql: SqlStorage;
     private continuationOrder = 0;
@@ -1445,6 +1451,8 @@ export function defineScopeDO(
      * `holder: 'system'` — the role and grant doors' refusals read it.
      */
     private readonly reservedKeys = new Set<string>(declaredReserved);
+    /** #2447: every key those modules declare, marked or not — a role definition projected here reads it. */
+    private readonly declaredKeys = new Set<string>(declaredListed);
     /** #1705: what this deployment exports to other verticals and imports from them. */
     private readonly crossVertical = new CrossVerticalRegistry();
     /**
@@ -1645,6 +1653,7 @@ export function defineScopeDO(
         })),
       });
       noteReservedKeys(this.reservedKeys, manifest);
+      noteDeclaredKeys(this.declaredKeys, manifest);
       if (erasure) this.erasurePlans.push(erasure);
       for (const [name, handler] of Object.entries(registration.predicates ?? {})) {
         this.predicates.set(name, { module: manifest.id, handler });
@@ -5003,10 +5012,15 @@ export function defineScopeDO(
     /**
      * #2430: why `roleKey` may not be conferred through `door` here, or null — the tenant's role as
      * the checker expands it (`controlPlaneReader`), against the keys this class's modules reserve.
-     * A role the tenant does not define is left to the door's own answer for it.
+     * A role the tenant does not define is left to the door's own answer for it. A person's door reads
+     * the role even when this class reserves nothing (#2447): a role stored `holder: 'system'` is
+     * never a person's, whatever this class knows. Accepted cost: on a class that reserves nothing, an
+     * invite, a role change and a `canAssign` read the role here and again for the bound, which on a
+     * scope still reading the shared directory is one more ControlPlaneDO round trip per call. These
+     * doors are a person acting, not a hot path, so one read is not threaded through both.
      */
     async reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
-      if (this.reservedKeys.size === 0) return null;
+      if (door === 'platform' && this.reservedKeys.size === 0) return null;
       const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
       return role ? reservedRoleRefusal(role, this.reservedKeys, door) : null;
     }
@@ -5025,7 +5039,7 @@ export function defineScopeDO(
      * door cannot know, so it refuses.
      */
     async reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
-      if (this.reservedKeys.size === 0) return null;
+      if (door === 'platform' && this.reservedKeys.size === 0) return null;
       const tenantId = this.provisionedFor();
       if (tenantId) return this.reservedRoleRefusalFor(tenantId as TenantId, roleKey, door);
       const tenants = this.hasTable('_substrat_roles')
@@ -5035,7 +5049,8 @@ export function defineScopeDO(
         const refusal = await this.reservedRoleRefusalFor(projected, roleKey, door);
         if (refusal) return refusal;
       }
-      if (tenants.length === 0 && this.permissionSourceIsRemote()) {
+      // A class that reserves nothing has nothing to rule out here, at either door (#2447 keeps that).
+      if (tenants.length === 0 && this.reservedKeys.size > 0 && this.permissionSourceIsRemote()) {
         return (
           `role '${roleKey}' cannot be judged here: this scope has no provisioning receipt and no projected role, and its ` +
           "checks read roles from the control plane, so which tenant's definition a check expands is unknown and a key " +
@@ -5053,6 +5068,33 @@ export function defineScopeDO(
     /** #2430: why a reconcile of declared `shapes` is refused against this class's reservations, or null. */
     async reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null> {
       return reservedShapeRefusal(shapes, this.reservedKeys);
+    }
+
+    /**
+     * #2447: the tenant's roles as this scope stores them, and the role keys anyone but a system
+     * principal holds a live scope-level seat in here — what a role
+     * set defined on this scope, or a role definition fanned out to it, is judged against.
+     */
+    async roleStateHere(tenantId: TenantId): Promise<{ roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[]; seated: string[] }> {
+      // Spine tables only (built in the constructor), so no module migration runs ahead of a provision's.
+      const now = new Date().toISOString();
+      const roles = this.hasTable('_substrat_roles')
+        ? (this.sql.exec('SELECT role_key, permissions, holder FROM _substrat_roles WHERE tenant_id = ? AND revoked_at IS NULL', tenantId).toArray() as {
+            role_key: string;
+            permissions: string;
+            holder: 'person' | 'system' | null;
+          }[]).map((r) => ({ key: r.role_key, permissions: JSON.parse(r.permissions) as string[], ...(r.holder ? { holder: r.holder } : {}) }))
+        : [];
+      // Scope-level seats only. The tenant-level ones are the directory's (the ControlPlaneDO reads
+      // them in its own unit), and this scope's projected copy can be stale: a fan-out skips an
+      // archived scope, and a CP-less projection carries none.
+      const seated = new Set(this.sql.exec(SCOPE_SEATED_ROLES_SQL, now).toArray().map((r) => (r as { role_key: string }).role_key));
+      return { roles, seated: [...seated] };
+    }
+
+    /** #2447: what this class's modules reserve and declare — a coordinator judging a role definition joins its own. */
+    async reservationHere(): Promise<{ reserved: string[]; declared: string[] }> {
+      return { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
     }
 
     /** #2430: which of `permissions` this class's modules reserve to a system principal. */

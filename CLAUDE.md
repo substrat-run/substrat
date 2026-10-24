@@ -210,7 +210,14 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   a role mixing reserved and other keys and admit an all-reserved role, since a stored role does
   not record its holder. The diff a promote shows itemises a moved reservation and a moved role
   holder (`reservationChanges`, `roleChanges[].holder`), and marks a system-held role
-  (`roleChanges[].systemHeld`). The
+  (`roleChanges[].systemHeld`). A role a host defines or seats itself is held too (#2447): `defineRole` and
+  the role set a CP-less provision or restore projects refuse a person's role holding a reserved key (and a
+  system-held role holding a person's key), the provisioning owner seat and the owner hand-over are person
+  doors, and every person door refuses a role stored `holder: 'system'`. A module-less host counts the
+  tenant's system-held roles' keys as reserved, and a key a host knows nothing about is admitted
+  (deliberately: push judges the whole surface). Nothing already seated is revoked, and a directory
+  fan-out is not re-judged. `pnpm lint:role-seat-paths` refuses a host path that seats or defines a role
+  without asking (`tools/role-seat-paths.mjs`, fixtures via `pnpm test:role-seat-paths`). The
   reservation follows the vertical's `permissions.modules`, so that list has to be what the
   host registers: a host given the same `permissions` (`new SqliteScopeHost({ …, permissions })`,
   `defineScopeDO(MODULES, {}, { permissions })`) refuses a module it leaves out, and
@@ -775,7 +782,10 @@ that holds a handler to that declaration), `lint:lifecycle-writes` (`tools/lifec
 every write of a declared lifecycle's state field — an `UPDATE`, an upsert's `DO UPDATE`, a
 `REPLACE INTO` — has `assertTransition`/`transitionFor`, or a
 local wrapper of one, before it — in its function or in every caller of the one helper that
-writes), and `lint:operation-tests --base <ref>`, which is advisory and never fails (a
+writes), `lint:role-seat-paths` (`tools/role-seat-paths.mjs`, #2447: in the hosts' shipped source, every
+role tuple, role-table write, kernel scope-role writer and ScopeDO role projection has a reserved-key refusal
+before it in its function, or sits in a function its `ALLOWED` list names with the reason — a revoke, or a
+fan-out of definitions already judged; a stale entry is refused too), and `lint:operation-tests --base <ref>`, which is advisory and never fails (a
 `::warning` for an operation new since the base that no test in its package names) — and
 `lint:changelog --check` — which asserts a hand-written digest accounts
 for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`

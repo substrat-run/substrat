@@ -471,10 +471,15 @@ import {
   type RoleBound,
   type ScopeRoleHolder,
   assertModuleDeclared,
+  noteDeclaredKeys,
   noteReservedKeys,
   reservedGrantRefusal,
+  reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
   reservedShapeRefusal,
+  SCOPE_SEATED_ROLES_SQL,
+  SEAT_HOLDING_SCOPE_STATUSES,
+  TENANT_SEATED_ROLES_SQL,
   type DeclaredPermissions,
   admitPeer,
   boundToPeerDeclarations,
@@ -2083,6 +2088,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly modules = new Map<string, RegisteredModule>();
   /** #2430: what a registered module declares `holder: 'system'` — the role doors' refusal reads it. */
   private readonly reservedKeys = new Set<string>();
+  /** #2447: every key a registered or listed module declares, marked or not — a role definition reads it. */
+  private readonly declaredKeys = new Set<string>();
   /** #2430: the declared permission surface `registerModule` holds each module to, when given. */
   private readonly permissions: DeclaredPermissions | undefined;
   /** #1705: what this deployment exports to other verticals and imports from them. */
@@ -2202,7 +2209,10 @@ export class SqliteScopeHost implements ScopeHost {
     this.migrationsDigest = options.migrationsDigest;
     this.permissions = options.permissions;
     // #2430: what the declared surface reserves holds here too, whatever is registered under its ids.
-    for (const m of options.permissions?.modules ?? []) noteReservedKeys(this.reservedKeys, m.manifest);
+    for (const m of options.permissions?.modules ?? []) {
+      noteReservedKeys(this.reservedKeys, m.manifest);
+      noteDeclaredKeys(this.declaredKeys, m.manifest);
+    }
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
@@ -3247,6 +3257,7 @@ export class SqliteScopeHost implements ScopeHost {
       purgeOnlyKeys: purgeOnlyKeysOf(manifest.schedules ?? []),
     });
     noteReservedKeys(this.reservedKeys, manifest);
+    noteDeclaredKeys(this.declaredKeys, manifest);
     if (erasure) this.erasurePlans.push(erasure);
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
@@ -5759,6 +5770,43 @@ export class SqliteScopeHost implements ScopeHost {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
     const refusal = role ? reservedRoleRefusal(role, this.reservedKeys, door) : null;
     if (refusal) throw substratError('forbidden', refusal);
+  }
+
+  /**
+   * #2447: refuse defining `role` for `tenantId` (`reservedRoleDefinitionRefusal`): against the keys
+   * the modules registered or listed here reserve and declare, and the tenant's other roles.
+   */
+  private refuseReservedDefinition(tenantId: TenantId, role: RoleDefinition): void {
+    const prefix = `${tenantId}/`;
+    const tenantRoles = [...this.roles].filter(([k]) => k.startsWith(prefix)).map(([, r]) => r);
+    const stored = this.roles.get(`${tenantId}/${role.key}`);
+    // The seats are read only for the one case they decide: a system-held definition of a key with no
+    // system-held definition stored (none at all included: a seat can outlive its role's row).
+    const seated = stored?.holder !== 'system' && role.holder === 'system' && this.roleSeated(tenantId, role.key);
+    const refusal = reservedRoleDefinitionRefusal(role, { reserved: this.reservedKeys, declared: this.declaredKeys }, tenantRoles, seated);
+    if (refusal) throw substratError('forbidden', refusal);
+  }
+
+  /**
+   * #2447: does anyone but a system principal hold a live seat in `roleKey` in this tenant — a
+   * tenant-level assignment, or a scope-level one in any of its scopes not reaped
+   * (`SEAT_HOLDING_SCOPE_STATUSES`: an archived scope's seats come back on unarchive, one archived
+   * straight from provisioning included)? A scope with no store on disk holds none and is not opened.
+   */
+  private roleSeated(tenantId: TenantId, roleKey: string): boolean {
+    const now = this.clock();
+    const holds = (rows: unknown[]) => (rows as { role_key: string }[]).some((r) => r.role_key === roleKey);
+    if (holds(this.directory.prepare(TENANT_SEATED_ROLES_SQL).all(tenantId, now))) return true;
+    const scopes = this.directory
+      .prepare(`SELECT scope_id FROM scopes WHERE tenant_id = ? AND status IN (${SEAT_HOLDING_SCOPE_STATUSES.map(() => '?').join(', ')})`)
+      .all(tenantId, ...SEAT_HOLDING_SCOPE_STATUSES) as { scope_id: string }[];
+    return scopes.some((s) => {
+      // Read without creating storage: a scope whose store is neither open nor on disk never held a
+      // seat (a scope archived straight from provisioning may be one), and opening it would create it.
+      const id = s.scope_id as ScopeId;
+      if (!this.scopes.has(`${tenantId}/${id}`) && !existsSync(join(this.dir, `${tenantId}__${id}.sqlite`))) return false;
+      return holds(this.runtime(tenantId, id).db.prepare(SCOPE_SEATED_ROLES_SQL).all(now));
+    });
   }
 
   /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */
@@ -8740,6 +8788,10 @@ export class SqliteScopeHost implements ScopeHost {
       canStoreSecrets: isSecretBoxConfigured(this.secretBox),
       defineRole: async (actor: PlatformActorId, tenantId: TenantId, role: RoleDefinition) => {
         const parsed = roleDefinition.parse(role);
+        // #2447: judged before the write, against this host's keys and the tenant's other roles, so a
+        // role assigned through a door cannot be widened afterwards. A refusal writes nothing, so a
+        // seat of the role as it was stored keeps working.
+        this.refuseReservedDefinition(tenantId, parsed);
         const before = this.roles.get(`${tenantId}/${parsed.key}`) ?? null;
         this.directory
           .prepare(

@@ -394,6 +394,13 @@ jobs:
       # cannot drift from the declared one. Shares attachment-writers' function reading.
       - run: pnpm test:lifecycle-writes
       - run: pnpm lint:lifecycle-writes
+      # Every path where a host seats or defines a role asks the reserved-key rule first (#2447): a
+      # role tuple, a write of the role table, the kernel scope-role writers and a ScopeDO role
+      # projection each have reservedRoleRefusal / reservedRoleDefinitionRefusal (or an adapter
+      # wrapper) before them, or sit in a function its ALLOWED list names with the reason. Shares
+      # attachment-writers' function reading.
+      - run: pnpm test:role-seat-paths
+      - run: pnpm lint:role-seat-paths
       # The review checklist (plugin/substrat/review/checklist.md, #2365) names, per item, the gates
       # that already refuse it, and a review runner trusts that list instead of re-reading what a
       # gate decides. So every command an item's `gates:` line names must exist and be run in

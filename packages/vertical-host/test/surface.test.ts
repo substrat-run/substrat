@@ -162,6 +162,50 @@ describe('mountPlatformSurface — the platform-secret gate', () => {
   });
 });
 
+describe('a restore judges the role set its repair defines before it imports anything (#2447 round 1)', () => {
+  const post = (host: VerticalScopeHost, path: string, body: object) =>
+    appWith(host).request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, ENV);
+
+  it('refuses with a 409 and imports nothing, on /internal/restore and /internal/restore-staged; its twin restores and repairs', async () => {
+    for (const [path, body, restorer] of [
+      ['/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] }, 'restoreScopeLocal'],
+      ['/internal/restore-staged', { tenantId: TENANT, scopeId: SCOPE, stageId: 'stage-1' }, 'restoreStagedScopeLocal'],
+    ] as const) {
+      const refusing = fakeHost({
+        restoreStagedScopeLocal: async () => ({ tables: 3 }) as never,
+        roleSetRefusalLocal: async () => "role 'staff' is a person's role and would hold rsv:run",
+      });
+      const res = await post(refusing, path, body);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/the vertical's roles cannot be defined here: role 'staff'.*Nothing was restored/);
+      expect(refusing.calls).not.toContain(restorer);
+      expect(refusing.calls).not.toContain('projectRolesLocal');
+      const admitting = fakeHost({
+        restoreStagedScopeLocal: async () => {
+          admitting.calls.push('restoreStagedScopeLocal');
+          return { tables: 3 } as never;
+        },
+        roleSetRefusalLocal: async () => null,
+      });
+      expect((await post(admitting, path, body)).status).toBe(200);
+      expect(admitting.calls).toEqual(expect.arrayContaining([restorer, 'projectRolesLocal']));
+    }
+  });
+
+  it('hands the whole restore’s dump to the pre-check, so it is judged against the dump’s roles and seats (round 2)', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      roleSetRefusalLocal: async (_s, _r, dump) => {
+        seen.push(dump);
+        return null;
+      },
+    });
+    const tables = [{ name: '_substrat_tuples', ddl: 'CREATE TABLE _substrat_tuples (x)', columns: ['subject'], rows: [['principal:p']] }];
+    expect((await post(host, '/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables })).status).toBe(200);
+    expect(seen).toEqual([{ tenantId: TENANT, tables }]);
+  });
+});
+
 describe('mountPlatformSurface — the error envelope (#510 regression)', () => {
   it('renders a thrown route as { error: <real message> }, never bare "Internal Server Error"', async () => {
     const host = fakeHost({
@@ -2441,7 +2485,7 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
 
   /** One scope's owner state: the record, the last hand-over, members, owner-role holders. */
   function world(
-    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[] } = {},
+    init: { record?: string | null; claimed?: boolean; members?: string[]; seats?: string[]; roles?: string[]; seatRefusal?: string } = {},
   ) {
     const w = {
       record: init.record === undefined ? A : init.record,
@@ -2452,6 +2496,10 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       /** Who holds SOME live role in the scope (a member role), besides the owner seats. */
       roles: new Set(init.roles ?? [A, B, C]),
       steps: [] as string[],
+      /** #2447: each owner role the hand-over asked the person's door about, before any step. */
+      judged: [] as string[],
+      /** #2447: what the person's door answers for the owner role; null admits it. */
+      seatRefusal: init.seatRefusal ?? null,
       /** Throw on the named step, once — the failure "between" steps. */
       failOn: null as null | Step,
     };
@@ -2509,8 +2557,13 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
       return 'abandoned' as const;
     };
     const host = fakeHost({
-      assignScopeRole: async (_s, principal, roleKey) => {
-        w.steps.push(`assign ${principal} ${roleKey}`);
+      // #2447: the person's door the hand-over asks first, and passes to the seat.
+      scopeRoleRefusal: async (_s, roleKey, door) => {
+        w.judged.push(`${roleKey} ${door}`);
+        return w.seatRefusal;
+      },
+      assignScopeRole: async (_s, principal, roleKey, door) => {
+        w.steps.push(`assign ${principal} ${roleKey}${door ? ` (${door})` : ''}`);
         failIf('assign');
         w.seats.add(principal);
       },
@@ -2542,8 +2595,51 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     const res = await send({ ...REF, from: A, to: B });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'transferred', fromRevoked: true });
-    expect(w.steps).toEqual(['record', `assign ${B} admin`, `revoke ${A} admin`, 'complete']);
+    expect(w.judged).toEqual(['admin person']);
+    expect(w.steps).toEqual(['record', `assign ${B} admin (person)`, `revoke ${A} admin`, 'complete']);
     expect(state()).toEqual({ record: B, seats: [B], last: { from: A, to: B, state: 'done' } });
+  });
+
+  it('refuses, before the record moves, an owner role the person’s door refuses (#2447) — nothing is seated or revoked', async () => {
+    const { w, send, state } = world({ seatRefusal: "role 'admin' is declared holder: 'system', a role for a system principal" });
+    const res = await send({ ...REF, from: A, to: B });
+    // A 409: the status the platform audits as "refused, nothing written" (round 1).
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/the owner role cannot be handed to a person: role 'admin' is declared holder: 'system'.*Nothing was moved/);
+    expect(w.judged).toEqual(['admin person']);
+    expect(w.steps).toEqual([]);
+    expect(state()).toEqual({ record: A, seats: [A], last: null });
+  });
+
+  it('a repeat of a finished hand-over stays a 200 that writes nothing, even once the owner role is refused (#2447 round 1)', async () => {
+    const { w, send, state } = world();
+    expect((await send({ ...REF, from: A, to: B })).status).toBe(200);
+    w.seatRefusal = "role 'admin' is declared holder: 'system'";
+    w.steps = [];
+    const again = await send({ ...REF, from: A, to: B });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ scopeId: SCOPE, from: A, owner: B, outcome: 'done', fromRevoked: false });
+    expect(w.steps).toEqual(['record']);
+    expect(state().seats).toEqual([B]);
+  });
+
+  it('a resend of an open hand-over whose seat is now refused says the record moved, and seats nothing (#2447 round 1)', async () => {
+    const { w, send, state } = world();
+    w.failOn = 'assign'; // step 1 ran: the record names B, the hand-over is open
+    expect((await send({ ...REF, from: A, to: B })).ok).toBe(false);
+    w.seatRefusal = "role 'admin' is declared holder: 'system'";
+    w.steps = [];
+    const resend = await send({ ...REF, from: A, to: B });
+    expect(resend.status).toBe(409);
+    const { error } = (await resend.json()) as { error: string };
+    expect(error).toMatch(/the owner record names .*, but the owner role cannot be seated in a person: .*Nothing was seated or revoked/);
+    expect(error).not.toMatch(/Nothing was moved/);
+    // It names the ways out that work in this state, not an abandon this state refuses (round 2).
+    expect(error).toMatch(/finishes on a resend once the owner role can be seated in a person again/);
+    expect(error).toMatch(/cannot be abandoned while .* still holds a role here/);
+    expect(w.steps).toEqual(['record']);
+    expect(state()).toEqual({ record: B, seats: [A], last: { from: A, to: B, state: 'pending' } });
+    expect((await send({ ...REF, from: A, to: B, abandon: true })).status).toBe(409); // `healthy`, as the message says
   });
 
   it('a repeat of a finished hand-over is a 200 that seats and revokes nothing', async () => {

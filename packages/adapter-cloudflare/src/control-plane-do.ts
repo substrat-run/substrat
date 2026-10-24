@@ -8,7 +8,9 @@ import {
   RAISE_MEMBERSHIP_FENCE_SQL,
   memberAddedAudit,
   orgChangeBound,
+  reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
+  TENANT_SEATED_ROLES_SQL,
   tenantCoverage,
   type MembershipChange,
   type MembershipChangeResult,
@@ -2847,8 +2849,51 @@ export class ControlPlaneDO extends DurableObject {
 
   // -- roles (checker rule 1) -------------------------------------------------
 
-  /** INSERT OR REPLACE; return the previous role (for the audit `before`) or null. */
+  /**
+   * Kept for a coordinator from before #2447, which calls it and reads the previous role (for the
+   * audit `before`) or null. The definition is judged as `defineRoleOrRefusal` judges it, and a
+   * refusal is THROWN, so such a coordinator cannot read it as the previous role and audit a change
+   * that never happened.
+   */
   defineRole(tenantId: string, role: RoleDefinition): RoleDefinition | null {
+    const outcome = this.defineRoleOrRefusal(tenantId, role);
+    if ('refused' in outcome) throw new Error(outcome.refused);
+    return outcome.before;
+  }
+
+  /**
+   * INSERT OR REPLACE; answer the previous role (for the audit `before`) or null. Judged first, in
+   * the same unit (#2447, `reservedRoleDefinitionRefusal`): against `reservation`, what the
+   * coordinator's modules reserve and declare, and the tenant's roles as stored now, so no
+   * concurrent definition lands between the read and the write. Whether the key is seated decides a
+   * system-held definition of a key with no system-held definition stored (none at all included): its tenant-level seats are read here, in the unit, and
+   * `seatedInScopes` carries what the coordinator read off the tenant's scopes. A refusal is answered
+   * as data, so its text survives the hop, and writes nothing. The current coordinator calls this one
+   * (the same split as `transitionScope` and `transitionScopeOrRefusal`).
+   */
+  defineRoleOrRefusal(
+    tenantId: string,
+    role: RoleDefinition,
+    reservation: { reserved: readonly string[]; declared: readonly string[] } = { reserved: [], declared: [] },
+    seatedInScopes = false,
+  ): { before: RoleDefinition | null } | { refused: string } {
+    const tenantRoles = this.listRoles({ tenantId }).map((r) => ({
+      key: r.role_key,
+      permissions: JSON.parse(r.permissions) as string[],
+      holder: r.holder ?? undefined,
+    }));
+    const stored = tenantRoles.find((r) => r.key === role.key);
+    const seated =
+      stored?.holder !== 'system' && role.holder === 'system' &&
+      (seatedInScopes ||
+        (this.sql.exec(TENANT_SEATED_ROLES_SQL, tenantId, new Date().toISOString()).toArray() as { role_key: string }[]).some((r) => r.role_key === role.key));
+    const refused = reservedRoleDefinitionRefusal(
+      role,
+      { reserved: new Set(reservation.reserved), declared: new Set(reservation.declared) },
+      tenantRoles,
+      seated,
+    );
+    if (refused) return { refused };
     const before = this.getRole(tenantId, role.key) ?? null;
     this.sql.exec(
       `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder)
@@ -2859,7 +2904,7 @@ export class ControlPlaneDO extends DurableObject {
       String(role.source),
       role.holder ?? 'person',
     );
-    return before;
+    return { before };
   }
 
   /** Raw rows; the coordinator parses them through the `tenantRole` contract. */
