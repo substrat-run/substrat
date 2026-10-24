@@ -383,6 +383,13 @@ export interface DashboardClient {
   appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
 
   /**
+   * Ask the dashboard assistant a question about this team, read-only, as the assistant stream protocol
+   *
+   * `POST /assistant/ask` — `dashboard/ask`
+   */
+  ask(input: { messages: ({ role: "user" | "assistant"; text: string })[] }): Promise<{ events: Record<string, unknown>[] }>;
+
+  /**
    * Attach a custom domain to a preview's scope: what makes a pinned preview a long-lived test environment
    *
    * `POST /deployments/{slug}/previews/{tag}/domain` — `dashboard/bind-preview-domain`
@@ -854,6 +861,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/volume`, "GET", undefined, omit(input, ["scopeId"])),
     appRequests: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/list`, "GET", undefined, omit(input, ["scopeId"])),
+    ask: (input: Args) =>
+      send("/assistant/ask", "POST", input, undefined),
     bindPreviewDomain: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
     businessVolumes: (input: Args) =>

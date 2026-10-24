@@ -573,6 +573,33 @@ providers we route through is five, so a sixth key is refused at the line rather
 silently dropped on the wire). A `record` that throws fails the run: a call that could not
 be recorded must not look like one that was.
 
+**Tools and conversations.** Instead of `prompt`, a request may carry `messages`, a
+conversation oldest first and ending with the user's turn (exactly one of the two). It may
+also carry `tools`: each is `{ description, input, execute }`, where `input` is a Zod schema
+the model's arguments are parsed with and `execute` is your code, running with your
+authority. A tool call runs `execute`, hands its result back to the model, and the run goes
+on, up to `maxSteps` model calls (default 4, at most `MODEL_MAX_STEPS`, 8). The guard runs
+**once**, before the first call: a request with tools is one decision to spend. The usage
+line covers every step, priced per step. `run.steps` lists each model call with the tool calls
+it made and their results, which is what a turn record or a "query it ran" view shows.
+
+```ts
+const run = await models.run({
+  spec, attribution,
+  system,
+  messages: [{ role: 'user', content: 'Why do uploads fail?' }],
+  tools: {
+    list_findings: {
+      description: 'List the team’s open findings',
+      input: z.object({ limit: z.number().int().max(25).optional() }),
+      execute: async ({ limit }) => ({ findings: await readFindingsAsTheCaller(limit) }),
+    },
+  },
+  maxSteps: 4,
+});
+run.steps;       // [{ text, toolCalls: [{ callId, tool, input }], toolResults: [{ callId, tool, output }] }, …]
+```
+
 `status(spec)` answers a settings screen — is this row configured on the platform, and
 what is it missing — without running anything.
 
