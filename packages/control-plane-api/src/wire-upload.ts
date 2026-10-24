@@ -19,7 +19,7 @@
  * ids, or why nothing was given. The vertical never declares any of it.
  */
 import { verticalSlug, type WireAuthRecord } from '@substrat-run/contracts';
-import { wireUploadSettings, WIRE_ENVELOPE_VERSION, WIRE_UPLOAD_STATE } from '@substrat-run/contracts/wire-signing';
+import { wireUploadSettings, wireVerificationKeys, WIRE_ENVELOPE_VERSION, WIRE_UPLOAD_STATE } from '@substrat-run/contracts/wire-signing';
 import { platformEntrySkipReason } from './platform-entry.js';
 import type { VerticalBundle } from './deploy.js';
 
@@ -108,7 +108,29 @@ export async function wireUploadFor(
       refusal: null,
     };
   } catch (error) {
-    // The list parser's messages are fixed text naming a problem, never a key.
-    return nothing('lists-refused', error instanceof Error ? error.message : 'the lists did not load');
+    return nothing('lists-refused', await refusedList(settings, error));
   }
+}
+
+/**
+ * Why the lists were refused, naming the setting to fix: each list is loaded alone, and the first
+ * that fails is named with its problem. When each loads alone (a key in both, or an audience the
+ * encoder would not carry), the refusal is the one given. The parser's messages are fixed text
+ * naming a problem, never a key.
+ */
+async function refusedList(settings: WireUploadSettings | undefined, error: unknown): Promise<string> {
+  const problem = (e: unknown) => (e instanceof Error ? e.message : 'the list did not load').replace(/^a store public key/, 'a public key');
+  for (const [name, router, platform] of [
+    ['WIRE_ROUTER_PUBLIC_KEYS', settings?.routerKeys, undefined],
+    ['WIRE_PLATFORM_PUBLIC_KEYS', undefined, settings?.platformKeys],
+  ] as const) {
+    const list = router ?? platform;
+    if (!list?.trim()) return `${name} lists no key`;
+    try {
+      await wireVerificationKeys({ router, platform });
+    } catch (e) {
+      return `${name}: ${problem(e)}`;
+    }
+  }
+  return problem(error);
 }

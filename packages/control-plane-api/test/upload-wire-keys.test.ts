@@ -200,7 +200,9 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   });
 
   it('off, unset or left out: no upload carries anything, the bindings are the ones sent with no setting at all, and each records that it gave nothing', async () => {
-    const sent: Record<string, string[]> = {};
+    const sent: Record<string, unknown[]> = {};
+    // Whole binding objects, the version's own id aside: it is the one value two versions never share.
+    const comparable = (b: { name: string; text?: string }) => (b.name === 'SUBSTRAT_VERSION_ID' ? { ...b, text: '<version>' } : b);
     for (const [name, settings] of [
       ['none', null],
       ['off', { rollout: 'off', routerKeys, platformKeys }],
@@ -209,7 +211,7 @@ describe('the uploader gives the deployments the rollout names their lists, audi
       const { verticalSlug, scripts } = await serve(appWith(settings), await tenantOf(`wire-${name}`));
       const [archive, serving] = scripts;
       for (const script of scripts) expect(Object.keys(wireOf(script)), `${name} ${script}`).toEqual([]);
-      sent[name] = [...bindingsOf(archive), ...bindingsOf(serving)].map((b) => `${b.type}:${b.name}`);
+      sent[name] = [...bindingsOf(archive), ...bindingsOf(serving)].map(comparable);
       const records = await recordsOf(verticalSlug);
       for (const script of scripts) {
         expect(records[script]?.record, `${name} ${script}`).toEqual({
@@ -232,6 +234,29 @@ describe('the uploader gives the deployments the rollout names their lists, audi
     expect(Object.values(records).map((r) => r.record.withheld)).toEqual(['not-in-rollout', 'not-in-rollout']);
   });
 
+  it('the in-place serve every later promote does gives the serving script its lists too, under the fleet and under a canary', async () => {
+    for (const kind of ['fleet', 'canary'] as const) {
+      const tenant = await tenantOf(`wire-inplace-${kind}`);
+      const app = appWith({ rollout: kind === 'fleet' ? 'fleet' : `canary:${tenant}/crm`, routerKeys, platformKeys });
+      await serve(app, tenant);
+      const second = await serve(app, tenant);
+      const serving = second.scripts[1];
+      // The second serve updated the serving script in place: no fresh migration tag, as a first serve declares.
+      expect(puts.filter((p) => p.script === serving)).toHaveLength(2);
+      expect(lastPutTo(serving).meta['migrations'], kind).toBeUndefined();
+      expect(Object.values(wireOf(serving)).map((b) => [b.name, b.text]), kind).toEqual([
+        [WIRE_ROUTER_KEYS_VAR, routerKeys.trim()],
+        [WIRE_PLATFORM_KEYS_VAR, platformKeys],
+        [WIRE_AUDIENCE_VAR, serving],
+        [WIRE_STATE_VAR, 'dual'],
+      ]);
+      expect((await recordsOf(second.verticalSlug))[serving], kind).toMatchObject({
+        versionId: second.id,
+        record: { state: 'dual', audience: serving, routerKids: kids.router, platformKids: kids.platform, withheld: null },
+      });
+    }
+  });
+
   it('a re-upload writes the lists again from the setting: given, then taken back by an upload under `off`', async () => {
     const tenant = await tenantOf('wire-again');
     const first = await serve(appWith(fleet()), tenant);
@@ -252,9 +277,9 @@ describe('the uploader gives the deployments the rollout names their lists, audi
       // The router's key listed for the platform too: it could sign as the platform.
       ['wire-shared', { rollout: 'fleet', routerKeys, platformKeys: `${platformKeys},${first}` }, /listed for both issuers/],
       // A list missing.
-      ['wire-missing', { rollout: 'fleet', routerKeys }, /at least one key/],
+      ['wire-missing', { rollout: 'fleet', routerKeys }, /^WIRE_PLATFORM_PUBLIC_KEYS lists no key$/],
       // A key that is not one.
-      ['wire-garbled', { rollout: 'fleet', routerKeys: `${routerKeys},not-a-key`, platformKeys }, /./],
+      ['wire-garbled', { rollout: 'fleet', routerKeys: `${routerKeys},not-a-key`, platformKeys }, /^WIRE_ROUTER_PUBLIC_KEYS: a public key /],
     ] as const) {
       const { verticalSlug, scripts } = await serve(appWith(settings), await tenantOf(tenant));
       for (const script of scripts) expect(Object.keys(wireOf(script)), `${tenant} ${script}`).toEqual([]);
