@@ -9001,56 +9001,9 @@ export function defineScopeDO(
     // into a scope's own storage (Phase 2), then flips the source to 'local'. Public
     // RPC methods so `CloudflareScopeHost` (and the projection sweep) can call them.
 
-    /** Project (upsert) a role definition into this scope. */
-    async projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string; holder?: 'person' | 'system' }): Promise<void> {
-      await this.queue.enqueue(() => {
-        this.sql.exec(
-          `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder, revoked_at)
-           VALUES (?, ?, ?, ?, ?, NULL)`,
-          tenantId,
-          role.key,
-          JSON.stringify(role.permissions),
-          role.source,
-          role.holder ?? null,
-        );
-      });
-    }
-
-    /** Tombstone a projected role — it stops granting but stays as evidence (K-21). */
-    async revokeProjectedRole(tenantId: string, key: string, revokedAt: string): Promise<void> {
-      await this.queue.enqueue(() => {
-        this.sql.exec(
-          `UPDATE _substrat_roles SET revoked_at = ? WHERE tenant_id = ? AND role_key = ?`,
-          revokedAt,
-          tenantId,
-          key,
-        );
-      });
-    }
-
-    /** Project (upsert) a tenant-level tuple into this scope. `revokedAt` tombstones it. */
-    async projectTenantTuple(
-      tenantId: string,
-      subject: string,
-      relation: string,
-      object: string,
-      expiresAt: string | null,
-      revokedAt: string | null = null,
-    ): Promise<void> {
-      await this.queue.enqueue(() => {
-        this.sql.exec(
-          `INSERT OR REPLACE INTO _substrat_tenant_tuples
-             (tenant_id, subject, relation, object, expires_at, revoked_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          tenantId,
-          subject,
-          relation,
-          object,
-          expiresAt,
-          revokedAt,
-        );
-      });
-    }
+    // #2531: no per-row role or tenant-tuple projection RPC. Every projected row arrives through
+    // `applyProjection`, whose callers judge what they project (or fan out definitions already
+    // judged), so no RPC writes a role row unjudged.
 
     /** Flip which reader the checker uses. 'local' makes projections authoritative. */
     async setPermissionSource(source: 'local' | 'control-plane'): Promise<void> {

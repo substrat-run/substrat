@@ -645,7 +645,8 @@ export interface VerticalScopeHost {
   /**
    * #2447: why `roleKey` may not be seated at scope level through `door`, or null — asked by the
    * hand-over before the record moves, so a refused seat leaves nothing half-done. Optional: a host
-   * without it is held only by `assignScopeRole`'s own door, after the record moved.
+   * without it predates the person's door, so the hand-over answers 501 before the record moves
+   * rather than seat through a door that ignores `'person'` (#2531).
    */
   scopeRoleRefusal?(scopeId: ScopeId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
   revokeScopeRole?(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean>;
@@ -2624,6 +2625,17 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.assignScopeRole || !host.revokeScopeRole || !host.hasScopeRoleLocal) {
       return refuseStatus(c, 501, 'this deployment cannot seat a new owner (#1665) — redeploy it. Nothing was moved.');
     }
+    // #2531: a scope host without `scopeRoleRefusal` predates the person's door (#2447, the same
+    // release), so it would ignore the `'person'` below and seat through the platform's door. Fail
+    // closed rather than seat unjudged: the pair is upgraded together.
+    if (!host.scopeRoleRefusal) {
+      return refuseStatus(
+        c,
+        501,
+        "this deployment's scope host cannot judge the owner seat as a person's (#2447) — upgrade the adapter beside " +
+          '@substrat-run/vertical-host and redeploy. Nothing was moved.',
+      );
+    }
     // A bound login is not enough: `to` must still hold a role here. A member removed by
     // revoking their role keeps the binding, and handing them the scope would seat someone
     // the scope already let go. Read before step 1 and decided by the directory, which judges
@@ -2633,7 +2645,7 @@ export function mountPlatformSurface<Env extends object>(
     // writes nothing and the owner of record stays who it was. A 409, the status the platform audits
     // as "refused, nothing written". When the record already names `to` (a finished hand-over's
     // repeat, or a resend of an open one), the record's own answer decides first, below.
-    const seatRefusal = (await host.scopeRoleRefusal?.(body.scopeId, deps.ownerRoleKey, 'person')) ?? null;
+    const seatRefusal = await host.scopeRoleRefusal(body.scopeId, deps.ownerRoleKey, 'person');
     const recorded = seatRefusal && deps.resolveOwner ? await deps.resolveOwner(c.env, ref) : null;
     if (seatRefusal && recorded !== body.to) {
       throw new HTTPException(409, { message: `scope ${body.scopeId}: the owner role cannot be handed to a person: ${seatRefusal}. Nothing was moved.` });

@@ -4,6 +4,7 @@ import { REWIND_REFUSED } from '../src/rewind-refusal.js';
 import { ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey } from '@substrat-run/kernel';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
+import { seedProjectedRole, seedProjectedTenantTuple, tombstoneProjectedRole } from './seed-projection.js';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { armRewind, awaitRestart, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
@@ -1033,10 +1034,11 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     await host.admin.assignRole(staff, { principalId: principalId.parse(ulid()), roleKey: 'mixed', node: { tenantId: t, scopeId: null } });
   });
 
-  /** The ScopeDO's role projection, called directly: it writes a role row and no receipt. */
+  /** A role row seeded straight into the scope's store: no receipt, and no host judgement. */
   function projector(scope: ScopeId) {
-    return env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
-      projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(scope));
+    return {
+      projectRole: (tenantId: string, role: { key: string; permissions: string[]; source: string }) => seedProjectedRole(stub, tenantId, role),
     };
   }
   /** The `granted:` relations a subject (`principal:<id>`, `connection:<id>`) holds in a scope, read off its tuples. */
@@ -2831,13 +2833,10 @@ describe('scope-local permissions — the projected local reader (Phase 1)', () 
       .allowed;
 
   interface ProjectionRpc {
-    projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
-    projectTenantTuple(tenantId: string, subject: string, relation: string, object: string, expiresAt: string | null, revokedAt?: string | null): Promise<void>;
-    revokeProjectedRole(tenantId: string, key: string, revokedAt: string): Promise<void>;
     setPermissionSource(source: 'local' | 'control-plane'): Promise<void>;
   }
-  const projection = (scope: string): ProjectionRpc =>
-    env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as ProjectionRpc;
+  const stubOf = (scope: string) => env.SCOPE.get(env.SCOPE.idFromName(scope));
+  const projection = (scope: string): ProjectionRpc => stubOf(scope) as unknown as ProjectionRpc;
 
   beforeAll(async () => {
     host = new CloudflareScopeHost({
@@ -2862,15 +2861,14 @@ describe('scope-local permissions — the projected local reader (Phase 1)', () 
   it('resolves via RPC by default, then identically via the local projection', async () => {
     expect(await probe(sProj)).toBe(true); // RPC baseline
 
-    const p = projection(sProj);
-    await p.projectRole(t, { key: 'admin', permissions: [PERM_ADMIN], source: 'vertical' });
-    await p.projectTenantTuple(t, `principal:${alice}`, 'role:admin', `tenant:${t}`, null);
-    await p.setPermissionSource('local');
+    await seedProjectedRole(stubOf(sProj), t, { key: 'admin', permissions: [PERM_ADMIN], source: 'vertical' });
+    await seedProjectedTenantTuple(stubOf(sProj), t, { subject: `principal:${alice}`, relation: 'role:admin', object: `tenant:${t}` });
+    await projection(sProj).setPermissionSource('local');
     expect(await probe(sProj)).toBe(true); // now resolved locally — parity
   });
 
   it('a tombstoned projected role stops granting (K-21)', async () => {
-    await projection(sProj).revokeProjectedRole(t, 'admin', new Date().toISOString());
+    await tombstoneProjectedRole(stubOf(sProj), t, 'admin', new Date().toISOString());
     expect(await probe(sProj)).toBe(false);
   });
 

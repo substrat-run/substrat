@@ -3270,6 +3270,17 @@ describe('mountPlatformSurface — the owner hand-over (#1665)', () => {
     expect(touched).toEqual([]);
   });
 
+  it('501s on a scope host that predates the person’s door (#2531) — before the record moves, nothing seated', async () => {
+    const { w, host, send, state } = world();
+    const before = state();
+    delete host.scopeRoleRefusal;
+    const res = await send({ ...REF, from: A, to: B });
+    expect(res.status).toBe(501);
+    expect(((await res.json()) as { error: string }).error).toMatch(/upgrade the adapter beside @substrat-run\/vertical-host/);
+    expect(w.steps).toEqual([]);
+    expect(state()).toEqual(before);
+  });
+
   it('is behind the platform-secret gate — and its twin with the secret gets through', async () => {
     const { w, app } = world();
     const body = JSON.stringify({ ...REF, from: A, to: B });
