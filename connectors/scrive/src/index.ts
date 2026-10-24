@@ -892,7 +892,7 @@ export async function reconcileScriveDispatch(
     /**
      * Keep a sealed file held as too large held while the document's `mtime` is unchanged, instead of
      * fetching again. Off by default: an explicit reconcile or a callback is somebody asking, and
-     * retries. The sweep turns it on.
+     * retries. A passive caller turns it on; the sweep does not need to, since it only reconciles rows still short of a signature, which attempt no sealed file.
      */
     honourHeld?: boolean;
   },
@@ -1607,7 +1607,7 @@ export async function sweepScriveReconciliations(
       continue;
     }
     try {
-      const r = await reconcileScriveDispatch(host, connectionId, state.instanceId, { ...options, honourHeld: true });
+      const r = await reconcileScriveDispatch(host, connectionId, state.instanceId, options);
       result.polled += 1;
       (r.complete ? result.completed : result.outstanding).push(state.instanceId);
       for (const a of r.needsAttention) result.needsAttention.push({ instanceId: state.instanceId, ...a });
