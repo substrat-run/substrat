@@ -450,7 +450,8 @@ step 6, withdraws the credential.
   the two issuers: the same functions, judgements and refusals, with `--issuer router|platform` in
   place of `--audience`. `generate` writes a private key only outside any work tree, `doctor` checks
   a configured set (and warns when a list holds no standby beside the key in use), and `rotate`
-  prints the steps, the break-glass order included. The private keys are `WIRE_ROUTER_KEY` on the
+  prints the steps, the break-glass order included; its `--drop` refuses to print a list that would
+  leave the key in use with no standby beside it, unless `--without-standby` is passed. The private keys are `WIRE_ROUTER_KEY` on the
   router and `WIRE_PLATFORM_KEY` on the control plane; the lists, `WIRE_ROUTER_PUBLIC_KEYS` and
   `WIRE_PLATFORM_PUBLIC_KEYS`, are held by the control plane, which uploads deployments. Secrets are
   pushed with `scripts/secrets.mjs`, as today, and `pnpm lint:secrets-coverage` holds the manifest,
@@ -551,11 +552,12 @@ step 6, withdraws the credential.
   own that opts in by name.
 - **The signers count** envelopes signed and signing failures. The router's request line carries
   `wire: 'signed' | 'failed'` for a dispatch it tried to sign, and a peer invocation writes
-  `{ router: 'wire-sign', kind, aud, outcome }`; the control plane writes
-  `{ substrat: 'wire-sign', issuer: 'platform', aud, outcome }` per call, with a `reason` beside
-  `failed`, and `outcome: 'skipped'` with `reason: 'stream'` for a streamed call it leaves unsigned
-  by design (§3.6), so a readiness report never reads a deliberate skip as a signing failure. A failure names why (`unset`, the key form's refusal, `claims`, or `error` for anything
-  else), never a key. Both signers decide through one function, contracts' `wireSignerOf`, so the
+  `{ router: 'wire-sign', kind, aud, outcome }` whichever the outcome; the control plane writes
+  `{ substrat: 'wire-sign', issuer: 'platform', aud, outcome }` per call. Each carries a `reason`
+  beside `failed`, and the control plane writes `outcome: 'skipped'` with `reason: 'stream'` for a
+  streamed call it leaves unsigned by design (§3.6), so a readiness report never reads a deliberate
+  skip as a signing failure. A failure names why (`unset`, the key form's refusal, `claims` for the
+  encoder's own refusal, or `error` for anything else, an unreadable body included), never a key. Both signers decide through one function, contracts' `wireSignerOf`, so the
   reasons are the same on both. None of these is written while `sign` is off. A signer whose key will not import keeps sending the legacy
   headers and raises an alarm (`router: 'wire-sign-failed'` on the router's error log). Where
   every environment it signs for is still `dual`, that is degraded but serving. In a
