@@ -162,3 +162,32 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
   expect(await roleDoor('unknown')).toMatch(/must declare holder: 'system'/);
   expect(await roleDoor('system')).toBeNull();
 });
+
+// #2447 (CodeRabbit on #2525): the legacy `defineRole` a coordinator from before #2447 calls keeps
+// its shape, the previous role or null, and THROWS a refusal, so that coordinator cannot read a
+// refusal as the previous role and audit a change that never happened. The judged answer, as data,
+// is `defineRoleOrRefusal`'s.
+it('the legacy defineRole throws a refusal and writes nothing; its twin answers the previous role, as before', async () => {
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`role-legacy-${ulid()}`)) as unknown as {
+    defineRole(tenantId: string, role: { key: string; permissions: string[]; source: 'vertical'; holder?: 'system' }): Promise<unknown>;
+    defineRoleOrRefusal(tenantId: string, role: { key: string; permissions: string[]; source: 'vertical'; holder?: 'system' }): Promise<unknown>;
+    getRole(tenantId: string, key: string): Promise<{ key: string; permissions: string[]; holder?: 'person' | 'system' } | undefined>;
+  };
+  const tenant = ulid();
+  // A system-held role whose key a person's role may then not hold (the tenant's own evidence).
+  expect(await stub.defineRole(tenant, { key: 'runner', permissions: ['lgc:run'], source: 'vertical', holder: 'system' })).toBeNull();
+  await expect(() => stub.defineRole(tenant, { key: 'crew', permissions: ['lgc:use', 'lgc:run'], source: 'vertical' })).rejects.toThrow(
+    /role 'crew' is a person's role and would hold lgc:run \(held by the system-held role 'runner'\)/,
+  );
+  expect(await stub.getRole(tenant, 'crew')).toBeUndefined();
+  // The twin: a definition that passes answers the previous role (none, then the first), never a wrapper.
+  expect(await stub.defineRole(tenant, { key: 'crew', permissions: ['lgc:use'], source: 'vertical' })).toBeNull();
+  expect(await stub.defineRole(tenant, { key: 'crew', permissions: ['lgc:use', 'lgc:other'], source: 'vertical' })).toMatchObject({
+    key: 'crew',
+    permissions: ['lgc:use'],
+  });
+  // The current coordinator's method answers the same refusal as data.
+  expect(await stub.defineRoleOrRefusal(tenant, { key: 'crew', permissions: ['lgc:run'], source: 'vertical' })).toEqual({
+    refused: expect.stringMatching(/role 'crew' is a person's role and would hold lgc:run/),
+  });
+});

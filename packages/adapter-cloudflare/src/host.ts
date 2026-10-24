@@ -604,7 +604,6 @@ import type {
   RepliedMethod,
 } from './control-plane-do.js';
 import { unwrapReply, type DoReply } from './do-reply.js';
-import { definedRoleOf } from './role-definition-reply.js';
 
 /**
  * `CloudflareScopeHost` — the coordinator (design doc §5.7). It runs in the
@@ -838,8 +837,10 @@ interface ControlPlaneStub {
     | { ok: true; status: string; vertical: string | null }
     | { ok: false; code: ErrorCode | null; message: string }
   >;
+  /** Kept for a coordinator from before #2447: the previous role, or null; a refusal is thrown. */
+  defineRole(tenantId: string, role: RoleDefinition): Promise<RoleDefinition | null>;
   /** #2447: judged in the unit against `reservation` and the tenant's other roles; a refusal writes nothing. */
-  defineRole(
+  defineRoleOrRefusal(
     tenantId: string,
     role: RoleDefinition,
     reservation?: { reserved: string[]; declared: string[] },
@@ -7585,8 +7586,10 @@ export class CloudflareScopeHost implements ScopeHost {
         // nothing, so a seat of the role as it was stored keeps working.
         const context = await this.definitionContext(tenantId, parsed);
         if (context.unreadable) throw substratError('forbidden', `role '${parsed.key}' cannot be judged: ${context.unreadable}`);
-        // Read by `definedRoleOf`, so a ControlPlaneDO from before #2447 in a deploy's restart window is understood.
-        const defined = definedRoleOf(await this.cp.defineRole(tenantId, parsed, context.reservation, context.seatedInScopes));
+        // `defineRoleOrRefusal`, not the legacy `defineRole` an older coordinator reads. A ControlPlaneDO from
+        // before #2447, met in a deploy's restart window, has no such method, so the call fails loudly rather
+        // than being misread.
+        const defined = await this.cp.defineRoleOrRefusal(tenantId, parsed, context.reservation, context.seatedInScopes);
         if ('refused' in defined) throw substratError('forbidden', defined.refused);
         const before = defined.before;
         await this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
