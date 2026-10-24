@@ -11932,6 +11932,78 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- the history of vertical ownership (#2501) ---------------------------------
+
+    describe('the history of vertical ownership (#2501)', () => {
+      const newSlug = () => `owned-${ulid().toLowerCase()}`;
+      const newOwner = async () => {
+        const t = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: t, slug: `owner-${t.toLowerCase()}`, name: 'Owner' });
+        return t;
+      };
+      const createdAtOf = async (slug: string) => (await host.admin.listVerticals(staff)).find((v) => v.slug === slug)!.createdAt;
+
+      it('opens a period with the registration and closes it with the delete; a slug registered again opens a new one', async () => {
+        const [first, second] = [await newOwner(), await newOwner()];
+        const slug = newSlug();
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: first });
+        const since = await createdAtOf(slug);
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([{ slug, owner: first, since, until: null }]);
+
+        // An identical registration opens nothing; a conflicting one is refused and opens nothing.
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: first });
+        await expect(host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: second })).rejects.toThrow();
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toHaveLength(1);
+
+        // The delete closes the period, and the history outlives the registry row.
+        await host.admin.deleteVertical(staff, slug);
+        const [closed] = await host.admin.listVerticalOwners!(staff, slug);
+        expect(closed).toEqual({ slug, owner: first, since, until: expect.any(String) });
+        expect(closed!.until! >= since).toBe(true);
+
+        // Registered again, by another tenant: the first owner's period stays closed, a new one opens.
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: second });
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([
+          closed,
+          { slug, owner: second, since: await createdAtOf(slug), until: null },
+        ]);
+        // K-24: the read is attributable.
+        expect((await host.admin.accessLog(staff, { method: 'listVerticalOwners' })).length).toBeGreaterThan(0);
+        await host.admin.deleteVertical(staff, slug);
+      });
+
+      it("a platform vertical's owner is none, and a slug never registered has no period", async () => {
+        const slug = newSlug();
+        await host.admin.registerVertical(staff, { slug, name: 'Platform', source: 'builtin' });
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([{ slug, owner: null, since: await createdAtOf(slug), until: null }]);
+        expect(await host.admin.listVerticalOwners!(staff, newSlug())).toEqual([]);
+        await host.admin.deleteVertical(staff, slug);
+      });
+
+      it("a tenant reap keeps the periods it owned: the history is the invoice's, kept for good", async () => {
+        const owner = await newOwner();
+        const [past, standing] = [newSlug(), newSlug()];
+        await host.admin.registerVertical(staff, { slug: past, name: 'Past', source: 'cli', ownerTenant: owner });
+        await host.admin.deleteVertical(staff, past);
+        await host.admin.registerVertical(staff, { slug: standing, name: 'Standing', source: 'cli', ownerTenant: owner });
+        const before = [await host.admin.listVerticalOwners!(staff, past), await host.admin.listVerticalOwners!(staff, standing)];
+        await host.admin.setTenantStatus(staff, owner, 'deleting');
+        await host.admin.reapTenant(staff, owner);
+        expect([await host.admin.listVerticalOwners!(staff, past), await host.admin.listVerticalOwners!(staff, standing)]).toEqual(before);
+        expect(before.flat().map((p) => p.owner)).toEqual([owner, owner]);
+        await host.admin.deleteVertical(staff, standing);
+      });
+
+      it('a delete refused while a scope still runs the vertical leaves the period open', async () => {
+        const owner = await newOwner();
+        const slug = newSlug();
+        await host.admin.registerVertical(staff, { slug, name: 'Bound', source: 'cli', ownerTenant: owner });
+        await host.provisionScope(staff, { tenantId: owner, scopeId: scopeId.parse(ulid()), vertical: slug });
+        await expect(host.admin.deleteVertical(staff, slug)).rejects.toThrow(/still backs/);
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([{ slug, owner, since: await createdAtOf(slug), until: null }]);
+      });
+    });
+
     it('leaves bare (module-less) operations ungated', async () => {
       // test/read-counter was registered via defineOperation, no manifest — it
       // must resolve regardless of entitlements.

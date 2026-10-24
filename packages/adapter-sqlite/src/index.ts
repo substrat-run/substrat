@@ -375,6 +375,12 @@ import {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
   METER_DAYS_DDL,
+  VERTICAL_OWNERS_BACKFILL,
+  VERTICAL_OWNERS_DDL,
+  closeVerticalOwnerRow,
+  listVerticalOwnerRows,
+  openVerticalOwnerRow,
+  verticalOwnerNow,
   listMeterDayRows,
   listMeterDayTakeRows,
   pruneMeterDayRows,
@@ -2927,6 +2933,8 @@ export class SqliteScopeHost implements ScopeHost {
       ${REQUEST_ROLLUP_DDL}
       -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
       ${METER_DAYS_DDL}
+      -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
+      ${VERTICAL_OWNERS_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -9739,12 +9747,18 @@ export class SqliteScopeHost implements ScopeHost {
             `vertical '${parsed.slug}' is already registered as ${existing.source}`,
           );
         }
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare(
-            'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          )
-          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString())
-          .changes > 0,
+        const createdAt = verticalOwnerNow();
+        // #2501: the slug's ownership period opens with its row, in the same transaction.
+        this.directoryWriteAndAudit(() => {
+          const changed = this.directory
+            .prepare(
+              'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            )
+            .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, createdAt)
+            .changes > 0;
+          if (changed) openVerticalOwnerRow(redactionSqlOf(this.directory), parsed.slug, parsed.ownerTenant, createdAt);
+          return changed;
+        },
           () => this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed));
       },
       listVerticals: async (actor, page) => {
@@ -9929,6 +9943,7 @@ export class SqliteScopeHost implements ScopeHost {
         }
         // Deployed dispatch scripts are NOT reaped here — they become orphans for the
         // cleanup script (#248), never destroyed alongside a registry row.
+        // #2501: one transaction, so the row and its ownership period close together.
         this.directoryWriteAndAudit(() => {
           this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
           this.directory.prepare('DELETE FROM vertical_channel_history WHERE vertical_slug = ?').run(slug);
@@ -9941,7 +9956,9 @@ export class SqliteScopeHost implements ScopeHost {
           forgetVerticalScopeStores(switchSqlOf(this.directory), slug);
           forgetVerticalWireAuth(switchSqlOf(this.directory), slug);
           this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
-          return this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug).changes > 0;
+          const changed = this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug).changes > 0;
+          if (changed) closeVerticalOwnerRow(redactionSqlOf(this.directory), slug, verticalOwnerNow());
+          return changed;
         }, () => this.recordAdmin(
           actor,
           'deleteVertical',
@@ -9949,6 +9966,11 @@ export class SqliteScopeHost implements ScopeHost {
           { slug, source: existing.source, ownerTenant: existing.ownerTenant },
           null,
         ));
+      },
+      listVerticalOwners: async (actor, slug: string) => {
+        const periods = listVerticalOwnerRows(redactionSqlOf(this.directory), slug);
+        this.recordAccess(actor, 'listVerticalOwners', { tenantId: null }, { slug }, periods.length);
+        return periods;
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await readVersion(versionId);
@@ -13691,6 +13713,8 @@ export class SqliteScopeHost implements ScopeHost {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }
     for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) this.directory.exec(stmt);
+    // #2501: an ownership period for every vertical registered before the history existed.
+    this.directory.exec(VERTICAL_OWNERS_BACKFILL);
     // Created after the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
     //

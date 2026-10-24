@@ -99,6 +99,7 @@ import {
   requestRollupDay,
   meterDay,
   meterDayTake,
+  verticalOwnerPeriod,
   subjectRef,
   createConnectionInput,
   connectLinkFilter,
@@ -193,6 +194,7 @@ import {
   type RequestRollupDay,
   type MeterDay,
   type MeterDayTake,
+  type VerticalOwnerPeriod,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
@@ -551,6 +553,7 @@ import {
   type MeterDayTakeFilter,
   type MeterDayTakeInput,
   type MeterDayTakeResult,
+  verticalOwnerNow,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
@@ -911,6 +914,8 @@ interface ControlPlaneStub {
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string,
     audit: AdminEntry): Promise<void>;
+  /** #2501: every period of a slug's ownership, oldest first. */
+  listVerticalOwners(slug: string): Promise<VerticalOwnerPeriod[]>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
   updateVerticalListed(slug: string, listed: number, audit: AdminEntry): Promise<void>;
   updateVerticalPublishRequest(slug: string, requestedAt: string, audit: AdminEntry): Promise<void>;
@@ -918,7 +923,7 @@ interface ControlPlaneStub {
   updateVerticalTenantProvisioner(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   updateVerticalEmailSender(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
-  deleteVertical(slug: string, audit: AdminEntry): Promise<void>;
+  deleteVertical(slug: string, audit: AdminEntry, until?: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -8274,7 +8279,7 @@ export class CloudflareScopeHost implements ScopeHost {
           }
           throw substratError('conflict', `vertical '${parsed.slug}' is already registered as ${existing.source}`);
         }
-        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString(),
+        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, verticalOwnerNow(),
           this.adminEntry(actor, 'registerVertical', { tenantId: null }, null, parsed));
       },
       listVerticals: async (actor, page) => {
@@ -8403,13 +8408,19 @@ export class CloudflareScopeHost implements ScopeHost {
             `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
+        // #2501: the period's `until` is read here, on the clock its `since` was.
         await this.cp.deleteVertical(slug, this.adminEntry(
           actor,
           'deleteVertical',
           { tenantId: null },
           { slug, source: existing.source, ownerTenant: existing.owner_tenant },
           null,
-        ));
+        ), verticalOwnerNow());
+      },
+      listVerticalOwners: async (actor, slug: string) => {
+        const periods = (await this.cp.listVerticalOwners(slug)).map((p) => verticalOwnerPeriod.parse(p));
+        await this.recordAccess(actor, 'listVerticalOwners', { tenantId: null }, { slug }, periods.length);
+        return periods;
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);

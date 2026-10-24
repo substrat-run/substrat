@@ -1225,10 +1225,10 @@ are honestly computable *honest*, and display them.
     closed day up into the directory, one row per (tenant, vertical, scope), before the
     datapoints age out (§5.3). An exact counter at the router comes only when pricing uses
     requests as a unit.
-  - **Still pending** ([#2501](https://github.com/substrat-run/substrat/issues/2501), the part
-    after the request rollup, the daily meter snapshot of §5.1 and the attachment bytes of §5.2):
-    a history of vertical ownership, and one retention horizon for billing-relevant rollups. None
-    of it prices anything.
+  - **Still pending** ([#2501](https://github.com/substrat-run/substrat/issues/2501)): the
+    billing retention horizon itself, which waits on the maintainer's bookkeeping (§5.3). The
+    request rollup, the daily meter snapshot and the ownership history (§5.1) and the attachment
+    bytes (§5.2) are kept. None of it prices anything.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1321,6 +1321,38 @@ from `expires_at` and leaves no trace of its own. So the scheduled pass keeps th
   are what a final invoice, or a dispute about one, is answered from.
 - **Opt-in per deployment.** The hosted control plane turns the phase on; a host without the
   directory methods skips it.
+
+#### Who owned a vertical, and when ([#2501](https://github.com/substrat-run/substrat/issues/2501))
+
+Usage is attributed per tenant and per vertical, and a past period bills the builder who owned
+the vertical then. `verticals.owner_tenant` says only who owns a slug now, and a slug deleted and
+registered again, perhaps by another tenant, left no trace of its first owner outside the admin
+log. So the directory keeps each registration as a period.
+
+- **`_substrat_vertical_owners (slug, owner, since, until)`**, `owner` null for a
+  platform-owned vertical. A period opens in the transaction that inserts the `verticals` row and
+  closes in the one that deletes it. A slug never changes owner in place (a conflicting
+  re-registration is refused), so those are the only two transitions, and a partial unique index
+  holds at most one open period per slug.
+- **Backfilled, at start and after a restore.** Every vertical with no open period gets one from
+  its own `created_at`: on each start of either directory, and inside a directory restore once the
+  dump's rows are in, so a dump taken before the history comes back with one. A registration
+  before that, of a slug deleted and registered again, is in the admin log only. A restore also
+  closes an open period whose slug has no `verticals` row (kept, not dropped), at the restore's
+  reading of the wall clock or the period's own `since` if that is later, so the slug can be
+  registered again; a dump with two open periods of one slug is refused. That is the whole
+  reconciliation: it changes nothing about a slug that has a row, so a closed period from the dump
+  can overlap the one backfilled from `created_at`, and an open period's owner is kept as dumped.
+  A `since` ahead of the clock closes at that `since`, and a later registration then opens a period
+  that overlaps it. Every period stamp is read on the one wall clock both hosts stamp `created_at`
+  with (`verticalOwnerNow`).
+- **Served for a deleted slug too.** `GET /verticals/:slug/owners` (staff-only) lists every
+  period, oldest first; a slug never registered has none.
+- **Kept for good.** One row per registration is tiny, and it is the record a later invoice or a
+  dispute needs, so it is not governed by `BILLING_ROLLUP_RETENTION_MONTHS` and nothing prunes it.
+  A tenant reap keeps the periods that tenant owned, as it keeps the `tenants` tombstone and the
+  billing day rows: a period names a tenant id, never a person. A horizon for it later would be
+  an additive change.
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 

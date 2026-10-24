@@ -44,6 +44,7 @@ import type {
   StorageMeterReading,
   RequestRollupReading,
   MeterDaysReading,
+  VerticalOwnersReading,
   SweepRunEntry,
   SweepRunKind,
   SystemGrantsStatusEntry,
@@ -692,6 +693,8 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // Delete a vertical + its versions/channels. Refused (4xx) while any scope is bound.
   deleteVertical = (slug: string): Promise<{ slug: string; deleted: boolean }> =>
     this.json('DELETE', `/verticals/${seg(slug)}`);
+  // Who owned a vertical slug when (#2501): every period, oldest first, a deleted slug's included.
+  readVerticalOwners = (slug: string): Promise<VerticalOwnersReading> => this.call(`/verticals/${seg(slug)}/owners`);
   promoteVersion = (
     slug: string,
     channel: ChannelName,

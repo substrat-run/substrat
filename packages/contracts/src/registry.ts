@@ -16,6 +16,30 @@ import { platformScriptCollision, platformScriptRefusal } from './script-names.j
  * two of them, and an admission status, so **push is not live**.
  */
 
+/**
+ * One period of a vertical slug's ownership (#2501): who owned it, from when, until when. A slug is
+ * registered with its owner and never changes owner in place (a re-registration under another owner
+ * is refused), so a period opens when the slug is registered and closes when it is deleted; a slug
+ * registered again after a delete, perhaps by another tenant, opens a new one. `until` null is the
+ * registration that stands now. This is what bills a past period to the builder who owned the
+ * vertical then: `verticals.owner_tenant` only says who owns it today.
+ */
+export const verticalOwnerPeriod = z.object({
+  slug: verticalSlug,
+  /** The owning tenant; null = platform-owned. */
+  owner: tenantId.nullable(),
+  since: instant,
+  until: instant.nullable(),
+});
+export type VerticalOwnerPeriod = z.infer<typeof verticalOwnerPeriod>;
+
+/** `GET /verticals/:slug/owners` (#2501): every period of the slug's ownership, oldest first. */
+export const verticalOwnersReading = z.object({
+  slug: verticalSlug,
+  owners: z.array(verticalOwnerPeriod),
+});
+export type VerticalOwnersReading = z.infer<typeof verticalOwnersReading>;
+
 /** Where a vertical came from. `builtin` is one we ship; the others are a customer's. */
 export const verticalSource = z.enum(['builtin', 'git', 'cli']);
 export type VerticalSource = z.infer<typeof verticalSource>;

@@ -387,6 +387,97 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
+    it('a dump from before the ownership history: each vertical gets a period from its created_at (#2501)', async () => {
+      await using(async (dir, fresh) => {
+        const verticals = find(fresh, 'verticals');
+        const base = Object.fromEntries(verticals.columns.map((c) => [c, valueFor('verticals', c)]));
+        const vertical = (slug: string, owner: string | null) =>
+          rowOf(verticals.columns, { ...base, slug, owner_tenant: owner, created_at: '2026-01-02T03:04:05.000Z' });
+        const dump = withTable(
+          fresh.filter((t) => t.name !== '_substrat_vertical_owners'),
+          'verticals',
+          (t) => ({ ...t, rows: [vertical('acme/crm', 'tenant-a'), vertical('platform-app', null)] }),
+        );
+        await dir.restore(dump);
+        await dir.settle();
+        const periods = (tables: ScopeDumpTable[]) =>
+          recordsOf(find(tables, '_substrat_vertical_owners')).sort((a, b) => `${a.slug}${a.since}`.localeCompare(`${b.slug}${b.since}`));
+        expect(periods(await dir.snapshot())).toEqual([
+          { slug: 'acme/crm', owner: 'tenant-a', since: '2026-01-02T03:04:05.000Z', until: null },
+          { slug: 'platform-app', owner: null, since: '2026-01-02T03:04:05.000Z', until: null },
+        ]);
+
+        // Twin: a dump that carries the history is taken as it is. An earlier owner's closed period
+        // stays, and the open one is not opened a second time.
+        const owners = find(fresh, '_substrat_vertical_owners');
+        const carried = [
+          { slug: 'acme/crm', owner: 'tenant-b', since: '2025-06-01T00:00:00.000Z', until: '2025-12-31T00:00:00.000Z' },
+          { slug: 'acme/crm', owner: 'tenant-a', since: '2026-01-02T03:04:05.000Z', until: null },
+        ];
+        await dir.restore([...dump, { ...owners, rows: carried.map((p) => rowOf(owners.columns, p)) }]);
+        await dir.settle();
+        expect(periods(await dir.snapshot())).toEqual([
+          ...carried,
+          { slug: 'platform-app', owner: null, since: '2026-01-02T03:04:05.000Z', until: null },
+        ]);
+      });
+    });
+
+    it('keeps the periods consistent with the restored verticals: an open period with no vertical is closed (#2501)', async () => {
+      await using(async (dir, fresh) => {
+        const verticals = find(fresh, 'verticals');
+        const owners = find(fresh, '_substrat_vertical_owners');
+        const base = Object.fromEntries(verticals.columns.map((c) => [c, valueFor('verticals', c)]));
+        const since = '2026-01-02T03:04:05.000Z';
+        // A `since` ahead of any clock this runs on: clock skew, or a hand-edited dump.
+        const ahead = '2099-01-01T00:00:00.000Z';
+        // `kept` has its row and its open period; `stray`'s and `skewed`'s are open, their rows gone.
+        const dump = withTable(
+          withTable(fresh, 'verticals', (t) => ({ ...t, rows: [rowOf(verticals.columns, { ...base, slug: 'kept', created_at: since })] })),
+          '_substrat_vertical_owners',
+          (t) => ({
+            ...t,
+            rows: [
+              rowOf(owners.columns, { slug: 'kept', owner: null, since, until: null }),
+              rowOf(owners.columns, { slug: 'stray', owner: 'tenant-a', since, until: null }),
+              rowOf(owners.columns, { slug: 'skewed', owner: 'tenant-a', since: ahead, until: null }),
+            ],
+          }),
+        );
+        const startedAt = new Date().toISOString();
+        await dir.restore(dump);
+        await dir.settle();
+        const finishedAt = new Date().toISOString();
+        const periods = async () =>
+          recordsOf(find(await dir.snapshot(), '_substrat_vertical_owners'))
+            .sort((a, b) => `${a.slug}${a.since}`.localeCompare(`${b.slug}${b.since}`));
+        const restored = await periods();
+        // The kept vertical's open period is left alone; the stray ones are closed, not dropped.
+        expect(restored).toEqual([
+          { slug: 'kept', owner: null, since, until: null },
+          // Closed at the restore's own reading of the clock: after its `since`, inside the restore.
+          { slug: 'skewed', owner: 'tenant-a', since: ahead, until: ahead },
+          { slug: 'stray', owner: 'tenant-a', since, until: expect.any(String) },
+        ]);
+        const strayUntil = String(restored[2]!.until);
+        expect(strayUntil > since).toBe(true);
+        expect(strayUntil >= startedAt && strayUntil <= finishedAt).toBe(true);
+
+        // So the slug registers again, and holds exactly one open period: the new one.
+        await dir.registerVertical('stray');
+        const open = (await periods()).filter((p) => p.slug === 'stray' && p.until === null);
+        expect(open).toHaveLength(1);
+        expect(open[0]!.owner).toBeNull();
+
+        // The skewed slug registers again too. Its closed period ends at its own future `since`, so
+        // the new one starts before it and overlaps it: the history keeps both as they were stamped.
+        await dir.registerVertical('skewed');
+        const skewed = (await periods()).filter((p) => p.slug === 'skewed');
+        expect(skewed.filter((p) => p.until === null)).toHaveLength(1);
+        expect(String(skewed.find((p) => p.until === null)!.since) < ahead).toBe(true);
+      });
+    });
+
     describe('refused, and the directory is left exactly as it was', () => {
       const refusals: Refusal[] = [
         [
@@ -457,6 +548,20 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           /NOT NULL constraint failed: verticals\.source/,
         ],
         [
+          // #2501: a slug has one registration standing at a time. Refused by name before any row
+          // loads, not left to the open-period index's raw constraint error.
+          'two open ownership periods of one slug',
+          (tables) =>
+            withTable(tables, '_substrat_vertical_owners', (t) => ({
+              ...t,
+              rows: [
+                rowOf(t.columns, { slug: 'twice-open', owner: null, since: '2026-01-01T00:00:00.000Z', until: null }),
+                rowOf(t.columns, { slug: 'twice-open', owner: null, since: '2026-02-01T00:00:00.000Z', until: null }),
+              ],
+            })),
+          /more than one open period for: twice-open\. .*Nothing was changed/,
+        ],
+        [
           // Two pre-directory scope rows whose ids differ only in case: the legacy backfill gives
           // them one slug, which the live-slug index refuses. It runs inside the transaction.
           'a legacy scope backfill that fails',
@@ -481,6 +586,18 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
         await using(async (dir, fresh) => {
           await dir.restore(withTable(fresh, 'scopes', () => oldScopes(['Dup', 'other'])));
           expect(recordsOf(find(await dir.snapshot(), 'scopes')).map((r) => r.slug).sort()).toEqual(['dup', 'other']);
+        });
+      });
+
+      it('twin (#2501): one open period of a slug beside a closed one restores', async () => {
+        await using(async (dir, fresh) => {
+          const periods = [
+            { slug: 'once-open', owner: null, since: '2026-01-01T00:00:00.000Z', until: '2026-01-15T00:00:00.000Z' },
+            { slug: 'once-open', owner: null, since: '2026-02-01T00:00:00.000Z', until: null },
+          ];
+          await dir.restore(withTable(fresh, '_substrat_vertical_owners', (t) => ({ ...t, rows: periods.map((p) => rowOf(t.columns, p)) })));
+          // No row for the slug, so the open one is closed: the refusal is about the dump, not this.
+          expect(recordsOf(find(await dir.snapshot(), '_substrat_vertical_owners')).map((p) => p.since)).toEqual(periods.map((p) => p.since));
         });
       });
     });
