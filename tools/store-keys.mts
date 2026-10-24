@@ -167,7 +167,8 @@ export const WIRE_FAMILY: KeyFamily = {
       'A COMPROMISED key, or a signer that cannot sign, takes the break-glass path (RFC wire-signing §6):',
       'switch the signer FIRST to the standby key, which every deployment already lists (step 4 with the',
       `standby's file), so no ${member} call is refused; revoke the old ${privateKey} value at the secrets`,
-      'manager; then drop the compromised public key and list a new standby (generate one, steps 1 and 2),',
+      'manager; then list a new standby (generate one, step 2) and drop the compromised public key (step 5,',
+      'which refuses to leave the signer\'s key without a standby beside it unless --without-standby is passed),',
       'and upload every live deployment again at once. A deployment not yet uploaded still accepts the',
       'compromised key. Only platform staff on call take this path, as a person, recorded with the reason.',
     ],
@@ -430,9 +431,17 @@ function formatDoctor(report: DoctorReport): string {
 /**
  * The ordered rotation for one member with the current step marked, or the new list value when
  * `drop` names a kid to remove. Throws {@link StoreKeysError} on an ordering it can see is unsafe;
- * it cannot see what is deployed, and says so.
+ * it cannot see what is deployed, and says so. For a family that lists a standby, a drop that would
+ * leave the signer's key alone in the list, with no standby beside it, is refused unless
+ * `withoutStandby` says so: it takes the break-glass key away.
  */
-export function rotatePlan(report: DoctorReport, member: string, env: string, drop?: string): string {
+export function rotatePlan(
+  report: DoctorReport,
+  member: string,
+  env: string,
+  drop?: string,
+  opts: { readonly withoutStandby?: boolean } = {},
+): string {
   const { family } = report;
   const names = memberNames(family, member);
   const a = report.members[member]!;
@@ -454,6 +463,13 @@ export function rotatePlan(report: DoctorReport, member: string, env: string, dr
     }
     // Never empty: the signer's key is listed (a blocking finding otherwise) and is not the target.
     const rest = listed.filter((key) => key !== target);
+    if (family.standby && rest.length < 2 && !opts.withoutStandby) {
+      throw new StoreKeysError(
+        `refusing: without kid ${drop}, ${names.publicKeys} would list only the key ${names.privateKey} signs with, ` +
+          'and no standby beside it to switch to. List a new standby first (generate one, step 2), then drop; ' +
+          'or pass --without-standby to drop it anyway.',
+      );
+    }
     return [
       `New value (paste it into the env file, then push and deploy the ${family.uploader}):`,
       `${names.publicKeys}=${rest.map((key) => key.publicKey).join(',')}`,
@@ -650,7 +666,7 @@ interface Args {
   readonly flags: Map<string, string[]>;
 }
 
-const BOOLEAN = new Set(['stdout', 'yes-print-to-terminal']);
+const BOOLEAN = new Set(['stdout', 'yes-print-to-terminal', 'without-standby']);
 
 function parseArgs(argv: readonly string[]): Args {
   const flags = new Map<string, string[]>();
@@ -702,7 +718,7 @@ const usage = (family: KeyFamily) => {
   pnpm ${family.command} generate ${flag} --out <path outside the work tree>
   pnpm ${family.command} generate ${flag} --stdout [--yes-print-to-terminal]
   pnpm ${family.command} doctor [--env prod|test|dev] [--file <env file>] [--key-file <path>]...
-  pnpm ${family.command} rotate ${flag} [--env …] [--file …] [--key-file <path>]... [--drop <kid>]
+  pnpm ${family.command} rotate ${flag} [--env …] [--file …] [--key-file <path>]... [--drop <kid>${family.standby ? ' [--without-standby]' : ''}]
 Runbook: ${family.runbook}`;
 };
 
@@ -727,7 +743,10 @@ export async function main(argv: readonly string[], io: GenerateIo, family: KeyF
       case 'rotate': {
         const member = memberOf(args, family);
         const { values, env } = readEnv(args);
-        io.stdout.write(`${rotatePlan(await doctor(values, readStaged(args), family), member, env, one(args, 'drop'))}\n`);
+        const plan = rotatePlan(await doctor(values, readStaged(args), family), member, env, one(args, 'drop'), {
+          withoutStandby: args.flags.has('without-standby'),
+        });
+        io.stdout.write(`${plan}\n`);
         return 0;
       }
       default:

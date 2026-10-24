@@ -97,7 +97,9 @@ check, never a value. `doctor` reads the env file; it cannot see what is deploye
 
 `pnpm wire-keys rotate --issuer <router|platform> --env <env> [--key-file <staged>]` prints the
 steps with the current one marked. They are the store's: generate, list the new key beside the two
-already listed, wait, switch the signer, drop the old key. The standby stays listed throughout.
+already listed, wait, switch the signer, drop the old key. The standby stays listed throughout:
+`--drop` refuses to print a list that would hold only the signer's key, with no standby beside it,
+unless `--without-standby` is passed.
 
 The wait is the one difference. A list reaches a deployment only when the control plane uploads it
 again (plain configuration is rewritten on every upload). Nothing yet reports which live
@@ -112,8 +114,9 @@ The break-glass path (RFC §6), taken only by platform staff on call:
    signer's private key, push that worker, deploy it. Every deployment already lists the standby,
    so nothing is refused.
 2. Revoke the old private key at the secrets manager, and make sure no other copy of it survives.
-3. Generate a new standby, list it, and drop the compromised public key
-   (`pnpm wire-keys rotate --issuer <issuer> --drop <old kid>` prints the list without it).
+3. Generate a new standby and list it, then drop the compromised public key
+   (`pnpm wire-keys rotate --issuer <issuer> --drop <old kid>` prints the list without it; listing
+   the new standby first is what lets `--drop` print it without `--without-standby`).
    Push and deploy the control plane.
 4. Upload every live deployment again at once. A deployment not yet uploaded still accepts the
    compromised key.

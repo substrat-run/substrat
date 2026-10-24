@@ -118,9 +118,36 @@ test('rotate --drop: refuses the signer’s key and an unlisted kid; prints the 
   const report = await doctor(good, [], WIRE_FAMILY);
   assert.throws(() => rotatePlan(report, 'router', 'prod', A.kid), /is the key WIRE_ROUTER_KEY signs with/);
   assert.throws(() => rotatePlan(report, 'router', 'prod', 'AAAAAAAAAAA'), /lists no key with kid AAAAAAAAAAA/);
-  const out = rotatePlan(report, 'router', 'prod', C.kid);
-  assert.match(out, new RegExp(`^WIRE_ROUTER_PUBLIC_KEYS=${A.public}$`, 'm'));
+  // With a new standby listed beside the two, dropping the old one leaves the signer's key and a standby.
+  const E = await generateScopeStoreKeyPair();
+  const three = await doctor({ ...good, WIRE_ROUTER_PUBLIC_KEYS: `${A.public},${C.public},${E.publicKey}` }, [], WIRE_FAMILY);
+  const out = rotatePlan(three, 'router', 'prod', C.kid);
+  assert.match(out, new RegExp(`^WIRE_ROUTER_PUBLIC_KEYS=${A.public},${E.publicKey}$`, 'm'));
   assert.match(out, /--only control-plane/);
+});
+
+test('rotate --drop: refuses to leave the signer’s key with no standby beside it, unless told to', async () => {
+  const report = await doctor(good, [], WIRE_FAMILY);
+  // Dropping the standby from a steady list would take the break-glass key away.
+  assert.throws(
+    () => rotatePlan(report, 'router', 'prod', C.kid),
+    /without kid .*, WIRE_ROUTER_PUBLIC_KEYS would list only the key WIRE_ROUTER_KEY signs with, and no standby beside it[\s\S]*--without-standby/,
+  );
+  const forced = rotatePlan(report, 'router', 'prod', C.kid, { withoutStandby: true });
+  assert.match(forced, new RegExp(`^WIRE_ROUTER_PUBLIC_KEYS=${A.public}$`, 'm'));
+  // The same through the command line, where the flag takes no value.
+  const dir = privateDir();
+  const file = join(dir, 'p.env');
+  writeFileSync(file, Object.entries(good).map(([k, v]) => `${k}=${v}`).join('\n'), { mode: 0o600 });
+  const refused = recorder();
+  assert.equal(await main(['rotate', '--issuer', 'router', '--file', file, '--drop', C.kid], refused, WIRE_FAMILY), 1);
+  assert.match(refused.err, /no standby beside it/);
+  assert.equal(refused.out, '');
+  const told = recorder();
+  assert.equal(await main(['rotate', '--issuer', 'router', '--file', file, '--drop', C.kid, '--without-standby'], told, WIRE_FAMILY), 0);
+  assert.match(told.out, new RegExp(`^WIRE_ROUTER_PUBLIC_KEYS=${A.public}$`, 'm'));
+  // The break-glass text names the order that needs no flag: list the new standby, then drop.
+  assert.match(rotatePlan(report, 'router', 'test'), /list a new standby \(generate one, step 2\) and drop the compromised public key/);
 });
 
 test('rotate: refuses a set doctor fails', async () => {
@@ -176,6 +203,7 @@ test('no wire-keys command echoes a private value, on any path, success or refus
       ['rotate', '--issuer', 'router', '--file', file],
       ['rotate', '--issuer', 'platform', '--file', file, '--key-file', keyFile],
       ['rotate', '--issuer', 'router', '--file', file, '--drop', C.kid],
+      ['rotate', '--issuer', 'router', '--file', file, '--drop', C.kid, '--without-standby'],
     );
   }
   runs.push(['doctor', '--file', join(dir, 'missing.env')], ['nonsense', FAKE]);
