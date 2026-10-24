@@ -219,12 +219,30 @@ describe('streamed attachment upload (pure adapter)', () => {
     }
   });
 
-  it('a refused write still lands the object first, then deletes it', async () => {
+  it('a caller who may not write is refused before the first byte is read (#2516)', async () => {
     const { host, t, s, reader } = await world();
     const att = await host.attachments(reader, t, s);
-    await expect(att.upload(upload({ stream: producer(4), length: 4 * CHUNK }))).rejects.toThrow();
-    // The bytes were read (object first), then compensated away when the gate refused.
+    await expect(att.upload(upload({ stream: producer(4), length: 4 * CHUNK }))).rejects.toThrow(/perm:use|denied|forbidden/i);
+    // Nothing was pulled from the producer, so no object was written and none had to be deleted.
+    expect(flow.produced).toBe(0);
+    expect(flow.read).toBe(0);
+    expect(objectFiles()).toEqual([]);
+    expect(await att.list(item)).toEqual([]);
+  });
+
+  it('its twin: a caller who may write is let through and the object lands first, as before', async () => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    const rec = await att.upload(upload({ stream: producer(4), length: 4 * CHUNK }));
     expect(flow.read).toBe(4 * CHUNK);
+    expect(rec.size).toBe(4 * CHUNK);
+    expect(objectFiles()).toHaveLength(1);
+  });
+
+  it('a refused buffered write still lands its object and then deletes it (the pre-check is for streams)', async () => {
+    const { host, t, s, reader } = await world();
+    const att = await host.attachments(reader, t, s);
+    await expect(att.upload(upload(new Uint8Array(CHUNK)))).rejects.toThrow();
     expect(objectFiles()).toEqual([]);
   });
 });

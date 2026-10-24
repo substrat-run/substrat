@@ -298,6 +298,7 @@ import {
   type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
+  isSizedByteStream,
   putAttachmentBytes,
   entitlementDenial,
   requiredEntitlementFor,
@@ -1735,6 +1736,15 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     connectionId?: string,
   ): Promise<DoReply<AttachmentRecord>>;
+  /** The add's write gate alone (#2516): asked before a streamed body is read, so a refusal costs no
+   *  object. Writes nothing; a refusal is recorded as the upload's own would be. */
+  attachmentCheckWriteReply(
+    entity: EntityRef,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    connectionId?: string,
+  ): Promise<DoReply<null>>;
   /** An upload-link redemption's metadata half: the add above, with the link spent in the same
    *  transaction. Its own verb so a DO that predates links refuses rather than ignores the secret. */
   attachmentRedeemUploadLinkReply(
@@ -4985,6 +4995,11 @@ export class CloudflareScopeHost implements ScopeHost {
           createdBy,
           createdAt: new Date().toISOString(),
         };
+        // A streamed body is the case where bytes are the cost, so the write gate is asked before
+        // the first one is read (#2516). The row's own check below stays: this one is only early.
+        if (isSizedByteStream(input.body)) {
+          unwrapReply(await stub.attachmentCheckWriteReply(input.entity, asPrincipalId, tenantId, scopeId, connectionId));
+        }
         // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
         // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
         // A streamed body is hashed and counted as R2 reads it (#2498).

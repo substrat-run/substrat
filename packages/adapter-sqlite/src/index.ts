@@ -4081,6 +4081,13 @@ export class SqliteScopeHost implements ScopeHost {
           });
         }
         const gate = targetGate(input.entity.entityType);
+        // A streamed body is the case where bytes are the cost, so the write gate is asked before
+        // the first one is read (#2516). The row's own check below stays: this one is only early.
+        if (isSizedByteStream(input.body)) {
+          await guarded('attachments.upload', async (ctx) => {
+            assertAllowed(await ctx.check(gate.write, input.entity));
+          });
+        }
         const creator = authority as CheckSubject;
         const id = ulid();
         const key = attachmentBlobKey(rt.scopeId, id);

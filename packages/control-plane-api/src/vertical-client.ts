@@ -115,6 +115,10 @@ import {
   substratError,
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
+  connectorAttachmentMetaBytes,
+  connectorAttachmentMetaRefusal,
+  connectorAttachmentSizeRefusal,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   PLATFORM_SECRET_HEADER,
@@ -867,8 +871,10 @@ export class VerticalClient {
   }): Promise<AttachmentRecord> {
     const { body, ...meta } = input;
     if (isSizedByteStream(body)) return this.connectorStreamAttachment(meta, body);
+    const metaJson = JSON.stringify(meta);
+    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson));
     const form = new FormData();
-    form.append('meta', JSON.stringify(meta));
+    form.append('meta', metaJson);
     form.append('body', new Blob([body as BlobPart], { type: input.contentType }), input.filename);
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const res = await this.reach('connector-attachment', () =>
@@ -881,6 +887,19 @@ export class VerticalClient {
     );
     if (!res.ok) throw await this.refusal('connector-attachment', res);
     return this.parseInternal<AttachmentRecord>('connector-attachment', '/internal/connector-attachment', res);
+  }
+
+  /**
+   * Hold an upload to the bounds the far end holds it to (#2516), so it is refused here, with
+   * nothing sent, in the words the route would use. `declared` is a streamed body's length.
+   */
+  private assertWithinAttachmentBounds(verb: string, metaBytes: number, declared?: number): void {
+    if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
+      throw new ControlPlaneError(400, `${verb}: ${connectorAttachmentMetaRefusal(metaBytes)}. Nothing was sent.`);
+    }
+    if (declared !== undefined && declared > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
+      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentSizeRefusal(declared)}. Nothing was sent.`);
+    }
   }
 
   /**
@@ -900,19 +919,12 @@ export class VerticalClient {
     // The metadata is the only header a caller's strings reach. Its characters are always safe:
     // JSON escapes a control character or a lone surrogate, and URI encoding everything else.
     // Its SIZE is not, since it grows with the filename, so it is held to a named bound here and
-    // refused before a byte is sent rather than answered with a server's bare 431. (The
-    // multipart route carries the same metadata in its body and has no such bound.) The file's
-    // own type rides inside it (the route reads `contentType` from there), so the request's own
+    // refused before a byte is sent rather than answered with a server's bare 431. (The multipart
+    // route is held to the same bound, #2516.) The file's own type rides inside it (the route
+    // reads `contentType` from there), so the request's own
     // `content-type` is the plain octet-stream it is.
     const encodedMeta = encodeURIComponent(JSON.stringify({ ...meta, size: body.length }));
-    if (encodedMeta.length > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
-      throw new ControlPlaneError(
-        400,
-        `${verb}: the attachment's metadata is ${encodedMeta.length} bytes once encoded, over the ` +
-          `${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound a streamed upload carries it in a header — ` +
-          `shorten the filename. Nothing was sent.`,
-      );
-    }
+    this.assertWithinAttachmentBounds(verb, encodedMeta.length, body.length);
     const init = knownLengthInit({
       method: 'POST',
       headers: {
