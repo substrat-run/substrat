@@ -175,6 +175,7 @@ import {
   isBindExportBreakRefusal,
   isExportBreakRefusal,
   isExportBreakUnjudged,
+  upstreamReferenceMarker,
   isPrimaryScope,
   promoteReviewDigest,
   rebindReviewDigest,
@@ -1901,7 +1902,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           // row with no tenant, which only staff read, and to the log line, under the same reference.
           let reference = c.get('failureReference');
           if (!reference) {
-            reference = withheldReference(raw);
+            reference = ulid();
             console.error('control-plane.unhandled', { method: c.req.method, path: c.req.path, reference, tenantId, scopeId, detail: raw });
           }
           recordWithheld({ ...base, tenantId, reference }, raw, answered, cause);
@@ -2190,15 +2191,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     answered: string,
     cause: unknown,
   ): void => {
-    recordFailure(entry.tenantId ? { ...entry, message: answered, detail: raw } : { ...entry, tenantId: null, message: raw }, cause);
+    const text = staffText(raw);
+    recordFailure(entry.tenantId ? { ...entry, message: answered, detail: text } : { ...entry, tenantId: null, message: text }, cause);
   };
 
   /**
-   * #2540: the reference a withheld failure is filed and answered under. An upstream's own trace
-   * handle when the text carries one, so the #559 lookup by `reference = <id>` still lands on its
-   * rows; else a fresh one. Either is an opaque id, never the text around it.
+   * #2540: a withheld failure's text as staff's row keeps it. The pair is filed and answered under
+   * the platform's own reference; an upstream trace handle the text carries (#559's `reference =
+   * <id>`) is named on staff's row only, in the form staff's reference search finds
+   * (`upstreamReferenceMarker`), so either id lands on the pair.
    */
-  const withheldReference = (raw: string): string => UPSTREAM_REFERENCE.exec(raw)?.[1] ?? ulid();
+  const staffText = (raw: string): string => {
+    const upstream = UPSTREAM_REFERENCE.exec(raw)?.[1];
+    return upstream ? `${raw} ${upstreamReferenceMarker(upstream)}` : raw;
+  };
 
   /**
    * #2540: a failure whose text is not ours to hand a confined caller: what an upstream or a store
@@ -2217,7 +2223,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     cause: unknown,
     answered?: (reference: string) => string,
   ): { reference: string; detail?: string } => {
-    const reference = withheldReference(entry.message);
+    const reference = ulid();
     console.error('control-plane.unhandled', {
       method: c.req.method,
       path: c.req.path,
@@ -2359,7 +2365,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // says what is wrong, and the tail line is what ties it to the request that hit it.
     if (status >= 500) {
       const subject = await subjectOf();
-      const reference = withheldReference(messageOfThrow(err));
+      const reference = ulid();
       c.set('failureReference', reference);
       console.error('control-plane.unhandled', {
         method: c.req.method,
@@ -11715,10 +11721,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       cursor: c.req.query('cursor'),
       order: c.req.query('order'),
     });
-    const entries = await c.var.admin.listOpsFailures(
-      c.get('actor'),
-      filter as Parameters<typeof c.var.admin.listOpsFailures>[1],
-    );
+    const entries = await c.var.admin.listOpsFailures(c.get('actor'), {
+      ...(filter as Parameters<typeof c.var.admin.listOpsFailures>[1]),
+      // #2540: staff's `reference` also finds a pair by the upstream handle its staff row names.
+      // The text that matches is staff's, so a confined caller's search stays exact.
+      ...(staffCaller(c) ? { referenceInText: true } : {}),
+    });
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
   });
 

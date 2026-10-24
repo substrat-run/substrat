@@ -433,7 +433,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     expect(((await asStaff.json()) as { detail: string }).detail).toBe(`reconcile refused: ${leak}`);
   });
 
-  it('an upstream trace reference in the withheld text is the pair’s reference, so the #559 lookup still finds it', async () => {
+  it('an upstream trace reference stays on staff’s row; staff find the pair by it or by the platform’s own', async () => {
     const { pin, t, slug, clean, leak } = await setup('upstream');
     const v2 = await push(pin, manifest('0.2.0'));
     const asTenant = await tokenFor('/tenant-tokens', t);
@@ -443,11 +443,37 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     expect(res.status).toBe(502);
     const text = await res.text();
     clean(text);
-    expect((JSON.parse(text) as { reference: string }).reference).toBe(upstream);
-    // `GET /ops-failures?reference=<upstream id>` lands on both rows, the text on staff's.
-    const found = await app.request(`/ops-failures?reference=${upstream}`, { headers: auth });
-    const rows = ((await found.json()) as { entries: { tenantId: string | null; message: string }[] }).entries;
-    expect(rows.map((r) => r.tenantId)).toEqual([t, null]);
-    expect(rows[1]!.message).toContain(leak);
+    // The caller's answer, headers and row carry the platform's own reference, never the upstream's.
+    expect(text).not.toContain(upstream);
+    expect(JSON.stringify([...res.headers.entries()])).not.toContain(upstream);
+    const reference = (JSON.parse(text) as { reference: string }).reference;
+    expect(reference).toMatch(/^[0-9A-Z]{26}$/);
+    type Row = { tenantId: string | null; message: string; reference: string | null };
+    const listed = async (query: string, headers: Record<string, string>) => {
+      const found = await app.request(`/ops-failures?${query}`, { headers });
+      expect(found.status).toBe(200);
+      return ((await found.json()) as { entries: Row[] }).entries;
+    };
+    // Staff find both rows by either id; the upstream one is named on staff's row only.
+    for (const id of [reference, upstream]) {
+      const rows = await vi.waitFor(async () => {
+        const r = await listed(`reference=${id}`, auth);
+        expect(r.length).toBe(2);
+        return r;
+      });
+      expect(rows.map((r) => [r.tenantId, r.reference])).toEqual([
+        [t, reference],
+        [null, reference],
+      ]);
+      expect(rows[0]!.message).not.toContain(upstream);
+      expect(rows[1]!.message).toContain(leak);
+      expect(rows[1]!.message).toContain(`[upstream reference = ${upstream}]`);
+    }
+    // The caller's own search by its reference finds only its own row, and by the upstream id nothing.
+    const own = await listed(`tenantId=${t}&reference=${reference}`, asTenant);
+    expect(own.map((r) => [r.tenantId, r.message])).toEqual([[t, (JSON.parse(text) as { detail: string }).detail]]);
+    expect(await listed(`tenantId=${t}&reference=${upstream}`, asTenant)).toEqual([]);
+    const all = await failuresSeenBy(asTenant, t);
+    expect(all).not.toContain(upstream);
   });
 });

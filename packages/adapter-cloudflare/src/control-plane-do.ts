@@ -198,6 +198,7 @@ import {
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
+import { opsFailureReferenceWhere } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -728,6 +729,8 @@ export interface OpsFailureQuery {
   code?: string;
   fingerprint?: string;
   reference?: string;
+  /** #2540: staff's search — `OpsFailureFilter.referenceInText`. */
+  referenceInText?: boolean;
   since?: string;
   until?: string;
   limit?: number;
@@ -5699,8 +5702,9 @@ export class ControlPlaneDO extends DurableObject {
       params.push(query.fingerprint);
     }
     if (query.reference) {
-      where.push('reference = ?');
-      params.push(query.reference);
+      const byReference = opsFailureReferenceWhere(query.reference, query.referenceInText === true);
+      where.push(byReference.sql);
+      params.push(...byReference.params);
     }
     if (query.since) {
       where.push('at >= ?');

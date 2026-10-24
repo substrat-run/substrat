@@ -5581,7 +5581,8 @@ export interface OpsFailureInput {
    * filed under a tenant is read back by that tenant, so a host given `detail` on one writes it on
    * a second row with no tenant under the same `reference`, which only staff read, and counts the
    * failure once: the issue takes `detail` as its last message. Ignored on a row with no tenant,
-   * whose `message` is staff's already.
+   * whose `message` is staff's already. A tenant-readable row never carries an upstream trace
+   * handle: a writer keeps one only in this text (`referenceInText` finds it).
    */
   detail?: string | null;
 }
@@ -5650,6 +5651,12 @@ export interface OpsFailureFilter {
   fingerprint?: string;
   /** Exact match — the lookup a CI log's `reference = <id>` line lands on. */
   reference?: string;
+  /**
+   * #2540: with `reference`, also every pair whose row with no tenant names `reference = <reference>`
+   * in its text (an upstream trace handle, which a withheld failure keeps only there), both rows of
+   * it. Staff's search: the text it matches is staff's, so a confined read never sets it.
+   */
+  referenceInText?: boolean;
   since?: string;
   until?: string;
   limit?: number;

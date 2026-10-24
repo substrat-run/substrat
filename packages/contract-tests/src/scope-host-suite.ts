@@ -61,6 +61,7 @@ import {
   rebindReviewRefusalOf,
   createUlid,
   ulid,
+  upstreamReferenceMarker,
   type AuditLogFilter,
   type OperationHandler,
   type ScopeHost,
@@ -5225,6 +5226,33 @@ export function scopeHostContractSuite(
         await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.unpaired', message: 'staff text', detail: 'ignored' });
         const lone = await host.admin.listOpsFailures(staff, { operation: 'contract.unpaired' });
         expect(lone.map((r) => [r.tenantId, r.message])).toEqual([[null, 'staff text']]);
+      });
+
+      it('#2540: staff find a pair by the upstream handle its staff row names; an exact search does not', async () => {
+        const reference = `own${ulid().toLowerCase()}`;
+        const upstream = `cf${ulid().toLowerCase()}`;
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'contract.upstream',
+          tenantId: t1,
+          message: `the step failed (reference ${reference})`,
+          detail: `internal error; reference = ${upstream} ${upstreamReferenceMarker(upstream)}`,
+          reference,
+        });
+        // Bracketed, so an id that only begins this one finds nothing.
+        await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.upstream', message: 'x', reference: `${upstream}0` });
+        const bothRows = [
+          [t1, reference],
+          [null, reference],
+        ];
+        const by = async (ref: string, referenceInText: boolean, tenantId?: typeof t1) =>
+          (await host.admin.listOpsFailures(staff, { reference: ref, referenceInText, ...(tenantId ? { tenantId } : {}) })).map((r) => [r.tenantId, r.reference]);
+        expect(await by(upstream, true)).toEqual(bothRows);
+        expect(await by(reference, true)).toEqual(bothRows);
+        expect(await by(upstream, false)).toEqual([]);
+        expect(await by(upstream.slice(0, -2), true)).toEqual([]);
+        // Narrowed to the tenant, the search lands on the tenant's own row only.
+        expect(await by(reference, false, t1)).toEqual([[t1, reference]]);
       });
 
       it('bounds the recorded message — a runaway upstream body never becomes a runaway row', async () => {

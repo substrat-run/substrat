@@ -10479,6 +10479,7 @@ export class CloudflareScopeHost implements ScopeHost {
           code: filter?.code,
           fingerprint: filter?.fingerprint,
           reference: filter?.reference,
+          referenceInText: filter?.referenceInText,
           since: filter?.since,
           until: filter?.until,
           limit: filter?.limit,

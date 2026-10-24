@@ -880,6 +880,7 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
+import { opsFailureReferenceWhere } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
@@ -12875,8 +12876,9 @@ export class SqliteScopeHost implements ScopeHost {
           params.push(filter.fingerprint);
         }
         if (filter?.reference) {
-          where.push('reference = ?');
-          params.push(filter.reference);
+          const byReference = opsFailureReferenceWhere(filter.reference, filter.referenceInText === true);
+          where.push(byReference.sql);
+          params.push(...byReference.params);
         }
         if (filter?.since) {
           where.push('at >= ?');
