@@ -1338,8 +1338,14 @@ log. So the directory keeps each registration as a period.
   its own `created_at`: on each start of either directory, and inside a directory restore once the
   dump's rows are in, so a dump taken before the history comes back with one. A registration
   before that, of a slug deleted and registered again, is in the admin log only. A restore also
-  keeps the periods consistent with the verticals it restores: an open period whose slug has no
-  row is closed (kept, not dropped), so the slug can be registered again.
+  closes an open period whose slug has no `verticals` row (kept, not dropped), at the restore's
+  reading of the wall clock or the period's own `since` if that is later, so the slug can be
+  registered again; a dump with two open periods of one slug is refused. That is the whole
+  reconciliation: it changes nothing about a slug that has a row, so a closed period from the dump
+  can overlap the one backfilled from `created_at`, and an open period's owner is kept as dumped.
+  A `since` ahead of the clock closes at that `since`, and a later registration then opens a period
+  that overlaps it. Every period stamp is read on the one wall clock both hosts stamp `created_at`
+  with (`verticalOwnerNow`).
 - **Served for a deleted slug too.** `GET /verticals/:slug/owners` (staff-only) lists every
   period, oldest first; a slug never registered has none.
 - **Kept for good.** One row per registration is tiny, and it is the record a later invoice or a

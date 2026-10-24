@@ -744,6 +744,7 @@ export const INDEX_VALUE_EXPORTS = [
   'versionMigrationsOf',
   'versionsAwaitDigest',
   'versionsAwaitSplit',
+  'verticalOwnerNow',
   'verticalScopeStoresOf',
   'visibleContinuation',
   'vouchedWithin',

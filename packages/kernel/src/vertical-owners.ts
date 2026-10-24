@@ -1,4 +1,4 @@
-import { instant, verticalOwnerPeriod, type VerticalOwnerPeriod } from '@substrat-run/contracts';
+import { instant, substratError, verticalOwnerPeriod, type VerticalOwnerPeriod } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
 
 /**
@@ -41,11 +41,53 @@ export const VERTICAL_OWNERS_BACKFILL = `INSERT INTO _substrat_vertical_owners (
    WHERE NOT EXISTS (SELECT 1 FROM _substrat_vertical_owners o WHERE o.slug = v.slug AND o.until IS NULL)`;
 
 /**
+ * The one clock every period stamp is read on: the wall clock, which is what both hosts stamp a
+ * `verticals` row's `created_at` (a period's `since`) with. A delete's `until` and a restore's
+ * close of a stray period read it too, so the history never mixes a test host's injected clock
+ * with the wall clock its registrations were stamped on.
+ */
+export const verticalOwnerNow = (): string => new Date().toISOString();
+
+/**
+ * Refuse a directory dump that holds two open periods of one slug, before any of its rows load.
+ * The open-period index would refuse the second row anyway, as a raw constraint error; this names
+ * the slug, in the words the loader's other refusals use. Nothing was changed: it runs first.
+ */
+export function assertOneOpenVerticalOwnerPeriod(
+  tables: readonly { name: string; columns: readonly string[]; rows: readonly (readonly unknown[])[] }[],
+): void {
+  const owners = tables.find((t) => t.name.toLowerCase() === '_substrat_vertical_owners');
+  if (!owners) return;
+  const slugAt = owners.columns.findIndex((c) => c.toLowerCase() === 'slug');
+  const untilAt = owners.columns.findIndex((c) => c.toLowerCase() === 'until');
+  if (slugAt < 0 || untilAt < 0) return;
+  const open = new Set<unknown>();
+  const twice = new Set<string>();
+  for (const row of owners.rows) {
+    if (row[untilAt] !== null && row[untilAt] !== undefined) continue;
+    if (open.has(row[slugAt])) twice.add(String(row[slugAt]));
+    open.add(row[slugAt]);
+  }
+  if (twice.size > 0) {
+    throw substratError(
+      'validation_failed',
+      `restore refused: the dump's _substrat_vertical_owners holds more than one open period for: ${[...twice].sort().join(', ')}. ` +
+        'A slug has at most one registration standing at a time. Nothing was changed.',
+    );
+  }
+}
+
+/**
  * Close every open period whose slug has no `verticals` row, at `at` (or at the period's own
- * `since`, if that is later). A directory restore runs it once the dump's rows are in, so the
- * periods it keeps are consistent with the verticals it restores: an open period with no row
- * would otherwise make the next registration of that slug fail on the open-period index. Closed,
- * not dropped, so the period stays in the history.
+ * `since`, if that is later, so a period never ends before it began). A directory restore runs it
+ * once the dump's rows are in, with `verticalOwnerNow()`: an open period with no row would
+ * otherwise make the next registration of that slug fail on the open-period index. Closed, not
+ * dropped, so the period stays in the history.
+ *
+ * One direction only: it closes what has no row, and changes nothing about a slug that has one.
+ * A period whose `since` lies ahead of the clock (clock skew, or a hand-edited dump) closes at
+ * that `since`, and a registration of the slug after it then opens a period that starts earlier
+ * and overlaps it. The history records both as they were stamped.
  */
 export function verticalOwnersStrayCloseSql(at: string): string {
   // Interpolated, not bound: the adapters run it through `exec`. `instant` holds it to an

@@ -1062,6 +1062,7 @@ export {
   closeVerticalOwnerRow,
   listVerticalOwnerRows,
   openVerticalOwnerRow,
+  verticalOwnerNow,
 } from './vertical-owners.js';
 export {
   METER_DAYS_DDL,

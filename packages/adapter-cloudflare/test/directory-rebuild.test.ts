@@ -329,6 +329,57 @@ describe('#1722 directory additions on an existing Durable Object', () => {
   });
 });
 
+describe('deleteVertical across a mixed-version deploy (#2501)', () => {
+  const audit = (slug: string) => ({
+    id: ulid(), actor: 'staff', action: 'deleteVertical', tenantId: null, scopeId: null, vertical: slug,
+    before: { slug }, after: null, at: '2026-05-01T00:00:00.000Z',
+  });
+  const periodsOf = (state: DurableObjectState, slug: string) =>
+    state.storage.sql.exec('SELECT owner, since, until FROM _substrat_vertical_owners WHERE slug = ?', slug).toArray();
+
+  it("a caller from before `until`, sending (slug, audit), still closes the period on the DO's clock", async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`owners-skew-${ulid()}`));
+    const result = await runInDurableObject(stub, (instance: ControlPlaneDO, state) => {
+      const before = new Date().toISOString();
+      instance.insertVertical('old-caller', 'Old', 'builtin', null, null, null, 0, '2026-04-01T00:00:00.000Z');
+      instance.deleteVertical('old-caller', audit('old-caller'));
+      const after = new Date().toISOString();
+      const audited = state.storage.sql
+        .exec("SELECT COUNT(*) AS n FROM _substrat_admin_log WHERE action = 'deleteVertical' AND vertical = 'old-caller'")
+        .one().n;
+      return { periods: periodsOf(state, 'old-caller'), before, after, audited };
+    });
+    expect(result.periods).toEqual([{ owner: null, since: '2026-04-01T00:00:00.000Z', until: expect.any(String) }]);
+    const until = String(result.periods[0]!.until);
+    expect(until >= result.before && until <= result.after).toBe(true);
+    // The audit object went where it always did, so the old caller's admin row is written.
+    expect(result.audited).toBe(1);
+  });
+
+  it("the new caller's `until` is the one kept; anything but an instant is refused and changes nothing", async () => {
+    await warmControlPlane(env.CONTROL_PLANE);
+    const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`owners-until-${ulid()}`));
+    const result = await runInDurableObject(stub, (instance: ControlPlaneDO, state) => {
+      instance.insertVertical('new-caller', 'New', 'builtin', null, null, null, 0, '2026-04-01T00:00:00.000Z');
+      let refused = '';
+      try {
+        instance.deleteVertical('new-caller', audit('new-caller'), { not: 'an instant' } as unknown as string);
+      } catch (e) {
+        refused = String(e);
+      }
+      const afterRefusal = periodsOf(state, 'new-caller');
+      const stillRegistered = instance.readVertical('new-caller') !== undefined;
+      instance.deleteVertical('new-caller', audit('new-caller'), '2026-04-02T00:00:00.000Z');
+      return { refused, afterRefusal, stillRegistered, periods: periodsOf(state, 'new-caller') };
+    });
+    expect(result.refused).not.toBe('');
+    expect(result.stillRegistered).toBe(true);
+    expect(result.afterRefusal).toEqual([{ owner: null, since: '2026-04-01T00:00:00.000Z', until: null }]);
+    expect(result.periods).toEqual([{ owner: null, since: '2026-04-01T00:00:00.000Z', until: '2026-04-02T00:00:00.000Z' }]);
+  });
+});
+
 describe('the vertical ownership history on a directory from before it (#2501)', () => {
   it('a construction over verticals with no period opens one each, from its created_at, and only once', async () => {
     await warmControlPlane(env.CONTROL_PLANE);

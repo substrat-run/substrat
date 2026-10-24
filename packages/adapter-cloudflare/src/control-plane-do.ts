@@ -49,6 +49,7 @@ import {
   closeVerticalOwnerRow,
   listVerticalOwnerRows,
   openVerticalOwnerRow,
+  verticalOwnerNow,
   listMeterDayRows,
   listMeterDayTakeRows,
   pruneMeterDayRows,
@@ -229,7 +230,7 @@ import type {
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import type { DeploymentWireAuth, FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
@@ -3447,9 +3448,12 @@ export class ControlPlaneDO extends DurableObject {
    * Remove a vertical's registry presence: channels, versions, the row. The bound-scope
    * refusal lives host-side (the audited seam), not here — this is the storage verb.
    */
-  deleteVertical(slug: string, until: string, audit?: AdminEntryInput): void {
+  deleteVertical(slug: string, audit?: AdminEntryInput, until?: string): void {
     // #2501: one transaction, so the row and its ownership period close together. `until` is the
-    // host's clock, the one the period's `since` (the row's created_at) was read on.
+    // host's stamp, on the clock the period's `since` (the row's created_at) was read on. It is
+    // optional and trailing so a caller from before it, sending (slug, audit), still closes the
+    // period, on this DO's own reading of that clock; anything but an instant is refused.
+    const closedAt = until === undefined ? verticalOwnerNow() : instant.parse(until);
     this.writeAndAudit(() => {
       this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
       this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
@@ -3462,7 +3466,7 @@ export class ControlPlaneDO extends DurableObject {
       forgetVerticalWireAuth(this.kernelSql, slug);
       this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
       const changed = this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug).rowsWritten > 0;
-      if (changed) closeVerticalOwnerRow(doRedactionSql(this.sql), slug, until);
+      if (changed) closeVerticalOwnerRow(doRedactionSql(this.sql), slug, closedAt);
       return changed;
     }, audit);
   }

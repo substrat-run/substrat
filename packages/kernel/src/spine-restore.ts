@@ -5,7 +5,12 @@ import { isSearchIndexTable } from './search-index.js';
 import { SWITCH_KINDS, dumpCarriesSwitches, switchesBackfillSqlOf } from './system-switch-record.js';
 import { dumpCarriesMembershipFences, membershipFencesBackfillSql } from './membership-fence.js';
 import { mapLegacyStoreDriverDump } from './store-driver-releases.js';
-import { VERTICAL_OWNERS_BACKFILL, verticalOwnersStrayCloseSql } from './vertical-owners.js';
+import {
+  VERTICAL_OWNERS_BACKFILL,
+  assertOneOpenVerticalOwnerPeriod,
+  verticalOwnerNow,
+  verticalOwnersStrayCloseSql,
+} from './vertical-owners.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One
@@ -246,15 +251,17 @@ function assertWithinColumnCap(
  *
  * 0. map a pre-rename copy's `store_kind_*` tables and `kind` columns onto the driver names
  *    (`mapLegacyStoreDriverDump`);
- * 1. refuse a table the directory does not build (`assertDirectoryTablesBuilt`), and one that
- *    would pass `maxColumns` once the dump's unknown columns join this code's own;
+ * 1. refuse a table the directory does not build (`assertDirectoryTablesBuilt`), a dump with two
+ *    open ownership periods of one slug (`assertOneOpenVerticalOwnerPeriod`, #2501), and a table
+ *    that would pass `maxColumns` once the dump's unknown columns join this code's own;
  * 2. add each column the dump carries and this code does not know, bare and lowercased, and
  *    refuse one named for the rowid (`spineColumnAdditions`);
  * 3. insert every row by column name, against the columns read back after step 2
  *    (`spineRowsInsert`);
  * 4. fill a pre-directory scope row's naming columns (`LEGACY_SCOPE_ROWS_BACKFILL`), close an
- *    open ownership period whose slug has no vertical (`verticalOwnersStrayCloseSql`) and open
- *    one for each vertical that has none (`VERTICAL_OWNERS_BACKFILL`, #2501);
+ *    open ownership period whose slug has no vertical, at `verticalOwnerNow()`
+ *    (`verticalOwnersStrayCloseSql`), and open one for each vertical that has none
+ *    (`VERTICAL_OWNERS_BACKFILL`, #2501);
  * 5. backfill each kill switch's record (the schedule switch's, #1674, and the peer switch's,
  *    #2029) from the dump's own admin log, when the dump predates that record. One that carried
  *    it keeps its rows and is never backfilled over;
@@ -282,16 +289,17 @@ export function loadDirectoryDump(
   // A copy from before the store driver rename names its tables and key column the old way.
   tables = mapLegacyStoreDriverDump(tables);
   assertDirectoryTablesBuilt(tables.map((t) => t.name), host.columnsOf);
+  assertOneOpenVerticalOwnerPeriod(tables);
   if (host.maxColumns !== undefined) assertWithinColumnCap(tables, host.columnsOf, host.maxColumns);
   for (const t of tables) for (const alter of spineColumnAdditions(t, host.columnsOf(t.name))) host.exec(alter);
   for (const t of tables) {
     if (t.rows.length > 0) host.insert(spineRowsInsert(t, host.columnsOf(t.name)), t.rows);
   }
   for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) host.exec(stmt);
-  // #2501: the periods kept are consistent with the verticals restored. A dump from before the
-  // history comes back with one period per vertical, and a period left open for a slug the dump
-  // has no row for is closed.
-  host.exec(verticalOwnersStrayCloseSql(host.now()));
+  // #2501: a period left open for a slug the dump has no row for is closed, on the clock every
+  // period stamp is read on (not `host.now()`); then a dump from before the history comes back
+  // with one period per vertical.
+  host.exec(verticalOwnersStrayCloseSql(verticalOwnerNow()));
   host.exec(VERTICAL_OWNERS_BACKFILL);
   const names = tables.map((t) => t.name);
   for (const kind of SWITCH_KINDS) if (!dumpCarriesSwitches(names, kind)) host.exec(switchesBackfillSqlOf(kind));

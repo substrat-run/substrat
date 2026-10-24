@@ -379,6 +379,7 @@ import {
   closeVerticalOwnerRow,
   listVerticalOwnerRows,
   openVerticalOwnerRow,
+  verticalOwnerNow,
   listMeterDayRows,
   listMeterDayTakeRows,
   pruneMeterDayRows,
@@ -9665,7 +9666,7 @@ export class SqliteScopeHost implements ScopeHost {
             `vertical '${parsed.slug}' is already registered as ${existing.source}`,
           );
         }
-        const createdAt = new Date().toISOString();
+        const createdAt = verticalOwnerNow();
         // #2501: the slug's ownership period opens with its row, in the same transaction.
         this.directoryWriteAndAudit(() => {
           const changed = this.directory
@@ -9875,7 +9876,7 @@ export class SqliteScopeHost implements ScopeHost {
           forgetVerticalWireAuth(switchSqlOf(this.directory), slug);
           this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
           const changed = this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug).changes > 0;
-          if (changed) closeVerticalOwnerRow(redactionSqlOf(this.directory), slug, new Date().toISOString());
+          if (changed) closeVerticalOwnerRow(redactionSqlOf(this.directory), slug, verticalOwnerNow());
           return changed;
         }, () => this.recordAdmin(
           actor,
