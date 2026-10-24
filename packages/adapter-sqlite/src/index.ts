@@ -289,6 +289,7 @@ import {
   purgeDueOf,
   purgeHeldBy,
   lifecycleRefusal,
+  scopeNotHeldRefusal,
   type PurgeGateFacts,
   type PurgePass,
   purgeOnlyKeysOf,
@@ -374,6 +375,12 @@ import {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
   METER_DAYS_DDL,
+  VERTICAL_OWNERS_BACKFILL,
+  VERTICAL_OWNERS_DDL,
+  closeVerticalOwnerRow,
+  listVerticalOwnerRows,
+  openVerticalOwnerRow,
+  verticalOwnerNow,
   listMeterDayRows,
   listMeterDayTakeRows,
   pruneMeterDayRows,
@@ -652,6 +659,7 @@ import {
   type RoleFilter,
   type ScheduleRegistration,
   type ScheduleRunReport,
+  type ScheduleTick,
   type ScopedSql,
   type ScopeFilter,
   type ScopeListing,
@@ -881,6 +889,7 @@ import {
   type SettleIntentRow,
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
+import { opsFailureReferenceWhere } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
@@ -1971,6 +1980,13 @@ type TupleReadRow = { subject: string; relation: string; expires_at: string | nu
  */
 const PROCESS_HOST_DIRS = new Map<string, { lock: Database.Database; hosts: number }>();
 
+/** A scope database's size in bytes: allocated pages, free ones included, which is what the file costs on disk (#1524). */
+const databaseBytesOf = (db: Database.Database): number =>
+  (db.pragma('page_count', { simple: true }) as number) * (db.pragma('page_size', { simple: true }) as number);
+
+/** What a scope database's attachment rows sum to (#2501). */
+const attachmentBytesOf = (db: Database.Database): number => (db.prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number }).bytes;
+
 /**
  * #119: claim a host directory for this process, for one live `SqliteScopeHost`. The first host in
  * the process takes an exclusive lock on `_host.lock` (a SQLite file: `locking_mode = EXCLUSIVE`
@@ -2926,6 +2942,8 @@ export class SqliteScopeHost implements ScopeHost {
       ${REQUEST_ROLLUP_DDL}
       -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
       ${METER_DAYS_DDL}
+      -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
+      ${VERTICAL_OWNERS_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -5860,6 +5878,36 @@ export class SqliteScopeHost implements ScopeHost {
     return { roles, seated };
   }
 
+  /**
+   * The scope database's size in bytes, asked by scope id alone (#2541): the Cloudflare host's
+   * `databaseSizeLocal`, which a vertical's `/internal/database-size` calls. Counts as
+   * `scopeDatabaseSize` does. A scope this host does not hold is refused before any store is opened.
+   */
+  async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
+    return databaseBytesOf(this.heldReadDb(scopeId));
+  }
+
+  /** What the scope's attachment rows sum to (#2501), asked by scope id alone: refused as the size is (#2541). */
+  async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
+    return attachmentBytesOf(this.heldReadDb(scopeId));
+  }
+
+  /**
+   * The read connection of a scope this host holds, for a read that names only the scope id (#2541),
+   * with the directory read ONCE. Refused `conflict` before anything is opened: no row, a reaped one
+   * (a tombstone whose store is gone), or a scope with no store open or on disk (archived straight
+   * from provisioning, as the Cloudflare host's object holding nothing is), since `runtime()` would
+   * create the store those leave absent.
+   */
+  private heldReadDb(scopeId: ScopeId): Database.Database {
+    const row = this.directory.prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { tenant_id: string; status: string }
+      | undefined;
+    const stored = row !== undefined && (this.scopes.has(`${row.tenant_id}/${scopeId}`) || existsSync(join(this.dir, `${row.tenant_id}__${scopeId}.sqlite`)));
+    if (!row || row.status === 'reaped' || !stored) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+    return this.readDb(this.runtime(row.tenant_id as TenantId, scopeId));
+  }
+
   /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */
   private refuseReservedGrant(permissions: readonly string[]): void {
     const refusal = reservedGrantRefusal(permissions, this.reservedKeys);
@@ -6021,6 +6069,8 @@ export class SqliteScopeHost implements ScopeHost {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #2517: what the sweep tick's earlier calls did to this scope (`ScopeHost.runDueSchedules`). */
+    tick?: ScheduleTick,
   ): Promise<ScheduleRunReport> {
     const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [], runs: [] };
     const mod = this.modules.get(moduleId);
@@ -6090,6 +6140,16 @@ export class SqliteScopeHost implements ScopeHost {
     // scope at once. `ScheduleRunReport.platformRequests` says what that does and does not count.
     let platformRequests = 0;
     const counted: ScopeStubOptions = { onPlatformRequests: (n) => (platformRequests += n) };
+    // #2517: the part of that the purge runs enqueued, which is what defers a later purge head the
+    // cap refuses (`runPurgePass`): this call's, on top of what the tick's earlier calls report.
+    const earlierPurgeRequests = tick?.earlierPurgeRequests ?? 0;
+    let purgeRequests = 0;
+    const purgeCounted: ScopeStubOptions = {
+      onPlatformRequests: (n) => {
+        platformRequests += n;
+        purgeRequests += n;
+      },
+    };
     for (const schedule of mod.schedules) {
       const lastRunAt = gate.lastRuns.get(schedule.operation) ?? null;
       const lastRun = lastRunAt ? Date.parse(lastRunAt) : null;
@@ -6117,7 +6177,24 @@ export class SqliteScopeHost implements ScopeHost {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
           // #2431: each purge is an invoke, and reports what it enqueued through `counted` like any other.
-          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId, counted);
+          // #2517: what the purge runs before this one in the tick enqueued, so a head the cap refuses
+          // because they filled the queue is deferred to the next tick rather than failed.
+          const pass = await this.runPurgeSweep(
+            moduleId,
+            tenantId,
+            scopeId,
+            schedule.operation,
+            invocationId,
+            purgeCounted,
+            earlierPurgeRequests + purgeRequests,
+          );
+          if (pass.deferred) {
+            // Ran nothing: no line, no cadence row, `skipped` like any run that did not happen.
+            report.skipped += 1;
+            report.deferred = (report.deferred ?? 0) + 1;
+            report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+            continue;
+          }
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -6179,6 +6256,7 @@ export class SqliteScopeHost implements ScopeHost {
     }
     lines.end();
     if (platformRequests > 0) report.platformRequests = platformRequests;
+    if (purgeRequests > 0) report.purgeRequests = purgeRequests;
     return report;
   }
 
@@ -6199,6 +6277,8 @@ export class SqliteScopeHost implements ScopeHost {
     runInvocationId: string,
     /** #2431: how each purge reports the platform requests it enqueued. */
     counted?: ScopeStubOptions,
+    /** #2517: platform requests the purge runs earlier in this tick enqueued. */
+    earlierPurgeRequests = 0,
   ): Promise<PurgePass> {
     const entityType = this.modules
       .get(moduleId)
@@ -6231,6 +6311,7 @@ export class SqliteScopeHost implements ScopeHost {
         await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: runInvocationId });
       },
       (write) => rt.actor.turn(() => write(spineSql(rt.db))),
+      earlierPurgeRequests,
     );
   }
 
@@ -7995,32 +8076,37 @@ export class SqliteScopeHost implements ScopeHost {
     // #1748: the evidence, its issue and its finding in ONE transaction — a detector that
     // throws takes the evidence with it, so the caller's retry observes it rather than finding
     // the row already there and the observation lost.
+    // #2540: a tenant's row with a `detail` is a pair — the tenant's row says what was answered, and
+    // a row with no tenant, which only staff read, carries the failure's own text. Counted once.
+    const detail = entry.tenantId && typeof entry.detail === 'string' ? entry.detail : null;
     this.directory.transaction(() => {
-      this.directory
-        .prepare(
-          `INSERT INTO _substrat_ops_failures
-             (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+      const insert = this.directory.prepare(
+        `INSERT INTO _substrat_ops_failures
+           (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const row = (tenantId: string | null, message: string) =>
+        insert.run(
           ulid(),
           entry.actor,
           entry.operation,
           entry.stage ?? null,
-          entry.tenantId ?? null,
+          tenantId,
           entry.scopeId ?? null,
           entry.vertical ?? null,
           entry.version ?? null,
           entry.status ?? null,
           // Bounded here, not trusted from the catch site: one runaway upstream
           // body must not become a runaway directory row (#559).
-          entry.message.slice(0, 2000),
+          message.slice(0, 2000),
           entry.reference ?? null,
           entry.origin ?? null,
           entry.code ?? null,
           fingerprint,
           at,
         );
+      if (detail !== null) row(null, detail);
+      row(entry.tenantId ?? null, entry.message);
       // Prune-on-write (#559): retention lives here, not in a cron — every insert
       // pays for its own housekeeping, so the table stays bounded even where no
       // scheduled pass runs (this adapter has none).
@@ -8054,9 +8140,12 @@ export class SqliteScopeHost implements ScopeHost {
           entry.code ?? null,
           at,
           at,
-          entry.message.slice(0, 2000),
-          entry.tenantId ?? null,
-          issueExemplarOwner(entry.tenantId ?? null),
+          // The issues are staff's (#2540): a pair's exemplar is its own text, not the tenant's
+          // sentence, and it is owned as the row it is copied from is, the platform's — so erasure
+          // reaches it on an id match, as it reaches that row.
+          (detail ?? entry.message).slice(0, 2000),
+          detail !== null ? null : (entry.tenantId ?? null),
+          issueExemplarOwner(detail !== null ? null : (entry.tenantId ?? null)),
           entry.vertical ?? null,
           entry.version ?? null,
         );
@@ -9665,12 +9754,18 @@ export class SqliteScopeHost implements ScopeHost {
             `vertical '${parsed.slug}' is already registered as ${existing.source}`,
           );
         }
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare(
-            'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          )
-          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString())
-          .changes > 0,
+        const createdAt = verticalOwnerNow();
+        // #2501: the slug's ownership period opens with its row, in the same transaction.
+        this.directoryWriteAndAudit(() => {
+          const changed = this.directory
+            .prepare(
+              'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            )
+            .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, createdAt)
+            .changes > 0;
+          if (changed) openVerticalOwnerRow(redactionSqlOf(this.directory), parsed.slug, parsed.ownerTenant, createdAt);
+          return changed;
+        },
           () => this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed));
       },
       listVerticals: async (actor, page) => {
@@ -9855,6 +9950,7 @@ export class SqliteScopeHost implements ScopeHost {
         }
         // Deployed dispatch scripts are NOT reaped here — they become orphans for the
         // cleanup script (#248), never destroyed alongside a registry row.
+        // #2501: one transaction, so the row and its ownership period close together.
         this.directoryWriteAndAudit(() => {
           this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
           this.directory.prepare('DELETE FROM vertical_channel_history WHERE vertical_slug = ?').run(slug);
@@ -9867,7 +9963,9 @@ export class SqliteScopeHost implements ScopeHost {
           forgetVerticalScopeStores(switchSqlOf(this.directory), slug);
           forgetVerticalWireAuth(switchSqlOf(this.directory), slug);
           this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
-          return this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug).changes > 0;
+          const changed = this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug).changes > 0;
+          if (changed) closeVerticalOwnerRow(redactionSqlOf(this.directory), slug, verticalOwnerNow());
+          return changed;
         }, () => this.recordAdmin(
           actor,
           'deleteVertical',
@@ -9875,6 +9973,11 @@ export class SqliteScopeHost implements ScopeHost {
           { slug, source: existing.source, ownerTenant: existing.ownerTenant },
           null,
         ));
+      },
+      listVerticalOwners: async (actor, slug: string) => {
+        const periods = listVerticalOwnerRows(redactionSqlOf(this.directory), slug);
+        this.recordAccess(actor, 'listVerticalOwners', { tenantId: null }, { slug }, periods.length);
+        return periods;
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await readVersion(versionId);
@@ -10814,10 +10917,7 @@ export class SqliteScopeHost implements ScopeHost {
       scopeDatabaseSize: async (actor, tenantId, scopeId) => {
         // #1524: the SQLite twin of a DO's `databaseSize`. It counts allocated pages,
         // free ones included, which is what the file costs on disk, not the live row bytes.
-        const db = this.scopeReadDbFor(tenantId, scopeId);
-        const pages = db.pragma('page_count', { simple: true }) as number;
-        const pageSize = db.pragma('page_size', { simple: true }) as number;
-        const bytes = pages * pageSize;
+        const bytes = databaseBytesOf(this.scopeReadDbFor(tenantId, scopeId));
         this.recordAccess(actor, 'scopeDatabaseSize', { tenantId, scopeId }, null, 1);
         return bytes;
       },
@@ -10827,7 +10927,7 @@ export class SqliteScopeHost implements ScopeHost {
         return sizes;
       },
       scopeAttachmentBytes: async (actor, tenantId, scopeId) => {
-        const { bytes } = this.scopeReadDbFor(tenantId, scopeId).prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number };
+        const bytes = attachmentBytesOf(this.scopeReadDbFor(tenantId, scopeId));
         this.recordAccess(actor, 'scopeAttachmentBytes', { tenantId, scopeId }, null, 1);
         return bytes;
       },
@@ -12876,8 +12976,9 @@ export class SqliteScopeHost implements ScopeHost {
           params.push(filter.fingerprint);
         }
         if (filter?.reference) {
-          where.push('reference = ?');
-          params.push(filter.reference);
+          const byReference = opsFailureReferenceWhere(filter.reference, filter.referenceInText === true);
+          where.push(byReference.sql);
+          params.push(...byReference.params);
         }
         if (filter?.since) {
           where.push('at >= ?');
@@ -13619,6 +13720,8 @@ export class SqliteScopeHost implements ScopeHost {
       if (!existing.has(column)) this.directory.exec(`ALTER TABLE scopes ADD COLUMN ${ddl}`);
     }
     for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) this.directory.exec(stmt);
+    // #2501: an ownership period for every vertical registered before the history existed.
+    this.directory.exec(VERTICAL_OWNERS_BACKFILL);
     // Created after the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
     //

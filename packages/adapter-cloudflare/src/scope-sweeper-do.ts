@@ -7,6 +7,7 @@ import type {
   ScheduleRegistration,
   ScheduleRunReport,
   ScheduleSweepReport,
+  ScheduleTick,
   FreshnessRegistration,
   FreshnessReport,
 } from '@substrat-run/kernel';
@@ -93,6 +94,8 @@ export interface ScopeSweepHost {
     moduleId: ScheduleRegistration['moduleId'],
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #2517: what the pass's earlier calls on this scope did. A host older than it ignores it. */
+    tick?: ScheduleTick,
   ): Promise<ScheduleRunReport>;
   /**
    * #1232: hand one pass's schedule outcomes to the scope's intent journal, for
@@ -373,13 +376,18 @@ export function defineScopeSweeperDO<Env>(
           // journal cap. Stamped with pass time here; the drain runs a window later.
           const passAt = new Date().toISOString();
           const passRuns: SweepRunsPayload['entries'] = [];
+          // #2517: the requests this scope's purge runs enqueued so far in the pass, across modules —
+          // nothing drains between them, so a later purge head the cap refuses waits for the next pass.
+          let purgeRequests = 0;
           for (const reg of registrations) {
             try {
-              const r = await host.runDueSchedules(reg.moduleId, tenantId, scopeId);
+              const r = await host.runDueSchedules(reg.moduleId, tenantId, scopeId, { earlierPurgeRequests: purgeRequests });
               if (r.fired > 0 || r.failed > 0) touched = true;
               report.schedules.fired += r.fired;
               report.schedules.skipped += r.skipped;
               report.schedules.failed += r.failed;
+              if (r.deferred) report.schedules.deferred = (report.schedules.deferred ?? 0) + r.deferred;
+              purgeRequests += r.purgeRequests ?? 0;
               if (r.platformRequests) {
                 report.schedules.platformRequests = (report.schedules.platformRequests ?? 0) + r.platformRequests;
                 needsPlatformDrain = true;

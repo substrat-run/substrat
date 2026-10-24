@@ -110,6 +110,25 @@ export async function failureDigestWatermark(opts: {
 }
 
 /**
+ * #2540: one failure whose text was withheld from a tenant is two ledger rows written together:
+ * the tenant's, saying what was answered, and one with no tenant carrying the text, under one
+ * reference. The digest is staff's, so it lists such a failure once: the text, under the tenant
+ * it was filed for. Two rows pair only when they share reference, operation and instant, and
+ * exactly one of them has a tenant.
+ */
+export function pairedFailuresMerged(rows: readonly OpsFailureEntry[]): OpsFailureEntry[] {
+  const key = (r: OpsFailureEntry) => `${r.reference}\u001f${r.operation}\u001f${r.at}`;
+  const staffKeys = new Set(rows.filter((r) => r.tenantId === null && r.reference).map(key));
+  const twins = new Map<string, OpsFailureEntry>();
+  for (const r of rows) if (r.tenantId !== null && r.reference && staffKeys.has(key(r)) && !twins.has(key(r))) twins.set(key(r), r);
+  return rows.flatMap((r) => {
+    if (r.tenantId !== null) return twins.get(key(r)) === r ? [] : [r];
+    const twin = r.reference ? twins.get(key(r)) : undefined;
+    return [twin ? { ...r, tenantId: twin.tenantId } : r];
+  });
+}
+
+/**
  * The phase. Never throws: a send failure is recorded as an ops failure of its own
  * (so the NEXT digest carries it, and the Issues view shows it) and returned, and the
  * pass it rides on is never sunk by its reporter — the recorder's own rule.
@@ -136,7 +155,7 @@ export async function sendFailureDigest(opts: FailureDigestOptions): Promise<Fai
   // is resolved: the latest outcome row wins, so there is nothing left to look into. A read that
   // fails here keeps every row: reporting one resolved change is better than hiding an open one.
   const superseded = await supersededUnknowns(opts.admin, opts.actor, failures).catch(() => new Set<string>());
-  failures = failures.filter((f) => !superseded.has(f.id));
+  failures = pairedFailuresMerged(failures.filter((f) => !superseded.has(f.id)));
 
   if (failures.length === 0 && opts.reportErrors.length === 0) {
     return { status: 'skipped', reason: 'nothing-to-report' };

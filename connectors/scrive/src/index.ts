@@ -21,7 +21,7 @@ import type {
   HostAdmin,
   ScopeHost,
 } from '@substrat-run/kernel';
-import { deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
+import { connectorUploadBody, deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
 import { ScriveApi, ScriveApiError, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
 import { renderPdf, representableInWinAnsi } from './pdf.js';
 
@@ -1043,7 +1043,8 @@ export async function reconcileScriveDispatch(
         contentType: 'application/pdf',
         // The signed contract is the customer-facing proof of the signature.
         visibility: 'customer',
-        body: bytes,
+        // A sealed PDF over the buffered bound goes by the streamed route (#2538).
+        body: connectorUploadBody(bytes),
       });
       sealedAttachmentId = record.id;
       sealedDocument = { attachmentId: record.id };

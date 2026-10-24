@@ -99,6 +99,7 @@ import {
   requestRollupDay,
   meterDay,
   meterDayTake,
+  verticalOwnerPeriod,
   subjectRef,
   createConnectionInput,
   connectLinkFilter,
@@ -193,6 +194,7 @@ import {
   type RequestRollupDay,
   type MeterDay,
   type MeterDayTake,
+  type VerticalOwnerPeriod,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
@@ -380,6 +382,7 @@ import {
   type RoleFilter,
   type ScheduleRegistration,
   type ScheduleRunReport,
+  type ScheduleTick,
   type ScheduleStateKind,
   type ScopeFilter,
   type ScopeListing,
@@ -511,6 +514,7 @@ import {
   INERT_SCOPE_REASON,
   lifecycleReceipt,
   lifecycleRefusal,
+  scopeNotHeldRefusal,
   isPrimaryScope,
   isPrimaryScopeRow,
   asyncInvocationId,
@@ -550,6 +554,7 @@ import {
   type MeterDayTakeFilter,
   type MeterDayTakeInput,
   type MeterDayTakeResult,
+  verticalOwnerNow,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
@@ -910,6 +915,8 @@ interface ControlPlaneStub {
   readVertical(slug: string): Promise<VerticalRow | undefined>;
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string,
     audit: AdminEntry): Promise<void>;
+  /** #2501: every period of a slug's ownership, oldest first. */
+  listVerticalOwners(slug: string): Promise<VerticalOwnerPeriod[]>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
   updateVerticalListed(slug: string, listed: number, audit: AdminEntry): Promise<void>;
   updateVerticalPublishRequest(slug: string, requestedAt: string, audit: AdminEntry): Promise<void>;
@@ -917,7 +924,7 @@ interface ControlPlaneStub {
   updateVerticalTenantProvisioner(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   updateVerticalEmailSender(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
-  deleteVertical(slug: string, audit: AdminEntry): Promise<void>;
+  deleteVertical(slug: string, audit: AdminEntry, until?: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -1618,6 +1625,11 @@ interface ScopeStubRpc {
     systemDoorInstance: string,
     /** #2192: the schedule run's id, which every purge in the pass runs under. */
     runInvocationId?: string,
+    /**
+     * #2517: the platform requests the purge runs before this one in the tick enqueued. LAST and
+     * optional for the positional-RPC reason above; a scope without it fails a refused head.
+     */
+    earlierPurgeRequests?: number,
   ): Promise<PurgePass | SystemDoorMoved>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
   freshnessProbe(
@@ -2054,6 +2066,10 @@ interface ScopeStubRpc {
   ): Promise<ImportResult | SystemDoorMoved>;
   /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
   servesTenant(tenantId: TenantId): Promise<boolean>;
+  /** #2541: the size, or null when this deployment does not hold the scope — held check and read in one call. */
+  databaseSizeIfHeld(): Promise<number | null>;
+  /** #2541: the attachment bytes, or null when this deployment does not hold the scope — one call, as the size is. */
+  attachmentBytesIfHeld(): Promise<number | null>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
   importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved>;
   redrainEvents(drainedBefore: string): Promise<number>;
@@ -2942,6 +2958,12 @@ const DOOR_WORDS = {
 
 /** #2029: the rewind hold's key for one subject — a module's id, bare as #1819 stored it, or `vertical:<slug>`. */
 const holdKeyOf = (kind: SwitchKind, key: string): string => (kind === 'system' ? key : peerSubjectRef(key));
+
+/** #2541: a vertical-side size read's answer, or the refusal when the scope's own object said it holds nothing (`null`). */
+function heldOrRefused(scopeId: ScopeId, size: number | null): number {
+  if (size === null) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+  return size;
+}
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
 export interface SwitchHoldClaim {
@@ -4200,14 +4222,17 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId).appliedMigrations();
   }
 
-  /** This host's own scope's database size in bytes (#1524), the vertical-host read. */
+  /**
+   * This host's own scope's database size in bytes (#1524), the vertical-host read. A scope this
+   * deployment does not hold is refused (#2541), not read as 0.
+   */
   async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
-    return this.scopeStub(scopeId).databaseSize();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).databaseSizeIfHeld());
   }
 
-  /** This host's own scope's attachment bytes (#2501), the vertical-host read. */
+  /** This host's own scope's attachment bytes (#2501), the vertical-host read; refused as the size is. */
   async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
-    return this.scopeStub(scopeId).attachmentBytes();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).attachmentBytesIfHeld());
   }
 
   /**
@@ -6447,6 +6472,8 @@ export class CloudflareScopeHost implements ScopeHost {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #2517: what the sweep tick's earlier calls did to this scope (`ScopeHost.runDueSchedules`). */
+    tick?: ScheduleTick,
   ): Promise<ScheduleRunReport> {
     const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [], runs: [] };
     const schedules = this.moduleSchedules.get(moduleId);
@@ -6498,6 +6525,10 @@ export class CloudflareScopeHost implements ScopeHost {
     // scope at once. `ScheduleRunReport.platformRequests` says what that does and does not count.
     let platformRequests = 0;
     const counted: ScopeStubOptions = { onPlatformRequests: (n) => (platformRequests += n) };
+    // #2517: the part of that the purge runs enqueued, which is what defers a later purge head the
+    // cap refuses (`runPurgePass`): this call's, on top of what the tick's earlier calls report.
+    const earlierPurgeRequests = tick?.earlierPurgeRequests ?? 0;
+    let purgeRequests = 0;
     for (const schedule of schedules) {
       const last = await stub.scheduleLastRun(schedule.operation);
       const lastRun = last ? Date.parse(last) : null;
@@ -6533,13 +6564,24 @@ export class CloudflareScopeHost implements ScopeHost {
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
           // #2431, #2440: the scope reports the requests its purges enqueued (`pass.platformRequests`),
           // and the deliveries their events route to the platform are counted below, as an invoke's are.
+          // #2517: with what the purge runs before this one in the tick enqueued, so a head the cap
+          // refuses because they filled the queue is deferred to the next tick rather than failed.
           const pass = await door.through((instance) =>
-            stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId),
+            stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId, earlierPurgeRequests + purgeRequests),
           );
+          if (pass.deferred) {
+            // Ran nothing: no line, no cadence row, `skipped` like any run that did not happen.
+            report.skipped += 1;
+            report.deferred = (report.deferred ?? 0) + 1;
+            report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+            continue;
+          }
           platformRequests += pass.platformRequests ?? 0;
+          purgeRequests += pass.platformRequests ?? 0;
           // The purges' events, delivered the way each invoke's own tail delivers them.
           const delivered = await this.drainExecutors(tenantId, scopeId, invocationId);
           platformRequests += delivered.routedToPlatform ?? 0;
+          purgeRequests += delivered.routedToPlatform ?? 0;
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -6594,6 +6636,7 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     lines.end();
     if (platformRequests > 0) report.platformRequests = platformRequests;
+    if (purgeRequests > 0) report.purgeRequests = purgeRequests;
     return report;
   }
 
@@ -8243,7 +8286,7 @@ export class CloudflareScopeHost implements ScopeHost {
           }
           throw substratError('conflict', `vertical '${parsed.slug}' is already registered as ${existing.source}`);
         }
-        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString(),
+        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, verticalOwnerNow(),
           this.adminEntry(actor, 'registerVertical', { tenantId: null }, null, parsed));
       },
       listVerticals: async (actor, page) => {
@@ -8372,13 +8415,19 @@ export class CloudflareScopeHost implements ScopeHost {
             `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
+        // #2501: the period's `until` is read here, on the clock its `since` was.
         await this.cp.deleteVertical(slug, this.adminEntry(
           actor,
           'deleteVertical',
           { tenantId: null },
           { slug, source: existing.source, ownerTenant: existing.owner_tenant },
           null,
-        ));
+        ), verticalOwnerNow());
+      },
+      listVerticalOwners: async (actor, slug: string) => {
+        const periods = (await this.cp.listVerticalOwners(slug)).map((p) => verticalOwnerPeriod.parse(p));
+        await this.recordAccess(actor, 'listVerticalOwners', { tenantId: null }, { slug }, periods.length);
+        return periods;
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);
@@ -10453,7 +10502,10 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows.map((r) => adminLogEntry.parse(r));
       },
       recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
+        // #2540: a pair's staff row is minted first, so the tenant's row lists above it.
+        const detail = entry.tenantId && typeof entry.detail === 'string' ? { detail: entry.detail.slice(0, 2000), detail_id: ulid() } : {};
         await this.cp.recordOpsFailure({
+          ...detail,
           id: ulid(),
           actor: entry.actor,
           operation: entry.operation,
@@ -10483,6 +10535,7 @@ export class CloudflareScopeHost implements ScopeHost {
           code: filter?.code,
           fingerprint: filter?.fingerprint,
           reference: filter?.reference,
+          referenceInText: filter?.referenceInText,
           since: filter?.since,
           until: filter?.until,
           limit: filter?.limit,

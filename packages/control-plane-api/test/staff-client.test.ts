@@ -126,6 +126,7 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   setTenantProvisioner: [(c) => c.setTenantProvisioner('v', true), 'POST', '/verticals/v/tenant-provisioner', { granted: true }],
   setEmailSender: [(c) => c.setEmailSender('v', true), 'POST', '/verticals/v/email-sender', { granted: true }],
   deleteVertical: [(c) => c.deleteVertical('v'), 'DELETE', '/verticals/v'],
+  readVerticalOwners: [(c) => c.readVerticalOwners('acme/crm'), 'GET', '/verticals/acme%2Fcrm/owners'],
   promoteVersion: [(c) => c.promoteVersion('v', 'prod' as never, 'ver1'), 'POST', '/verticals/v/channels/prod/promote', { versionId: 'ver1' }],
   promotionImpact: [(c) => c.promotionImpact('v', 'prod' as never, 'ver 1'), 'GET', '/verticals/v/channels/prod/promote-impact?versionId=ver%201'],
   versionRegistry: [(c) => c.versionRegistry('v', 'ver 1'), 'GET', '/verticals/v/versions/ver%201/registry'],

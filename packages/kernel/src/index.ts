@@ -65,6 +65,7 @@ export type {
   OperationEntitlement,
   ScheduleRegistration,
   ScheduleRunReport,
+  ScheduleTick,
   ScopeAttachments,
   ScopedSql,
   ScopeFilter,
@@ -158,6 +159,7 @@ export {
 } from './scope-copy-ledger.js';
 export { STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_DURATION_MS, deadlineFetch, type DeadlineOptions } from './deadline-fetch.js';
 export {
+  connectorUploadBody,
   isSizedByteStream,
   knownLengthInit,
   knownLengthStream,
@@ -622,7 +624,7 @@ export {
 } from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
-export { isLifecycleWrite, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, writeLifecycle } from './scope-lifecycle.js';
+export { isLifecycleWrite, lifecycleReceipt, lifecycleRefusal, readLifecycle, scopeNotHeldRefusal, settleLifecycleAfterLoad, writeLifecycle } from './scope-lifecycle.js';
 export { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, type KeptCopy, carriedAwayDump, dumpMetaValue, isCopyMarkInsert, isWriteStatement, metaValueIn, type CarriedAway, type LoadMarker } from './carried-copy.js';
 export { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, type KernelColumnsOf } from './spine-restore.js';
 export {
@@ -972,10 +974,12 @@ export type {
 // every receipt writer and the sweep answer both questions the same way.
 export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
 export type { ServingPointer } from './scope-identity.js';
+export { opsFailureReferenceWhere } from './ops-failure-reference.js';
 export {
   exportBreaksOf,
   exportBreakRefusal,
   isExportBreakRefusal,
+  isExportBreakUnjudged,
   bindExportBreaksOf,
   scopeMoveOf,
   bindExportBreakRefusal,
@@ -1057,6 +1061,14 @@ export {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
 } from './request-rollup.js';
+export {
+  VERTICAL_OWNERS_BACKFILL,
+  VERTICAL_OWNERS_DDL,
+  closeVerticalOwnerRow,
+  listVerticalOwnerRows,
+  openVerticalOwnerRow,
+  verticalOwnerNow,
+} from './vertical-owners.js';
 export {
   METER_DAYS_DDL,
   METER_DAYS_LIMIT_DEFAULT,

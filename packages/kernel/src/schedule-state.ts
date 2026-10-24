@@ -152,4 +152,9 @@ export interface ScheduleSweepReport {
    * `ScheduleRunReport.platformRequests`. Absent when none did.
    */
   platformRequests?: number;
+  /**
+   * #2517: purge runs deferred to the next tick because the tick's earlier purges filled the queue,
+   * summed from each pass's `ScheduleRunReport.deferred`. Already counted in `skipped`. Absent when none.
+   */
+  deferred?: number;
 }

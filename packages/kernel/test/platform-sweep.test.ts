@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { platformActorId, connectionId, importsOfManifestJson, scopeId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, connectionId, importsOfManifestJson, scopeId, substratError, tenantId } from '@substrat-run/contracts';
 import type { MigrationFailure, MigrationStraggler, Scope, Tenant } from '@substrat-run/contracts';
 import {
   installReconciled,
@@ -13,7 +13,7 @@ import {
   type InstallsReconciled,
 } from '../src/install-receipts.js';
 import { isPrimaryScope, runningVersionOf } from '../src/scope-identity.js';
-import { exportBreaksOf } from '../src/export-break.js';
+import { exportBreakRefusal, exportBreaksOf, isExportBreakRefusal, isExportBreakUnjudged } from '../src/export-break.js';
 import {
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
@@ -23,7 +23,7 @@ import {
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
 import type { ConnectorSweeper, CrossVerticalReach, PlatformRequestDrain, PlatformSweepOptions } from '../src/platform-sweep.js';
-import type { FetchLike, MigrateScopeOutcome, ScopeHost, SweepRunInput } from '../src/scope-host.js';
+import type { FetchLike, MigrateScopeOutcome, ScheduleRunReport, ScopeHost, SweepRunInput } from '../src/scope-host.js';
 
 /**
  * The orchestration, with fakes — that the pass enumerates, drains, dispatches by
@@ -1482,6 +1482,49 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
     ]);
   });
 
+  // #2517: nothing drains between two modules' schedules on a scope, so each call is told what the
+  // purge runs of the calls before it on THAT scope enqueued; and only purge runs count.
+  it('carries the purge requests of a scope\'s earlier modules into each later call, and reports deferred runs', async () => {
+    const a = sid();
+    const b = sid();
+    const seen: { scope: string; module: string; earlier: number | undefined }[] = [];
+    const answers: Record<string, ScheduleRunReport> = {
+      // Ordinary requests only: they defer nothing, so they are not carried.
+      '@test/first': { fired: 1, skipped: 0, failed: 0, errors: [], platformRequests: 5 },
+      '@test/second': { fired: 1, skipped: 0, failed: 0, errors: [], platformRequests: 7, purgeRequests: 3 },
+      '@test/third': { fired: 0, skipped: 1, failed: 0, errors: [], purgeRequests: 2, deferred: 1 },
+      '@test/fourth': { fired: 0, skipped: 1, failed: 0, errors: [], deferred: 1 },
+    };
+    const host = schedHost({
+      scopes: [{ id: a, forkedFrom: null }, { id: b, forkedFrom: null }],
+      schedules: Object.keys(answers).map((moduleId) => ({ moduleId, schedules: [{ operation: `${moduleId}/x` }] })),
+      run: async (m, _t, s, tick) => {
+        seen.push({ scope: s, module: m, earlier: tick?.earlierPurgeRequests });
+        return answers[m]!;
+      },
+    });
+    const report = await runPlatformSweep(host, opts());
+    for (const scope of [a, b]) {
+      // Each scope starts at zero: one scope's purges never defer another's.
+      expect(seen.filter((e) => e.scope === scope).map((e) => [e.module, e.earlier])).toEqual([
+        ['@test/first', 0],
+        ['@test/second', 0],
+        ['@test/third', 3],
+        ['@test/fourth', 5],
+      ]);
+    }
+    expect(report.schedules).toMatchObject({ fired: 4, skipped: 4, failed: 0, deferred: 4 });
+  });
+
+  it('twin: a pass that defers nothing reports no deferred count', async () => {
+    const host = schedHost({
+      scopes: [{ id: sid(), forkedFrom: null }],
+      run: async () => ({ fired: 1, skipped: 0, failed: 0, errors: [] }),
+    });
+    const report = await runPlatformSweep(host, opts());
+    expect(report.schedules).toEqual({ scopes: 1, fired: 1, skipped: 0, failed: 0 });
+  });
+
   describe('a scope whose schedules enqueued platform requests is drained again (#2431)', () => {
     const quiet: PlatformRequestDrain = { drained: 0, done: 0, failed: 0, pending: 0, attempted: [] };
 
@@ -2685,6 +2728,26 @@ describe('exportBreaksOf: the promote gate fails closed (#1705 PR 3)', () => {
         },
       }),
     ).rejects.toThrow(/cannot say whom this promotion breaks.*registry down/);
+  });
+
+  it('#2540: the refusal to judge is recognisable, and the refusal for a break is not it', async () => {
+    const unjudged = await exportBreaksOf({
+      admin: admin(fleet()),
+      actor: ACTOR,
+      producer: PRODUCER,
+      outgoing,
+      incoming,
+      readImports: async () => {
+        throw new Error('registry down');
+      },
+    }).catch((e: unknown) => e);
+    expect(isExportBreakUnjudged(unjudged)).toBe(true);
+    expect(isExportBreakRefusal(unjudged)).toBe(false);
+    expect(isExportBreakUnjudged(substratError('precondition_failed', exportBreakRefusal([])))).toBe(false);
+    expect(isExportBreakUnjudged(substratError('unavailable', 'something else entirely'))).toBe(false);
+    // As it arrives across a Durable Object hop: the code's name folded into the message.
+    const hopped = Object.assign(new Error(`Substrat.unavailable: ${(unjudged as Error).message}`), { name: 'Substrat.unavailable' });
+    expect(isExportBreakUnjudged(hopped)).toBe(true);
   });
 
   it('a manifest that does not parse is not judged (the twin: no refusal, no break)', async () => {

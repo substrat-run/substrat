@@ -324,6 +324,34 @@ describe('#1902 — the sweeper’s id check, without contracts at run time', ()
 });
 
 /**
+ * #2517: a pass runs a scope's modules back to back with no drain between them, so each call is
+ * told what the purge runs of the calls before it on THAT scope enqueued — ordinary requests not
+ * counted, every scope starting at zero — and the deferred runs are summed into the report.
+ */
+describe('#2517 — the pass carries the purge requests across a scope\'s modules', () => {
+  const tickStub = () =>
+    env.TICK_SWEEPER.get(env.TICK_SWEEPER.idFromName(SCOPE_SWEEPER_NAME)) as DurableObjectStub & ScopeSweeperStub;
+
+  it('each module is told its earlier modules\' purge requests on the same scope, and deferred runs are counted', async () => {
+    const t = tenantId.parse(ulid());
+    const scopes = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+    for (const s of scopes) await tickStub().noteScope(t, s);
+    const report = asReport(await tickStub().sweepNow());
+    for (const s of scopes) {
+      const told = report.errors.filter((e) => e.id.startsWith(`${s}:tick:`)).map((e) => [e.id.slice(`${s}:tick:`.length), e.error]);
+      expect(told).toEqual([
+        ['@test/first', '0'],
+        ['@test/second', '0'],
+        ['@test/third', '3'],
+        ['@test/fourth', '5'],
+      ]);
+    }
+    expect(report.schedules).toMatchObject({ fired: 4, skipped: 4, failed: 0, deferred: 4 });
+    for (const s of scopes) await tickStub().forgetScope(s);
+  });
+});
+
+/**
  * #1713 through the deployment's real sweeper: a roster scope its delivered lifecycle holds is
  * skipped whole — no schedule fires, no job is driven, no delivery attempted, and no cadence row
  * moves — and the first pass after it is live again does the work it deferred, once.

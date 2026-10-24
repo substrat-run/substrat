@@ -54,6 +54,7 @@ import type {
   HistoryEntry,
   Page,
   ScopeDumpTable,
+  Scope,
   ScopeId,
   ScopeQueryResult,
   DenialFilter,
@@ -115,9 +116,11 @@ import {
   substratError,
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
   connectorAttachmentMetaBytes,
   connectorAttachmentMetaRefusal,
+  connectorAttachmentBufferedRefusal,
   connectorAttachmentSizeRefusal,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
@@ -127,7 +130,7 @@ import {
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { isSizedByteStream, knownLengthInit, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
+import { isSizedByteStream, knownLengthInit, scopeNotHeldRefusal, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -144,6 +147,31 @@ export function isRouteMiss(err: ControlPlaneError): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * The 409 a deployment answers a size read for a scope it does not hold (#2541): never provisioned
+ * there, reaped, or carried away. Told by its sentence (`scopeNotHeldRefusal`) as well as its status,
+ * since a 409 on the same route could be any other conflict. Whether that is benign is
+ * `notHeldIsBenign`'s question, asked of the directory.
+ */
+export function isScopeNotHeld(err: unknown, scopeId: ScopeId): boolean {
+  return err instanceof ControlPlaneError && err.status === 409 && err.message.includes(scopeNotHeldRefusal(scopeId));
+}
+
+/**
+ * Whether a deployment's "not held" answer is expected, judged against the directory's record read
+ * NOW (#2541): the scope was reaped (or archived) since it was listed, or the directory has no such
+ * scope. Every other status (`provisioning`, `active`, `suspended`, `archiving`) holds a store, so
+ * "not held" there is a real fault and the caller keeps it an error. ONE rule for the storage
+ * gauge (skip) and the on-demand console page (read 0).
+ *
+ * `record` is not caught: a directory read that FAILS rejects here, so the failure is reported
+ * instead of being taken for a gone scope.
+ */
+export async function notHeldIsBenign(record: () => Promise<Pick<Scope, 'status'> | undefined>): Promise<boolean> {
+  const found = await record();
+  return found === undefined || found.status === 'reaped' || found.status === 'archived';
 }
 
 /** The orphan-attachment report as it crosses the wire (#2314): `OrphanSweepReport`, checked. */
@@ -880,7 +908,13 @@ export class VerticalClient {
     const { body, ...meta } = input;
     if (isSizedByteStream(body)) return this.connectorStreamAttachment(meta, body);
     const metaJson = JSON.stringify(meta);
-    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson));
+    // The buffer is already held, so its length is known and the route's buffered bound is judged
+    // here, before it is copied into a form (#2538). This covers the typed inputs only: the route
+    // judges the bytes that arrive, so a caller that does not go through this client meets it there.
+    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson), {
+      length: body.byteLength,
+      held: 'buffered',
+    });
     const form = new FormData();
     form.append('meta', metaJson);
     form.append('body', new Blob([body as BlobPart], { type: input.contentType }), input.filename);
@@ -899,14 +933,22 @@ export class VerticalClient {
 
   /**
    * Hold an upload to the bounds the far end holds it to (#2516), so it is refused here, with
-   * nothing sent, in the words the route would use. `declared` is a streamed body's length.
+   * nothing sent, in the words the route would use. `body` is its length and how it is held: a
+   * buffered one is judged against the buffered bound, a streamed one against the stream bound.
    */
-  private assertWithinAttachmentBounds(verb: string, metaBytes: number, declared?: number): void {
+  private assertWithinAttachmentBounds(
+    verb: string,
+    metaBytes: number,
+    body?: { length: number; held: 'buffered' | 'streamed' },
+  ): void {
     if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
       throw new ControlPlaneError(400, `${verb}: ${connectorAttachmentMetaRefusal(metaBytes)}. Nothing was sent.`);
     }
-    if (declared !== undefined && declared > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
-      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentSizeRefusal(declared)}. Nothing was sent.`);
+    if (body?.held === 'buffered' && body.length > CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES) {
+      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentBufferedRefusal(body.length)}. Nothing was sent.`);
+    }
+    if (body?.held === 'streamed' && body.length > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
+      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentSizeRefusal(body.length)}. Nothing was sent.`);
     }
   }
 
@@ -932,7 +974,10 @@ export class VerticalClient {
     // reads `contentType` from there), so the request's own
     // `content-type` is the plain octet-stream it is.
     // Counted without `size`, as the multipart route's `meta` is, so one name passes or fails alike.
-    this.assertWithinAttachmentBounds(verb, connectorAttachmentMetaBytes(JSON.stringify(meta)), body.length);
+    this.assertWithinAttachmentBounds(verb, connectorAttachmentMetaBytes(JSON.stringify(meta)), {
+      length: body.length,
+      held: 'streamed',
+    });
     const encodedMeta = encodeURIComponent(JSON.stringify({ ...meta, size: body.length }));
     const init = knownLengthInit({
       method: 'POST',

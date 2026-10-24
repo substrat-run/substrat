@@ -79,6 +79,7 @@ import type {
   MeterReading,
   MeterDay,
   MeterDayTake,
+  VerticalOwnerPeriod,
   ScopeStorageSample,
   RequestDay,
   RequestRollupDay,
@@ -1446,6 +1447,24 @@ export interface ScheduleRunReport {
    * deliveries their events route to the platform. A purge that threw adds nothing.
    */
   platformRequests?: number;
+  /**
+   * #2517: the part of `platformRequests` the purge horizons' runs enqueued. A sweep running
+   * another module's schedules on the same scope in the same tick passes the running sum on
+   * (`ScheduleTick.earlierPurgeRequests`). Absent when zero, and from a host that predates it.
+   */
+  purgeRequests?: number;
+  /**
+   * #2517: purge runs whose head waits for the next tick because the tick's earlier purges filled
+   * the queue (`PurgePass.deferred`). Each is also in `skipped`, never `fired`, and its run is
+   * `skipped`: it ran nothing and moved no cadence row. Absent when none.
+   */
+  deferred?: number;
+}
+
+/** #2517: what a sweep tick already did to a scope before a `runDueSchedules` call. */
+export interface ScheduleTick {
+  /** Platform requests the purge runs of the tick's earlier calls on this scope enqueued (their `purgeRequests`). */
+  earlierPurgeRequests?: number;
 }
 
 /**
@@ -2657,6 +2676,13 @@ export interface HostAdmin {
    * while the refusal above is being raced. Staff-only, audited.
    */
   deleteVertical(actor: PlatformActorId, slug: string): Promise<void>;
+  /**
+   * Every period of a slug's ownership (#2501), oldest first: opened by `registerVertical`, closed
+   * by `deleteVertical`, each in that write's transaction. Served for a deleted slug too, which is
+   * the point: a past period bills whoever owned the vertical then. Access-logged (K-24).
+   * Optional, so a host built before it still satisfies `HostAdmin`.
+   */
+  listVerticalOwners?(actor: PlatformActorId, slug: string): Promise<VerticalOwnerPeriod[]>;
 
   /**
    * Promote a version to a channel (#31 step 2) — the moment a change reaches
@@ -5580,6 +5606,16 @@ export interface OpsFailureInput {
   message: string;
   /** The upstream provider's trace reference, when the message carried one. */
   reference?: string | null;
+  /**
+   * #2540: the failure's own text, when `message` is only what the request was answered. A row
+   * filed under a tenant is read back by that tenant, so a host given `detail` on one writes it on
+   * a second row with no tenant under the same `reference`, which only staff read, and counts the
+   * failure once: the issue takes `detail` as its last message, owned as the platform's (the row it
+   * copies), so a subject erasure reaches it on an id match. Ignored on a row with no tenant, whose
+   * `message` is staff's already. A tenant-readable row never carries an upstream trace handle: a
+   * writer keeps one only at the start of this text (`withUpstreamReference`; `referenceInText`).
+   */
+  detail?: string | null;
 }
 
 /** How long a recorded copy move owns its pending entries before a sweep may settle them (#1722). */
@@ -5646,6 +5682,12 @@ export interface OpsFailureFilter {
   fingerprint?: string;
   /** Exact match — the lookup a CI log's `reference = <id>` line lands on. */
   reference?: string;
+  /**
+   * #2540: with `reference`, also every pair whose row with no tenant names `reference = <reference>`
+   * in its text (an upstream trace handle, which a withheld failure keeps only there), both rows of
+   * it. Staff's search: the text it matches is staff's, so a confined read never sets it.
+   */
+  referenceInText?: boolean;
   since?: string;
   until?: string;
   limit?: number;
@@ -6401,8 +6443,14 @@ export interface ScopeHost {
    * class as `drainDue`/`migrateScope`; the invocation itself is attributed to the
    * system actor. A single schedule's failure is reported, never thrown, so one bad
    * operation cannot stop the others on the scope.
+   *
+   * `tick` (#2517) carries what this sweep tick already did to the scope before this call: a
+   * sweep that runs several modules' schedules on one scope with no drain between them passes the
+   * sum of the earlier calls' `purgeRequests`, so a purge head the cap refuses because those
+   * purges filled the queue is deferred rather than failed (`runPurgePass`). Optional; absent
+   * means none.
    */
-  runDueSchedules(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScheduleRunReport>;
+  runDueSchedules(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId, tick?: ScheduleTick): Promise<ScheduleRunReport>;
 
   /**
    * The declared freshness expectations, per module (#1232). OPTIONAL and

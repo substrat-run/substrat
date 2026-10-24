@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   connectionId,
   moduleManifest,
   permissionKey,
@@ -13,12 +14,13 @@ import {
   tenantId,
   type ConnectionId,
 } from '@substrat-run/contracts';
-import { assertAllowed, ulid, webCryptoSecretBox, type OperationHandler } from '@substrat-run/kernel';
+import { assertAllowed, isSizedByteStream, ulid, webCryptoSecretBox, type ByteBody, type OperationHandler } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { testOperations } from '@substrat-run/contract-tests';
 import {
   MAX_FILE_BYTES,
   MICROSOFT365_FILES_EVENT,
+  SKIPPED_NEEDS_REDEPLOY,
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
   MAX_UNPLACED_ATTEMPTS,
@@ -491,6 +493,164 @@ describe('reads: the sync lands what is in the folder', () => {
     const everything = JSON.stringify(w.landed) + (await w.state()) + JSON.stringify([...log.mock.calls, ...warn.mock.calls]);
     for (const name of OUTSIDE_NAMES) expect(everything).not.toContain(name);
     expect(everything).not.toContain(w.leadership);
+  });
+
+  it('a file over the buffered upload bound is landed by a sized stream, one at the bound as a buffer (#2538)', async () => {
+    const w = await world();
+    w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+    w.drive.put(w.general, 'edge.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES).fill(7));
+    w.drive.put(w.general, 'small.txt', 'small');
+    await w.bind();
+    const bodies = new Map<string, ByteBody>();
+    const real = w.host.getConnectorAttachments.bind(w.host);
+    vi.spyOn(w.host, 'getConnectorAttachments').mockImplementation(async (...args) => {
+      const inner = await real(...args);
+      return { ...inner, upload: (input) => (bodies.set(input.filename, input.body), inner.upload(input)) };
+    });
+    await w.sync();
+    expect(isSizedByteStream(bodies.get('big.bin'))).toBe(true);
+    expect((bodies.get('big.bin') as { length: number }).length).toBe(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1);
+    expect(bodies.get('edge.bin')).toBeInstanceOf(Uint8Array);
+    expect(bodies.get('small.txt')).toBeInstanceOf(Uint8Array);
+    // And the stored bytes are the file's, read back.
+    const big = w.landed.find((c) => c.change === 'content' && c.path === 'big.bin');
+    expect(big).toBeDefined();
+    const opened = await w.attachments.open((big as { attachment: { id: string } }).attachment.id);
+    const stored = opened!.body as Uint8Array;
+    expect(stored.byteLength).toBe(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1);
+    expect(stored[0]).toBe(7);
+    expect(stored[stored.byteLength - 1]).toBe(7);
+  });
+
+  describe('a deployment that cannot take a file over the buffered bound (#2538)', () => {
+    const BIG = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1;
+    /**
+     * Make every upload of a `*.bin` file answer as the platform client does for a deployment predating
+     * the streamed route (`answer`, 501 by default) until `fix()` upgrades it; `attempts` counts them.
+     */
+    const refuseBig = (w: Awaited<ReturnType<typeof world>>, answer: () => unknown = redeploy) => {
+      const attempts: string[] = [];
+      let broken = true;
+      const real = w.host.getConnectorAttachments.bind(w.host);
+      vi.spyOn(w.host, 'getConnectorAttachments').mockImplementation(async (...args) => {
+        const inner = await real(...args);
+        return {
+          ...inner,
+          upload: async (input) => {
+            if (input.filename.endsWith('.bin')) {
+              attempts.push(input.filename);
+              if (broken) throw answer();
+            }
+            return inner.upload(input);
+          },
+        };
+      });
+      return { attempts, fix: () => void (broken = false) };
+    };
+    function redeploy() {
+      return Object.assign(new Error('the deployment predates streamed connector uploads'), { status: 501 });
+    }
+    const contentLanded = (w: Awaited<ReturnType<typeof world>>, path: string) =>
+      w.landed.some((c) => c.change === 'content' && c.path === path);
+
+    it('holds the file without its bytes, reports it, and lands the rest of the pass', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
+      w.drive.put(w.general, 'small.txt', 'small');
+      await w.bind();
+      refuseBig(w);
+      const r = await w.sync();
+      expect(r.complete).toBe(true);
+      expect(r.skipped).toEqual([{ itemId: expect.any(String), reason: SKIPPED_NEEDS_REDEPLOY }]);
+      expect(contentLanded(w, 'small.txt')).toBe(true);
+      expect(contentLanded(w, 'big.bin')).toBe(false);
+      // Held, so the vertical knows the item: the upsert landed and the state names the skip.
+      expect(w.landed.some((c) => c.change === 'upsert' && c.path === 'big.bin')).toBe(true);
+      expect(await w.state()).toContain('re-pushed');
+    });
+
+    it('tries a nested file once in a pass, though the feed and the folder walk both present it', async () => {
+      const w = await world();
+      const sub = w.drive.mkdir(w.general, 'Minutes');
+      w.drive.put(sub, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      const { attempts } = refuseBig(w);
+      const r = await w.sync();
+      expect(attempts).toHaveLength(1);
+      expect(r.skipped).toHaveLength(1);
+    });
+
+    it('tries the file again when the drive presents the same unchanged file, and lands it once the deployment takes it', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      const { attempts, fix } = refuseBig(w);
+      expect((await w.sync()).skipped).toHaveLength(1);
+      // A later pass that does not present it leaves it held and does not try it.
+      await w.sync();
+      expect(attempts).toHaveLength(1);
+      fix();
+      // Graph expires the cursor: the full enumeration presents every file again, cTag unchanged.
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      w.landed.length = 0;
+      const r = await w.sync();
+      w.drive.expiredBefore = 0;
+      expect(attempts).toHaveLength(2);
+      expect(r.skipped).toBeUndefined();
+      expect(contentLanded(w, 'big.bin')).toBe(true);
+      expect(await w.state()).not.toContain('re-pushed');
+    });
+
+    it('a changed file is a fresh attempt that clears the hold', async () => {
+      const w = await world();
+      const id = w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      const { fix } = refuseBig(w);
+      expect((await w.sync()).skipped).toHaveLength(1);
+      fix();
+      w.drive.edit(id, 'now small');
+      w.landed.length = 0;
+      await w.sync();
+      expect(contentLanded(w, 'big.bin')).toBe(true);
+      expect(await w.state()).not.toContain('re-pushed');
+    });
+
+    it('stays held through a rename of a folder above it, and is still tried when next presented', async () => {
+      const w = await world();
+      const sub = w.drive.mkdir(w.general, 'Minutes');
+      w.drive.put(sub, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      const { attempts, fix } = refuseBig(w);
+      await w.sync();
+      w.drive.rename(sub, 'Meeting minutes');
+      w.landed.length = 0;
+      await w.sync();
+      expect(w.landed.some((c) => c.change === 'upsert' && c.path === 'Meeting minutes/big.bin')).toBe(true);
+      expect(await w.state()).toContain('re-pushed');
+      expect(attempts).toHaveLength(1);
+      fix();
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      w.landed.length = 0;
+      await w.sync();
+      w.drive.expiredBefore = 0;
+      expect(contentLanded(w, 'Meeting minutes/big.bin')).toBe(true);
+    });
+
+    it('a genuine transient failure still stops the pass, as before', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      refuseBig(w, () => Object.assign(new Error('unavailable'), { status: 503 }));
+      await expect(w.sync()).rejects.toThrow('unavailable');
+    });
+
+    it('a 501 on a file small enough to go as a buffer is not taken for a missing route', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'small.bin', new Uint8Array(1024).fill(7));
+      await w.bind();
+      refuseBig(w);
+      await expect(w.sync()).rejects.toThrow('predates');
+    });
   });
 
   it('follows adds, edits, renames, moves and deletes from Teams', async () => {

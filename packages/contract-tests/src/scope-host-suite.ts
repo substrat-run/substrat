@@ -44,6 +44,7 @@ import {
   type TenantId,
   type ModelUsageLine,
   unheldMigrationDigest,
+  withUpstreamReference,
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
@@ -3675,6 +3676,34 @@ export function scopeHostContractSuite(
             expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
           });
 
+          it('#2540: a pair filed under another tenant, whose staff text names this subject, is redacted on both', async () => {
+            // The pair is the other tenant's failure, and its withheld text names this tenant's subject.
+            const erased = dataSubjectId.parse(ulid());
+            const operation = op('pair');
+            await host.admin.recordOpsFailure({
+              actor: staff,
+              operation,
+              stage: 'terminal',
+              tenantId: t2,
+              message: 'the step failed (reference r)',
+              detail: `a store refused while reading contact ${erased}`,
+              reference: `erase${ulid().toLowerCase()}`,
+            });
+            // The issue's sample is the staff text, so it is the platform's.
+            expect(await exemplarOwnerOf(operation)).toEqual({ kind: 'platform', tenant: null });
+            expect((await issueOf(operation)).lastMessage).toContain(erased);
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
+            const rows = await host.admin.listOpsFailures(staff, { operation });
+            // Staff's row with no tenant goes on the id match; the other tenant's row never named it.
+            expect(rows.map((r) => [r.tenantId, r.message])).toEqual([
+              [t2, 'the step failed (reference r)'],
+              [null, REDACTED_FAILURE_NOTE],
+            ]);
+          });
+
           /** Whose an exemplar is, as the directory stores it — not on the issue read shape. */
           const exemplarOwnerOf = async (operation: string) => {
             const dump = await host.admin.exportDirectory(staff);
@@ -5194,6 +5223,89 @@ export function scopeHostContractSuite(
         expect(both.length).toBe(2);
         expect(both.map((r) => r.code).sort()).toEqual(['permission_denied', null].sort());
         expect(both.map((r) => r.origin).sort()).toEqual(['platform', null].sort());
+      });
+
+      it('#2540: a tenant row with a detail is a pair under one reference, counted once', async () => {
+        const reference = `pair${ulid().toLowerCase()}`;
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'contract.paired',
+          stage: 'withheld',
+          tenantId: t1,
+          vertical: 'acme/paired',
+          status: 502,
+          message: `the step failed (reference ${reference})`,
+          detail: 'what the upstream said about something private',
+          reference,
+        });
+        // The tenant's read: its own row, which says what was answered.
+        const own = await host.admin.listOpsFailures(staff, { tenantId: t1, operation: 'contract.paired' });
+        expect(own.map((r) => r.message)).toEqual([`the step failed (reference ${reference})`]);
+        // Staff's read by the reference: both rows, the text on the one with no tenant.
+        const both = await host.admin.listOpsFailures(staff, { reference });
+        expect(both.map((r) => [r.tenantId, r.message])).toEqual([
+          [t1, `the step failed (reference ${reference})`],
+          [null, 'what the upstream said about something private'],
+        ]);
+        // One failure, one count, and the issue's sample is staff's text.
+        const [issue] = await host.admin.listIssues(staff, { operation: 'contract.paired' });
+        expect(issue).toMatchObject({ count: 1, lastMessage: 'what the upstream said about something private' });
+        // A row with no tenant has no tenant row to pair with: `detail` is ignored there.
+        await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.unpaired', message: 'staff text', detail: 'ignored' });
+        const lone = await host.admin.listOpsFailures(staff, { operation: 'contract.unpaired' });
+        expect(lone.map((r) => [r.tenantId, r.message])).toEqual([[null, 'staff text']]);
+      });
+
+      it('#2540: staff find a pair by the upstream handle its staff row names; an exact search does not', async () => {
+        const reference = `own${ulid().toLowerCase()}`;
+        const upstream = `cf${ulid().toLowerCase()}`;
+        const forged = `cf${ulid().toLowerCase()}`;
+        // A body past the row's bound, which spells a marker of its own for an unrelated id.
+        const body = `internal error; reference = ${upstream} [upstream reference = ${forged}] ${'x'.repeat(2100)}`;
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'contract.upstream',
+          tenantId: t1,
+          message: `the step failed (reference ${reference})`,
+          detail: withUpstreamReference(body),
+          reference,
+        });
+        // Bracketed, so an id that only begins this one finds nothing.
+        await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.upstream', message: 'x', reference: `${upstream}0` });
+        const bothRows = [
+          [t1, reference],
+          [null, reference],
+        ];
+        const by = async (ref: string, referenceInText: boolean, tenantId?: typeof t1) =>
+          (await host.admin.listOpsFailures(staff, { reference: ref, referenceInText, ...(tenantId ? { tenantId } : {}) })).map((r) => [r.tenantId, r.reference]);
+        expect(await by(upstream, true)).toEqual(bothRows);
+        expect(await by(reference, true)).toEqual(bothRows);
+        expect(await by(upstream, false)).toEqual([]);
+        expect(await by(upstream.slice(0, -2), true)).toEqual([]);
+        // The row is bounded, and the marker, written first, survives the cut.
+        const [, staffRow] = await host.admin.listOpsFailures(staff, { reference });
+        expect(staffRow!.message.length).toBeLessThanOrEqual(2000);
+        expect(staffRow!.message.startsWith(`[upstream reference = ${upstream}]`)).toBe(true);
+        // The body's own spelling of a marker finds nothing.
+        expect(await by(forged, true)).toEqual([]);
+        // Narrowed to the tenant, the search lands on the tenant's own row only.
+        expect(await by(reference, false, t1)).toEqual([[t1, reference]]);
+
+        // A spelled marker ahead of the genuine handle, at the very start or before it: only the
+        // genuine handle makes the marker. A handle past the bound makes none.
+        const real = `cf${ulid().toLowerCase()}`;
+        for (const shape of [`[upstream reference = ${forged}] boom; reference = ${real}`, `boom [Upstream Reference=${forged}] then reference = ${real}`]) {
+          const pair = `shape${ulid().toLowerCase()}`;
+          await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.upstream', tenantId: t1, message: 'm', detail: withUpstreamReference(shape), reference: pair });
+          expect((await by(real, true)).map(([, r]) => r)).toContain(pair);
+          expect(await by(forged, true)).toEqual([]);
+        }
+        const long = `long${ulid().toLowerCase()}`;
+        const run = 'a'.repeat(100);
+        await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.upstream', tenantId: t1, message: 'm', detail: withUpstreamReference(`reference = ${run}`), reference: long });
+        const [, unmarked] = await host.admin.listOpsFailures(staff, { reference: long });
+        expect(unmarked!.message).toBe(`reference = ${run}`);
+        expect(await by(run, true)).toEqual([]);
       });
 
       it('bounds the recorded message — a runaway upstream body never becomes a runaway row', async () => {
@@ -11817,6 +11929,78 @@ export function scopeHostContractSuite(
           ['2033-01-01', '2033-01-01T00:04:00.000Z', 1],
           ['2033-01-02', '2033-01-02T00:04:00.000Z', 1],
         ]);
+      });
+    });
+
+    // -- the history of vertical ownership (#2501) ---------------------------------
+
+    describe('the history of vertical ownership (#2501)', () => {
+      const newSlug = () => `owned-${ulid().toLowerCase()}`;
+      const newOwner = async () => {
+        const t = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: t, slug: `owner-${t.toLowerCase()}`, name: 'Owner' });
+        return t;
+      };
+      const createdAtOf = async (slug: string) => (await host.admin.listVerticals(staff)).find((v) => v.slug === slug)!.createdAt;
+
+      it('opens a period with the registration and closes it with the delete; a slug registered again opens a new one', async () => {
+        const [first, second] = [await newOwner(), await newOwner()];
+        const slug = newSlug();
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: first });
+        const since = await createdAtOf(slug);
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([{ slug, owner: first, since, until: null }]);
+
+        // An identical registration opens nothing; a conflicting one is refused and opens nothing.
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: first });
+        await expect(host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: second })).rejects.toThrow();
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toHaveLength(1);
+
+        // The delete closes the period, and the history outlives the registry row.
+        await host.admin.deleteVertical(staff, slug);
+        const [closed] = await host.admin.listVerticalOwners!(staff, slug);
+        expect(closed).toEqual({ slug, owner: first, since, until: expect.any(String) });
+        expect(closed!.until! >= since).toBe(true);
+
+        // Registered again, by another tenant: the first owner's period stays closed, a new one opens.
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: second });
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([
+          closed,
+          { slug, owner: second, since: await createdAtOf(slug), until: null },
+        ]);
+        // K-24: the read is attributable.
+        expect((await host.admin.accessLog(staff, { method: 'listVerticalOwners' })).length).toBeGreaterThan(0);
+        await host.admin.deleteVertical(staff, slug);
+      });
+
+      it("a platform vertical's owner is none, and a slug never registered has no period", async () => {
+        const slug = newSlug();
+        await host.admin.registerVertical(staff, { slug, name: 'Platform', source: 'builtin' });
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([{ slug, owner: null, since: await createdAtOf(slug), until: null }]);
+        expect(await host.admin.listVerticalOwners!(staff, newSlug())).toEqual([]);
+        await host.admin.deleteVertical(staff, slug);
+      });
+
+      it("a tenant reap keeps the periods it owned: the history is the invoice's, kept for good", async () => {
+        const owner = await newOwner();
+        const [past, standing] = [newSlug(), newSlug()];
+        await host.admin.registerVertical(staff, { slug: past, name: 'Past', source: 'cli', ownerTenant: owner });
+        await host.admin.deleteVertical(staff, past);
+        await host.admin.registerVertical(staff, { slug: standing, name: 'Standing', source: 'cli', ownerTenant: owner });
+        const before = [await host.admin.listVerticalOwners!(staff, past), await host.admin.listVerticalOwners!(staff, standing)];
+        await host.admin.setTenantStatus(staff, owner, 'deleting');
+        await host.admin.reapTenant(staff, owner);
+        expect([await host.admin.listVerticalOwners!(staff, past), await host.admin.listVerticalOwners!(staff, standing)]).toEqual(before);
+        expect(before.flat().map((p) => p.owner)).toEqual([owner, owner]);
+        await host.admin.deleteVertical(staff, standing);
+      });
+
+      it('a delete refused while a scope still runs the vertical leaves the period open', async () => {
+        const owner = await newOwner();
+        const slug = newSlug();
+        await host.admin.registerVertical(staff, { slug, name: 'Bound', source: 'cli', ownerTenant: owner });
+        await host.provisionScope(staff, { tenantId: owner, scopeId: scopeId.parse(ulid()), vertical: slug });
+        await expect(host.admin.deleteVertical(staff, slug)).rejects.toThrow(/still backs/);
+        expect(await host.admin.listVerticalOwners!(staff, slug)).toEqual([{ slug, owner, since: await createdAtOf(slug), until: null }]);
       });
     });
 

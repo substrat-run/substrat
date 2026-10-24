@@ -89,7 +89,9 @@ export function mapError(err: unknown): ApiError {
   // `internal error` to a provision for four hours while the throw it was hiding named
   // its own fix in full. The message is OURS in every case (kernel or adapter, written
   // to be read by an operator, carrying no tenant data and no secret), which is what
-  // licenses passing it through where an unreviewed message must not be.
+  // licenses passing it through where an unreviewed message must not be. One `unavailable` is not
+  // like that: `exportBreaksOf`'s refusal to judge names what could not be read and the read's error
+  // (#2540), and the API's `onError` answers it before it reaches here (`isExportBreakUnjudged`).
   //
   // Matched by CODE, not by class: `errorCodeOf` reads the live property, the
   // `Substrat.<code>` name a throw keeps across an RPC hop, and the legacy class names —

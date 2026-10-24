@@ -75,10 +75,18 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   raw bytes, with the record in a header), and the `connection:<id>` grant tuple the first
   three are checked against. Both upload routes hold the metadata to
   `CONNECTOR_ATTACHMENT_META_MAX_BYTES` (8 KiB once URI-encoded) and answer one `400` for
-  more; the stream route also refuses a declared size over
-  `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (95 MiB) with a `413`, before it reads a byte, and a
+  more. Both also hold the file to a size bound and answer one `413` for more, with a different
+  bound for each because they hold the file differently: the stream route to
+  `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (95 MiB, a request-size limit, since a stream is never
+  held), judged from the declared size before it reads a byte; the multipart route to
+  `CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES` (16 MiB, a memory limit, since a buffered file is
+  resident several times over), judged from `Content-Length` before it buffers anything or, for a
+  body without one, by cutting the read off at that size plus a 16 KiB multipart envelope (#2538);
+  the multipart route's answer tells the caller to use a streamed upload. A
   streamed upload asks the connection's write gate before the first byte is read, so a
-  connection that may not write stores no object (#2516).
+  connection that may not write stores no object (#2516). The multipart route cannot: it buffers
+  the body first, because the gate needs the parsed `meta`, so its bound is the only thing held
+  before the bytes are read.
   Each is authorized in the scope's own DO like any other caller, and the grant has no
   revoke mirror because every delegated call re-passes the platform's live-connection
   gate first. Generic in the same sense as the group above: owned by the package,
@@ -564,6 +572,33 @@ vertical / version / operation` (the smallest per-request metadata limit among t
 providers we route through is five, so a sixth key is refused at the line rather than
 silently dropped on the wire). A `record` that throws fails the run: a call that could not
 be recorded must not look like one that was.
+
+**Tools and conversations.** Instead of `prompt`, a request may carry `messages`, a
+conversation oldest first and ending with the user's turn (exactly one of the two). It may
+also carry `tools`: each is `{ description, input, execute }`, where `input` is a Zod schema
+the model's arguments are parsed with and `execute` is your code, running with your
+authority. A tool call runs `execute`, hands its result back to the model, and the run goes
+on, up to `maxSteps` model calls (default 4, at most `MODEL_MAX_STEPS`, 8). The guard runs
+**once**, before the first call: a request with tools is one decision to spend. The usage
+line covers every step, priced per step. `run.steps` lists each model call with the tool calls
+it made and their results, which is what a turn record or a "query it ran" view shows.
+
+```ts
+const run = await models.run({
+  spec, attribution,
+  system,
+  messages: [{ role: 'user', content: 'Why do uploads fail?' }],
+  tools: {
+    list_findings: {
+      description: 'List the team’s open findings',
+      input: z.object({ limit: z.number().int().max(25).optional() }),
+      execute: async ({ limit }) => ({ findings: await readFindingsAsTheCaller(limit) }),
+    },
+  },
+  maxSteps: 4,
+});
+run.steps;       // [{ text, toolCalls: [{ callId, tool, input }], toolResults: [{ callId, tool, output }] }, …]
+```
 
 `status(spec)` answers a settings screen — is this row configured on the platform, and
 what is it missing — without running anything.

@@ -1689,14 +1689,19 @@ export async function runPlatformSweep(
         if (failedThisPass.has(s.id)) return;
         let touched = false;
         let platformRequests = 0;
+        // #2517: the requests this scope's purge runs enqueued so far in the tick, across modules —
+        // nothing drains between them, so a later purge head the cap refuses waits for the next tick.
+        let purgeRequests = 0;
         for (const reg of registrations) {
           try {
-            const r = await host.runDueSchedules(reg.moduleId, s.tenantId, s.id);
+            const r = await host.runDueSchedules(reg.moduleId, s.tenantId, s.id, { earlierPurgeRequests: purgeRequests });
             if (r.fired > 0 || r.failed > 0) touched = true;
             schedules.fired += r.fired;
             schedules.skipped += r.skipped;
             schedules.failed += r.failed;
+            if (r.deferred) schedules.deferred = (schedules.deferred ?? 0) + r.deferred;
             platformRequests += r.platformRequests ?? 0;
+            purgeRequests += r.purgeRequests ?? 0;
             for (const e of r.errors) {
               report.errors.push({ kind: 'schedule', id: `${s.id}:${e.operation}`, error: e.error });
             }
