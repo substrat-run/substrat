@@ -69,7 +69,8 @@ export function topLevelIds(bytes: Uint8Array): { tenantId?: unknown; scopeId?: 
       i = start;
       while (i < bytes.length && bytes[i] !== QUOTE) i += bytes[i] === BACKSLASH ? 2 : 1;
       if (i >= bytes.length) return found;
-      if (depth !== 1) continue;
+      // A string below the top level meets neither branch: a key is expected, and a value pending,
+      // only at depth 1, and a nested value settles what was pending as it opens.
       if (expectKey) {
         expectKey = false;
         pending = NAMED.find(([, name]) => name.length === i - start && name.every((c, k) => bytes[start + k] === c))?.[0] ?? '';
