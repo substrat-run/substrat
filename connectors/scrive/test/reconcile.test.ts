@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
-  CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
   connectionActivity,
   connectionId,
   dataSubjectId,
@@ -19,6 +18,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PROTOCOL_PERM as PERM, protocolModule, getProtocol } from '@substrat-run/engine-protocol';
 import {
   ScriveApi,
+  SCRIVE_MAX_DOWNLOAD_BYTES,
   ScriveMock,
   registerScriveConnector,
   reconcileScriveDispatch,
@@ -289,8 +289,11 @@ describe('scrive connector — return path (record signatures back)', () => {
     expect((opened!.body as Uint8Array)[big.byteLength - 1]).toBe(9);
   });
 
-  describe('a sealed PDF over the streamed-upload ceiling (#2552)', () => {
-    const MAX = CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES;
+  describe('a sealed PDF over the download bound (#2552)', () => {
+    const MAX = SCRIVE_MAX_DOWNLOAD_BYTES;
+    /** A passive pass: the hold is honoured while the document is unchanged. */
+    const passive = (instanceId: string) =>
+      reconcileScriveDispatch(host, connId, instanceId, { fetch: scrive.fetch, baseUrl: BASE, honourHeld: true });
     const ledgerOf = async (instanceId: string) =>
       (await host.admin.getConnectorState(connId, `scrive:dispatch:${instanceId}`)) as ScriveDispatchState;
 
@@ -323,18 +326,33 @@ describe('scrive connector — return path (record signatures back)', () => {
 
       const first = await reconcile(instanceId);
       expect(first.complete).toBe(true);
-      expect(first.sealedDocument).toEqual({ skipped: expect.stringMatching(/over the \d+ bytes a connector upload carries/) });
+      expect(first.sealedDocument).toEqual({ skipped: expect.stringMatching(/larger than this connector downloads/) });
       expect(scrive.sealedBytesServed.get(docId) ?? 0).toBe(0);
       expect(uploads).toHaveLength(0);
       expect((await ledgerOf(instanceId)).sealedHeld).toMatchObject({ reason: expect.stringContaining(String(MAX + 1)) });
       expect(spy).toHaveBeenCalledTimes(1);
 
       // The document is as it was: the next polls report the same reason and fetch nothing.
-      const again = await reconcile(instanceId);
-      const third = await reconcile(instanceId);
+      const again = await passive(instanceId);
+      const third = await passive(instanceId);
       expect(again.sealedDocument).toEqual(first.sealedDocument);
       expect(third.sealedDocument).toEqual(first.sealedDocument);
       expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('an explicit reconcile, or a callback, clears the hold and tries again on an unchanged document', async () => {
+      const { instanceId, docId } = await closedWith(MAX + 1, 8);
+      const spy = fetches();
+      await reconcile(instanceId);
+      await passive(instanceId);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // Nothing changed at the provider; an operator asks again, and the file is now takeable.
+      scrive.setSealedFile(docId, { declared: 8, actual: 8 });
+      const forced = await reconcile(instanceId);
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(forced.sealedDocument).toMatchObject({ attachmentId: expect.any(String) });
+      expect((await ledgerOf(instanceId)).sealedHeld).toBeUndefined();
     });
 
     it('tries again when the provider reports the document changed, and clears the hold once it lands', async () => {
@@ -346,7 +364,7 @@ describe('scrive connector — return path (record signatures back)', () => {
       // Re-presented: the document changed at the provider and the file is now one the connector can take.
       scrive.touch(docId);
       scrive.setSealedFile(docId, { declared: 8, actual: 8 });
-      const retried = await reconcile(instanceId);
+      const retried = await passive(instanceId);
       expect(spy).toHaveBeenCalledTimes(2);
       expect(retried.sealedDocument).toMatchObject({ attachmentId: expect.any(String) });
       const row = await ledgerOf(instanceId);
@@ -360,12 +378,12 @@ describe('scrive connector — return path (record signatures back)', () => {
       await reconcile(instanceId);
       const before = (await ledgerOf(instanceId)).sealedHeld;
       scrive.touch(docId);
-      await reconcile(instanceId);
+      await passive(instanceId);
       expect(spy).toHaveBeenCalledTimes(2);
       const after = (await ledgerOf(instanceId)).sealedHeld;
       expect(after?.mtime).toBeDefined();
       expect(after?.mtime).not.toBe(before?.mtime);
-      await reconcile(instanceId);
+      await passive(instanceId);
       expect(spy).toHaveBeenCalledTimes(2);
     });
 
@@ -383,12 +401,15 @@ describe('scrive connector — return path (record signatures back)', () => {
 
     it('cuts off a body that declares no length at the ceiling and holds it', async () => {
       const CHUNK = 1024 * 1024; // the mock serves in 1 MiB reads
-      const { instanceId, docId } = await closedWith(null, MAX + 10 * CHUNK);
+      const total = 2 * MAX;
+      const { instanceId, docId } = await closedWith(null, total);
       const first = await reconcile(instanceId);
-      expect(first.sealedDocument).toEqual({ skipped: expect.stringMatching(/over the \d+ bytes/) });
+      expect(first.sealedDocument).toEqual({ skipped: expect.stringMatching(/larger than this connector downloads/) });
       expect(scrive.sealedBytesServed.get(docId)).toBeLessThanOrEqual(MAX + CHUNK);
+      expect(scrive.sealedBytesServed.get(docId)).toBeLessThan(total);
+      expect(scrive.sealedCancelled.has(docId)).toBe(true);
       const spy = fetches();
-      await reconcile(instanceId);
+      await passive(instanceId);
       expect(spy).not.toHaveBeenCalled();
     });
 

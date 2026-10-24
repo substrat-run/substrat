@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES } from '@substrat-run/contracts';
-import { ScriveApi, ScriveFileTooLargeError, type ScriveSecret } from '../src/api.js';
+import { SCRIVE_MAX_DOWNLOAD_BYTES, ScriveApi, ScriveFileTooLargeError, type ScriveSecret } from '../src/api.js';
 import { ScriveMock } from '../src/mock.js';
 
 /**
@@ -55,7 +54,7 @@ describe('ScriveApi.getMainFile', () => {
 });
 
 describe('ScriveApi.getMainFile size bound (#2552)', () => {
-  const MAX = CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES;
+  const MAX = SCRIVE_MAX_DOWNLOAD_BYTES;
 
   async function sealed(declared: number | null, actual: number, encoded = false) {
     const mock = new ScriveMock();
@@ -82,12 +81,16 @@ describe('ScriveApi.getMainFile size bound (#2552)', () => {
 
   it('counts a body that declares no length and cuts it off at the ceiling', async () => {
     const CHUNK = 1024 * 1024; // the mock serves in 1 MiB reads
-    const { mock, api, doc } = await sealed(null, MAX + 10 * CHUNK);
+    const total = 2 * MAX;
+    const { mock, api, doc } = await sealed(null, total);
     const err = await api.getMainFile(doc.id).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ScriveFileTooLargeError);
     expect((err as ScriveFileTooLargeError).bytes).toBeUndefined();
     // Cut off at the read that crossed the bound, never the whole file read to its end.
     expect(mock.sealedBytesServed.get(doc.id)).toBeLessThanOrEqual(MAX + CHUNK);
+    expect(mock.sealedBytesServed.get(doc.id)).toBeLessThan(total);
+    // The body was released, not left streaming.
+    expect(mock.sealedCancelled.has(doc.id)).toBe(true);
   });
 
   it('takes a body that declares no length and is under the ceiling', async () => {
@@ -98,6 +101,15 @@ describe('ScriveApi.getMainFile size bound (#2552)', () => {
   it('still counts an encoded response whose header is small', async () => {
     const { api, doc } = await sealed(10, MAX + 1, true);
     await expect(api.getMainFile(doc.id)).rejects.toBeInstanceOf(ScriveFileTooLargeError);
+  });
+
+  it('releases a body refused on its declared length, and reads one that outruns its header', async () => {
+    const big = await sealed(MAX + 1, 8);
+    await big.api.getMainFile(big.doc.id).catch(() => {});
+    expect(big.mock.sealedCancelled.has(big.doc.id)).toBe(true);
+    // The header is a hint: a body longer than it declared is still read, to the bound.
+    const longer = await sealed(10, 3 * 1024 * 1024);
+    expect((await longer.api.getMainFile(longer.doc.id)).byteLength).toBe(3 * 1024 * 1024);
   });
 
   it('takes the bound as an argument', async () => {

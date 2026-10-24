@@ -102,7 +102,7 @@ export interface ScriveMockOptions {
 declare const URL: new (input: string) => { pathname: string };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const ReadableStream: new <T>(
-  source: { pull(controller: { enqueue(chunk: T): void; close(): void }): void },
+  source: { pull(controller: { enqueue(chunk: T): void; close(): void }): void; cancel?(reason?: unknown): void },
   strategy?: { highWaterMark?: number },
 ) => { getReader(): { read(): Promise<{ done: boolean; value?: T }>; cancel(reason?: unknown): Promise<void>; releaseLock(): void } };
 
@@ -161,6 +161,9 @@ export class ScriveMock {
 
   /** Bytes of a sealed body the mock has produced for a reader, per document id. */
   readonly sealedBytesServed = new Map<string, number>();
+
+  /** Documents whose sealed body a reader cancelled before its end. */
+  readonly sealedCancelled = new Set<string>();
 
   /**
    * Reorder the party list: `order[i]` is the old index now at position i. Each party
@@ -257,6 +260,9 @@ export class ScriveMock {
               at += n;
               this.sealedBytesServed.set(id, (this.sealedBytesServed.get(id) ?? 0) + n);
               controller.enqueue(new Uint8Array(n));
+            },
+            cancel: () => {
+              this.sealedCancelled.add(id);
             },
           },
           { highWaterMark: 0 },

@@ -22,7 +22,7 @@ import type {
   ScopeHost,
 } from '@substrat-run/kernel';
 import { connectorUploadBody, settleConnectionUse } from '@substrat-run/kernel';
-import { ScriveApi, ScriveApiError, ScriveFileTooLargeError, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
+import { ScriveApi, ScriveApiError, ScriveFileTooLargeError, SCRIVE_MAX_DOWNLOAD_BYTES, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
 import { renderPdf, representableInWinAnsi } from './pdf.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
@@ -34,7 +34,7 @@ declare const crypto: {
 };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
-export { ScriveApi, ScriveApiError, ScriveFileTooLargeError, SCRIVE_TESTBED, SCRIVE_PRODUCTION } from './api.js';
+export { ScriveApi, ScriveApiError, ScriveFileTooLargeError, SCRIVE_MAX_DOWNLOAD_BYTES, SCRIVE_TESTBED, SCRIVE_PRODUCTION } from './api.js';
 export { ScriveMock, type ScriveMockOptions } from './mock.js';
 export { renderPdf } from './pdf.js';
 
@@ -293,10 +293,13 @@ export interface ScriveDispatchState {
    */
   sealedAttachmentId?: string;
   /**
-   * Set when the sealed PDF is larger than a connector upload carries (#2552), found before its body
-   * was downloaded. The file is not fetched again by a poll that finds the document as it was: it is
-   * tried again when the provider's `mtime` differs from the one held here, and the marker goes when
-   * the file lands. One small marker on the dispatch row, so nothing grows with the polls.
+   * Set when the sealed PDF is larger than this connector downloads (#2552), found before its body
+   * was downloaded. A reconcile run with `honourHeld` finds the document as it was and fetches
+   * nothing; it tries again when the provider's `mtime` differs from the one held here. A callback
+   * or an explicit reconcile (the default) clears the hold and tries again. The passive sweep never
+   * looks at a held row: every party is recorded, so it skips the row. A document whose response
+   * carries no `mtime` stays held until a callback or explicit reconcile. The marker goes when the
+   * file lands, and shows on the activity view meanwhile. One small marker on the dispatch row.
    */
   sealedHeld?: {
     reason: string;
@@ -882,7 +885,17 @@ export async function reconcileScriveDispatch(
   host: ScopeHost,
   connectionId: ConnectionId,
   instanceId: string,
-  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number },
+  options: {
+    fetch: FetchLike;
+    baseUrl: string;
+    timeoutMs?: number;
+    /**
+     * Keep a sealed file held as too large held while the document's `mtime` is unchanged, instead of
+     * fetching again. Off by default: an explicit reconcile or a callback is somebody asking, and
+     * retries. The sweep turns it on.
+     */
+    honourHeld?: boolean;
+  },
 ): Promise<ScriveReconcileResult> {
   const admin = host.admin;
   const key = dispatchKey(instanceId);
@@ -1042,8 +1055,9 @@ export async function reconcileScriveDispatch(
   let sealedDocument: ScriveReconcileResult['sealedDocument'];
   let sealedAttachmentId = state.sealedAttachmentId;
   let sealedHeld = state.sealedHeld;
-  // A file held as too large is not fetched again until the provider says the document changed.
-  const heldStill = sealedHeld !== undefined && sealedHeld.mtime === doc.mtime;
+  // A file held as too large is not fetched again by a passive pass until the provider says the document
+  // changed; an explicit reconcile or a callback retries it.
+  const heldStill = options.honourHeld === true && sealedHeld !== undefined && sealedHeld.mtime === doc.mtime;
   if (doc.status === 'closed' && complete && !sealedAttachmentId && heldStill) {
     sealedDocument = { skipped: sealedHeld!.reason };
   } else if (doc.status === 'closed' && complete && !sealedAttachmentId) {
@@ -1593,7 +1607,7 @@ export async function sweepScriveReconciliations(
       continue;
     }
     try {
-      const r = await reconcileScriveDispatch(host, connectionId, state.instanceId, options);
+      const r = await reconcileScriveDispatch(host, connectionId, state.instanceId, { ...options, honourHeld: true });
       result.polled += 1;
       (r.complete ? result.completed : result.outstanding).push(state.instanceId);
       for (const a of r.needsAttention) result.needsAttention.push({ instanceId: state.instanceId, ...a });
