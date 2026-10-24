@@ -103,15 +103,16 @@ export function deadlineFetch(fetchImpl: FetchLike, timeoutMs: number, options: 
     const total = timers.setTimeout(() => {
       timedOut ??= timeoutError('The operation was aborted due to timeout');
       controller.abort(timedOut);
+      finish();
     }, timeoutMs);
     // Not held against the process: `AbortSignal.timeout`'s timer was not either.
-    (total as { unref?: () => void } | null)?.unref?.();
+    unref(total);
     const releaseTotal = (): void => timers.clearTimeout(total);
     /** The call is over: its deadline and its hold on the caller's signal go. Idempotent. */
-    const finish = (): void => {
+    function finish(): void {
       releaseTotal();
       upstream?.removeEventListener?.('abort', onUpstreamAbort);
-    };
+    }
     let res: ConnectorResponse;
     try {
       res = await fetchImpl(input, { ...init, signal: controller.signal });
@@ -138,6 +139,7 @@ export function deadlineFetch(fetchImpl: FetchLike, timeoutMs: number, options: 
             releaseTotal,
             finish,
             abortCall: (reason) => controller.abort(reason),
+            timedOut: () => timedOut,
           });
           return guarded;
         }
@@ -147,6 +149,9 @@ export function deadlineFetch(fetchImpl: FetchLike, timeoutMs: number, options: 
           return async (...args: unknown[]) => {
             try {
               return await (value as (...a: unknown[]) => unknown).apply(target, args);
+            } catch (err) {
+              // A runtime may fail a read the call's deadline aborted with a generic abort.
+              throw timedOut ?? err;
             } finally {
               finish();
             }
@@ -167,6 +172,13 @@ interface GuardOptions {
   /** The stream is over (end, error, cancel): the call's last hold goes. */
   finish(): void;
   abortCall(reason: unknown): void;
+  /** The error the call's own deadline ended it with, if it did: what a runtime's generic abort stands for. */
+  timedOut(): Error | undefined;
+}
+
+/** A timer that does not hold a Node process open, where the runtime lets it say so. */
+function unref(handle: unknown): void {
+  (handle as { unref?: () => void } | null)?.unref?.();
 }
 
 /**
@@ -175,20 +187,28 @@ interface GuardOptions {
  * and the call's deadline in force. From the first read: the stream errors when the provider is
  * silent for `idleMs` (empty chunks are not bytes and do not reset the window) or when `maxStreamMs`
  * has passed in all. Pull-driven with no queue of its own, so the idle window runs only while a
- * read waits on the provider. Whichever bound ends it cancels the source reader and aborts the
- * call, which releases the connection: nothing is left reading, and nothing buffered.
+ * read waits on the provider. Whichever bound ends it cancels the source reader, aborts the call
+ * (which releases the connection) and errors the stream: nothing is left reading, nothing buffered.
+ *
+ * The bounds are TIMERS that end the stream, never promises raced against each read: a promise
+ * that outlives a read keeps a reaction for every race it was in, and through it the chunk the
+ * race resolved with. Nothing long-lived here holds a chunk once it has been delivered.
  */
 function guardedBody(body: ByteStream, o: GuardOptions): ByteStream {
   let reader: ByteStreamReader | undefined;
+  let ctl: { error(reason: unknown): void } | undefined;
   let capHandle: unknown;
-  /** Set once a bound or a failure has ended the stream; a later pull answers it. */
-  let ended: unknown;
   let over = false;
+  /** End the stream with `err`, once: error it, let go of the call, cancel the source. */
   const stop = async (err: unknown): Promise<void> => {
     if (over) return;
     over = true;
-    ended = err;
     o.timers.clearTimeout(capHandle);
+    try {
+      ctl?.error(err);
+    } catch {
+      // already closed or errored
+    }
     o.abortCall(err);
     o.finish();
     await reader?.cancel(err).catch(() => {});
@@ -198,42 +218,35 @@ function guardedBody(body: ByteStream, o: GuardOptions): ByteStream {
       // a read the cancel has not yet settled: the lock goes with the stream
     }
   };
-  let expired: Promise<never> | undefined;
+  /** The first read: the call's deadline hands over to the idle window and the absolute cap. */
   const begin = (): ByteStreamReader => {
-    // The first read: the call's deadline hands over to the idle window and the absolute cap.
     o.releaseTotal();
-    expired = new Promise<never>((_, reject) => {
-      capHandle = o.timers.setTimeout(() => {
-        const err = timeoutError('The transfer exceeded its maximum duration');
-        // Rejects a read that is waiting; with none waiting, the stop alone ends an abandoned stream.
-        reject(err);
-        void stop(err);
-      }, o.maxStreamMs);
-    });
-    expired.catch(() => {});
+    capHandle = o.timers.setTimeout(
+      () => void stop(timeoutError('The transfer exceeded its maximum duration')),
+      o.maxStreamMs,
+    );
+    unref(capHandle);
     return body.getReader();
   };
   return new ReadableStream(
     {
+      start(controller) {
+        ctl = controller;
+      },
       async pull(controller) {
-        if (over) {
-          controller.error(ended);
-          return;
-        }
-        reader ??= begin();
-        let handle: unknown;
-        const stalled = new Promise<never>((_, reject) => {
-          handle = o.timers.setTimeout(
-            () => reject(timeoutError(`The response body stalled: no bytes for ${o.idleMs} ms`)),
+        if (over) return;
+        let idle: unknown;
+        try {
+          reader ??= begin();
+          idle = o.timers.setTimeout(
+            () => void stop(timeoutError(`The response body stalled: no bytes for ${o.idleMs} ms`)),
             o.idleMs,
           );
-        });
-        try {
+          unref(idle);
           for (;;) {
-            const read = reader.read();
-            // If a bound wins, the read settles later (cancelled): that is not a second failure.
-            read.catch(() => {});
-            const { done, value } = await Promise.race([read, stalled, expired!]);
+            const { done, value } = await reader.read();
+            // A bound (or the consumer) ended the stream while this read waited: it has answered.
+            if (over) return;
             if (done) {
               over = true;
               o.timers.clearTimeout(capHandle);
@@ -248,10 +261,10 @@ function guardedBody(body: ByteStream, o: GuardOptions): ByteStream {
             return;
           }
         } catch (err) {
-          controller.error(err);
-          await stop(err);
+          // A runtime may end a read the call's deadline aborted with a generic abort.
+          await stop(o.timedOut() ?? err);
         } finally {
-          o.timers.clearTimeout(handle);
+          o.timers.clearTimeout(idle);
         }
       },
       cancel: (reason) => stop(reason),

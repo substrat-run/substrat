@@ -462,9 +462,77 @@ describe('a body that is looked at, abandoned or padded (#2518 review)', () => {
     await expect(reader.read()).rejects.toMatchObject({ name: 'TimeoutError' });
   });
 
-  it('the default cap is finite and no longer than ten minutes', () => {
+  it('the default cap is finite, no longer than ten minutes, and is the one applied', async () => {
     expect(STREAM_MAX_DURATION_MS).toBeGreaterThan(0);
     expect(STREAM_MAX_DURATION_MS).toBeLessThanOrEqual(10 * 60_000);
+    const clock = manualTimers();
+    const p = provider();
+    // No options: the defaults. A consumer that read once and walked away ends at the default cap.
+    const res = await deadlineFetch(p.fetch, TOTAL, { timers: clock.timers })('https://provider.example/file');
+    const reader = bodyOf(res).getReader();
+    const first = reader.read();
+    p.send();
+    await first;
+    await clock.advance(STREAM_MAX_DURATION_MS - 1);
+    expect(p.seen.signal?.aborted).toBe(false);
+    await clock.advance(1);
+    expect(p.seen.signal?.aborted).toBe(true);
+    await expect(reader.read()).rejects.toMatchObject({ name: 'TimeoutError', message: 'The transfer exceeded its maximum duration' });
+  });
+
+  it('a reader that cannot be taken leaves no cap timer armed', async () => {
+    const clock = manualTimers();
+    const fetch: FetchLike = async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () => '',
+        json: async () => null,
+        arrayBuffer: async () => new ArrayBuffer(0),
+        body: {
+          getReader() {
+            throw new TypeError('The stream is locked');
+          },
+        },
+      }) as unknown as ConnectorResponse;
+    const res = await deadlineFetch(fetch, TOTAL, { timers: clock.timers })('https://provider.example/file');
+    await expect(bodyOf(res).getReader().read()).rejects.toThrow('The stream is locked');
+    expect(clock.pending).toBe(0);
+  });
+
+  it("lets go of the caller's signal when the call's own deadline fires", async () => {
+    const clock = manualTimers();
+    const counts = { added: 0, removed: 0 };
+    const signal = {
+      aborted: false,
+      addEventListener: () => void counts.added++,
+      removeEventListener: () => void counts.removed++,
+    };
+    const p = provider();
+    await deadlineFetch(p.fetch, TOTAL, { timers: clock.timers })('https://provider.example/file', { signal });
+    await clock.advance(TOTAL);
+    expect(p.seen.signal?.aborted).toBe(true);
+    expect(counts).toEqual({ added: 1, removed: 1 });
+  });
+
+  it('none of its timers hold a process open', async () => {
+    const unrefs: string[] = [];
+    let n = 0;
+    const timers = {
+      setTimeout: (fn: () => void) => {
+        void fn;
+        const id = n++;
+        return { unref: () => void unrefs.push(String(id)) };
+      },
+      clearTimeout: () => {},
+    };
+    const p = provider();
+    const res = await deadlineFetch(p.fetch, TOTAL, { timers })('https://provider.example/file');
+    const read = bodyOf(res).getReader().read();
+    p.send();
+    await read;
+    // The call's deadline, the cap and the idle window.
+    expect(unrefs).toHaveLength(3);
   });
 
   it("lets go of the caller's signal when the call is over", async () => {
@@ -536,5 +604,50 @@ describe('against a real fetch and a real server', () => {
     const started = Date.now();
     await expect(drain(bodyOf(res))).rejects.toMatchObject({ name: 'TimeoutError' });
     expect(Date.now() - started).toBeLessThan(2_000);
+  });
+});
+
+describe('a streamed body is not retained once delivered (#2498, #2518)', () => {
+  it('reads many large chunks through the guard and keeps about one in memory', async () => {
+    // Node's `gc`, without a flag on the command line.
+    const v8 = await import('node:v8');
+    const vm = await import('node:vm');
+    v8.setFlagsFromString('--expose-gc');
+    const gc = vm.runInNewContext('gc') as () => void;
+    const MB = 1024 * 1024;
+    const CHUNKS = 120;
+    let made = 0;
+    const source = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (made === CHUNKS) return controller.close();
+          made++;
+          controller.enqueue(new Uint8Array(MB).fill(made % 251));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const fetch: FetchLike = async () => new Response(source) as unknown as ConnectorResponse;
+    const buffers = () => process.memoryUsage().arrayBuffers;
+    for (let i = 0; i < 3; i++) gc();
+    const before = buffers();
+    // Real timers, the runtime's own: the bounds are armed for every read, as in production.
+    const res = await deadlineFetch(fetch, 60_000)('https://provider.example/file');
+    const reader = bodyOf(res).getReader();
+    let read = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value!.byteLength;
+      // Dropped: nothing here keeps it.
+    }
+    expect(read).toBe(CHUNKS * MB);
+    await settle();
+    for (let i = 0; i < 3; i++) {
+      gc();
+      await settle();
+    }
+    // 120 MB went through. A chunk kept alive per read would leave ~120 MB; one chunk is about 1.
+    expect(buffers() - before).toBeLessThan(10 * MB);
   });
 });
