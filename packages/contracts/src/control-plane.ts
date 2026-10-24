@@ -1864,7 +1864,8 @@ export const storageGauge = z.object({
    * reading of what its attachment rows record. Not part of `bytes`, which stays the databases
    * (`basis`), and attachments stay in `excluded` for that reason. Absent when this reading has no
    * attachment sample. `sampled` counts scopes; a scope whose deployment cannot read attachments is
-   * not among them.
+   * not among them. It is what the rows record, not what the blob store holds: an orphan blob is
+   * not in it, and a fork's or snapshot's copied rows count again beside its parent's.
    */
   attachments: z
     .object({

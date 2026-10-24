@@ -25,6 +25,7 @@ import worker, {
   drainContextOf,
   drainTarget,
   meterSnapshotLogOf,
+  oncePerScope,
   platformRequestSweepRun,
   recordPlatformRequestPass,
   requestRollupFor,
@@ -503,6 +504,22 @@ describe('attachmentReaderFor (#2501)', () => {
     const read = attachmentReaderFor(async () => ((resolved += 1), undefined));
     await expect(read(scope(null))).resolves.toBeNull();
     expect(resolved).toBe(0);
+  });
+
+  it('shares one deployment lookup per scope with the database read, through oncePerScope', async () => {
+    const asked: string[] = [];
+    const client = new VerticalClient({
+      fetch: (async () => Response.json({ bytes: 4_096 })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const deployment = oncePerScope(async (s: { id: string }) => (asked.push(s.id), client));
+    const [a, b] = [scope('todo'), scope('todo')];
+    await storageReaderFor(deployment)(a);
+    await attachmentReaderFor(deployment)(a);
+    expect(asked).toEqual([a.id]);
+    // Its twin: another scope climbs the ladder for itself.
+    await attachmentReaderFor(deployment)(b);
+    expect(asked).toEqual([a.id, b.id]);
   });
 });
 

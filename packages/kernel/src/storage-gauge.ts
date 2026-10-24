@@ -76,8 +76,10 @@ export const SCOPE_STORAGE_DDL = `
 
 /**
  * A scope's attachment bytes (#2501), as its own database records them: the sum of the sizes on
- * its `_substrat_attachments` rows. Bytes in the blob store that no row names (an orphan the sweep
- * has not collected, #2314) are not in it. Both adapters read it with this one statement.
+ * its `_substrat_attachments` rows, not what the blob store holds. Bytes in the blob store that no
+ * row names (an orphan the sweep has not collected, #2314) are not in it, and a fork or snapshot
+ * that is itself a stored scope counts its copied rows again, though they name the parent's blobs.
+ * Both adapters read it with this one statement.
  */
 export const ATTACHMENT_BYTES_SQL = 'SELECT COALESCE(SUM(size), 0) AS bytes FROM _substrat_attachments';
 
@@ -393,7 +395,10 @@ export function listScopeAttachmentStorageRows(sql: RedactionSql, tenantId?: Ten
     `SELECT g.tenant_id, g.bytes
        FROM scopes s
        JOIN _substrat_scope_attachment_storage g ON g.scope_id = s.scope_id AND g.tenant_id = s.tenant_id
-        AND g.day = (SELECT MAX(m.day) FROM _substrat_scope_attachment_storage m WHERE m.scope_id = s.scope_id)
+        AND g.day = (
+          SELECT MAX(m.day) FROM _substrat_scope_attachment_storage m
+           WHERE m.scope_id = s.scope_id AND m.tenant_id = s.tenant_id
+        )
       WHERE ${holdsStoreSql('s.')}${tenantId ? ' AND s.tenant_id = ?' : ''}
       ORDER BY g.scope_id`,
     tenantId ? [tenantId] : [],

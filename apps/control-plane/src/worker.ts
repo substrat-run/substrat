@@ -1759,6 +1759,23 @@ export function attachmentReaderFor(
   return deploymentSizeReaderFor(resolve, (client, scopeId) => client.attachmentSize(scopeId), 'attachment bytes');
 }
 
+/**
+ * A scope resolver that climbs the deployment ladder once per scope (#2501): the storage gauge
+ * reads a scope's database and then its attachments through the same deployment, in one pass. Built
+ * per pass, so a later pass sees a redeploy.
+ */
+export function oncePerScope<C>(resolve: (scope: Scope) => Promise<C>): (scope: Scope) => Promise<C> {
+  const found = new Map<ScopeId, Promise<C>>();
+  return (scope) => {
+    let client = found.get(scope.id);
+    if (!client) {
+      client = resolve(scope);
+      found.set(scope.id, client);
+    }
+    return client;
+  };
+}
+
 /** One size of a scope, read through the deployment that holds its DO (see `storageReaderFor`). */
 function deploymentSizeReaderFor<C>(
   resolve: (scope: Scope) => Promise<C | undefined>,
@@ -2376,6 +2393,8 @@ export default {
     const crossVertical = crossVerticalFor(env, host);
     const orphanAttachments = orphanAttachmentSweepFor(env, host.admin, resolveRef);
     const requestRollup = requestRollupFor(env);
+    // #2501: the storage gauge's database and attachment reads go through one deployment per scope.
+    const gaugeDeployment = oncePerScope(resolveVerticalForScopeFor(env));
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
@@ -2449,10 +2468,10 @@ export default {
       // #1524: the stored storage gauge. The kernel reads only scopes the drain above just
       // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
       storageGauge: {
-        read: storageReaderFor(resolveVerticalForScopeFor(env)),
+        read: storageReaderFor(gaugeDeployment),
         readStores: storeStorageReaderFor((scope) => declaredStoreSizes(env, host.admin, scope)),
-        // #2501: attachment bytes beside the database, through the same deployment.
-        readAttachments: attachmentReaderFor(resolveVerticalForScopeFor(env)),
+        // #2501: attachment bytes beside the database, through the same deployment, found once.
+        readAttachments: attachmentReaderFor(gaugeDeployment),
       },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is

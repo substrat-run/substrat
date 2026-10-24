@@ -1419,11 +1419,16 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **Attachment bytes beside it ([#2501](https://github.com/substrat-run/substrat/issues/2501)).**
   The same attempt reads what the scope's attachment rows sum to, and keeps it as its own day
   row in `_substrat_scope_attachment_storage`, the database table's shape and rules: the day's
-  latest reading, thirteen months, deleted at reap. `/meters` serves it as
-  `storage.attachments {bytes, sampled}`. It never enters `bytes`, whose basis stays the scope
-  databases, and attachments stay in `excluded` for that reason.
-  - The figure is what the rows record. Bytes in the blob store that no row names (an orphan
-    the sweep of #2314 has not collected) are not in it.
+  latest reading and thirteen months of days. A scope reap treats them as it treats the
+  scope's database days, and a reaped tenant or a deleted fork forgets them. `/meters` serves
+  it as `storage.attachments {bytes, sampled}`. It never enters `bytes`, whose basis stays the
+  scope databases, and attachments stay in `excluded` for that reason.
+  - The figure is what the rows record, not what the blob store holds, and it can be off in
+    either direction. Bytes in the blob store that no row names (an orphan the sweep of #2314
+    has not collected) are not in it. And a fork or snapshot that is itself a stored scope
+    carries its parent's rows, which name the parent's blobs, so the same bytes count once per
+    copy and the sum can exceed what the store holds. A price per stored byte has to settle
+    both before it reads this figure as blob-store bytes.
   - On the hosted plane it is read through the vertical's `/internal/attachment-size`, behind
     the same gate as every `/internal` route; a co-located scope through
     `HostAdmin.scopeAttachmentBytes`. Each read is bounded like the store read beside it.

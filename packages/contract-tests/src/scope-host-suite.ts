@@ -10890,13 +10890,34 @@ export function scopeHostContractSuite(
         expect((await attachmentsOf(aged))?.attachments).toBeUndefined();
         expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
 
-        // A reaped scope's samples are deleted with it, not only hidden: a sample past retention
-        // that the prune would otherwise find is gone before it runs.
+        // A reaped scope's attachment samples follow its database days (#2515): whether a reap
+        // keeps or drops those rows, the gauge describes live storage only and never counts them.
         const reaped = await newScope(ta);
-        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: reaped, bytes: 1, readAt: old.toISOString(), attachments: 3 }]);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: reaped, bytes: 1, readAt: day(0, '12:00:00'), attachments: 3 }]);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 53, sampled: 3 });
         await host.admin.archiveScope(staff, ta, reaped);
         await host.admin.reapScope(staff, ta, reaped);
-        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+      });
+
+      it('a tenant reap forgets its attachment samples with its other storage rows (#2501)', async () => {
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const gone = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: gone, slug: 'gauge-attachments-tenant-reap', name: 'Gauge Attachments Tenant Reap' });
+        const s = await newScope(gone);
+        // Past retention, so the prune (which reads the raw tables) finds the row if the reap left it.
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: gone, scopeId: s, bytes: 1, readAt: old.toISOString(), attachments: 9 }]);
+        // Its twin, before the reap: both old samples are there for the prune to find.
+        const kept = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: kept, slug: 'gauge-attachments-tenant-kept', name: 'Gauge Attachments Tenant Kept' });
+        const ks = await newScope(kept);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: kept, scopeId: ks, bytes: 1, readAt: old.toISOString(), attachments: 9 }]);
+        await host.admin.setTenantStatus(staff, gone, 'deleting');
+        await host.admin.reapTenant(staff, gone);
+        // Only the kept tenant's two rows (database and attachments) were left to prune.
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(2);
       });
 
       it("forgets a reaped scope's samples, and never writes one for it again", async () => {

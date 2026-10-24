@@ -2171,6 +2171,7 @@ export class ControlPlaneDO extends DurableObject {
         '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
         '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
         '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
+        '_substrat_scope_attachment_storage', // #2501: attachment samples, gone with the tenant
       ]) {
         this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
       }
