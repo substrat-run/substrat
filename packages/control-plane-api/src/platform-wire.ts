@@ -47,6 +47,10 @@ const NAMED = [
  * It reads what `JSON.parse` would for every body the control plane sends, which `JSON.stringify`
  * writes: no key twice, and no key's letters escaped. It does not validate the rest of the body, so a
  * malformed one can name a pair a parse would refuse; the control plane writes none.
+ *
+ * So it assumes a body `JSON.stringify` wrote from an object the platform built: on a key repeated
+ * after both are seen the first wins, and a BOM or an escaped key is not read as a parse reads it. A
+ * caller that forwards raw bytes from outside the platform must not use it unchanged.
  */
 export function topLevelIds(bytes: Uint8Array): { tenantId?: unknown; scopeId?: unknown } {
   const found: { tenantId?: unknown; scopeId?: unknown } = {};
