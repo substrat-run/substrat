@@ -652,6 +652,7 @@ import {
   type RoleFilter,
   type ScheduleRegistration,
   type ScheduleRunReport,
+  type ScheduleTick,
   type ScopedSql,
   type ScopeFilter,
   type ScopeListing,
@@ -6014,6 +6015,8 @@ export class SqliteScopeHost implements ScopeHost {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #2517: what the sweep tick's earlier calls did to this scope (`ScopeHost.runDueSchedules`). */
+    tick?: ScheduleTick,
   ): Promise<ScheduleRunReport> {
     const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [], runs: [] };
     const mod = this.modules.get(moduleId);
@@ -6083,6 +6086,16 @@ export class SqliteScopeHost implements ScopeHost {
     // scope at once. `ScheduleRunReport.platformRequests` says what that does and does not count.
     let platformRequests = 0;
     const counted: ScopeStubOptions = { onPlatformRequests: (n) => (platformRequests += n) };
+    // #2517: the part of that the purge runs enqueued, which is what defers a later purge head the
+    // cap refuses (`runPurgePass`): this call's, on top of what the tick's earlier calls report.
+    const earlierPurgeRequests = tick?.earlierPurgeRequests ?? 0;
+    let purgeRequests = 0;
+    const purgeCounted: ScopeStubOptions = {
+      onPlatformRequests: (n) => {
+        platformRequests += n;
+        purgeRequests += n;
+      },
+    };
     for (const schedule of mod.schedules) {
       const lastRunAt = gate.lastRuns.get(schedule.operation) ?? null;
       const lastRun = lastRunAt ? Date.parse(lastRunAt) : null;
@@ -6110,9 +6123,24 @@ export class SqliteScopeHost implements ScopeHost {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
           // #2431: each purge is an invoke, and reports what it enqueued through `counted` like any other.
-          // #2517: what the schedules before this one in the tick enqueued, so a head the cap refuses
+          // #2517: what the purge runs before this one in the tick enqueued, so a head the cap refuses
           // because they filled the queue is deferred to the next tick rather than failed.
-          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId, counted, platformRequests);
+          const pass = await this.runPurgeSweep(
+            moduleId,
+            tenantId,
+            scopeId,
+            schedule.operation,
+            invocationId,
+            purgeCounted,
+            earlierPurgeRequests + purgeRequests,
+          );
+          if (pass.deferred) {
+            // Ran nothing: no line, no cadence row, `skipped` like any run that did not happen.
+            report.skipped += 1;
+            report.deferred = (report.deferred ?? 0) + 1;
+            report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+            continue;
+          }
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -6174,6 +6202,7 @@ export class SqliteScopeHost implements ScopeHost {
     }
     lines.end();
     if (platformRequests > 0) report.platformRequests = platformRequests;
+    if (purgeRequests > 0) report.purgeRequests = purgeRequests;
     return report;
   }
 
@@ -6194,8 +6223,8 @@ export class SqliteScopeHost implements ScopeHost {
     runInvocationId: string,
     /** #2431: how each purge reports the platform requests it enqueued. */
     counted?: ScopeStubOptions,
-    /** #2517: platform requests the schedules earlier in this tick enqueued. */
-    earlierRequests = 0,
+    /** #2517: platform requests the purge runs earlier in this tick enqueued. */
+    earlierPurgeRequests = 0,
   ): Promise<PurgePass> {
     const entityType = this.modules
       .get(moduleId)
@@ -6228,7 +6257,7 @@ export class SqliteScopeHost implements ScopeHost {
         await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: runInvocationId });
       },
       (write) => rt.actor.turn(() => write(spineSql(rt.db))),
-      earlierRequests,
+      earlierPurgeRequests,
     );
   }
 

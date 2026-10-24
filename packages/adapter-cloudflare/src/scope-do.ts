@@ -5711,10 +5711,10 @@ export function defineScopeDO(
        */
       runInvocationId?: string,
       /**
-       * #2517: platform requests the schedules earlier in the same tick enqueued. LAST and optional
+       * #2517: platform requests the purge runs earlier in the same tick enqueued. LAST and optional
        * for the same reason; absent means none, so a refused head is a failure as before.
        */
-      earlierRequests?: number,
+      earlierPurgeRequests?: number,
     ): Promise<PurgePass | SystemDoorMoved> {
       await this.ensureMigrations();
       const schedule = this.purgeSchedules.get(operation);
@@ -5760,7 +5760,7 @@ export function defineScopeDO(
           true,
         );
         platformRequests += envelope.platformRequests;
-      }, (write) => write(doSpineSql(this.sql)), earlierRequests ?? 0);
+      }, (write) => write(doSpineSql(this.sql)), earlierPurgeRequests ?? 0);
       return platformRequests > 0 ? { ...pass, platformRequests } : pass;
     }
 

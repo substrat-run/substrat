@@ -65,6 +65,7 @@ export type {
   OperationEntitlement,
   ScheduleRegistration,
   ScheduleRunReport,
+  ScheduleTick,
   ScopeAttachments,
   ScopedSql,
   ScopeFilter,

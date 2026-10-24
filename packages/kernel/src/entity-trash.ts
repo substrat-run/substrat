@@ -383,6 +383,13 @@ export interface PurgePass {
    * Absent, like `more`, from a scope running code older than the lap, which ran no lap.
    */
   lapFailed?: number;
+  /**
+   * #2517: the cap refused the head because the purge passes before this one in the same tick filled
+   * the queue (`runPurgePass`), so the pass tried nothing and waits for the next tick. A host reports
+   * the run `skipped` and counts it in `ScheduleRunReport.deferred`, never `fired`. Absent otherwise,
+   * and from a scope running code older than the field, which fails such a head instead.
+   */
+  deferred?: true;
   /** Why the scope ran no purge at all this pass (`purgeHeldBy`), when its gate held it. */
   held?: string;
   /**
@@ -391,6 +398,11 @@ export interface PurgePass {
    * the stub it invokes with). Absent means none, or a scope running code older than this field.
    */
   platformRequests?: number;
+}
+
+/** A pass whose head waits for the next tick (#2517): nothing purged, nothing failed, the lap where it was, still due. */
+function deferredPurgePass(): PurgePass {
+  return { purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0, deferred: true };
 }
 
 /** A pass the scope's gate held: nothing selected, nothing tried, the lap where it was. */
@@ -415,22 +427,30 @@ export function heldPurgePass(held: string): PurgePass {
  * deferred rather than failed, and the lap resumes at it. A pass always moves the lap strictly
  * forward, so neither a deferral nor a refused head can hold the head of the walk.
  *
- * One more case (#2517): a head the cap refuses is deferred too when `earlierRequests` says that
- * a schedule earlier in the same scheduled tick enqueued requests. Nothing drains the scope
- * between two schedules of a tick, so that head met a queue the tick itself filled, not a standing
- * one, and failing it would make the run wait its whole cadence for nothing. The pass then ends
- * having tried nothing: the lap is left exactly as it was, `more` is true so the schedule stays
- * due, and the next tick, after the drain, tries the same head again. It cannot spin or starve: it
- * needs an earlier schedule that committed a request in the same tick (so the queue is full of
- * that schedule's progress, and a queue held full by other traffic still fails the head), and the
- * scheduled tick runs each schedule once.
+ * One more case (#2517): a head the cap refuses is deferred, not failed, when
+ * `earlierPurgeRequests` says that the PURGE passes run before this one in the same scheduled tick
+ * (this module's or an earlier module's) enqueued requests. Nothing drains the scope between the
+ * schedules of a tick, so that head met a queue the tick's own purges filled, and failing it would
+ * make the run wait its whole cadence for nothing. The pass then ends having tried nothing
+ * (`deferred`): the lap is left exactly as it was, `more` is true so the schedule stays due, and
+ * the next tick tries the same head again.
+ *
+ * Only purge passes count, never an ordinary schedule's requests or any other traffic, because
+ * that is what bounds the deferral. Each tick that defers this head needs a purge ahead of it to
+ * have COMMITTED a purge that enqueued a request, and that entity has left its bin for good; an
+ * ordinary schedule can enqueue every tick forever, which would hold the head, and everything
+ * behind it, for ever (#2096). So the head is deferred only while the purges ahead of it keep
+ * committing requests, and on the first tick none does (their laps closed, their cadence not due,
+ * or the queue still full so they could enqueue nothing) it runs like any head: it purges if it
+ * fits, and a head that cannot fit, or a queue other traffic holds full, fails it as before. It
+ * cannot spin: the scheduled tick runs each schedule once.
  */
 export async function runPurgePass(
   operation: string,
   due: PurgeDue,
   purgeOne: (entityId: string) => Promise<void>,
   inScope: (write: (sql: ScopedSql) => void) => unknown,
-  earlierRequests = 0,
+  earlierPurgeRequests = 0,
 ): Promise<PurgePass> {
   // Where the lap resumes: after this batch's last entity, or null when the batch closes the lap.
   let next = due.next;
@@ -453,8 +473,8 @@ export async function runPurgePass(
       // purge can never fit (it enqueues more than the scope has room for) cannot hold the head of
       // the walk, which is what #2096 is for. Without `keys` there is no position to resume from.
       if (isPlatformRequestRefusal(err)) {
-        // #2517: the head met a queue an earlier schedule of this tick filled — "not yet" too.
-        if (i === 0 && earlierRequests > 0) return { purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0 };
+        // #2517: the head met a queue the tick's earlier purges filled — "not yet" too.
+        if (i === 0 && earlierPurgeRequests > 0) return deferredPurgePass();
         if (i === 0) headRefused = true;
         if (!headRefused && keys) {
           next = keys[i - 1]!;
@@ -484,9 +504,9 @@ export async function runPurgePass(
  * Whether a purge pass leaves its schedule due, so the next sweep pass continues its lap rather
  * than waiting the cadence: more is due after its batch (#2096). It cannot spin (#2087): every pass
  * moves the lap strictly forward, whatever its purges did, bar one — the pass that defers its head
- * to the next tick because an earlier schedule of the same tick filled the queue (#2517), which
- * needs that schedule to have committed a request (so it made progress) and which nothing re-runs
- * within the tick. A pass that defers an entity the platform-request cap turned away (#2506) has
+ * to the next tick because the tick's earlier purge passes filled the queue (#2517), which needs a
+ * purge ahead of it to have committed a request (so the tick made progress) and which nothing
+ * re-runs within the tick. A pass that defers an entity the platform-request cap turned away (#2506) has
  * already got past its head, and the entity is the head of the next pass, where a refusal is a
  * failure like any other — and the pass that runs out
  * of due entities closes the lap and records the run. So a cadence window holds one lap, and an

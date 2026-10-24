@@ -380,6 +380,7 @@ import {
   type RoleFilter,
   type ScheduleRegistration,
   type ScheduleRunReport,
+  type ScheduleTick,
   type ScheduleStateKind,
   type ScopeFilter,
   type ScopeListing,
@@ -1618,10 +1619,10 @@ interface ScopeStubRpc {
     /** #2192: the schedule run's id, which every purge in the pass runs under. */
     runInvocationId?: string,
     /**
-     * #2517: the platform requests the schedules before this one in the tick enqueued. LAST and
+     * #2517: the platform requests the purge runs before this one in the tick enqueued. LAST and
      * optional for the positional-RPC reason above; a scope without it fails a refused head.
      */
-    earlierRequests?: number,
+    earlierPurgeRequests?: number,
   ): Promise<PurgePass | SystemDoorMoved>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
   freshnessProbe(
@@ -6445,6 +6446,8 @@ export class CloudflareScopeHost implements ScopeHost {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #2517: what the sweep tick's earlier calls did to this scope (`ScopeHost.runDueSchedules`). */
+    tick?: ScheduleTick,
   ): Promise<ScheduleRunReport> {
     const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [], runs: [] };
     const schedules = this.moduleSchedules.get(moduleId);
@@ -6496,6 +6499,10 @@ export class CloudflareScopeHost implements ScopeHost {
     // scope at once. `ScheduleRunReport.platformRequests` says what that does and does not count.
     let platformRequests = 0;
     const counted: ScopeStubOptions = { onPlatformRequests: (n) => (platformRequests += n) };
+    // #2517: the part of that the purge runs enqueued, which is what defers a later purge head the
+    // cap refuses (`runPurgePass`): this call's, on top of what the tick's earlier calls report.
+    const earlierPurgeRequests = tick?.earlierPurgeRequests ?? 0;
+    let purgeRequests = 0;
     for (const schedule of schedules) {
       const last = await stub.scheduleLastRun(schedule.operation);
       const lastRun = last ? Date.parse(last) : null;
@@ -6531,13 +6538,23 @@ export class CloudflareScopeHost implements ScopeHost {
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
           // #2431, #2440: the scope reports the requests its purges enqueued (`pass.platformRequests`),
           // and the deliveries their events route to the platform are counted below, as an invoke's are.
+          // #2517: with what the purge runs before this one in the tick enqueued, so a head the cap
+          // refuses because they filled the queue is deferred to the next tick rather than failed.
           const pass = await door.through((instance) =>
-            stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId, platformRequests),
+            stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId, earlierPurgeRequests + purgeRequests),
           );
-          platformRequests += pass.platformRequests ?? 0;
+          if (pass.deferred) {
+            // Ran nothing: no line, no cadence row, `skipped` like any run that did not happen.
+            report.skipped += 1;
+            report.deferred = (report.deferred ?? 0) + 1;
+            report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
+            continue;
+          }
           // The purges' events, delivered the way each invoke's own tail delivers them.
           const delivered = await this.drainExecutors(tenantId, scopeId, invocationId);
-          platformRequests += delivered.routedToPlatform ?? 0;
+          const enqueued = (pass.platformRequests ?? 0) + (delivered.routedToPlatform ?? 0);
+          platformRequests += enqueued;
+          purgeRequests += enqueued;
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -6592,6 +6609,7 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     lines.end();
     if (platformRequests > 0) report.platformRequests = platformRequests;
+    if (purgeRequests > 0) report.purgeRequests = purgeRequests;
     return report;
   }
 
