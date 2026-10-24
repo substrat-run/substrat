@@ -1446,6 +1446,24 @@ export interface ScheduleRunReport {
    * deliveries their events route to the platform. A purge that threw adds nothing.
    */
   platformRequests?: number;
+  /**
+   * #2517: the part of `platformRequests` the purge horizons' runs enqueued. A sweep running
+   * another module's schedules on the same scope in the same tick passes the running sum on
+   * (`ScheduleTick.earlierPurgeRequests`). Absent when zero, and from a host that predates it.
+   */
+  purgeRequests?: number;
+  /**
+   * #2517: purge runs whose head waits for the next tick because the tick's earlier purges filled
+   * the queue (`PurgePass.deferred`). Each is also in `skipped`, never `fired`, and its run is
+   * `skipped`: it ran nothing and moved no cadence row. Absent when none.
+   */
+  deferred?: number;
+}
+
+/** #2517: what a sweep tick already did to a scope before a `runDueSchedules` call. */
+export interface ScheduleTick {
+  /** Platform requests the purge runs of the tick's earlier calls on this scope enqueued (their `purgeRequests`). */
+  earlierPurgeRequests?: number;
 }
 
 /**
@@ -6397,8 +6415,14 @@ export interface ScopeHost {
    * class as `drainDue`/`migrateScope`; the invocation itself is attributed to the
    * system actor. A single schedule's failure is reported, never thrown, so one bad
    * operation cannot stop the others on the scope.
+   *
+   * `tick` (#2517) carries what this sweep tick already did to the scope before this call: a
+   * sweep that runs several modules' schedules on one scope with no drain between them passes the
+   * sum of the earlier calls' `purgeRequests`, so a purge head the cap refuses because those
+   * purges filled the queue is deferred rather than failed (`runPurgePass`). Optional; absent
+   * means none.
    */
-  runDueSchedules(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScheduleRunReport>;
+  runDueSchedules(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId, tick?: ScheduleTick): Promise<ScheduleRunReport>;
 
   /**
    * The declared freshness expectations, per module (#1232). OPTIONAL and

@@ -145,9 +145,26 @@ refusal is a failure like any other. A purge the full queue refuses at the *firs
 is an ordinary failure, and so is every refusal after it in that pass; those entities stay in the
 bin and are retried on the next lap. The pass walks on, so a purge that needs no request still
 commits behind a refused one, and an entity whose purge can never fit (it enqueues more requests
-than the scope will ever have room for) cannot hold up the others. A scope's purge horizons share
-the same 32 slots within a sweep, so a horizon with a large backlog can leave the next one's first
-entity refused until it catches up. Have a purge enqueue at most one request per entity.
+than the scope will ever have room for) cannot hold up the others.
+
+Nothing drains a scope's requests between its schedules within one sweep, so every purge horizon
+on the scope shares the same 32 slots, in your module and in any other module the scope runs. A
+horizon with a large backlog can fill the queue before the next one runs, and that next horizon's
+first entity is not failed for it. When purges run earlier in the same sweep enqueued requests,
+the pass tries nothing: its run is reported as deferred (counted as skipped, never as fired), and
+the schedule stays due, so it runs again on the next sweep rather than waiting its whole cadence.
+It waits only while the horizons ahead of it keep committing requests, which means they are
+emptying their own bins. On the first sweep where none of them enqueues anything, its first entity
+runs like any other: it purges if the queue has room, and fails if its purge can never fit.
+
+Only purges count toward that. Requests from your ordinary schedules, which run before the purge
+horizons, and from any other traffic are not the sweep's purges, and a queue they filled fails the
+first entity as before. An ordinary schedule may enqueue on every sweep, and if those requests
+counted, a horizon behind it would wait indefinitely. The next sweep normally finds the queue drained:
+the platform sweep drains the scope again straight after its schedules, and a hosted vertical's
+scope sweeper asks the platform to drain once its pass ends. A queue still full on the next sweep
+refuses the horizon ahead as well, so that horizon enqueues nothing, and the first entity behind it
+fails as before. Have a purge enqueue at most one request per entity.
 
 The purge operation is also the entity's permanent delete, so by default a person holding its
 key can empty the bin at any time. If the purge operation must only ever run on what has sat in
