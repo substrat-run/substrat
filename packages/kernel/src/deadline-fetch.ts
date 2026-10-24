@@ -42,6 +42,13 @@ export const STREAM_IDLE_TIMEOUT_MS = 30_000;
  */
 export const STREAM_MAX_DURATION_MS = 10 * 60_000;
 
+/**
+ * How many empty chunks in a row a stream may deliver before it is treated as making no progress.
+ * Generous: a real source sends a few at most. It is a count, not a time, because a source that
+ * answers only with empty chunks answers in microtasks and no timer would ever get to run.
+ */
+const MAX_CONSECUTIVE_EMPTY_READS = 1_000;
+
 declare const setTimeout: (fn: () => void, ms: number) => unknown;
 declare const clearTimeout: (handle: unknown) => void;
 declare const AbortController: new () => { readonly signal: unknown; abort(reason?: unknown): void };
@@ -98,7 +105,12 @@ export function deadlineFetch(fetchImpl: FetchLike, timeoutMs: number, options: 
     const controller = new AbortController();
     let timedOut: Error | undefined;
     const upstream = init?.signal as AbortSignalLike | undefined;
-    const onUpstreamAbort = (): void => controller.abort(upstream?.reason);
+    // The caller's own abort ends the call: its deadline is released, so it cannot fire later and
+    // pass a cancel off as a timeout.
+    const onUpstreamAbort = (): void => {
+      releaseTotal();
+      controller.abort(upstream?.reason);
+    };
     if (upstream?.aborted) controller.abort(upstream.reason);
     else upstream?.addEventListener?.('abort', onUpstreamAbort, { once: true });
     const total = timers.setTimeout(() => {
@@ -114,13 +126,19 @@ export function deadlineFetch(fetchImpl: FetchLike, timeoutMs: number, options: 
       releaseTotal();
       upstream?.removeEventListener?.('abort', onUpstreamAbort);
     }
+    /**
+     * What a failed read reports. A runtime may fail a read the call's deadline aborted with a
+     * generic abort rather than the reason; that one is the deadline's `TimeoutError`. Any other
+     * failure (a caller's cancel, a network error) keeps its own class.
+     */
+    const reported = (err: unknown): unknown =>
+      timedOut && (err as { name?: unknown } | null)?.name === 'AbortError' ? timedOut : err;
     let res: ConnectorResponse;
     try {
       res = await fetchImpl(input, { ...init, signal: controller.signal });
     } catch (err) {
       finish();
-      // A runtime may reject an aborted fetch with a generic abort rather than the reason.
-      throw timedOut ?? err;
+      throw reported(err);
     }
     // A response that has no body at all (`null`, as on a web `Response`) has nothing to bound.
     // A stand-in with no `body` field (`undefined`) may still be read buffered, so it keeps the deadline.
@@ -140,7 +158,7 @@ export function deadlineFetch(fetchImpl: FetchLike, timeoutMs: number, options: 
             releaseTotal,
             finish,
             abortCall: (reason) => controller.abort(reason),
-            timedOut: () => timedOut,
+            reported,
           });
           return guarded;
         }
@@ -152,7 +170,7 @@ export function deadlineFetch(fetchImpl: FetchLike, timeoutMs: number, options: 
               return await (value as (...a: unknown[]) => unknown).apply(target, args);
             } catch (err) {
               // A runtime may fail a read the call's deadline aborted with a generic abort.
-              throw timedOut ?? err;
+              throw reported(err);
             } finally {
               finish();
             }
@@ -173,8 +191,8 @@ interface GuardOptions {
   /** The stream is over (end, error, cancel): the call's last hold goes. */
   finish(): void;
   abortCall(reason: unknown): void;
-  /** The error the call's own deadline ended it with, if it did: what a runtime's generic abort stands for. */
-  timedOut(): Error | undefined;
+  /** What a failed read reports: the call's deadline's error for a runtime's generic abort, else the failure itself. */
+  reported(err: unknown): unknown;
 }
 
 /** A timer that does not hold a Node process open, where the runtime lets it say so. */
@@ -237,6 +255,7 @@ function guardedBody(body: ByteStream, o: GuardOptions): ByteStream {
       async pull(controller) {
         if (over) return;
         let idle: unknown;
+        let empties = 0;
         try {
           reader ??= begin();
           idle = o.timers.setTimeout(
@@ -257,13 +276,20 @@ function guardedBody(body: ByteStream, o: GuardOptions): ByteStream {
             }
             if (!value) throw new Error('the byte stream yielded a read with neither a chunk nor its end');
             // An empty chunk carries nothing: it is read past under the same window, not counted as progress.
-            if (value.byteLength === 0) continue;
+            // A source that answers only with empty chunks, all in microtasks, would never let a timer
+            // run, so the run of them is itself bounded.
+            if (value.byteLength === 0) {
+              if (++empties > MAX_CONSECUTIVE_EMPTY_READS) {
+                throw timeoutError('The response body made no progress');
+              }
+              continue;
+            }
             controller.enqueue(value);
             return;
           }
         } catch (err) {
           // A runtime may end a read the call's deadline aborted with a generic abort.
-          await stop(o.timedOut() ?? err);
+          await stop(o.reported(err));
         } finally {
           o.timers.clearTimeout(idle);
         }

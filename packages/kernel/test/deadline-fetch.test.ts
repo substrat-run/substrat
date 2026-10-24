@@ -607,6 +607,115 @@ describe('against a real fetch and a real server', () => {
   });
 });
 
+describe("the caller's abort and other failures keep their own class (#2518 review)", () => {
+  /** A provider whose body errors when the call is aborted, as a runtime's does. */
+  function abortable() {
+    const seen: { signal?: AbortSignal } = {};
+    const fetch: FetchLike = async (_input, init) => {
+      const signal = init?.signal as AbortSignal;
+      seen.signal = signal;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const fail = () => controller.error(signal.reason);
+          if (signal.aborted) fail();
+          else signal.addEventListener('abort', fail, { once: true });
+        },
+      });
+      return new Response(body) as unknown as ConnectorResponse;
+    };
+    return { fetch, seen };
+  }
+
+  it("a caller's abort, then a first read, is the caller's AbortError, even after the call's deadline would have fired", async () => {
+    const clock = manualTimers();
+    const p = abortable();
+    const caller = new AbortController();
+    const res = await deadlineFetch(p.fetch, TOTAL, { timers: clock.timers })('https://provider.example/file', {
+      signal: caller.signal,
+    });
+    caller.abort();
+    // The deadline was released by the abort: it cannot fire later and rename the cancel.
+    expect(clock.pending).toBe(0);
+    await clock.advance(TOTAL * 3);
+    const err = await bodyOf(res).getReader().read().then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.name).toBe('AbortError');
+  });
+
+  it("a caller's abort, then a buffered read, is the caller's AbortError", async () => {
+    const clock = manualTimers();
+    const p = abortable();
+    const caller = new AbortController();
+    const res = await deadlineFetch(p.fetch, TOTAL, { timers: clock.timers })('https://provider.example/file', {
+      signal: caller.signal,
+    });
+    caller.abort();
+    await clock.advance(TOTAL * 3);
+    await expect(res.arrayBuffer()).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('after the call\'s deadline fired, an unrelated failure keeps its own class', async () => {
+    const clock = manualTimers();
+    const network = new TypeError('connection reset');
+    const fetch: FetchLike = async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () => {
+          throw network;
+        },
+        json: async () => null,
+        arrayBuffer: async () => new ArrayBuffer(0),
+      }) as unknown as ConnectorResponse;
+    const res = await deadlineFetch(fetch, TOTAL, { timers: clock.timers })('https://provider.example/x');
+    await clock.advance(TOTAL); // the deadline fires first
+    await expect(res.text()).rejects.toBe(network);
+  });
+
+  it('a source that answers only with empty chunks is cut, though no timer can run', async () => {
+    const clock = manualTimers();
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new Uint8Array(0));
+      },
+    });
+    const fetch: FetchLike = async () => new Response(body) as unknown as ConnectorResponse;
+    const res = await deadlineFetch(fetch, TOTAL, { idleMs: IDLE, timers: clock.timers })('https://provider.example/file');
+    // No clock movement at all: only the count can end it.
+    const err = await bodyOf(res).getReader().read().then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.name).toBe('TimeoutError');
+    expect(err?.message).toBe('The response body made no progress');
+    expect(pulls).toBeLessThan(1_100);
+    await settle();
+    expect(clock.pending).toBe(0);
+  });
+
+  it('a few empty chunks in a run are fine', async () => {
+    const clock = manualTimers();
+    let n = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (n++ < 500) controller.enqueue(new Uint8Array(0));
+        else {
+          controller.enqueue(CHUNK);
+          controller.close();
+        }
+      },
+    });
+    const fetch: FetchLike = async () => new Response(body) as unknown as ConnectorResponse;
+    const res = await deadlineFetch(fetch, TOTAL, { timers: clock.timers })('https://provider.example/file');
+    const { value } = await bodyOf(res).getReader().read();
+    expect(value?.byteLength).toBe(CHUNK.byteLength);
+  });
+});
+
 describe('a streamed body is not retained once delivered (#2498, #2518)', () => {
   it('reads many large chunks through the guard and keeps about one in memory', async () => {
     // Node's `gc`, without a flag on the command line.
@@ -635,18 +744,20 @@ describe('a streamed body is not retained once delivered (#2498, #2518)', () => 
     const res = await deadlineFetch(fetch, 60_000)('https://provider.example/file');
     const reader = bodyOf(res).getReader();
     let read = 0;
-    for (;;) {
+    let peak = 0;
+    for (let n = 1; ; n++) {
       const { done, value } = await reader.read();
       if (done) break;
       read += value!.byteLength;
-      // Dropped: nothing here keeps it.
+      // Dropped: nothing here keeps it. Measured WHILE the stream is live, every 10 chunks: a chunk
+      // kept alive per read is unreachable again once the stream ends, so only a mid-stream sample sees it.
+      if (n % 10 === 0) {
+        gc();
+        await settle();
+        peak = Math.max(peak, buffers() - before);
+      }
     }
     expect(read).toBe(CHUNKS * MB);
-    await settle();
-    for (let i = 0; i < 3; i++) {
-      gc();
-      await settle();
-    }
     // 120 MB went through. A chunk kept alive per read would leave ~120 MB; one chunk is about 1.
     expect(buffers() - before).toBeLessThan(10 * MB);
   });

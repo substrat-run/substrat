@@ -148,20 +148,23 @@ describe("a streamed response body through a connection's fetch, hosted (#2518)"
   // workerd's own fetch and its own abort, not a stand-in's: what the runtime hands a read after the
   // call's deadline must still be the TimeoutError the health line classifies as a timeout.
   const stalled = () =>
-    deadlineFetch((input, init) => SELF.fetch(input, init as RequestInit) as unknown as Promise<ConnectorResponse>, 150)(
+    deadlineFetch((input, init) => SELF.fetch(input, init as RequestInit) as unknown as Promise<ConnectorResponse>, DEADLINE_MS)(
       'https://provider.invalid/stall',
     );
+  // Generous on both sides, for a slow CI isolate: the deadline is long enough for the round trip to
+  // finish well inside it, and the wait is several times longer, so the order is never in doubt.
+  const DEADLINE_MS = 750;
   const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   it("the first read of an untouched body, after timeoutMs, is a TimeoutError", async () => {
     const res = await stalled();
-    await pause(400);
+    await pause(DEADLINE_MS * 3);
     await expect((res.body as ByteStream).getReader().read()).rejects.toMatchObject({ name: 'TimeoutError' });
   });
 
   it('a buffered read of that body after timeoutMs is a TimeoutError too', async () => {
     const res = await stalled();
-    await pause(400);
+    await pause(DEADLINE_MS * 3);
     await expect(res.arrayBuffer()).rejects.toMatchObject({ name: 'TimeoutError' });
   });
 });
