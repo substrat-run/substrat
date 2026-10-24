@@ -6550,11 +6550,12 @@ export class CloudflareScopeHost implements ScopeHost {
             report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
             continue;
           }
+          platformRequests += pass.platformRequests ?? 0;
+          purgeRequests += pass.platformRequests ?? 0;
           // The purges' events, delivered the way each invoke's own tail delivers them.
           const delivered = await this.drainExecutors(tenantId, scopeId, invocationId);
-          const enqueued = (pass.platformRequests ?? 0) + (delivered.routedToPlatform ?? 0);
-          platformRequests += enqueued;
-          purgeRequests += enqueued;
+          platformRequests += delivered.routedToPlatform ?? 0;
+          purgeRequests += delivered.routedToPlatform ?? 0;
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
