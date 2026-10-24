@@ -607,6 +607,7 @@ export {
   SEAT_HOLDING_SCOPE_STATUSES,
   TENANT_SEATED_ROLES_SQL,
   dumpRoleState,
+  holdsSeats,
   type DeclaredPermissions,
   type DumpTable,
   type HostReservations,

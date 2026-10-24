@@ -13,6 +13,7 @@ import {
   reservedRoleSetRefusal,
   reservedShapeRefusal,
   dumpRoleState,
+  holdsSeats,
 } from '../src/reserved-roles.js';
 
 const manifest = (id: string, permissions: { key: string; description: string; holder?: 'system' }[]) =>
@@ -304,10 +305,21 @@ describe('dumpRoleState (#2447 round 2)', () => {
   it('reads the tenant’s live roles and the role keys a non-system principal holds a live seat in', () => {
     const state = dumpRoleState(tables, 't1', now);
     expect(state.roles).toEqual([{ key: 'staffer', permissions: ['a:use'], holder: 'person' }]);
-    expect([...state.seated].sort()).toEqual(['ghost', 'staffer', 'tenantwide']);
+    // Scope-level seats only: a dump's projected tenant tuples do not survive the repair (round 3).
+    expect([...state.seated].sort()).toEqual(['ghost', 'staffer']);
   });
 
   it('reads a dump with none of those tables as storing nothing', () => {
     expect(dumpRoleState([], 't1', now)).toEqual({ roles: [], seated: new Set() });
+  });
+});
+
+describe('holdsSeats (#2447 round 3)', () => {
+  it('reads every scope not reaped, but not one archived straight from provisioning (#1524)', () => {
+    for (const status of ['provisioning', 'active', 'suspended', 'archiving', 'archived']) expect(holdsSeats({ status })).toBe(true);
+    expect(holdsSeats({ status: 'archived', archivedFromStatus: 'active' })).toBe(true);
+    expect(holdsSeats({ status: 'reaped' })).toBe(false);
+    expect(holdsSeats({ status: 'archived', archivedFromStatus: 'provisioning' })).toBe(false);
+    expect(holdsSeats({ status: 'archiving', archivedFromStatus: 'provisioning' })).toBe(false);
   });
 });

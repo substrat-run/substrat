@@ -120,7 +120,6 @@ import {
   noteDeclaredKeys,
   noteReservedKeys,
   SCOPE_SEATED_ROLES_SQL,
-  TENANT_SEATED_ROLES_SQL,
   reservedGrantRefusal,
   reservedRoleRefusal,
   reservedShapeRefusal,
@@ -5072,8 +5071,8 @@ export function defineScopeDO(
     }
 
     /**
-     * #2447: the tenant's roles as this scope stores them, and the keys of those anyone but a system
-     * principal holds a live seat in here (scope-level, or tenant-level as projected) — what a role
+     * #2447: the tenant's roles as this scope stores them, and the role keys anyone but a system
+     * principal holds a live scope-level seat in here — what a role
      * set defined on this scope, or a role definition fanned out to it, is judged against.
      */
     async roleStateHere(tenantId: TenantId): Promise<{ roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[]; seated: string[] }> {
@@ -5086,12 +5085,10 @@ export function defineScopeDO(
             holder: 'person' | 'system' | null;
           }[]).map((r) => ({ key: r.role_key, permissions: JSON.parse(r.permissions) as string[], ...(r.holder ? { holder: r.holder } : {}) }))
         : [];
-      const seated = new Set(
-        [
-          ...this.sql.exec(SCOPE_SEATED_ROLES_SQL, now).toArray(),
-          ...(this.hasTable('_substrat_tenant_tuples') ? this.sql.exec(TENANT_SEATED_ROLES_SQL, tenantId, now).toArray() : []),
-        ].map((r) => (r as { role_key: string }).role_key),
-      );
+      // Scope-level seats only. The tenant-level ones are the directory's (the ControlPlaneDO reads
+      // them in its own unit), and this scope's projected copy can be stale: a fan-out skips an
+      // archived scope, and a CP-less projection carries none.
+      const seated = new Set(this.sql.exec(SCOPE_SEATED_ROLES_SQL, now).toArray().map((r) => (r as { role_key: string }).role_key));
       return { roles, seated: [...seated] };
     }
 

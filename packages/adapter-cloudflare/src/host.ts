@@ -518,6 +518,7 @@ import {
   reservedRoleSetRefusal,
   reservedShapeRefusal,
   SEAT_HOLDING_SCOPE_STATUSES,
+  holdsSeats,
   dumpRoleState,
   type DumpTable,
   type DeclaredPermissions,
@@ -11842,7 +11843,9 @@ export class CloudflareScopeHost implements ScopeHost {
     role: RoleDefinition,
   ): Promise<{ reservation: { reserved: string[]; declared: string[] }; seatedInScopes: boolean }> {
     // Every scope not reaped (`SEAT_HOLDING_SCOPE_STATUSES`): an archived scope's seats come back on unarchive.
-    const scopes = await this.cp.listScopes({ tenantId, status: [...SEAT_HOLDING_SCOPE_STATUSES] });
+    const scopes = (await this.cp.listScopes({ tenantId, status: [...SEAT_HOLDING_SCOPE_STATUSES] })).filter((s) =>
+      holdsSeats({ status: s.status, archivedFromStatus: s.archived_from_status }),
+    );
     const reservation = { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
     if (scopes.length > 0) {
       const here = await this.scopeStub(scopes[0]!.scope_id as ScopeId).reservationHere();

@@ -470,6 +470,7 @@ import {
   reservedShapeRefusal,
   SCOPE_SEATED_ROLES_SQL,
   SEAT_HOLDING_SCOPE_STATUSES,
+  holdsSeats,
   TENANT_SEATED_ROLES_SQL,
   type DeclaredPermissions,
   admitPeer,
@@ -5783,9 +5784,11 @@ export class SqliteScopeHost implements ScopeHost {
     const now = this.clock();
     const holds = (rows: unknown[]) => (rows as { role_key: string }[]).some((r) => r.role_key === roleKey);
     if (holds(this.directory.prepare(TENANT_SEATED_ROLES_SQL).all(tenantId, now))) return true;
-    const scopes = this.directory
-      .prepare(`SELECT scope_id FROM scopes WHERE tenant_id = ? AND status IN (${SEAT_HOLDING_SCOPE_STATUSES.map(() => '?').join(', ')})`)
-      .all(tenantId, ...SEAT_HOLDING_SCOPE_STATUSES) as { scope_id: string }[];
+    const scopes = (
+      this.directory
+        .prepare(`SELECT scope_id, status, archived_from_status FROM scopes WHERE tenant_id = ? AND status IN (${SEAT_HOLDING_SCOPE_STATUSES.map(() => '?').join(', ')})`)
+        .all(tenantId, ...SEAT_HOLDING_SCOPE_STATUSES) as { scope_id: string; status: string; archived_from_status: string | null }[]
+    ).filter((s) => holdsSeats({ status: s.status, archivedFromStatus: s.archived_from_status }));
     return scopes.some((s) => holds(this.runtime(tenantId, s.scope_id as ScopeId).db.prepare(SCOPE_SEATED_ROLES_SQL).all(now)));
   }
 

@@ -221,9 +221,10 @@ export interface DumpTable {
 
 /**
  * #2447: what a scope dump stores for a tenant's roles, and the role keys anyone but a system
- * principal holds a live seat in there (scope-level, or tenant-level as projected) — the same
- * reading as `SCOPE_SEATED_ROLES_SQL` and `TENANT_SEATED_ROLES_SQL`, over a dump's rows instead of a
- * table. A restore judges the role set its repair defines against it before it imports the dump.
+ * principal holds a live scope-level seat in there — `SCOPE_SEATED_ROLES_SQL`'s reading, over a dump's
+ * rows instead of a table. A dump's projected tenant-level tuples are not seats here: the repair a
+ * restore runs projects none, so they do not survive it, and the tenant's own seats are the
+ * directory's. A restore judges the role set its repair defines against it before it imports the dump.
  */
 export function dumpRoleState(tables: readonly DumpTable[], tenantId: string, now: string): StoredRoles {
   const read = (name: string) => {
@@ -238,7 +239,7 @@ export function dumpRoleState(tables: readonly DumpTable[], tenantId: string, no
       permissions: JSON.parse(String(r.permissions)) as string[],
       ...(r.holder === 'person' || r.holder === 'system' ? { holder: r.holder as 'person' | 'system' } : {}),
     }));
-  const seats = [...read('_substrat_tuples'), ...read('_substrat_tenant_tuples').filter((r) => r.tenant_id === tenantId)];
+  const seats = read('_substrat_tuples');
   const seated = new Set(
     seats
       .filter((r) => String(r.relation).startsWith('role:') && !String(r.subject).startsWith('system:') && live(r))
@@ -253,6 +254,17 @@ export function dumpRoleState(tables: readonly DumpTable[], tenantId: string, no
  * a definition judged without them would relabel those seats; both adapters read this one list.
  */
 export const SEAT_HOLDING_SCOPE_STATUSES = ['provisioning', 'active', 'suspended', 'archiving', 'archived'] as const;
+
+/**
+ * #2447: whether a scope's seats are read when a role definition is judged: a
+ * `SEAT_HOLDING_SCOPE_STATUSES` status, unless it was archived straight from `provisioning`. That
+ * scope never held data, and reading it would create the spine it never had (#1524's rule for the
+ * storage gauge, `holdsStore`).
+ */
+export function holdsSeats(scope: { status: string; archivedFromStatus?: string | null }): boolean {
+  if (!(SEAT_HOLDING_SCOPE_STATUSES as readonly string[]).includes(scope.status)) return false;
+  return !((scope.status === 'archived' || scope.status === 'archiving') && scope.archivedFromStatus === 'provisioning');
+}
 
 /** #2447: `SCOPE_SEATED_ROLES_SQL` for a tenant's tenant-level tuples. Parameters: tenantId, now. */
 export const TENANT_SEATED_ROLES_SQL =

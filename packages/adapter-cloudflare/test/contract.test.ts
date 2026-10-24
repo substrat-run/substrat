@@ -315,6 +315,39 @@ describe('a scope class that reserves nothing: its person’s doors read the sto
   });
 });
 
+// #2447 (review round 3): a scope's projected copy of the tenant-level tuples is not where seats are
+// counted. The fan-out skips an archived scope, so its copy goes stale; the tenant-level seats are
+// the ControlPlaneDO's, read in its own unit.
+describe('an archived scope’s stale projected tenant tuples are not seats (#2447)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeLocalPermissions: true });
+  const USE = permissionKey.parse('rsv:use');
+  const RUN = permissionKey.parse('rsv:run');
+  afterAll(() => host.close());
+
+  it('a tenant-level seat taken back while the scope was archived blocks nothing; a live one still does', async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `stale-${t.slice(-10).toLowerCase()}`, name: 'Stale' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'stale-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    for (const key of ['stale', 'live']) await host.admin.defineRole(staff, t, { key, permissions: [USE], source: 'vertical' });
+    const who = principalId.parse(ulid());
+    for (const key of ['stale', 'live']) await host.admin.assignRole(staff, { principalId: who, roleKey: key, node: { tenantId: t, scopeId: null } });
+    await host.admin.archiveScope(staff, t, s);
+    await host.admin.unassignRole(staff, { principalId: who, roleKey: 'stale', node: { tenantId: t, scopeId: null } });
+    // The archived scope's projection still names the seat; the directory does not.
+    await host.admin.defineRole(staff, t, { key: 'stale', permissions: [RUN], source: 'vertical', holder: 'system' });
+    expect((await host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'stale')?.holder).toBe('system');
+    // The twin: a tenant-level seat that is still live is counted, in the ControlPlaneDO's unit.
+    const refused = await host.admin
+      .defineRole(staff, t, { key: 'live', permissions: [RUN], source: 'vertical', holder: 'system' })
+      .then(() => undefined, (e: unknown) => e as Error);
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(/role 'live' is held by a principal/);
+  });
+});
+
 // #1184: the membership executor, on the DEFAULT tuple checker — the bound is a set
 // comparison an allow-all checker would answer "covered" for everything. Its executors run
 // here on the coordinator; the fixture module is in `contractTestModules`, so the ScopeDO has it.

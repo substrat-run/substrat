@@ -369,6 +369,8 @@ export const INDEX_VALUE_EXPORTS = [
   'guardSqlLimits',
   'heldPurgePass',
   'holdStoreDriverIn',
+  // #2447: whether a scope's seats are read when a role definition is judged.
+  'holdsSeats',
   'idempotencyLookupQuery',
   'idempotencyOptedOutMessage',
   'idempotencyPruneStatement',
