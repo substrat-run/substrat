@@ -182,10 +182,12 @@ export function storageRetentionHorizon(nowMs: number): string {
  * directory holds UNDER THAT TENANT and has not reaped, so a reading can never land in another
  * tenant's figure, and a scope reaped while its read was in flight leaves no row behind.
  *
- * Every attempt replaces the scope's attempt row. A successful one also upserts the day's
- * sample, which replaces an older reading of that day and never a newer one; a failed one
- * leaves the samples alone, so the last good reading stands. Returns how many SAMPLE rows
- * were written.
+ * Every attempt replaces the scope's attempt row. One with a database size also upserts the
+ * day's sample, which replaces an older reading of that day and never a newer one; a failed
+ * database read (no size) leaves every sample alone, so the last good reading stands. The store
+ * and attachment samples beside it are written only when the attempt carries them, so a failed
+ * read of either leaves its own sample alone while the database sample is still written.
+ * Returns how many DATABASE sample rows were written.
  */
 export function recordScopeStorageRows(sql: RedactionSql, readings: readonly ScopeStorageReadingInput[]): number {
   let recorded = 0;

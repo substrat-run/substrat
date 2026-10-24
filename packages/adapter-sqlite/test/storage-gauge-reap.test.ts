@@ -53,34 +53,39 @@ describe('storage gauge rows at reap (#1524)', () => {
     }
     const now = new Date().toISOString();
     await host.admin.recordScopeStorage!(staff, [
-      { tenantId: t, scopeId: kept, bytes: 1, readAt: now, stores: [{ binding: 'GRAPH', bytes: 4 }] },
-      { tenantId: t, scopeId: reaped, bytes: 2, readAt: now, stores: [{ binding: 'GRAPH', bytes: 5 }] },
+      { tenantId: t, scopeId: kept, bytes: 1, readAt: now, stores: [{ binding: 'GRAPH', bytes: 4 }], attachments: 6 },
+      { tenantId: t, scopeId: reaped, bytes: 2, readAt: now, stores: [{ binding: 'GRAPH', bytes: 5 }], attachments: 7 },
     ]);
     const directory = (host as unknown as { directory: { prepare(q: string): { get(...a: unknown[]): unknown } } }).directory;
     const count = (table: string, scope: string) =>
       (directory.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE scope_id = ?`).get(scope) as { n: number }).n;
-    // #2212: the store table holds the binding and the day's measured marker.
+    // #2212: the store table holds the binding and the day's measured marker. #2501: the attachment
+    // table holds the day's attachment sample.
     const rows = (scope: string) => [
       count('_substrat_scope_storage', scope),
       count('_substrat_scope_storage_attempts', scope),
       count('_substrat_scope_store_storage', scope),
+      count('_substrat_scope_attachment_storage', scope),
     ];
-    expect(rows(reaped)).toEqual([1, 1, 2]);
+    expect(rows(reaped)).toEqual([1, 1, 2, 1]);
 
     await host.admin.archiveScope(staff, t, reaped);
     await host.admin.reapScope(staff, t, reaped);
 
-    // #2515: the days stay for the invoice; only the attempt, which has no retention, goes.
-    expect(rows(reaped)).toEqual([1, 0, 2]);
-    expect(rows(kept)).toEqual([1, 1, 2]);
+    // #2515: the days stay for the invoice, the attachment day with them; only the attempt, which
+    // has no retention, goes.
+    expect(rows(reaped)).toEqual([1, 0, 2, 1]);
+    expect(rows(kept)).toEqual([1, 1, 2, 1]);
 
     // Fork delete (`deleteSnapshot`) removes the directory row itself, so the rows it leaves
     // behind would be invisible to every joined read, and the attempt row has no retention.
     const fork = await host.snapshotScope(staff, t, kept);
-    await host.admin.recordScopeStorage!(staff, [{ tenantId: t, scopeId: fork, bytes: 3, readAt: now, stores: [] }]);
-    expect(rows(fork)).toEqual([1, 1, 1]);
+    await host.admin.recordScopeStorage!(staff, [{ tenantId: t, scopeId: fork, bytes: 3, readAt: now, stores: [], attachments: 8 }]);
+    expect(rows(fork)).toEqual([1, 1, 1, 1]);
     await host.deleteSnapshot(staff, t, fork);
-    expect(rows(fork)).toEqual([0, 0, 0]);
+    expect(rows(fork)).toEqual([0, 0, 0, 0]);
+    // Its sibling, the scope it was forked from, keeps all of its rows.
+    expect(rows(kept)).toEqual([1, 1, 2, 1]);
     await host.close();
   });
 });

@@ -1438,6 +1438,11 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
     attachment sample stays as it was, and `sampled` counts only the scopes that were read.
   - A failed attachment read keeps the database sample and the store reading taken with it,
     and is the scope's error, as a failed store read is.
+  - `/meters` serves each scope's latest attachment day however old it is, with no bound on its
+    `read_at`. A deployment rolled back to a version without the route keeps serving the last day
+    it read, for up to the thirteen months retention holds it. The store figure has the same gap.
+    Both are left as they are here for parity, and an age bound for the two together is a
+    follow-up.
 
 ### 5.3 Requests, rolled up daily ([#2501](https://github.com/substrat-run/substrat/issues/2501))
 

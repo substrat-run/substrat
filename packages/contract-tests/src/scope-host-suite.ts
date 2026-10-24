@@ -11069,6 +11069,23 @@ export function scopeHostContractSuite(
         expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
       });
 
+      it("deletes a fork's attachment samples with its other samples, and keeps its source's (#2501)", async () => {
+        const tk = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tk, slug: 'gauge-fork-attachments', name: 'Gauge Fork Attachments' });
+        const source = await newScope(tk);
+        const fork = await host.snapshotScope(staff, tk, source);
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        // Past retention, so the prune (which reads the raw tables) finds whatever the delete left.
+        for (const s of [source, fork]) {
+          await host.admin.recordScopeStorage!(staff, [{ tenantId: tk, scopeId: s, bytes: 1, readAt: old.toISOString(), attachments: 5 }]);
+        }
+        await host.deleteSnapshot(staff, tk, fork);
+        // Only the source's database and attachment samples were left to prune: the fork's went with it.
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(2);
+      });
+
       it('prunes samples older than thirteen months, at most the limit per call', async () => {
         const tp = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tp, slug: 'gauge-prune', name: 'Gauge Prune' });
