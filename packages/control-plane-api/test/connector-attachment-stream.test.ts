@@ -6,6 +6,7 @@ import {
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
+  connectorAttachmentMetaBytes,
   PLATFORM_SECRET_HEADER,
   connectionId as connectionIdOf,
   connectorAttachmentMetaRefusal,
@@ -427,6 +428,29 @@ describe('mountPlatformSurface — the bounds on a connector upload (#2516)', ()
     expect(reached).toEqual([]);
     // The sentence is the one the client uses, not a copy of it.
     expect(connectorAttachmentMetaRefusal(18_000)).toContain('over the 8192-byte bound');
+  });
+
+  it('a name exactly at the bound passes on both routes and the client alike; one byte more fails on all (#2516)', async () => {
+    const fill = CONNECTOR_ATTACHMENT_META_MAX_BYTES - connectorAttachmentMetaBytes(JSON.stringify(metaOf('')));
+    const atBound = 'a'.repeat(fill);
+    expect(connectorAttachmentMetaBytes(JSON.stringify(metaOf(atBound)))).toBe(CONNECTOR_ATTACHMENT_META_MAX_BYTES);
+    const { app, reached } = surface();
+    expect((await streamPost(app, metaOf(atBound, CHUNK), producer(1).stream)).status).toBe(201);
+    expect((await multipartPost(app, metaOf(atBound))).status).toBe(201);
+    expect((await streamPost(app, metaOf(atBound + 'a', CHUNK), producer(1).stream)).status).toBe(400);
+    expect((await multipartPost(app, metaOf(atBound + 'a'))).status).toBe(400);
+    expect(reached).toHaveLength(2);
+    const sent: string[] = [];
+    const client = new VerticalClient({
+      fetch: ((input: RequestInfo, init?: RequestInit) => {
+        sent.push(String(input));
+        return app.request(input, init, ENV);
+      }) as typeof fetch,
+      platformSecret: SECRET,
+    });
+    await client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound));
+    await expect(client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound + 'a'))).rejects.toThrow(/Nothing was sent/);
+    expect(sent).toHaveLength(1);
   });
 
   it('its twin: a long but realistic name is accepted by both routes', async () => {
