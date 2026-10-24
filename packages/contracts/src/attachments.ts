@@ -252,7 +252,8 @@ export type AttachmentUploadLinkRevokedPayload = z.infer<typeof attachmentUpload
 /**
  * How many bytes a connector upload's metadata takes on the wire: its JSON, URI-encoded, which is
  * what the stream route's header carries. The multipart route carries the same JSON in a field and
- * is held to the same count, so one filename is accepted or refused the same way on both (#2516).
+ * is held to the same count, taken WITHOUT the stream route's `size` member, so one filename is
+ * accepted or refused the same way on both (#2516).
  */
 export function connectorAttachmentMetaBytes(metaJson: string): number {
   return encodeURIComponent(metaJson).length;
@@ -269,9 +270,11 @@ export function connectorAttachmentMetaRefusal(bytes: number): string {
 /**
  * The most bytes one streamed connector upload may carry (#2516). Streaming took the worker's
  * memory out of the limit, which left nothing bounding a file; this is that bound, held where the
- * bytes arrive (the stream route) and again by the platform before it sends. It sits under the
- * Workers request-body limit of the lowest plan a router fronts, 100 MB decimal (about 95.4 MiB),
- * so an over-large file is refused with an answer instead of cut off mid-transfer by the edge.
+ * bytes arrive (the stream route) and again by the platform before it sends, so a file too large
+ * is refused with an answer before anything is read or stored. The platform reaches the route
+ * through the dispatch namespace, not a zone's edge; the value is kept under 100 MB decimal (about
+ * 95.4 MiB), the lowest plan's Workers request-body limit, so that the same file is also one a
+ * deployment reached directly by a public request could take.
  */
 export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 95 * 1024 * 1024;
 

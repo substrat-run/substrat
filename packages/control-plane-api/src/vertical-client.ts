@@ -923,8 +923,9 @@ export class VerticalClient {
     // route is held to the same bound, #2516.) The file's own type rides inside it (the route
     // reads `contentType` from there), so the request's own
     // `content-type` is the plain octet-stream it is.
+    // Counted without `size`, as the multipart route's `meta` is, so one name passes or fails alike.
+    this.assertWithinAttachmentBounds(verb, connectorAttachmentMetaBytes(JSON.stringify(meta)), body.length);
     const encodedMeta = encodeURIComponent(JSON.stringify({ ...meta, size: body.length }));
-    this.assertWithinAttachmentBounds(verb, encodedMeta.length, body.length);
     const init = knownLengthInit({
       method: 'POST',
       headers: {

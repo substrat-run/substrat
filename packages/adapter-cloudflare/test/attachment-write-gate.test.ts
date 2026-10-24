@@ -26,6 +26,13 @@ describe('askAttachmentWriteGate', () => {
     await expect(askAttachmentWriteGate(refused as never, ...args)).rejects.toThrow();
   });
 
+  it('is by the error\'s kind, not its wording: a reworded TypeError is still the redeploy answer', async () => {
+    const reworded = { attachmentCheckWriteReply: async () => { throw new TypeError('RPC method missing on receiver'); } };
+    await expect(askAttachmentWriteGate(reworded as never, ...args)).rejects.toMatchObject({ code: 'unavailable' });
+    const named = { attachmentCheckWriteReply: async () => { throw Object.assign(new Error('gone'), { name: 'TypeError' }); } };
+    await expect(askAttachmentWriteGate(named as never, ...args)).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
   it('any other transport error is rethrown as it is', async () => {
     const boom = { attachmentCheckWriteReply: async () => { throw new Error('network lost'); } };
     await expect(askAttachmentWriteGate(boom as never, ...args)).rejects.toThrow('network lost');

@@ -1904,12 +1904,13 @@ export function mountPlatformSurface<Env extends object>(
     if (raw === undefined) {
       throw new HTTPException(400, { message: `connector-attachment-stream needs a ${CONNECTOR_ATTACHMENT_META_HEADER} header` });
     }
-    const metaJson = decodeURIComponent(raw);
-    const metaBytes = connectorAttachmentMetaBytes(metaJson);
+    const { size: _declared, ...described } = z.record(z.string(), z.unknown()).parse(JSON.parse(decodeURIComponent(raw)));
+    // Counted without `size`, as the multipart route's `meta` is, so one name passes or fails alike.
+    const metaBytes = connectorAttachmentMetaBytes(JSON.stringify(described));
     if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
       return refuse(c, 'validation_failed', connectorAttachmentMetaRefusal(metaBytes));
     }
-    const meta = connectorAttachmentStreamMeta.parse(JSON.parse(metaJson));
+    const meta = connectorAttachmentStreamMeta.parse({ ...described, size: _declared });
     // The declared size is judged before the body is touched (#2516). The bytes are held to it as
     // they flow (`witnessedStream` errors on one more than declared), so this is the bound on all of them.
     if (meta.size > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {

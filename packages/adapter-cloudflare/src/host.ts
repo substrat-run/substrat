@@ -2751,7 +2751,10 @@ export async function askAttachmentWriteGate(
   try {
     reply = await stub.attachmentCheckWriteReply(entity, principal, tenantId, scopeId, connectionId);
   } catch (err) {
-    if (/does not implement|is not a function|no such .*method/i.test(err instanceof Error ? err.message : String(err))) {
+    // By shape, not wording: the scope answers every refusal as data (`replyOf`), so what is
+    // THROWN here is a failure of the call itself, and a verb the receiver does not have is a
+    // `TypeError` however workerd phrases it. A dropped connection is a plain `Error`, rethrown.
+    if (err instanceof TypeError || (err as { name?: unknown } | null)?.name === 'TypeError') {
       throw substratError(
         'unavailable',
         `the deployment serving scope ${scopeId} predates the upload write check (#2516): a streamed upload ` +
