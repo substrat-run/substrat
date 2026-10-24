@@ -27,6 +27,7 @@ export type {
   OpsFailuresQuery,
   PageQuery,
   RecentLogEvent,
+  RecentLogsRead,
   ServiceMetricsRow,
   StaffMember,
   SweepRunsQuery,

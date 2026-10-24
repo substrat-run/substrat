@@ -939,6 +939,9 @@ export type {
   StorageGaugeSweepReport,
   RequestRollupSweepOptions,
   RequestRollupSweepReport,
+  MeterSnapshotSweepOptions,
+  MeterSnapshotSweepReport,
+  FailingRun,
   CandidatesHint,
   CrossVerticalEdge,
   CrossVerticalOptions,
@@ -1035,6 +1038,19 @@ export {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
 } from './request-rollup.js';
+export {
+  METER_DAYS_DDL,
+  METER_DAYS_LIMIT_DEFAULT,
+  METER_DAYS_LIMIT_MAX,
+  listMeterDayRows,
+  listMeterDayTakeRows,
+  pruneMeterDayRows,
+  recordMeterDayRows,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
+  type MeterDayTakeResult,
+} from './meter-days.js';
 
 export {
   moduleLog,

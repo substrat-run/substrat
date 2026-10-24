@@ -67,6 +67,7 @@ import type {
   MemberRemoval,
   ScopeMembers,
 } from '@substrat-run/contracts';
+import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
 import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
@@ -306,6 +307,14 @@ export class TenantNarrowedControlPlane {
    * transport's own `ControlPlaneError`.
    */
   private async call<T>(path: string, init: RequestInit & { idempotent?: boolean } = {}): Promise<T> {
+    return (await this.callWithHeaders<T>(path, init)).body;
+  }
+
+  /** `call`, plus the headers of the answer — for the one read whose answer says something its body cannot. */
+  private async callWithHeaders<T>(
+    path: string,
+    init: RequestInit & { idempotent?: boolean } = {},
+  ): Promise<{ body: T; headers: Headers }> {
     const { idempotent, ...request } = init;
     // A credential the provider cannot resolve is thrown as it is, before anything is sent:
     // it is a different failure with its own answer (the worker's 503 naming what is
@@ -333,10 +342,13 @@ export class TenantNarrowedControlPlane {
     } catch (e) {
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
-      if (idempotent && e instanceof ControlPlaneError && (e.status === 409 || e.status === 422)) return undefined as T;
+      if (idempotent && e instanceof ControlPlaneError && (e.status === 409 || e.status === 422)) {
+        return { body: undefined as T, headers: new Headers() };
+      }
       throw e;
     }
-    return res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
+    const body = res.status === 204 ? (undefined as T) : ((await res.json().catch(() => undefined)) as T);
+    return { body, headers: res.headers };
   }
 
   private post<T>(path: string, body?: unknown, idempotent = false): Promise<T> {
@@ -1337,8 +1349,11 @@ export class TenantNarrowedControlPlane {
    * "all versions", which the plane answers as one merged newest-first stream).
    * Ownership is checked BEFORE the plane is asked: unowned refs are dropped here, so
    * they never reach the staff-wide log query, and a request for nothing but unowned
-   * refs answers `[]`, indistinguishable from services with no logs (existence hiding,
-   * the same property `listVerticals` narrowing gives the registry).
+   * refs answers no events and a complete page, indistinguishable from services with no logs
+   * (existence hiding, the same property `listVerticals` narrowing gives the registry).
+   *
+   * `incomplete` is the plane's own `x-substrat-logs-incomplete` header (#2520), set when the
+   * page may be incomplete or missing newer lines; it never reaches the events.
    */
   async observabilityLogs(input: {
     services: string[];
@@ -1346,8 +1361,8 @@ export class TenantNarrowedControlPlane {
     search?: string;
     hours?: number;
     limit?: number;
-  }): Promise<
-    Array<{
+  }): Promise<{
+    events: Array<{
       timestamp: number | null;
       level: string | null;
       message: string | null;
@@ -1361,8 +1376,10 @@ export class TenantNarrowedControlPlane {
       cpuTimeMs: number | null;
       wallTimeMs: number | null;
       raw: unknown;
-    }>
-  > {
+    }>;
+    /** The plane said the page may be incomplete or missing newer lines (#2520). */
+    incomplete: boolean;
+  }> {
     const refs = await this.ownedServiceRefs();
     // Same refusal as observabilityMetrics: a partial ownership map here would
     // silently drop a legitimately owned service from the ask.
@@ -1370,52 +1387,55 @@ export class TenantNarrowedControlPlane {
       throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
     }
     const services = input.services.filter((s) => refs.owned.has(s));
-    if (services.length === 0) return [];
+    if (services.length === 0) return { events: [], incomplete: false };
     const q = new URLSearchParams();
     for (const s of services) q.append('service', s);
     if (input.level) q.set('level', input.level);
     if (input.search) q.set('search', input.search);
     if (input.hours) q.set('hours', String(input.hours));
     if (input.limit) q.set('limit', String(input.limit));
-    const events =
-      (await this.call<
-        Array<{
-          timestamp?: unknown;
-          level?: unknown;
-          message?: unknown;
-          service?: unknown;
-          outcome?: unknown;
-          trigger?: unknown;
-          invocation?: unknown;
-          entrypoint?: unknown;
-          requestId?: unknown;
-          invocationId?: unknown;
-          cpuTimeMs?: unknown;
-          wallTimeMs?: unknown;
-          raw?: unknown;
-        }>
-      >(`/observability/logs?${q.toString()}`)) ?? [];
+    const { body, headers } = await this.callWithHeaders<
+      Array<{
+        timestamp?: unknown;
+        level?: unknown;
+        message?: unknown;
+        service?: unknown;
+        outcome?: unknown;
+        trigger?: unknown;
+        invocation?: unknown;
+        entrypoint?: unknown;
+        requestId?: unknown;
+        invocationId?: unknown;
+        cpuTimeMs?: unknown;
+        wallTimeMs?: unknown;
+        raw?: unknown;
+      }>
+    >(`/observability/logs?${q.toString()}`);
+    const events = body ?? [];
     // A builder only ever reaches an OWNED service here (checked above), so the event —
     // `raw` included — is already this tenant's own telemetry: passing the whole thing
     // through is a deliberate widening (the drill-down the per-app tab renders), not a
     // leak. The one narrowing that remains is the ownership gate, not the field set.
     const str = (v: unknown) => (typeof v === 'string' ? v : null);
     const num = (v: unknown) => (typeof v === 'number' ? v : null);
-    return events.map((e) => ({
-      timestamp: num(e.timestamp),
-      level: str(e.level),
-      message: str(e.message),
-      service: str(e.service),
-      outcome: str(e.outcome),
-      trigger: str(e.trigger),
-      invocation: str(e.invocation),
-      entrypoint: str(e.entrypoint),
-      requestId: str(e.requestId),
-      ...(e.invocationId === undefined ? {} : { invocationId: str(e.invocationId) }),
-      cpuTimeMs: num(e.cpuTimeMs),
-      wallTimeMs: num(e.wallTimeMs),
-      raw: e.raw,
-    }));
+    return {
+      events: events.map((e) => ({
+        timestamp: num(e.timestamp),
+        level: str(e.level),
+        message: str(e.message),
+        service: str(e.service),
+        outcome: str(e.outcome),
+        trigger: str(e.trigger),
+        invocation: str(e.invocation),
+        entrypoint: str(e.entrypoint),
+        requestId: str(e.requestId),
+        ...(e.invocationId === undefined ? {} : { invocationId: str(e.invocationId) }),
+        cpuTimeMs: num(e.cpuTimeMs),
+        wallTimeMs: num(e.wallTimeMs),
+        raw: e.raw,
+      })),
+      incomplete: logsIncompleteOf(headers),
+    };
   }
 
   /** One installed app's sampled field counts. The tenant is fixed by this credential. */

@@ -1,5 +1,6 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
+import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
 import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
@@ -1473,6 +1474,11 @@ export function teamApi(teamId: string): DashboardClient {
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await callWithHeaders<T>(path, init)).body;
+}
+
+/** `call`, plus the headers of the answer — for a read that says something its body cannot. */
+async function callWithHeaders<T>(path: string, init?: RequestInit): Promise<{ body: T; headers: Headers }> {
   const res = await fetch(`/api${path}`, {
     credentials: 'include',
     headers: { 'content-type': 'application/json', ...(init?.headers as Record<string, string>) },
@@ -1495,7 +1501,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       typeof body?.reason === 'string' ? body.reason : undefined,
     );
   }
-  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
+  return { body: res.status === 204 ? (undefined as T) : ((await res.json()) as T), headers: res.headers };
 }
 
 /** Invocation aggregates for one deployed version of a team vertical (last N hours). */
@@ -1620,6 +1626,31 @@ export interface ObservabilityLogEvent {
   wallTimeMs: number | null;
   /** The backend's full event — powers the per-row expand-to-JSON drill-down. */
   raw?: unknown;
+}
+
+/** The team-grain logs read's query: one service, or every version the tab is showing. */
+interface ObservabilityLogsQuery {
+  services: string[];
+  level?: string;
+  search?: string;
+  hours?: number;
+  limit?: number;
+}
+
+async function observabilityLogsRead(
+  teamId: string,
+  q: ObservabilityLogsQuery,
+): Promise<{ events: ObservabilityLogEvent[]; incomplete: boolean }> {
+  const p = new URLSearchParams();
+  for (const s of q.services) p.append('service', s);
+  if (q.level) p.set('level', q.level);
+  if (q.search) p.set('search', q.search);
+  if (q.hours) p.set('hours', String(q.hours));
+  if (q.limit) p.set('limit', String(q.limit));
+  const { body, headers } = await callWithHeaders<ObservabilityLogEvent[]>(
+    `/teams/${encodeURIComponent(teamId)}/observability/logs?${p.toString()}`,
+  );
+  return { events: body, incomplete: logsIncompleteOf(headers) };
 }
 
 /** One provider's routes on one app, or one connection's when a fleet row is addressed. */
@@ -1889,15 +1920,14 @@ export const api = {
     teamApi(teamId).observabilityMetrics({ hours: String(hours), vertical }),
   // `services` is a set: one version, or every version the tab is showing — the
   // worker asks the plane for them together and answers one merged stream.
-  observabilityLogs: (teamId: string, q: { services: string[]; level?: string; search?: string; hours?: number; limit?: number }) => {
-    const p = new URLSearchParams();
-    for (const s of q.services) p.append('service', s);
-    if (q.level) p.set('level', q.level);
-    if (q.search) p.set('search', q.search);
-    if (q.hours) p.set('hours', String(q.hours));
-    if (q.limit) p.set('limit', String(q.limit));
-    return call<ObservabilityLogEvent[]>(`/teams/${encodeURIComponent(teamId)}/observability/logs?${p.toString()}`);
-  },
+  observabilityLogs: async (teamId: string, q: ObservabilityLogsQuery): Promise<ObservabilityLogEvent[]> =>
+    (await observabilityLogsRead(teamId, q)).events,
+  /**
+   * The same read, with what its body cannot carry (#2520): `incomplete` is set when the
+   * worker passed on the plane's `x-substrat-logs-incomplete` header — the page may be
+   * incomplete or missing newer lines — and only then.
+   */
+  observabilityLogsRead,
 
   // -- the tenant grain (observability.md §3 view 4) ------------------------
   // The two reads above answer "how is the vertical I PUBLISHED doing", across every

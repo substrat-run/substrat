@@ -41,6 +41,15 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  METER_DAYS_DDL,
+  listMeterDayRows,
+  listMeterDayTakeRows,
+  pruneMeterDayRows,
+  recordMeterDayRows,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
+  type MeterDayTakeResult,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink as insertConnectLinkRow,
@@ -198,6 +207,8 @@ import type {
   ScopeStorageSample,
   RequestDay,
   RequestRollupDay,
+  MeterDay,
+  MeterDayTake,
   Tenant,
   TenantId,
   TenantStatus,
@@ -1361,6 +1372,8 @@ const DIRECTORY_DDL = `
   ${SCOPE_STORAGE_DDL}
   -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
   ${REQUEST_ROLLUP_DDL}
+  -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
+  ${METER_DAYS_DDL}
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
   -- #1713: the lifecycle each hosted scope's deployment last acknowledged, as
   -- "<scope status>/<tenant status>" (lifecycleReceipt). A CP-less deployment has no
@@ -2051,13 +2064,17 @@ export class ControlPlaneDO extends DurableObject {
     return row ? this.mapTenant(row) : undefined;
   }
 
-  /** Idempotent on the id; return the new tenant, or null if it already existed. */
+  /**
+   * Idempotent on the id; return the new tenant, or null if it already existed. `audit` is the
+   * coordinator's row, written in the insert's unit with the tenant as its `after`.
+   */
   createTenant(
     id: string,
     slug: string,
     name: string,
     createdAt: string,
     provisionedByTenant: string | null = null,
+    audit?: AdminEntryInput,
   ): Tenant | null {
     if (this.readTenant(id)) return null; // idempotent — nothing created
     // Checked explicitly rather than left to `INSERT OR IGNORE` + the
@@ -2070,7 +2087,7 @@ export class ControlPlaneDO extends DurableObject {
     if (slugOwner) {
       throw substratError('conflict', `tenant slug '${slug}' already taken by ${slugOwner.tenant_id} (slugs are unique)`);
     }
-    this.sql.exec(
+    this.writeAndAudit(() => this.sql.exec(
       `INSERT INTO tenants (tenant_id, slug, name, status, created_at, provisioned_by_tenant)
        VALUES (?, ?, ?, 'active', ?, ?)`,
       id,
@@ -2078,12 +2095,12 @@ export class ControlPlaneDO extends DurableObject {
       name,
       createdAt,
       provisionedByTenant,
-    );
+    ).rowsWritten > 0, audit && (() => ({ ...audit, after: this.readTenant(id) })));
     return this.readTenant(id) ?? null;
   }
 
-  /** Throw if absent; else UPDATE and return the previous status. */
-  setTenantStatus(tenantId: string, status: TenantStatus): string {
+  /** Throw if absent; else UPDATE and return the previous status, which `audit`'s `before` records. */
+  setTenantStatus(tenantId: string, status: TenantStatus, audit?: AdminEntryInput): string {
     const before = this.readTenant(tenantId);
     if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
     // `reaped` is terminal and destroys data — unreachable here, only ever set by
@@ -2097,23 +2114,22 @@ export class ControlPlaneDO extends DurableObject {
     // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
     // entering `deleting` stamps, leaving it (an un-delete) clears — the same shape
     // transitionScope uses for archived_at.
-    this.ctx.storage.transactionSync(() => {
-      if (status === 'deleting') {
-        this.sql.exec(
+    this.writeAndAudit(() => {
+      const moved = (status === 'deleting'
+        ? this.sql.exec(
           'UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?',
           status,
           new Date().toISOString(),
           tenantId,
-        );
-      } else {
-        this.sql.exec(
+        )
+        : this.sql.exec(
           'UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?',
           status,
           tenantId,
-        );
-      }
+        )).rowsWritten > 0;
       this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713, with the change it counts
-    });
+      return moved;
+    }, audit && { ...audit, before: { status: before.status } });
     return before.status;
   }
 
@@ -2125,7 +2141,7 @@ export class ControlPlaneDO extends DurableObject {
    * previous status (for the audit before/after). Idempotent: set-to-empty DELETEs
    * plus the status flip converge on a re-run after a partial failure.
    */
-  reapTenant(tenantId: string): string {
+  reapTenant(tenantId: string, audit?: AdminEntryInput): string {
     const before = this.readTenant(tenantId);
     if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
     if (before.status !== 'deleting') {
@@ -2135,43 +2151,52 @@ export class ControlPlaneDO extends DurableObject {
     }
     // KEPT as the tombstone: the `tenants` row itself and `_substrat_admin_log` (the
     // compliance witness — never swept). Scope rows were already reaped individually.
-    for (const table of [
-      '_substrat_identities', // PII: external subjects/emails bound to principals
-      '_substrat_identity_pools', // the tenant's IdP topology declarations
-      '_substrat_tenant_tuples', // membership + tenant-level grants
-      '_substrat_roles', // operator-defined roles
-      '_substrat_entitlements', // per-tenant SKU flags
-      'orgs', // K-22 org records
-      '_substrat_system_switches', // #1674: the schedule switch's record, per scope
-      '_substrat_membership_fences', // #1184: the latest removal, per principal
-      '_substrat_peer_switches', // #2029: the peer switch's record, per scope
-      'peer_bindings', // #1720: a tenant's explicit caller-to-target choices
-      '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
-      '_substrat_findings', // #1748: the tenant's findings
-      '_substrat_finding_rules', // #1748: the tenant's suppress rules
-      '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
-      '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
-      '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
-    ]) {
-      this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
-    }
-    this.ctx.storage.transactionSync(() => {
-      this.sql.exec(
+    // One unit with the flip and `audit`, whose `before` is the status read here.
+    this.writeAndAudit(() => {
+      for (const table of [
+        '_substrat_identities', // PII: external subjects/emails bound to principals
+        '_substrat_identity_pools', // the tenant's IdP topology declarations
+        '_substrat_tenant_tuples', // membership + tenant-level grants
+        '_substrat_roles', // operator-defined roles
+        '_substrat_entitlements', // per-tenant SKU flags
+        'orgs', // K-22 org records
+        '_substrat_system_switches', // #1674: the schedule switch's record, per scope
+        '_substrat_membership_fences', // #1184: the latest removal, per principal
+        '_substrat_peer_switches', // #2029: the peer switch's record, per scope
+        'peer_bindings', // #1720: a tenant's explicit caller-to-target choices
+        '_substrat_switch_owed', // #2045: subjects owed a re-assert, per scope
+        '_substrat_findings', // #1748: the tenant's findings
+        '_substrat_finding_rules', // #1748: the tenant's suppress rules
+        '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
+        '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
+        '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
+      ]) {
+        this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
+      }
+      const reaped = this.sql.exec(
         "UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?",
         tenantId,
-      );
+      ).rowsWritten > 0;
       // Its scopes were reaped one by one, each forgetting its own; any left over go here.
       this.forgetLifecycleDeliveries('scope_id IN (SELECT scope_id FROM scopes WHERE tenant_id = ?)', tenantId);
       this.bumpLifecycleRevision(`tenant:${tenantId}`); // #1713
-    });
+      return reaped;
+    }, audit && { ...audit, before: { status: before.status } });
     return before.status;
   }
 
-  /** Rename the DISPLAY name (never the slug); throw if absent; return the previous name. */
-  setTenantName(tenantId: string, name: string): string {
+  /**
+   * Rename the DISPLAY name (never the slug); throw if absent; return the previous name. A rename
+   * to the name it already has writes nothing, `audit` included; otherwise `audit`'s `before` is
+   * the name read here.
+   */
+  setTenantName(tenantId: string, name: string, audit?: AdminEntryInput): string {
     const before = this.readTenant(tenantId);
     if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
-    this.sql.exec('UPDATE tenants SET name = ? WHERE tenant_id = ?', name, tenantId);
+    this.writeAndAudit(
+      () => before.name !== name && this.sql.exec('UPDATE tenants SET name = ? WHERE tenant_id = ?', name, tenantId).rowsWritten > 0,
+      audit && { ...audit, before: { name: before.name } },
+    );
     return before.name;
   }
 
@@ -3313,11 +3338,12 @@ export class ControlPlaneDO extends DurableObject {
       .toArray()[0] as unknown as VerticalRow | undefined;
   }
 
-  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): void {
-    this.sql.exec(
+  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string,
+    audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec(
       'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       slug, name, source, ownerTenant, envSpec, installSpec, listed, createdAt,
-    );
+    ).rowsWritten > 0, audit);
   }
 
   /** Refresh a vertical's declared env-spec + install-spec (both evolve with the manifest).
@@ -3331,28 +3357,33 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** Publish/unpublish a vertical to the public marketplace + resolve any pending request. */
-  updateVerticalListed(slug: string, listed: number): void {
-    this.sql.exec('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?', listed, slug);
+  updateVerticalListed(slug: string, listed: number, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?', listed, slug)
+      .rowsWritten > 0, audit);
   }
 
   /** Record a builder's pending publish request (marketplace-publish.md §5). */
-  updateVerticalPublishRequest(slug: string, requestedAt: string): void {
-    this.sql.exec('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?', requestedAt, slug);
+  updateVerticalPublishRequest(slug: string, requestedAt: string, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?', requestedAt, slug)
+      .rowsWritten > 0, audit);
   }
 
   /** Block/unblock new installs of a vertical (staff kill-switch). */
-  updateVerticalInstallsBlocked(slug: string, blocked: number): void {
-    this.sql.exec('UPDATE verticals SET installs_blocked = ? WHERE slug = ?', blocked, slug);
+  updateVerticalInstallsBlocked(slug: string, blocked: number, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET installs_blocked = ? WHERE slug = ?', blocked, slug)
+      .rowsWritten > 0, audit);
   }
 
   /** Grant/revoke the tenant-provisioner capability (#412, staff grant). */
-  updateVerticalTenantProvisioner(slug: string, granted: number): void {
-    this.sql.exec('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?', granted, slug);
+  updateVerticalTenantProvisioner(slug: string, granted: number, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?', granted, slug)
+      .rowsWritten > 0, audit);
   }
 
   /** Grant/revoke the email-sender capability (#303, staff grant). */
-  updateVerticalEmailSender(slug: string, granted: number): void {
-    this.sql.exec('UPDATE verticals SET email_sender = ? WHERE slug = ?', granted, slug);
+  updateVerticalEmailSender(slug: string, granted: number, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET email_sender = ? WHERE slug = ?', granted, slug)
+      .rowsWritten > 0, audit);
   }
 
   /**
@@ -3379,17 +3410,19 @@ export class ControlPlaneDO extends DurableObject {
    * Remove a vertical's registry presence: channels, versions, the row. The bound-scope
    * refusal lives host-side (the audited seam), not here — this is the storage verb.
    */
-  deleteVertical(slug: string): void {
-    this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
-    this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
-    this.sql.exec(
-      `DELETE FROM vertical_version_migrations
-        WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
-      slug,
-    );
-    forgetVerticalScopeStores(this.kernelSql, slug);
-    this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
-    this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug);
+  deleteVertical(slug: string, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => {
+      this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
+      this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
+      this.sql.exec(
+        `DELETE FROM vertical_version_migrations
+          WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
+        slug,
+      );
+      forgetVerticalScopeStores(this.kernelSql, slug);
+      this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
+      return this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug).rowsWritten > 0;
+    }, audit);
   }
 
   listVerticals(page?: ListPage): VerticalRow[] {
@@ -3426,8 +3459,8 @@ export class ControlPlaneDO extends DurableObject {
     originJson: string | null;
     migrations: DeclaredMigration[] | null;
     createdAt: string;
-  }): void {
-    this.ctx.storage.transactionSync(() => {
+  }, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => {
       this.sql.exec(
         `INSERT INTO vertical_versions
            (id, vertical_slug, version, manifest_digest, permission_digest,
@@ -3441,7 +3474,8 @@ export class ControlPlaneDO extends DurableObject {
       writeVersionMigrations(this.kernelSql, v.id, v.migrations);
       // #2286: the version's scope-store bindings, refusing one moved to another driver, in the insert's transaction.
       indexVersionScopeStores(this.kernelSql, v.verticalSlug, v.id, v.manifestJson);
-    });
+      return true;
+    }, audit);
   }
 
   /** Every scope-store binding any version of the vertical declared (#2286); indexes versions not indexed yet. */
@@ -3459,12 +3493,13 @@ export class ControlPlaneDO extends DurableObject {
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
+    audit?: AdminEntryInput,
   ): void {
-    this.sql.exec(
+    this.writeAndAudit(() => this.sql.exec(
       `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
               serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
       s.ref, s.versionId, s.doClassesJson, s.migrationTag, slug,
-    );
+    ).rowsWritten > 0, audit);
   }
 
   /** Point a scope's routing at the serving script its data now lives in (#286). False when a
@@ -3514,11 +3549,11 @@ export class ControlPlaneDO extends DurableObject {
     return read();
   }
 
-  setAdmission(id: string, admission: string, note: string | null): void {
-    this.sql.exec(
+  setAdmission(id: string, admission: string, note: string | null, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec(
       'UPDATE vertical_versions SET admission = ?, admission_note = ? WHERE id = ?',
       admission, note, id,
-    );
+    ).rowsWritten > 0, audit);
   }
 
   /**
@@ -3578,11 +3613,14 @@ export class ControlPlaneDO extends DurableObject {
     }, audit);
   }
 
-  /** The directory effect and its admin row either both commit or both roll back. */
-  private writeAndAudit(write: () => boolean, audit?: AdminEntryInput): boolean {
+  /**
+   * The directory effect and its admin row either both commit or both roll back. A thunk is
+   * read after the write, in the same unit, for a row that carries what only the write knows.
+   */
+  private writeAndAudit(write: () => boolean, audit?: AdminEntryInput | (() => AdminEntryInput)): boolean {
     return this.ctx.storage.transactionSync(() => {
       const changed = write();
-      if (changed && audit) this.recordAdmin(audit);
+      if (changed && audit) this.recordAdmin(typeof audit === 'function' ? audit() : audit);
       return changed;
     });
   }
@@ -3789,10 +3827,10 @@ export class ControlPlaneDO extends DurableObject {
    * #2333: move a channel's pointer, and record the move, only if it still names `from` (null: the
    * channel has none yet). A compare-and-set in one synchronous transaction, so no other promote
    * runs between the read and the write: a promote judged its gates against `from` across awaits,
-   * and the one that lost the race is told so (`false`) and writes nothing.
+   * and the one that lost the race is told so (`false`) and writes nothing, `audit` included.
    */
-  moveChannel(from: string | null, history: ChannelHistoryRow): boolean {
-    return this.ctx.storage.transactionSync(() => {
+  moveChannel(from: string | null, history: ChannelHistoryRow, audit?: AdminEntryInput): boolean {
+    return this.writeAndAudit(() => {
       const now = this.readChannel(history.vertical_slug, history.channel);
       if ((now?.version_id ?? null) !== from) return false;
       this.sql.exec(
@@ -3803,7 +3841,7 @@ export class ControlPlaneDO extends DurableObject {
       );
       this.insertChannelHistory(history);
       return true;
-    });
+    }, audit);
   }
 
   listChannels(verticalSlug: string, page?: ListPage): ChannelRow[] {
@@ -4245,6 +4283,26 @@ export class ControlPlaneDO extends DurableObject {
   pruneRequestDays(limit: number, retentionMonths: number | null): number {
     return this.ctx.storage.transactionSync(() =>
       pruneRequestDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths),
+    );
+  }
+
+  // -- the daily meter snapshot (#2501) — kernel `meter-days.ts` -------------------
+  // One transaction: the snapshot's reads and its rows are one instant of the directory.
+  recordMeterDay(input: MeterDayTakeInput): MeterDayTakeResult {
+    return this.ctx.storage.transactionSync(() => recordMeterDayRows(doRedactionSql(this.sql), input));
+  }
+
+  listMeterDays(filter?: MeterDayFilter): MeterDay[] {
+    return listMeterDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  listMeterDayTakes(filter?: MeterDayTakeFilter): MeterDayTake[] {
+    return listMeterDayTakeRows(doRedactionSql(this.sql), filter);
+  }
+
+  pruneMeterDays(limit: number, retentionMonths: number | null): number {
+    return this.ctx.storage.transactionSync(() =>
+      pruneMeterDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths),
     );
   }
 

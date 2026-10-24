@@ -73,6 +73,7 @@ import {
   adminRowFaultSql,
   adminActionFaultSql,
   scopeAdminAuditTransactionSuite,
+  directoryAdminAuditTransactionSuite,
   switchRecordFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
@@ -138,6 +139,17 @@ scopeAdminAuditTransactionSuite('adapter-cloudflare', async () => {
       return async () => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
         (_, state) => { state.storage.sql.exec(drop); });
     },
+    cleanup: async () => host.close(),
+  };
+});
+
+directoryAdminAuditTransactionSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  return {
+    host,
+    directorySql: async (sql: string) => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
+      (_, state) => { state.storage.sql.exec(sql); }),
     cleanup: async () => host.close(),
   };
 });
