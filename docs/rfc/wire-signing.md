@@ -421,7 +421,8 @@ step 6, withdraws the credential.
   environment is `signed-only`. Legacy goes off only at step 7.
 - **Reverts unwind in reverse order, and each state has its own.**
   - From `dual`, or before any flip: turn `sign` off, or revert the verifier package. Nothing
-    relies on a signature yet.
+    relies on a signature yet. Turning `sign` off is deploying an explicit value other than `on`,
+    since the secrets tool skips a blank and deletes nothing (`secrets/wire-keys.md`).
   - From `signed-only` (steps 5 and 6): set the environment back to `dual` and walk the fleet, or
     re-upload one deployment. The signers kept sending the legacy headers, and the deployment
     still holds the credential, so a reverted deployment accepts the legacy path again at once.

@@ -30,8 +30,10 @@ each can rotate without the other. A key listed for both issuers is refused wher
 loaded, so the router's key can never sign as the platform. Every other rule is the store's
 ([store-keys.md](./store-keys.md#the-four-values)).
 
-A `sign` flag is on only when it is exactly `on`; blank, unset and anything else is off. Off is the
-default, and off means the signer sends exactly what it sent before signing existed.
+A `sign` flag is on only when the worker's setting is exactly `on`; unset, empty and anything else
+is off. Off is the default, and off means the signer sends exactly what it sent before signing
+existed. A blank line in the env file is not the same as off once a value has been pushed: see
+[Turning signing off](#turning-signing-off).
 
 ## The standby key
 
@@ -70,15 +72,22 @@ Public keys go out before private keys, and signing goes on last. Test environme
 for dispatched requests carry `wire: 'signed'`, a peer invocation writes `router: 'wire-sign'` with
 `outcome: 'signed'`, and the control plane writes `substrat: 'wire-sign'` lines with
 `outcome: 'signed'`. Any `failed` names its reason (`unset`, a key-form refusal such as
-`not-pkcs8-v1`, or `claims`), and the router also writes `router: 'wire-sign-failed'` to its error
+`not-pkcs8-v1`, `claims`, or `error`), and the router also writes `router: 'wire-sign-failed'` to its error
 log. A failed signature never fails a request: it goes with its legacy headers, as before. A
 control-plane line with `outcome: 'skipped'` and `reason: 'stream'` is a streamed call left unsigned
 by design (RFC §3.6), not a failure.
 
 ## Turning signing off
 
-Set the signer's flag to anything but `on` (or remove it), push that worker, deploy it. This is
-step 2's revert (RFC §9). Once any environment is `signed-only`, the signers' release gate refuses
+Write an explicit value other than `on` into the signer's flag, `off` being the plain one
+(`WIRE_ROUTER_SIGN=off` or `WIRE_PLATFORM_SIGN=off`), push that worker (`--only router` or
+`--only control-plane`) and deploy it. **Blanking or removing the line does not turn it off:**
+`secrets.mjs push` skips a blank key and never deletes a secret, so the worker keeps the `on` it was
+last given. To remove the flag instead, delete the secret on the worker, from its directory
+(`apps/router` or `apps/control-plane`): `pnpm exec wrangler secret delete WIRE_SIGN`, with
+`--env <env>` outside prod. Then blank the line, so the next push does not put it back. Either way,
+check the logs: the signer's `wire-sign` lines and the router's `wire` field stop, since none is
+written while the flag is off. This is step 2's revert (RFC §9). Once any environment is `signed-only`, the signers' release gate refuses
 it (RFC §7, follow-on 4); until then it is always safe, since nothing relies on a signature.
 
 ## Checking a configured set

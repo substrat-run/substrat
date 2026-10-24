@@ -146,7 +146,9 @@ The four `WIRE_*` keys sign and verify the wire envelope ([RFC wire-signing](../
 K-58): the router signs issuer `router`, the control plane issuer `platform`, each with its own
 pair, never the store key. The two public lists are not secret and live on the control plane;
 each carries the key in use and a standby whose private half is held offline. `WIRE_ROUTER_SIGN`
-and `WIRE_PLATFORM_SIGN` are each signer's `sign` flag, off unless set to `on`.
+and `WIRE_PLATFORM_SIGN` are each signer's `sign` flag, off unless set to `on`; once `on` has been
+pushed, turning one off takes an explicit `off` (a blank line is skipped by `push`, which deletes
+nothing).
 [wire-keys.md](./wire-keys.md) is their runbook, and the same check holds them to
 `WIRE_KEY_ISSUERS` in `scripts/secrets.mjs`.
 
