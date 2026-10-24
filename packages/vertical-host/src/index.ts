@@ -30,6 +30,7 @@ import { externalInput, externalJson } from './wire.js';
 import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
   type CarriedAway,
+  type RoleState,
   type KeptCopy,
   type LoadMarker,
   type CopyRestoreFence,
@@ -334,6 +335,13 @@ export interface VerticalScopeHost {
     /** The dump about to be imported, when the caller has it: the set is judged against its roles and seats. */
     dump?: { tenantId: TenantId; tables: { name: string; columns: string[]; rows: unknown[][] }[] },
   ): Promise<string | null>;
+  /**
+   * #2446: the roles `scopeId` stores for `tenantId` and the role keys anyone but a system principal
+   * holds a live seat in there (`RoleState`), what `projectRolesLocal` judges a role set against.
+   * Optional: a host without it answers the route 501, which a promote counts as a deployment built
+   * before the read and moves unjudged, as it does one without the route.
+   */
+  roleStateLocal?(tenantId: TenantId, scopeId: ScopeId): Promise<RoleState>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
    *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
@@ -1611,6 +1619,15 @@ export function mountPlatformSurface<Env extends object>(
   app.get('/internal/migrations', async (c) =>
     c.json(await deps.hostFor(c.env).appliedMigrationsLocal(scopeIdOf.parse(c.req.query('scopeId')))),
   );
+
+  // #2446: the roles this scope stores for the tenant and the role keys seated there — what this
+  // deployment's reconcile judges a role set against. A promote reads it to judge the incoming
+  // version's set before it moves the scope. Read-only; it names role keys, never a principal.
+  app.get('/internal/role-state', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.roleStateLocal) return refuseStatus(c, 501, 'this deployment cannot report its role state (#2446): its scope host predates roleStateLocal — upgrade the adapter beside vertical-host');
+    return c.json(await host.roleStateLocal(tenantIdOf.parse(c.req.query('tenantId')), scopeIdOf.parse(c.req.query('scopeId'))));
+  });
 
   // #1524: one scope's database size, for the console's on-demand storage reading.
   // Metadata only, and no scope bytes cross. The read wakes the scope's DO, which is why

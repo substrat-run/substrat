@@ -59,6 +59,7 @@ export { causedByMod } from './caused-by-module.js';
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 // #2430: a key reserved to a system principal at the role doors, and the declared module list.
 export { reservedRoleContractSuite } from './reserved-role-suite.js';
+export { roleStateContractSuite } from './role-state-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
 export { scopeStoreContractSuite } from './scope-store-suite.js';
 // #2213: what a driver's own runner passes, and the trivial driver both suites run.

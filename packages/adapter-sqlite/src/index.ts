@@ -481,6 +481,7 @@ import {
   SCOPE_SEATED_ROLES_SQL,
   SEAT_HOLDING_SCOPE_STATUSES,
   TENANT_SEATED_ROLES_SQL,
+  type RoleState,
   type DeclaredPermissions,
   admitPeer,
   boundToPeerDeclarations,
@@ -5808,6 +5809,29 @@ export class SqliteScopeHost implements ScopeHost {
       if (!this.scopes.has(`${tenantId}/${id}`) && !existsSync(join(this.dir, `${tenantId}__${id}.sqlite`))) return false;
       return holds(this.runtime(tenantId, id).db.prepare(SCOPE_SEATED_ROLES_SQL).all(now));
     });
+  }
+
+  /**
+   * #2446: the roles this host stores for `tenantId` and the role keys anyone but a system principal
+   * holds a live seat in at `scopeId` (`SCOPE_SEATED_ROLES_SQL`): the Cloudflare host's
+   * `roleStateLocal`, the state a CP-less reconcile judges a role set against and a promote judges the
+   * incoming version's set with. It is deliberately narrower than this host's own `defineRole`
+   * judgement (`roleSeated`), which also counts tenant-level seats and every other scope's: a
+   * reconcile defines a scope's role set and reads that scope's seats only, and this answers what it
+   * reads (`roleStateContractSuite` pins the two adapters to the same answer, a tenant-level seat
+   * and another scope's seat excluded). Read-only: a scope with no store on disk holds no seat and is
+   * not opened, so the read creates nothing.
+   */
+  async roleStateLocal(tenantId: TenantId, scopeId: ScopeId): Promise<RoleState> {
+    const prefix = `${tenantId}/`;
+    const roles = [...this.roles]
+      .filter(([k]) => k.startsWith(prefix))
+      .map(([, r]) => ({ key: r.key, permissions: [...r.permissions], ...(r.holder ? { holder: r.holder } : {}) }));
+    const stored = this.scopes.has(`${tenantId}/${scopeId}`) || existsSync(join(this.dir, `${tenantId}__${scopeId}.sqlite`));
+    const seated = stored
+      ? [...new Set((this.runtime(tenantId, scopeId).db.prepare(SCOPE_SEATED_ROLES_SQL).all(this.clock()) as { role_key: string }[]).map((r) => r.role_key))]
+      : [];
+    return { roles, seated };
   }
 
   /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */

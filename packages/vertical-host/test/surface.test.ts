@@ -607,6 +607,35 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(older.calls).toHaveLength(0);
   });
 
+  // #2446: what a promote judges the incoming version's roles against. Behind the same gate as every
+  // sibling, read-only, and a host without the method answers 501, which the platform reads as a
+  // failed read (the route exists), never as "predates the route".
+  it('serves a scope’s role state behind the gate, and 501s on a host that cannot report one', async () => {
+    const url = `/internal/role-state?tenantId=${TENANT}&scopeId=${SCOPE}`;
+    const asked: string[] = [];
+    const state = { roles: [{ key: 'member', permissions: ['a:use'], holder: 'person' as const }], seated: ['member'] };
+    const host = fakeHost({
+      roleStateLocal: async (t, s) => {
+        asked.push(`${t}/${s}`);
+        return state;
+      },
+    });
+    const ok = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual(state);
+    expect(asked).toEqual([`${TENANT}/${SCOPE}`]);
+
+    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
+    expect((await appWith(host).request(url, { headers: { [PLATFORM_SECRET_HEADER]: 'nope' } }, ENV)).status).toBe(403);
+    expect((await appWith(host).request(`/internal/role-state?tenantId=${TENANT}&scopeId=nope`, { headers: authed() }, ENV)).status).toBe(400);
+    expect((await appWith(host).request(url, { method: 'POST', headers: authed() }, ENV)).status).toBe(404);
+    expect(asked).toHaveLength(1);
+
+    const refused = await appWith(fakeHost()).request(url, { headers: authed() }, ENV);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/cannot report its role state/);
+  });
+
   // #1524: the size behind the on-demand storage reading. It sits behind the same
   // platform-secret gate as every sibling, and a host that predates the method answers
   // 501 rather than 0, because a 0 would be summed into a tenant's storage as a real scope.
