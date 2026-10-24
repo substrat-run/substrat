@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   STREAM_IDLE_TIMEOUT_MS,
+  STREAM_MAX_DURATION_MS,
   deadlineFetch,
   globalFetch,
   settleConnectionUse,
@@ -82,7 +83,14 @@ function provider() {
     seen.signal = init?.signal as AbortSignal;
     return new Response(body) as unknown as ConnectorResponse;
   };
-  return { fetch, seen, send: (chunk = CHUNK) => controller.enqueue(chunk), end: () => controller.close() };
+  return { fetch, seen, send: (chunk = CHUNK) => {
+      try {
+        controller.enqueue(chunk);
+      } catch {
+        // the call let go of the stream: a provider writing to it afterwards is not heard
+      }
+    },
+    end: () => controller.close() };
 }
 
 const bodyOf = (res: ConnectorResponse): ByteStream => res.body as ByteStream;
@@ -328,6 +336,150 @@ describe('the call and a buffered read keep timeoutMs', () => {
     await clock.advance(IDLE);
     const settled = settleConnectionUse('scrive', 1, { error: await outcome });
     expect(settled.timedOut).toBe(true);
+  });
+});
+
+describe('a body that is looked at, abandoned or padded (#2518 review)', () => {
+  const MAX = 200;
+
+  it('taking the body and never reading it is still cut at timeoutMs, and leaves the native body unlocked', async () => {
+    const clock = manualTimers();
+    const p = provider();
+    const res = await deadlineFetch(p.fetch, TOTAL, { idleMs: IDLE, timers: clock.timers })('https://provider.example/file');
+    expect(res.body).toBeTruthy();
+    await clock.advance(TOTAL - 1);
+    expect(p.seen.signal?.aborted).toBe(false);
+    await clock.advance(1);
+    expect(p.seen.signal?.aborted).toBe(true);
+    expect((p.seen.signal?.reason as Error).name).toBe('TimeoutError');
+  });
+
+  it('a truthiness check on the body leaves it readable: res.text() still works', async () => {
+    const clock = manualTimers();
+    const fetch: FetchLike = async () => new Response('hello') as unknown as ConnectorResponse;
+    const res = await deadlineFetch(fetch, TOTAL, { timers: clock.timers })('https://provider.example/x');
+    if (!res.body) throw new Error('expected a body');
+    expect(await res.text()).toBe('hello');
+    expect(clock.pending).toBe(0);
+  });
+
+  it('a response with a null body releases the call deadline at once', async () => {
+    const clock = manualTimers();
+    const fetch: FetchLike = async () => new Response(null, { status: 204 }) as unknown as ConnectorResponse;
+    await deadlineFetch(fetch, TOTAL, { timers: clock.timers })('https://provider.example/x');
+    expect(clock.pending).toBe(0);
+  });
+
+  it('empty chunks are not progress: they do not extend the idle window', async () => {
+    const clock = manualTimers();
+    const p = provider();
+    const res = await deadlineFetch(p.fetch, TOTAL, { idleMs: IDLE, timers: clock.timers })('https://provider.example/file');
+    const read = bodyOf(res).getReader().read();
+    const outcome = read.then(
+      (r) => r,
+      (err: unknown) => err,
+    );
+    await settle();
+    await clock.advance(IDLE - 10);
+    p.send(new Uint8Array(0));
+    await settle();
+    await clock.advance(10);
+    expect(((await outcome) as Error).name).toBe('TimeoutError');
+  });
+
+  it('a non-empty chunk after empty ones is still delivered', async () => {
+    const clock = manualTimers();
+    const p = provider();
+    const res = await deadlineFetch(p.fetch, TOTAL, { idleMs: IDLE, timers: clock.timers })('https://provider.example/file');
+    const read = bodyOf(res).getReader().read();
+    p.send(new Uint8Array(0));
+    p.send(new Uint8Array(0));
+    p.send();
+    const { done, value } = await read;
+    expect(done).toBe(false);
+    expect(value?.byteLength).toBe(CHUNK.byteLength);
+  });
+
+  it('an absolute cap ends a steady trickle that never goes idle', async () => {
+    const clock = manualTimers();
+    const p = provider();
+    const res = await deadlineFetch(p.fetch, TOTAL, { idleMs: IDLE, maxStreamMs: MAX, timers: clock.timers })(
+      'https://provider.example/file',
+    );
+    const reader = bodyOf(res).getReader();
+    let failure: Error | undefined;
+    for (let i = 0; i < 10 && !failure; i++) {
+      const read = reader.read().catch((err: Error) => {
+        failure = err;
+      });
+      await settle();
+      await clock.advance(40); // 40 ms apart: never 50 ms of silence
+      p.send();
+      await read;
+    }
+    expect(failure?.name).toBe('TimeoutError');
+    expect(failure?.message).toBe('The transfer exceeded its maximum duration');
+    expect(p.seen.signal?.aborted).toBe(true);
+    expect(p.seen.cancelled).toBeDefined();
+    expect(clock.pending).toBe(0);
+  });
+
+  it('a steady transfer below the cap still passes', async () => {
+    const clock = manualTimers();
+    const p = provider();
+    const res = await deadlineFetch(p.fetch, TOTAL, { idleMs: IDLE, maxStreamMs: MAX, timers: clock.timers })(
+      'https://provider.example/file',
+    );
+    const reader = bodyOf(res).getReader();
+    for (let i = 0; i < 4; i++) {
+      const read = reader.read();
+      await settle();
+      await clock.advance(40); // 160 ms in all, under the 200 ms cap
+      p.send();
+      expect((await read).done).toBe(false);
+    }
+    const last = reader.read();
+    p.end();
+    expect((await last).done).toBe(true);
+    expect(p.seen.signal?.aborted).toBe(false);
+    expect(clock.pending).toBe(0);
+  });
+
+  it('a stream abandoned between reads, never cancelled, ends at the cap and lets go of the source', async () => {
+    const clock = manualTimers();
+    const p = provider();
+    const res = await deadlineFetch(p.fetch, TOTAL, { idleMs: IDLE, maxStreamMs: MAX, timers: clock.timers })(
+      'https://provider.example/file',
+    );
+    const reader = bodyOf(res).getReader();
+    const first = reader.read();
+    p.send();
+    await first;
+    // The consumer walks away: no read outstanding, nothing waiting on the provider.
+    await clock.advance(MAX);
+    expect(p.seen.signal?.aborted).toBe(true);
+    expect(p.seen.cancelled).toBeDefined();
+    await expect(reader.read()).rejects.toMatchObject({ name: 'TimeoutError' });
+  });
+
+  it('the default cap is finite and no longer than ten minutes', () => {
+    expect(STREAM_MAX_DURATION_MS).toBeGreaterThan(0);
+    expect(STREAM_MAX_DURATION_MS).toBeLessThanOrEqual(10 * 60_000);
+  });
+
+  it("lets go of the caller's signal when the call is over", async () => {
+    const clock = manualTimers();
+    const counts = { added: 0, removed: 0 };
+    const signal = {
+      aborted: false,
+      addEventListener: () => void counts.added++,
+      removeEventListener: () => void counts.removed++,
+    };
+    const fetch: FetchLike = async () => new Response('{}') as unknown as ConnectorResponse;
+    const res = await deadlineFetch(fetch, TOTAL, { timers: clock.timers })('https://provider.example/x', { signal });
+    expect(counts).toEqual({ added: 1, removed: 0 });
+    await res.json();
+    expect(counts).toEqual({ added: 1, removed: 1 });
   });
 });
 

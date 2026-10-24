@@ -54,13 +54,21 @@ response's `body` on this way, with the length from the provider's own record of
 
 Streaming bounds memory, and it bounds time by idleness rather than by the whole transfer. A
 connection's `fetch` runs under the connector's `timeoutMs` (30 seconds unless the registration
-says otherwise) until the response headers arrive, and for any buffered read (`text()`, `json()`,
-`arrayBuffer()`). Once the body is taken as a stream (`ConnectorResponse.body`), that deadline is
-released and the stream errors only when the provider sends no byte for 30 seconds
-(`STREAM_IDLE_TIMEOUT_MS`). A large file that keeps flowing completes however long it takes; one
-that stalls errors with a `TimeoutError`, the same error `timeoutMs` ends in, the connection is
-released, and the upload lands no object and no row. The window runs only while the stream waits
-on the provider, so a slow store does not spend it.
+says otherwise) until the response headers arrive, for any buffered read (`text()`, `json()`,
+`arrayBuffer()`), and for a body that is taken as a stream but not read: looking at
+`ConnectorResponse.body` releases nothing. From the first read of the stream, that deadline hands
+over to two limits:
+
+- **Idle:** the stream errors when the provider sends no byte for 30 seconds
+  (`STREAM_IDLE_TIMEOUT_MS`). An empty chunk is not a byte. A transfer that keeps flowing
+  completes however long it takes. The window runs only while the stream waits on the provider,
+  so a slow store does not spend it.
+- **Absolute:** the stream errors 10 minutes after its first read (`STREAM_MAX_DURATION_MS`),
+  however steadily it flows, so a trickle that never stops does not hold a run for ever. A stream
+  that is abandoned between reads ends at the same point and releases the connection.
+
+Both fail with a `TimeoutError`, the same error `timeoutMs` ends in. The connection is released,
+and the upload lands no object and no row.
 
 ## Bytes that no row points at
 

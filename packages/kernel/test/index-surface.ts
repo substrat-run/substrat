@@ -178,6 +178,7 @@ export const INDEX_VALUE_EXPORTS = [
   'STORE_LOCAL_META_KEYS',
   // #2518: the idle window of a streamed connector response body.
   'STREAM_IDLE_TIMEOUT_MS',
+  'STREAM_MAX_DURATION_MS',
   'SUBJECT_ERASURE_CLAIM_SQL',
   'SWEEP_RUNS_INTENT_INDEX',
   'SWEEP_RUN_RETENTION_DAYS',
