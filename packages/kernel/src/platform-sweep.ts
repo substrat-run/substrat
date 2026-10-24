@@ -3028,31 +3028,38 @@ async function sweepStorageGauge(
           // The store read and the attachment read are each their own: a failure of one must not
           // throw away the database size just read, nor the other's reading, nor replace what the
           // day already holds of it. A read the deployment cannot make is not a failure and not a
-          // size of 0: what it would measure is left as it is.
+          // size of 0: what it would measure is left as it is. Neither waits for the other, so a
+          // slow scope holds its slot for one deadline, not two.
           const beside: Pick<ScopeStorageReadingInput, 'stores' | 'attachments'> = {};
-          const failures: string[] = [];
           const timeoutMs = gauge.storeReadTimeoutMs ?? STORE_READ_TIMEOUT_MS;
-          if (gauge.readStores) {
+          /** One read beside the database: its failure message, or nothing. */
+          const readBeside = async <T>(
+            read: ((scope: Scope) => Promise<T | null>) | undefined,
+            label: string,
+            keep: (value: T) => void,
+          ): Promise<string | undefined> => {
+            if (!read) return undefined;
             try {
-              const stores = await withinDeadline(gauge.readStores(s), timeoutMs, `scope store read of ${s.id}`);
-              if (stores !== null) beside.stores = stores;
+              const value = await withinDeadline(read.call(gauge, s), timeoutMs, `${label} of ${s.id}`);
+              if (value !== null) keep(value);
             } catch (err) {
-              if (isUnsupported(err)) out.unsupported += 1;
-              else failures.push(message(err));
+              if (!isUnsupported(err)) return message(err);
+              out.unsupported += 1;
             }
-          }
-          if (gauge.readAttachments) {
-            try {
-              const attachments = await withinDeadline(gauge.readAttachments(s), timeoutMs, `attachment read of ${s.id}`);
-              if (attachments !== null) {
+            return undefined;
+          };
+          // Listed in a fixed order, so a scope failing both always reports them the same way.
+          const failures = (
+            await Promise.all([
+              readBeside(gauge.readStores, 'scope store read', (stores) => {
+                beside.stores = stores;
+              }),
+              readBeside(gauge.readAttachments, 'attachment read', (attachments) => {
                 if (!Number.isInteger(attachments) || attachments < 0) throw new Error(`not a size: ${String(attachments)}`);
                 beside.attachments = attachments;
-              }
-            } catch (err) {
-              if (isUnsupported(err)) out.unsupported += 1;
-              else failures.push(message(err));
-            }
-          }
+              }),
+            ])
+          ).filter((failure): failure is string => failure !== undefined);
           if (failures.length > 0) {
             const error = failures.join('; ');
             out.failed += 1;

@@ -1903,13 +1903,7 @@ export class VerticalClient {
    * missing size read as 0 would sit inside a sum and look like a real, small scope.
    */
   async databaseSize(scopeId: ScopeId): Promise<number> {
-    const answer = await this.getInternal<{ bytes?: unknown }>(
-      `/internal/database-size?scopeId=${encodeURIComponent(scopeId)}`,
-    );
-    if (typeof answer.bytes !== 'number' || !Number.isInteger(answer.bytes) || answer.bytes < 0) {
-      throw new ControlPlaneError(502, `vertical answered database-size without a size for scope ${scopeId}`);
-    }
-    return answer.bytes;
+    return this.internalSize('database-size', scopeId);
   }
 
   /**
@@ -1918,11 +1912,14 @@ export class VerticalClient {
    * caller decides that is a deployment to redeploy, never a size of 0.
    */
   async attachmentSize(scopeId: ScopeId): Promise<number> {
-    const answer = await this.getInternal<{ bytes?: unknown }>(
-      `/internal/attachment-size?scopeId=${encodeURIComponent(scopeId)}`,
-    );
+    return this.internalSize('attachment-size', scopeId);
+  }
+
+  /** One `/internal/<route>?scopeId=` size read; a 200 without a non-negative integer throws. */
+  private async internalSize(route: 'database-size' | 'attachment-size', scopeId: ScopeId): Promise<number> {
+    const answer = await this.getInternal<{ bytes?: unknown }>(`/internal/${route}?scopeId=${encodeURIComponent(scopeId)}`);
     if (typeof answer.bytes !== 'number' || !Number.isInteger(answer.bytes) || answer.bytes < 0) {
-      throw new ControlPlaneError(502, `vertical answered attachment-size without a size for scope ${scopeId}`);
+      throw new ControlPlaneError(502, `vertical answered ${route} without a size for scope ${scopeId}`);
     }
     return answer.bytes;
   }
