@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: kernel
-description: One-way trust between the platform and a deployed vertical. The router and the control plane sign what they send a vertical with Ed25519, a vertical holds public keys only, and a vertical's calls up to the control plane give way to its outbox. Envelope, verifier states, key management, the readiness gate and a rollout that breaks no live app. Primitives, and the verifier in the platform's entry, inert until key lists are given.
+description: One-way trust between the platform and a deployed vertical. The router and the control plane sign what they send a vertical with Ed25519, a vertical holds public keys only, and a vertical's calls up to the control plane give way to its outbox. Envelope, verifier states, key management, the readiness gate and a rollout that breaks no live app. Primitives, the verifier in the platform's entry, inert until key lists are given, and the signers, off until their flag is set.
 ---
 
 # RFC: wire signing
@@ -12,7 +12,9 @@ proposed · **Primitives:**
 `packages/contracts/src/wire-signing.ts`, with shared vectors in
 `packages/contracts/test/vectors/wire-envelope.json` · **Verifier:**
 `packages/control-plane-api/platform-entry/wire-gate.ts`, in the platform's entry, inert until a
-deployment is given key lists · **Precedent:**
+deployment is given key lists · **Signers:** the router (`apps/router/src/worker.ts`) and the
+control plane (`packages/control-plane-api/src/platform-wire.ts`), each off until its `WIRE_SIGN`
+flag is `on` · **Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
 the scope-store envelope, whose scheme this reuses.
 
@@ -51,9 +53,14 @@ acceptance, mismatch, fault or refusal beyond expected client noise, and a human
 is gone. Every step reverts on its own.
 
 **Where it stands.** Step 0 (#2503) added this RFC, the K-58 draft and the primitives, with tests
-and vectors. Step 1 adds the verifier to the platform's entry module, with all three states and the
-counters, inert until an upload gives a deployment key lists, which none does yet: a deployment
-behaves exactly as before. §11 is step 0's scope.
+and vectors. Step 1 (#2511) added the verifier to the platform's entry module, with all three states
+and the counters, inert until an upload gives a deployment key lists. Step 2 lands in two pull
+requests, along §10's follow-ons 2 and 3. The first adds the signers: the router signs routes and
+its peer invocations, the control plane signs its calls, each beside the legacy headers and each
+off until its own `sign` flag is set, and the key tool gains the two issuers. The second is the
+uploader's injection of the key lists. Until it lands no deployment is given lists, so an envelope
+a signer sends is carried and ignored, and a deployment behaves exactly as before. §11 is step 0's
+scope.
 
 **Decided questions** (§12): new key pairs, one per issuer, not the store keys; the verifier runs
 in the platform's entry module; a deployment learns its state from an explicit per-environment
@@ -366,16 +373,25 @@ step 6, withdraws the credential.
     for it.
 
   Whenever the envelope alone admits a request, the vertical sees exactly one identity, the
-  envelope's, and no other header under the router's `x-substrat-` prefix: one the envelope did
-  not sign is dropped, in any case and however often it was sent. That includes the informational
-  ones the router adds: the field-coverage sample (`x-substrat-field-coverage`, which arms the
-  per-response field walk) and a peer call's parent request id (which links a peer invocation's
-  line to the request that made it). **Step 2 owns them** (§9, follow-on 2): the router's signer
-  either carries them as signed claims of the envelope or the entry lists them as carrying no
-  authority and hands them on, decided by name in that PR. **`signed-only` must not be flipped
-  fleet-wide before that lands**: from the flip every request is admitted on its envelope alone,
-  so field coverage would stop arming and every peer-call line would lose its
-  `parentInvocationId`. §7's gate holds the flip to it.
+  envelope's, and no other header under the router's `x-substrat-` prefix that the envelope did
+  not sign, in any case and however often it was sent, save the two below.
+
+  **The informational headers are listed as carrying no authority, decided by name in step 2.**
+  The router adds two headers no envelope signs: the field-coverage sample
+  (`x-substrat-field-coverage`, the dispatch id that arms the per-response field walk) on a route,
+  and a peer call's parent request id (`x-substrat-parent-request-id`, which links a peer
+  invocation's line to the request that made it) on a call. Contracts' `WIRE_UNSIGNED_HEADERS`
+  names exactly these two, each with the kind of request it rides on. When the envelope alone
+  admits a request, the entry hands each on, on its own kind of request only, when its value is
+  exactly one ULID, the check its own reader applies, and drops it otherwise; every other unsigned
+  `x-substrat-*` header is still dropped. The reasons, by name: each was already a claim its reader
+  treats as one. A field-coverage report counts only when the router's own line for the request
+  names its dispatch id beside the tenant and vertical the router resolved, and a parent request id
+  only relates two lines and decides nothing. Signing them instead would take a sixteenth line, a
+  new envelope version (`substrat-wire/2`) that every verifier would have to learn; that stays an
+  option for later, should either header ever come to carry authority. With them listed, field
+  coverage keeps arming and a peer-call line keeps its `parentInvocationId` from the flip on, which
+  is what §7's gate on `signed-only` asks of this step.
 
   A version built against an older vertical-host still reads the router's legacy headers for that
   identity at steps 5 and 6, which is safe only because the router still sends both and
@@ -392,9 +408,11 @@ step 6, withdraws the credential.
   deployment's own name) and `SUBSTRAT_WIRE_STATE`.
 - **The signers have two flags per environment:** `sign` (add envelopes) and `legacy` (keep
   sending the legacy headers). Both are the signers' own configuration, so changing either is a
-  deploy of that signer. Signing, once on, stays on: the signers' release gate (§7) refuses `sign`
-  off, and a signer build that would not sign, while any environment is `signed-only`. Legacy
-  goes off only at step 7.
+  deploy of that signer. `sign` is each signer's `WIRE_SIGN` setting, read through contracts'
+  `wireSigningOn`: exactly `on` signs, and anything else, unset included, is off. `legacy` has no
+  setting yet: until step 7 the legacy headers are always sent. Signing, once on, stays on: the
+  signers' release gate (§7) refuses `sign` off, and a signer build that would not sign, while any
+  environment is `signed-only`. Legacy goes off only at step 7.
 - **Reverts unwind in reverse order, and each state has its own.**
   - From `dual`, or before any flip: turn `sign` off, or revert the verifier package. Nothing
     relies on a signature yet.
@@ -422,10 +440,15 @@ step 6, withdraws the credential.
 - **A key listed for both issuers is refused** when the lists are loaded, so the router's key can
   never sign as the platform. `wireVerificationKeys` is the only way to build a key set the
   verifier accepts.
-- **The tool is K-52's.** `pnpm store-keys` (`tools/store-keys.mts`) gains the two issuers, or a
-  sibling command over the same functions does: `generate` writes a private key only outside any
-  work tree, `doctor` checks a configured set, and `rotate` prints the steps. Secrets are pushed
-  with `scripts/secrets.mjs`, as today.
+- **The tool is K-52's.** `pnpm wire-keys` (`tools/wire-keys.mts`) is `tools/store-keys.mts` over
+  the two issuers: the same functions, judgements and refusals, with `--issuer router|platform` in
+  place of `--audience`. `generate` writes a private key only outside any work tree, `doctor` checks
+  a configured set (and warns when a list holds no standby beside the key in use), and `rotate`
+  prints the steps, the break-glass order included. The private keys are `WIRE_ROUTER_KEY` on the
+  router and `WIRE_PLATFORM_KEY` on the control plane; the lists, `WIRE_ROUTER_PUBLIC_KEYS` and
+  `WIRE_PLATFORM_PUBLIC_KEYS`, are held by the control plane, which uploads deployments. Secrets are
+  pushed with `scripts/secrets.mjs`, as today, and `pnpm lint:secrets-coverage` holds the manifest,
+  the env templates and `secrets/README.md` to the inventory. Runbook: `secrets/wire-keys.md`.
 - **Rotation** is the store runbook's (`secrets/store-keys.md`): list the new public key, wait
   until every live deployment carries it (the readiness report, §7), switch the signer, drop the
   old key, and wait again.
@@ -520,10 +543,16 @@ step 6, withdraws the credential.
   before it. It is the platform's counter, so its reason reaches no log line a tenant reads. No
   reader needs it today; the readiness report (follow-on 4) is to read it through a query of its
   own that opts in by name.
-- **The signers count** envelopes signed and signing failures. A signer whose key will not import
-  keeps sending the legacy headers and raises an alarm. Where every environment it signs for is
-  still `dual`, that is degraded but serving. In a `signed-only` environment it is an outage that
-  pages, and the fix is at the signer: its standby key (§6).
+- **The signers count** envelopes signed and signing failures. The router's request line carries
+  `wire: 'signed' | 'failed'` for a dispatch it tried to sign, and a peer invocation writes
+  `{ router: 'wire-sign', kind, aud, outcome }`; the control plane writes
+  `{ substrat: 'wire-sign', issuer: 'platform', aud, outcome }` per call, with a `reason` beside
+  `failed`. A failure names why (`unset`, the key form's refusal, or `claims`), never a key. None of
+  these is written while `sign` is off. A signer whose key will not import keeps sending the legacy
+  headers and raises an alarm (`router: 'wire-sign-failed'` on the router's error log). Where
+  every environment it signs for is still `dual`, that is degraded but serving. In a
+  `signed-only` environment it is an outage that pages, and the fix is at the signer: its standby
+  key (§6).
 - **The cutover criterion** for an environment: a clean readiness report, and over a window with
   traffic on every live version (a week is proposed) zero `legacy-accepted`, zero `dual-mismatch`,
   zero `fault`, and zero `refused:*` (a line with a `reason`, whatever its `outcome`) outside
@@ -545,7 +574,7 @@ step 6, withdraws the credential.
 |---|---|---|---|
 | 0 | This PR: RFC, K-58 draft, primitives. Nothing wired. | delete the files | the envelope format and the plan |
 | 1 | The verifier, `dual`-capable, inert without key lists, in the platform's entry module (Q2) | revert the package | a pushed demo with no keys behaves exactly as before |
-| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The router's signer decides, by name, how the informational headers it sends (the field-coverage sample, a peer call's parent request id) reach a request admitted on its envelope alone: signed as claims, or listed by the entry as carrying no authority (§5). Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and no envelope is refused (no `reason` but the untouched vertical's `missing`, whatever the `outcome`), each read from the environment's own log query (below) |
+| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The informational headers the router sends (the field-coverage sample, a peer call's parent request id) are listed by the entry as carrying no authority, decided by name (§5). Lands as two pull requests, the signers (follow-on 2) and then the uploader (follow-on 3); the check to the right is made once both are deployed. Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and no envelope is refused (no `reason` but the untouched vertical's `missing`, whatever the `outcome`), each read from the environment's own log query (below) |
 | 3 | The fleet re-uploaded so every live version the entry wraps carries the verifier and the lists. Readiness report and tooling. A version uploaded without the entry is not reached by any re-upload, and is named in the report until its author pushes again (§7). | none needed: `dual` accepts legacy | the report is clean, or lists only named exceptions, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
 | 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included, field coverage still arming and peer-call lines still naming their parent (§5) |
@@ -589,10 +618,32 @@ never rebuilt keeps the up-calls it was built with.
    `packages/control-plane-api/platform-entry/wire-gate.ts`, composed into the entry by
    `tools/platform-entry-emit.mts` and run on workerd in `platform-entry.workerd.test.ts`.
 2. **The signers**: the router signs routes and its own calls, and the control plane signs its
-   calls. Legacy headers unchanged, `sign` flag per environment, default off. It also owns the
-   informational headers the router adds (§5): the field-coverage sample and a peer call's parent
-   request id are carried as signed claims, or listed by the entry as carrying no authority and
-   handed on, decided by name in that PR. `signed-only` is not flipped fleet-wide before it lands.
+   calls. Legacy headers unchanged, `sign` flag per environment, default off. Decided in its PR:
+   - **What is signed.** The router signs every request it dispatches into the namespace as a
+     `route` for the script it dispatches to (`aud`), with the tenant, scope, surface and vertical
+     it resolved, and every peer invocation as a router `call` for the target's script, naming the
+     scope the resolver chose and binding the exact body. It signs nothing it sends a static
+     fallback binding, which no entry wraps, and never signs an end user's request to a path the
+     entry reads as the internal surface, as a route or as a call. The control plane signs every
+     call it makes to a deployment through one client factory, for the very script name it makes
+     the dispatch stub from. Each attempt is signed afresh, a retry included (§4).
+   - **What a platform call names.** The tenant and scope its own JSON body names (top-level
+     `tenantId` and `scopeId`), else its query's, both or neither.
+   - **A signer that cannot sign never fails the request**: it goes with its legacy headers and its
+     whole body, and is counted (§8).
+   - **The informational headers** are listed as carrying no authority (§5).
+   - **The keys**: their own pairs, `pnpm wire-keys` (§6).
+   Notes it leaves for later follow-ons:
+   - **Asset recovery.** The control plane reads a version's static files back from its archive
+     script with no envelope and no identity (the in-place serve's asset recovery). The asset
+     layer answers those before the worker runs; a path a version routes worker-first would reach
+     the entry as an unsigned route instead, served in `dual` and refused in `signed-only`. Such
+     reads are to be answered without the worker, or the readiness report (follow-on 4) is to name
+     a version that routes them worker-first.
+   - **Calls that name a scope alone.** Several platform calls name only a `scopeId` (the drain's
+     event reads and marks, a scope's table reads), and a platform envelope names its tenant with
+     its scope or neither, so they are signed naming neither. The ones that change state keep
+     nonces with no scope to spend them in: follow-on 5 decides where their nonces are spent.
 3. **The uploader** injects the key lists (standby keys included), the deployment's name, the
    state and the capability record, and
    the key tool gains the two issuers. It refuses a list `wireVerificationKeys` refuses before
@@ -619,7 +670,9 @@ never rebuilt keeps the up-calls it was built with.
      earlier, and its suite holds that a store is never reached for an envelope refused before the
      claim, so the store fills the seam without moving it;
    - a call that names a scope whose own object may not exist (a preview client's, or a configure
-     call naming a preview or its parent) needs an explicit answer for where its nonce is spent.
+     call naming a preview or its parent) needs an explicit answer for where its nonce is spent, and
+     so does a call that names a scope alone, which its signer cannot name in the envelope
+     (follow-on 2's note).
    It also counts an unscoped call that keeps nonces under a fault kind of its own (§4).
 6. **The up-channel removals**, one PR each (§9, step 6). On the critical path: they can start
    now, in parallel with 1 to 5, and the credential cannot be withdrawn until all are merged and
@@ -756,4 +809,22 @@ path is Q2's wrapper or retirement (§7).
   turn and a test failed every time. On workerd (`platform-entry.workerd.test.ts`), the entry as
   uploaded: no keys and no line, `dual` with and without a legacy credential, a large call body
   read and handed on byte for byte, and a `signed-only` refusal beside its twin.
-- **Not shown.** Anything signing, so no envelope has yet met a deployed entry; the nonce store.
+- **Shown, step 2, the signers.** `apps/router/test/wire-sign.test.ts` and
+  `packages/control-plane-api/test/platform-wire.test.ts`: off by default, and off (every spelling
+  but `on`, a key with no flag included) the router and the control plane send exactly what they
+  sent before, request for request and argument for argument; on, each envelope names what the
+  signer resolved and binds what it sends, beside the legacy headers; a key that is unset or will
+  not import, and claims the encoder refuses, send the request unsigned with its whole body and
+  count why; each retry is signed afresh. Every signed request is then judged by the entry's own
+  verifier (`wire-gate.ts`): with no key lists, by the entry before it, and with no entry at all, it
+  is carried and ignored; in `dual` it is `signed-accepted` with no mismatch, another audience's
+  envelope is refused as such, and a call that changes state spends its nonce in the scope it
+  names; in `signed-only` it is served on its envelope alone, field coverage still arms and a peer
+  invocation keeps its parent id; a deployment listing both the key in use and the standby accepts
+  either, and one the standby never reached refuses it. `apps/control-plane/test/wire-sign.test.ts`
+  drives the drain through the control plane's client factory on workerd, the same as before with
+  no key, signed for the serving script with one. `platform-entry.workerd.test.ts`: the signers' own
+  requests through the entry as uploaded, with no key lists, served as before, no wire line.
+  `tools/wire-keys.test.mts`: the key tool's wire family, no command echoing a private value.
+- **Not shown.** No envelope has yet met a deployed entry given key lists: the uploader's injection
+  is follow-on 3. The nonce store.

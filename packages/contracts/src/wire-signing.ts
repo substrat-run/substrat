@@ -1,8 +1,9 @@
 /**
- * The signed envelope the router and the control plane are to put on a call to a vertical
- * (RFC wire-signing, K-58 proposed). Nothing in the repo signs one yet. The platform's entry
- * module verifies one, inert until a deployment is given key lists (RFC §9, step 1), and the
- * shared-secret checks in `wire-auth.ts` and vertical-host's `readRoutedNode` are unchanged.
+ * The signed envelope the router and the control plane put on a call to a vertical (RFC
+ * wire-signing, K-58 proposed). Each signs only while its `sign` flag is on and its key is set
+ * (RFC §9, step 2), beside the legacy headers, which stay. The platform's entry module verifies
+ * one, inert until a deployment is given key lists (step 1), and the shared-secret checks in
+ * `wire-auth.ts` and vertical-host's `readRoutedNode` are unchanged.
  *
  * Ed25519 over a canonical encoding, the scheme the scope-store envelope already uses (K-52),
  * with its conventions reused rather than restated: the key id, the raw public key lists, the
@@ -779,4 +780,84 @@ export interface WireVerificationLine {
   readonly scopeId: string | null;
   /** The platform's `SUBSTRAT_VERSION_ID`, as on the invocation line. */
   readonly versionId: string | null;
+}
+
+/*
+ * The signers (RFC §5, §9 step 2): the router signs a route and its own calls, the control plane
+ * signs its calls. Both read their flag and their key the same way and put an envelope on a request
+ * the same way, beside every header the request already carries. The legacy headers stay.
+ */
+
+/**
+ * Whether a signer's `sign` flag (RFC §5) is on: exactly `on`, around whitespace. Absent, empty or
+ * anything else is off, so a signer nobody configured adds nothing to any request.
+ */
+export function wireSigningOn(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() === 'on';
+}
+
+/** One isolate's signing key, imported once per configured value. */
+let importedKey: { readonly pkcs8: string; readonly key: Promise<WireSigningKey> } | undefined;
+
+/**
+ * {@link importWireSigningKey}, once per isolate for a given value: the signer's key is imported on
+ * the first request that needs it and reused after. A value that will not import keeps rejecting,
+ * with the same {@link WireKeyError}, until the value changes.
+ */
+export function wireSigningKeyOf(pkcs8: string): Promise<WireSigningKey> {
+  if (importedKey?.pkcs8 !== pkcs8) importedKey = { pkcs8, key: importWireSigningKey(pkcs8) };
+  return importedKey.key;
+}
+
+/** What a signer names on one request, beside what the request itself says: its method, target and body. */
+export type WireRequestClaims = Omit<WireEnvelopeInput, 'method' | 'target' | 'body'>;
+
+/**
+ * The request with one fresh envelope on it ({@link WIRE_ENVELOPE_HEADER} and
+ * {@link WIRE_SIGNATURE_HEADER}), every other header kept as it was. The method and target are read
+ * with {@link wireRequestBinding}, as the verifier reads them. A call binds the request's exact body,
+ * read whole here and handed on as the same bytes (an absent body is the empty one, as the verifier
+ * reads it); a route binds none, and its body is not read. Sign each attempt: a resend carries a
+ * spent nonce (RFC §4).
+ */
+export async function signWireRequest(key: WireSigningKey, request: Request, claims: WireRequestClaims): Promise<Request> {
+  const { method, target } = wireRequestBinding(request);
+  const body = claims.kind === 'call' && request.body !== null ? await request.arrayBuffer() : undefined;
+  const issued = await signWireEnvelope(key, { ...claims, method, target, ...(claims.kind === 'call' ? { body: body ?? '' } : {}) });
+  const headers = new Headers(request.headers);
+  headers.set(WIRE_ENVELOPE_HEADER, issued.header);
+  headers.set(WIRE_SIGNATURE_HEADER, issued.signature);
+  return new Request(request, body === undefined ? { headers } : { headers, body });
+}
+
+/**
+ * The headers the router adds that the envelope does not sign, listed by name as carrying no
+ * authority (RFC §5, decided in step 2), with the kind of request each rides on: the field-coverage
+ * sample on a route (the dispatch id that arms the per-response field walk) and a peer call's parent
+ * request id on a call (which links the target's line to the request that made it). Each is a claim
+ * its own reader already treats as one: the walk's report counts only when the router's own line
+ * names its dispatch id, and the parent id only relates two lines. So when the envelope alone admits
+ * a request, the entry hands each on, on its own kind of request, when its value passes the check its
+ * reader applies (one ULID), and drops it otherwise, as it drops every other `x-substrat-*` header
+ * the envelope did not sign. Signing them instead would take a new envelope version (`substrat-wire/2`).
+ * The names are `invocation-record.ts`'s `FIELD_COVERAGE_HEADER` and `PARENT_REQUEST_ID_HEADER`,
+ * spelled here so the entry's bundle imports nothing more; a test holds the two spellings together.
+ */
+export const WIRE_UNSIGNED_HEADERS: Readonly<Record<string, WireKind>> = Object.freeze({
+  'x-substrat-field-coverage': 'route',
+  'x-substrat-parent-request-id': 'call',
+});
+
+/**
+ * The listed headers ({@link WIRE_UNSIGNED_HEADERS}) a request of `kind` hands on, as name and value:
+ * only those listed for that kind, and only a value that is exactly one ULID. A header sent twice
+ * reads as both values joined, which is not one ULID, so it is dropped whole.
+ */
+export function wireUnsignedHeadersOf(kind: WireKind, headers: { get(name: string): string | null }): [name: string, value: string][] {
+  const kept: [string, string][] = [];
+  for (const [name, on] of Object.entries(WIRE_UNSIGNED_HEADERS)) {
+    const value = on === kind ? headers.get(name) : null;
+    if (value !== null && ULID.test(value)) kept.push([name, value]);
+  }
+  return kept;
 }

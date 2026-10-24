@@ -123,6 +123,7 @@ import {
 import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { ulid, undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
+import type { PlatformCallSigner } from './platform-wire.js';
 
 /**
  * A 404 the vertical's router answered because it has no such route: a non-empty body that is
@@ -268,6 +269,13 @@ export interface VerticalClientOptions {
   baseUrl?: string;
   /** Shared secret the vertical verifies with `assertPlatformCall`. */
   platformSecret: string;
+  /**
+   * The control plane's wire signer for the deployment `fetch` reaches (RFC wire-signing step 2,
+   * `platformCallSignerFor`), built for the same name the dispatch stub was made from. Every call
+   * then carries a `call` envelope beside the legacy header. Absent, nothing is signed and every
+   * call goes out exactly as before.
+   */
+  sign?: PlatformCallSigner;
 }
 
 export interface ProvisionInstanceInput {
@@ -546,7 +554,12 @@ export interface ReconciledInstance {
 }
 
 export class VerticalClient {
-  constructor(private readonly options: VerticalClientOptions) {}
+  constructor(private readonly options: VerticalClientOptions) {
+    // RFC wire-signing step 2: every call this client makes goes through the signer, which is the
+    // one place an envelope is added. Without one, `fetch` is the caller's own, untouched.
+    const { sign, fetch: send } = options;
+    if (sign) this.options = { ...options, fetch: (async (input, init) => send(await sign(new Request(input, init)))) as typeof fetch };
+  }
 
   /**
    * Ask the vertical to create one instance.

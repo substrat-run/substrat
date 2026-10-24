@@ -13,13 +13,19 @@
  * list per audience (STORE_CALLER_PUBLIC_KEYS, STORE_PLATFORM_PUBLIC_KEYS), written in by the
  * control plane when it uploads the script.
  *
+ * The wire envelope's keys (RFC wire-signing §6, K-58) are the same scheme over two issuers, and
+ * the same commands run over them as `pnpm wire-keys` (`tools/wire-keys.mts`, {@link WIRE_FAMILY},
+ * `--issuer router|platform`, runbook secrets/wire-keys.md). Each wire list also carries a standby
+ * key beside the one in use, which doctor asks for.
+ *
  * What the tool will never do: print a private key anywhere but the one place `generate` was
  * told to put it, write a file inside a git work tree, edit the env file, or talk to Cloudflare.
  * A check that fails names the variable and the check, never the value. Kids and public keys
  * are not secret and are printed.
  *
  * Every key judgement is made by `@substrat-run/contracts`' envelope module, the same code a
- * store script and both signers run, so this tool cannot accept a key a store would refuse.
+ * store script, a deployment's entry and the signers run, so this tool cannot accept a key a
+ * verifier would refuse.
  */
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -31,28 +37,144 @@ import {
   scopeStorePublicKeyProblem,
   scopeStorePublicKeysFrom,
   scopeStoreSignerPublicKey,
-  type ScopeStoreAudience,
   type ScopeStoreKeyProblem,
   type ScopeStorePublicKeyProblem,
 } from '../packages/contracts/src/scope-store-envelope.ts';
-import { parseEnvText, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER } from '../scripts/secrets.mjs';
+import { wireVerificationKeys } from '../packages/contracts/src/wire-signing.ts';
+import { parseEnvText, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER, WIRE_KEY_ISSUERS, WIRE_KEY_UPLOADER } from '../scripts/secrets.mjs';
 import { repoRoot } from './repo-path.mjs';
 
 const ROOT = repoRoot(import.meta.url);
-const AUDIENCES = Object.keys(STORE_KEY_AUDIENCES) as ScopeStoreAudience[];
-const other = (aud: ScopeStoreAudience): ScopeStoreAudience => (aud === 'caller' ? 'platform' : 'caller');
 
 /** A refusal. Its message is written by this file and never carries a value it was given. */
 export class StoreKeysError extends Error {}
 
-interface Finding {
-  readonly level: 'error' | 'warn';
-  /** The variable (or file) the finding is about. Never its value. */
-  readonly subject: string;
-  readonly check: string;
+// ── the two families ─────────────────────────────────────────────────────────────
+
+/** One signer's names: its private key, the worker that signs with it, and the list that verifies it. */
+interface Member {
+  readonly privateKey: string;
+  readonly signer: string;
+  readonly publicKeys: string;
 }
 
-// ── reading one audience ─────────────────────────────────────────────────────────
+/**
+ * A family of keys this tool keeps: two members, each signed for by one worker and verified with
+ * one list the uploader writes. Every judgement is shared; a family names what differs.
+ */
+export interface KeyFamily {
+  /** `pnpm <command>`. */
+  readonly command: string;
+  /** What one member is called, on the command line (`--audience`) and in messages. */
+  readonly member: 'audience' | 'issuer';
+  /** Exactly two, in a fixed order. */
+  readonly members: Readonly<Record<string, Member>>;
+  /** The worker that writes both lists into what it uploads. */
+  readonly uploader: string;
+  /** How both lists are named at once, and who verifies against them. */
+  readonly lists: string;
+  readonly verifier: string;
+  /** What a key in both lists breaks. */
+  readonly bothLists: string;
+  /** Whether each list carries a standby beside the key in use (RFC wire-signing §6). */
+  readonly standby: boolean;
+  /** The verifier's own reading of both lists, by member; it throws when it refuses them. */
+  readonly load: (lists: Readonly<Record<string, string>>) => Promise<unknown>;
+  /** The parts of a rotation that depend on how a list reaches what verifies with it. */
+  readonly rotation: {
+    /** How a pushed list reaches the verifiers, and how to tell it has. */
+    readonly reach: string;
+    /** Step 3: what to wait for before switching the signer. */
+    readonly wait: string;
+    /** Step 5's closing lines: when the dropped key counts as revoked. */
+    readonly revoked: readonly string[];
+    /** The order for a compromised key. */
+    readonly compromise: (privateKey: string, member: string) => readonly string[];
+  };
+  readonly runbook: string;
+}
+
+const STORE_REACH_CAVEAT =
+  'The deployed lists reach every store script through the control plane\'s rebuild (#2309): its\n' +
+  '       quarter-hourly pass rebuilds a bounded number of scripts each time. The change has reached\n' +
+  '       every script once `substrat store-driver status --driver <driver>` reads `scripts: current`\n' +
+  '       for every driver; `substrat store-driver rebuild --driver <driver>` runs a pass at once.';
+
+/** The scope-store envelope's keys (K-52): two audiences, one key each. */
+export const STORE_FAMILY: KeyFamily = {
+  command: 'store-keys',
+  member: 'audience',
+  members: STORE_KEY_AUDIENCES,
+  uploader: STORE_KEY_UPLOADER,
+  lists: 'STORE_*_PUBLIC_KEYS',
+  verifier: 'the store',
+  bothLists: 'every store refuses every call while a key is in both lists',
+  standby: false,
+  load: async (lists) => scopeStorePublicKeysFrom({ caller: lists['caller'] ?? '', platform: lists['platform'] ?? '' }),
+  rotation: {
+    reach: STORE_REACH_CAVEAT,
+    wait: 'Wait until every store script carries the new list: store-driver status reads `scripts: current` (step 2\'s caveat).',
+    revoked: [
+      '     The old key is revoked only once store-driver status reads `scripts: current` again AND no control-plane',
+      '     deploy is still rolling out; after the deploy, force the walk: substrat store-driver rebuild --driver <driver> --deploy-finished.',
+    ],
+    compromise: (privateKey, member) => [
+      'A COMPROMISED key is revoked in a different order: switch the signer FIRST (steps 1, 2 and 4 at once,',
+      `accepting that ${member} calls fail at stores that do not yet list the new key), and run`,
+      '`substrat store-driver rebuild --driver <driver>` for every driver at once, so the new key reaches them; revoke the old',
+      `${privateKey} value at the secrets manager, and only then drop the old public key (step 5).`,
+      'Dropping the old public key while it still signs would refuse the platform\'s own calls wherever',
+      'the new list arrives. Once that deploy serves only the new version, run',
+      '`substrat store-driver rebuild --driver <driver> --deploy-finished` for every driver until',
+      'it reads `scripts: current` (issue #2309): until then a pending script still accepts the compromised key.',
+    ],
+  },
+  runbook: 'secrets/store-keys.md',
+};
+
+const WIRE_REACH_CAVEAT =
+  'A list reaches a deployment only when the control plane uploads it again: plain configuration\n' +
+  '       is rewritten on every upload. Nothing yet reports which live deployments carry a list (the\n' +
+  '       readiness report is RFC wire-signing follow-on 4), so until it exists a deployment is\n' +
+  '       known to carry a list only once it has been uploaded since.';
+
+/**
+ * The wire envelope's keys (RFC wire-signing §6, K-58): two issuers, one key in use each and a
+ * standby listed beside it, whose private half is held offline. `pnpm wire-keys`.
+ */
+export const WIRE_FAMILY: KeyFamily = {
+  command: 'wire-keys',
+  member: 'issuer',
+  members: WIRE_KEY_ISSUERS,
+  uploader: WIRE_KEY_UPLOADER,
+  lists: 'WIRE_*_PUBLIC_KEYS',
+  verifier: 'a deployment',
+  bothLists: 'a deployment refuses to load lists that share a key, so the router could otherwise sign as the platform',
+  standby: true,
+  load: async (lists) => wireVerificationKeys({ router: lists['router'] ?? '', platform: lists['platform'] ?? '' }),
+  rotation: {
+    reach: WIRE_REACH_CAVEAT,
+    wait: 'Wait until every live deployment carries the new list (step 2\'s caveat).',
+    revoked: [
+      '     The old key is revoked only once every live deployment has been uploaded with the list that',
+      '     drops it: until then a deployment still listing it accepts it.',
+    ],
+    compromise: (privateKey, member) => [
+      'A COMPROMISED key, or a signer that cannot sign, takes the break-glass path (RFC wire-signing §6):',
+      'switch the signer FIRST to the standby key, which every deployment already lists (step 4 with the',
+      `standby's file), so no ${member} call is refused; revoke the old ${privateKey} value at the secrets`,
+      'manager; then drop the compromised public key and list a new standby (generate one, steps 1 and 2),',
+      'and upload every live deployment again at once. A deployment not yet uploaded still accepts the',
+      'compromised key. Only platform staff on call take this path, as a person, recorded with the reason.',
+    ],
+  },
+  runbook: 'secrets/wire-keys.md',
+};
+
+const membersOf = (family: KeyFamily) => Object.keys(family.members);
+const otherOf = (family: KeyFamily, member: string) => membersOf(family).find((m) => m !== member)!;
+
+// ── reading one member ───────────────────────────────────────────────────────────
 
 /** A public key, as listed or as derived from a private key. Canonical, so equal text is equal bytes. */
 interface Signer {
@@ -62,6 +184,13 @@ interface Signer {
 
 interface ListedKey extends Signer {
   readonly position: number;
+}
+
+interface Finding {
+  readonly level: 'error' | 'warn';
+  /** The variable (or file) the finding is about. Never its value. */
+  readonly subject: string;
+  readonly check: string;
 }
 
 const PUBLIC_KEY_PROBLEM: Readonly<Record<ScopeStorePublicKeyProblem, string>> = {
@@ -79,10 +208,11 @@ const SIGNER_PROBLEM: Readonly<Record<ScopeStoreKeyProblem, string>> = {
   'small-order': 'is a small-order point',
 };
 
-/** One audience's public-key list, entry by entry. Findings never carry an entry's text. */
-async function readList(name: string, text: string | undefined, findings: Finding[]): Promise<ListedKey[] | undefined> {
+/** One member's public-key list, entry by entry. Findings never carry an entry's text. */
+async function readList(name: string, text: string | undefined, findings: Finding[], family: KeyFamily): Promise<ListedKey[] | undefined> {
   if (text === undefined) {
-    findings.push({ level: 'error', subject: name, check: 'is unset: every store script is uploaded with this list, and the upload refuses without it' });
+    const what = family === STORE_FAMILY ? 'every store script is uploaded with this list' : 'every deployment is to be uploaded with this list';
+    findings.push({ level: 'error', subject: name, check: `is unset: ${what}, and the upload refuses without it` });
     return undefined;
   }
   const listed: ListedKey[] = [];
@@ -125,13 +255,13 @@ async function readSigner(subject: string, text: string | undefined, findings: F
 interface StagedKey {
   /** How the operator named it: the file path. */
   readonly label: string;
-  /** The file's text: one `STORE_<AUDIENCE>_KEY=<pkcs8>` line. */
+  /** The file's text: one `<PRIVATE KEY NAME>=<pkcs8>` line. */
   readonly text: string;
 }
 
 type Phase = 'steady' | 'listed' | 'switched' | 'two-listed' | 'unknown';
 
-interface AudienceReport {
+interface MemberReport {
   readonly listed: readonly ListedKey[] | undefined;
   readonly signer: Signer | undefined;
   readonly staged: readonly (Signer & { readonly label: string })[];
@@ -140,16 +270,19 @@ interface AudienceReport {
 
 interface DoctorReport {
   readonly findings: readonly Finding[];
-  readonly audiences: Readonly<Record<ScopeStoreAudience, AudienceReport>>;
+  /** Per audience (the store's) or issuer (the wire's). */
+  readonly members: Readonly<Record<string, MemberReport>>;
 }
 
-/** Which step of a rotation a list and its signer are at. */
-function phaseOf(listed: readonly ListedKey[] | undefined, signer: Signer | undefined, staged: readonly Signer[]): Phase {
+/**
+ * Which step of a rotation a list and its signer are at. A family with a standby holds two keys
+ * when steady, the one in use and the standby; a rotation adds one.
+ */
+function phaseOf(listed: readonly ListedKey[] | undefined, signer: Signer | undefined, staged: readonly Signer[], steady: number): Phase {
   if (!listed || !signer || !listed.some((key) => key.publicKey === signer.publicKey)) return 'unknown';
-  if (listed.length === 1) return 'steady';
   const stagedListed = staged.find((key) => listed.some((l) => l.publicKey === key.publicKey));
   if (stagedListed) return stagedListed.publicKey === signer.publicKey ? 'switched' : 'listed';
-  return 'two-listed';
+  return listed.length <= steady ? 'steady' : 'two-listed';
 }
 
 /**
@@ -157,94 +290,108 @@ function phaseOf(listed: readonly ListedKey[] | undefined, signer: Signer | unde
  * Read-only, and nothing in the report is private: findings name variables, the rest is kids
  * and public keys.
  */
-export async function doctor(values: Readonly<Record<string, string>>, stagedFiles: readonly StagedKey[] = []): Promise<DoctorReport> {
+export async function doctor(
+  values: Readonly<Record<string, string>>,
+  stagedFiles: readonly StagedKey[] = [],
+  family: KeyFamily = STORE_FAMILY,
+): Promise<DoctorReport> {
   const findings: Finding[] = [];
-  const lists = {} as Record<ScopeStoreAudience, ListedKey[] | undefined>;
-  const signers = {} as Record<ScopeStoreAudience, Signer | undefined>;
-  for (const aud of AUDIENCES) {
-    const names = STORE_KEY_AUDIENCES[aud];
-    lists[aud] = await readList(names.publicKeys, values[names.publicKeys], findings);
-    signers[aud] = await readSigner(names.privateKey, values[names.privateKey], findings);
+  const members = membersOf(family);
+  const lists: Record<string, ListedKey[] | undefined> = {};
+  const signers: Record<string, Signer | undefined> = {};
+  for (const m of members) {
+    const names = family.members[m]!;
+    lists[m] = await readList(names.publicKeys, values[names.publicKeys], findings, family);
+    signers[m] = await readSigner(names.privateKey, values[names.privateKey], findings);
   }
-  const staged = { caller: [], platform: [] } as Record<ScopeStoreAudience, (Signer & { label: string })[]>;
+  const staged: Record<string, (Signer & { label: string })[]> = Object.fromEntries(members.map((m) => [m, []]));
   for (const file of stagedFiles) {
     const entries = Object.entries(parseEnvText(file.text) as Record<string, string>);
-    const audience = AUDIENCES.find((aud) => entries.length === 1 && entries[0]![0] === STORE_KEY_AUDIENCES[aud].privateKey);
-    if (!audience) {
-      findings.push({ level: 'error', subject: file.label, check: 'is not one STORE_CALLER_KEY= or STORE_PLATFORM_KEY= line, as generate writes' });
+    const member = members.find((m) => entries.length === 1 && entries[0]![0] === family.members[m]!.privateKey);
+    if (!member) {
+      const lines = members.map((m) => `${family.members[m]!.privateKey}=`).join(' or ');
+      findings.push({ level: 'error', subject: file.label, check: `is not one ${lines} line, as generate writes` });
       continue;
     }
     const signer = await readSigner(file.label, entries[0]![1], findings);
-    if (signer) staged[audience].push({ ...signer, label: file.label });
+    if (signer) staged[member]!.push({ ...signer, label: file.label });
   }
 
-  // L16: a key listed for both audiences, or one key signing both, lets the caller key sign `substrat.erase`.
-  const { caller: callerNames, platform: platformNames } = STORE_KEY_AUDIENCES;
-  for (const key of lists.caller ?? []) {
-    const twin = lists.platform?.find((t) => t.publicKey === key.publicKey);
+  // A key listed for both members, or one key signing both, lets one member's key sign as the
+  // other (for the store: the caller key signing `substrat.erase`, L16).
+  const [first, second] = members as [string, string];
+  const firstNames = family.members[first]!;
+  const secondNames = family.members[second]!;
+  for (const key of lists[first] ?? []) {
+    const twin = lists[second]?.find((t) => t.publicKey === key.publicKey);
     if (twin) {
-      findings.push({ level: 'error', subject: callerNames.publicKeys, check: `entry ${key.position} (kid ${key.kid}) is also ${platformNames.publicKeys} entry ${twin.position}: every store refuses every call while a key is in both lists` });
+      findings.push({ level: 'error', subject: firstNames.publicKeys, check: `entry ${key.position} (kid ${key.kid}) is also ${secondNames.publicKeys} entry ${twin.position}: ${family.bothLists}` });
     }
   }
-  if (signers.caller && signers.caller.publicKey === signers.platform?.publicKey) {
-    findings.push({ level: 'error', subject: callerNames.privateKey, check: `is the same key as ${platformNames.privateKey}: each audience needs its own` });
+  if (signers[first] && signers[first]!.publicKey === signers[second]?.publicKey) {
+    findings.push({ level: 'error', subject: firstNames.privateKey, check: `is the same key as ${secondNames.privateKey}: each ${family.member} needs its own` });
   }
 
-  for (const aud of AUDIENCES) {
-    const names = STORE_KEY_AUDIENCES[aud];
-    const otherNames = STORE_KEY_AUDIENCES[other(aud)];
-    const own = lists[aud];
-    const theirs = lists[other(aud)];
-    const signer = signers[aud];
+  const steady = family.standby ? 2 : 1;
+  for (const m of members) {
+    const names = family.members[m]!;
+    const otherNames = family.members[otherOf(family, m)]!;
+    const own = lists[m];
+    const theirs = lists[otherOf(family, m)];
+    const signer = signers[m];
     if (signer) {
       if (own && !own.some((key) => key.publicKey === signer.publicKey)) {
-        findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${names.publicKeys} does not list: every ${aud} call is refused (the signer was switched before its key was listed)` });
+        findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${names.publicKeys} does not list: every ${m} call is refused (the signer was switched before its key was listed)` });
       }
       if (theirs?.some((key) => key.publicKey === signer.publicKey)) {
-        findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${otherNames.publicKeys} lists: its holder could sign ${other(aud)} envelopes` });
+        findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${otherNames.publicKeys} lists: its holder could sign ${otherOf(family, m)} envelopes` });
+      }
+      // RFC wire-signing §6: a standby listed ahead of need, so a signer that cannot sign switches
+      // to a key every verifier already holds. Needed before an environment goes signed-only.
+      if (family.standby && own && !own.some((key) => key.publicKey !== signer.publicKey)) {
+        findings.push({ level: 'warn', subject: names.publicKeys, check: `lists no standby key beside the one ${names.privateKey} signs with: list one before any environment goes signed-only (${family.runbook})` });
       }
     }
-    for (const key of staged[aud]) {
+    for (const key of staged[m]!) {
       if (theirs?.some((t) => t.publicKey === key.publicKey)) {
-        findings.push({ level: 'error', subject: key.label, check: `(kid ${key.kid}, ${aud}) is listed in ${otherNames.publicKeys}` });
+        findings.push({ level: 'error', subject: key.label, check: `(kid ${key.kid}, ${m}) is listed in ${otherNames.publicKeys}` });
       }
-      if (signers[other(aud)]?.publicKey === key.publicKey) {
+      if (signers[otherOf(family, m)]?.publicKey === key.publicKey) {
         findings.push({ level: 'error', subject: key.label, check: `is the same key as ${otherNames.privateKey}` });
       }
       if (own && !own.some((l) => l.publicKey === key.publicKey)) {
         findings.push({ level: 'warn', subject: key.label, check: `(kid ${key.kid}) is not in ${names.publicKeys} yet: list it and deploy before making it the signer` });
       }
     }
-    if (own && own.length > 1) {
-      findings.push({ level: 'warn', subject: names.publicKeys, check: `lists ${own.length} keys: a rotation is in progress (pnpm store-keys rotate --audience ${aud})` });
+    if (own && own.length > steady) {
+      findings.push({ level: 'warn', subject: names.publicKeys, check: `lists ${own.length} keys: a rotation is in progress (pnpm ${family.command} rotate --${family.member} ${m})` });
     }
   }
 
-  // The store's own reading of the pair must agree. If it refuses and nothing above did, this
+  // The verifier's own reading of the pair must agree. If it refuses and nothing above did, this
   // tool has fallen behind the envelope module, which is a defect here, not an operator error.
-  const callerText = values[STORE_KEY_AUDIENCES.caller.publicKeys];
-  const platformText = values[STORE_KEY_AUDIENCES.platform.publicKeys];
-  if (callerText !== undefined && platformText !== undefined && !findings.some((f) => f.level === 'error' && f.subject.endsWith('_PUBLIC_KEYS'))) {
+  const texts = Object.fromEntries(members.map((m) => [m, values[family.members[m]!.publicKeys]]));
+  if (members.every((m) => texts[m] !== undefined) && !findings.some((f) => f.level === 'error' && f.subject.endsWith('_PUBLIC_KEYS'))) {
     try {
-      scopeStorePublicKeysFrom({ caller: callerText, platform: platformText });
+      await family.load(texts as Record<string, string>);
     } catch {
-      findings.push({ level: 'error', subject: 'STORE_*_PUBLIC_KEYS', check: 'pass every check here but the store refuses them: tools/store-keys.mts is out of step with the envelope module' });
+      findings.push({ level: 'error', subject: family.lists, check: `pass every check here but ${family.verifier} refuses them: tools/store-keys.mts is out of step with the envelope module` });
     }
   }
 
-  const audiences = {} as Record<ScopeStoreAudience, AudienceReport>;
-  for (const aud of AUDIENCES) {
-    audiences[aud] = { listed: lists[aud], signer: signers[aud], staged: staged[aud], phase: phaseOf(lists[aud], signers[aud], staged[aud]) };
+  const report: Record<string, MemberReport> = {};
+  for (const m of members) {
+    report[m] = { listed: lists[m], signer: signers[m], staged: staged[m]!, phase: phaseOf(lists[m], signers[m], staged[m]!, steady) };
   }
-  return { findings, audiences };
+  return { findings, members: report };
 }
 
-function formatDoctor(report: DoctorReport): string {
+function formatDoctor(report: DoctorReport, family: KeyFamily): string {
   const lines: string[] = [];
-  for (const aud of AUDIENCES) {
-    const names = STORE_KEY_AUDIENCES[aud];
-    const a = report.audiences[aud];
-    lines.push(`● ${aud}  (signer: ${names.signer} ${names.privateKey}; list: ${names.publicKeys})  phase: ${a.phase}`);
+  for (const m of membersOf(family)) {
+    const names = family.members[m]!;
+    const a = report.members[m]!;
+    lines.push(`● ${m}  (signer: ${names.signer} ${names.privateKey}; list: ${names.publicKeys})  phase: ${a.phase}`);
     for (const key of a.listed ?? []) {
       const marks = [
         a.signer?.publicKey === key.publicKey ? 'signer' : '',
@@ -266,25 +413,20 @@ function formatDoctor(report: DoctorReport): string {
 
 // ── rotate ───────────────────────────────────────────────────────────────────────
 
-const STORE_REACH_CAVEAT =
-  'The deployed lists reach every store script through the control plane\'s rebuild (#2309): its\n' +
-  '       quarter-hourly pass rebuilds a bounded number of scripts each time. The change has reached\n' +
-  '       every script once `substrat store-driver status --driver <driver>` reads `scripts: current`\n' +
-  '       for every driver; `substrat store-driver rebuild --driver <driver>` runs a pass at once.';
-
 /**
- * The ordered rotation for one audience with the current step marked, or the new list value
- * when `drop` names a kid to remove. Throws {@link StoreKeysError} on an ordering it can see is
- * unsafe; it cannot see what is deployed, and says so.
+ * The ordered rotation for one member with the current step marked, or the new list value when
+ * `drop` names a kid to remove. Throws {@link StoreKeysError} on an ordering it can see is unsafe;
+ * it cannot see what is deployed, and says so.
  */
-export function rotatePlan(report: DoctorReport, aud: ScopeStoreAudience, env: string, drop?: string): string {
-  const names = STORE_KEY_AUDIENCES[aud];
-  const a = report.audiences[aud];
-  // Any error blocks, the other audience's included: a key in both lists breaks both.
+export function rotatePlan(report: DoctorReport, member: string, env: string, drop?: string, family: KeyFamily = STORE_FAMILY): string {
+  const names = family.members[member]!;
+  const a = report.members[member]!;
+  const flag = `--${family.member} ${member}`;
+  // Any error blocks, the other member's included: a key in both lists breaks both.
   const blocking = report.findings.filter((f) => f.level === 'error');
   if (blocking.length) {
     throw new StoreKeysError(
-      `refusing: the ${aud} set is not safe to rotate from:\n${blocking.map((f) => `  ✗ ${f.subject} ${f.check}`).join('\n')}\n  (pnpm store-keys doctor shows the whole set)`,
+      `refusing: the ${member} set is not safe to rotate from:\n${blocking.map((f) => `  ✗ ${f.subject} ${f.check}`).join('\n')}\n  (pnpm ${family.command} doctor shows the whole set)`,
     );
   }
   if (drop !== undefined) {
@@ -293,49 +435,46 @@ export function rotatePlan(report: DoctorReport, aud: ScopeStoreAudience, env: s
     if (!target) throw new StoreKeysError(`refusing: ${names.publicKeys} lists no key with kid ${drop}`);
     if (!a.signer) throw new StoreKeysError(`refusing: ${names.privateKey} is unset, so dropping a key cannot be checked against the signer`);
     if (target.publicKey === a.signer.publicKey) {
-      throw new StoreKeysError(`refusing: kid ${drop} is the key ${names.privateKey} signs with; every ${aud} call would be refused. Switch the signer first.`);
+      throw new StoreKeysError(`refusing: kid ${drop} is the key ${names.privateKey} signs with; every ${member} call would be refused. Switch the signer first.`);
     }
     // Never empty: the signer's key is listed (a blocking finding otherwise) and is not the target.
     const rest = listed.filter((key) => key !== target);
     return [
-      `New value (paste it into the env file, then push and deploy the ${STORE_KEY_UPLOADER}):`,
+      `New value (paste it into the env file, then push and deploy the ${family.uploader}):`,
       `${names.publicKeys}=${rest.map((key) => key.publicKey).join(',')}`,
       '',
-      `Then: node scripts/secrets.mjs push --env ${env} --only ${STORE_KEY_UPLOADER}`,
-      `      ${STORE_REACH_CAVEAT}`,
+      `Then: node scripts/secrets.mjs push --env ${env} --only ${family.uploader}`,
+      `      ${family.rotation.reach}`,
     ].join('\n');
   }
   const at = (phase: Phase[]) => (phase.includes(a.phase) ? '→' : ' ');
   return [
-    `Rotating the ${aud} key (signer: ${names.signer}, ${names.privateKey}). Current phase: ${a.phase}.`,
+    `Rotating the ${member} key (signer: ${names.signer}, ${names.privateKey}). Current phase: ${a.phase}.`,
     'Each step is finished before the next starts. This tool sees the env file, not what is deployed.',
-    ...(a.phase === 'two-listed' ? ['Two keys are listed and no staged key was given: pass --key-file <the staged file> to tell step 3 from step 5.'] : []),
+    ...(a.phase === 'two-listed'
+      ? [`${a.listed?.length ?? 0} keys are listed and no staged key was given: pass --key-file <the staged file> to tell step 3 from step 5.`]
+      : []),
+    ...(family.standby
+      ? ['The standby key stays listed throughout; only the key in use is rotated. Its private half stays offline.']
+      : []),
     '',
-    `${at(['steady'])} 1. pnpm store-keys generate --audience ${aud} --out <path outside any git work tree>`,
+    `${at(['steady'])} 1. pnpm ${family.command} generate ${flag} --out <path outside any git work tree>`,
     `     Keep the file until step 4. It is the new private key; the public key and kid are on stderr.`,
     `  2. Add the new public key to ${names.publicKeys} (comma-separated, after the current one),`,
-    `     then: node scripts/secrets.mjs push --env ${env} --only ${STORE_KEY_UPLOADER}, and deploy the ${STORE_KEY_UPLOADER}.`,
-    `       ${STORE_REACH_CAVEAT}`,
-    `     Check: pnpm store-keys doctor --env ${env} --key-file <path>  (the staged key must be listed).`,
-    `${at(['listed'])} 3. Wait until every store script carries the new list: store-driver status reads \`scripts: current\` (step 2's caveat).`,
+    `     then: node scripts/secrets.mjs push --env ${env} --only ${family.uploader}, and deploy the ${family.uploader}.`,
+    `       ${family.rotation.reach}`,
+    `     Check: pnpm ${family.command} doctor --env ${env} --key-file <path>  (the staged key must be listed).`,
+    `${at(['listed'])} 3. ${family.rotation.wait}`,
     `${at(['listed'])} 4. Switch the signer: replace the ${names.privateKey}= line in the env file with the staged file's line,`,
     `     node scripts/secrets.mjs push --env ${env} --only ${names.signer}, deploy the ${names.signer}, then delete the staged file.`,
-    `     Doctor refuses a signer whose key is not listed, which is the ordering that breaks every ${aud} call.`,
-    `${at(['switched'])} 5. Drop the old key: pnpm store-keys rotate --audience ${aud} --drop <old kid> prints the new list.`,
-    `     It refuses to drop the key the signer uses. Push and deploy the ${STORE_KEY_UPLOADER} again (same caveat).`,
-    '     The old key is revoked only once store-driver status reads `scripts: current` again AND no control-plane',
-    '     deploy is still rolling out; after the deploy, force the walk: substrat store-driver rebuild --driver <driver> --deploy-finished.',
+    `     Doctor refuses a signer whose key is not listed, which is the ordering that breaks every ${member} call.`,
+    `${at(['switched'])} 5. Drop the old key: pnpm ${family.command} rotate ${flag} --drop <old kid> prints the new list.`,
+    `     It refuses to drop the key the signer uses. Push and deploy the ${family.uploader} again (same caveat).`,
+    ...family.rotation.revoked,
     '',
-    'A COMPROMISED key is revoked in a different order: switch the signer FIRST (steps 1, 2 and 4 at once,',
-    `accepting that ${aud} calls fail at stores that do not yet list the new key), and run`,
-    '`substrat store-driver rebuild --driver <driver>` for every driver at once, so the new key reaches them; revoke the old',
-    `${names.privateKey} value at the secrets manager, and only then drop the old public key (step 5).`,
-    'Dropping the old public key while it still signs would refuse the platform\'s own calls wherever',
-    'the new list arrives. Once that deploy serves only the new version, run',
-    '`substrat store-driver rebuild --driver <driver> --deploy-finished` for every driver until',
-    'it reads `scripts: current` (issue #2309): until then a pending script still accepts the compromised key.',
+    ...family.rotation.compromise(names.privateKey, member),
     '',
-    'The runbook is secrets/store-keys.md.',
+    `The runbook is ${family.runbook}.`,
   ].join('\n');
 }
 
@@ -448,12 +587,14 @@ export interface GenerateIo {
 }
 
 export async function generate(
-  aud: ScopeStoreAudience,
+  member: string,
   target: { readonly out: string } | { readonly toTerminal: boolean },
   io: GenerateIo,
-  options: { readonly repoRoot?: string; readonly fs?: WriteFs } = {},
+  options: { readonly repoRoot?: string; readonly fs?: WriteFs; readonly family?: KeyFamily } = {},
 ): Promise<{ readonly publicKey: string; readonly kid: string }> {
-  const names = STORE_KEY_AUDIENCES[aud];
+  const family = options.family ?? STORE_FAMILY;
+  const names = family.members[member];
+  if (!names) throw new StoreKeysError(`--${family.member} must be ${membersOf(family).join(' or ')}`);
   // Every refusal happens before the key exists.
   const out = 'out' in target ? assertPrivateOutPath(target.out, options.repoRoot) : undefined;
   if ('toTerminal' in target && io.stdout.isTTY && !target.toTerminal) {
@@ -475,12 +616,13 @@ export async function generate(
   }
   io.stderr.write(
     [
-      `audience:   ${aud} (signer: ${names.signer})`,
+      `${`${family.member}:`.padEnd(12)}${member} (signer: ${names.signer})`,
       `public key: ${pair.publicKey}`,
       `kid:        ${pair.kid}`,
       '',
-      `Next: add the public key to ${names.publicKeys} and deploy the ${STORE_KEY_UPLOADER} BEFORE setting ${names.privateKey}.`,
-      `      pnpm store-keys rotate --audience ${aud} prints the whole procedure.`,
+      `Next: add the public key to ${names.publicKeys} and deploy the ${family.uploader} BEFORE setting ${names.privateKey}.`,
+      `      pnpm ${family.command} rotate --${family.member} ${member} prints the whole procedure.`,
+      ...(family.standby ? [`      A standby: list it beside the key in use and keep this file offline; it is never set until it is needed.`] : []),
       '',
     ].join('\n'),
   );
@@ -512,10 +654,10 @@ function parseArgs(argv: readonly string[]): Args {
 
 const one = (args: Args, name: string) => args.flags.get(name)?.at(-1);
 
-function audienceOf(args: Args): ScopeStoreAudience {
-  const aud = one(args, 'audience');
-  if (aud !== 'caller' && aud !== 'platform') throw new StoreKeysError('--audience must be caller or platform');
-  return aud;
+function memberOf(args: Args, family: KeyFamily): string {
+  const member = one(args, family.member);
+  if (member === undefined || !Object.hasOwn(family.members, member)) throw new StoreKeysError(`--${family.member} must be ${membersOf(family).join(' or ')}`);
+  return member;
 }
 
 function readEnv(args: Args): { values: Record<string, string>; env: string } {
@@ -540,15 +682,18 @@ function readStaged(args: Args): StagedKey[] {
   });
 }
 
-const USAGE = `usage:
-  pnpm store-keys generate --audience caller|platform --out <path outside the work tree>
-  pnpm store-keys generate --audience caller|platform --stdout [--yes-print-to-terminal]
-  pnpm store-keys doctor [--env prod|test|dev] [--file <env file>] [--key-file <path>]...
-  pnpm store-keys rotate --audience caller|platform [--env …] [--file …] [--key-file <path>]... [--drop <kid>]
-Runbook: secrets/store-keys.md`;
+const usage = (family: KeyFamily) => {
+  const flag = `--${family.member} ${membersOf(family).join('|')}`;
+  return `usage:
+  pnpm ${family.command} generate ${flag} --out <path outside the work tree>
+  pnpm ${family.command} generate ${flag} --stdout [--yes-print-to-terminal]
+  pnpm ${family.command} doctor [--env prod|test|dev] [--file <env file>] [--key-file <path>]...
+  pnpm ${family.command} rotate ${flag} [--env …] [--file …] [--key-file <path>]... [--drop <kid>]
+Runbook: ${family.runbook}`;
+};
 
 /** Run one command. Returns the exit code; never throws, and never prints a value it read. */
-export async function main(argv: readonly string[], io: GenerateIo): Promise<number> {
+export async function main(argv: readonly string[], io: GenerateIo, family: KeyFamily = STORE_FAMILY): Promise<number> {
   try {
     const args = parseArgs(argv);
     switch (args.command) {
@@ -556,23 +701,23 @@ export async function main(argv: readonly string[], io: GenerateIo): Promise<num
         const toStdout = args.flags.has('stdout');
         const out = one(args, 'out');
         if (toStdout === (out !== undefined)) throw new StoreKeysError('generate needs exactly one of --out <path> or --stdout');
-        await generate(audienceOf(args), out !== undefined ? { out } : { toTerminal: args.flags.has('yes-print-to-terminal') }, io);
+        await generate(memberOf(args, family), out !== undefined ? { out } : { toTerminal: args.flags.has('yes-print-to-terminal') }, io, { family });
         return 0;
       }
       case 'doctor': {
         const { values } = readEnv(args);
-        const report = await doctor(values, readStaged(args));
-        io.stdout.write(`${formatDoctor(report)}\n`);
+        const report = await doctor(values, readStaged(args), family);
+        io.stdout.write(`${formatDoctor(report, family)}\n`);
         return report.findings.some((f) => f.level === 'error') ? 1 : 0;
       }
       case 'rotate': {
-        const aud = audienceOf(args);
+        const member = memberOf(args, family);
         const { values, env } = readEnv(args);
-        io.stdout.write(`${rotatePlan(await doctor(values, readStaged(args)), aud, env, one(args, 'drop'))}\n`);
+        io.stdout.write(`${rotatePlan(await doctor(values, readStaged(args), family), member, env, one(args, 'drop'), family)}\n`);
         return 0;
       }
       default:
-        io.stderr.write(`${USAGE}\n`);
+        io.stderr.write(`${usage(family)}\n`);
         return args.command === undefined ? 0 : 1;
     }
   } catch (error) {

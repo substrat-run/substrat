@@ -185,6 +185,9 @@ describe('a vertical upload carries no scope-store binding, and its store script
     for (const script of [deploymentRefFor(verticalSlug, id), stableDeploymentRefFor(verticalSlug)]) {
       const sent = names(putTo(script)?.meta);
       expect(sent.filter((name) => name.startsWith('SUBSTRAT_STORE_')), script).toEqual([]);
+      // RFC wire-signing step 2 injects nothing yet: no key list, audience or state reaches either
+      // upload (the uploader's half is follow-on 3), so every deployment stays legacy-only.
+      expect(sent.filter((name) => name.startsWith('SUBSTRAT_WIRE_')), script).toEqual([]);
       // The twin: the vertical's own declared bindings are in that same upload.
       expect(sent, script).toEqual(expect.arrayContaining(['SCOPE', 'CACHE']));
     }

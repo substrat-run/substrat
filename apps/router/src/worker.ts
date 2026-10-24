@@ -43,6 +43,15 @@ import {
   type RateLimiter,
   type RouteTarget,
 } from '@substrat-run/contracts';
+import {
+  signWireRequest,
+  wireEndpoint,
+  WireKeyError,
+  wireSigningKeyOf,
+  wireSigningOn,
+  type WireRequestClaims,
+  type WireSigningKey,
+} from '@substrat-run/contracts/wire-signing';
 import { fieldCoverageSampled, fieldCoverageSampleRate, mintDispatchId } from './field-coverage-sample.js';
 
 export interface Env {
@@ -96,6 +105,18 @@ export interface Env {
    * every store call is refused.
    */
   STORE_CALLER_KEY?: string;
+  /**
+   * The router's `sign` flag (RFC wire-signing §5, step 2): `on` puts a signed envelope beside the
+   * legacy headers on every request dispatched to a deployment and on every peer invocation.
+   * Anything else is off, and the router sends exactly what it sent before signing existed.
+   */
+  WIRE_SIGN?: string;
+  /**
+   * PKCS8 Ed25519 private key, base64url, for issuer `router` (RFC wire-signing §6). Its own pair,
+   * not the store key. A deployment holds only the public half. Read only while `WIRE_SIGN` is on;
+   * unset or unusable then, nothing is signed and an alarm line is written per request.
+   */
+  WIRE_ROUTER_KEY?: string;
   /**
    * Tenant-keyed request metering (design/observability.md §4.2). The router is the
    * one place that knows which TENANT a request belonged to — Cloudflare's own
@@ -249,6 +270,55 @@ function assertNode(
   return new Request(request, { headers });
 }
 
+/** What the router's signer did for one request (RFC wire-signing §8). Absent when it did not try. */
+type WireSignOutcome = 'signed' | 'failed';
+
+/** The router's signing key while its flag is on, or why it cannot sign. */
+type RouterWire = { readonly key: WireSigningKey } | { readonly unusable: string };
+
+/**
+ * The router's wire signer (RFC wire-signing §5, step 2): `null` while `WIRE_SIGN` is off, which is
+ * the default, so nothing below is reached and every request goes out as it did before signing
+ * existed. On, the key is imported once per isolate; a key that is unset or will not import is
+ * `unusable`, and every request then goes out with its legacy headers alone.
+ */
+async function routerWireOf(env: Env): Promise<RouterWire | null> {
+  if (!wireSigningOn(env.WIRE_SIGN)) return null;
+  if (!env.WIRE_ROUTER_KEY) return { unusable: 'unset' };
+  try {
+    return { key: await wireSigningKeyOf(env.WIRE_ROUTER_KEY) };
+  } catch (error) {
+    return { unusable: error instanceof WireKeyError ? error.reason : 'error' };
+  }
+}
+
+/**
+ * One request as `make` builds it, with a fresh envelope beside its legacy headers. A signer that
+ * cannot sign never fails the request: it goes out as `make` builds it, with its legacy headers,
+ * and the alarm line names why, never a key (RFC §8). A call's body is read to be signed, so a
+ * failed call is built again rather than sent half-read.
+ */
+async function signedRequest(
+  make: () => Request,
+  wire: RouterWire,
+  claims: WireRequestClaims,
+): Promise<{ request: Request; outcome: WireSignOutcome }> {
+  const request = make();
+  let reason: string;
+  if ('key' in wire) {
+    try {
+      return { request: await signWireRequest(wire.key, request, claims), outcome: 'signed' };
+    } catch {
+      // Claims no verifier would accept (a value the encoder refuses): a fault of this router's.
+      reason = 'claims';
+    }
+  } else {
+    reason = wire.unusable;
+  }
+  console.error(JSON.stringify({ router: 'wire-sign-failed', kind: claims.kind, aud: claims.aud, reason }));
+  return { request: claims.kind === 'call' ? make() : request, outcome: 'failed' };
+}
+
 /**
  * A dispatch failure that a retry might fix.
  *
@@ -339,6 +409,8 @@ function record(
     fieldCoverageId: string | null;
     /** The router's own effective sampling rate for this dispatch. */
     fieldCoverageRate: number;
+    /** RFC wire-signing §8: whether the dispatch went out signed, when the signer tried. */
+    wire?: WireSignOutcome;
   },
 ): void {
   const statusClass = `${Math.floor(m.status / 100)}xx`;
@@ -377,6 +449,8 @@ function record(
       // by the router, says which tenant and app a dispatch id was minted for.
       ...(m.fieldCoverageId ? { [FIELD_COVERAGE_ID_FIELD]: m.fieldCoverageId } : {}),
       ...(m.fieldCoverageId ? { fieldCoverageRate: m.fieldCoverageRate } : {}),
+      // The signer's count (RFC wire-signing §8), per deployment and tenant, only while it signs.
+      ...(m.wire ? { wire: m.wire } : {}),
     }),
   );
 }
@@ -483,6 +557,8 @@ async function dispatch(
   hostname: string,
   /** #1923: the dispatch id of a request in the field-coverage sample; the same on a retry. */
   fieldCoverageId: string | null,
+  /** What the signer did for this request, for the request line: set only when it tried. */
+  signing: { outcome?: WireSignOutcome },
 ): Promise<Response> {
   const vertical = verticalFor(env, target, hostname);
   if (!vertical) {
@@ -503,14 +579,38 @@ async function dispatch(
   // jurisdiction pins storage and execution (K-7). Both halves are configuration.
   // Re-checking it in code would be a third enforcement point that can disagree.
   const assertion = { secret: env.ROUTER_SECRET, fieldCoverageId };
-  const forwarded = assertNode(request, target, assertion);
+  // RFC wire-signing step 2: a route envelope beside the legacy headers, for the deployment the
+  // request is dispatched to (its `aud`), minted again for the retry. Only a dispatch into the
+  // namespace is signed, since only those deployments carry the platform's entry; and a request to
+  // a path the entry reads as the internal surface is never signed, as a route or as a call.
+  const wire =
+    target.deploymentRef && env.DISPATCH && wireEndpoint(new URL(request.url).pathname).kind === 'route'
+      ? await routerWireOf(env)
+      : null;
+  const claims: WireRequestClaims = {
+    iss: 'router',
+    kind: 'route',
+    aud: target.deploymentRef ?? '',
+    tenantId: target.tenantId,
+    scopeId: target.scopeId,
+    surface: target.surface,
+    vertical: target.verticalSlug,
+  };
+  const forward = async (): Promise<Request> => {
+    const make = () => assertNode(request, target, assertion);
+    if (!wire) return make();
+    const out = await signedRequest(make, wire, claims);
+    signing.outcome = out.outcome;
+    return out.request;
+  };
+  const forwarded = await forward();
 
   try {
     return await vertical.fetch(forwarded);
   } catch (e) {
     if (!isTransientDispatchFailure(e) || !isReplayable(request)) throw e;
     try {
-      return await vertical.fetch(assertNode(request, target, assertion));
+      return await vertical.fetch(await forward());
     } catch (retryError) {
       if (!isTransientDispatchFailure(retryError)) throw retryError;
       // Twice is enough to distinguish a propagation gap from a script that is
@@ -573,6 +673,7 @@ export default {
     const fieldCoverageId = fieldCoverageSampled(fieldCoverageRate)
       ? mintDispatchId()
       : null;
+    const signing: { outcome?: WireSignOutcome } = {};
     try {
       // #130: counted before the dispatch. A refusal is still recorded below, under the
       // tenant and with its problem code, so a tenant's own view shows why it was refused.
@@ -583,7 +684,7 @@ export default {
         invocation = { ...invocation, problemCode: 'rate_limited' };
         return limit.refused;
       }
-      let response = await dispatch(env, request, target, hostname, fieldCoverageId);
+      let response = await dispatch(env, request, target, hostname, fieldCoverageId, signing);
       status = response.status;
       threw = false;
       // #1904: the vertical's record of what ran, for the datapoint — and never for the caller.
@@ -619,6 +720,7 @@ export default {
         invocation,
         fieldCoverageId,
         fieldCoverageRate,
+        wire: signing.outcome,
       });
     }
   },
@@ -690,7 +792,7 @@ export async function handlePeerCall(
     rawContext !== null && typeof rawContext === 'object' ? (rawContext as { parentInvocationId?: unknown }).parentInvocationId : undefined,
   );
   // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.
-  const invocation = (): Request =>
+  const unsigned = (): Request =>
     new Request('https://vertical/internal/vertical-invoke', {
       method: 'POST',
       headers: {
@@ -718,6 +820,23 @@ export async function handlePeerCall(
         ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
       }),
     });
+  // RFC wire-signing step 2: the router signs the calls it makes itself (`iss` router, `kind` call),
+  // beside the legacy credential, for the target deployment and the scope the resolver chose, and
+  // binding the exact body. Signed per attempt, so the retry below carries a fresh nonce.
+  const wire = await routerWireOf(env);
+  const invocation = async (): Promise<Request> => {
+    if (!wire) return unsigned();
+    const out = await signedRequest(unsigned, wire, {
+      iss: 'router',
+      kind: 'call',
+      aud: decision.deploymentRef,
+      tenantId: decision.tenantId,
+      scopeId: decision.scopeId,
+      vertical: decision.vertical,
+    });
+    console.log(JSON.stringify({ router: 'wire-sign', kind: 'call', aud: decision.deploymentRef, outcome: out.outcome }));
+    return out.request;
+  };
   // The same bounded retry the public path takes, and for the same K-29 propagation gap
   // (#1719 review). Two differences, both in this path's favour: a peer call is always
   // replayable, because `Worker not found` is raised by the dispatch before the target's
@@ -727,11 +846,11 @@ export async function handlePeerCall(
   // which is why the last resort is a structured `unavailable` rather than a throw.
   let response: Response;
   try {
-    response = await target.fetch(invocation());
+    response = await target.fetch(await invocation());
   } catch (e) {
     if (!isTransientDispatchFailure(e)) throw e;
     try {
-      response = await target.fetch(invocation());
+      response = await target.fetch(await invocation());
     } catch (retryError) {
       if (!isTransientDispatchFailure(retryError)) throw retryError;
       console.error(

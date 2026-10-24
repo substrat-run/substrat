@@ -21,6 +21,7 @@
  *     production.
  *
  *  3. The scope-store envelope's four keys, held to one inventory (`tools/store-key-inventory.mjs`).
+ *  4. The wire envelope's four keys (RFC wire-signing), held to theirs the same way.
  *
  * (2) is deliberately narrow — it reads one phrase, not "every string field", because
  * most of a worker's `Env` fields are optional behavioural config that intentionally
@@ -33,7 +34,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { MANIFEST } from '../scripts/secrets.mjs';
-import { storeKeyProblems } from './store-key-inventory.mjs';
+import { storeKeyProblems, wireKeyProblems } from './store-key-inventory.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -95,11 +96,15 @@ for (const [worker, cfg] of Object.entries(MANIFEST)) {
 // ── 3. the scope-store keys ─────────────────────────────────────────────────────
 for (const p of storeKeyProblems(MANIFEST)) problems.push(`store keys: ${p}`);
 
+// ── 4. the wire keys ────────────────────────────────────────────────────────────
+for (const p of wireKeyProblems(MANIFEST)) problems.push(`wire keys: ${p}`);
+
 if (problems.length > 0) {
   console.error('secrets-coverage: scripts/secrets.mjs, a worker and the templates disagree about a secret.\n');
   for (const p of problems) console.error(`  ✗ ${p}`);
   console.error('\nAdd a missing name to MANIFEST.<worker>.required and .secrets in scripts/secrets.mjs.');
   console.error('For a store-keys line, STORE_KEY_AUDIENCES is the inventory; see secrets/store-keys.md.');
+  console.error('For a wire-keys line, WIRE_KEY_ISSUERS is the inventory; see secrets/wire-keys.md.');
   process.exit(1);
 }
 console.log('secrets-coverage: ok');
