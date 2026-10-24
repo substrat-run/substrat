@@ -3737,7 +3737,8 @@ export function scopeHostContractSuite(
 
             await host.admin.shredSubject(staff, t1, s1, erased);
 
-            expect(await rowsOf(ops.linked)).toEqual([before.linked[0], [null, REDACTED_FAILURE_NOTE]]);
+            // Both rows of the pair: the tenant's by the link it always had, staff's by #2554's.
+            expect(await rowsOf(ops.linked)).toEqual([[t1, REDACTED_FAILURE_NOTE], [null, REDACTED_FAILURE_NOTE]]);
             expect((await issueOf(ops.linked)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
             expect(await rowsOf(ops.unlinked)).toEqual(before.unlinked);
             expect((await issueOf(ops.unlinked)).lastMessage).toBe(before.unlinked[1]![1]);
