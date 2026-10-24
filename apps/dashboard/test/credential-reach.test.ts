@@ -25,7 +25,7 @@ import { tenantCredentialPin } from '@substrat-run/control-plane-api';
 describe('the tenant credential reaches every route the authority seam calls', () => {
   const src = readFileSync(join(import.meta.dirname, '../src/authority.ts'), 'utf8');
 
-  /** One `this.call/post/page/listAll/walkList(...)` — its HTTP method and its path. */
+  /** One `this.call/callWithHeaders/post/page/listAll/walkList(...)` — its HTTP method and its path. */
   interface Site {
     method: string;
     path: string;
@@ -34,7 +34,7 @@ describe('the tenant credential reaches every route the authority seam calls', (
 
   const sites = ((): Site[] => {
     const out: Site[] = [];
-    const re = /this\.(call|post|page|listAll|walkList)\s*(<[\s\S]*?>)?\(/g;
+    const re = /this\.(call|callWithHeaders|post|page|listAll|walkList)\s*(<[\s\S]*?>)?\(/g;
     for (let m = re.exec(src); m; m = re.exec(src)) {
       // Balance parens from the opening one to find this call's argument list.
       let i = m.index + m[0].length;
