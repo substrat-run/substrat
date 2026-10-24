@@ -23,10 +23,12 @@ import {
   purgeRequestMod,
 } from './schedule-purge-request-module.js';
 import { PURGE_TWO_DAYS, PURGE_TWO_KIND, PURGE_TWO_MODULE_ID, QUIET_TWO_ROW, purgeTwoMod } from './schedule-purge-two-module.js';
+import { PURGE_TICK_DAYS, PURGE_TICK_MODULE_ID, QUIET_TICK_ROW, purgeTickMod } from './schedule-purge-tick-module.js';
 
 const SCHED_REQUEST = moduleId.parse('@test/sched-request');
 const PURGE_REQUEST = moduleId.parse(PURGE_REQUEST_MODULE_ID);
 const PURGE_TWO = moduleId.parse(PURGE_TWO_MODULE_ID);
+const PURGE_TICK = moduleId.parse(PURGE_TICK_MODULE_ID);
 const DAY = 86_400_000;
 
 /**
@@ -61,12 +63,21 @@ export function schedulePlatformRequestsContractSuite(
       host.registerModule(schedRequestMod);
       host.registerModule(purgeRequestMod);
       host.registerModule(purgeTwoMod);
+      host.registerModule(purgeTickMod);
       await host.admin.createTenant(staff, { id: t, slug: `sched-request-${t.toLowerCase()}`, name: 'Scheduled requests' });
       await host.admin.grantEntitlement(staff, t, 'sched');
       // Seats the schedules' declared permission on the module's system principal.
       await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'sched-request-vertical' });
       await host.admin.activateScope(staff, t, s);
-      const keys = ['purgereq:write', 'purgereq:trash', 'purgetwo:write', 'purgetwo:trash-a', 'purgetwo:trash-b'].map((k) =>
+      const keys = [
+        'purgereq:write',
+        'purgereq:trash',
+        'purgetwo:write',
+        'purgetwo:trash-a',
+        'purgetwo:trash-b',
+        'purgetick:write',
+        'purgetick:trash',
+      ].map((k) =>
         permissionKey.parse(k),
       );
       await host.admin.defineRole(staff, t, { key: 'purger', permissions: keys, source: 'vertical' });
@@ -339,13 +350,27 @@ export function schedulePlatformRequestsContractSuite(
             // The first horizon filled the queue and stopped there, still due; it did not fail.
             expect(await requestsTwo(fresh)).toHaveLength(MAX_PENDING_PLATFORM_REQUESTS);
             expect(await goneTwo(fresh, 'a', first)).toEqual(first.slice(0, MAX_PENDING_PLATFORM_REQUESTS));
-            // The second tried nothing and failed nothing; each request is counted once.
-            expect(report).toMatchObject({ fired: 2, failed: 0, errors: [], platformRequests: MAX_PENDING_PLATFORM_REQUESTS });
+            // The second tried nothing and failed nothing: reported deferred, a skip, never fired.
+            // Each request is counted once, and all of them were the purges'.
+            expect(report).toMatchObject({
+              fired: 1,
+              skipped: 1,
+              failed: 0,
+              deferred: 1,
+              errors: [],
+              platformRequests: MAX_PENDING_PLATFORM_REQUESTS,
+              purgeRequests: MAX_PENDING_PLATFORM_REQUESTS,
+            });
+            expect(report.runs).toEqual([
+              { operation: 'purgetwo/purge-a', outcome: 'ok' },
+              { operation: 'purgetwo/purge-b', outcome: 'skipped' },
+            ]);
             expect(await goneTwo(fresh, 'b', second)).toEqual([]);
             // After the drain the very next tick runs both: no cadence wait for either.
             await drainAll(fresh);
             const next = await host.runDueSchedules(PURGE_TWO, t, fresh);
             expect(next).toMatchObject({ fired: 2, failed: 0, errors: [] });
+            expect(next.deferred).toBeUndefined();
             expect(await goneTwo(fresh, 'b', second)).toEqual(second);
             expect(await goneTwo(fresh, 'a', first.slice(MAX_PENDING_PLATFORM_REQUESTS))).toEqual(
               first.slice(MAX_PENDING_PLATFORM_REQUESTS),
@@ -374,6 +399,96 @@ export function schedulePlatformRequestsContractSuite(
             const report = await host.runDueSchedules(PURGE_TWO, t, fresh);
             expect(report).toMatchObject({ fired: 2, failed: 0, errors: [] });
             expect(await goneTwo(fresh, 'b', second)).toEqual(second);
+          });
+
+          // #2517: a sweep runs a scope's modules back to back with no drain either, and tells each
+          // call what the earlier calls' purges enqueued (`purgeRequests`).
+          const acrossModules = async (carry: boolean) => {
+            const fresh = await freshScope();
+            await dueRows(fresh, names(OVER));
+            const earlier = await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+            expect(earlier).toMatchObject({ failed: 0, purgeRequests: MAX_PENDING_PLATFORM_REQUESTS });
+            const a = await dueTwo(fresh, 'a', ['row', QUIET_TWO_ROW]);
+            const b = await dueTwo(fresh, 'b', ['row', QUIET_TWO_ROW]);
+            const report = await host.runDueSchedules(
+              PURGE_TWO,
+              t,
+              fresh,
+              carry ? { earlierPurgeRequests: earlier.purgeRequests } : undefined,
+            );
+            return { fresh, a, b, report };
+          };
+
+          it('a module after one whose purges filled the queue defers its heads when the sweep says so', async () => {
+            const { fresh, a, b, report } = await acrossModules(true);
+            expect(report).toMatchObject({ fired: 0, skipped: 2, failed: 0, deferred: 2, errors: [] });
+            expect(report.runs?.map((r) => r.outcome)).toEqual(['skipped', 'skipped']);
+            expect(await goneTwo(fresh, 'a', a)).toEqual([]);
+            expect(await goneTwo(fresh, 'b', b)).toEqual([]);
+            // Next tick, after the drain: the purge-request module finishes its lap, and this one runs.
+            await drainAll(fresh);
+            await host.runDueSchedules(PURGE_REQUEST, t, fresh);
+            await drainAll(fresh);
+            const next = await host.runDueSchedules(PURGE_TWO, t, fresh);
+            expect(next).toMatchObject({ fired: 2, failed: 0, errors: [] });
+            expect(await goneTwo(fresh, 'a', a)).toEqual(a);
+            expect(await goneTwo(fresh, 'b', b)).toEqual(b);
+          });
+
+          it('twin (skew): told nothing — an older sweep — the same heads fail as before and nothing behind them waits', async () => {
+            const { fresh, a, b, report } = await acrossModules(false);
+            expect(report).toMatchObject({ fired: 0, failed: 2 });
+            expect(report.deferred).toBeUndefined();
+            expect(await goneTwo(fresh, 'a', a)).toEqual(a.slice(1));
+            expect(await goneTwo(fresh, 'b', b)).toEqual(b.slice(1));
+          });
+        });
+
+        // #2517's bound: only PURGE runs defer a head. An ordinary schedule may enqueue on every
+        // tick for ever, so if its requests counted, a head behind it would wait for ever, and so
+        // would everything behind the head (#2096).
+        describe('an ordinary schedule that fills the queue before a purge horizon', () => {
+          const dueTick = async (fresh: ScopeId, rowNames: string[]): Promise<string[]> => {
+            const stub = await host.getScope(alice, t, fresh);
+            const base = Date.now() - (PURGE_TICK_DAYS + 1) * DAY;
+            const ids: string[] = [];
+            for (const [n, name] of rowNames.entries()) {
+              const id = `tick-${String(n).padStart(3, '0')}-${ulid()}`;
+              const at = new Date(base + n * 60_000).toISOString();
+              await stub.invoke('purgetick/add', { id, name });
+              await stub.invoke('purgetick/trash', { rowId: id });
+              await raw!(t, fresh, `INSERT INTO _substrat_state_moves (entity_type, entity_id) VALUES (?, ?)`, ['ptk', id]);
+              await raw!(t, fresh, `UPDATE purgetick_rows SET _substrat_trashed_at = ? WHERE id = ?`, [at, id]);
+              await raw!(t, fresh, `DELETE FROM _substrat_state_moves WHERE entity_type = ? AND entity_id = ?`, ['ptk', id]);
+              ids.push(id);
+            }
+            return ids;
+          };
+          const goneTick = async (fresh: ScopeId, ids: string[]): Promise<string[]> => {
+            const stub = await host.getScope(alice, t, fresh);
+            const out: string[] = [];
+            for (const id of ids) {
+              try {
+                await stub.invoke('purgetick/add', { id, name: 'again' });
+                out.push(id);
+              } catch {
+                // still there
+              }
+            }
+            return out;
+          };
+
+          it('never defers the head: it fails as before, and the purges behind it that need no request commit', async () => {
+            const fresh = await freshScope();
+            const ids = await dueTick(fresh, ['row', QUIET_TICK_ROW, QUIET_TICK_ROW]);
+            const report = await host.runDueSchedules(PURGE_TICK, t, fresh);
+            expect(report).toMatchObject({ fired: 1, failed: 1, platformRequests: MAX_PENDING_PLATFORM_REQUESTS });
+            expect(report.deferred).toBeUndefined();
+            expect(report.purgeRequests).toBeUndefined();
+            expect(report.errors).toEqual([
+              { operation: expect.stringContaining('purgetick/purge'), error: expect.stringMatching(/too many pending platform requests/) },
+            ]);
+            expect(await goneTick(fresh, ids)).toEqual(ids.slice(1));
           });
         });
       });
