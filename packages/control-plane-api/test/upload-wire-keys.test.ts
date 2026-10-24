@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, tenantId } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, platformActorId, tenantId } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair, scopeStoreKeyId } from '@substrat-run/contracts/scope-store-envelope';
 import {
   WIRE_AUDIENCE_VAR,
@@ -174,7 +174,7 @@ describe('the uploader gives the deployments the rollout names their lists, audi
   const bindingsOf = (script: string) => (lastPutTo(script).meta['bindings'] ?? []) as { type: string; name: string; text?: string }[];
   const wireOf = (script: string) => Object.fromEntries(bindingsOf(script).filter((b) => WIRE.test(b.name)).map((b) => [b.name, b]));
   const recordsOf = async (verticalSlug: string) =>
-    Object.fromEntries((await host.admin.listWireAuth!(staff, { reach: { fleet: true }, limit: 200, verticalSlug })).map((r) => [r.deploymentRef, r]));
+    Object.fromEntries((await host.admin.listWireAuth!(staff, { reach: { fleet: true }, limit: LIST_PAGE_MAX, verticalSlug })).map((r) => [r.deploymentRef, r]));
 
   it('fleet: the push and the serving upload each carry both lists, their own name and `dual`, as plain configuration, and each records it', async () => {
     const { id, verticalSlug, scripts } = await serve(appWith(fleet()), await tenantOf('wire-fleet'));

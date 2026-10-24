@@ -10,7 +10,7 @@
  * A vertical's rows go with the vertical (`forgetVerticalWireAuth`), so none outlives what it
  * describes.
  */
-import { deploymentWireAuth, LIST_PAGE_MAX, substratError, tenantId, type DeploymentWireAuth } from '@substrat-run/contracts';
+import { deploymentWireAuth, LIST_PAGE_MAX, substratError, tenantId, type DeploymentWireAuth, type TenantId } from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
 
 export type { DeploymentWireAuthInput } from '@substrat-run/contracts';
@@ -33,8 +33,14 @@ export const DEPLOYMENT_WIRE_AUTH_DDL = `
  * itself is refused rather than handed every tenant's deployments: a record names scripts, versions
  * and key ids, and a tenant reads only its own. A record whose vertical no tenant owns, or that the
  * registry does not know, is reached only by the fleet.
+ *
+ * A tenant reach follows the vertical's current owner: it is resolved at read time, so whoever owns
+ * the slug then reads every record the table holds for it, and a tenant that no longer owns it reads
+ * none. No host path moves the owner of a registered vertical today; an owner changes by deleting the
+ * vertical, which removes its records, and registering the slug again. A record written while no
+ * tenant owned the slug is read by the tenant that owns it at read time. Key ids are not secrets.
  */
-export type DeploymentWireAuthReach = { readonly tenantId: string } | { readonly fleet: true };
+export type DeploymentWireAuthReach = { readonly tenantId: TenantId } | { readonly fleet: true };
 
 /**
  * Which records a read returns, one page of them: the keyset convention by script name, `cursor` the
@@ -51,31 +57,67 @@ export interface DeploymentWireAuthFilter {
 
 const refused = (message: string) => substratError('validation_failed', message);
 
+/** The longest `verticalSlug` or `cursor` a read takes. A script name is far shorter. */
+export const WIRE_AUTH_FILTER_TEXT_MAX = 256;
+
+const FILTER_KEYS: ReadonlySet<string> = new Set(['reach', 'verticalSlug', 'limit', 'cursor', 'order']);
+const REACH_REFUSAL = 'a capability-record read names its reach: one tenant ({ tenantId }) or the fleet ({ fleet: true }), exactly one';
+
 /**
- * The filter a read is allowed to run, or a `validation_failed` refusal: a reach that is exactly one
- * tenant (a tenant id) or exactly the fleet, a limit from 1 to `LIST_PAGE_MAX`, and the optional
- * fields in their own types. Both adapters judge it before the read, and the Cloudflare host before
- * the call into the directory's object, so the refusal keeps its code across the RPC.
+ * The filter a read is allowed to run, or a `validation_failed` refusal: only the filter's own keys;
+ * a reach that is exactly one tenant (a tenant id) or exactly the fleet; a limit from 1 to
+ * `LIST_PAGE_MAX`; a vertical and a cursor of 1 to `WIRE_AUTH_FILTER_TEXT_MAX` characters; an order
+ * of `asc` or `desc`. Both adapters judge it before the read, and the Cloudflare host before the call
+ * into the directory's object, so the refusal keeps its code across the RPC.
+ *
+ * Answers a NEW object built from the judged fields alone, never the caller's, so nothing else crosses
+ * the RPC or reaches the access log. `reach` is its first key: the log keeps a read's params cut to a
+ * bounded length, and nothing after the reach can push it out of what is kept.
  */
 export function assertWireAuthFilter(filter: unknown): DeploymentWireAuthFilter {
-  if (typeof filter !== 'object' || filter === null) throw refused('a capability-record read needs a filter naming its reach and its limit');
+  if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
+    throw refused('a capability-record read needs a filter naming its reach and its limit');
+  }
   const f = filter as Record<string, unknown>;
-  const reach = f['reach'];
-  if (typeof reach !== 'object' || reach === null) throw refused('a capability-record read names its reach: one tenant ({ tenantId }) or the fleet ({ fleet: true })');
-  const r = reach as Record<string, unknown>;
+  const extra = Object.keys(f).filter((key) => !FILTER_KEYS.has(key));
+  if (extra.length > 0) throw refused(`a capability-record read takes reach, verticalSlug, limit, cursor and order; not ${extra.slice(0, 3).join(', ')}`);
+  const r = f['reach'];
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) throw refused(REACH_REFUSAL);
   const keys = Object.keys(r);
-  const isTenant = keys.length === 1 && keys[0] === 'tenantId' && tenantId.safeParse(r['tenantId']).success;
-  const isFleet = keys.length === 1 && keys[0] === 'fleet' && r['fleet'] === true;
-  if (!isTenant && !isFleet) throw refused('a capability-record read names its reach: one tenant ({ tenantId }) or the fleet ({ fleet: true }), exactly one');
+  if (keys.length !== 1) throw refused(REACH_REFUSAL);
+  const value = (r as Record<string, unknown>)[keys[0]!];
+  let reach: DeploymentWireAuthReach;
+  if (keys[0] === 'fleet' && value === true) reach = { fleet: true };
+  else if (keys[0] === 'tenantId' && tenantId.safeParse(value).success) reach = { tenantId: tenantId.parse(value) };
+  else throw refused(REACH_REFUSAL);
   const limit = f['limit'];
   if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > LIST_PAGE_MAX) {
-    throw refused(`limit must be an integer from 1 to ${LIST_PAGE_MAX}, got ${String(limit)}`);
+    throw refused(`limit must be an integer from 1 to ${LIST_PAGE_MAX}, got ${typeof limit === 'number' ? String(limit) : typeof limit}`);
   }
-  for (const name of ['verticalSlug', 'cursor'] as const) {
-    if (f[name] !== undefined && (typeof f[name] !== 'string' || f[name] === '')) throw refused(`${name} must be a non-empty string`);
-  }
-  if (f['order'] !== undefined && f['order'] !== 'asc' && f['order'] !== 'desc') throw refused('order must be asc or desc');
-  return filter as DeploymentWireAuthFilter;
+  const text = (name: 'verticalSlug' | 'cursor'): string | undefined => {
+    const v = f[name];
+    if (v === undefined) return undefined;
+    if (typeof v !== 'string' || v.length === 0 || v.length > WIRE_AUTH_FILTER_TEXT_MAX) {
+      throw refused(`${name} must be a string of 1 to ${WIRE_AUTH_FILTER_TEXT_MAX} characters`);
+    }
+    return v;
+  };
+  const verticalSlug = text('verticalSlug');
+  const cursor = text('cursor');
+  const order = f['order'];
+  if (order !== undefined && order !== 'asc' && order !== 'desc') throw refused('order must be asc or desc');
+  return {
+    reach,
+    ...(verticalSlug !== undefined ? { verticalSlug } : {}),
+    limit,
+    ...(cursor !== undefined ? { cursor } : {}),
+    ...(order !== undefined ? { order } : {}),
+  };
+}
+
+/** The access-log target of a read: the tenant a tenant reach names, none for the fleet. */
+export function wireAuthAccessTarget(filter: DeploymentWireAuthFilter): { tenantId: TenantId | null } {
+  return { tenantId: 'tenantId' in filter.reach ? filter.reach.tenantId : null };
 }
 
 /**

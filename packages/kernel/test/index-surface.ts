@@ -214,6 +214,8 @@ export const INDEX_VALUE_EXPORTS = [
   'VERTICAL_OWNERS_BACKFILL',
   'VERTICAL_OWNERS_DDL',
   'VERTICAL_SCOPE_STORES_DDL',
+  // RFC wire-signing §7: the longest vertical or cursor a capability-record read takes.
+  'WIRE_AUTH_FILTER_TEXT_MAX',
   'WITHHELD_SECRET',
   'WRITE_REVISION_KEY',
   'actorOf',
@@ -760,6 +762,8 @@ export const INDEX_VALUE_EXPORTS = [
   'walkEventEffects',
   'watchUpdatedStamps',
   'webCryptoSecretBox',
+  // RFC wire-signing §7: a capability-record read's access-log target, the tenant its reach names.
+  'wireAuthAccessTarget',
   'withRecorded',
   'withheldKeysFor',
   'withheldNote',

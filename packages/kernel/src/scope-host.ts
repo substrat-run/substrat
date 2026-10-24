@@ -2908,7 +2908,8 @@ export interface HostAdmin {
    * `LIST_PAGE_MAX`), `cursor` the last script name of the page before, `order`. Confined by `reach`,
    * which is required: one tenant's verticals (`{ tenantId }`, the verticals it owns now) or the
    * whole fleet (`{ fleet: true }`), so a reader that forgets to confine itself is refused, never
-   * handed every tenant's deployments. Optionally one vertical's within that. A bad filter is
+   * handed every tenant's deployments. A tenant reach follows the vertical's current owner, resolved
+   * at read time (`DeploymentWireAuthReach`). Optionally one vertical's within that. A bad filter is
    * `validation_failed` (`assertWireAuthFilter`). Access-logged (K-24). Reached through the host API
    * only today.
    */

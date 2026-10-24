@@ -756,6 +756,8 @@ export {
   assertWireAuthFilter,
   forgetVerticalWireAuth,
   deploymentWireAuthOf,
+  wireAuthAccessTarget,
+  WIRE_AUTH_FILTER_TEXT_MAX,
   writeDeploymentWireAuth,
   type DeploymentWireAuthFilter,
   type DeploymentWireAuthReach,

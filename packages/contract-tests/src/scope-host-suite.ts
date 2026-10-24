@@ -63,6 +63,7 @@ import {
   rebindReviewRefusalOf,
   createUlid,
   ulid,
+  WIRE_AUTH_FILTER_TEXT_MAX,
   type AuditLogFilter,
   type OperationHandler,
   type ScopeHost,
@@ -11343,10 +11344,20 @@ export function scopeHostContractSuite(
           // No limit, or one outside 1..LIST_PAGE_MAX.
           { reach: { fleet: true }, verticalSlug: a },
           ...[0, -1, 1.5, LIST_PAGE_MAX + 1, Number.POSITIVE_INFINITY, Number.NaN, '10'].map((limit) => ({ reach: { fleet: true }, limit, verticalSlug: a })),
-          // The optional fields in their own types.
+          // The optional fields in their own types, and the text ones no longer than their bound.
           { reach: { fleet: true }, limit: 10, verticalSlug: '' },
+          { reach: { fleet: true }, limit: 10, verticalSlug: 'x'.repeat(257) },
           { reach: { fleet: true }, limit: 10, verticalSlug: a, cursor: 7 },
+          { reach: { fleet: true }, limit: 10, verticalSlug: a, cursor: '' },
+          { reach: { fleet: true }, limit: 10, verticalSlug: a, cursor: 'x'.repeat(257) },
           { reach: { fleet: true }, limit: 10, verticalSlug: a, order: 'sideways' },
+          // Only the filter's own keys: an unknown one is refused, never carried across or logged.
+          { reach: { fleet: true }, limit: 10, verticalSlug: a, tenantId: t },
+          { reach: { fleet: true }, limit: 10, verticalSlug: a, extra: 'x'.repeat(400) },
+          { reach: { fleet: true }, limit: 10, verticalSlug: a, offset: 0 },
+          // Arrays are not a filter, nor a reach.
+          [{ reach: { fleet: true }, limit: 10, verticalSlug: a }],
+          { reach: [{ fleet: true }], limit: 10, verticalSlug: a },
         ]) {
           await expectRefusal(host.admin.listWireAuth!(staff, bad as never), 'validation_failed');
         }
@@ -11366,7 +11377,7 @@ export function scopeHostContractSuite(
           await put(slug, 'serving', null, record(), `16:00:0${i}`);
           await put(slug, 'archive', 'v1', record(), `16:00:1${i}`);
         }
-        const refs = async (reach: { tenantId: string } | { fleet: true }, verticalSlug?: string) =>
+        const refs = async (reach: { tenantId: TenantId } | { fleet: true }, verticalSlug?: string) =>
           (await host.admin.listWireAuth!(staff, { reach, limit: LIST_PAGE_MAX, ...(verticalSlug ? { verticalSlug } : {}) }))
             .map((r) => r.deploymentRef)
             .filter((ref) => [mine, theirs, platform, unregistered].some((slug) => ref.startsWith(`${slug}-`)));
@@ -11378,7 +11389,7 @@ export function scopeHostContractSuite(
         expect(await refs({ tenantId: owner }, mine)).toEqual([`${mine}-archive`, `${mine}-serving`]);
         // A tenant that owns nothing reaches nothing; a vertical no tenant owns, or the registry does not
         // know, is reached by the fleet alone.
-        expect(await refs({ tenantId: ulid() })).toEqual([]);
+        expect(await refs({ tenantId: tenantId.parse(ulid()) })).toEqual([]);
         for (const slug of [mine, theirs, platform, unregistered]) {
           expect(await refs({ fleet: true }, slug)).toEqual([`${slug}-archive`, `${slug}-serving`]);
         }
@@ -11388,6 +11399,62 @@ export function scopeHostContractSuite(
         const next = await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: 1, cursor: page[0]!.deploymentRef });
         expect(next.map((r) => r.deploymentRef)).toEqual([`${mine}-serving`]);
         expect(await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: 1, cursor: next[0]!.deploymentRef })).toEqual([]);
+      });
+
+      it('logs a tenant’s read against that tenant and the fleet’s against none, the judged filter with its reach first', async () => {
+        const owner = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: owner, slug: `wire-log-${owner.slice(-6).toLowerCase()}`, name: 'Wire Log' });
+        const mine = slugOf('wire-logged');
+        await host.admin.registerVertical(staff, { slug: mine, name: 'Logged', source: 'cli', ownerTenant: owner });
+        await put(mine, 'serving', null, record(), '17:00:00');
+
+        // The reach given last, as a caller may spell it: the log still names it first.
+        await host.admin.listWireAuth!(staff, { limit: 5, verticalSlug: mine, reach: { tenantId: owner } });
+        const forTenant = await host.admin.accessLog(staff, { method: 'listWireAuth', tenantId: owner });
+        expect(forTenant.map((e) => ({ tenantId: e.tenantId, params: e.params, count: e.resultCount }))).toEqual([
+          { tenantId: owner, params: JSON.stringify({ reach: { tenantId: owner }, verticalSlug: mine, limit: 5 }), count: 1 },
+        ]);
+
+        // The fleet's read is logged against no tenant, and is told apart by its reach.
+        await host.admin.listWireAuth!(staff, { reach: { fleet: true }, limit: 5, verticalSlug: mine });
+        const fleetRows = (await host.admin.accessLog(staff, { method: 'listWireAuth' })).filter((e) => (e.params ?? '').includes(mine) && e.tenantId === null);
+        expect(fleetRows.map((e) => e.params)).toEqual([JSON.stringify({ reach: { fleet: true }, verticalSlug: mine, limit: 5 })]);
+        expect(await host.admin.accessLog(staff, { method: 'listWireAuth', tenantId: owner })).toHaveLength(1);
+
+        // A vertical and a cursor at their longest cannot push the reach out of the logged text, which
+        // the log keeps cut to a bounded length.
+        const long = 'z'.repeat(WIRE_AUTH_FILTER_TEXT_MAX);
+        await host.admin.listWireAuth!(staff, { cursor: long, verticalSlug: long, limit: 5, reach: { tenantId: owner } });
+        const logged = (await host.admin.accessLog(staff, { method: 'listWireAuth', tenantId: owner })).map((e) => e.params ?? '');
+        expect(logged).toHaveLength(2);
+        for (const params of logged) expect(params.startsWith(`{"reach":{"tenantId":"${owner}"}`)).toBe(true);
+      });
+
+      it('follows the vertical’s current owner, resolved when the read runs', async () => {
+        const [first, second] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
+        await host.admin.createTenant(staff, { id: first, slug: `wire-fst-${first.slice(-6).toLowerCase()}`, name: 'Wire First' });
+        await host.admin.createTenant(staff, { id: second, slug: `wire-snd-${second.slice(-6).toLowerCase()}`, name: 'Wire Second' });
+        const slug = slugOf('wire-owned');
+        const refsOf = async (owner: TenantId) =>
+          (await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: LIST_PAGE_MAX, verticalSlug: slug })).map((r) => r.deploymentRef);
+
+        // A record written while no tenant owned the slug is read by whoever owns it when the read runs.
+        await put(slug, 'archive', 'v0', record(), '18:00:00');
+        expect(await refsOf(first)).toEqual([]);
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: first });
+        expect(await refsOf(first)).toEqual([`${slug}-archive`]);
+        await put(slug, 'serving', 'v1', record(), '18:00:01');
+        expect(await refsOf(first)).toEqual([`${slug}-archive`, `${slug}-serving`]);
+
+        // An owner changes by deleting the vertical, which takes its records, and registering it again:
+        // the tenant that held it reads nothing after, the new owner reads only what was recorded since.
+        await host.admin.deleteVertical(staff, slug);
+        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: second });
+        expect(await refsOf(first)).toEqual([]);
+        expect(await refsOf(second)).toEqual([]);
+        await put(slug, 'serving', 'v2', record(), '18:00:02');
+        expect(await refsOf(first)).toEqual([]);
+        expect(await refsOf(second)).toEqual([`${slug}-serving`]);
       });
 
       it('forgets a vertical’s records with the vertical', async () => {

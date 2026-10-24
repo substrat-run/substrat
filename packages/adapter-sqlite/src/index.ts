@@ -556,8 +556,10 @@ import {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   DEPLOYMENT_WIRE_AUTH_DDL,
+  assertWireAuthFilter,
   deploymentWireAuthOf,
   forgetVerticalWireAuth,
+  wireAuthAccessTarget,
   writeDeploymentWireAuth,
   indexVersionScopeStores,
   driverDeclarationsOf,
@@ -10506,9 +10508,11 @@ export class SqliteScopeHost implements ScopeHost {
           { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
         ));
       },
-      listWireAuth: async (actor, filter) => {
+      listWireAuth: async (actor, input) => {
+        // The judged copy, not the caller's object: only its own fields, the reach first, reach the log.
+        const filter = assertWireAuthFilter(input);
         const rows = deploymentWireAuthOf(switchSqlOf(this.directory), filter);
-        this.recordAccess(actor, 'listWireAuth', {}, filter, rows.length);
+        this.recordAccess(actor, 'listWireAuth', wireAuthAccessTarget(filter), filter, rows.length);
         return rows;
       },
       setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {

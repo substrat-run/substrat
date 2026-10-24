@@ -124,6 +124,12 @@ exists, count every script given a list naming that key as still trusting it. Th
 `recordWireAuth` rows name each script an upload gave lists to and the key ids of each list (the
 records themselves are reachable only through the host API today, until the readiness report).
 
+A read of the records (`listWireAuth`) is always one page and names its reach: one tenant's
+verticals or the whole fleet. A tenant reach follows the vertical's current owner, resolved when the
+read runs: the tenant that owns the slug then reads every record held for it, and one that no longer
+owns it reads none. An owner changes only by deleting the vertical, which removes its records, and
+registering the slug again.
+
 ## Turning signing off
 
 Write an explicit value other than `on` into the signer's flag, `off` being the plain one
