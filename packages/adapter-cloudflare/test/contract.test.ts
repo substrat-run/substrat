@@ -401,6 +401,44 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     await host.admin.defineRole(staff, t, { key: 'mixed-2', permissions: [MIXED[0]!, permissionKey.parse('rsv:other')], source: 'vertical' });
   });
 
+  describe('a tenant whose only scope was archived straight from provisioning (#2447 round 4)', () => {
+    const tenantWithEarlyScope = async () => {
+      const tn = tenantId.parse(ulid());
+      const early = scopeId.parse(ulid());
+      await host.admin.createTenant(staff, { id: tn, slug: `rsv-early-${tn.slice(-10).toLowerCase()}`, name: 'Early' });
+      await host.provisionScope(staff, { tenantId: tn, scopeId: early, vertical: 'rsv-front' }); // never activated
+      await host.admin.archiveScope(staff, tn, early);
+      return { tn, early };
+    };
+    const refusalOf = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as Error);
+
+    it('still reads the scope class’s reservations there: a mixed person’s role is refused; an unreserved key is admitted', async () => {
+      const { tn } = await tenantWithEarlyScope();
+      const refused = await refusalOf(host.admin.defineRole(staff, tn, { key: 'mixed-3', permissions: MIXED, source: 'vertical' }));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'mixed-3' is a person's role and would hold rsv:run/);
+      await host.admin.defineRole(staff, tn, { key: 'mixed-3', permissions: [MIXED[0]!], source: 'vertical' });
+    });
+
+    it('fails closed when that scope records no migration (its DO may never have run), naming it; unarchived, the same definition is judged', async () => {
+      const { tn, early } = await tenantWithEarlyScope();
+      await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_instance, state) => {
+        state.storage.sql.exec('UPDATE scopes SET schema_version = ? WHERE scope_id = ?', '0', early);
+      });
+      for (const role of [
+        { key: 'sys', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const },
+        { key: 'plain', permissions: [MIXED[0]!], source: 'vertical' as const },
+      ]) {
+        const refused = await refusalOf(host.admin.defineRole(staff, tn, role));
+        expect(errorCodeOf(refused)).toBe('forbidden');
+        expect(refused?.message).toContain(`role '${role.key}' cannot be judged: scope ${early} was archived straight from provisioning and records no migration`);
+      }
+      await host.admin.unarchiveScope(staff, tn, early);
+      await host.admin.defineRole(staff, tn, { key: 'sys', permissions: [MIXED[1]!], source: 'vertical', holder: 'system' });
+      await host.admin.defineRole(staff, tn, { key: 'plain', permissions: [MIXED[0]!], source: 'vertical' });
+    });
+  });
+
   it('…so a seated role is not widened: the refused definition writes nothing, and nothing is fanned out (#2447 round 1)', async () => {
     const who = principalId.parse(ulid());
     await host.admin.defineRole(staff, t, { key: 'grows', permissions: [MIXED[0]!], source: 'vertical' });

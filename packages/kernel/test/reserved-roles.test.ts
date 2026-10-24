@@ -13,7 +13,6 @@ import {
   reservedRoleSetRefusal,
   reservedShapeRefusal,
   dumpRoleState,
-  holdsSeats,
 } from '../src/reserved-roles.js';
 
 const manifest = (id: string, permissions: { key: string; description: string; holder?: 'system' }[]) =>
@@ -314,12 +313,3 @@ describe('dumpRoleState (#2447 round 2)', () => {
   });
 });
 
-describe('holdsSeats (#2447 round 3)', () => {
-  it('reads every scope not reaped, but not one archived straight from provisioning (#1524)', () => {
-    for (const status of ['provisioning', 'active', 'suspended', 'archiving', 'archived']) expect(holdsSeats({ status })).toBe(true);
-    expect(holdsSeats({ status: 'archived', archivedFromStatus: 'active' })).toBe(true);
-    expect(holdsSeats({ status: 'reaped' })).toBe(false);
-    expect(holdsSeats({ status: 'archived', archivedFromStatus: 'provisioning' })).toBe(false);
-    expect(holdsSeats({ status: 'archiving', archivedFromStatus: 'provisioning' })).toBe(false);
-  });
-});

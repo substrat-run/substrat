@@ -518,7 +518,6 @@ import {
   reservedRoleSetRefusal,
   reservedShapeRefusal,
   SEAT_HOLDING_SCOPE_STATUSES,
-  holdsSeats,
   dumpRoleState,
   type DumpTable,
   type DeclaredPermissions,
@@ -7569,6 +7568,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // roles, so a role assigned through a door cannot be widened afterwards. A refusal writes
         // nothing, so a seat of the role as it was stored keeps working.
         const context = await this.definitionContext(tenantId, parsed);
+        if (context.unreadable) throw substratError('forbidden', `role '${parsed.key}' cannot be judged: ${context.unreadable}`);
         // Read by `definedRoleOf`, so a ControlPlaneDO from before #2447 in a deploy's restart window is understood.
         const defined = definedRoleOf(await this.cp.defineRole(tenantId, parsed, context.reservation, context.seatedInScopes));
         if ('refused' in defined) throw substratError('forbidden', defined.refused);
@@ -11832,8 +11832,16 @@ export class CloudflareScopeHost implements ScopeHost {
    *   host's modules alone (a stated residual: its first scope's projection is not judged again);
    * - for a `holder: 'system'` definition of a key with no system-held definition stored (none at
    *   all included: a seat can outlive its role's row), whether anyone but a system principal holds a
-   *   live scope-level seat in it in one of those scopes (the
-   *   ControlPlaneDO reads the tenant-level seats). No scope is asked for seats otherwise.
+   *   live scope-level seat in it in one of those scopes (the ControlPlaneDO reads the tenant-level
+   *   seats). No scope is asked for seats otherwise.
+   *
+   * Every scope that is not reaped is read, a scope archived straight from `provisioning` included:
+   * the platform's door seats into a provisioning scope, and unarchive brings the seat back. A DO
+   * cannot be asked anything without waking it, and waking one that never ran would create storage it
+   * never had (#1524), so such a scope is read only when its directory row records a migration
+   * (`schema_version` past `'0'`), which `provisionScope` writes after instantiating it. One that
+   * records none is not read, and the definition fails closed: `unreadable` names it, and the caller
+   * refuses a definition its seats or its class's reservations would decide.
    *
    * A stated residual: this half is read before the ControlPlaneDO's unit, not in it, so a scope-level
    * seat made in between is not seen. The tenant-level seats and the stored roles are read in the unit.
@@ -11841,11 +11849,16 @@ export class CloudflareScopeHost implements ScopeHost {
   private async definitionContext(
     tenantId: TenantId,
     role: RoleDefinition,
-  ): Promise<{ reservation: { reserved: string[]; declared: string[] }; seatedInScopes: boolean }> {
-    // Every scope not reaped (`SEAT_HOLDING_SCOPE_STATUSES`): an archived scope's seats come back on unarchive.
-    const scopes = (await this.cp.listScopes({ tenantId, status: [...SEAT_HOLDING_SCOPE_STATUSES] })).filter((s) =>
-      holdsSeats({ status: s.status, archivedFromStatus: s.archived_from_status }),
-    );
+  ): Promise<{ reservation: { reserved: string[]; declared: string[] }; seatedInScopes: boolean; unreadable: string | null }> {
+    const listed = await this.cp.listScopes({ tenantId, status: [...SEAT_HOLDING_SCOPE_STATUSES] });
+    const neverStored = (s: (typeof listed)[number]) =>
+      (s.status === 'archived' || s.status === 'archiving') && s.archived_from_status === 'provisioning' && (s.schema_version ?? '0') === '0';
+    const scopes = listed.filter((s) => !neverStored(s));
+    const unreadableScope = listed.find(neverStored);
+    const unreadable = unreadableScope
+      ? `scope ${unreadableScope.scope_id} was archived straight from provisioning and records no migration, so its seats and its ` +
+        `class's reservations cannot be read without creating storage it may never have had. Unarchive it (or reap it) first`
+      : null;
     const reservation = { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
     if (scopes.length > 0) {
       const here = await this.scopeStub(scopes[0]!.scope_id as ScopeId).reservationHere();
@@ -11853,9 +11866,11 @@ export class CloudflareScopeHost implements ScopeHost {
       reservation.declared = [...new Set([...reservation.declared, ...here.declared])];
     }
     let seatedInScopes = false;
+    let seatsDecide = false;
     if (role.holder === 'system') {
       const stored = await this.cp.getRole(tenantId, role.key);
       if (stored?.holder !== 'system') {
+        seatsDecide = true;
         for (const s of scopes) {
           if ((await this.scopeStub(s.scope_id as ScopeId).roleStateHere(tenantId)).seated.includes(role.key)) {
             seatedInScopes = true;
@@ -11864,7 +11879,10 @@ export class CloudflareScopeHost implements ScopeHost {
         }
       }
     }
-    return { reservation, seatedInScopes };
+    // Fail closed only where the unread scope could decide: its seats (a system-held definition the
+    // seats judge), or the class's reservations when no other scope gave them.
+    const decides = unreadable !== null && ((seatsDecide && !seatedInScopes) || scopes.length === 0);
+    return { reservation, seatedInScopes, unreadable: decides ? unreadable : null };
   }
 
   /**

@@ -424,6 +424,25 @@ export function reservedRoleContractSuite(
         expect(await stored('shelved')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
       });
 
+      it('counts a seat in a scope archived straight from provisioning; unarchive brings it back unchanged (round 4)', async () => {
+        const early = scopeId.parse(ulid());
+        const bob = person();
+        await host.provisionScope(staff, { tenantId: t1, scopeId: early, vertical: 'rsv-vertical' }); // never activated
+        await host.admin.defineRole(staff, t1, { key: 'esc', permissions: [RSV_USE], source: 'vertical' });
+        await host.admin.assignRole(staff, { principalId: bob, roleKey: 'esc', node: { tenantId: t1, scopeId: early } });
+        await host.admin.archiveScope(staff, t1, early);
+        await expectRefusal(
+          host.admin.defineRole(staff, t1, { key: 'esc', permissions: [RSV_RUN], source: 'vertical', holder: 'system' }),
+          'forbidden',
+          /role 'esc' is held by a principal/,
+        );
+        await host.admin.unarchiveScope(staff, t1, early);
+        expect(await host.listScopeRoleHolders(t1, early, bob)).toEqual([{ principal: bob, roleKey: 'esc' }]);
+        expect(await stored('esc')).toMatchObject({ permissions: [RSV_USE], holder: 'person' });
+        const probe = await host.getScope(bob, t1, early);
+        expect((await probe.invoke<{ allowed: boolean }>('perm/probe', { permission: RSV_RUN })).allowed).toBe(false);
+      });
+
       it('twin: the same change to a role nobody holds is judged as a first definition, and admitted', async () => {
         await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_USE], source: 'vertical' });
         await host.admin.defineRole(staff, t1, { key: 'idle', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });

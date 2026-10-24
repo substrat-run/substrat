@@ -470,7 +470,6 @@ import {
   reservedShapeRefusal,
   SCOPE_SEATED_ROLES_SQL,
   SEAT_HOLDING_SCOPE_STATUSES,
-  holdsSeats,
   TENANT_SEATED_ROLES_SQL,
   type DeclaredPermissions,
   admitPeer,
@@ -5778,18 +5777,23 @@ export class SqliteScopeHost implements ScopeHost {
   /**
    * #2447: does anyone but a system principal hold a live seat in `roleKey` in this tenant — a
    * tenant-level assignment, or a scope-level one in any of its scopes not reaped
-   * (`SEAT_HOLDING_SCOPE_STATUSES`: an archived scope's seats come back on unarchive)?
+   * (`SEAT_HOLDING_SCOPE_STATUSES`: an archived scope's seats come back on unarchive, one archived
+   * straight from provisioning included)? A scope with no store on disk holds none and is not opened.
    */
   private roleSeated(tenantId: TenantId, roleKey: string): boolean {
     const now = this.clock();
     const holds = (rows: unknown[]) => (rows as { role_key: string }[]).some((r) => r.role_key === roleKey);
     if (holds(this.directory.prepare(TENANT_SEATED_ROLES_SQL).all(tenantId, now))) return true;
-    const scopes = (
-      this.directory
-        .prepare(`SELECT scope_id, status, archived_from_status FROM scopes WHERE tenant_id = ? AND status IN (${SEAT_HOLDING_SCOPE_STATUSES.map(() => '?').join(', ')})`)
-        .all(tenantId, ...SEAT_HOLDING_SCOPE_STATUSES) as { scope_id: string; status: string; archived_from_status: string | null }[]
-    ).filter((s) => holdsSeats({ status: s.status, archivedFromStatus: s.archived_from_status }));
-    return scopes.some((s) => holds(this.runtime(tenantId, s.scope_id as ScopeId).db.prepare(SCOPE_SEATED_ROLES_SQL).all(now)));
+    const scopes = this.directory
+      .prepare(`SELECT scope_id FROM scopes WHERE tenant_id = ? AND status IN (${SEAT_HOLDING_SCOPE_STATUSES.map(() => '?').join(', ')})`)
+      .all(tenantId, ...SEAT_HOLDING_SCOPE_STATUSES) as { scope_id: string }[];
+    return scopes.some((s) => {
+      // Read without creating storage: a scope whose store is neither open nor on disk never held a
+      // seat (a scope archived straight from provisioning may be one), and opening it would create it.
+      const id = s.scope_id as ScopeId;
+      if (!this.scopes.has(`${tenantId}/${id}`) && !existsSync(join(this.dir, `${tenantId}__${id}.sqlite`))) return false;
+      return holds(this.runtime(tenantId, id).db.prepare(SCOPE_SEATED_ROLES_SQL).all(now));
+    });
   }
 
   /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */

@@ -250,21 +250,13 @@ export function dumpRoleState(tables: readonly DumpTable[], tenantId: string, no
 
 /**
  * #2447: the scope statuses whose seats count as held when a role definition is judged: every one
- * but `reaped` (whose storage is gone). An archived scope comes back on unarchive with its seats, so
+ * but `reaped` (whose storage is gone), a scope archived straight from `provisioning` included: it
+ * can hold a seat (the platform's door seats into a provisioning scope), and unarchive brings it back.
+ * Each adapter reads such a scope without creating storage it never had, and where it cannot, fails
+ * closed. An archived scope comes back on unarchive with its seats, so
  * a definition judged without them would relabel those seats; both adapters read this one list.
  */
 export const SEAT_HOLDING_SCOPE_STATUSES = ['provisioning', 'active', 'suspended', 'archiving', 'archived'] as const;
-
-/**
- * #2447: whether a scope's seats are read when a role definition is judged: a
- * `SEAT_HOLDING_SCOPE_STATUSES` status, unless it was archived straight from `provisioning`. That
- * scope never held data, and reading it would create the spine it never had (#1524's rule for the
- * storage gauge, `holdsStore`).
- */
-export function holdsSeats(scope: { status: string; archivedFromStatus?: string | null }): boolean {
-  if (!(SEAT_HOLDING_SCOPE_STATUSES as readonly string[]).includes(scope.status)) return false;
-  return !((scope.status === 'archived' || scope.status === 'archiving') && scope.archivedFromStatus === 'provisioning');
-}
 
 /** #2447: `SCOPE_SEATED_ROLES_SQL` for a tenant's tenant-level tuples. Parameters: tenantId, now. */
 export const TENANT_SEATED_ROLES_SQL =

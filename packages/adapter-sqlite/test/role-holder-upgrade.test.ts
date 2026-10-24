@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -108,6 +108,36 @@ it('refuses making a seated legacy holder-less role system-held, in one release 
       // The twin: a legacy row nobody holds upgrades (#2480).
       await after.admin.defineRole(staff, t, { key: 'idle', permissions: [A], source: 'vertical', holder: 'system' });
       expect(await role('idle')).toMatchObject({ permissions: [A], holder: 'system' });
+    } finally {
+      await after.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// #2447 review round 4: a scope's seats are read without creating its store. A scope with no store
+// on disk (one archived straight from provisioning may be one) holds no seat, so it decides nothing,
+// and it is not opened, which would create the store it never had.
+it('reads no scope without a store: a definition is judged with no seats there, and the store is not created', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'no-store-seat-'));
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const file = join(dir, `${t}__${s}.sqlite`);
+  try {
+    const before = new SqliteScopeHost({ dir });
+    await before.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
+    await before.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'v' });
+    await before.admin.archiveScope(staff, t, s);
+    await before.close();
+    for (const suffix of ['', '-wal', '-shm']) rmSync(`${file}${suffix}`, { force: true });
+
+    const after = new SqliteScopeHost({ dir });
+    try {
+      await after.admin.defineRole(staff, t, { key: 'runner', permissions: [permissionKey.parse('x:run')], source: 'vertical', holder: 'system' });
+      expect((await after.admin.listRoles(staff, { tenantId: t }))[0]).toMatchObject({ key: 'runner', holder: 'system' });
+      expect(existsSync(file)).toBe(false);
     } finally {
       await after.close();
     }
