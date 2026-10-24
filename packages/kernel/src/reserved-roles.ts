@@ -111,10 +111,10 @@ export interface HostReservations {
  *   unless a system-held definition is stored for it: the seats were made through a person's door
  *   (or before any definition, or under one a projection since dropped), and relabelling the role
  *   would make them a system principal's. Taking the seats back first, or defining a new key, is the
- *   way. A role stored before the
- *   holder was recorded (#2480: no holder) and made only of reserved keys — K-55's shape, which the
- *   platform's door admitted — may still be declared `holder: 'system'`, with no key it did not
- *   already hold.
+ *   way. The seats decide for a role stored before the holder was recorded (#2480: no holder) too:
+ *   it may be declared `holder: 'system'` only while nobody but a system principal holds a seat in
+ *   it, since an upgrade admitted beside such a seat would let a later system-held definition add
+ *   keys to it.
  *
  * **A key the host knows nothing about is admitted, deliberately (fail-open).** A host judges only
  * the reservations of modules it knows and of the tenant's system-held roles. Refusing every key it
@@ -141,20 +141,14 @@ export function reservedRoleDefinitionRefusal(
   if (role.holder === 'system') {
     // Judged against the seats of the key, whether or not a definition is stored: a projection can
     // drop a role's row and leave its seats live, and a later definition must not relabel them.
+    // A row stored before the holder was recorded (#2480) is no exception: an upgrade admitted beside
+    // a person's seat would leave a system-held row a later definition widens unjudged by its seats.
     if (stored?.holder !== 'system' && seated) {
-      // #2480's upgrade, and only that: the same keys (or fewer), with the holder now recorded.
-      const legacyShape =
-        !!stored &&
-        stored.holder === undefined &&
-        stored.permissions.every((p) => host.reserved.has(p) || bySystemRole.has(p)) &&
-        role.permissions.every((p) => stored.permissions.includes(p));
-      if (!legacyShape) {
-        return (
-          `role '${role.key}' is held by someone who is not a system principal (${stored ? 'stored as a person\'s role' : 'with no definition stored'}), ` +
-          `so it cannot be declared holder: 'system': those seats were made through a person\'s door, and a system-held role is a ` +
-          `system principal\'s. Take its seats back first, or define the system-held role under a new key (K-55)`
-        );
-      }
+      return (
+        `role '${role.key}' is held by someone who is not a system principal (${stored ? 'stored as a person\'s role' : 'with no definition stored'}), ` +
+        `so it cannot be declared holder: 'system': those seats were made through a person\'s door, and a system-held role is a ` +
+        `system principal\'s. Take its seats back first, or define the system-held role under a new key (K-55)`
+      );
     }
     const personsKeys = new Map<string, string>();
     for (const r of others) if (r.holder !== 'system') for (const p of r.permissions) if (!personsKeys.has(p)) personsKeys.set(p, r.key);

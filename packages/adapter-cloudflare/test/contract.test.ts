@@ -655,6 +655,28 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       expect(await rowOf()).toEqual([]);
     });
 
+    it('a reconcile refuses making a seated legacy holder-less role system-held, with the same keys; an unseated one upgrades (round 3)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await release([member]);
+      // Rows from before #2444: projected with no holder.
+      for (const key of ['ops', 'idle']) await projector(scope).projectRole(tenant, { key, permissions: [MIXED[1]!], source: 'vertical' });
+      const who = principalId.parse(ulid());
+      await local.assignScopeRole(scope, who, 'ops');
+      const system = (key: string) => ({ key, permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const });
+      const refused = await failure(release([member, system('ops'), system('idle')]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'ops' is held by someone who is not a system principal/);
+      // The twin: the unseated legacy row upgrades.
+      await release([member, system('idle')]);
+      const holderOf = (key: string) =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+          (state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, key).toArray()[0] as { holder: string } | undefined)?.holder);
+      expect(await holderOf('idle')).toBe('system');
+    });
+
     it('roleSetRefusalLocal answers the refusal a restore asks before importing, writing nothing; its twin answers null (round 1)', async () => {
       const scope = scopeId.parse(ulid());
       expect(await local.roleSetRefusalLocal(scope, [member, { key: 'mixed', permissions: MIXED, source: 'vertical' }])).toMatch(

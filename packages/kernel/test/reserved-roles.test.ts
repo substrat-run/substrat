@@ -222,19 +222,17 @@ describe('reservedRoleDefinitionRefusal against the stored row of the same key (
     expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:run'], 'system')], true)).toBeNull();
   });
 
-  it('keeps the legacy upgrade: a seated role stored with no holder and only reserved keys may become holder: system; one with a person’s key may not', () => {
-    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:run'])], true)).toBeNull();
-    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:use', 'a:run'])], true)).toMatch(/cannot be declared holder: 'system'/);
+  it('the seats decide a legacy holder-less row too: seated, it cannot become holder: system, with any keys (round 3)', () => {
+    const both = { reserved: new Set(['a:run', 'b:run']), declared: new Set(['a:run', 'b:run']) };
+    for (const keys of [['a:run'], ['a:run', 'b:run']]) {
+      expect(reservedRoleDefinitionRefusal({ ...role(keys), holder: 'system' }, both, [stored(['a:run'])], true)).toMatch(
+        /cannot be declared holder: 'system'/,
+      );
+    }
   });
 
-  it('the legacy upgrade adds no key: a seated holder-less [a:run] redefined system-held [a:run, b:run] is refused (round 2, from the property test)', () => {
-    const both = { reserved: new Set(['a:run', 'b:run']), declared: new Set(['a:run', 'b:run']) };
-    expect(reservedRoleDefinitionRefusal({ ...role(['a:run', 'b:run']), holder: 'system' }, both, [stored(['a:run'])], true)).toMatch(
-      /cannot be declared holder: 'system'/,
-    );
-    // Its twins: the same keys, or fewer, upgrade.
-    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, both, [stored(['a:run'])], true)).toBeNull();
-    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, both, [stored(['a:run', 'b:run'])], true)).toBeNull();
+  it('twin: a legacy holder-less row nobody but a system principal holds may become holder: system (#2480)', () => {
+    expect(reservedRoleDefinitionRefusal({ ...role(['a:run']), holder: 'system' }, host, [stored(['a:run'])], false)).toBeNull();
   });
 
   it('judges a stored system-held role redefined as a person’s with its stored keys counted reserved, even on a module-less host', () => {
