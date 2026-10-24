@@ -49,7 +49,8 @@ import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer, type ProcessPeriod } from './process-map.js';
-import { createModelHost, ProviderError, type ModelHost } from '@substrat-run/vertical-host/model';
+import { createModelHost, type ModelHost } from '@substrat-run/vertical-host/model';
+import { ASK_FINDINGS_MAX, ASK_MAX_STEPS, ASK_SYSTEM, REFUSED, answeredTurn, appRow as appRowForAsk, askSummary, endedTurn, findingRow } from './ask.js';
 import {
   DEFAULT_EXPLANATION_MODEL,
   EXPLANATION_SENT,
@@ -5224,6 +5225,109 @@ async function processNoteIn(
   });
 }
 
+/**
+ * One question to the assistant (#2283), answered by a model that reads the dashboard through
+ * tools. Each tool calls the same guarded function its route does, as the caller, so a tool
+ * reads what the person may read and nothing more: a member without `dashboard:read-findings`
+ * gets a refusal from the findings tools, which the model is told to pass on. The budget is the
+ * #1749 reservation: one unit per question, however many tool calls it takes.
+ */
+async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' | 'assistant'; text: string }> }) {
+  offAnswer(ctx.c.env, true);
+  const { c, node } = ctx;
+  const dash = await teamScope(ctx);
+  const question = input.messages[input.messages.length - 1]!.text;
+  let reservation: string | null = null;
+  const ex = explainerFor(c.env, async () => {
+    reservation = ((await dash.invoke('dashboard/reserve-explanation', { subject: `ask:${ulid()}` })) as { id: string }).id;
+  });
+  // `offAnswer` above has already refused a deployment that writes nothing; this narrows the type.
+  if ('off' in ex) throw new HTTPException(409, { message: 'AI explanations are not turned on for this deployment' });
+
+  /** Run a read as the caller; a refused gate is an answer the model passes on, not a failure. */
+  const asCaller = async <T,>(read: () => Promise<T>): Promise<T | typeof REFUSED> => {
+    try {
+      return await read();
+    } catch (e) {
+      if (errorCodeOf(e) === 'permission_denied' || (e instanceof HTTPException && e.status === 403)) return REFUSED;
+      throw e;
+    }
+  };
+  const tools = {
+    list_apps: {
+      description: 'List the apps installed in this team: name, the vertical it runs, and whether it is active.',
+      input: z.object({}),
+      execute: () => asCaller(async () => ({ apps: (await allApps(dash)).map(appRowForAsk) })),
+    },
+    list_findings: {
+      description:
+        'List the team’s findings: problems the platform noticed recurring in its apps. Each has an id to pass to finding_evidence.',
+      input: z.object({
+        status: z.enum(['open', 'acked', 'resolved', 'suppressed']).optional(),
+        limit: z.number().int().min(1).max(ASK_FINDINGS_MAX).optional(),
+      }),
+      execute: ({ status, limit }: { status?: 'open' | 'acked' | 'resolved' | 'suppressed'; limit?: number }) =>
+        asCaller(async () => {
+          const page = await (await findingsPlane(ctx, 'read')).listFindings({ status: status ?? 'open', limit: limit ?? 10 });
+          return page === null ? { findings: [], available: false } : { findings: page.entries.map(findingRow), more: page.nextCursor !== null };
+        }),
+    },
+    finding_evidence: {
+      description: 'Read one finding’s evidence: its failure records (who refused, status codes, redacted messages) or sweep runs, and its likely cause.',
+      input: z.object({ id: z.string().min(1).max(64) }),
+      execute: ({ id }: { id: string }) =>
+        asCaller(async () => {
+          try {
+            return (await findingFactsIn(await findingsPlane(ctx, 'read'), id, {})).facts;
+          } catch (e) {
+            if (e instanceof HTTPException && e.status === 404) return { notFound: id };
+            throw e;
+          }
+        }),
+    },
+  };
+
+  let run;
+  try {
+    run = await ex.host.run({
+      spec: ex.spec,
+      attribution: { tenant: node.tenantId, scope: node.scopeId, vertical: dashboardManifest.id, version: dashboardManifest.version, operation: 'dashboard/ask' },
+      system: ASK_SYSTEM,
+      messages: input.messages.map((m) => ({ role: m.role, content: m.text })),
+      tools,
+      maxSteps: ASK_MAX_STEPS,
+      maxOutputTokens: 600,
+      temperature: 0.2,
+    });
+  } catch (e) {
+    if (reservation === null && errorCodeOf(e) === 'rate_limited') return { events: endedTurn(question, { budget: true }) };
+    if (reservation === null) throw e;
+    await dash.invoke('dashboard/settle-explanation', { id: reservation, outcome: 'failed', usage: null, filed: null });
+    console.warn(JSON.stringify({ msg: 'ask failed', error: e instanceof Error ? e.message : String(e) }));
+    return { events: endedTurn(question, { error: { code: 'model_unavailable', message: 'The assistant could not answer; try again in a while.' } }) };
+  }
+  const usage = { model: run.line.model, inputTokens: run.line.inputTokens, outputTokens: run.line.outputTokens, listUsd: run.line.listUsd };
+  const text = cleanText(run.text);
+  if (!text) {
+    await dash.invoke('dashboard/settle-explanation', { id: reservation, outcome: 'failed', usage, filed: null });
+    return { events: endedTurn(question, { error: { code: 'empty_answer', message: 'The assistant had nothing to say; try asking another way.' } }) };
+  }
+  const writtenAt = run.line.at;
+  await dash.invoke('dashboard/settle-explanation', {
+    id: reservation,
+    outcome: 'filed',
+    usage,
+    filed: {
+      digest: await factsDigest(input.messages),
+      text,
+      provenance: { writtenAt, model: run.label, since: writtenAt, until: writtenAt, sources: [], summary: askSummary(run.steps) },
+    },
+  });
+  const budget = (await dash.invoke('dashboard/explanation-budget', {})) as ExplanationBudget;
+  const exhausted = budget.person.used >= budget.person.limit || budget.team.used >= budget.team.limit;
+  return { events: answeredTurn({ question, steps: run.steps, text, producedAt: writtenAt, model: run.label, budgetExhausted: exhausted }) };
+}
+
 /** Whether this deployment writes AI text, and the caller's budget: one read for a whole page. */
 async function explanationsStatusIn(ctx: TeamContext): Promise<ExplanationView> {
   const off = offAnswer(ctx.c.env, false);
@@ -5733,6 +5837,7 @@ const routeHandlers = {
   }),
   'dashboard/create-finding-rule': async (ctx, rule) => (await findingsPlane(ctx, 'manage')).createFindingRule(rule),
   'dashboard/revoke-finding-rule': async (ctx, { ruleId }) => (await findingsPlane(ctx, 'manage')).revokeFindingRule(ruleId),
+  'dashboard/ask': async (ctx, input) => askIn(ctx, input),
   'dashboard/explanations-status': async (ctx) => explanationsStatusIn(ctx),
   'dashboard/get-finding-explanation': async (ctx, input) => findingExplanationIn(ctx, input, false),
   'dashboard/write-finding-explanation': async (ctx, input) => findingExplanationIn(ctx, input, true),

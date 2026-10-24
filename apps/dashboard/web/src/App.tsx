@@ -11,7 +11,8 @@ import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { canManageFindings } from './lib/findings';
 import { sectionLabel, sectionOf, sectionQuery } from './lib/obs-sections';
-import { CommandPalette } from './components/CommandPalette';
+import { CommandPalette, type AskFn } from './components/CommandPalette';
+import { mockAsk } from './lib/ask';
 import { mergePaletteModels, type PaletteContext, type PaletteGo } from './lib/palette';
 import { openRecordInUrl, openRequestInUrl } from './lib/request-url';
 import { MOCK_TIMELINE_TARGETS } from './lib/mock-timeline';
@@ -223,6 +224,29 @@ export function App() {
     if (!currentTeamId) throw new Error('no current team');
     return teamApi(currentTeamId);
   }, [currentTeamId]);
+
+  // ⌘K Ask (#2283): offered only where this deployment writes AI text, asked once per team.
+  const [aiOffered, setAiOffered] = useState(false);
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setAiOffered(true);
+      return;
+    }
+    if (!currentTeamId) return;
+    let live = true;
+    teamApi(currentTeamId)
+      .explanationsStatus({})
+      .then((v) => live && setAiOffered(v.available))
+      .catch(() => live && setAiOffered(false));
+    return () => {
+      live = false;
+    };
+  }, [currentTeamId]);
+  const ask = useMemo<AskFn | null>(() => {
+    if (!aiOffered) return null;
+    if (DEV_MOCK) return mockAsk();
+    return currentTeamId ? (input) => teamApi(currentTeamId).ask(input) : null;
+  }, [aiOffered, currentTeamId]);
 
   // Refresh = back to the FIRST page (the newest window); "Load more" appends below.
   const reloadApps = useCallback(async () => {
@@ -1042,6 +1066,7 @@ export function App() {
 
       {palette && (
         <CommandPalette
+          ask={ask}
           ctx={{
             apps: apps.map((a) => ({ scopeId: a.app_scope_id, name: a.name, host: a.hostname, status: a.status })),
             // The app the page is about: an app's own page, or a team page narrowed to one.
