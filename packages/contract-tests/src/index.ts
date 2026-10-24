@@ -165,7 +165,7 @@ export { SPLIT_CASES } from './split-cases.js';
 export { migrationCommentsContractSuite } from './migration-comments-suite.js';
 export { commentedDdlMod } from './migration-comments.js';
 export { manyMigrationsContractSuite } from './many-migrations-suite.js';
-export { manyMigrationsMod, MANY_MIGRATIONS_COUNT, MANY_MIGRATIONS_MODULE_ID } from './many-migrations.js';
+export { manyMigrationsMod, MANY_MIGRATIONS_COUNT, MANY_MIGRATIONS_MODULE_ID, MANY_MIGRATIONS_VERSIONS } from './many-migrations.js';
 export { migrationFenceContractSuite } from './migration-fence-suite.js';
 export { fenceDeclaredMod, fenceReusedRightMod, fenceReusedWrongMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 export { shapeBackfillTies } from './shape-backfill-ties.js';

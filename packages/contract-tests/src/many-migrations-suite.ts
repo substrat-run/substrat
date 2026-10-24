@@ -1,38 +1,52 @@
 /**
  * Contract suite for the applied-migrations read (#2553): a scope holding more migrations than the
- * read once capped at (100) answers with every one of them, on every adapter. The fixture is
- * `manyMigrationsMod`, which carries more than the cap on its own.
+ * read once capped at (100) answers with every one of them, on every adapter. The first case's
+ * fixture is `manyMigrationsMod`, which carries more than the cap on its own; the second's is
+ * `overCapMigrationsMod`, past twice the cap on a scope of its own, so a cap raised to 200 still fails.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type ModuleRegistration, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { MANY_MIGRATIONS_MODULE_ID, MANY_MIGRATIONS_VERSIONS, manyMigrationsMod } from './many-migrations.js';
+import {
+  MANY_MIGRATIONS_MODULE_ID,
+  MANY_MIGRATIONS_VERSIONS,
+  OVER_CAP_MIGRATIONS_MODULE_ID,
+  OVER_CAP_MIGRATIONS_VERSIONS,
+  manyMigrationsMod,
+  overCapMigrationsMod,
+} from './many-migrations.js';
+
+/** One host, one tenant, one provisioned and migrated scope carrying `mod`. */
+function scopeWith(mod: ModuleRegistration, vertical: string, makeFixture: () => Promise<ScopeHostFixture>) {
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const state = {} as { fixture: ScopeHostFixture; host: ScopeHost };
+  const setup = async () => {
+    state.fixture = await makeFixture();
+    state.host = state.fixture.host;
+    state.host.registerModule(mod);
+    await state.host.admin.createTenant(staff, { id: t, slug: `mm-${t.toLowerCase()}`, name: 'Many migrations' });
+    await state.host.admin.grantEntitlement(staff, t, vertical);
+    await state.host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
+    await state.host.admin.activateScope(staff, t, s);
+    await state.host.getScope(principalId.parse(ulid()), t, s);
+  };
+  const applied = () => state.host.admin.scopeAppliedMigrations(staff, t, s);
+  return { state, setup, applied };
+}
 
 export function manyMigrationsContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`applied migrations past 100 rows (#2553): ${adapterName}`, () => {
-    let fixture: ScopeHostFixture;
-    let host: ScopeHost;
-    const t = tenantId.parse(ulid());
-    const s = scopeId.parse(ulid());
-    const staff = platformActorId.parse(ulid());
-
-    beforeAll(async () => {
-      fixture = await makeFixture();
-      host = fixture.host;
-      host.registerModule(manyMigrationsMod);
-      await host.admin.createTenant(staff, { id: t, slug: `mm-${t.toLowerCase()}`, name: 'Many migrations' });
-      await host.admin.grantEntitlement(staff, t, 'many-migrations');
-      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'many-migrations' });
-      await host.admin.activateScope(staff, t, s);
-      await host.getScope(principalId.parse(ulid()), t, s);
-    });
+    const scope = scopeWith(manyMigrationsMod, 'many-migrations', makeFixture);
+    beforeAll(scope.setup);
     afterAll(async () => {
-      await fixture.cleanup();
+      await scope.state.fixture.cleanup();
     });
 
     it('reads back every migration a scope applied, not the first hundred', async () => {
-      const applied = await host.admin.scopeAppliedMigrations(staff, t, s);
+      const applied = await scope.applied();
       // The twin of the fixture's own count: the list is longer than the old cap, and nothing is missing.
       expect(MANY_MIGRATIONS_VERSIONS.length).toBeGreaterThan(100);
       expect(applied.length).toBeGreaterThan(100);
@@ -46,6 +60,23 @@ export function manyMigrationsContractSuite(adapterName: string, makeFixture: ()
       // Still newest first end to end, so a caller renders a history without re-sorting it.
       const stamped = applied.filter((m) => m.appliedAt !== null).map((m) => m.appliedAt!);
       expect([...stamped].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))).toEqual(stamped);
+    });
+  });
+
+  describe(`applied migrations past 200 rows, newest first (#2553): ${adapterName}`, () => {
+    const scope = scopeWith(overCapMigrationsMod, 'over-cap-migrations', makeFixture);
+    beforeAll(scope.setup);
+    afterAll(async () => {
+      await scope.state.fixture.cleanup();
+    });
+
+    it('answers every one of 260 migrations, last applied first', async () => {
+      expect(OVER_CAP_MIGRATIONS_VERSIONS.length).toBeGreaterThan(200);
+      const mine = (await scope.applied()).filter((m) => m.moduleId === OVER_CAP_MIGRATIONS_MODULE_ID);
+      // The exact reverse of the order they ran in. The stamps alone cannot say it: a pass stamps
+      // each migration with its own clock read, so neighbours share a millisecond (every one of them
+      // does where the clock holds still), and only the order they were written in tells which came last.
+      expect(mine.map((m) => m.version)).toEqual([...OVER_CAP_MIGRATIONS_VERSIONS].reverse());
     });
   });
 }
