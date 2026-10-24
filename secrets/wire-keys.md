@@ -71,7 +71,9 @@ for dispatched requests carry `wire: 'signed'`, a peer invocation writes `router
 `outcome: 'signed'`, and the control plane writes `substrat: 'wire-sign'` lines with
 `outcome: 'signed'`. Any `failed` names its reason (`unset`, a key-form refusal such as
 `not-pkcs8-v1`, or `claims`), and the router also writes `router: 'wire-sign-failed'` to its error
-log. A failed signature never fails a request: it goes with its legacy headers, as before.
+log. A failed signature never fails a request: it goes with its legacy headers, as before. A
+control-plane line with `outcome: 'skipped'` and `reason: 'stream'` is a streamed call left unsigned
+by design (RFC §3.6), not a failure.
 
 ## Turning signing off
 

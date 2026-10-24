@@ -259,8 +259,14 @@ finished reading. A clock that is not a number fails both comparisons rather tha
 A `call` binds its exact body, so the verifier reads the whole body before it acts on any of it.
 Web Crypto has no streaming digest, so this means buffering. It reads it only when the body is the
 next check (a `WireBodyReader`), after the signature, the audience, the time, the method and the
-target have passed: a call with no envelope, or one refused before that, is never buffered. Every internal endpoint today reads
-a whole JSON body anyway, and a scope too large for one call already moves in pages (#2450). An
+target have passed: a call with no envelope, or one refused before that, is never buffered. Every internal endpoint reads
+a whole JSON body anyway but one, and a scope too large for one call already moves in pages (#2450). The one is
+`/internal/connector-attachment-stream` (#2498), whose body is sent as it is read so that neither end holds all of it.
+Binding it would mean holding it, so version 1 does not sign it: the control plane's signer sends such a call with
+its legacy header alone, never reading its body, and counts it as `skipped`, which is a decision rather than a
+failure. Unsigned, it meets the entry's legacy path, and the entry never reads an unsigned call's body, so `dual`
+keeps the stream unbuffered. It would be refused in `signed-only`, so it is on the flip gate's list (§7, follow-on
+4) until it has an answer of its own (below, Q5). An
 empty body is the empty string or zero bytes. A body that is absent or `null` (a body read that
 failed) is refused, never digested as empty. A `route` binds no body: the router does not buffer
 an end user's upload, and a route's authority is the identity the router resolved, not the
@@ -547,7 +553,8 @@ step 6, withdraws the credential.
   `wire: 'signed' | 'failed'` for a dispatch it tried to sign, and a peer invocation writes
   `{ router: 'wire-sign', kind, aud, outcome }`; the control plane writes
   `{ substrat: 'wire-sign', issuer: 'platform', aud, outcome }` per call, with a `reason` beside
-  `failed`. A failure names why (`unset`, the key form's refusal, `claims`, or `error` for anything
+  `failed`, and `outcome: 'skipped'` with `reason: 'stream'` for a streamed call it leaves unsigned
+  by design (§3.6), so a readiness report never reads a deliberate skip as a signing failure. A failure names why (`unset`, the key form's refusal, `claims`, or `error` for anything
   else), never a key. Both signers decide through one function, contracts' `wireSignerOf`, so the
   reasons are the same on both. None of these is written while `sign` is off. A signer whose key will not import keeps sending the legacy
   headers and raises an alarm (`router: 'wire-sign-failed'` on the router's error log). Where
@@ -632,6 +639,8 @@ never rebuilt keeps the up-calls it was built with.
      `tenantId` and `scopeId`), else its query's, both or neither.
    - **A signer that cannot sign never fails the request**: it goes with its legacy headers and its
      whole body, and is counted (§8).
+   - **A streamed call is not signed** (§3.6, Q5): it goes with its legacy header, its body unread,
+     counted `skipped`.
    - **The informational headers** are listed as carrying no authority (§5).
    - **The keys**: their own pairs, `pnpm wire-keys` (§6).
    Notes it leaves for later follow-ons:
@@ -651,7 +660,8 @@ never rebuilt keeps the up-calls it was built with.
    injecting it, and gives an environment's lists to one canary deployment first. A list that
    still will not load at a deployment is the counted `keys` fault (§3.4).
 4. **The fleet walk and readiness report**, with the gates on `signed-only` (standby keys listed,
-   the cutover criterion, versions without the entry named), on dropping a key (and its
+   the cutover criterion, versions without the entry named, and every route a signer leaves unsigned
+   by design, today `/internal/connector-attachment-stream`, answered first: §3.6, Q5), on dropping a key (and its
    break-glass path), and on withdrawing the shared credentials (both of §7's tests). The signers'
    release gate on `sign` off and on non-signing builds goes into each signer's deploy workflow.
    The report reads the wire lines through a query of its own (§8), and takes step 2's reading
@@ -748,6 +758,10 @@ few, so the store stays small.
 
 **Q5. Large bodies.** **Decided:** buffer them. Version 1 has no streaming endpoint. If one is
 ever needed, it gets a new field in a new version rather than a special case in this one.
+**Amended in step 2:** one now exists, `/internal/connector-attachment-stream` (#2498), and version 1
+does not sign it (§3.6). It needs its own answer before any environment goes `signed-only`: a new
+envelope version that binds a declared length and a digest the producer states, or a different guard
+for that one route.
 
 **Q6. The lifetimes.** **Decided:** 60 seconds by default, 120 at most, 30 of skew, revisited from
 the `refused:expired` and `refused:not-yet-valid` counts.

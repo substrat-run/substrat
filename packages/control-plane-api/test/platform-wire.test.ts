@@ -176,6 +176,75 @@ describe('on: every call a client makes carries a call envelope beside the legac
   });
 });
 
+describe('a streamed call (#2498): never signed, and its body never read by the signer (RFC §3.6, Q5)', () => {
+  /** A sized stream that records whether anything has read it. */
+  function sizedStream() {
+    let read = false;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          read = true;
+          controller.enqueue(new Uint8Array([1, 2, 3]));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return { body: { stream, length: 3 }, read: () => read };
+  }
+  const upload = (body: unknown) =>
+    ({ connectionId: '01JZ0000000000000000CNN001', tenantId: T, scopeId: S, entity: { entityType: 'document', entityId: 'd1' }, filename: 'a.pdf', contentType: 'application/pdf', visibility: 'internal', body }) as never;
+  /** A deployment that records each call as it was handed over, reading nothing. */
+  function deployment(s: ReturnType<typeof sizedStream>) {
+    const calls: { input: RequestInfo | URL; init: RequestInit | undefined; readBefore: boolean }[] = [];
+    const send = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init, readBefore: s.read() });
+      return Response.json({ id: '01JZ0000000000000000ATT001' });
+    }) as typeof globalThis.fetch;
+    return { send, calls };
+  }
+
+  it('on: it goes exactly as given, with its legacy header and no envelope, counted skipped and never failed', async () => {
+    const s = sizedStream();
+    const d = deployment(s);
+    const lines: string[] = [];
+    await new VerticalClient({ fetch: signed(d.send, active.privateKey, (l) => lines.push(l)), platformSecret: SECRET }).connectorUploadAttachment(upload(s.body));
+    const [{ input, init, readBefore }] = d.calls as [(typeof d.calls)[number]];
+    expect(readBefore).toBe(false);
+    // Handed over as the client made it, not rebuilt into a request around a read body.
+    expect(typeof input).toBe('string');
+    expect(String(input)).toMatch(/\/internal\/connector-attachment-stream$/);
+    expect(typeof (init!.body as ReadableStream).getReader).toBe('function');
+    const headers = new Headers(init!.headers);
+    expect(headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
+    expect(headers.has(WIRE_SIGNATURE_HEADER)).toBe(false);
+    expect(headers.get('x-substrat-platform')).toBe(SECRET);
+    expect(lines.map((l) => JSON.parse(l) as unknown)).toEqual([{ substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'skipped', reason: 'stream' }]);
+  });
+
+  it('off: the client is handed the very fetch it had, so the streamed call reaches it unchanged and nothing is counted', async () => {
+    const s = sizedStream();
+    const d = deployment(s);
+    const lines: string[] = [];
+    const fetch = platformSignedFetch({ sign: 'off', key: active.privateKey, log: (l) => lines.push(l) }, AUD, d.send);
+    expect(fetch).toBe(d.send);
+    await new VerticalClient({ fetch, platformSecret: SECRET }).connectorUploadAttachment(upload(s.body));
+    expect(d.calls[0]!.readBefore).toBe(false);
+    expect(new Headers(d.calls[0]!.init!.headers).has(WIRE_ENVELOPE_HEADER)).toBe(false);
+    expect(lines).toEqual([]);
+  });
+
+  it('its twin: the same attachment given as bytes rides the multipart route, and that call is signed', async () => {
+    const r = recorder();
+    const lines: string[] = [];
+    await new VerticalClient({ fetch: signed(r.fetch, active.privateKey, (l) => lines.push(l)), platformSecret: SECRET }).connectorUploadAttachment(upload(new Uint8Array([1, 2, 3])));
+    const sent = r.sent[0]!;
+    expect(new URL(sent.url).pathname).toBe('/internal/connector-attachment');
+    expect(claimsOf(sent)).toMatchObject({ iss: 'platform', kind: 'call', aud: AUD, bodyDigest: await wireDigest(await sent.clone().arrayBuffer()) });
+    expect(lines.map((l) => JSON.parse(l) as unknown)).toEqual([{ substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'signed' }]);
+  });
+});
+
 describe('on, a signer that cannot sign: the call goes with its legacy header and its whole body', () => {
   it.each([
     ['unset', '', 'unset'],
