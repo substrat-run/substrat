@@ -158,7 +158,7 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   **Settings → Permissions**; tenant credentials are checked against registry ownership,
   and staff retain an override. Deployment manifests cannot grant it.
 - **Provisioner grant** — `/verticals/:slug/tenant-provisioner` remains staff-only.
-- **Roles**, **admin-log**, **ops-failures**, **meters** (`/meters/requests` is the daily request count per tenant, app and scope, kept from the router's sampled datapoints: every count is an estimate, and the answer names which days have been read), **model-usage** (meter 3: the lines a vertical's model host raised as `model-usage` intents, listed and folded per tenant × model with the platform's margin applied at read time), and **observability**
+- **Roles**, **admin-log**, **ops-failures**, **meters** (`/meters/requests` is the daily request count per tenant, app and scope, kept from the router's sampled datapoints: every count is an estimate, and the answer names which days have been read; `/meters/days` is each tenant's scope and entitlement counts as the first scheduled pass of each day found them, kept, with the record of which days were taken), **model-usage** (meter 3: the lines a vertical's model host raised as `model-usage` intents, listed and folded per tenant × model with the platform's margin applied at read time), and **observability**
   (`/observability/logs`, `/observability/metrics`, `/observability/metrics-series` —
   staff-only, script-grain, and `/observability/tenant-metrics`,
   `/observability/tenant-metrics-series`, `/observability/tenant-logs` — the only

@@ -23,6 +23,7 @@ import {
 import worker, {
   drainContextOf,
   drainTarget,
+  meterSnapshotLogOf,
   platformRequestSweepRun,
   recordPlatformRequestPass,
   requestRollupFor,
@@ -653,5 +654,38 @@ describe('the scheduled pass runs the steps after a failed hostname reconcile', 
         state.storage.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
       });
     }
+  });
+});
+
+describe('the daily meter snapshot in the scheduled pass (#2501)', () => {
+  const base = { day: '2026-10-23', taken: false, tenants: 0, failed: 0, repeated: 0, streak: null, pruned: 0 };
+
+  it('the log line says nothing for a pass that took nothing and is not failing', () => {
+    expect(meterSnapshotLogOf(null)).toBeNull();
+    expect(meterSnapshotLogOf(undefined)).toBeNull();
+    // A later pass of a day already taken.
+    expect(meterSnapshotLogOf(base)).toBeNull();
+    // A prune alone is not worth a line.
+    expect(meterSnapshotLogOf({ ...base, pruned: 4 })).toBeNull();
+  });
+
+  it('the log line names the day taken with its tenants, and a failing run with its start and length', () => {
+    expect(meterSnapshotLogOf({ ...base, taken: true, tenants: 7 })).toEqual({ day: '2026-10-23', tenants: 7 });
+    const streak = { error: 'directory busy', since: '2026-10-22T23:45:00.000Z', failures: 3 };
+    // Repeated, so not in the digest: the line is where the run stays visible.
+    expect(meterSnapshotLogOf({ ...base, failed: 1, repeated: 1, streak })).toEqual({ day: '2026-10-23', failing: streak });
+  });
+
+  it('on the directory DO, the real scheduled pass takes the day it runs in', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const staff = platformActorId.parse(ulid());
+    await warmControlPlane(env.CONTROL_PLANE);
+    const before = new Date().toISOString().slice(0, 10);
+    await worker.scheduled({} as ScheduledController, env as never);
+    const after = new Date().toISOString().slice(0, 10);
+    // The directory persists across this pool's files, so an earlier file's pass may have taken the
+    // day already: what holds either way is that the day is taken, at an instant inside it.
+    const takes = await host.admin.listMeterDayTakes!(staff, { since: before, until: after });
+    expect(takes.some((t) => t.error === null && t.takenAt?.slice(0, 10) === t.day)).toBe(true);
   });
 });

@@ -60,6 +60,8 @@ import {
   type OrphanAttachmentSweepOptions,
   type RequestRollupSweepOptions,
   type RequestRollupSweepReport,
+  type MeterSnapshotSweepReport,
+  type FailingRun,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -953,7 +955,7 @@ export function requestRollupFor(
 export function requestRollupLogOf(rollup: RequestRollupSweepReport | null | undefined): {
   read: number;
   recorded: number;
-  failing?: { error: string; since: string; failures: number };
+  failing?: FailingRun;
   saturatedDays?: string[];
 } | null {
   if (!rollup || (rollup.read === 0 && rollup.failed === 0 && rollup.saturated === 0 && rollup.streak === null)) return null;
@@ -962,6 +964,25 @@ export function requestRollupLogOf(rollup: RequestRollupSweepReport | null | und
     recorded: rollup.recorded,
     ...(rollup.streak ? { failing: rollup.streak } : {}),
     ...(rollup.saturatedDays.length > 0 ? { saturatedDays: rollup.saturatedDays } : {}),
+  };
+}
+
+/**
+ * #2501: what the pass's log line says about the daily meter snapshot, or null when it did nothing
+ * worth a line. The pass that takes the day's snapshot says so, with the tenants it met. A failing
+ * run is mailed once, when it begins (the phase keeps repeats out of `report.errors`), and every
+ * pass of a day not yet taken makes an attempt, so this line names the run on every pass it lasts.
+ */
+export function meterSnapshotLogOf(snapshot: MeterSnapshotSweepReport | null | undefined): {
+  day: string | null;
+  tenants?: number;
+  failing?: FailingRun;
+} | null {
+  if (!snapshot || (!snapshot.taken && snapshot.streak === null)) return null;
+  return {
+    day: snapshot.day,
+    ...(snapshot.taken ? { tenants: snapshot.tenants } : {}),
+    ...(snapshot.streak ? { failing: snapshot.streak } : {}),
   };
 }
 
@@ -2426,6 +2447,9 @@ export default {
       // #2501: each closed day of the router's request datapoints, kept in the directory as
       // estimated counts before Analytics Engine ages them out. Off without the router's dataset.
       ...(requestRollup ? { requestRollup } : {}),
+      // #2501: each UTC day's meters 1 and 2, one row per tenant, taken by the day's first pass and
+      // kept for the billing horizon. A directory transaction, so nothing to configure.
+      meterSnapshot: {},
     });
     // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
     // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
@@ -2464,6 +2488,8 @@ export default {
     // #2501: days rolled up, a failing run (on every pass it lasts, between its hourly retries too,
     // though the digest mails it once) and days found saturated.
     const rollup = requestRollupLogOf(report.requestRollup);
+    // #2501: the day's snapshot taken, or a failing run, on every pass it lasts.
+    const snapshot = meterSnapshotLogOf(report.meterSnapshot);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -2478,7 +2504,8 @@ export default {
       unsettleable !== undefined ||
       cvActive ||
       orphansActive ||
-      rollup !== null
+      rollup !== null ||
+      snapshot !== null
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -2505,6 +2532,7 @@ export default {
           : {}),
         ...(orphansActive ? { orphanAttachments: oa } : {}),
         ...(rollup ? { requestRollup: rollup } : {}),
+        ...(snapshot ? { meterSnapshot: snapshot } : {}),
         errors: report.errors,
       });
     }
