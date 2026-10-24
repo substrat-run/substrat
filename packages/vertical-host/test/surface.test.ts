@@ -656,6 +656,25 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/database size/);
   });
 
+  // #2501: a scope's attachment bytes for the storage gauge, behind exactly the gate its siblings
+  // sit behind, with no path of its own. A host that predates the read answers 501, never 0.
+  it('serves a scope attachment size behind the gate, and 501s on a host that cannot read one', async () => {
+    const url = `/internal/attachment-size?scopeId=${SCOPE}`;
+    const host = fakeHost({ attachmentSizeLocal: async (s) => (s === SCOPE ? 2_048 : -1) });
+    const ok = await appWith(host).request(url, { headers: authed() }, ENV);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ bytes: 2_048 });
+
+    expect((await appWith(host).request(url, {}, ENV)).status).toBe(403);
+    expect((await appWith(host).request(url, { headers: { [PLATFORM_SECRET_HEADER]: 'nope' } }, ENV)).status).toBe(403);
+    expect((await appWith(host).request('/internal/attachment-size?scopeId=nope', { headers: authed() }, ENV)).status).toBe(400);
+
+    const older = fakeHost();
+    const refused = await appWith(older).request(url, { headers: authed() }, ENV);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/attachment bytes/);
+  });
+
   // #2314: one orphan-attachment pass, asked of THIS deployment by the platform's sweep. The body is
   // parsed here: `dryRun` must be said, `copiesSettled` must be the platform's `true`, and no
   // instant crosses (a `now` is stripped, so the host's own clock is the only one the pass sees).

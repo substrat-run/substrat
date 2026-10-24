@@ -1211,7 +1211,8 @@ are honestly computable *honest*, and display them.
   [#39](https://github.com/substrat-run/substrat/issues/39)):
   - **Storage** of scope databases (§5.2): readable on demand per tenant, and kept as a stored
     daily gauge, thirteen months of day rows, that `/meters` serves without waking a scope.
-    Attachment files, per-tenant D1 databases and lake history are not in it.
+    Attachment bytes are kept beside it, as the scope's attachment rows record them, and never
+    in it. Per-tenant D1 databases and lake history are not in it either.
   - **Model usage** (D-59): the `_substrat_model_usage` ledger, drained from `model-usage`
     platform intents and kept 400 days, read at `/model-usage`. The vertical reports its own
     lines, so the ledger is as complete as what verticals report.
@@ -1225,9 +1226,9 @@ are honestly computable *honest*, and display them.
     datapoints age out (§5.3). An exact counter at the router comes only when pricing uses
     requests as a unit.
   - **Still pending** ([#2501](https://github.com/substrat-run/substrat/issues/2501), the part
-    after the request rollup and the daily meter snapshot of §5.1): attachment bytes beside the
-    storage gauge, a history of vertical ownership, and one retention horizon for billing-relevant
-    rollups. None of it prices anything.
+    after the request rollup, the daily meter snapshot of §5.1 and the attachment bytes of §5.2):
+    a history of vertical ownership, and one retention horizon for billing-relevant rollups. None
+    of it prices anything.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1356,7 +1357,8 @@ without a wake of its own. The on-demand reading stays the live one:
 
 **Explicitly excluded**, in the reading's `excluded` field and on the card:
 
-- **Attachment files.** Their bytes live in a blob store. The scope holds only their rows.
+- **Attachment files.** Their bytes live in a blob store. The scope holds only their rows. The
+  stored gauge keeps what those rows sum to beside its figure (below), never in it.
 - **Per-tenant D1 databases** (`GET /tenants/:id/stores` lists them, without sizes).
 - **The lake.** Its `bytes` column is event history as shipped, a different quantity.
 
@@ -1415,6 +1417,32 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **History, not yet a price.** The day rows are what a byte-day (and so GB-month) figure
   needs, through `HostAdmin.listScopeStorage`. Nothing prices them yet, because a GB-month
   over days the pass did not sample is a coverage question the bill has to answer first.
+- **Attachment bytes beside it ([#2501](https://github.com/substrat-run/substrat/issues/2501)).**
+  The same attempt reads what the scope's attachment rows sum to, and keeps it as its own day
+  row in `_substrat_scope_attachment_storage`, the database table's shape and rules: the day's
+  latest reading and thirteen months of days. A scope reap keeps them until retention, as it
+  keeps its database days (#2515), and a reaped tenant or a deleted fork forgets them. `/meters` serves
+  it as `storage.attachments {bytes, sampled}`. It never enters `bytes`, whose basis stays the
+  scope databases, and attachments stay in `excluded` for that reason.
+  - The figure is what the rows record, not what the blob store holds, and it can be off in
+    either direction. Bytes in the blob store that no row names (an orphan the sweep of #2314
+    has not collected) are not in it. And a fork or snapshot that is itself a stored scope
+    carries its parent's rows, which name the parent's blobs, so the same bytes count once per
+    copy and the sum can exceed what the store holds. A price per stored byte has to settle
+    both before it reads this figure as blob-store bytes.
+  - On the hosted plane it is read through the vertical's `/internal/attachment-size`, behind
+    the same gate as every `/internal` route; a co-located scope through
+    `HostAdmin.scopeAttachmentBytes`. Each read is bounded like the store read beside it.
+  - A deployment built before the route (501, or a route miss) cannot read it. That is
+    neither a failure nor a size of 0: the attempt carries no error for it, the day's
+    attachment sample stays as it was, and `sampled` counts only the scopes that were read.
+  - A failed attachment read keeps the database sample and the store reading taken with it,
+    and is the scope's error, as a failed store read is.
+  - `/meters` serves each scope's latest attachment day however old it is, with no bound on its
+    `read_at`. A deployment rolled back to a version without the route keeps serving the last day
+    it read, for up to the thirteen months retention holds it. The store figure has the same gap.
+    Both are left as they are here for parity, and an age bound for the two together is a
+    follow-up.
 
 ### 5.3 Requests, rolled up daily ([#2501](https://github.com/substrat-run/substrat/issues/2501))
 

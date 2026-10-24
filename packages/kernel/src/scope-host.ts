@@ -3061,6 +3061,14 @@ export interface HostAdmin {
     scopeId: ScopeId,
   ): Promise<{ binding: string; bytes: number }[]>;
   /**
+   * A CO-LOCATED scope's attachment bytes (#2501): what its attachment rows sum to
+   * (`ATTACHMENT_BYTES_SQL`). Bytes in the blob store that no row names are not in it. Like
+   * `scopeDatabaseSize` it wakes the scope and is access-logged; for a dispatch vertical the
+   * platform reads it through the vertical's `/internal/attachment-size` instead. Optional, so a
+   * host built before it still satisfies `HostAdmin`.
+   */
+  scopeAttachmentBytes?(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
+  /**
    * #286's backout: PITR-rewind a scope to a pre-migration bookmark — schema AND
    * data, discarding every write since. Audited (destructive by design). The scope
    * DO enforces the freshness window (24h unless `force`). `localApply: false`

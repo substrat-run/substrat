@@ -24,6 +24,7 @@ import {
   orphanSweepContractSuite,
   uploadLinkReplayContractSuite,
   type OrphanSweepFixture,
+  attachmentBytesContractSuite,
   attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -650,6 +651,9 @@ uploadLinkReplayContractSuite('adapter-sqlite', orphanSweepFixture);
 
 // #113: an attachment refusal reaches the caller typed — the pure adapter's half of the parity.
 attachmentRefusalContractSuite('adapter-sqlite', attachmentHostFixture);
+
+// #2501: a scope's attachment bytes, from the upload to the storage gauge.
+attachmentBytesContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // #1575: attachment text — extraction, the FTS5 index and the search gate on node SQLite.
 attachmentTextContractSuite('adapter-sqlite', async (options = {}) => {

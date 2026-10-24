@@ -361,6 +361,105 @@ describe('runPlatformSweep · storage gauge (#1524)', () => {
     expect(storesAsked).toEqual([scope]);
   });
 
+  it('samples attachment bytes with the database, for a due scope only, and a second pass the same day does not (#2501)', async () => {
+    const clock = manualClock('2026-06-01T12:00:00.000Z');
+    const scope = sid();
+    const tried: Record<string, string> = {};
+    const { host, recorded } = gaugeHost({ scopes: [scope], tried });
+    const record = host.admin.recordScopeStorage!;
+    host.admin.recordScopeStorage = async (actor, readings) => {
+      for (const reading of readings) tried[reading.scopeId] = reading.readAt;
+      return record(actor, readings);
+    };
+    const asked: string[] = [];
+    const gauge = {
+      read: reader().read,
+      readAttachments: async (s: { id: string }) => (asked.push(s.id), 2_048),
+      now: () => clock.now(),
+    };
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(asked).toEqual([scope]);
+    expect(recorded).toEqual([{ tenantId: T, scopeId: scope, bytes: 4096, attachments: 2_048, readAt: expect.any(String) }]);
+
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(asked).toEqual([scope]);
+    clock.advance(DAY);
+    await sweep(host, { drainPlatformRequestsFn: async () => drained, storageGauge: gauge });
+    expect(asked).toEqual([scope, scope]);
+  });
+
+  it('an attachment read the deployment cannot make is neither a failure nor 0; a declined one is no reading (#2501)', async () => {
+    const [old, declined] = [sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [old, declined] });
+    const report = await sweep(host, {
+      drainPlatformRequestsFn: async () => drained,
+      storageGauge: {
+        read: reader().read,
+        readAttachments: async (s) => {
+          if (s.id === old) throw new StorageReadUnsupported('cannot read attachment bytes (501); redeploy it');
+          return null;
+        },
+      },
+    });
+    // The database sample, no error and no attachment figure: the day's attachment sample stays as it was.
+    expect(recorded.find((x) => x.scopeId === old)).toEqual({ tenantId: T, scopeId: old, bytes: 4096, readAt: expect.any(String) });
+    expect(recorded.find((x) => x.scopeId === declined)).toEqual({ tenantId: T, scopeId: declined, bytes: 4096, readAt: expect.any(String) });
+    expect(report.errors).toEqual([]);
+    expect(report.storage).toMatchObject({ read: 2, failed: 0, unsupported: 1 });
+  });
+
+  it('each read beside the database is its own: one failing keeps the database sample and the other reading (#2501)', async () => {
+    const [attachmentsDown, storesDown, bothDown, bothOld] = [sid(), sid(), sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [attachmentsDown, storesDown, bothDown, bothOld] });
+    const old = (what: string) => new StorageReadUnsupported(`cannot read ${what} (501); redeploy it`);
+    const report = await sweep(host, {
+      drainPlatformRequestsFn: async () => drained,
+      storageGauge: {
+        read: reader().read,
+        readStores: async (s) => {
+          if (s.id === bothOld) throw old('scope store sizes');
+          if (s.id === storesDown || s.id === bothDown) throw new Error('store down');
+          return [{ binding: 'GRAPH', bytes: 3 }];
+        },
+        readAttachments: async (s) => {
+          if (s.id === bothOld) throw old('attachment bytes');
+          if (s.id === attachmentsDown || s.id === bothDown) throw new Error('attachments down');
+          return 7;
+        },
+      },
+    });
+    const by = new Map(recorded.map((x) => [x.scopeId, x]));
+    expect(by.get(attachmentsDown)).toEqual({
+      tenantId: T, scopeId: attachmentsDown, bytes: 4096, stores: [{ binding: 'GRAPH', bytes: 3 }], error: 'attachments down', readAt: expect.any(String),
+    });
+    expect(by.get(storesDown)).toEqual({ tenantId: T, scopeId: storesDown, bytes: 4096, attachments: 7, error: 'store down', readAt: expect.any(String) });
+    expect(by.get(bothDown)).toEqual({ tenantId: T, scopeId: bothDown, bytes: 4096, error: 'store down; attachments down', readAt: expect.any(String) });
+    expect(by.get(bothOld)).toEqual({ tenantId: T, scopeId: bothOld, bytes: 4096, readAt: expect.any(String) });
+    // One digest entry per failing scope, and each scope counts once; unsupported counts each read.
+    expect(report.errors.map((e) => e.id).sort()).toEqual([attachmentsDown, storesDown, bothDown].sort());
+    expect(report.storage).toMatchObject({ read: 1, failed: 3, unsupported: 2 });
+  });
+
+  it('attachment bytes that are not a non-negative integer, or that hang past the deadline, are a failed read (#2501)', async () => {
+    const [negative, hung, fine] = [sid(), sid(), sid()];
+    const { host, recorded } = gaugeHost({ scopes: [negative, hung, fine] });
+    const report = await sweep(host, {
+      drainPlatformRequestsFn: async () => drained,
+      storageGauge: {
+        read: reader().read,
+        readAttachments: (s) => (s.id === negative ? Promise.resolve(-1) : s.id === hung ? new Promise(() => undefined) : Promise.resolve(0)),
+        storeReadTimeoutMs: 20,
+      },
+    });
+    expect(recorded.find((x) => x.scopeId === negative)).toMatchObject({ bytes: 4096, error: 'not a size: -1' });
+    expect(recorded.find((x) => x.scopeId === negative)).not.toHaveProperty('attachments');
+    expect(recorded.find((x) => x.scopeId === hung)).toMatchObject({ bytes: 4096, error: expect.stringMatching(/attachment read of .* took longer than 20 ms/) });
+    // Its positive twin: a scope with no attachment holds 0 bytes of them, a reading like any other.
+    expect(recorded.find((x) => x.scopeId === fine)).toMatchObject({ bytes: 4096, attachments: 0 });
+    expect(recorded.find((x) => x.scopeId === fine)).not.toHaveProperty('error');
+    expect(report.storage).toMatchObject({ read: 1, failed: 2, recorded: 3 });
+  }, 5_000);
+
   it('is off when the option is unset, or the host keeps no gauge', async () => {
     const a = gaugeHost({ scopes: [sid()] });
     expect((await sweep(a.host, { drainPlatformRequestsFn: async () => drained })).storage).toBeNull();

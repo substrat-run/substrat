@@ -10052,6 +10052,10 @@ export function scopeHostContractSuite(
       // #1524: a size read is refused BEFORE it reaches the storage. Addressing a reaped
       // DO to ask its size would recreate an empty database and report that as the scope.
       await expectRefusal(host.admin.scopeDatabaseSize(staff, t3, s), 'conflict', /reaped/);
+      // #2501: the attachment read is refused the same way, never answered as 0.
+      if (host.admin.scopeAttachmentBytes) {
+        await expectRefusal(host.admin.scopeAttachmentBytes(staff, t3, s), 'conflict', /reaped/);
+      }
       // Audited as reapScope against the right scope + actor.
       const reapEntry = (await host.admin.auditLog(staff, { tenantId: t3 })).find(
         (r) => r.action === 'reapScope' && r.scopeId === s,
@@ -10847,6 +10851,81 @@ export function scopeHostContractSuite(
         });
       });
 
+      it('keeps attachment samples beside the databases, the day\'s latest, until retention, a reaped scope\'s too (#2501)', async () => {
+        const ta = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-attachments', name: 'Gauge Attachments' });
+        const [s, quiet] = [await newScope(ta), await newScope(ta)];
+        const attachmentsOf = async (tenant: TenantId) => (await host.admin.readMeters(staff, { tenantId: tenant })).perTenant[0]!.storage;
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 100, readAt: day(0, '08:00:00'), attachments: 300 }]);
+        // Beside the databases' figure, never inside it, which still names attachments as excluded.
+        expect(await attachmentsOf(ta)).toMatchObject({ bytes: 100, excluded: ['attachments', 'tenant-stores', 'lake'], attachments: { bytes: 300, sampled: 1 } });
+        // A later reading of the day replaces it; an older one, recorded after it, does not.
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 100, readAt: day(0, '09:00:00'), attachments: 50 }]);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 100, readAt: day(0, '08:30:00'), attachments: 999 }]);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 1 });
+        // A reading that did not measure attachments (unsupported, failed, declined) leaves them.
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: s, bytes: 120, readAt: day(0, '10:00:00') }]);
+        expect(await attachmentsOf(ta)).toMatchObject({ bytes: 120, attachments: { bytes: 50, sampled: 1 } });
+        // A scope with none holds 0 of them: a sample like any other, counted in `sampled`.
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: quiet, bytes: 10, readAt: day(0, '10:00:00'), attachments: 0 }]);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+        // Named under another tenant, refused like the database sample.
+        const other = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: other, slug: 'gauge-attachments-other', name: 'Gauge Attachments Other' });
+        await newScope(other);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: other, scopeId: s, bytes: 1, readAt: day(0, '11:00:00'), attachments: 7 }]);
+        expect((await attachmentsOf(other))?.attachments).toBeUndefined();
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+
+        // Past retention a sample goes with the database samples, the limit shared across the tables.
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        const aged = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: aged, slug: 'gauge-attachments-old', name: 'Gauge Attachments Old' });
+        const agedScope = await newScope(aged);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: aged, scopeId: agedScope, bytes: 1, readAt: old.toISOString(), attachments: 9 }]);
+        expect((await attachmentsOf(aged))?.attachments).toEqual({ bytes: 9, sampled: 1 });
+        expect(await host.admin.pruneScopeStorage!(staff, 1)).toBe(1);
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(1);
+        expect((await attachmentsOf(aged))?.attachments).toBeUndefined();
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+
+        // A reaped scope's attachment samples follow its database days (#2515): the reap keeps
+        // them for the invoice and the gauge, which describes live storage, stops counting them.
+        const reaped = await newScope(ta);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: reaped, bytes: 1, readAt: old.toISOString(), attachments: 4 }]);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: ta, scopeId: reaped, bytes: 1, readAt: day(0, '12:00:00'), attachments: 3 }]);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 53, sampled: 3 });
+        await host.admin.archiveScope(staff, ta, reaped);
+        await host.admin.reapScope(staff, ta, reaped);
+        expect((await attachmentsOf(ta))?.attachments).toEqual({ bytes: 50, sampled: 2 });
+        // Retention, not the reap, ends them: the old database day and the old attachment day are
+        // both still there for the prune to take, and the current ones stay.
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(2);
+        expect((await host.admin.listScopeStorage!(staff, { scopeId: reaped })).map((r) => r.bytes)).toEqual([1]);
+      });
+
+      it('a tenant reap forgets its attachment samples with its other storage rows (#2501)', async () => {
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const gone = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: gone, slug: 'gauge-attachments-tenant-reap', name: 'Gauge Attachments Tenant Reap' });
+        const s = await newScope(gone);
+        // Past retention, so the prune (which reads the raw tables) finds the row if the reap left it.
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: gone, scopeId: s, bytes: 1, readAt: old.toISOString(), attachments: 9 }]);
+        // Its twin, before the reap: both old samples are there for the prune to find.
+        const kept = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: kept, slug: 'gauge-attachments-tenant-kept', name: 'Gauge Attachments Tenant Kept' });
+        const ks = await newScope(kept);
+        await host.admin.recordScopeStorage!(staff, [{ tenantId: kept, scopeId: ks, bytes: 1, readAt: old.toISOString(), attachments: 9 }]);
+        await host.admin.setTenantStatus(staff, gone, 'deleting');
+        await host.admin.reapTenant(staff, gone);
+        // Only the kept tenant's two rows (database and attachments) were left to prune.
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(2);
+      });
+
       it("keeps a reaped scope's days for the invoice, ends its attempts, and never writes one for it again", async () => {
         const tr = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tr, slug: 'gauge-reap', name: 'Gauge Reap' });
@@ -10989,6 +11068,23 @@ export function scopeHostContractSuite(
 
         await host.deleteSnapshot(staff, tk, fork);
         expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
+      });
+
+      it("deletes a fork's attachment samples with its other samples, and keeps its source's (#2501)", async () => {
+        const tk = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tk, slug: 'gauge-fork-attachments', name: 'Gauge Fork Attachments' });
+        const source = await newScope(tk);
+        const fork = await host.snapshotScope(staff, tk, source);
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        const old = new Date();
+        old.setUTCMonth(old.getUTCMonth() - 14);
+        // Past retention, so the prune (which reads the raw tables) finds whatever the delete left.
+        for (const s of [source, fork]) {
+          await host.admin.recordScopeStorage!(staff, [{ tenantId: tk, scopeId: s, bytes: 1, readAt: old.toISOString(), attachments: 5 }]);
+        }
+        await host.deleteSnapshot(staff, tk, fork);
+        // Only the source's database and attachment samples were left to prune: the fork's went with it.
+        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(2);
       });
 
       it('prunes samples older than thirteen months, at most the limit per call', async () => {

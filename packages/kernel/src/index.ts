@@ -1027,8 +1027,10 @@ export type {
   MeterTenantInput,
 } from './meters.js';
 export {
+  ATTACHMENT_BYTES_SQL,
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  listScopeAttachmentStorageRows,
   retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,

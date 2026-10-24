@@ -17,6 +17,7 @@ export { BIND_INVITE, BIND_MEMBER, BIND_SHAPE, bindMod } from './bind-module.js'
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { attachmentRefusalContractSuite } from './attachment-refusal-suite.js';
 export { attachmentTextContractSuite } from './attachment-text-suite.js';
+export { attachmentBytesContractSuite } from './attachment-bytes-suite.js';
 export type { AttachmentTextHostFixture, AttachmentTextHostOptions } from './attachment-text-suite.js';
 export { ATTACHMENT_TEXT_FIXTURES, DOCX_LINES, hostilePdfs } from './attachment-text-fixtures.js';
 export type { AttachmentTextFixture, HostilePdf } from './attachment-text-fixtures.js';

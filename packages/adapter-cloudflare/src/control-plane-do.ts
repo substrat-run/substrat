@@ -28,6 +28,7 @@ import {
   retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
+  listScopeAttachmentStorageRows,
   listScopeStoreStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
@@ -2177,6 +2178,7 @@ export class ControlPlaneDO extends DurableObject {
         '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
         '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
         '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
+        '_substrat_scope_attachment_storage', // #2501: attachment samples, gone with the tenant
       ]) {
         this.sql.exec(`DELETE FROM ${table} WHERE tenant_id = ?`, tenantId);
       }
@@ -4259,6 +4261,8 @@ export class ControlPlaneDO extends DurableObject {
     storage: ScopeStorageSample[];
     storageAttempts: ScopeStorageAttempt[];
     storeStorage: { tenantId: TenantId; bytes: number; readAt: string }[];
+    /** #2501: the latest attachment sample per non-reaped scope. */
+    attachmentStorage: { tenantId: TenantId; bytes: number }[];
   } {
     const where = tenantId ? ' WHERE tenant_id = ?' : '';
     const args = tenantId ? [tenantId] : [];
@@ -4281,6 +4285,7 @@ export class ControlPlaneDO extends DurableObject {
       storage: listScopeStorageRows(doRedactionSql(this.sql), { tenantId: tenantId as TenantId | undefined, latest: true }),
       storageAttempts: listScopeStorageAttemptRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
       storeStorage: listScopeStoreStorageRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
+      attachmentStorage: listScopeAttachmentStorageRows(doRedactionSql(this.sql), tenantId as TenantId | undefined),
     };
   }
 

@@ -67,6 +67,8 @@ export interface MeterInput {
   storageAttempts?: { tenantId: TenantId; attemptedAt: string; error: string | null }[];
   /** Latest scope-store samples (#2212). Absent when the host has not started recording them. */
   storeStorage?: { tenantId: TenantId; bytes: number }[];
+  /** Latest attachment samples (#2501). Absent when the host has not started recording them. */
+  attachmentStorage?: { tenantId: TenantId; bytes: number }[];
 }
 
 /** One scope's latest storage sample, as the fold needs it. */
@@ -175,6 +177,8 @@ export function foldMeterReading(input: MeterInput): MeterReading {
   for (const sample of input.storage ?? []) samplesByTenant.get(sample.tenantId)?.push(sample);
   const storesByTenant = new Map<TenantId, { bytes: number }[]>(tenants.map((t) => [t.tenantId, []]));
   for (const sample of input.storeStorage ?? []) storesByTenant.get(sample.tenantId)?.push(sample);
+  const attachmentsByTenant = new Map<TenantId, { bytes: number }[]>(tenants.map((t) => [t.tenantId, []]));
+  for (const sample of input.attachmentStorage ?? []) attachmentsByTenant.get(sample.tenantId)?.push(sample);
   const attemptsByTenant = new Map<TenantId, NonNullable<MeterInput['storageAttempts']>>(tenants.map((t) => [t.tenantId, []]));
   for (const a of input.storageAttempts ?? []) attemptsByTenant.get(a.tenantId)?.push(a);
   // Only a scope that holds a store has a size (`holdsStore`): not a reaped one (gone), a
@@ -200,6 +204,7 @@ export function foldMeterReading(input: MeterInput): MeterReading {
             storedByTenant.get(t.tenantId)!,
             attemptsByTenant.get(t.tenantId)!,
             input.storeStorage ? storesByTenant.get(t.tenantId)! : undefined,
+            input.attachmentStorage ? attachmentsByTenant.get(t.tenantId)! : undefined,
           ),
         }
       : {}),
@@ -229,6 +234,7 @@ export function foldMeterReading(input: MeterInput): MeterReading {
             [...storedByTenant.values()].reduce((a, b) => a + b, 0),
             [...attemptsByTenant.values()].flat(),
             input.storeStorage ? [...storesByTenant.values()].flat() : undefined,
+            input.attachmentStorage ? [...attachmentsByTenant.values()].flat() : undefined,
           ),
         }
       : {}),

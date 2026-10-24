@@ -43,6 +43,7 @@ import {
   uploadLinkMod,
   UPL_READ,
   UPL_WRITE,
+  attachmentBytesContractSuite,
   attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   type AttachmentTextHostOptions,
@@ -1325,6 +1326,9 @@ uploadLinkReplayContractSuite('adapter-cloudflare', orphanSweepFixture);
 
 // #113: an attachment refusal crosses the ScopeDO hop as data, so it reaches the caller typed.
 attachmentRefusalContractSuite('adapter-cloudflare', attachmentHostFixture);
+
+// #2501: a scope's attachment bytes, from the upload to the storage gauge.
+attachmentBytesContractSuite('adapter-cloudflare', attachmentHostFixture);
 
 // #1575: attachment text — the extraction job driven by the coordinator against the real
 // ScopeDO, the FTS5 table and its triggers on DO SQLite, the search gate in the DO.

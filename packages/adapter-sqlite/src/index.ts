@@ -353,8 +353,10 @@ import {
   ISSUE_RETENTION_DAYS,
   telemetryRetentionStatements,
   FINDINGS_DDL,
+  ATTACHMENT_BYTES_SQL,
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  listScopeAttachmentStorageRows,
   retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
@@ -10817,6 +10819,11 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'scopeStoreSizes', { tenantId, scopeId }, null, sizes.length);
         return sizes;
       },
+      scopeAttachmentBytes: async (actor, tenantId, scopeId) => {
+        const { bytes } = this.scopeReadDbFor(tenantId, scopeId).prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number };
+        this.recordAccess(actor, 'scopeAttachmentBytes', { tenantId, scopeId }, null, 1);
+        return bytes;
+      },
       rewindScope: async () => {
         throw new Error(
           'point-in-time rewind is not available on this host (PITR is a Durable-Object-plane mechanism) — use the backup restore path',
@@ -11852,6 +11859,7 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_scope_storage', // #1524: storage samples of scopes whose storage is gone
           '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
           '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
+          '_substrat_scope_attachment_storage', // #2501: attachment samples, gone with the tenant
         ];
         this.directoryWriteAndAudit(() => {
           for (const table of tables) {
@@ -12024,6 +12032,7 @@ export class SqliteScopeHost implements ScopeHost {
           storage: listScopeStorageRows(redactionSqlOf(this.directory), { tenantId: only, latest: true }),
           storageAttempts: listScopeStorageAttemptRows(redactionSqlOf(this.directory), only),
           storeStorage: listScopeStoreStorageRows(redactionSqlOf(this.directory), only),
+          attachmentStorage: listScopeAttachmentStorageRows(redactionSqlOf(this.directory), only),
         });
         // The count that matters for K-24 is how many TENANTS this reading covered —
         // "read the meter for one tenant" and "metered the whole fleet" are different

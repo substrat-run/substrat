@@ -21,9 +21,11 @@ import {
   type PlatformSweepReport,
 } from '@substrat-run/kernel';
 import worker, {
+  attachmentReaderFor,
   drainContextOf,
   drainTarget,
   meterSnapshotLogOf,
+  oncePerScope,
   platformRequestSweepRun,
   recordPlatformRequestPass,
   requestRollupFor,
@@ -462,6 +464,62 @@ describe('storageReaderFor (#1524)', () => {
     });
     await expect(read(scope(null))).resolves.toBeNull();
     expect(resolved).toBe(0);
+  });
+});
+
+describe('attachmentReaderFor (#2501)', () => {
+  const scope = (vertical: string | null) =>
+    ({ id: scopeId.parse(ulid()), tenantId: tenantId.parse(ulid()), vertical }) as unknown as Parameters<
+      ReturnType<typeof attachmentReaderFor>
+    >[0];
+  const answeredBy = (res: () => Response) =>
+    attachmentReaderFor(
+      async () => new VerticalClient({ fetch: (async () => res()) as unknown as typeof fetch, platformSecret: 'secret' }),
+    );
+
+  it("reads through the deployment that resolves for the scope, and fails when none does", async () => {
+    const s = scope('todo');
+    await expect(answeredBy(() => Response.json({ bytes: 2_048 }))(s)).resolves.toBe(2_048);
+    await expect(attachmentReaderFor(async () => undefined)(s)).rejects.toThrow(/no deployment resolves for vertical 'todo'/);
+  });
+
+  it('turns a deployment without the route (501, or a plain-text route miss) into the standing condition, never 0', async () => {
+    for (const [status, res] of [
+      [501, () => Response.json({ error: 'this deployment cannot read attachment bytes (#2501). Redeploy it' }, { status: 501 })],
+      [404, () => new Response('404 Not Found', { status: 404 })],
+    ] as const) {
+      const err = await answeredBy(res)(scope('todo')).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StorageReadUnsupported);
+      expect((err as Error).message).toMatch(new RegExp(`vertical 'todo' cannot read attachment bytes \\(${status}\\); redeploy it`));
+    }
+  });
+
+  it('passes an enveloped 404 and any other failure on as real failures, and skips a scope with no vertical', async () => {
+    for (const res of [() => Response.json({ error: 'unknown scope' }, { status: 404 }), () => new Response('down', { status: 503 })]) {
+      const err = await answeredBy(res)(scope('todo')).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect(err).not.toBeInstanceOf(StorageReadUnsupported);
+    }
+    let resolved = 0;
+    const read = attachmentReaderFor(async () => ((resolved += 1), undefined));
+    await expect(read(scope(null))).resolves.toBeNull();
+    expect(resolved).toBe(0);
+  });
+
+  it('shares one deployment lookup per scope with the database read, through oncePerScope', async () => {
+    const asked: string[] = [];
+    const client = new VerticalClient({
+      fetch: (async () => Response.json({ bytes: 4_096 })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    const deployment = oncePerScope(async (s: { id: string }) => (asked.push(s.id), client));
+    const [a, b] = [scope('todo'), scope('todo')];
+    await storageReaderFor(deployment)(a);
+    await attachmentReaderFor(deployment)(a);
+    expect(asked).toEqual([a.id]);
+    // Its twin: another scope climbs the ladder for itself.
+    await attachmentReaderFor(deployment)(b);
+    expect(asked).toEqual([a.id, b.id]);
   });
 });
 

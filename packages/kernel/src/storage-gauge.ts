@@ -30,6 +30,10 @@ import { utcDayMonthsBefore } from './billing-retention.js';
  * pass, ahead of every scope that can be read, and its error would reach every pass's
  * failure digest. With it, a failing scope is tried once a day like any other, while its last
  * good sample stands.
+ *
+ * `_substrat_scope_attachment_storage` (#2501) is the database table's shape for attachment
+ * bytes: the day's latest reading of what the scope's attachment rows sum to, read in the same
+ * attempt as the database. It sits beside the database figure and never inside it.
  */
 export const SCOPE_STORAGE_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_scope_storage (
@@ -58,7 +62,26 @@ export const SCOPE_STORAGE_DDL = `
     PRIMARY KEY (scope_id, binding, day)
   );
   CREATE INDEX IF NOT EXISTS _substrat_scope_store_storage_tenant ON _substrat_scope_store_storage (tenant_id, day);
+  CREATE TABLE IF NOT EXISTS _substrat_scope_attachment_storage (
+    scope_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (scope_id, day)
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_scope_attachment_storage_tenant ON _substrat_scope_attachment_storage (tenant_id, day);
+  CREATE INDEX IF NOT EXISTS _substrat_scope_attachment_storage_day ON _substrat_scope_attachment_storage (day);
 `;
+
+/**
+ * A scope's attachment bytes (#2501), as its own database records them: the sum of the sizes on
+ * its `_substrat_attachments` rows, not what the blob store holds. Bytes in the blob store that no
+ * row names (an orphan the sweep has not collected, #2314) are not in it, and a fork or snapshot
+ * that is itself a stored scope counts its copied rows again, though they name the parent's blobs.
+ * Both adapters read it with this one statement.
+ */
+export const ATTACHMENT_BYTES_SQL = 'SELECT COALESCE(SUM(size), 0) AS bytes FROM _substrat_attachments';
 
 /**
  * The statuses a scope that holds a store can be in: every status but `provisioning` (no
@@ -111,6 +134,12 @@ export interface ScopeStorageReadingInput {
    * them: an empty list replaces the day's store rows with nothing. Absent leaves them.
    */
   stores?: readonly { binding: string; bytes: number }[];
+  /**
+   * Attachment bytes read in the same attempt (#2501): what the scope's attachment rows sum to.
+   * Present means this attempt measured them, and writes the day's attachment sample. Absent
+   * leaves it as it is: the read was not made, failed, or the deployment cannot make it.
+   */
+  attachments?: number;
 }
 
 /** When the phase last tried a scope (#1524), and why it failed if it did. */
@@ -153,10 +182,12 @@ export function storageRetentionHorizon(nowMs: number): string {
  * directory holds UNDER THAT TENANT and has not reaped, so a reading can never land in another
  * tenant's figure, and a scope reaped while its read was in flight leaves no row behind.
  *
- * Every attempt replaces the scope's attempt row. A successful one also upserts the day's
- * sample, which replaces an older reading of that day and never a newer one; a failed one
- * leaves the samples alone, so the last good reading stands. Returns how many SAMPLE rows
- * were written.
+ * Every attempt replaces the scope's attempt row. One with a database size also upserts the
+ * day's sample, which replaces an older reading of that day and never a newer one; a failed
+ * database read (no size) leaves every sample alone, so the last good reading stands. The store
+ * and attachment samples beside it are written only when the attempt carries them, so a failed
+ * read of either leaves its own sample alone while the database sample is still written.
+ * Returns how many DATABASE sample rows were written.
  */
 export function recordScopeStorageRows(sql: RedactionSql, readings: readonly ScopeStorageReadingInput[]): number {
   let recorded = 0;
@@ -182,6 +213,19 @@ export function recordScopeStorageRows(sql: RedactionSql, readings: readonly Sco
       [storageGaugeDay(readAt), r.bytes, readAt, r.scopeId, r.tenantId],
     ).length;
     if (r.stores) recordScopeStoreRows(sql, r, readAt);
+    if (r.attachments !== undefined && Number.isInteger(r.attachments) && r.attachments >= 0) {
+      // The database sample's rule: the day's latest reading, never replaced by an older one. Its
+      // own literal statement, not one shared with the table above: lint:attachment-writers reads
+      // every INSERT's target, and a computed one is a writer it cannot see.
+      sql(
+        `INSERT INTO _substrat_scope_attachment_storage (scope_id, day, tenant_id, bytes, read_at)
+         SELECT scope_id, ?, tenant_id, ?, ? FROM scopes
+          WHERE scope_id = ? AND tenant_id = ? AND ${holdsStoreSql()}
+         ON CONFLICT (scope_id, day) DO UPDATE SET bytes = excluded.bytes, read_at = excluded.read_at
+          WHERE excluded.read_at >= _substrat_scope_attachment_storage.read_at`,
+        [storageGaugeDay(readAt), r.attachments, readAt, r.scopeId, r.tenantId],
+      );
+    }
   }
   return recorded;
 }
@@ -314,16 +358,18 @@ export function listScopeStorageAttemptRows(sql: RedactionSql, tenantId?: Tenant
   }));
 }
 
-/** Delete at most `limit` samples older than retention, oldest first, across both tables. Returns how many went. */
+/**
+ * Delete at most `limit` samples older than retention, oldest first: the databases' first, then
+ * the stores' and the attachments' with what the limit leaves. Returns how many went.
+ */
 export function pruneScopeStorageRows(sql: RedactionSql, nowMs: number, limit: number): number {
   const horizon = storageRetentionHorizon(nowMs);
-  const capped = assertRowLimit('limit', limit);
-  const databases = sql(boundedRetentionDelete('_substrat_scope_storage', 'day'), [horizon, capped]).length;
-  const remaining = capped - databases;
-  const stores = remaining > 0
-    ? sql(boundedRetentionDelete('_substrat_scope_store_storage', 'day'), [horizon, remaining]).length
-    : 0;
-  return databases + stores;
+  let remaining = assertRowLimit('limit', limit);
+  for (const table of ['_substrat_scope_storage', '_substrat_scope_store_storage', '_substrat_scope_attachment_storage']) {
+    if (remaining === 0) break;
+    remaining -= sql(boundedRetentionDelete(table, 'day'), [horizon, remaining]).length;
+  }
+  return limit - remaining;
 }
 
 /**
@@ -349,6 +395,23 @@ export function listScopeStoreStorageRows(
   return rows.map((r) => ({ tenantId: r.tenant_id as TenantId, bytes: r.bytes, readAt: r.read_at }));
 }
 
+/** Each stored scope's latest attachment sample (#2501), as the gauge folds it. */
+export function listScopeAttachmentStorageRows(sql: RedactionSql, tenantId?: TenantId): { tenantId: TenantId; bytes: number }[] {
+  const rows = sql(
+    `SELECT g.tenant_id, g.bytes
+       FROM scopes s
+       JOIN _substrat_scope_attachment_storage g ON g.scope_id = s.scope_id AND g.tenant_id = s.tenant_id
+        AND g.day = (
+          SELECT MAX(m.day) FROM _substrat_scope_attachment_storage m
+           WHERE m.scope_id = s.scope_id AND m.tenant_id = s.tenant_id
+        )
+      WHERE ${holdsStoreSql('s.')}${tenantId ? ' AND s.tenant_id = ?' : ''}
+      ORDER BY g.scope_id`,
+    tenantId ? [tenantId] : [],
+  ) as { tenant_id: string; bytes: number }[];
+  return rows.map((r) => ({ tenantId: r.tenant_id as TenantId, bytes: r.bytes }));
+}
+
 /**
  * A reap ends a scope's measuring (#2515): the attempt row goes, the day rows stay. They are the
  * bytes the scope held on the days it held them, which a later invoice for that month is cut
@@ -363,6 +426,7 @@ export function forgetScopeStorage(sql: RedactionSql, scopeId: string): void {
   sql('DELETE FROM _substrat_scope_storage WHERE scope_id = ?', [scopeId]);
   sql('DELETE FROM _substrat_scope_storage_attempts WHERE scope_id = ?', [scopeId]);
   sql('DELETE FROM _substrat_scope_store_storage WHERE scope_id = ?', [scopeId]);
+  sql('DELETE FROM _substrat_scope_attachment_storage WHERE scope_id = ?', [scopeId]);
 }
 
 /**
@@ -376,6 +440,7 @@ export function foldStorageGauge(
   total: number,
   attempts: readonly { attemptedAt: string; error: string | null }[] = [],
   stores?: readonly { bytes: number }[],
+  attachments?: readonly { bytes: number }[],
 ): StorageGauge {
   let failing = 0;
   let lastFailed: string | null = null;
@@ -404,5 +469,8 @@ export function foldStorageGauge(
     failing,
     lastFailedAt: lastFailed as StorageGauge['lastFailedAt'],
     ...(stores && stores.length > 0 ? { stores: { bytes: storeBytes ?? 0, sampled: stores.length } } : {}),
+    ...(attachments && attachments.length > 0
+      ? { attachments: { bytes: attachments.reduce((sum, row) => sum + row.bytes, 0), sampled: attachments.length } }
+      : {}),
   };
 }

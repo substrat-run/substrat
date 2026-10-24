@@ -58,6 +58,7 @@ const NOT_IMPLEMENTED: readonly (readonly [string, 'GET' | 'POST', Record<string
   ['/internal/wipe-carried', 'POST', { scopeId: s, expectLoadStamp: null, carriedTo: 'other', at }],
   ['/internal/redrain-count', 'POST', { scopeId: s, drainedBefore: at }],
   ['/internal/database-size', 'GET', {}],
+  ['/internal/attachment-size', 'GET', {}],
   ['/internal/attachment-sweep', 'POST', { ...ids, dryRun: true, copiesSettled: true, expectedVersionId: 'v1' }],
   ['/internal/redact-subject', 'POST', { scopeId: s, subjectId: 'subject-1' }],
   ['/internal/connector-grants', 'POST', ids],

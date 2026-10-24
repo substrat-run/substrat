@@ -180,7 +180,8 @@ waits to be asked.
 What both leave out, and say they leave out:
 
 - **Attachment files.** Attachment rows record their own byte size, but the bytes live in a
-  blob store rather than in the scope.
+  blob store rather than in the scope. The stored figure keeps what those rows sum to beside
+  it, as its own number per scope per day, never added into it.
 - **Per-tenant D1 databases.** They are separate databases.
 - **The lake's `bytes` column** (chapter 11), which records every event's serialized size as
   shipped. Summed per tenant after dedupe, it is exact, but it measures **event history
