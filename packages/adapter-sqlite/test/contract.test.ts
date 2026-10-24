@@ -70,6 +70,7 @@ import {
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
   manyMigrationsContractSuite,
+  overCapMigrationsContractSuite,
   migrationFenceContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
@@ -1049,7 +1050,7 @@ manyMigrationsContractSuite('adapter-sqlite', async () => {
 
 // The same read on a clock that never moves: every migration of a pass is stamped with one instant,
 // so only the order they were written in says which ran last (the DO host takes no clock, #956).
-manyMigrationsContractSuite('adapter-sqlite, one instant', async () => {
+overCapMigrationsContractSuite('adapter-sqlite, one instant', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-many-migrations-tied-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker, clock: manualClock().read });
   return {

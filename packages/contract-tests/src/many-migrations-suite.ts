@@ -1,8 +1,7 @@
 /**
  * Contract suite for the applied-migrations read (#2553): a scope holding more migrations than the
- * read once capped at (100) answers with every one of them, on every adapter. The first case's
- * fixture is `manyMigrationsMod`, which carries more than the cap on its own; the second's is
- * `overCapMigrationsMod`, past twice the cap on a scope of its own, so a cap raised to 200 still fails.
+ * read once capped at (100) answers with every one of them, on every adapter. The fixture is
+ * `manyMigrationsMod`, which carries more than the cap on its own.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
@@ -62,7 +61,14 @@ export function manyMigrationsContractSuite(adapterName: string, makeFixture: ()
       expect([...stamped].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))).toEqual(stamped);
     });
   });
+}
 
+/**
+ * The same read past twice the old cap, newest first (#2553), for a host that can carry
+ * `overCapMigrationsMod` without every other scope in the kit migrating it too. The pure host can;
+ * the Durable-Object host's module set is fixed at code time, so its own suite plants the rows.
+ */
+export function overCapMigrationsContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`applied migrations past 200 rows, newest first (#2553): ${adapterName}`, () => {
     const scope = scopeWith(overCapMigrationsMod, 'over-cap-migrations', makeFixture);
     beforeAll(scope.setup);
