@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { ConnectorConnection } from '@substrat-run/kernel';
+import { CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES } from '@substrat-run/contracts';
+import type { ByteStream, ConnectorConnection } from '@substrat-run/kernel';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as the kernel does.
@@ -80,6 +81,8 @@ export type ScriveStartedDocument = z.infer<typeof scriveStartedDocument>;
 export const scriveDocument = z.object({
   id: z.string().min(1),
   status: z.enum(['preparation', 'pending', 'closed', 'canceled', 'timedout', 'rejected']),
+  /** When the provider last changed the document; how a held sealed file is told to be worth another try. */
+  mtime: z.string().optional(),
   parties: z
     .array(
       z.object({
@@ -287,6 +290,82 @@ const asBytes = async (
   return new Uint8Array(await res.arrayBuffer());
 };
 
+/**
+ * The sealed file is larger than a connector upload carries (#2552), found before its body was read.
+ * `bytes` is the size the provider declared, and absent when it declared none and the count was
+ * stopped at the ceiling.
+ */
+export class ScriveFileTooLargeError extends Error {
+  constructor(
+    readonly bytes: number | undefined,
+    readonly maxBytes: number,
+  ) {
+    super(
+      bytes === undefined
+        ? `the sealed document is over the ${maxBytes} bytes a connector upload carries; it was not downloaded`
+        : `the sealed document is ${bytes} bytes, over the ${maxBytes} bytes a connector upload carries; it was not downloaded`,
+    );
+    this.name = 'ScriveFileTooLargeError';
+  }
+}
+
+/** Throw the too-large error, giving up the body first so the connection is not left streaming. */
+const refuseLarge = async (
+  res: { body?: ByteStream | null },
+  bytes: number | undefined,
+  maxBytes: number,
+): Promise<never> => {
+  const reader = res.body?.getReader();
+  if (reader) await reader.cancel().catch(() => {});
+  throw new ScriveFileTooLargeError(bytes, maxBytes);
+};
+
+/**
+ * A binary response's bytes, at most `maxBytes` of them. A `Content-Length` over the bound refuses
+ * before the body is read. Without one the body is counted as it arrives and cut off at the bound,
+ * so a response that does not say how large it is is never held whole either. A response with no
+ * stream (a hand-built stand-in) is read whole, then judged.
+ */
+const boundedBytes = async (
+  res: {
+    headers?: { get(name: string): string | null };
+    body?: ByteStream | null;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  },
+  maxBytes: number,
+): Promise<Uint8Array> => {
+  // The header counts the bytes on the wire: with a Content-Encoding the body decodes to more, so
+  // it can only prove a file too large, never small. Either way the count below is the check.
+  const declared = Number(res.headers?.get('content-length') ?? Number.NaN);
+  if (Number.isFinite(declared) && declared > maxBytes) return refuseLarge(res, declared, maxBytes);
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const whole = new Uint8Array(await res.arrayBuffer());
+    if (whole.byteLength > maxBytes) throw new ScriveFileTooLargeError(whole.byteLength, maxBytes);
+    return whole;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new ScriveFileTooLargeError(undefined, maxBytes);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return out;
+};
+
 export class ScriveApi {
   private readonly secret: ScriveSecret;
 
@@ -452,13 +531,22 @@ export class ScriveApi {
    * sealed file exists only once the document is `closed`; on an open document the
    * response is the working copy or an error depending on account settings, so the
    * return path fetches only after `get` reports `closed` (issue #476).
+   *
+   * Scrive's `get` carries no file size, so the size is the response's own: a `Content-Length`
+   * over `maxBytes` (the streamed-upload ceiling by default) throws {@link ScriveFileTooLargeError}
+   * before a byte of the body is read, and a body that declares none is counted and cut off at the
+   * bound (#2552). That is a thrown refusal, not a truncation: the caller holds the decision.
    */
-  async getMainFile(documentId: string): Promise<Uint8Array> {
+  async getMainFile(
+    documentId: string,
+    maxBytes: number = CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
+  ): Promise<Uint8Array> {
     const res = await this.conn.fetch(
       `${this.baseUrl}/api/v2/documents/${documentId}/files/main`,
       { method: 'GET', headers: this.headers() },
     );
-    return asBytes(res, 'files/main');
+    if (!res.ok) return asBytes(res, 'files/main');
+    return boundedBytes(res, maxBytes);
   }
 }
 
