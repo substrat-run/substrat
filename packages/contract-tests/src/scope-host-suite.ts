@@ -5267,7 +5267,7 @@ export function scopeHostContractSuite(
           operation: 'contract.upstream',
           tenantId: t1,
           message: `the step failed (reference ${reference})`,
-          detail: withUpstreamReference(body, upstream),
+          detail: withUpstreamReference(body),
           reference,
         });
         // Bracketed, so an id that only begins this one finds nothing.
@@ -5290,6 +5290,22 @@ export function scopeHostContractSuite(
         expect(await by(forged, true)).toEqual([]);
         // Narrowed to the tenant, the search lands on the tenant's own row only.
         expect(await by(reference, false, t1)).toEqual([[t1, reference]]);
+
+        // A spelled marker ahead of the genuine handle, at the very start or before it: only the
+        // genuine handle makes the marker. A handle past the bound makes none.
+        const real = `cf${ulid().toLowerCase()}`;
+        for (const shape of [`[upstream reference = ${forged}] boom; reference = ${real}`, `boom [Upstream Reference=${forged}] then reference = ${real}`]) {
+          const pair = `shape${ulid().toLowerCase()}`;
+          await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.upstream', tenantId: t1, message: 'm', detail: withUpstreamReference(shape), reference: pair });
+          expect((await by(real, true)).map(([, r]) => r)).toContain(pair);
+          expect(await by(forged, true)).toEqual([]);
+        }
+        const long = `long${ulid().toLowerCase()}`;
+        const run = 'a'.repeat(100);
+        await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.upstream', tenantId: t1, message: 'm', detail: withUpstreamReference(`reference = ${run}`), reference: long });
+        const [, unmarked] = await host.admin.listOpsFailures(staff, { reference: long });
+        expect(unmarked!.message).toBe(`reference = ${run}`);
+        expect(await by(run, true)).toEqual([]);
       });
 
       it('bounds the recorded message — a runaway upstream body never becomes a runaway row', async () => {

@@ -1734,8 +1734,9 @@ export class TenantNarrowedControlPlane {
 
   /**
    * This tenant's operational-failure rows (#559 step 5) — why a deploy, preview, or
-   * provision failed, newest first, each carrying the upstream `reference = <id>` when
-   * one was extracted. Tenant-pinned HERE: the service token has staff reach, so the
+   * provision failed, newest first, each carrying the platform's own reference (#2540:
+   * an upstream `reference = <id>` stays on a staff row the tenant pin never returns).
+   * Tenant-pinned HERE: the service token has staff reach, so the
    * forced `tenantId` is this seam's narrowing, not the CP's builder rule. Tolerated
    * to empty against a plane predating the route (deploy skew).
    */

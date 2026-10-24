@@ -159,7 +159,7 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import { withUpstreamReference } from '@substrat-run/contracts';
+import { upstreamHandleIn, withUpstreamReference } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
@@ -1408,10 +1408,6 @@ const modelUsageSummaryQuery = z.object({
 
 export const DEFAULT_MODEL_MARGIN_PERCENT = 20;
 
-/** The upstream provider's trace handle, when a failure message carries one —
- *  Cloudflare's `internal error; reference = <id>` shape (#559). */
-const UPSTREAM_REFERENCE = /\breference\s*=\s*([a-z0-9]+)/i;
-
 // -- the tenant-scoped credential's confinement (#977) ----------------------
 //
 // A `tenant` principal (tenant-token.ts) has the dashboard's CAPABILITY and ONE
@@ -1914,8 +1910,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               ...base,
               tenantId,
               message: raw,
-              // An upstream's own trace reference first, as before; else the one the log line carries.
-              reference: UPSTREAM_REFERENCE.exec(raw)?.[1] ?? c.get('failureReference') ?? null,
+              // The one the log line carries. `recordFailure` keeps an upstream handle in the text
+              // off a tenant's row, on a staff row beside it, and takes it on a row with no tenant.
+              reference: tenantId
+                ? (c.get('failureReference') ?? null)
+                : (upstreamHandleIn(raw) ?? c.get('failureReference') ?? null),
             },
             cause === undefined ? NO_CAUSE : cause,
           );
@@ -2166,12 +2165,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // regex a message. A caller with no throw in hand leaves the columns null,
     // which reads as "nobody classified this" rather than a guess nobody made.
     const attributed = cause === NO_CAUSE ? undefined : attributeFailure(cause);
+    // #2540: a row filed under a tenant is read back by it, so its reference is always the
+    // platform's own. When its text carries an upstream trace handle (#559), that handle is kept
+    // on a staff row beside it (`detail`, under the same reference), where staff's search finds it.
+    // A row with no tenant is staff's, and takes the handle as its reference, as before.
+    const handle = upstreamHandleIn(entry.message);
+    const shaped: OpsFailureInput =
+      entry.tenantId && entry.detail == null && handle
+        ? {
+            ...entry,
+            reference: entry.reference && entry.reference !== handle ? entry.reference : ulid(),
+            detail: withUpstreamReference(entry.message),
+          }
+        : { ...entry, reference: entry.reference ?? (entry.tenantId ? null : handle) };
     const write = host.admin
       .recordOpsFailure({
-        ...entry,
+        ...shaped,
         origin: entry.origin ?? attributed?.origin ?? null,
         code: entry.code ?? attributed?.code ?? null,
-        reference: entry.reference ?? UPSTREAM_REFERENCE.exec(entry.message)?.[1] ?? null,
+        reference: shaped.reference ?? null,
       })
       .catch(() => undefined)
       .finally(() => inflightRecords.delete(write));
@@ -2203,7 +2215,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * <id>`) is named on staff's row only, first, in the form staff's reference search finds
    * (`withUpstreamReference`), so either id lands on the pair and a bounded row keeps it.
    */
-  const staffText = (raw: string): string => withUpstreamReference(raw, UPSTREAM_REFERENCE.exec(raw)?.[1]);
+  const staffText = (raw: string): string => withUpstreamReference(raw);
 
   /**
    * #2540: a failure whose text is not ours to hand a confined caller: what an upstream or a store

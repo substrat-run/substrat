@@ -516,4 +516,60 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     const all = await failuresSeenBy(asTenant, t);
     expect(all).not.toContain(upstream);
   });
+
+  it('a marker spelled in the text ahead of the genuine handle makes none: only the genuine one is named', async () => {
+    const { pin, slug } = await setup('forged');
+    const v2 = await push(pin, manifest('0.2.0'));
+    const forged = `cf${ulid().toLowerCase()}`;
+    for (const shape of ['start', 'before'] as const) {
+      const real = `cf${ulid().toLowerCase()}`;
+      const text = shape === 'start' ? `[upstream reference = ${forged}] boom; reference = ${real}` : `boom [upstream reference = ${forged}] then reference = ${real}`;
+      serveFails = { slug, error: new Error(text) };
+      const res = await promote(slug, v2.id);
+      expect(res.status).toBe(502);
+      const reference = ((await res.json()) as { reference: string }).reference;
+      const found = await vi.waitFor(async () => {
+        const r = await app.request(`/ops-failures?reference=${real}`, { headers: auth });
+        const rows = ((await r.json()) as { entries: { tenantId: string | null; reference: string; message: string }[] }).entries;
+        expect(rows.length).toBeGreaterThan(0);
+        return rows;
+      });
+      expect(found.map((r) => r.reference)).toContain(reference);
+      const staffRow = found.find((r) => r.reference === reference && r.tenantId === null)!;
+      expect(staffRow.message.startsWith(`[upstream reference = ${real}] `)).toBe(true);
+    }
+    const byForged = await app.request(`/ops-failures?reference=${forged}`, { headers: auth });
+    expect(((await byForged.json()) as { entries: unknown[] }).entries).toEqual([]);
+  });
+
+  it('an own install’s failure whose text carries an upstream handle: the tenant row’s reference is the platform’s', async () => {
+    const { t, own } = await setup('ownref');
+    const asBuilder = await tokenFor('/push-tokens', t);
+    const upstream = `cf${ulid().toLowerCase()}`;
+    const said = `reconcile failed: internal error; reference = ${upstream}`;
+    reconcileFails = () => new ControlPlaneError(502, said);
+    const res = await app.request(`/tenants/${t}/scopes/${own}/provision`, { method: 'POST', headers: asBuilder });
+    expect(res.status).toBe(502);
+    // The caller's own install: its answer is the vertical's own text, unchanged.
+    expect(((await res.json()) as { detail: string }).detail).toBe(said);
+    type Row = { tenantId: string | null; reference: string | null; message: string };
+    const rows = await vi.waitFor(async () => {
+      const r = await app.request(`/ops-failures?reference=${upstream}`, { headers: auth });
+      const entries = ((await r.json()) as { entries: Row[] }).entries;
+      expect(entries.length).toBe(2);
+      return entries;
+    });
+    const [tenantRow, staffRow] = rows;
+    expect(tenantRow).toMatchObject({ tenantId: t, message: said });
+    expect(tenantRow!.reference).toMatch(/^[0-9A-Z]{26}$/);
+    expect(staffRow).toMatchObject({ tenantId: null, reference: tenantRow!.reference });
+    expect(staffRow!.message.startsWith(`[upstream reference = ${upstream}] `)).toBe(true);
+    // Staff find both by the platform's reference too; the tenant's own search by it finds its row,
+    // and by the upstream id nothing.
+    const byOwn = await app.request(`/ops-failures?reference=${tenantRow!.reference}`, { headers: auth });
+    expect(((await byOwn.json()) as { entries: Row[] }).entries.map((r) => r.tenantId)).toEqual([t, null]);
+    const asTenant = await tokenFor('/tenant-tokens', t);
+    const mine = await app.request(`/ops-failures?tenantId=${t}&reference=${upstream}`, { headers: asTenant });
+    expect(((await mine.json()) as { entries: Row[] }).entries).toEqual([]);
+  });
 });

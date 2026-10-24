@@ -2863,10 +2863,16 @@ describe('control-plane API', () => {
       tenantId: tF,
       vertical: 'fault-vert',
       status: 502,
-      reference: '9tsvbrr50lrn5b6qeieuk2kh',
     });
-    // Once: the 5xx backstop sees the restore site already recorded this throw.
-    expect(failures.filter((f) => f.reference === '9tsvbrr50lrn5b6qeieuk2kh')).toHaveLength(1);
+    // #2540: a row the tenant reads back carries the platform's own reference. The upstream handle
+    // is kept on a staff row beside it, which staff's search by that handle finds with it.
+    expect(recorded!.reference).toMatch(/^[0-9A-Z]{26}$/);
+    const byUpstream = await host.admin.listOpsFailures(staff, { reference: '9tsvbrr50lrn5b6qeieuk2kh', referenceInText: true });
+    // Once: the 5xx backstop sees the restore site already recorded this throw — one pair.
+    expect(byUpstream.map((f) => [f.tenantId, f.reference])).toEqual([
+      [tF, recorded!.reference],
+      [null, recorded!.reference],
+    ]);
   });
 
   it('a 5xx from a step that records nothing still lands one ops-failure row (the 5xx backstop)', async () => {
@@ -2916,8 +2922,10 @@ describe('control-plane API', () => {
     expect(((await res.json()) as { error: string }).error).toContain('reference = q01etq01etq01etq01etq01e');
 
     await new Promise((r) => setTimeout(r, 20));
-    const rows = (await host.admin.listOpsFailures(staff, { reference: 'q01etq01etq01etq01etq01e' }));
-    expect(rows).toHaveLength(1);
+    // #2540: staff's search by the upstream handle lands on the failure: the owner's row, under the
+    // platform's own reference, and the staff row beside it that keeps the handle.
+    const rows = await host.admin.listOpsFailures(staff, { reference: 'q01etq01etq01etq01etq01e', referenceInText: true });
+    expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({
       operation: 'POST /verticals/:slug/previews',
       vertical: 'quiet-vert',
@@ -2925,8 +2933,10 @@ describe('control-plane API', () => {
       // puts the row in that tenant's dashboard view.
       tenantId: tF,
       status: 502,
-      reference: 'q01etq01etq01etq01etq01e',
     });
+    expect(rows[0]!.reference).toMatch(/^[0-9A-Z]{26}$/);
+    expect(rows[1]).toMatchObject({ tenantId: null, reference: rows[0]!.reference });
+    expect(rows[1]!.message.startsWith('[upstream reference = q01etq01etq01etq01etq01e] ')).toBe(true);
   });
 
   it('a literal 5xx answered with no error object lands a row carrying its body (the 5xx backstop)', async () => {

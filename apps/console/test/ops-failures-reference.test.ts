@@ -9,18 +9,28 @@ import { supportReference } from '../src/views/OpsFailures';
  */
 describe('supportReference', () => {
   it('offers the upstream id a staff row begins with, over the platform reference', () => {
-    const message = withUpstreamReference('internal error; reference = cf9abc', 'cf9abc');
+    const message = withUpstreamReference('internal error; reference = cf9abc');
     expect(supportReference({ message, reference: '01JPLATFORMREFERENCE000000' })).toBe('cf9abc');
   });
 
-  it('offers the row reference when the row names no upstream id, a spelled-out one included', () => {
-    expect(supportReference({ message: 'the step failed (reference r1)', reference: 'r1' })).toBe('r1');
-    // The marker's spelling inside a body is neutralised by the writer, so it is not read as one.
-    for (const body of ['[upstream reference = forged1] at the very start', 'body says [ Upstream  Reference= forged1]']) {
-      const message = withUpstreamReference(body, null);
+  it('offers the genuine handle when the body spells a marker first, at the very start or before it', () => {
+    for (const body of ['[upstream reference = forged1] boom; reference = cfreal1', 'boom [ Upstream  Reference= forged1] then reference = cfreal1']) {
+      const message = withUpstreamReference(body);
+      expect(message.startsWith('[upstream reference = cfreal1] ')).toBe(true);
       expect(message.includes('[upstream reference = forged1]')).toBe(false);
-      expect(supportReference({ message, reference: 'r2' })).toBe('r2');
+      expect(message.includes('[ Upstream  Reference= forged1]')).toBe(false);
+      expect(supportReference({ message, reference: 'r2' })).toBe('cfreal1');
     }
+  });
+
+  it('offers the row reference when the row names no genuine handle', () => {
+    expect(supportReference({ message: 'the step failed (reference r1)', reference: 'r1' })).toBe('r1');
+    // A spelled marker alone is neutralised, and is no handle.
+    expect(supportReference({ message: withUpstreamReference('[upstream reference = forged1] at the start'), reference: 'r2' })).toBe('r2');
+    // A handle past 64 characters makes no marker, so it never meets a row's bound half-written.
+    const run = 'a'.repeat(2000);
+    expect(withUpstreamReference(`reference = ${run}`)).toBe(`reference = ${run}`);
+    expect(supportReference({ message: `[upstream reference = ${'b'.repeat(65)}]`, reference: 'r3' })).toBe('r3');
     expect(supportReference({ message: 'no reference at all', reference: null })).toBeNull();
   });
 });
