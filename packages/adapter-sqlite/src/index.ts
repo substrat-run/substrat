@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -18,7 +19,6 @@ import {
   modelUsageEntry,
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
-  attachmentRecord,
   type AttachmentRecord,
   type UploadLinkPolicy,
   type UploadLinkView,
@@ -331,6 +331,11 @@ import {
   assertReadOnlyQuery,
   attachmentBlobKey,
   attachmentSha256,
+  isSizedByteStream,
+  knownLengthStream,
+  putAttachmentBytes,
+  type IncrementalSha256,
+  type SizedByteStream,
   entitlementDenial,
   requiredEntitlementFor,
   type OperationEntitlement,
@@ -363,6 +368,14 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  METER_DAYS_DDL,
+  listMeterDayRows,
+  listMeterDayTakeRows,
+  pruneMeterDayRows,
+  recordMeterDayRows,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink,
@@ -791,6 +804,7 @@ import {
   idempotencyOptedOutMessage,
   replayFor,
   globalFetch,
+  fetchLikeOf,
   createUlid,
   type UlidMint,
   type IdempotencyRow,
@@ -879,6 +893,43 @@ export function isStorageFault(err: unknown): boolean {
  * this map — cannot write one. Registered as each context is built.
  */
 const kernelEmitters = new WeakMap<OperationContext, (event: DomainEventInput) => void>();
+
+/**
+ * Node's running SHA-256 (#2498), for a streamed upload — the kernel's `putAttachmentBytes` takes
+ * it. `node:crypto` because Web Crypto has no running digest, and hashing the written file
+ * afterwards would read it whole into memory, which is what streaming is for.
+ */
+function nodeSha256(): IncrementalSha256 {
+  const hash = createHash('sha256');
+  return {
+    update: (chunk) => {
+      hash.update(chunk);
+    },
+    hex: async () => hash.digest('hex'),
+  };
+}
+
+/**
+ * Write a sized stream to `path` one chunk at a time (#2498), so the file is never held whole,
+ * held to its declared length as the store contract says: a stream that carries more or fewer
+ * bytes leaves no file.
+ */
+async function writeStreamToFile(path: string, body: SizedByteStream): Promise<void> {
+  const reader = knownLengthStream(body).getReader();
+  const fd = openSync(path, 'w');
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) writeSync(fd, value);
+    }
+  } catch (err) {
+    rmSync(path, { force: true });
+    throw err;
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   const write = kernelEmitters.get(ctx);
@@ -2141,7 +2192,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.wrapBlobStore = options.wrapBlobStore ?? ((store) => store);
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
-    this.fetchImpl = options.fetch ?? globalFetch;
+    // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
+    this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
@@ -2841,6 +2893,8 @@ export class SqliteScopeHost implements ScopeHost {
       ${SCOPE_STORAGE_DDL}
       -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
       ${REQUEST_ROLLUP_DDL}
+      -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
+      ${METER_DAYS_DDL}
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -3654,7 +3708,8 @@ export class SqliteScopeHost implements ScopeHost {
       put: async (key, body, opts) => {
         const p = resolveKey(key);
         mkdirSync(dirname(p), { recursive: true });
-        writeFileSync(p, body);
+        if (isSizedByteStream(body)) await writeStreamToFile(p, body);
+        else writeFileSync(p, body);
         writeFileSync(`${p}.meta`, JSON.stringify({ contentType: opts?.contentType ?? null }));
       },
       get: async (key) => {
@@ -4016,21 +4071,20 @@ export class SqliteScopeHost implements ScopeHost {
         const creator = authority as CheckSubject;
         const id = ulid();
         const key = attachmentBlobKey(rt.scopeId, id);
-        const record = attachmentRecord.parse({
+        const fields = {
           id,
           entity: input.entity,
           filename: input.filename,
           contentType: input.contentType,
-          size: input.body.byteLength,
-          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy: creator.id,
           createdAt: new Date().toISOString(),
-        });
+        };
         // Bytes first, row second: a crash between the two leaves an orphaned object that no
         // row points at (#2314). A refused check compensates the object away below; a drain
         // fault after the commit is not a refusal (`serialized` keeps it from becoming one).
-        await store.put(key, input.body, { contentType: input.contentType });
+        // A streamed body is hashed and counted as it is written (#2498).
+        const record = await putAttachmentBytes(store, key, fields, input.body, nodeSha256);
         try {
           return await guarded('attachments.upload', async (ctx) => {
             assertAllowed(await ctx.check(gate.write, input.entity));
@@ -9479,12 +9533,13 @@ export class SqliteScopeHost implements ScopeHost {
             `vertical '${parsed.slug}' is already registered as ${existing.source}`,
           );
         }
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare(
             'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           )
-          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
-        this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
+          .run(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString())
+          .changes > 0,
+          () => this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed));
       },
       listVerticals: async (actor, page) => {
         const where: string[] = [];
@@ -9517,7 +9572,7 @@ export class SqliteScopeHost implements ScopeHost {
         const migrationDigest = await publishedMigrationDigest({
           id: audited.id, migrationDigest: audited.migrationDigest, manifestJson: manifestJson ?? null, migrations: split.migrations,
         });
-        this.directory.transaction(() => {
+        this.directoryWriteAndAudit(() => {
           this.directory
             .prepare(
               `INSERT INTO vertical_versions
@@ -9544,14 +9599,14 @@ export class SqliteScopeHost implements ScopeHost {
           writeVersionMigrations(switchSqlOf(this.directory), audited.id, split.migrations);
           // #2286: the version's scope-store bindings, refusing one moved to another driver, in the insert's transaction.
           indexVersionScopeStores(switchSqlOf(this.directory), audited.verticalSlug, audited.id, split.manifestJson);
-        })();
-        this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
+          return true;
+        }, () => this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
           // The digest the registry holds, which differs from the pushed one only for an unheld version.
           migrationDigest,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
-        });
+        }));
       },
       verticalScopeStores: async (actor, verticalSlug: string) => {
         // One transaction: versions not indexed yet are indexed by the read (#2286).
@@ -9601,40 +9656,42 @@ export class SqliteScopeHost implements ScopeHost {
           }
         }
         // Resolve any pending publish request either way, and set the flag.
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?')
-          .run(listed ? 1 : 0, slug);
-        this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: existing.listed }, { listed });
+          .run(listed ? 1 : 0, slug).changes > 0,
+          () => this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: existing.listed }, { listed }));
       },
       requestPublish: async (actor, slug: string) => {
         const existing = readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directory.prepare('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?').run(new Date().toISOString(), slug);
-        this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
+        this.directoryWriteAndAudit(() => this.directory
+          .prepare('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?')
+          .run(new Date().toISOString(), slug).changes > 0,
+          () => this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug }));
       },
       setVerticalInstallsBlocked: async (actor, slug: string, blocked: boolean) => {
         const existing = readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE verticals SET installs_blocked = ? WHERE slug = ?')
-          .run(blocked ? 1 : 0, slug);
-        this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: existing.installsBlocked }, { installsBlocked: blocked });
+          .run(blocked ? 1 : 0, slug).changes > 0,
+          () => this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: existing.installsBlocked }, { installsBlocked: blocked }));
       },
       setVerticalTenantProvisioner: async (actor, slug: string, granted: boolean) => {
         const existing = readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?')
-          .run(granted ? 1 : 0, slug);
-        this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: existing.tenantProvisioner }, { tenantProvisioner: granted });
+          .run(granted ? 1 : 0, slug).changes > 0,
+          () => this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: existing.tenantProvisioner }, { tenantProvisioner: granted }));
       },
       setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
         const existing = readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE verticals SET email_sender = ? WHERE slug = ?')
-          .run(granted ? 1 : 0, slug);
-        this.recordAdmin(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: existing.emailSender }, { emailSender: granted });
+          .run(granted ? 1 : 0, slug).changes > 0,
+          () => this.recordAdmin(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: existing.emailSender }, { emailSender: granted }));
       },
       deleteVertical: async (actor, slug: string) => {
         const existing = readVertical(slug);
@@ -9666,24 +9723,25 @@ export class SqliteScopeHost implements ScopeHost {
         }
         // Deployed dispatch scripts are NOT reaped here — they become orphans for the
         // cleanup script (#248), never destroyed alongside a registry row.
-        this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
-        this.directory.prepare('DELETE FROM vertical_channel_history WHERE vertical_slug = ?').run(slug);
-        this.directory
-          .prepare(
-            `DELETE FROM vertical_version_migrations
-              WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
-          )
-          .run(slug);
-        forgetVerticalScopeStores(switchSqlOf(this.directory), slug);
-        this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
-        this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug);
-        this.recordAdmin(
+        this.directoryWriteAndAudit(() => {
+          this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
+          this.directory.prepare('DELETE FROM vertical_channel_history WHERE vertical_slug = ?').run(slug);
+          this.directory
+            .prepare(
+              `DELETE FROM vertical_version_migrations
+                WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
+            )
+            .run(slug);
+          forgetVerticalScopeStores(switchSqlOf(this.directory), slug);
+          this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
+          return this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug).changes > 0;
+        }, () => this.recordAdmin(
           actor,
           'deleteVertical',
           { tenantId: null },
           { slug, source: existing.source, ownerTenant: existing.ownerTenant },
           null,
-        );
+        ));
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await readVersion(versionId);
@@ -9692,24 +9750,24 @@ export class SqliteScopeHost implements ScopeHost {
           // Idempotent — except an AUTO-admitted version, which this upgrades to a
           // manual vouch by clearing the note (what the publish seam requires).
           if (v.admissionNote !== AUTO_ADMISSION_NOTE) return;
-          this.directory
+          this.directoryWriteAndAudit(() => this.directory
             .prepare('UPDATE vertical_versions SET admission_note = NULL WHERE id = ?')
-            .run(versionId);
-          this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admissionNote }, {
-            admission: 'admitted',
-            note: null,
-          });
+            .run(versionId).changes > 0,
+            () => this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admissionNote }, {
+              admission: 'admitted',
+              note: null,
+            }));
           return;
         }
         if (v.admission === 'rejected') {
           throw substratError('conflict', `version ${versionId} was rejected — publish a new one`);
         }
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare("UPDATE vertical_versions SET admission = 'admitted' WHERE id = ?")
-          .run(versionId);
-        this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, {
-          admission: 'admitted',
-        });
+          .run(versionId).changes > 0,
+          () => this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, {
+            admission: 'admitted',
+          }));
       },
       rejectVersion: async (actor, versionId: string, note: string) => {
         const v = await readVersion(versionId);
@@ -9718,13 +9776,13 @@ export class SqliteScopeHost implements ScopeHost {
           throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
         }
         if (v.admission === 'rejected') return; // idempotent
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare("UPDATE vertical_versions SET admission = 'rejected', admission_note = ? WHERE id = ?")
-          .run(note, versionId);
-        this.recordAdmin(actor, 'rejectVersion', { tenantId: null }, { admission: v.admission }, {
-          admission: 'rejected',
-          note,
-        });
+          .run(note, versionId).changes > 0,
+          () => this.recordAdmin(actor, 'rejectVersion', { tenantId: null }, { admission: v.admission }, {
+            admission: 'rejected',
+            note,
+          }));
       },
       promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
         const incoming = await readVersion(versionId);
@@ -9829,8 +9887,9 @@ export class SqliteScopeHost implements ScopeHost {
         // #2333: a compare-and-set. Every gate above — the review binding, the digest checkpoints,
         // the export breaks — was judged against `outgoing`, across awaits another promote can run
         // in. So the pointer moves only if it still names `outgoing`, read and written in one
-        // transaction; the promote that lost the race is refused as stale and writes nothing.
-        const moved = this.directory.transaction(() => {
+        // transaction; the promote that lost the race is refused as stale and writes nothing. Its admin
+        // row commits with the move, ahead of the rebinds below, which record their own.
+        const moved = this.directoryWriteAndAudit(() => {
           const now = this.directory
             .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
             .get(verticalSlug, channel) as { version_id: string } | undefined;
@@ -9852,7 +9911,16 @@ export class SqliteScopeHost implements ScopeHost {
             )
             .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
           return true;
-        })();
+        },
+        // The acknowledgement is recorded, not just enforced: that is what turns
+        // "someone reviewed the permission change" into evidence.
+        () => this.recordAdmin(
+          actor,
+          'promoteVersion',
+          { tenantId: null, vertical: verticalSlug },
+          outgoing ? { versionId: outgoing.id, version: outgoing.version } : null,
+          { channel, versionId, version: incoming.version, acknowledged: ack },
+        ));
         if (!moved) throw promoteRaceRefusal(channel);
 
         // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
@@ -9888,16 +9956,6 @@ export class SqliteScopeHost implements ScopeHost {
               { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
             ));
         }
-
-        // The acknowledgement is recorded, not just enforced: that is what turns
-        // "someone reviewed the permission change" into evidence.
-        this.recordAdmin(
-          actor,
-          'promoteVersion',
-          { tenantId: null, vertical: verticalSlug },
-          outgoing ? { versionId: outgoing.id, version: outgoing.version } : null,
-          { channel, versionId, version: incoming.version, acknowledged: ack },
-        );
       },
       listChannels: async (actor, verticalSlug: string, page) => {
         // `prod` is the only live channel (#509 retired dev/staging). Filtering here keeps a
@@ -10174,19 +10232,19 @@ export class SqliteScopeHost implements ScopeHost {
           parsed.versionId,
           r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_version_id ? { ref: r.serving_ref, versionId: r.serving_version_id } : null, null) : [],
         );
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare(
             `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
                     serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
           )
-          .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag, verticalSlug);
-        this.recordAdmin(
-          actor,
-          'setVerticalServing',
-          { tenantId: null },
-          r.serving_ref ? { ref: r.serving_ref, versionId: r.serving_version_id } : null,
-          { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
-        );
+          .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag, verticalSlug).changes > 0,
+          () => this.recordAdmin(
+            actor,
+            'setVerticalServing',
+            { tenantId: null },
+            r.serving_ref ? { ref: r.serving_ref, versionId: r.serving_version_id } : null,
+            { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
+          ));
       },
       versionManifest: async (actor, verticalSlug: string, versionId: string) => {
         const v = this.directory
@@ -10747,7 +10805,7 @@ export class SqliteScopeHost implements ScopeHost {
             `tenant slug '${parsed.slug}' already taken by ${slugOwner.tenant_id} (slugs are unique)`,
           );
         }
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare(
             `INSERT INTO tenants (tenant_id, slug, name, status, created_at, provisioned_by_tenant)
              VALUES (?, ?, ?, 'active', ?, ?)`,
@@ -10758,8 +10816,8 @@ export class SqliteScopeHost implements ScopeHost {
             parsed.name,
             new Date().toISOString(),
             parsed.provisionedByTenant ?? null,
-          );
-        this.recordAdmin(actor, 'createTenant', { tenantId: parsed.id }, null, readTenant(parsed.id));
+          ).changes > 0,
+          () => this.recordAdmin(actor, 'createTenant', { tenantId: parsed.id }, null, readTenant(parsed.id)));
       },
       setTenantStatus: async (actor: PlatformActorId, tenantId: TenantId, status: TenantStatus) => {
         const before = readTenant(tenantId);
@@ -10775,29 +10833,28 @@ export class SqliteScopeHost implements ScopeHost {
         // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
         // entering `deleting` stamps, leaving it (an un-delete) clears — exactly the
         // shape suspendScope/archiveScope use for archived_at.
-        if (status === 'deleting') {
-          this.directory
+        this.directoryWriteAndAudit(() => (status === 'deleting'
+          ? this.directory
             .prepare('UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?')
-            .run(status, new Date().toISOString(), tenantId);
-        } else {
-          this.directory
+            .run(status, new Date().toISOString(), tenantId)
+          : this.directory
             .prepare('UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?')
-            .run(status, tenantId);
-        }
-        this.recordAdmin(
-          actor,
-          'setTenantStatus',
-          { tenantId },
-          { status: before.status },
-          { status },
-        );
+            .run(status, tenantId)).changes > 0,
+          () => this.recordAdmin(
+            actor,
+            'setTenantStatus',
+            { tenantId },
+            { status: before.status },
+            { status },
+          ));
       },
       setTenantName: async (actor: PlatformActorId, tenantId: TenantId, name: string) => {
         const before = readTenant(tenantId);
         if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
         if (before.name === name) return; // no-op is not audited — nothing changed
-        this.directory.prepare('UPDATE tenants SET name = ? WHERE tenant_id = ?').run(name, tenantId);
-        this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before.name }, { name });
+        this.directoryWriteAndAudit(
+          () => this.directory.prepare('UPDATE tenants SET name = ? WHERE tenant_id = ?').run(name, tenantId).changes > 0,
+          () => this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before.name }, { name }));
       },
       listTenants: async (actor, page): Promise<Tenant[]> => {
         const where: string[] = [];
@@ -11671,27 +11728,25 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_scope_storage_attempts', // #1524: and the phase's last try at each
           '_substrat_scope_store_storage', // #2212: scope-store samples, gone with the tenant
         ];
-        const clear = this.directory.transaction(() => {
+        this.directoryWriteAndAudit(() => {
           for (const table of tables) {
             this.directory.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId);
           }
-          this.directory
+          return this.directory
             .prepare(`UPDATE tenants SET status = 'reaped', deleting_at = NULL WHERE tenant_id = ?`)
-            .run(tenantId);
-        });
-        clear();
-        // Evict the in-memory role cache for this tenant (the one directory table
-        // mirrored in memory) so a reaped role never resolves after the DELETE.
-        for (const cacheKey of [...this.roles.keys()]) {
-          if (cacheKey.startsWith(`${tenantId}/`)) this.roles.delete(cacheKey);
-        }
-        this.recordAdmin(
+            .run(tenantId).changes > 0;
+        }, () => this.recordAdmin(
           actor,
           'reapTenant',
           { tenantId },
           { status: before.status },
           { status: 'reaped' },
-        );
+        ));
+        // Evict the in-memory role cache for this tenant (the one directory table
+        // mirrored in memory) so a reaped role never resolves after the DELETE.
+        for (const cacheKey of [...this.roles.keys()]) {
+          if (cacheKey.startsWith(`${tenantId}/`)) this.roles.delete(cacheKey);
+        }
       },
       grantEntitlement: async (
         actor: PlatformActorId,
@@ -13017,6 +13072,23 @@ export class SqliteScopeHost implements ScopeHost {
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.directory.transaction(() =>
           pruneRequestDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
+        )(),
+      // #2501: the snapshot reads and writes in one transaction, so its rows are one instant's reading.
+      recordMeterDay: async (_actor, input: MeterDayTakeInput) =>
+        this.directory.transaction(() => recordMeterDayRows(redactionSqlOf(this.directory), input))(),
+      listMeterDays: async (actor, filter?: MeterDayFilter) => {
+        const rows = listMeterDayRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listMeterDays', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
+      },
+      listMeterDayTakes: async (actor, filter?: MeterDayTakeFilter) => {
+        const rows = listMeterDayTakeRows(redactionSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listMeterDayTakes', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneMeterDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.directory.transaction(() =>
+          pruneMeterDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
         )(),
       listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
         const rows = this.selectModelUsage(filter);

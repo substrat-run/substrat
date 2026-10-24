@@ -1761,18 +1761,20 @@ export type TenantExport = z.infer<typeof tenantExport>;
 
 /**
  * The meters (#38; control-plane.md §5) — and the shape is as narrow as it is on
- * purpose, because only two of §9's four are computable at all.
+ * purpose, because only meters 1 and 2 come from one directory read.
  *
  * **Meter 1** (base fee: per tenant + per active scope) is a `COUNT` over the directory.
  * **Meter 2** (per-engine licensing) is a `GROUP BY` over the entitlement store, whose
  * flags *are* the SKUs. Both are free, both come from the directory database, and
- * neither needs a data pipeline. **Meters 3 and 4 are absent from THIS reading by
- * construction**, not by omission: the outbox is per-scope-database with no cross-tenant
- * fan-in, reads emit nothing, and the cross-tenant order flow does not exist. A field here
- * would be a number we cannot compute — "a meter you cannot compute is not a pricing
- * decision, it is a data-pipeline project" (§5). The one slice of meter 3 that IS computable
- * — model usage, because every call is raised as a platform intent and drained into the
- * directory — has its own reading, `modelUsageSummary` (model-usage.ts, #1054).
+ * neither needs a data pipeline. **Meters 3 and 4 are absent from THIS reading on
+ * purpose**, not by omission: this reading is one directory read, and meter 3 comes
+ * from other stores — the storage gauge, the model-usage ledger and the estimated daily
+ * request rollup have their own routes, and lake bytes have no reader yet. Meter 4 needs
+ * the cross-tenant order flow, which does not exist. Exact API counts are not computable
+ * at all: reads emit nothing on the spine (§5). A field here would be a number this read
+ * cannot stand behind. Model usage, because every call is raised as a platform intent and
+ * drained into the directory, has its own reading, `modelUsageSummary` (model-usage.ts,
+ * #1054).
  *
  * Two rules decide every number below, and they are the reason this is a server-side
  * aggregate rather than arithmetic over `listScopes`:
@@ -2063,6 +2065,94 @@ export const meterReading = z.object({
   storage: storageGauge.optional(),
 });
 export type MeterReading = z.infer<typeof meterReading>;
+
+/**
+ * One tenant's scopes under one vertical, on a meter day (#2501): `meterScopeCounts` narrowed to
+ * the scopes that vertical runs, by the same effective-status rule. `vertical` is the directory's
+ * own value, null for a scope bound to none.
+ */
+export const meterDayVertical = meterScopeCounts.extend({
+  vertical: z.string().min(1).nullable(),
+});
+export type MeterDayVertical = z.infer<typeof meterDayVertical>;
+
+/**
+ * One grant a tenant held on a meter day (#2501): the SKU and tier as meter 2 groups them, the
+ * expiry the grant carried, and whether it was live at the snapshot's `readAt`. A lapsed grant is
+ * kept with `live: false`, as the reading reports it `expired`, because a lapsed trial is a renewal.
+ */
+export const meterDayGrant = z.object({
+  entitlementKey: z.string().min(1),
+  plan: z.string().min(1).nullable(),
+  expiresAt: instant.nullable(),
+  live: z.boolean(),
+});
+export type MeterDayGrant = z.infer<typeof meterDayGrant>;
+
+/**
+ * Meters 1 and 2 for one tenant on one UTC day (#2501): the reading `/meters` gives for that
+ * tenant, kept. The first scheduled pass of the day takes it, so it is the state at `readAt`, one
+ * instant early in the day, not an account of the whole day: a scope created and archived between
+ * two snapshots is in neither. Every number is a directory count, exact at that instant.
+ *
+ * A reaped tenant has no row: it is a tombstone, holding no scope and billing nothing.
+ */
+export const meterDay = z.object({
+  day: utcDay,
+  tenantId,
+  /** When the directory was read. Its UTC day is `day`, and every grant's `live` is decided against it. */
+  readAt: instant,
+  status: tenantStatus,
+  /** `status === 'active'`, as on `/meters`. */
+  billable: z.boolean(),
+  /** The tenant's scopes by effective status, as `tenantMeterRow.scopes` counts them. */
+  scopes: meterScopeCounts,
+  /** The same counts split by the vertical each scope runs, ordered by vertical (null first). Sums to `scopes`. */
+  verticals: z.array(meterDayVertical),
+  /** Every grant the tenant held, ordered by key then plan. */
+  entitlements: z.array(meterDayGrant),
+});
+export type MeterDay = z.infer<typeof meterDay>;
+
+/**
+ * The record of one UTC day's meter snapshot (#2501): whether it was taken, and when. A day with
+ * no record had no pass that tried, so its absence of rows says nothing; a day taken with no
+ * rows had no tenant to meter.
+ */
+export const meterDayTake = z.object({
+  day: utcDay,
+  /** The last attempt to take the day's snapshot. */
+  attemptedAt: instant,
+  /** When the snapshot was taken; null while no attempt has succeeded. */
+  takenAt: instant.nullable(),
+  /** How many tenant rows it wrote; null while none has succeeded. */
+  tenants: z.number().int().nonnegative().nullable(),
+  /** Why the last attempt failed; null when it succeeded. */
+  error: z.string().nullable(),
+  /**
+   * While the day's last attempt failed: when the run of identical failures it belongs to began,
+   * and how many attempts, across days, that run holds up to this one. Null otherwise. A standing
+   * failure is mailed once, so this is where its length stays visible.
+   */
+  failingSince: instant.nullable(),
+  failingCount: z.number().int().positive().nullable(),
+});
+export type MeterDayTake = z.infer<typeof meterDayTake>;
+
+/**
+ * `GET /meters/days` (#2501): the stored daily meter snapshots over an inclusive window of UTC
+ * days, and the record of each day in it, so a surface can tell a day no pass took from a day
+ * whose snapshot met no tenant.
+ */
+export const meterDaysReading = z.object({
+  since: utcDay,
+  until: utcDay,
+  rows: z.array(meterDay),
+  /** True when `rows` stopped at the row limit, so the window holds more than was returned. */
+  truncated: z.boolean(),
+  days: z.array(meterDayTake),
+});
+export type MeterDaysReading = z.infer<typeof meterDaysReading>;
 
 /**
  * Storage, read on demand (#1524): the size of each of one tenant's scope DATABASES, and

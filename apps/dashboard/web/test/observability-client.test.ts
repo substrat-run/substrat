@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, teamApi } from '../src/lib/api';
+import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api/browser';
 
 describe('observability team paths (#2170)', () => {
   const realFetch = globalThis.fetch;
@@ -42,6 +43,20 @@ describe('observability team paths (#2170)', () => {
     }) as typeof fetch;
     await expect(api.observabilityLogs('team-b', { services: ['one', 'two'] })).rejects.toThrow('no such team');
     expect(seen).toEqual(['/api/teams/team-b/observability/logs?service=one&service=two']);
+  });
+
+  it('reports the logs-incomplete header exactly when the worker passes it on, and keeps the body (#2520)', async () => {
+    const lines = [{ timestamp: 1, level: 'info', message: 'a line' }];
+    const answer = (headers: Record<string, string>) => {
+      globalThis.fetch = vi.fn(async () => Response.json(lines, { headers })) as typeof fetch;
+    };
+    answer({ [LOGS_INCOMPLETE_HEADER]: '1' });
+    expect(await api.observabilityLogsRead('team-a', { services: ['one'] })).toEqual({ events: lines, incomplete: true });
+    answer({});
+    expect(await api.observabilityLogsRead('team-a', { services: ['one'] })).toEqual({ events: lines, incomplete: false });
+    // The bare-list read answers as it always has, header or not.
+    answer({ [LOGS_INCOMPLETE_HEADER]: '1' });
+    expect(await api.observabilityLogs('team-a', { services: ['one'] })).toEqual(lines);
   });
 
   it('uses each tab’s team for app logs, request reads and patterns, preserving repeated filters', async () => {

@@ -83,6 +83,8 @@ describe('wire header names, moved to contracts (#1978)', () => {
       PLATFORM_REQUEST_HEADER: 'x-substrat-platform-request',
       EXPORTED_EVENTS_HEADER: 'x-substrat-exported-events',
       CONNECTOR_ATTACHMENT_RECORD_HEADER: 'x-substrat-attachment',
+      CONNECTOR_ATTACHMENT_META_HEADER: 'x-substrat-attachment-meta',
+      CONNECTOR_ATTACHMENT_META_MAX_BYTES: 8192,
       LIVE_MODE_HEADER: 'x-substrat-live',
       LOAD_STAMP_HEADER: 'x-substrat-load-stamp',
       WRITE_REVISION_HEADER: 'x-substrat-write-revision',

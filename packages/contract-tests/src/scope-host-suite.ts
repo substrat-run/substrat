@@ -11265,6 +11265,278 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- the daily meter snapshot (#2501) -----------------------------------------
+
+    describe('the daily meter snapshot (#2501)', () => {
+      // A snapshot reads the whole directory, which every other test also writes to, so each test
+      // narrows its reads to its own tenants. The record of a day is fleet-wide, so each test owns its
+      // days: far from today, and from each other's.
+      const newTenant = async () => {
+        const t = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: t, slug: `meter-day-${t.toLowerCase()}`, name: 'Meter day' });
+        return t;
+      };
+      const newScope = async (tenant: TenantId, vertical?: string) => {
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: s, ...(vertical ? { vertical } : {}) });
+        await host.admin.activateScope(staff, tenant, s);
+        return s;
+      };
+      const counts = (c: Partial<{ total: number; active: number; suspended: number; archived: number }>) => ({
+        total: 0,
+        active: 0,
+        suspended: 0,
+        provisioning: 0,
+        archived: 0,
+        reaped: 0,
+        ...c,
+      });
+      const monthsAgo = (m: number) => {
+        const d = new Date();
+        d.setUTCMonth(d.getUTCMonth() - m);
+        return d.toISOString().slice(0, 10);
+      };
+
+      it('keeps one row per tenant not reaped: its scopes by effective status, split by vertical, and each grant live or lapsed at the instant', async () => {
+        const at = '2032-03-04T00:07:00.000Z';
+        const t = await newTenant();
+        await newScope(t, 'meter-crm');
+        await newScope(t, 'meter-crm');
+        const archived = await newScope(t, 'meter-crm');
+        await newScope(t, 'meter-desk');
+        await newScope(t);
+        await host.admin.archiveScope(staff, t, archived);
+        await host.admin.grantEntitlement(staff, t, 'meter-sku', { plan: 'pro' });
+        // Lapsed AT the instant: a grant is live only while its expiry is after the reading.
+        await host.admin.grantEntitlement(staff, t, 'meter-aux', { expiresAt: at });
+        // Its twin, a millisecond later, is live.
+        await host.admin.grantEntitlement(staff, t, 'meter-trial', { expiresAt: '2032-03-04T00:07:00.001Z' });
+
+        // A suspended tenant's active scope is counted suspended, and the tenant bills nothing.
+        const off = await newTenant();
+        await newScope(off, 'meter-crm');
+        await host.admin.setTenantStatus(staff, off, 'suspended');
+        // A reaped tenant is a tombstone: no row. Its twin, a tenant being deleted, has one.
+        const [gone, going] = [await newTenant(), await newTenant()];
+        await host.admin.setTenantStatus(staff, gone, 'deleting');
+        await host.admin.reapTenant(staff, gone);
+        await host.admin.setTenantStatus(staff, going, 'deleting');
+
+        const taken = await host.admin.recordMeterDay!(staff, { at });
+        expect(taken).toMatchObject({ day: '2032-03-04', taken: true });
+        const fleet = await host.admin.listMeterDays!(staff, { since: '2032-03-04', until: '2032-03-04', limit: 10_000 });
+        expect(taken.tenants).toBe(fleet.length);
+        expect(fleet.map((r) => r.tenantId)).not.toContain(gone);
+        expect(fleet.find((r) => r.tenantId === going)).toMatchObject({ status: 'deleting', billable: false, scopes: counts({}) });
+
+        expect(await host.admin.listMeterDays!(staff, { tenantId: t })).toEqual([
+          {
+            day: '2032-03-04',
+            tenantId: t,
+            readAt: at,
+            status: 'active',
+            billable: true,
+            scopes: counts({ total: 5, active: 4, archived: 1 }),
+            // Null first, then by vertical; the split sums to the tenant's counts.
+            verticals: [
+              { vertical: null, ...counts({ total: 1, active: 1 }) },
+              { vertical: 'meter-crm', ...counts({ total: 3, active: 2, archived: 1 }) },
+              { vertical: 'meter-desk', ...counts({ total: 1, active: 1 }) },
+            ],
+            entitlements: [
+              { entitlementKey: 'meter-aux', plan: null, expiresAt: at, live: false },
+              { entitlementKey: 'meter-sku', plan: 'pro', expiresAt: null, live: true },
+              { entitlementKey: 'meter-trial', plan: null, expiresAt: '2032-03-04T00:07:00.001Z', live: true },
+            ],
+          },
+        ]);
+        expect((await host.admin.listMeterDays!(staff, { tenantId: off }))[0]).toMatchObject({
+          status: 'suspended',
+          billable: false,
+          scopes: counts({ total: 1, suspended: 1 }),
+          verticals: [{ vertical: 'meter-crm', ...counts({ total: 1, suspended: 1 }) }],
+        });
+        expect(await host.admin.listMeterDayTakes!(staff, { since: '2032-03-04', until: '2032-03-04' })).toEqual([
+          {
+            day: '2032-03-04',
+            attemptedAt: at,
+            takenAt: at,
+            tenants: fleet.length,
+            error: null,
+            failingSince: null,
+            failingCount: null,
+          },
+        ]);
+        // K-24: both reads are attributable, the first to the tenant it narrowed to.
+        expect((await host.admin.accessLog(staff, { method: 'listMeterDays' })).some((r) => r.tenantId === t)).toBe(true);
+        expect((await host.admin.accessLog(staff, { method: 'listMeterDayTakes' })).length).toBeGreaterThan(0);
+      });
+
+      it('agrees with /meters read at the same moment', async () => {
+        const t = await newTenant();
+        await newScope(t, 'meter-crm');
+        const archived = await newScope(t);
+        await host.admin.archiveScope(staff, t, archived);
+        await host.admin.grantEntitlement(staff, t, 'meter-sku', { plan: 'pro' });
+        await host.admin.grantEntitlement(staff, t, 'meter-old', { expiresAt: new Date(Date.now() - 86_400_000).toISOString() });
+        const live = (await host.admin.readMeters(staff, { tenantId: t })).perTenant[0]!;
+        await host.admin.recordMeterDay!(staff, { at: new Date().toISOString() });
+        const [kept] = await host.admin.listMeterDays!(staff, { tenantId: t });
+        expect(kept!.scopes).toEqual(live.scopes);
+        expect(kept!.billable).toBe(live.billable);
+        expect({
+          live: kept!.entitlements.filter((g) => g.live).length,
+          expired: kept!.entitlements.filter((g) => !g.live).length,
+        }).toEqual(live.entitlements);
+      });
+
+      it('the first snapshot of a day stands: a later attempt that day writes nothing, and a failure never overwrites it', async () => {
+        const t = await newTenant();
+        await newScope(t);
+        const first = '2032-04-01T00:05:00.000Z';
+        expect(await host.admin.recordMeterDay!(staff, { at: first })).toMatchObject({ taken: true });
+        await newScope(t);
+        expect(await host.admin.recordMeterDay!(staff, { at: '2032-04-01T00:20:00.000Z' })).toEqual({
+          day: '2032-04-01',
+          taken: false,
+          tenants: 0,
+        });
+        // A failure recorded after the snapshot committed (its caller stopped waiting) is not the day's record.
+        await host.admin.recordMeterDay!(staff, { at: '2032-04-01T00:35:00.000Z', error: 'took longer than 30000 ms' });
+        expect(await host.admin.listMeterDays!(staff, { tenantId: t })).toEqual([
+          expect.objectContaining({ readAt: first, scopes: counts({ total: 1, active: 1 }) }),
+        ]);
+        expect((await host.admin.listMeterDayTakes!(staff, { since: '2032-04-01', until: '2032-04-01' }))[0]).toMatchObject({
+          attemptedAt: first,
+          takenAt: first,
+          error: null,
+        });
+        // Its positive twin: the next day is a new snapshot, and sees the second scope.
+        expect(await host.admin.recordMeterDay!(staff, { at: '2032-04-02T00:05:00.000Z' })).toMatchObject({ taken: true });
+        expect((await host.admin.listMeterDays!(staff, { tenantId: t })).map((r) => [r.day, r.scopes.total])).toEqual([
+          ['2032-04-01', 1],
+          ['2032-04-02', 2],
+        ]);
+      });
+
+      it('records a failed attempt with its run and writes nothing of the day; a snapshot later that day clears the run', async () => {
+        const t = await newTenant();
+        const day = '2032-05-01';
+        expect(await host.admin.recordMeterDay!(staff, { at: `${day}T00:05:00.000Z`, error: 'directory busy' })).toEqual({
+          day,
+          taken: false,
+          tenants: 0,
+        });
+        // A failure that names no run starts one of its own.
+        expect(await host.admin.listMeterDayTakes!(staff, { since: day, until: day })).toEqual([
+          {
+            day,
+            attemptedAt: `${day}T00:05:00.000Z`,
+            takenAt: null,
+            tenants: null,
+            error: 'directory busy',
+            failingSince: `${day}T00:05:00.000Z`,
+            failingCount: 1,
+          },
+        ]);
+        expect(await host.admin.listMeterDays!(staff, { tenantId: t })).toEqual([]);
+        // A failure that extends a run keeps its start and length.
+        await host.admin.recordMeterDay!(staff, {
+          at: `${day}T00:20:00.000Z`,
+          error: 'directory busy',
+          failingSince: '2032-04-30T23:50:00.000Z',
+          failingCount: 4,
+        });
+        expect((await host.admin.listMeterDayTakes!(staff, { since: day, until: day }))[0]).toMatchObject({
+          attemptedAt: `${day}T00:20:00.000Z`,
+          failingSince: '2032-04-30T23:50:00.000Z',
+          failingCount: 4,
+        });
+        await expect(
+          host.admin.recordMeterDay!(staff, { at: `${day}T00:25:00.000Z`, error: 'directory busy', failingCount: 0 }),
+        ).rejects.toThrow(/failingCount/);
+        // A snapshot taken later the same day stands, and ends the run.
+        await host.admin.recordMeterDay!(staff, { at: `${day}T00:35:00.000Z` });
+        expect((await host.admin.listMeterDayTakes!(staff, { since: day, until: day }))[0]).toEqual({
+          day,
+          attemptedAt: `${day}T00:35:00.000Z`,
+          takenAt: `${day}T00:35:00.000Z`,
+          tenants: expect.any(Number),
+          error: null,
+          failingSince: null,
+          failingCount: null,
+        });
+        expect(await host.admin.listMeterDays!(staff, { tenantId: t })).toHaveLength(1);
+      });
+
+      it('filters by tenant and an inclusive window of days, and bounds the page', async () => {
+        const t = await newTenant();
+        for (const day of ['2032-06-01', '2032-06-02', '2032-06-03']) {
+          await host.admin.recordMeterDay!(staff, { at: `${day}T01:00:00.000Z` });
+        }
+        expect((await host.admin.listMeterDays!(staff, { tenantId: t })).map((r) => r.day)).toEqual(['2032-06-01', '2032-06-02', '2032-06-03']);
+        expect((await host.admin.listMeterDays!(staff, { tenantId: t, since: '2032-06-02' })).map((r) => r.day)).toEqual(['2032-06-02', '2032-06-03']);
+        expect((await host.admin.listMeterDays!(staff, { tenantId: t, until: '2032-06-02' })).map((r) => r.day)).toEqual(['2032-06-01', '2032-06-02']);
+        expect(await host.admin.listMeterDays!(staff, { tenantId: t, limit: 2 })).toHaveLength(2);
+        expect((await host.admin.listMeterDayTakes!(staff, { since: '2032-06-02', until: '2032-06-03' })).map((r) => r.day)).toEqual([
+          '2032-06-02',
+          '2032-06-03',
+        ]);
+        await expect(host.admin.listMeterDays!(staff, { limit: 0 })).rejects.toThrow(/limit/);
+        await expect(host.admin.listMeterDays!(staff, { since: '2032-13-01' })).rejects.toThrow(/UTC day/);
+        await expect(host.admin.listMeterDayTakes!(staff, { until: '2032-02-30' })).rejects.toThrow(/UTC day/);
+      });
+
+      it('prunes snapshots older than an explicit horizon, at most the limit per call; a null horizon prunes nothing', async () => {
+        // Two tenants, so every day holds at least two rows and a prune of one leaves the day in part.
+        const t = await newTenant();
+        await newTenant();
+        const old = [monthsAgo(16), monthsAgo(15), monthsAgo(14)];
+        const kept = [monthsAgo(2)];
+        for (const day of [...old, ...kept]) await host.admin.recordMeterDay!(staff, { at: `${day}T12:00:00.000Z` });
+        // The default keeps everything: nothing goes, however old.
+        expect(await host.admin.pruneMeterDays!(staff, 500, null)).toBe(0);
+        expect(await host.admin.listMeterDays!(staff, { tenantId: t })).toHaveLength(4);
+
+        // Its positive twin: thirteen months named, the older days go, at most the limit per call.
+        expect(await host.admin.pruneMeterDays!(staff, 1, 13)).toBe(1);
+        // The oldest day still holds a row, so it is still marked taken and cannot be taken again.
+        expect(await host.admin.listMeterDayTakes!(staff, { since: old[0], until: old[0] })).toHaveLength(1);
+        while ((await host.admin.pruneMeterDays!(staff, 500, 13)) > 0);
+        expect((await host.admin.listMeterDays!(staff, { tenantId: t })).map((r) => r.day)).toEqual(kept);
+        // The record of a pruned day goes with it; a kept day's stays.
+        const recorded = (await host.admin.listMeterDayTakes!(staff, { since: old[0], until: kept[0] })).map((r) => r.day);
+        expect(recorded).toEqual(kept);
+
+        await expect(host.admin.pruneMeterDays!(staff, 0, 13)).rejects.toThrow(/limit/);
+        await expect(host.admin.pruneMeterDays!(staff, 10, 0)).rejects.toThrow(/whole number of months/);
+      });
+
+      it('the sweep phase takes the day on its first pass into this directory, and not again until the next day', async () => {
+        const t = await newTenant();
+        await newScope(t, 'meter-crm');
+        const pass = (now: string) =>
+          runPlatformSweep(host, {
+            actor: staff,
+            fetch: connectorTestFetch,
+            sweepers: {},
+            drainRetries: false,
+            meterSnapshot: { now: () => now },
+          });
+        const first = await pass('2033-01-01T00:04:00.000Z');
+        expect(first.errors.filter((e) => e.kind === 'meter-snapshot')).toEqual([]);
+        expect(first.meterSnapshot).toMatchObject({ day: '2033-01-01', taken: true, failed: 0, streak: null });
+        const later = await pass('2033-01-01T00:19:00.000Z');
+        expect(later.meterSnapshot).toMatchObject({ day: '2033-01-01', taken: false, tenants: 0, failed: 0 });
+        const next = await pass('2033-01-02T00:04:00.000Z');
+        expect(next.meterSnapshot).toMatchObject({ day: '2033-01-02', taken: true });
+        expect((await host.admin.listMeterDays!(staff, { tenantId: t })).map((r) => [r.day, r.readAt, r.scopes.active])).toEqual([
+          ['2033-01-01', '2033-01-01T00:04:00.000Z', 1],
+          ['2033-01-02', '2033-01-02T00:04:00.000Z', 1],
+        ]);
+      });
+    });
+
     it('leaves bare (module-less) operations ungated', async () => {
       // test/read-counter was registered via defineOperation, no manifest — it
       // must resolve regardless of entitlements.

@@ -321,8 +321,8 @@ export function TenantDetail({ api, tenant, scopes, entitlements, hostnames, run
       {meter?.perTenant[0] && (
         <Card
           title="Metered"
-          description="What this tenant contributes to §5's two computable meters. Nothing here is billed — the platform meters and does not invoice."
-          footer={`read at ${new Date(meter.readAt).toLocaleString()} · storage is read on demand below · meter 4 is uncomputable by construction`}
+          description="What this tenant contributes to meters 1 and 2 (§5). Nothing here is billed — the platform meters and does not invoice."
+          footer={`read at ${new Date(meter.readAt).toLocaleString()} · storage is read on demand below · meter 4 has no data source yet`}
         >
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
             <Stat

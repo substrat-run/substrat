@@ -155,15 +155,28 @@ export {
   type ScopeScriptCopyRow,
 } from './scope-copy-ledger.js';
 export {
+  isSizedByteStream,
+  knownLengthInit,
+  knownLengthStream,
+  type ByteBody,
+  type ByteStream,
+  type ByteStreamRead,
+  type ByteStreamReader,
+  type IncrementalSha256,
+  type SizedByteStream,
+} from './byte-stream.js';
+export {
   SCOPE_COPY_LEASE_MS,
   assertRedrainWindow,
   attachmentBlobKey,
   attachmentSha256,
+  putAttachmentBytes,
   consumersFor,
   entitlementDenial,
   requiredEntitlementFor,
   backoffAt,
   globalFetch,
+  fetchLikeOf,
   executorOutcomeOf,
   parseValidationRecords,
   resolveRetryPolicy,
@@ -908,6 +921,9 @@ export type {
   StorageGaugeSweepReport,
   RequestRollupSweepOptions,
   RequestRollupSweepReport,
+  MeterSnapshotSweepOptions,
+  MeterSnapshotSweepReport,
+  FailingRun,
   CandidatesHint,
   CrossVerticalEdge,
   CrossVerticalOptions,
@@ -1004,6 +1020,19 @@ export {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
 } from './request-rollup.js';
+export {
+  METER_DAYS_DDL,
+  METER_DAYS_LIMIT_DEFAULT,
+  METER_DAYS_LIMIT_MAX,
+  listMeterDayRows,
+  listMeterDayTakeRows,
+  pruneMeterDayRows,
+  recordMeterDayRows,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
+  type MeterDayTakeResult,
+} from './meter-days.js';
 
 export {
   moduleLog,

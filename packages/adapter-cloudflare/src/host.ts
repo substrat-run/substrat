@@ -49,7 +49,6 @@ import {
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunsPayload,
   modelUsageEntry,
-  attachmentRecord,
   type AttachmentRecord,
   type UploadLinkView,
   type BlobStoreHandle,
@@ -96,6 +95,8 @@ import {
   scopeStorageSample,
   requestDay,
   requestRollupDay,
+  meterDay,
+  meterDayTake,
   subjectRef,
   createConnectionInput,
   connectLinkFilter,
@@ -188,6 +189,8 @@ import {
   type ScopeStorageSample,
   type RequestDay,
   type RequestRollupDay,
+  type MeterDay,
+  type MeterDayTake,
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
@@ -295,6 +298,7 @@ import {
   type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
+  putAttachmentBytes,
   entitlementDenial,
   requiredEntitlementFor,
   type OperationEntitlement,
@@ -420,6 +424,7 @@ import {
   type LegacySubjectRedactionCounts,
   type SubjectTextTarget,
   globalFetch,
+  fetchLikeOf,
   assertRedrainWindow,
   platformRequestOf,
   type PlatformRequestRawRow,
@@ -529,6 +534,10 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
+  type MeterDayTakeResult,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
@@ -561,7 +570,7 @@ import {
   liveWithinOf,
 } from './live-reads.js';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
-import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
+import { blobStoreBucketName, r2TenantBlobStore, workerdSha256, type R2BlobStores } from './r2.js';
 import type {
   AccessLogRow,
   AuditLogQuery,
@@ -682,11 +691,12 @@ interface ControlPlaneStub {
     slug: string,
     name: string,
     createdAt: string,
-    provisionedByTenant?: string | null,
+    provisionedByTenant: string | null,
+    audit: AdminEntry,
   ): Promise<Tenant | null>;
-  setTenantStatus(tenantId: string, status: TenantStatus): Promise<string>;
-  setTenantName(tenantId: string, name: string): Promise<string>;
-  reapTenant(tenantId: string): Promise<string>;
+  setTenantStatus(tenantId: string, status: TenantStatus, audit: AdminEntry): Promise<string>;
+  setTenantName(tenantId: string, name: string, audit: AdminEntry): Promise<string>;
+  reapTenant(tenantId: string, audit: AdminEntry): Promise<string>;
   getTenant(tenantId: string): Promise<Tenant | undefined>;
   listTenants(page?: ListPage): Promise<Tenant[]>;
   getTenantStore(
@@ -878,15 +888,16 @@ interface ControlPlaneStub {
     filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): Promise<HostnameRow[]>;
   readVertical(slug: string): Promise<VerticalRow | undefined>;
-  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string): Promise<void>;
+  insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string,
+    audit: AdminEntry): Promise<void>;
   updateVerticalManifestMeta(slug: string, envSpec: string | null, installSpec: string | null, listed?: number | null): Promise<void>;
-  updateVerticalListed(slug: string, listed: number): Promise<void>;
-  updateVerticalPublishRequest(slug: string, requestedAt: string): Promise<void>;
-  updateVerticalInstallsBlocked(slug: string, blocked: number): Promise<void>;
-  updateVerticalTenantProvisioner(slug: string, granted: number): Promise<void>;
-  updateVerticalEmailSender(slug: string, granted: number): Promise<void>;
+  updateVerticalListed(slug: string, listed: number, audit: AdminEntry): Promise<void>;
+  updateVerticalPublishRequest(slug: string, requestedAt: string, audit: AdminEntry): Promise<void>;
+  updateVerticalInstallsBlocked(slug: string, blocked: number, audit: AdminEntry): Promise<void>;
+  updateVerticalTenantProvisioner(slug: string, granted: number, audit: AdminEntry): Promise<void>;
+  updateVerticalEmailSender(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
-  deleteVertical(slug: string): Promise<void>;
+  deleteVertical(slug: string, audit: AdminEntry): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -896,13 +907,13 @@ interface ControlPlaneStub {
     originJson: string | null;
     migrations: DeclaredMigration[] | null;
     createdAt: string;
-  }): Promise<void>;
+  }, audit: AdminEntry): Promise<void>;
   verticalScopeStores(slug: string): Promise<VerticalScopeStore[]>;
   readVersionMigrations(
     id: string,
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
-  setAdmission(id: string, admission: string, note: string | null): Promise<void>;
+  setAdmission(id: string, admission: string, note: string | null, audit: AdminEntry): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string, expectedServing?: ExpectedServing, audit?: AdminEntry): Promise<boolean>;
   servesNow(expected: ExpectedServing): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
@@ -920,6 +931,7 @@ interface ControlPlaneStub {
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
+    audit: AdminEntry,
   ): Promise<void>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
@@ -927,7 +939,7 @@ interface ControlPlaneStub {
     expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
-  moveChannel(from: string | null, history: ChannelHistoryRow): Promise<boolean>;
+  moveChannel(from: string | null, history: ChannelHistoryRow, audit: AdminEntry): Promise<boolean>;
   listChannels(verticalSlug: string, page?: ListPage): Promise<ChannelRow[]>;
   insertChannelHistory(h: ChannelHistoryRow): Promise<void>;
   listChannelHistory(
@@ -986,6 +998,11 @@ interface ControlPlaneStub {
   listRequestDays(filter?: RequestDayFilter): Promise<RequestDay[]>;
   listRequestRollupDays(filter?: RequestRollupDayFilter): Promise<RequestRollupDay[]>;
   pruneRequestDays(limit: number, retentionMonths: number | null): Promise<number>;
+  /** #2501: the daily meter snapshot — kernel `meter-days.ts`, run inside the directory DO. */
+  recordMeterDay(input: MeterDayTakeInput): Promise<MeterDayTakeResult>;
+  listMeterDays(filter?: MeterDayFilter): Promise<MeterDay[]>;
+  listMeterDayTakes(filter?: MeterDayTakeFilter): Promise<MeterDayTake[]>;
+  pruneMeterDays(limit: number, retentionMonths: number | null): Promise<number>;
   insertConnection(row: {
     id: string;
     tenantId: string;
@@ -2991,7 +3008,8 @@ export class CloudflareScopeHost implements ScopeHost {
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
-    this.fetchImpl = options.fetch ?? globalFetch;
+    // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
+    this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
@@ -4744,22 +4762,17 @@ export class CloudflareScopeHost implements ScopeHost {
       const filename = view.filename ?? input.filename;
       // Recorded as it is judged: the essence, never a parameter or a stray space.
       const contentType = normalizeUploadMediaType(input.contentType);
-      const record = attachmentRecord.parse({
-        id,
-        entity: view.entity,
-        filename,
-        contentType,
-        size: input.body.byteLength,
-        sha256: await attachmentSha256(input.body),
-        visibility: view.visibility,
-        createdBy: mintedBy,
-        createdAt: new Date().toISOString(),
-      });
       // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
       // someone else spent first) compensates the object away, and the link is unspent with it.
       // A lost reply keeps the bytes (`compensatingRefusal`), and a retry carrying the same
       // `Idempotency-Key` is answered as a replay (#2315).
-      await store.put(key, input.body, { contentType });
+      const record = await putAttachmentBytes(
+        store,
+        key,
+        { id, entity: view.entity, filename, contentType, visibility: view.visibility, createdBy: mintedBy, createdAt: new Date().toISOString() },
+        input.body,
+        workerdSha256,
+      );
       return unwrapReply(await compensatingRefusal(store, key, () =>
         stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId, input.idempotencyKey),
       ));
@@ -4936,20 +4949,19 @@ export class CloudflareScopeHost implements ScopeHost {
       upload: async (input) => {
         const id = ulid();
         const key = attachmentBlobKey(scopeId, id);
-        const record = attachmentRecord.parse({
+        const fields = {
           id,
           entity: input.entity,
           filename: input.filename,
           contentType: input.contentType,
-          size: input.body.byteLength,
-          sha256: await attachmentSha256(input.body),
           visibility: input.visibility,
           createdBy,
           createdAt: new Date().toISOString(),
-        });
+        };
         // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
         // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
-        await store.put(key, input.body, { contentType: input.contentType });
+        // A streamed body is hashed and counted as R2 reads it (#2498).
+        const record = await putAttachmentBytes(store, key, fields, input.body, workerdSha256);
         return unwrapReply(await compensatingRefusal(store, key, () =>
           stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
         ));
@@ -8111,8 +8123,8 @@ export class CloudflareScopeHost implements ScopeHost {
           }
           throw substratError('conflict', `vertical '${parsed.slug}' is already registered as ${existing.source}`);
         }
-        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString());
-        await this.recordAdmin(actor, 'registerVertical', { tenantId: null }, null, parsed);
+        await this.cp.insertVertical(parsed.slug, parsed.name, parsed.source, parsed.ownerTenant, envSpecJson, installSpecJson, parsed.listed ? 1 : 0, new Date().toISOString(),
+          this.adminEntry(actor, 'registerVertical', { tenantId: null }, null, parsed));
       },
       listVerticals: async (actor, page) => {
         const rows = await this.cp.listVerticals(page);
@@ -8149,14 +8161,13 @@ export class CloudflareScopeHost implements ScopeHost {
           admission: selfAdmits ? 'admitted' : 'pending',
           admissionNote: selfAdmits ? AUTO_ADMISSION_NOTE : null,
           createdAt: new Date().toISOString(),
-        });
-        await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
+        }, this.adminEntry(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
           // The digest the registry holds, which differs from the pushed one only for an unheld version.
           migrationDigest,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
-        });
+        }));
       },
       verticalScopeStores: async (actor, verticalSlug: string) => {
         const stores = await this.directory('verticalScopeStores', verticalSlug);
@@ -8192,32 +8203,32 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
-        await this.cp.updateVerticalListed(slug, listed ? 1 : 0); // also resolves any pending request
-        await this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: !!existing.listed }, { listed });
+        await this.cp.updateVerticalListed(slug, listed ? 1 : 0, // also resolves any pending request
+          this.adminEntry(actor, 'setVerticalListed', { tenantId: null }, { listed: !!existing.listed }, { listed }));
       },
       requestPublish: async (actor, slug: string) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalPublishRequest(slug, new Date().toISOString());
-        await this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
+        await this.cp.updateVerticalPublishRequest(slug, new Date().toISOString(),
+          this.adminEntry(actor, 'requestPublish', { tenantId: null }, null, { slug }));
       },
       setVerticalInstallsBlocked: async (actor, slug: string, blocked: boolean) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalInstallsBlocked(slug, blocked ? 1 : 0);
-        await this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: !!existing.installs_blocked }, { installsBlocked: blocked });
+        await this.cp.updateVerticalInstallsBlocked(slug, blocked ? 1 : 0,
+          this.adminEntry(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: !!existing.installs_blocked }, { installsBlocked: blocked }));
       },
       setVerticalTenantProvisioner: async (actor, slug: string, granted: boolean) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalTenantProvisioner(slug, granted ? 1 : 0);
-        await this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: !!existing.tenant_provisioner }, { tenantProvisioner: granted });
+        await this.cp.updateVerticalTenantProvisioner(slug, granted ? 1 : 0,
+          this.adminEntry(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: !!existing.tenant_provisioner }, { tenantProvisioner: granted }));
       },
       setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
         const existing = await this.cp.readVertical(slug);
         if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalEmailSender(slug, granted ? 1 : 0);
-        await this.recordAdmin(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: !!existing.email_sender }, { emailSender: granted });
+        await this.cp.updateVerticalEmailSender(slug, granted ? 1 : 0,
+          this.adminEntry(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: !!existing.email_sender }, { emailSender: granted }));
       },
       deleteVertical: async (actor, slug: string) => {
         const existing = await this.cp.readVertical(slug);
@@ -8241,14 +8252,13 @@ export class CloudflareScopeHost implements ScopeHost {
             `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
-        await this.cp.deleteVertical(slug);
-        await this.recordAdmin(
+        await this.cp.deleteVertical(slug, this.adminEntry(
           actor,
           'deleteVertical',
           { tenantId: null },
           { slug, source: existing.source, ownerTenant: existing.owner_tenant },
           null,
-        );
+        ));
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);
@@ -8257,15 +8267,15 @@ export class CloudflareScopeHost implements ScopeHost {
           // Idempotent — except an AUTO-admitted version, which this upgrades to a
           // manual vouch by clearing the note (what the publish seam requires).
           if (v.admission_note !== AUTO_ADMISSION_NOTE) return;
-          await this.cp.setAdmission(versionId, 'admitted', null);
-          await this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admission_note }, { admission: 'admitted', note: null });
+          await this.cp.setAdmission(versionId, 'admitted', null,
+            this.adminEntry(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admission_note }, { admission: 'admitted', note: null }));
           return;
         }
         if (v.admission === 'rejected') {
           throw substratError('conflict', `version ${versionId} was rejected — publish a new one`);
         }
-        await this.cp.setAdmission(versionId, 'admitted', null);
-        await this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, { admission: 'admitted' });
+        await this.cp.setAdmission(versionId, 'admitted', null,
+          this.adminEntry(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, { admission: 'admitted' }));
       },
       promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
         const incoming = await this.cp.readVersion(versionId);
@@ -8287,8 +8297,8 @@ export class CloudflareScopeHost implements ScopeHost {
           throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
         }
         if (v.admission === 'rejected') return;
-        await this.cp.setAdmission(versionId, 'rejected', note);
-        await this.recordAdmin(actor, 'rejectVersion', { tenantId: null }, { admission: v.admission }, { admission: 'rejected', note });
+        await this.cp.setAdmission(versionId, 'rejected', note,
+          this.adminEntry(actor, 'rejectVersion', { tenantId: null }, { admission: v.admission }, { admission: 'rejected', note }));
       },
       promoteVersion: async (
         actor,
@@ -8382,7 +8392,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // in. The control plane moves the pointer, and writes the timeline row (what makes rollback a
         // choice among recorded moments, and `at` the PITR anchor a data rollback would rewind to),
         // only if the pointer still names `outgoing`; the promote that lost the race is refused as
-        // stale and writes nothing.
+        // stale and writes nothing. Its admin row commits with the move, ahead of the rebinds below,
+        // which record their own — and the acknowledgement is recorded, not just enforced.
         const moved = await this.cp.moveChannel(outgoing?.id ?? null, {
           id: ulid(),
           vertical_slug: verticalSlug,
@@ -8391,7 +8402,13 @@ export class CloudflareScopeHost implements ScopeHost {
           from_version_id: outgoing?.id ?? null,
           actor,
           at: promotedAt,
-        });
+        }, this.adminEntry(
+          actor,
+          'promoteVersion',
+          { tenantId: null, vertical: verticalSlug },
+          outgoing ? { versionId: outgoing.id, version: outgoing.version } : null,
+          { channel, versionId, version: incoming.version, acknowledged: ack },
+        ));
         if (!moved) throw promoteRaceRefusal(channel);
         // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
         // owning tenant's live scopes in the same act, so merge-to-main (push +
@@ -8424,13 +8441,6 @@ export class CloudflareScopeHost implements ScopeHost {
               prev ? { versionId: prev.id, version: prev.version } : null,
               { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' }));
         }
-        await this.recordAdmin(
-          actor,
-          'promoteVersion',
-          { tenantId: null, vertical: verticalSlug },
-          outgoing ? { versionId: outgoing.id, version: outgoing.version } : null,
-          { channel, versionId, version: incoming.version, acknowledged: ack },
-        );
       },
       listChannels: async (actor, verticalSlug: string, page) => {
         // `prod` is the only live channel (#509 retired dev/staging). Filter before the parse
@@ -8605,8 +8615,7 @@ export class CloudflareScopeHost implements ScopeHost {
           versionId: parsed.versionId,
           doClassesJson: JSON.stringify(parsed.doClasses),
           migrationTag: parsed.migrationTag,
-        });
-        await this.recordAdmin(
+        }, this.adminEntry(
           actor,
           'setVerticalServing',
           { tenantId: null },
@@ -8614,7 +8623,7 @@ export class CloudflareScopeHost implements ScopeHost {
             ? { ref: r.serving_ref, versionId: r.serving_version_id }
             : null,
           { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
-        );
+        ));
       },
       versionManifest: async (actor, verticalSlug: string, versionId: string) => {
         const v = await this.cp.readVersion(versionId);
@@ -8809,35 +8818,36 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       createTenant: async (actor, input: CreateTenantInput) => {
         const parsed = createTenantInput.parse(input);
-        const created = await this.directory('createTenant',
+        // Idempotent: re-creating an existing tenant is a no-op, not audited. The DO writes the
+        // row with the tenant it created as its `after`.
+        await this.directory('createTenant',
           parsed.id,
           parsed.slug,
           parsed.name,
           new Date().toISOString(),
           parsed.provisionedByTenant ?? null,
+          this.adminEntry(actor, 'createTenant', { tenantId: parsed.id }, null, null),
         );
-        // Idempotent: re-creating an existing tenant is a no-op, not audited.
-        if (!created) return;
-        await this.recordAdmin(actor, 'createTenant', { tenantId: parsed.id }, null, created);
       },
       setTenantStatus: async (actor, tenantId, status: TenantStatus) => {
-        const before = await this.directory('setTenantStatus', tenantId, status);
-        await this.recordAdmin(actor, 'setTenantStatus', { tenantId }, { status: before }, { status });
+        // The DO fills the row's `before` with the status it read in the write's unit.
+        await this.directory('setTenantStatus', tenantId, status,
+          this.adminEntry(actor, 'setTenantStatus', { tenantId }, null, { status }));
         // #1713: every hosted scope under the tenant holds or resumes its work by this.
         await this.deliverLifecycles(actor, { tenantId });
       },
       setTenantName: async (actor, tenantId, name: string) => {
-        const before = await this.directory('setTenantName', tenantId, name);
-        if (before === name) return; // no-op is not audited — nothing changed
-        await this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before }, { name });
+        // A rename to the current name writes nothing and is not audited; the DO fills `before`.
+        await this.directory('setTenantName', tenantId, name,
+          this.adminEntry(actor, 'setTenantName', { tenantId }, null, { name }));
       },
       reapTenant: async (actor, tenantId) => {
         // Directory-side terminal reap (§4.8). The caller reaped every scope's storage
         // first (archive-if-needed → reapScope in the vertical deployment); the DO clears
         // the tenant's PII/config rows and flips the row to a `reaped` tombstone, keeping
         // the row + admin log. Only a `deleting` tenant may be reaped (checked in the DO).
-        const before = await this.directory('reapTenant', tenantId);
-        await this.recordAdmin(actor, 'reapTenant', { tenantId }, { status: before }, { status: 'reaped' });
+        await this.directory('reapTenant', tenantId,
+          this.adminEntry(actor, 'reapTenant', { tenantId }, null, { status: 'reaped' }));
       },
       listTenants: async (actor, page): Promise<Tenant[]> => {
         const tenants = (await this.cp.listTenants(page)).map((t) => tenantSchema.parse(t));
@@ -10502,6 +10512,19 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.cp.pruneRequestDays(assertRowLimit('limit', limit), retentionMonths),
+      recordMeterDay: async (_actor, input: MeterDayTakeInput) => this.cp.recordMeterDay(input),
+      listMeterDays: async (actor, filter?: MeterDayFilter) => {
+        const rows = (await this.cp.listMeterDays(filter)).map((r) => meterDay.parse(r));
+        await this.recordAccess(actor, 'listMeterDays', { tenantId: filter?.tenantId ?? null }, filter ?? null, rows.length);
+        return rows;
+      },
+      listMeterDayTakes: async (actor, filter?: MeterDayTakeFilter) => {
+        const rows = (await this.cp.listMeterDayTakes(filter)).map((r) => meterDayTake.parse(r));
+        await this.recordAccess(actor, 'listMeterDayTakes', { tenantId: null }, filter ?? null, rows.length);
+        return rows;
+      },
+      pruneMeterDays: async (_actor, limit: number, retentionMonths: number | null) =>
+        this.cp.pruneMeterDays(assertRowLimit('limit', limit), retentionMonths),
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;
         return this.cp.recordModelUsage({

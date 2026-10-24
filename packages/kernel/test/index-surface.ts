@@ -105,6 +105,10 @@ export const INDEX_VALUE_EXPORTS = [
   'MEMBERSHIP_REMOVAL_SKEW_MS',
   'MEMBER_ADD_REQUESTED',
   'MEMBER_REMOVE_REQUESTED',
+  // #2501: the daily meter snapshot, shared by both directories.
+  'METER_DAYS_DDL',
+  'METER_DAYS_LIMIT_DEFAULT',
+  'METER_DAYS_LIMIT_MAX',
   // #2349: the uploader's binding name, and the set digest both sides compute.
   'MIGRATIONS_DIGEST_BINDING',
   'MIGRATION_DIGEST_FENCE_DDL',
@@ -341,6 +345,8 @@ export const INDEX_VALUE_EXPORTS = [
   'facetEvents',
   'fenceAttachmentSweep',
   'fencedTables',
+  // #2498: a runtime fetch as a FetchLike, converting a sized stream body; both hosts wrap their injected fetch.
+  'fetchLikeOf',
   'findingOfOpsFailure',
   'findingOfSweepRun',
   'finishStoreDriverRolloutIn',
@@ -394,6 +400,8 @@ export const INDEX_VALUE_EXPORTS = [
   'isPrimaryScopeRow',
   'isSearchIndexTable',
   'isSecretBoxConfigured',
+  // #2498: the streamed-body helpers the adapters, the platform's vertical client and test fakes use.
+  'isSizedByteStream',
   'isSpineTable',
   'isSupersededOutcome',
   'isUnreachableParent',
@@ -404,6 +412,9 @@ export const INDEX_VALUE_EXPORTS = [
   'jobRunListLimit',
   'jobRunOf',
   'kernelJobFor',
+  // #2498: a sized stream as the runtime's fetch and R2 take it; the R2 store and the vertical client use it.
+  'knownLengthInit',
+  'knownLengthStream',
   'legacyStoreDriverConflict',
   'legacyStoreDriverRenames',
   'licensedOrphanIds',
@@ -414,6 +425,8 @@ export const INDEX_VALUE_EXPORTS = [
   'listFindings',
   'listIndexMigrations',
   'listIndexPlans',
+  'listMeterDayRows',
+  'listMeterDayTakeRows',
   'listQuery',
   'listRequestDayRows',
   'listRequestRollupDayRows',
@@ -494,6 +507,7 @@ export const INDEX_VALUE_EXPORTS = [
   'promoteReviewRefusalOf',
   'provisionedVersionsParams',
   'pruneFindings',
+  'pruneMeterDayRows',
   'pruneRequestDayRows',
   'pruneScopeStorageRows',
   'publishedMigrationDigest',
@@ -502,6 +516,8 @@ export const INDEX_VALUE_EXPORTS = [
   'purgeOnlyKeysOf',
   'purgeReportOf',
   'purgeStillDue',
+  // #2498: both adapters land an upload's bytes through it, a buffer or a stream.
+  'putAttachmentBytes',
   'queueAttachmentTextBackfill',
   'reachesWithin',
   'readAttachmentText',
@@ -531,6 +547,7 @@ export const INDEX_VALUE_EXPORTS = [
   'recordAttachmentText',
   'recordAuditOutcome',
   'recordConnectorCall',
+  'recordMeterDayRows',
   'recordOrphanSweepLicence',
   'recordOwnershipSteps',
   'recordRequestDayRows',

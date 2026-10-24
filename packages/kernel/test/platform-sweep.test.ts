@@ -906,6 +906,30 @@ describe('runPlatformSweep', () => {
     expect(report.connectionsSkipped).toBe(2);
   });
 
+  it("hands a sweeper a fetch that converts a sized body before the injected fetch sees it (#2498)", async () => {
+    const seen: unknown[] = [];
+    const injected = (async (_url: string, init?: { body?: unknown }) => {
+      seen.push(init?.body);
+      return { ok: true, status: 200 };
+    }) as unknown as FetchLike;
+    const host = fakeHost({ connections: [{ id: cid(), provider: 'scrive', revokedAt: null }] });
+    await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: injected,
+      sweepers: {
+        scrive: async (_h, _id, opts) => {
+          await opts.fetch('https://provider.invalid/upload', {
+            method: 'PUT',
+            body: { stream: new ReadableStream<Uint8Array>({ pull: (c) => c.close() }), length: 0 },
+          });
+        },
+      },
+    });
+    expect(seen).toHaveLength(1);
+    // The runtime-ready stream, never the `{ stream, length }` value a runtime would stringify.
+    expect(seen[0]).toBeInstanceOf(ReadableStream);
+  });
+
   it('records each unit outcome through the sweep-run seam - and an unset seam changes nothing (#1232)', async () => {
     const live = cid();
     const broken = cid();

@@ -1,15 +1,14 @@
 import {
   requestDay,
   requestRollupDay,
-  utcDay,
   type RequestDay,
   type RequestRollupDay,
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
-import { assertRowLimit, boundedRetentionDelete } from './scope-host.js';
-import { utcDayMonthsBefore } from './billing-retention.js';
+import { assertRowLimit } from './scope-host.js';
+import { assertUtcDay, pruneBillingDays, pushDayWindow, utcDayOf } from './billing-retention.js';
 
 /**
  * The daily request rollup (#2501), as statements both adapters run against their directory:
@@ -163,16 +162,6 @@ export interface RequestRollupDayFilter {
   until?: string;
 }
 
-/** The UTC day an instant falls on. */
-function utcDayOf(ms: number): string {
-  return new Date(ms).toISOString().slice(0, 10);
-}
-
-function assertDay(name: string, day: string): string {
-  if (!utcDay.safeParse(day).success) throw new Error(`${name} must be a UTC day (YYYY-MM-DD), got ${JSON.stringify(day)}`);
-  return day;
-}
-
 /**
  * Record one attempt. A successful read replaces the day's rows with what it counted, in the
  * caller's transaction, and marks the day read. A failed one records only the attempt and its
@@ -183,7 +172,7 @@ function assertDay(name: string, day: string): string {
  * rows were written.
  */
 export function recordRequestDayRows(sql: RedactionSql, input: RequestDayReadInput): number {
-  const day = assertDay('day', input.day);
+  const day = assertUtcDay('day', input.day);
   const attemptedAt = new Date(input.attemptedAt).toISOString();
   if ('error' in input) {
     const saturated = input.saturated === true;
@@ -292,14 +281,7 @@ export function listRequestDayRows(sql: RedactionSql, filter: RequestDayFilter =
     where.push('scope_id = ?');
     params.push(filter.scopeId);
   }
-  if (filter.since !== undefined) {
-    where.push('day >= ?');
-    params.push(assertDay('since', filter.since));
-  }
-  if (filter.until !== undefined) {
-    where.push('day <= ?');
-    params.push(assertDay('until', filter.until));
-  }
+  pushDayWindow(filter, where, params);
   const limit = Math.min(assertRowLimit('limit', filter.limit ?? REQUEST_ROLLUP_LIMIT_DEFAULT), REQUEST_ROLLUP_LIMIT_MAX);
   params.push(limit);
   const rows = sql(
@@ -330,15 +312,8 @@ export function listRequestDayRows(sql: RedactionSql, filter: RequestDayFilter =
 /** The rollup's record of each day it tried, in day order — see `RequestRollupDayFilter`. */
 export function listRequestRollupDayRows(sql: RedactionSql, filter: RequestRollupDayFilter = {}): RequestRollupDay[] {
   const where: string[] = [];
-  const params: string[] = [];
-  if (filter.since !== undefined) {
-    where.push('day >= ?');
-    params.push(assertDay('since', filter.since));
-  }
-  if (filter.until !== undefined) {
-    where.push('day <= ?');
-    params.push(assertDay('until', filter.until));
-  }
+  const params: (string | number)[] = [];
+  pushDayWindow(filter, where, params);
   const rows = sql(
     `SELECT day, attempted_at, read_at, row_count, error, saturated, failing_since, failing_count
        FROM _substrat_request_day_reads
@@ -370,34 +345,13 @@ export function listRequestRollupDayRows(sql: RedactionSql, filter: RequestRollu
 }
 
 /**
- * The first day a retention of `months` keeps, or null when `months` is null (kept for good).
- * A horizon is a whole number of months, at least one.
- */
-export function requestRollupHorizon(nowMs: number, months: number | null): string | null {
-  if (months === null) return null;
-  if (!Number.isInteger(months) || months < 1) {
-    throw new Error(`a billing retention must be a whole number of months, at least one, or null, got ${String(months)}`);
-  }
-  return utcDayMonthsBefore(nowMs, months);
-}
-
-/**
  * Delete at most `limit` day rows older than a retention of `months`, oldest first, then the
- * read rows of the days that are gone. `months` null deletes nothing. Returns how many day rows went.
+ * read rows of the days that are gone (`pruneBillingDays`). `months` null deletes nothing. A read
+ * row outlives a day still being pruned, so that day is not rolled up again in between. Returns
+ * how many day rows went.
  */
 export function pruneRequestDayRows(sql: RedactionSql, nowMs: number, limit: number, months: number | null): number {
-  const capped = assertRowLimit('limit', limit);
-  const horizon = requestRollupHorizon(nowMs, months);
-  if (horizon === null) return 0;
-  const pruned = sql(boundedRetentionDelete('_substrat_request_days', 'day'), [horizon, capped]).length;
-  // A read row goes only once its day holds no row, so a day still being pruned stays marked read
-  // and is not rolled up again in between.
-  sql(
-    `DELETE FROM _substrat_request_day_reads
-      WHERE day < ? AND NOT EXISTS (SELECT 1 FROM _substrat_request_days d WHERE d.day = _substrat_request_day_reads.day)`,
-    [horizon],
-  );
-  return pruned;
+  return pruneBillingDays(sql, { rows: '_substrat_request_days', records: '_substrat_request_day_reads' }, nowMs, limit, months);
 }
 
 /**

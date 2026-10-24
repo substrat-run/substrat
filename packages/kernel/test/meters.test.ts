@@ -3,7 +3,7 @@ import type { Instant, TenantId } from '@substrat-run/contracts';
 import { foldMeterReading, type MeterInput } from '../src/meters.js';
 
 /**
- * §5's two computable meters, held to the rules that make them *commercial* numbers
+ * Meters 1 and 2 (§5), held to the rules that make them *commercial* numbers
  * rather than row counts (#38). The contract suite pins them through a real adapter;
  * this pins the arithmetic itself, including the cases a fixture is clumsy at building
  * — an orphan scope row, a tenant reaped mid-life, two tiers of one SKU.

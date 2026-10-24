@@ -102,6 +102,7 @@ import {
   scopeId as scopeIdSchema,
   scopeStatus,
   requestRollupReading,
+  meterDaysReading,
   utcDay,
   storageShape,
   surfaceName,
@@ -184,6 +185,8 @@ import {
   type SubjectErasureFence,
   REQUEST_ROLLUP_LIMIT_DEFAULT,
   REQUEST_ROLLUP_LIMIT_MAX,
+  METER_DAYS_LIMIT_DEFAULT,
+  METER_DAYS_LIMIT_MAX,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -2315,11 +2318,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // -- the meters (§5, #38) --------------------------------------------------
-  // Meters 1 and 2, read fleet-wide or narrowed with `?tenantId=`. Meters 3 and 4 have
-  // no route because they have no number: the outbox is per-scope-database with no
-  // cross-tenant fan-in and reads emit nothing, so anything served here would be
-  // invented. Staff-only (absent from BUILDER_ROUTES) — a fleet-wide revenue aggregate
-  // is the platform's own book, not a builder's view of their installs.
+  // Meters 1 and 2, read fleet-wide or narrowed with `?tenantId=`. Meter 3's parts are
+  // read at their own routes, not here (`/meters/storage`, `/model-usage`, and the estimated
+  // daily request rollup at `/meters/requests`); lake bytes have no reader yet, and exact API counts are not computable, since
+  // reads emit nothing on the spine. Meter 4 has no route because it has no number
+  // (it needs the cross-tenant order flow). See control-plane.md §5. Staff-only (absent
+  // from BUILDER_ROUTES) — a fleet-wide revenue aggregate is the platform's own book, not
+  // a builder's view of their installs.
   //
   // GET, and nothing is stored: D-30 is meter, do not bill, so a reading is recomputed
   // per call and stamped with the instant it was taken.
@@ -2385,6 +2390,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // A page is at most half the directory's own read bound, so the one row past the page that
   // says the window holds more always fits under it.
   const REQUEST_ROLLUP_PAGE_MAX = REQUEST_ROLLUP_LIMIT_MAX / 2;
+  // Unless a window is named, the 31 days ending at `until`, both ends included.
+  const windowSince = (until: string) => new Date(Date.parse(`${until}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
   app.get('/meters/requests', async (c) => {
     const admin = c.var.admin;
     if (!admin.listRequestDays || !admin.listRequestRollupDays) {
@@ -2408,8 +2415,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         until: c.req.query('until') || undefined,
         limit: c.req.query('limit') || undefined,
       });
-    // Unless a window is named, the 31 days ending at `until`, both ends included.
-    const since = q.since ?? new Date(Date.parse(`${q.until}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
+    const since = q.since ?? windowSince(q.until);
     if (since > q.until) return refuse(c, 'validation_failed', '`since` is after `until`');
     const actor = c.get('actor');
     // One row past the page says whether the window holds more than it returned.
@@ -2431,6 +2437,46 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         truncated: rows.length > q.limit,
         days,
       }),
+    );
+  });
+
+  // The daily meter snapshot (#2501): meters 1 and 2 as the first scheduled pass of each UTC day
+  // found them, one row per (day, tenant), and the record of each day in the window. Staff-only
+  // like `/meters`. A directory read; nothing is recomputed, so a past day reads as it was then.
+  // `days` is what tells a day no pass took from a day whose snapshot met no tenant. The page bound
+  // leaves room under the directory's own for the one row past it.
+  const METER_DAYS_PAGE_MAX = METER_DAYS_LIMIT_MAX / 2;
+  app.get('/meters/days', async (c) => {
+    const admin = c.var.admin;
+    if (!admin.listMeterDays || !admin.listMeterDayTakes) {
+      return refuseStatus(c, 501, 'this control plane keeps no meter snapshots');
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const q = z
+      .object({
+        tenantId: tenantIdSchema.optional(),
+        since: utcDay.optional(),
+        until: utcDay.default(today),
+        limit: z.coerce.number().int().min(1).max(METER_DAYS_PAGE_MAX).default(METER_DAYS_LIMIT_DEFAULT),
+      })
+      .parse({
+        tenantId: c.req.query('tenantId') || undefined,
+        since: c.req.query('since') || undefined,
+        until: c.req.query('until') || undefined,
+        limit: c.req.query('limit') || undefined,
+      });
+    const since = q.since ?? windowSince(q.until);
+    if (since > q.until) return refuse(c, 'validation_failed', '`since` is after `until`');
+    const actor = c.get('actor');
+    const rows = await admin.listMeterDays(actor, {
+      ...(q.tenantId ? { tenantId: q.tenantId } : {}),
+      since,
+      until: q.until,
+      limit: q.limit + 1,
+    });
+    const days = await admin.listMeterDayTakes(actor, { since, until: q.until });
+    return c.json(
+      meterDaysReading.parse({ since, until: q.until, rows: rows.slice(0, q.limit), truncated: rows.length > q.limit, days }),
     );
   });
 

@@ -348,8 +348,11 @@ integrations hub (Fortnox, BankID-sign, EDI). The full adapter set beyond storag
   not kernel but `engine-notifications`, an engine composed by call. The kernel's part is
   the transactional send intent (`requestEmail`) and the outcome events its settle writes
   back; `adapter-email` is the transport behind it.*
-- **Search backends** — the search contract is kernel; FTS (SQLite FTS5 / D1) and vector
-  index (Vectorize / sqlite-vec) are adapters, already implied by the two-adapter rule.
+- **Search backends** — the search contract is kernel; FTS (SQLite FTS5 / D1) is an adapter,
+  already implied by the two-adapter rule. *Semantic matching is not an adapter beside the
+  scope (K-57, #1576): its index is scope-local, filled asynchronously through a host-supplied
+  embedder seam, and an external index exists only as a scope-store driver, never as a shared
+  service. Nothing is built until a vertical needs it.*
 
 What must **never** become an adapter: the event spine, tenancy/permission model,
 entitlements, and the module manifest — those are the product. Swapping them out is
@@ -458,7 +461,7 @@ the direction the spectrum points.
 | Nested tenancy + provisioning | **Build** | The crown jewel. Directory/registry, per-scope storage, migration orchestration, reconciliation. Largely exists from the auth platform. |
 | Module system | **Build (thin)** | Manifest (migrations, permissions, events, extension points), entitlement flags, attachment contracts. Mostly conventions. |
 | Integrations framework | **Build** | Connection store + token refresh, connector interface, webhook ingress (signatures, replay protection), outbox with idempotent retries, per-tenant config + health. Steal Nango's interface design; own it for EU sovereignty. Connectors accrete per vertical need: Fortnox, Visma, BankID, Swish, Peppol, Kivra, fastAPI, EDI (Ahlsell/Rexel/Sonepar). |
-| Documents + metadata | **Extract, then re-platform the source** | Our document product's engine extracts into the kernel service (R2 + versioning + Vectorize search + retention + tenancy-tree permissions); the product then re-platforms onto the kernel piecemeal (the POSCo pattern) and becomes kernel consumer #2 — proving the contracts on a collaboration-shaped product and exercising Shape A, realtime, and search. Never the reverse: documents behind an external product's own permission regime would be a second enforcement system — the exact leak the kernel exists to prevent. |
+| Documents + metadata | **Extract, then re-platform the source** | Our document product's engine extracts into the kernel service (R2 + versioning + search + retention + tenancy-tree permissions; when semantic search is built, its index is scope-local and an external one only a scope-store driver, K-57); the product then re-platforms onto the kernel piecemeal (the POSCo pattern) and becomes kernel consumer #2 — proving the contracts on a collaboration-shaped product and exercising Shape A, realtime, and search. Never the reverse: documents behind an external product's own permission regime would be a second enforcement system — the exact leak the kernel exists to prevent. |
 | Events / audit / reporting | **Build spine, buy engines** | Event contract (schema-versioned, tenant-tagged, PII-classified), Pipelines→Iceberg, query gateway. Audit log is a product feature, not just ops. |
 | Workflows | **Adopt + conventions** | Cloudflare Workflows for durable execution; kernel adds module-owned definitions, human-approval steps, event emission. **No visual BPMN builder — tarpit.** |
 | Jobs & scheduling | **Adopt + conventions** | Queues, cron; per-tenant scheduling conventions. |
