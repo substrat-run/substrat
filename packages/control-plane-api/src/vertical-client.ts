@@ -115,9 +115,11 @@ import {
   substratError,
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
   connectorAttachmentMetaBytes,
   connectorAttachmentMetaRefusal,
+  connectorAttachmentBufferedRefusal,
   connectorAttachmentSizeRefusal,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
@@ -880,7 +882,13 @@ export class VerticalClient {
     const { body, ...meta } = input;
     if (isSizedByteStream(body)) return this.connectorStreamAttachment(meta, body);
     const metaJson = JSON.stringify(meta);
-    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson));
+    // The buffer is already held, so its length is known and the route's buffered bound is judged
+    // here, before it is copied into a form (#2538). This covers the typed inputs only: the route
+    // judges the bytes that arrive, so a caller that does not go through this client meets it there.
+    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson), {
+      length: body.byteLength,
+      held: 'buffered',
+    });
     const form = new FormData();
     form.append('meta', metaJson);
     form.append('body', new Blob([body as BlobPart], { type: input.contentType }), input.filename);
@@ -899,14 +907,22 @@ export class VerticalClient {
 
   /**
    * Hold an upload to the bounds the far end holds it to (#2516), so it is refused here, with
-   * nothing sent, in the words the route would use. `declared` is a streamed body's length.
+   * nothing sent, in the words the route would use. `body` is its length and how it is held: a
+   * buffered one is judged against the buffered bound, a streamed one against the stream bound.
    */
-  private assertWithinAttachmentBounds(verb: string, metaBytes: number, declared?: number): void {
+  private assertWithinAttachmentBounds(
+    verb: string,
+    metaBytes: number,
+    body?: { length: number; held: 'buffered' | 'streamed' },
+  ): void {
     if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
       throw new ControlPlaneError(400, `${verb}: ${connectorAttachmentMetaRefusal(metaBytes)}. Nothing was sent.`);
     }
-    if (declared !== undefined && declared > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
-      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentSizeRefusal(declared)}. Nothing was sent.`);
+    if (body?.held === 'buffered' && body.length > CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES) {
+      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentBufferedRefusal(body.length)}. Nothing was sent.`);
+    }
+    if (body?.held === 'streamed' && body.length > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
+      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentSizeRefusal(body.length)}. Nothing was sent.`);
     }
   }
 
@@ -932,7 +948,10 @@ export class VerticalClient {
     // reads `contentType` from there), so the request's own
     // `content-type` is the plain octet-stream it is.
     // Counted without `size`, as the multipart route's `meta` is, so one name passes or fails alike.
-    this.assertWithinAttachmentBounds(verb, connectorAttachmentMetaBytes(JSON.stringify(meta)), body.length);
+    this.assertWithinAttachmentBounds(verb, connectorAttachmentMetaBytes(JSON.stringify(meta)), {
+      length: body.length,
+      held: 'streamed',
+    });
     const encodedMeta = encodeURIComponent(JSON.stringify({ ...meta, size: body.length }));
     const init = knownLengthInit({
       method: 'POST',

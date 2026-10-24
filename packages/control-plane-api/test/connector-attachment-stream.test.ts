@@ -5,11 +5,15 @@ import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vert
 import {
   ATTACHMENT_FIELD_MAX,
   CONNECTOR_ATTACHMENT_META_HEADER,
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
   connectorAttachmentMetaBytes,
   PLATFORM_SECRET_HEADER,
   connectionId as connectionIdOf,
+  connectorAttachmentBodyRefusal,
+  connectorAttachmentBufferedRefusal,
   connectorAttachmentMetaRefusal,
   connectorAttachmentSizeRefusal,
   scopeId as scopeIdOf,
@@ -469,5 +473,131 @@ describe('mountPlatformSurface — the bounds on a connector upload (#2516)', ()
     expect((await streamPost(app, metaOf(name, CHUNK), producer(1).stream)).status).toBe(201);
     expect((await multipartPost(app, metaOf(name))).status).toBe(201);
     expect(reached).toHaveLength(2);
+  });
+
+  describe('the multipart route and the buffered client path hold the buffered size bound (#2538)', () => {
+    const boundary = 'substrat-test-boundary';
+    const ceiling = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES;
+    const raw = (app: Hono<{ Bindings: Env }>, headers: Record<string, string>, body: BodyInit) =>
+      app.request(
+        '/internal/connector-attachment',
+        {
+          method: 'POST',
+          headers: { [PLATFORM_SECRET_HEADER]: SECRET, 'content-type': `multipart/form-data; boundary=${boundary}`, ...headers },
+          body,
+          ...(body instanceof ReadableStream ? { duplex: 'half' } : {}),
+        } as RequestInit,
+        ENV,
+      );
+    /** A valid multipart body (the `meta` part, then a `body` part of `chunks` chunks) made on demand, with no length. */
+    const multipartStream = (chunks: number) => {
+      const enc = new TextEncoder();
+      const head = enc.encode(
+        `--${boundary}\r\ncontent-disposition: form-data; name="meta"\r\n\r\n${JSON.stringify(metaOf('big.pdf'))}\r\n` +
+          `--${boundary}\r\ncontent-disposition: form-data; name="body"; filename="big.pdf"\r\ncontent-type: application/pdf\r\n\r\n`,
+      );
+      const tail = enc.encode(`\r\n--${boundary}--\r\n`);
+      const state = { produced: 0 };
+      let i = -1;
+      const stream = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            const chunk = i === -1 ? head : i < chunks ? chunkOf(i) : i === chunks ? tail : undefined;
+            i++;
+            if (chunk === undefined) return controller.close();
+            state.produced += chunk.byteLength;
+            controller.enqueue(chunk);
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      return { state, stream };
+    };
+    const BODY_SENTENCE = /the request body (is \d+ bytes, over|ran past) the 16793600-byte bound on a buffered connector upload .*use the streaming upload above 16 MiB/;
+
+    it('a Content-Length over the bound plus the envelope is a 413 naming the body, and no byte is read; exactly at it is read', async () => {
+      const { app, reached } = surface();
+      const over = await raw(app, { 'content-length': String(ceiling + 1) }, 'x');
+      expect(over.status).toBe(413);
+      const text = await over.text();
+      expect(text).toContain(connectorAttachmentBodyRefusal(ceiling + 1));
+      expect(text).toMatch(BODY_SENTENCE);
+      expect(reached).toEqual([]);
+      // The twin: the header is not what refuses at the ceiling itself, so the read begins (and finds
+      // a body that is not the multipart it was promised: a 400/500 of the parser's, never this 413).
+      const at = await raw(app, { 'content-length': String(ceiling) }, 'x');
+      expect(at.status).not.toBe(413);
+      expect(reached).toEqual([]);
+    });
+
+    it('a malformed Content-Length is not trusted: the read is bounded all the same', async () => {
+      const { app, reached } = surface();
+      const source = multipartStream(Math.ceil(ceiling / CHUNK) + 64);
+      const res = await raw(app, { 'content-length': 'not-a-number' }, source.stream);
+      expect(res.status).toBe(413);
+      expect(reached).toEqual([]);
+      expect(source.state.produced).toBeLessThan(ceiling + 8 * CHUNK);
+    });
+
+    it('a body with no Content-Length is cut off at the bound, in the body\'s words: the producer is stopped, not drained', async () => {
+      const { app, reached } = surface();
+      const source = multipartStream(Math.ceil(ceiling / CHUNK) + 64);
+      const res = await raw(app, {}, source.stream);
+      expect(res.status).toBe(413);
+      const text = await res.text();
+      expect(text).toContain(connectorAttachmentBodyRefusal());
+      expect(text).not.toMatch(/the attachment declares/);
+      expect(reached).toEqual([]);
+      expect(source.state.produced).toBeLessThan(ceiling + 8 * CHUNK);
+    });
+
+    it('its twin: a valid chunked multipart body under the bound is stored', async () => {
+      const { app, reached } = surface();
+      expect((await raw(app, {}, multipartStream(4).stream)).status).toBe(201);
+      expect(reached).toHaveLength(1);
+    });
+
+    it('a file one byte over the buffered bound is a 413 in the file\'s words once parsed; exactly at the bound it is stored', async () => {
+      const { app, reached } = surface();
+      const send = (size: number) => {
+        const form = new FormData();
+        form.append('meta', JSON.stringify(metaOf('big.pdf')));
+        form.append('body', new Blob([new Uint8Array(size)]), 'big.pdf');
+        return app.request('/internal/connector-attachment', { method: 'POST', headers: { [PLATFORM_SECRET_HEADER]: SECRET }, body: form }, ENV);
+      };
+      const over = await send(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1);
+      expect(over.status).toBe(413);
+      expect(await over.text()).toContain(connectorAttachmentBufferedRefusal(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1));
+      expect(reached).toEqual([]);
+      expect((await send(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES)).status).toBe(201);
+      expect(reached).toHaveLength(1);
+    });
+
+    it('the stream route keeps its own, higher bound and sentence', async () => {
+      expect(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES).toBeGreaterThan(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES);
+      expect(connectorAttachmentSizeRefusal(1)).toContain('streamed connector upload');
+      expect(connectorAttachmentBufferedRefusal(1)).toContain('use the streaming upload above 16 MiB');
+    });
+
+    it('the client refuses a buffer over the bound with the same 413 and sends nothing; one at the bound is sent', async () => {
+      const sent: number[] = [];
+      const client = new VerticalClient({
+        fetch: (async () => {
+          sent.push(1);
+          return new Response(JSON.stringify({ id: 'att1' }), { status: 201 });
+        }) as typeof fetch,
+        platformSecret: SECRET,
+      });
+      const err = await client
+        .connectorUploadAttachment(upload(new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1)))
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ControlPlaneError);
+      expect((err as ControlPlaneError).status).toBe(413);
+      expect((err as ControlPlaneError).message).toContain(connectorAttachmentBufferedRefusal(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1));
+      expect((err as ControlPlaneError).message).toContain('Nothing was sent');
+      expect(sent).toEqual([]);
+      await client.connectorUploadAttachment(upload(new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES))).catch(() => undefined);
+      expect(sent).toHaveLength(1);
+    });
   });
 });

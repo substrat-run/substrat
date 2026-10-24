@@ -297,6 +297,7 @@ export const INDEX_VALUE_EXPORTS = [
   'condemnLicensedOrphanAttachments',
   'condemnOrphanAttachments',
   'connectorCallRecord',
+  'connectorUploadBody',
   'consoleInvocationLineSink',
   'consoleLogSink',
   'consumeConnectLinkRow',

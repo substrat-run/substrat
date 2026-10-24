@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   connectionActivity,
   connectionId,
   dataSubjectId,
@@ -12,10 +13,11 @@ import {
   tenantId,
   type PermissionKey,
 } from '@substrat-run/contracts';
-import { runPlatformSweep, ulid, webCryptoSecretBox, type ScopeStub } from '@substrat-run/kernel';
+import { isSizedByteStream, runPlatformSweep, ulid, webCryptoSecretBox, type ByteBody, type ScopeStub } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PROTOCOL_PERM as PERM, protocolModule, getProtocol } from '@substrat-run/engine-protocol';
 import {
+  ScriveApi,
   ScriveMock,
   registerScriveConnector,
   reconcileScriveDispatch,
@@ -255,6 +257,34 @@ describe('scrive connector — return path (record signatures back)', () => {
     expect(again.sealedDocument).toEqual({ skipped: 'already landed' });
     const list = await att.list({ entityType: 'protocol', entityId: instanceId });
     expect(list).toHaveLength(1);
+  });
+
+  it('lands a sealed PDF over the buffered upload bound by a sized stream, and one at the bound as a buffer (#2538)', async () => {
+    await grantRecordSignature();
+    await grantAttach();
+    await host.provisionBlobStore(staff, { tenantId: t, vertical: 'meridian', binding: 'ATTACHMENTS' });
+    const { instanceId, docId } = await issue();
+    scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+    scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+
+    const big = new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(9);
+    vi.spyOn(ScriveApi.prototype, 'getMainFile').mockResolvedValue(big);
+    const bodies: ByteBody[] = [];
+    const real = host.getConnectorAttachments.bind(host);
+    vi.spyOn(host, 'getConnectorAttachments').mockImplementation(async (...args) => {
+      const inner = await real(...args);
+      return { ...inner, upload: (input) => (bodies.push(input.body), inner.upload(input)) };
+    });
+
+    const result = await reconcile(instanceId);
+    expect(result.sealedDocument).toMatchObject({ attachmentId: expect.any(String) });
+    expect(bodies).toHaveLength(1);
+    expect(isSizedByteStream(bodies[0])).toBe(true);
+    // The stored bytes are the PDF's, read back.
+    const att = await host.attachments(principal, t, s);
+    const opened = await att.open((result.sealedDocument as { attachmentId: string }).attachmentId);
+    expect((opened!.body as Uint8Array).byteLength).toBe(big.byteLength);
+    expect((opened!.body as Uint8Array)[big.byteLength - 1]).toBe(9);
   });
 
   it('records incrementally and is idempotent across polls', async () => {
