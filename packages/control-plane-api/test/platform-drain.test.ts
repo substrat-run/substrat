@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,7 @@ import {
   PROVISION_TENANT_KIND,
   SET_ENTITLEMENTS_KIND,
   SWEEP_RUNS_KIND,
+  substratError,
 } from '@substrat-run/contracts';
 import {
   drainScopePlatformRequests,
@@ -1005,6 +1006,31 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     ]);
     expect((await host.admin.listTenants(staff)).some((t) => t.id === newTenant)).toBe(false);
     expect(await host.admin.listEntitlements(staff, tenantId.parse(newTenant))).toEqual([]);
+  });
+
+  it.each([
+    ['refusing the input, settles failed', substratError('validation_failed', 'provisionScope: name must not be empty or whitespace'), 'failed'],
+    ['failing for any other reason, stays pending to be retried', new Error('directory unavailable'), 'pending'],
+  ] as const)('a scope provision %s', async (_case, refusal, status) => {
+    const newTenant = ulid();
+    const newScope = ulid();
+    const req = intent('provision-tenant', { payload: payloadFor(newTenant, newScope) });
+    const { client, settled } = fakeTransport([req]);
+    const provision = vi.spyOn(host, 'provisionScope').mockRejectedValueOnce(refusal);
+    try {
+      await drainScopePlatformRequests(client, { ...ctx, scope: INSTALL, lifecycle: LIVE }, {
+        'provision-tenant': provisionTenantHandler(deps()),
+      });
+    } finally {
+      provision.mockRestore();
+    }
+    expect(settled[0]).toMatchObject({ id: req.id, status, lastError: refusal.message });
+    if (status === 'failed') {
+      expect(settled[0]).toMatchObject({
+        result: { tenantId: newTenant, scopeId: newScope },
+        failure: { origin: 'platform', code: 'validation_failed', permission: null },
+      });
+    }
   });
 
   it('drains a payload whose vertical is a slug to done', async () => {
