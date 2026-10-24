@@ -6,7 +6,16 @@
  * the exported bindings via `CloudflareScopeHost` — see contract.test.ts.
  */
 import { platformActorId } from '@substrat-run/contracts';
-import { runCrossVerticalFrom, runPlatformSweep, ulid, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
+import {
+  runCrossVerticalFrom,
+  runPlatformSweep,
+  ulid,
+  webCryptoSecretBox,
+  type FetchLike,
+  type PlatformSweepReport,
+  type ScheduleRegistration,
+  type ScheduleRunReport,
+} from '@substrat-run/kernel';
 import {
   boardImportMod,
   brokenMod,
@@ -418,6 +427,38 @@ export const ScopeSweeperDO = defineScopeSweeperDO<ScopeSweeperEnv>({
     // the batch test asserting ONE freshness entry is the cross-module regression.
     host.registerModule(freshnessMod);
     return host;
+  },
+});
+
+/**
+ * #2517: the same trigger over a FAKE host of four modules, so a test can see what each
+ * `runDueSchedules` call on a scope was told the pass's earlier calls did. Each call echoes the
+ * `earlierPurgeRequests` it received as an error row (`tick:<module>`), the one channel the pass
+ * report carries back without any state shared across contexts.
+ */
+export const TickSweeperDO = defineScopeSweeperDO<Record<string, never>>({
+  intervalMs: 60_000,
+  host: () => {
+    const answers: Record<string, ScheduleRunReport> = {
+      // Ordinary requests only: they defer nothing, so they are not carried.
+      '@test/first': { fired: 1, skipped: 0, failed: 0, errors: [], platformRequests: 5 },
+      '@test/second': { fired: 1, skipped: 0, failed: 0, errors: [], platformRequests: 7, purgeRequests: 3 },
+      '@test/third': { fired: 0, skipped: 1, failed: 0, errors: [], purgeRequests: 2, deferred: 1 },
+      '@test/fourth': { fired: 0, skipped: 1, failed: 0, errors: [], deferred: 1 },
+    };
+    return {
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+      // `runJobs` is off, so the pass never drives a job.
+      runDueJobs: async () => {
+        throw new Error('the tick sweeper drives no jobs');
+      },
+      registeredSchedules: () =>
+        Object.keys(answers).map((m) => ({ moduleId: m, schedules: [{ operation: `${m}/x` }] })) as unknown as ScheduleRegistration[],
+      runDueSchedules: async (m, _t, _s, tick) => ({
+        ...answers[m]!,
+        errors: [{ operation: `tick:${m}`, error: String(tick?.earlierPurgeRequests) }],
+      }),
+    };
   },
 });
 

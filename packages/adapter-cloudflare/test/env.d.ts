@@ -24,6 +24,7 @@ declare namespace Cloudflare {
     SUBSTRAT_STORE_GRAPH: DurableObjectNamespace;
     /** The CP-less scope-local sweep trigger (#461) — scope-sweeper.test.ts… */
     SCOPE_SWEEPER: DurableObjectNamespace;
+    TICK_SWEEPER: DurableObjectNamespace;
     /** …and its own scope namespace (same ScopeDO class, no directory). */
     LOCAL_SWEEP_SCOPE: DurableObjectNamespace;
     /** #938: the live-read scope class, carrying only `liveMod` — live-reads.test.ts. */
