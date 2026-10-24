@@ -79,6 +79,7 @@ import type {
   MeterReading,
   MeterDay,
   MeterDayTake,
+  VerticalOwnerPeriod,
   ScopeStorageSample,
   RequestDay,
   RequestRollupDay,
@@ -2653,6 +2654,13 @@ export interface HostAdmin {
    * while the refusal above is being raced. Staff-only, audited.
    */
   deleteVertical(actor: PlatformActorId, slug: string): Promise<void>;
+  /**
+   * Every period of a slug's ownership (#2501), oldest first: opened by `registerVertical`, closed
+   * by `deleteVertical`, each in that write's transaction. Served for a deleted slug too, which is
+   * the point: a past period bills whoever owned the vertical then. Access-logged (K-24).
+   * Optional, so a host built before it still satisfies `HostAdmin`.
+   */
+  listVerticalOwners?(actor: PlatformActorId, slug: string): Promise<VerticalOwnerPeriod[]>;
 
   /**
    * Promote a version to a channel (#31 step 2) — the moment a change reaches

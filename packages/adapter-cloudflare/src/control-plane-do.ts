@@ -44,6 +44,12 @@ import {
   type RequestDayReadInput,
   type RequestRollupDayFilter,
   METER_DAYS_DDL,
+  VERTICAL_OWNERS_BACKFILL,
+  VERTICAL_OWNERS_DDL,
+  closeVerticalOwnerRow,
+  listVerticalOwnerRows,
+  openVerticalOwnerRow,
+  verticalOwnerNow,
   listMeterDayRows,
   listMeterDayTakeRows,
   pruneMeterDayRows,
@@ -216,6 +222,7 @@ import type {
   RequestRollupDay,
   MeterDay,
   MeterDayTake,
+  VerticalOwnerPeriod,
   Tenant,
   TenantId,
   TenantStatus,
@@ -223,7 +230,7 @@ import type {
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import type { DeploymentWireAuth, FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
@@ -1382,6 +1389,8 @@ const DIRECTORY_DDL = `
   ${REQUEST_ROLLUP_DDL}
   -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
   ${METER_DAYS_DDL}
+  -- #2501: who owned each vertical slug, period by period — kernel-owned DDL.
+  ${VERTICAL_OWNERS_DDL}
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
   -- #1713: the lifecycle each hosted scope's deployment last acknowledged, as
   -- "<scope status>/<tenant status>" (lifecycleReceipt). A CP-less deployment has no
@@ -1917,6 +1926,8 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_entitlements', 'granted_at TEXT');
     this.addColumn('_substrat_entitlements', 'granted_by TEXT');
     for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) this.sql.exec(stmt);
+    // #2501: an ownership period for every vertical registered before the history existed.
+    this.sql.exec(VERTICAL_OWNERS_BACKFILL);
     // After the backfill: a UNIQUE index over NULL slugs would permit the
     // duplicates it exists to forbid (SQLite treats NULLs as distinct).
     //
@@ -3362,10 +3373,15 @@ export class ControlPlaneDO extends DurableObject {
 
   insertVertical(slug: string, name: string, source: string, ownerTenant: string | null, envSpec: string | null, installSpec: string | null, listed: number, createdAt: string,
     audit?: AdminEntryInput): void {
-    this.writeAndAudit(() => this.sql.exec(
-      'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      slug, name, source, ownerTenant, envSpec, installSpec, listed, createdAt,
-    ).rowsWritten > 0, audit);
+    // #2501: the slug's ownership period opens with its row, in the same transaction.
+    this.writeAndAudit(() => {
+      const changed = this.sql.exec(
+        'INSERT INTO verticals (slug, name, source, owner_tenant, env_spec, install_spec, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        slug, name, source, ownerTenant, envSpec, installSpec, listed, createdAt,
+      ).rowsWritten > 0;
+      if (changed) openVerticalOwnerRow(doRedactionSql(this.sql), slug, ownerTenant, createdAt);
+      return changed;
+    }, audit);
   }
 
   /** Refresh a vertical's declared env-spec + install-spec (both evolve with the manifest).
@@ -3432,7 +3448,12 @@ export class ControlPlaneDO extends DurableObject {
    * Remove a vertical's registry presence: channels, versions, the row. The bound-scope
    * refusal lives host-side (the audited seam), not here — this is the storage verb.
    */
-  deleteVertical(slug: string, audit?: AdminEntryInput): void {
+  deleteVertical(slug: string, audit?: AdminEntryInput, until?: string): void {
+    // #2501: one transaction, so the row and its ownership period close together. `until` is the
+    // host's stamp, on the clock the period's `since` (the row's created_at) was read on. It is
+    // optional and trailing so a caller from before it, sending (slug, audit), still closes the
+    // period, on this DO's own reading of that clock; anything but an instant is refused.
+    const closedAt = until === undefined ? verticalOwnerNow() : instant.parse(until);
     this.writeAndAudit(() => {
       this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
       this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
@@ -3444,8 +3465,15 @@ export class ControlPlaneDO extends DurableObject {
       forgetVerticalScopeStores(this.kernelSql, slug);
       forgetVerticalWireAuth(this.kernelSql, slug);
       this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
-      return this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug).rowsWritten > 0;
+      const changed = this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug).rowsWritten > 0;
+      if (changed) closeVerticalOwnerRow(doRedactionSql(this.sql), slug, closedAt);
+      return changed;
     }, audit);
+  }
+
+  /** #2501: every period of a slug's ownership, oldest first — kernel `vertical-owners.ts`. */
+  listVerticalOwners(slug: string): VerticalOwnerPeriod[] {
+    return listVerticalOwnerRows(doRedactionSql(this.sql), slug);
   }
 
   listVerticals(page?: ListPage): VerticalRow[] {
