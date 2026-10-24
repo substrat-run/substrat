@@ -108,9 +108,20 @@ One canary first, in the test environment:
 4. Then the fleet: set `WIRE_KEYS_ROLLOUT=fleet`, push and deploy the control plane. Each deployment
    is given the lists at its next upload; one no upload reaches keeps none, and serves as before.
 
-Going back is writing `off` and pushing again: as with the flags, a blank line is skipped by `push`
-and leaves the last value live. The next upload of each deployment takes its lists back; until then
-it keeps them, which in `dual` changes nothing it serves.
+Going back is writing `WIRE_KEYS_ROLLOUT=off`, pushing `--only control-plane` and deploying the
+control plane: as with the flags, a blank line is skipped by `push` and leaves the last value live.
+`off` stops later uploads giving lists; it takes nothing back from a deployment already given them,
+which keeps them until it is uploaded again. In `dual` that changes nothing it serves.
+
+- A vertical's **serving script** is uploaded again at its next promote, which takes its lists back.
+- A **version's own script** is uploaded once, at its push, and nothing uploads it again today. It
+  keeps the lists it was given until its vertical is deleted, or until the fleet walk (RFC follow-on
+  4) reaches it.
+
+So neither `off` nor dropping a key from the lists withdraws that key from a script already given
+it. When a key must stop being trusted, take the break-glass path below, and until the fleet walk
+exists, count every script given a list naming that key as still trusting it: the capability
+records (`HostAdmin.listWireAuth`) name each script given lists and the key ids of each list.
 
 ## Turning signing off
 
@@ -134,8 +145,8 @@ pnpm wire-keys doctor --file <env file> --key-file ~/keys/new.key
 
 It prints each issuer's listed kids and public keys, marks which one the signer uses, and names
 the rotation phase: `steady` is the key in use and its standby. It exits 1 on any problem the store
-tool's `doctor` refuses, and warns when a list has no standby. A failure names the variable and the
-check, never a value. `doctor` reads the env file; it cannot see what is deployed.
+tool's `doctor` refuses, warns on values that look like private material, and warns when a list has
+no standby. A failure names the variable and the check, never a value. `doctor` reads the env file; it cannot see what is deployed.
 
 ## Rotation
 
@@ -162,8 +173,9 @@ The break-glass path (RFC §6), taken only by platform staff on call:
    (`pnpm wire-keys rotate --issuer <issuer> --drop <old kid>` prints the list without it; listing
    the new standby first is what lets `--drop` print it without `--without-standby`).
    Push and deploy the control plane.
-4. Upload every live deployment again at once. A deployment not yet uploaded still accepts the
-   compromised key.
+4. Upload every live deployment again at once: a serving script by promoting its vertical again; a
+   version's own script only the fleet walk (RFC follow-on 4) will reach, as above. A deployment not
+   yet uploaded still accepts the compromised key.
 
 ## What the tool does not do
 

@@ -93,8 +93,9 @@ It prints each audience's listed kids and public keys, marks which one the signe
 names the rotation phase. It exits 1 on any problem: an unset or malformed list, a bad entry
 (named by position, never by value), a duplicate or alias, a key in both lists, an unset or
 unusable private key, a signer whose key is not in its own list or *is* in the other list, and
-one key used for both audiences. `--key-file` adds a staged key from `generate` to the check.
-A failure names the variable and the check, never a value.
+one key used for both audiences. It also warns on values that look like private material.
+`--key-file` adds a staged key from `generate` to the check. A failure names the variable and the
+check, never a value.
 
 `doctor` reads the env file. It cannot see what is deployed: a set that passes here is the set
 `push` would install.
