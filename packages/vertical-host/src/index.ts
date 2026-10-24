@@ -180,10 +180,13 @@ import {
   type ImportResult,
   type ImportState,
   CONNECTOR_ATTACHMENT_META_HEADER,
+  CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
   CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
+  connectorAttachmentBodyRefusal,
+  connectorAttachmentBufferedRefusal,
   connectorAttachmentMetaBytes,
   connectorAttachmentMetaRefusal,
   connectorAttachmentSizeRefusal,
@@ -2004,18 +2007,20 @@ export function mountPlatformSurface<Env extends object>(
   // The bytes leg (#574): multipart, because provider artifacts (a sealed signed PDF)
   // cannot ride a JSON invoke. `meta` is a JSON string field, `body` the raw blob.
   app.post('/internal/connector-attachment', async (c) => {
-    // This route buffers the body, so it is held to the stream route's size bound before and while
-    // it is read (#2538). A `Content-Length` over the file bound plus the multipart envelope is
-    // refused unread; a body without one, or that understates it, is cut off at the same count; and
-    // the file part is judged on its own size once parsed, so the sentence names the file's bytes.
-    const ceiling = CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES;
-    const length = Number(c.req.header('content-length'));
+    // This route buffers the body (and before the write gate, since the gate needs the parsed
+    // `meta`), so it is held to the BUFFERED bound, not the stream route's, before and while it is
+    // read (#2538). A `Content-Length` over the bound plus the multipart envelope is refused unread;
+    // a body without one, or that understates it, is cut off at the same count; and the file part is
+    // judged on its own size once parsed. The first two name the request body, the last the file.
+    const ceiling = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES;
+    const declaredLength = c.req.header('content-length');
+    const length = declaredLength === undefined ? Number.NaN : Number(declaredLength);
     if (Number.isFinite(length) && length > ceiling) {
-      return refuseStatus(c, 413, connectorAttachmentSizeRefusal(length));
+      return refuseStatus(c, 413, connectorAttachmentBodyRefusal(length));
     }
     const form = await readFormWithin(c.req.raw, ceiling);
     if (form === null) {
-      return refuseStatus(c, 413, connectorAttachmentSizeRefusal(ceiling + 1));
+      return refuseStatus(c, 413, connectorAttachmentBodyRefusal());
     }
     const metaRaw = form.get('meta');
     if (typeof metaRaw !== 'string') {
@@ -2030,8 +2035,8 @@ export function mountPlatformSurface<Env extends object>(
     if (blob === null || typeof blob === 'string') {
       throw new HTTPException(400, { message: 'connector-attachment needs a `body` file field' });
     }
-    if (blob.size > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
-      return refuseStatus(c, 413, connectorAttachmentSizeRefusal(blob.size));
+    if (blob.size > CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES) {
+      return refuseStatus(c, 413, connectorAttachmentBufferedRefusal(blob.size));
     }
     const record = await deps.hostFor(c.env).connectorAttachmentUploadLocal(
       meta.connectionId,

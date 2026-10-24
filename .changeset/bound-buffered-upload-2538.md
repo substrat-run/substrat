@@ -4,10 +4,11 @@
 "@substrat-run/control-plane-api": minor
 ---
 
-The buffered connector upload is held to the same size bound as the streamed one (#2538):
+The buffered connector upload is held to a size bound before it is buffered (#2538):
 
-- **The multipart route.** `POST /internal/connector-attachment` refuses a body over `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (95 MiB) plus a 16 KiB multipart envelope (`CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES`) with a `413`, before it buffers anything when `Content-Length` says so. A body with no `Content-Length`, or one that understates it, is cut off at the same count while it is read, and a file part over the bound is refused once parsed. Until now the route read a body of any size into the worker's memory.
-- **The client.** `VerticalClient.connectorUploadAttachment` refuses a buffer over the bound with a `413` and sends nothing, as it already did for a stream.
-- **One sentence.** `connectorAttachmentSizeRefusal` now reads "bound on a connector upload", since it names both routes' bound.
+- **A buffered bound.** `CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES` (25 MiB) is the most a buffered connector upload may carry. It is lower than the stream route's 95 MiB on purpose: that one is a request-size limit, this one a memory limit, since a buffered file is resident several times over at once. The 95 MiB bound stays for streamed uploads.
+- **The multipart route.** `POST /internal/connector-attachment` refuses a `Content-Length` over 25 MiB plus a 16 KiB multipart envelope (`CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES`) with a `413` before it buffers anything. A body with no `Content-Length`, or one that understates it, is cut off at the same count while it is read, and a file part over 25 MiB is refused once parsed. Until now the route read a body of any size into the worker's memory.
+- **The client.** `VerticalClient.connectorUploadAttachment` refuses a buffer over 25 MiB with a `413` and sends nothing.
+- **The sentences.** Each `413` says to send the file as a streamed upload. The body-level refusals name the request body, not the attachment (`connectorAttachmentBodyRefusal`); the file part and the client use `connectorAttachmentBufferedRefusal`; the stream route's sentence is unchanged.
 
-A multipart upload over 95 MiB, which the route accepted until now, is refused. Use a streamed body for a file that large.
+A multipart upload over 25 MiB, which the route accepted until now, is refused. Use a streamed body for a file that large.

@@ -311,19 +311,49 @@ export function connectorAttachmentMetaRefusal(bytes: number): string {
 export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 95 * 1024 * 1024;
 
 /**
+ * The most bytes one BUFFERED connector upload may carry (#2538): the multipart route's file part,
+ * and the platform client's `Uint8Array` body. Lower than {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}
+ * because that one is a request-size limit and this one is a memory limit: a stream is never held, but
+ * a buffered file is resident several times over at once (the raw body, the parsed form's copy, then
+ * the bytes handed on; on the platform side the caller's buffer, the form's copy, the encoded request
+ * and the copy read to bind its digest) against a 128 MB isolate. 25 MiB is the buffered upload-link
+ * cap ({@link UPLOAD_LINK_MAX_BYTES_CEILING}), a size this repo already holds a buffered file to. Above
+ * it a caller sends a streamed upload, which is the route for a large file.
+ */
+export const CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
  * What the multipart route's body may carry beyond the file (#2538): the `meta` field (at most
  * {@link CONNECTOR_ATTACHMENT_META_MAX_BYTES} once encoded, never more raw), the part headers and
- * the boundaries, with room to spare. A body over the file bound plus this is refused unread.
+ * the boundaries, with room to spare. A body over the buffered bound plus this is refused unread.
  */
 export const CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES = 16 * 1024;
 
-/**
- * The one sentence every end uses to refuse a size over {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}:
- * a streamed upload's declared size, a buffered one's byte length (#2538).
- */
+/** The one sentence every end uses to refuse a declared size over {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}. */
 export function connectorAttachmentSizeRefusal(declared: number): string {
   return (
     `the attachment declares ${declared} bytes, over the ${CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}-byte ` +
-    `bound on a connector upload`
+    `bound on a streamed connector upload`
+  );
+}
+
+/** The sentence for a buffered file over {@link CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES}: its own bytes, once known. */
+export function connectorAttachmentBufferedRefusal(bytes: number): string {
+  return (
+    `the attachment is ${bytes} bytes, over the ${CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES}-byte bound ` +
+    `on a buffered connector upload — send it as a streamed upload`
+  );
+}
+
+/**
+ * The sentence for a multipart BODY refused before its file part could be told apart: a
+ * `Content-Length` over the bound plus the envelope (`bytes` is that header), or a body cut off while
+ * it was read (`bytes` omitted: nobody declared a size). Names the body, not the attachment.
+ */
+export function connectorAttachmentBodyRefusal(bytes?: number): string {
+  const bound = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES;
+  return (
+    (bytes === undefined ? `the request body ran past the ${bound}-byte bound` : `the request body is ${bytes} bytes, over the ${bound}-byte bound`) +
+    ` on a buffered connector upload (the file plus its multipart envelope) — send it as a streamed upload`
   );
 }
