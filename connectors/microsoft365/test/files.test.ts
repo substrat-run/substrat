@@ -523,59 +523,133 @@ describe('reads: the sync lands what is in the folder', () => {
   });
 
   describe('a deployment that cannot take a file over the buffered bound (#2538)', () => {
-    /** Make the upload of `big.bin` answer as the platform client does for a deployment predating the streamed route. */
-    const refuseBig = (w: Awaited<ReturnType<typeof world>>, answer: () => unknown) => {
+    const BIG = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1;
+    /**
+     * Make every upload of a `*.bin` file answer as the platform client does for a deployment predating
+     * the streamed route (`answer`, 501 by default) until `fix()` upgrades it; `attempts` counts them.
+     */
+    const refuseBig = (w: Awaited<ReturnType<typeof world>>, answer: () => unknown = redeploy) => {
+      const attempts: string[] = [];
+      let broken = true;
       const real = w.host.getConnectorAttachments.bind(w.host);
       vi.spyOn(w.host, 'getConnectorAttachments').mockImplementation(async (...args) => {
         const inner = await real(...args);
         return {
           ...inner,
           upload: async (input) => {
-            if (input.filename === 'big.bin') throw answer();
+            if (input.filename.endsWith('.bin')) {
+              attempts.push(input.filename);
+              if (broken) throw answer();
+            }
             return inner.upload(input);
           },
         };
       });
+      return { attempts, fix: () => void (broken = false) };
     };
-    const redeploy = () => Object.assign(new Error('the deployment predates streamed connector uploads'), { status: 501 });
+    function redeploy() {
+      return Object.assign(new Error('the deployment predates streamed connector uploads'), { status: 501 });
+    }
+    const contentLanded = (w: Awaited<ReturnType<typeof world>>, path: string) =>
+      w.landed.some((c) => c.change === 'content' && c.path === path);
 
     it('holds the file without its bytes, reports it, and lands the rest of the pass', async () => {
       const w = await world();
-      w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+      w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
       w.drive.put(w.general, 'small.txt', 'small');
       await w.bind();
-      refuseBig(w, redeploy);
+      refuseBig(w);
       const r = await w.sync();
       expect(r.complete).toBe(true);
       expect(r.skipped).toEqual([{ itemId: expect.any(String), reason: SKIPPED_NEEDS_REDEPLOY }]);
-      expect(w.landed.some((c) => c.change === 'content' && c.path === 'small.txt')).toBe(true);
-      expect(w.landed.some((c) => c.change === 'content' && c.path === 'big.bin')).toBe(false);
+      expect(contentLanded(w, 'small.txt')).toBe(true);
+      expect(contentLanded(w, 'big.bin')).toBe(false);
       // Held, so the vertical knows the item: the upsert landed and the state names the skip.
       expect(w.landed.some((c) => c.change === 'upsert' && c.path === 'big.bin')).toBe(true);
       expect(await w.state()).toContain('re-pushed');
     });
 
-    it('tries the file again when the drive next presents it, and lands it once the deployment takes it', async () => {
+    it('tries a nested file once in a pass, though the feed and the folder walk both present it', async () => {
       const w = await world();
-      const id = w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+      const sub = w.drive.mkdir(w.general, 'Minutes');
+      w.drive.put(sub, 'big.bin', new Uint8Array(BIG).fill(7));
       await w.bind();
-      refuseBig(w, redeploy);
+      const { attempts } = refuseBig(w);
+      const r = await w.sync();
+      expect(attempts).toHaveLength(1);
+      expect(r.skipped).toHaveLength(1);
+    });
+
+    it('tries the file again when the drive presents the same unchanged file, and lands it once the deployment takes it', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      const { attempts, fix } = refuseBig(w);
       expect((await w.sync()).skipped).toHaveLength(1);
-      vi.restoreAllMocks();
-      w.drive.edit(id, 'now small');
+      // A later pass that does not present it leaves it held and does not try it.
+      await w.sync();
+      expect(attempts).toHaveLength(1);
+      fix();
+      // Graph expires the cursor: the full enumeration presents every file again, cTag unchanged.
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
       w.landed.length = 0;
       const r = await w.sync();
+      w.drive.expiredBefore = 0;
+      expect(attempts).toHaveLength(2);
       expect(r.skipped).toBeUndefined();
-      expect(w.landed.some((c) => c.change === 'content' && c.path === 'big.bin')).toBe(true);
+      expect(contentLanded(w, 'big.bin')).toBe(true);
       expect(await w.state()).not.toContain('re-pushed');
+    });
+
+    it('a changed file is a fresh attempt that clears the hold', async () => {
+      const w = await world();
+      const id = w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      const { fix } = refuseBig(w);
+      expect((await w.sync()).skipped).toHaveLength(1);
+      fix();
+      w.drive.edit(id, 'now small');
+      w.landed.length = 0;
+      await w.sync();
+      expect(contentLanded(w, 'big.bin')).toBe(true);
+      expect(await w.state()).not.toContain('re-pushed');
+    });
+
+    it('stays held through a rename of a folder above it, and is still tried when next presented', async () => {
+      const w = await world();
+      const sub = w.drive.mkdir(w.general, 'Minutes');
+      w.drive.put(sub, 'big.bin', new Uint8Array(BIG).fill(7));
+      await w.bind();
+      const { attempts, fix } = refuseBig(w);
+      await w.sync();
+      w.drive.rename(sub, 'Meeting minutes');
+      w.landed.length = 0;
+      await w.sync();
+      expect(w.landed.some((c) => c.change === 'upsert' && c.path === 'Meeting minutes/big.bin')).toBe(true);
+      expect(await w.state()).toContain('re-pushed');
+      expect(attempts).toHaveLength(1);
+      fix();
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      w.landed.length = 0;
+      await w.sync();
+      w.drive.expiredBefore = 0;
+      expect(contentLanded(w, 'Meeting minutes/big.bin')).toBe(true);
     });
 
     it('a genuine transient failure still stops the pass, as before', async () => {
       const w = await world();
-      w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+      w.drive.put(w.general, 'big.bin', new Uint8Array(BIG).fill(7));
       await w.bind();
       refuseBig(w, () => Object.assign(new Error('unavailable'), { status: 503 }));
       await expect(w.sync()).rejects.toThrow('unavailable');
+    });
+
+    it('a 501 on a file small enough to go as a buffer is not taken for a missing route', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'small.bin', new Uint8Array(1024).fill(7));
+      await w.bind();
+      refuseBig(w);
+      await expect(w.sync()).rejects.toThrow('predates');
     });
   });
 
