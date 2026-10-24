@@ -176,7 +176,12 @@ export async function exportBreaksOf(input: {
  * the read's own error, so a door answering it phrases it for its caller.
  */
 export function isExportBreakUnjudged(err: unknown): boolean {
-  return errorCodeOf(err) === 'unavailable' && err instanceof Error && err.message.startsWith('cannot say whom this ');
+  // A throw that crossed a Durable Object hop has its `Substrat.<code>` name folded into the message.
+  return (
+    errorCodeOf(err) === 'unavailable' &&
+    err instanceof Error &&
+    err.message.replace(/^Substrat\.[a-z_]+: /, '').startsWith('cannot say whom this ')
+  );
 }
 
 /** How `exportBreakRefusal` begins: what lets the promote route recognise it and add the listing. */

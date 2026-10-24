@@ -2702,6 +2702,9 @@ describe('exportBreaksOf: the promote gate fails closed (#1705 PR 3)', () => {
     expect(isExportBreakRefusal(unjudged)).toBe(false);
     expect(isExportBreakUnjudged(substratError('precondition_failed', exportBreakRefusal([])))).toBe(false);
     expect(isExportBreakUnjudged(substratError('unavailable', 'something else entirely'))).toBe(false);
+    // As it arrives across a Durable Object hop: the code's name folded into the message.
+    const hopped = Object.assign(new Error(`Substrat.unavailable: ${(unjudged as Error).message}`), { name: 'Substrat.unavailable' });
+    expect(isExportBreakUnjudged(hopped)).toBe(true);
   });
 
   it('a manifest that does not parse is not judged (the twin: no refusal, no break)', async () => {
