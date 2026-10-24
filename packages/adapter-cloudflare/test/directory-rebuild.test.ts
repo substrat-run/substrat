@@ -340,7 +340,8 @@ describe('deleteVertical across a mixed-version deploy (#2501)', () => {
   it("a caller from before `until`, sending (slug, audit), still closes the period on the DO's clock", async () => {
     await warmControlPlane(env.CONTROL_PLANE);
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`owners-skew-${ulid()}`));
-    const result = await runInDurableObject(stub, (instance: ControlPlaneDO, state) => {
+    const result = await runInDurableObject(stub, (raw, state) => {
+      const instance = raw as unknown as ControlPlaneDO;
       const before = new Date().toISOString();
       instance.insertVertical('old-caller', 'Old', 'builtin', null, null, null, 0, '2026-04-01T00:00:00.000Z');
       instance.deleteVertical('old-caller', audit('old-caller'));
@@ -360,7 +361,8 @@ describe('deleteVertical across a mixed-version deploy (#2501)', () => {
   it("the new caller's `until` is the one kept; anything but an instant is refused and changes nothing", async () => {
     await warmControlPlane(env.CONTROL_PLANE);
     const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`owners-until-${ulid()}`));
-    const result = await runInDurableObject(stub, (instance: ControlPlaneDO, state) => {
+    const result = await runInDurableObject(stub, (raw, state) => {
+      const instance = raw as unknown as ControlPlaneDO;
       instance.insertVertical('new-caller', 'New', 'builtin', null, null, null, 0, '2026-04-01T00:00:00.000Z');
       let refused = '';
       try {
