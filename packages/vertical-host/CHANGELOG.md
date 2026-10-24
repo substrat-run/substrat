@@ -1,5 +1,96 @@
 # @substrat-run/vertical-host
 
+## 0.160.0
+
+### Minor Changes
+
+- 8e8af88: Attachment bytes beside the storage gauge (#2501). The stored gauge measured scope databases only. The scheduled pass now also reads what each due scope's attachment rows sum to, in the same attempt, and keeps it as its own day row, with the database sample's rules: the day's latest reading, and thirteen months of days. A scope reap keeps them until retention, as it keeps the scope's database days (#2515). A reaped tenant and a deleted fork forget them. `/meters` serves it as `storage.attachments {bytes, sampled}`, beside `bytes`, never in it: the basis stays the scope databases, and attachments stay in `excluded`. The figure is what each scope's rows record, not what the blob store holds: an orphan blob no row names is not in it, and a fork or snapshot that is itself a stored scope counts its copied rows again, though they name the parent's blobs.
+
+  - contracts: `storageGauge.attachments`.
+  - kernel: `ATTACHMENT_BYTES_SQL`, the `_substrat_scope_attachment_storage` table in `SCOPE_STORAGE_DDL`, `listScopeAttachmentStorageRows`, `attachments` on a storage reading, and the storage phase's optional `readAttachments`, bounded by `storeReadTimeoutMs` like the store read. A deployment that cannot read attachment bytes (`StorageReadUnsupported`) is neither a failure nor a size of 0. A failed attachment read keeps the database sample and the store reading, and is the scope's error. Also the optional `HostAdmin.scopeAttachmentBytes`, the co-located read, access-logged.
+  - adapter-sqlite, adapter-cloudflare: the table, the co-located read, and the scope DO's `attachmentBytes`. contract-tests holds both adapters to them, from an upload to `/meters`.
+  - vertical-host: `GET /internal/attachment-size`, behind the same platform gate as every `/internal` route, answering 501 on a host without `attachmentSizeLocal`.
+  - control-plane-api: `VerticalClient.attachmentSize`.
+  - control-plane: the storage phase reads attachment bytes through the deployment that holds each scope, found once per scope for both reads.
+
+  No existing retention changes.
+
+- 95bdb79: A prod promote is refused when the release's roles would hold a scope's reconcile (#2446).
+
+  - **The promote asks the scopes it moves.** When a pushed vertical's release declares a system-held role, `POST /verticals/:slug/channels/prod/promote` reads, before anything moves, the roles each scope the promote would move onto it stores and the role keys seated there: every live (`active`, `suspended`) primary scope already on the serving script, and a private vertical's owned installs the adopt moves. It judges the release's role set with the reconcile's own rule (`reservedRoleSetRefusal`, through the new `releaseRoleSetRefusal`) and the reservations the release's registry marks. A scope that would refuse it, a seated person's role made `holder: 'system'` among the cases, refuses the promote with a 409 (`roleRefusals`, narrowed to the caller's tenant), and nothing is served, adopted or moved. The digest and export-break acknowledgements do not pass it; only staff's `roleStateUnjudged` (below) skips the read.
+  - **Who is asked nothing.** A release with no system-held role and no role key its registry leaves undeclared (`releaseRolesAskScopes`), and an embedded vertical, whose roles are its host's and not defined by any reconcile of the registry.
+  - **Bounds.** One promote reads at most `roleStateScopeCap` scopes (default 500), eight at a time in (tenant, scope) order. A promote that would move more is refused with a 503 that names the two ways through, never judged in part: raise `roleStateScopeCap`, or, as staff, promote with the new `acknowledge.roleStateUnjudged` (contracts' `promotionAcknowledgement`), which skips the read and is recorded in the promote's audit row with the other acknowledgements. A confined caller sending it is refused (403).
+  - **Skew.** A deployment that predates the read, by its route (404) or by its scope host's `roleStateLocal` (the route's 501), is moved unjudged; the promote counts it in its answer (`roleStateUnread`) and logs `promote.role-state.predates`. Its reconcile still refuses a role set it cannot define. Any other failed read refuses the promote with a 502 and nothing moved (`roleStateUnreadable`), and what the deployment answered is logged (`promote.role-state.unreadable`).
+  - **Who sees what.** A confined caller sees only its own tenant's scopes by id in every one of these answers, every other tenant as a count, and never what a deployment answered; staff see the scopes and the detail.
+  - **New surface.** vertical-host: `GET /internal/role-state?tenantId&scopeId`, behind the platform gate every `/internal` route has, read-only, answering the optional `VerticalScopeHost.roleStateLocal` (501 without it, which a promote counts as predating the read). It names role keys, permissions and holders, never a principal. adapter-cloudflare and adapter-sqlite: `roleStateLocal(tenantId, scopeId)`. kernel: `RoleState`, `registryReservations`, `releaseRoleSetRefusal`, `releaseRolesAskScopes`. control-plane-api: `VerticalClient.roleState` and the `roleStateScopeCap` option. contract-tests: `roleStateContractSuite`.
+
+- 5147141: The reserved-key rule now holds where a host defines or seats a role itself (#2447).
+
+  - **Defining a role is judged.** `HostAdmin.defineRole` on both adapters, and the role set the Cloudflare host's `provisionScopeLocal` and `projectRolesLocal` project into a scope, throw `forbidden` before anything is written when a person's role (holder omitted or `person`) would hold a key a module reserves to a system principal, or a system-held role would hold a key a module declares for a person. A redefinition is judged against the role it replaces and its seats: a key it adds meets the same rule, a system-held role redefined as a person's counts its old keys as reserved, and a role cannot be declared `holder: 'system'` while anyone but a system principal holds a seat in it (in any scope not reaped, tenant-level seats read from the directory) unless it is already stored system-held, whether its stored row is a person's, a pre-#2444 row with no holder, or absent. A first definition of a key nobody holds is judged by the key rules alone. So a role assigned through a door can no longer be widened afterwards, by a key or by a holder change. A definition is never refused for a key it takes out, only for a reserved key it still holds.
+  - **The owner's seat is a person's.** `provisionScopeLocal` refuses an `ownerRoleKey` whose role carries a reserved key or is declared `holder: 'system'`. The owner hand-over (`/internal/owner-transfer`) asks the new optional `scopeRoleRefusal(scopeId, roleKey, 'person')` before the owner record moves and refuses with a 409 ("Nothing was moved"), which the platform audits as refused; a repeat of a finished hand-over is still a 200, and a resend of an open one whose seat is now refused is a 409 saying the record already moved. It seats through `assignScopeRole(…, 'person')`. `assignScopeRole` keeps the platform's door by default.
+  - **Every person's door refuses a role stored `holder: 'system'`**, from the stored holder alone, so a host that registers none of the modules still keeps a system-held role from a person.
+  - **A host that registers no modules** counts every key one of the tenant's system-held roles holds as reserved when a role is defined.
+  - **A key a host knows nothing about is admitted, deliberately.** A host judges only the modules it registers or lists and the tenant's system-held roles; push judges the whole surface. A key reserved only through a schedule's `permissions`, which no system-held role holds, is not caught on a host that does not register its module (#2446).
+  - **A release push admits can be refused at reconcile.** Push cannot see seats, so a release that makes a seated person's role `holder: 'system'` passes push and promote, and each scope's `provisionScopeLocal` then refuses it (`forbidden`, naming tenant, scope and role) wherever anyone but a system principal holds a seat in that role, on every pass. Nothing is written, but that scope's whole reconcile is held, its other roles, new schedules' grants, connection grants and entity-grant retirements included. The remedy is per scope: take those seats back, or ship a release that keeps the role person-held. A push- or promote-time refusal belongs with #2446.
+  - **A system-held role stored before holders were recorded cannot be upgraded while its host principal is seated.** A role stored on adapter 0.154 or 0.155 that never reconciled under 0.156 to 0.159, or a dump taken before 2026-10-21, keeps no holder, and declaring it `holder: 'system'` with its host principal seated is refused: on every CP-less reconcile (take the seat back, reconcile, seat it again), and at a restore (409, nothing restored; the only remedy is a new role key). No vertical in this repository uses a system-held role.
+  - **Nothing is revoked.** A refusal writes nothing, so a seat that already holds a key reserved after it was seated keeps working, and a directory fan-out of a stored definition is projected as it is, never judged again.
+
+  New kernel exports: `reservedRoleDefinitionRefusal`, `reservedRoleSetRefusal`, `noteDeclaredKeys`, `dumpRoleState`, `SCOPE_SEATED_ROLES_SQL`, `TENANT_SEATED_ROLES_SQL`, `SEAT_HOLDING_SCOPE_STATUSES`, and the `DumpTable`, `HostReservations`, `RoleShape` and `StoredRoles` types. This is the complete list of what the kernel newly exports. `VerticalScopeHost` gains the optional `roleSetRefusalLocal(scopeId, roles, dump?)` and `scopeRoleRefusal`, and `assignScopeRole` an optional `door`; `CloudflareScopeHost` implements all three. The ScopeDO gains the `reservationHere` and `roleStateHere` RPCs, and the ControlPlaneDO gains `defineRoleOrRefusal`, which takes an optional reservation and `seatedInScopes` and answers `{ before } | { refused }`. Its `defineRole` keeps the shape an older coordinator reads (the previous role, or null), is judged the same way, and throws a refusal. `pnpm lint:role-seat-paths` (new, in CI) refuses a host path that seats or defines a role without asking the rule. No migration and no persisted shape change. Grants a host seats itself (an install's owner grants, on a host that does not register the vertical's modules) are not covered yet; push refuses a reserved key there.
+
+- ee05879: Connectors can now move a file into an attachment without holding it in memory (#2498): memory stays bounded whatever the file's size. Time does not. A connection's `fetch` runs under the connector's `timeoutMs` (default 30 s), and that also bounds reading a streamed response body, so the whole transfer must finish within it. A file that takes longer errors the stream, and the upload lands no object and no row. Every byte seam on the way in also takes a `SizedByteStream`, which is a stream plus the length its producer declares:
+
+  - `ConnectorResponse.body` is the provider's response as a stream. It is optional, like `headers`, so a hand-built stand-in keeps compiling. It carries the body decoded: for a response sent with a `Content-Encoding`, `Content-Length` counts the compressed bytes, so take the length from the provider's own record of the file.
+  - `ConnectorRequestInit.body` accepts a sized stream. `globalFetch` sends it at its declared length: on workerd as a `FixedLengthStream`, on Node with a `Content-Length` header and `duplex: 'half'`. `fetchLikeOf` turns any runtime `fetch` (a bound global, a service binding, a stand-in) into a `FetchLike` that does the same; `globalFetch` is built from it, and both hosts and `runPlatformSweep` pass the `fetch` they are given through it, so a sized body never reaches a runtime `fetch` as `"[object Object]"`.
+  - `AttachmentUploadInput.body` and `TenantBlobStore.put` accept a sized stream. The bytes reach the blob store as they are read. Their sha256 and size are taken on the way through, with workerd's `DigestStream` or Node's `createHash`. The row is still written after the object, and a refusal still deletes the object. A stream that carries a different number of bytes than it declared lands nothing.
+  - A streamed connector upload into a hosted vertical goes to the new `POST /internal/connector-attachment-stream`. The body is the request stream and the metadata travels in `x-substrat-attachment-meta`. It sits behind the same gate as the other `/internal/connector-*` routes. A buffered upload still uses the multipart route, so older deployments keep working. A streamed upload to a deployment that predates the route is refused with a 501 that says to re-push it.
+
+  Buffered callers are unchanged. Reading an attachment back out as a stream is not part of this change.
+
+- 78a0c96: A streamed attachment upload is checked and bounded before it is read, not after it has landed (#2516):
+
+  - **Write gate first.** A streamed `AttachmentUploadInput.body` asks the target's write permission before the first byte is read, on both adapters (the Durable Object host through a new `attachmentCheckWriteReply` verb on the scope). A connection or principal that may not write stores no object and the stream is not pulled. The row's own check still runs when it is written, and a buffered body is unchanged: it is already in memory.
+  - **A size bound.** `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (95 MiB) is the most one streamed connector upload may declare. `POST /internal/connector-attachment-stream` refuses a larger declared size with a `413` before it reads the body, and the platform's client refuses it before sending. The bytes are held to the declared size while they flow, so the declaration is the bound on all of them.
+  - **A metadata bound on both routes.** `CONNECTOR_ATTACHMENT_META_MAX_BYTES` (8 KiB once encoded) now also applies to the multipart route, whose `meta` field was unbounded; both routes, and the client, refuse more with the same `400` and the same sentence (`connectorAttachmentMetaRefusal`), instead of a server's bare `431` on the stream route.
+
+  Rollout: a scope DO deployed before this change has no `attachmentCheckWriteReply`. A streamed upload to it fails closed with a retryable `unavailable` (503) saying to redeploy, never an unchecked read, until the vertical is re-pushed. The bound is under the lowest plan's Workers request-body limit of 100 MB decimal.
+
+  A multipart upload whose metadata is over 8 KiB, which the route accepted until now, is refused.
+
+### Patch Changes
+
+- f0b5904: A stored attachment can always be read back through the connector attachment route (#2519). A filename with a character outside Latin-1 (an en dash, an accented capital, an emoji) or a content type a header refuses made the route throw, so a file both upload routes had accepted could not be read by a connector. The record header is now printable ASCII (non-ASCII characters are `\uXXXX` escapes in the same JSON, so a client that predates this change parses it unchanged), and the response's own `content-type` falls back to `application/octet-stream` when the stored type is not header-safe. The client reads the content type from the record, which carries the stored value exactly.
+
+  **New refusals, at every door that stores an attachment.** An upload is now judged by one schema, `attachmentUploadFields` (with its bounds in `ATTACHMENT_FIELD_MAX`, both in `@substrat-run/contracts`), and refused before a byte is written when its filename is over 512 UTF-16 units, its content type over 255, its entity type over 128, its entity id over 255 or its creator over 128. The connector upload routes (multipart and streamed) answer 400 naming the field. These bounds keep the record a read-back carries under 8.2 KiB; a 400-character path still stores. `attachmentRecord` itself is not bounded, so a row stored before these bounds still parses and reads back.
+
+  A record already stored with a string long enough to push the read-back header past 10 KiB is read back with every string brought to its bound: a filename, entity type, entity id or creator is cut and ends in `…`, and a content type over 255 is sent as `application/octet-stream`, both in the record and as the response's own `content-type`. A creator that is a JSON actor and is cut stops being parseable JSON: the `…` at its end marks it. The bytes, size, sha256, visibility and dates are exact, and a record that fits the header is sent as stored. Nothing stored is rewritten. A stored row that does not parse as an attachment record is now answered as a server error (500), not a 400. An upload link's entity is bounded the same way at the mint, so a link no redemption could use is refused to the minter.
+
+- bc51fe0: Stop writing hash-only member invites, and announce when the accept side stops. `createInvite` (and the identity directory's method of the same name) now requires the `become` capability id the invite's link is, and refuses a missing or empty one before anything is written, so no new hash-only row can be created. Every route in this package and in vertical-host already passed one. A caller that passed `null`, or left the argument out, now fails to compile, and an untyped call throws.
+
+  `createLegacyInvite` in `@substrat-run/vertical-auth/member-directory` is the explicit way to write a hash-only row. It exists for test fixtures that cover the rows still pending, takes the directory's SQL handle rather than being a method of the identity directory, and is removed with the legacy branch.
+
+  Hash-only invites that are already stored still accept by their hash for now. `claimInvite`'s legacy branch stops admitting in the first vertical-auth release published on or after 2027-01-09, at least 90 days after 2026-10-11, when the last route that wrote a hash-only invite stopped doing so. Before that release, the platform counts the hash-only invites still pending on hosted scopes and withdraws any that remain. An invite that is still outstanding then needs to be sent again. `legacyInviteCount` and the `legacy-invites-pending` log line keep reporting what is left.
+
+- Updated dependencies [8e8af88]
+- Updated dependencies [f0b5904]
+- Updated dependencies [dc3b911]
+- Updated dependencies [a283098]
+- Updated dependencies [95bdb79]
+- Updated dependencies [26db572]
+- Updated dependencies [279f8e8]
+- Updated dependencies [c304fbd]
+- Updated dependencies [69868f3]
+- Updated dependencies [5147141]
+- Updated dependencies [ee05879]
+- Updated dependencies [78a0c96]
+- Updated dependencies [ecbed6e]
+- Updated dependencies [bc36021]
+- Updated dependencies [286f3b4]
+- Updated dependencies [5f75359]
+- Updated dependencies [bc629db]
+  - @substrat-run/contracts@0.160.0
+  - @substrat-run/kernel@0.160.0
+  - @substrat-run/model-providers@0.5.50
+
 ## 0.159.0
 
 ### Patch Changes
