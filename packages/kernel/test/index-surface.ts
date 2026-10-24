@@ -656,6 +656,7 @@ export const INDEX_VALUE_EXPORTS = [
   'samePeerVertical',
   'scheduleStateHasKind',
   'scopeMoveOf',
+  'scopeNotHeldRefusal',
   'scopeOwesSwitch',
   'scopeRoleHolders',
   'scopeScriptCopyOf',

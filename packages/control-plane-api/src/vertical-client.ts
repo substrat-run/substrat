@@ -54,6 +54,7 @@ import type {
   HistoryEntry,
   Page,
   ScopeDumpTable,
+  Scope,
   ScopeId,
   ScopeQueryResult,
   DenialFilter,
@@ -129,7 +130,7 @@ import {
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { isSizedByteStream, knownLengthInit, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
+import { isSizedByteStream, knownLengthInit, scopeNotHeldRefusal, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -146,6 +147,31 @@ export function isRouteMiss(err: ControlPlaneError): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * The 409 a deployment answers a size read for a scope it does not hold (#2541): never provisioned
+ * there, reaped, or carried away. Told by its sentence (`scopeNotHeldRefusal`) as well as its status,
+ * since a 409 on the same route could be any other conflict. Whether that is benign is
+ * `notHeldIsBenign`'s question, asked of the directory.
+ */
+export function isScopeNotHeld(err: unknown, scopeId: ScopeId): boolean {
+  return err instanceof ControlPlaneError && err.status === 409 && err.message.includes(scopeNotHeldRefusal(scopeId));
+}
+
+/**
+ * Whether a deployment's "not held" answer is expected, judged against the directory's record read
+ * NOW (#2541): the scope was reaped (or archived) since it was listed, or the directory has no such
+ * scope. Every other status (`provisioning`, `active`, `suspended`, `archiving`) holds a store, so
+ * "not held" there is a real fault and the caller keeps it an error. ONE rule for the storage
+ * gauge (skip) and the on-demand console page (read 0).
+ *
+ * `record` is not caught: a directory read that FAILS rejects here, so the failure is reported
+ * instead of being taken for a gone scope.
+ */
+export async function notHeldIsBenign(record: () => Promise<Pick<Scope, 'status'> | undefined>): Promise<boolean> {
+  const found = await record();
+  return found === undefined || found.status === 'reaped' || found.status === 'archived';
 }
 
 /** The orphan-attachment report as it crosses the wire (#2314): `OrphanSweepReport`, checked. */

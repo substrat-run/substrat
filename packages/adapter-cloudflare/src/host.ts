@@ -511,6 +511,7 @@ import {
   INERT_SCOPE_REASON,
   lifecycleReceipt,
   lifecycleRefusal,
+  scopeNotHeldRefusal,
   isPrimaryScope,
   isPrimaryScopeRow,
   asyncInvocationId,
@@ -2059,6 +2060,10 @@ interface ScopeStubRpc {
   ): Promise<ImportResult | SystemDoorMoved>;
   /** #1705 PR 2: was this scope provisioned here for this tenant — read without migrating. */
   servesTenant(tenantId: TenantId): Promise<boolean>;
+  /** #2541: the size, or null when this deployment does not hold the scope — held check and read in one call. */
+  databaseSizeIfHeld(): Promise<number | null>;
+  /** #2541: the attachment bytes, or null when this deployment does not hold the scope — one call, as the size is. */
+  attachmentBytesIfHeld(): Promise<number | null>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
   importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved>;
   redrainEvents(drainedBefore: string): Promise<number>;
@@ -2941,6 +2946,12 @@ const DOOR_WORDS = {
 
 /** #2029: the rewind hold's key for one subject — a module's id, bare as #1819 stored it, or `vertical:<slug>`. */
 const holdKeyOf = (kind: SwitchKind, key: string): string => (kind === 'system' ? key : peerSubjectRef(key));
+
+/** #2541: a vertical-side size read's answer, or the refusal when the scope's own object said it holds nothing (`null`). */
+function heldOrRefused(scopeId: ScopeId, size: number | null): number {
+  if (size === null) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+  return size;
+}
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
 export interface SwitchHoldClaim {
@@ -4199,14 +4210,17 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId).appliedMigrations();
   }
 
-  /** This host's own scope's database size in bytes (#1524), the vertical-host read. */
+  /**
+   * This host's own scope's database size in bytes (#1524), the vertical-host read. A scope this
+   * deployment does not hold is refused (#2541), not read as 0.
+   */
   async databaseSizeLocal(scopeId: ScopeId): Promise<number> {
-    return this.scopeStub(scopeId).databaseSize();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).databaseSizeIfHeld());
   }
 
-  /** This host's own scope's attachment bytes (#2501), the vertical-host read. */
+  /** This host's own scope's attachment bytes (#2501), the vertical-host read; refused as the size is. */
   async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
-    return this.scopeStub(scopeId).attachmentBytes();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).attachmentBytesIfHeld());
   }
 
   /**

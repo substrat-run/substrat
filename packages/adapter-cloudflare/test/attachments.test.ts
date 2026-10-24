@@ -253,8 +253,9 @@ describe('attachment surface (cloudflare host)', () => {
 
     const stamp = dumpMetaValue(await host.exportScopeLocal(s), LOAD_STAMP_KEY);
     expect(await host.wipeCarriedLocal(s, stamp, { to: 'elsewhere', at: '2026-10-10T00:00:00.000Z' })).toBe(true);
-    // A wiped copy holds no attachment row, so it reads 0, not a refusal.
-    expect(await host.attachmentSizeLocal(s)).toBe(0);
+    // A wiped copy is no scope this deployment holds (#2541): refused, not read as 0.
+    expect(await host.attachmentSizeLocal(s).then(() => undefined, (e: unknown) => errorCodeOf(e))).toBe('conflict');
+    expect(await host.databaseSizeLocal(s).then(() => undefined, (e: unknown) => errorCodeOf(e))).toBe('conflict');
 
     const refusalOf = (p: Promise<unknown>) =>
       p.then(
