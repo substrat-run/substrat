@@ -18,6 +18,7 @@ import {
   orgId,
   permissionKey,
   platformActorId,
+  eventId,
   principalId,
   projectedConnectionGrant,
   scopeId,
@@ -69,6 +70,9 @@ import {
   reservedRoleContractSuite,
   roleStateContractSuite,
   sizeReadsContractSuite,
+  introspectionReadsContractSuite,
+  introspectionReadsOf,
+  TEST_LIFECYCLE,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -435,6 +439,19 @@ roleStateContractSuite('adapter-cloudflare', async () => {
   };
 });
 
+// Addressing a DO constructs it, so it is listed whatever a read decides; what a refusal must
+// leave is an object with no state in it, which `holdsScope` would read as held.
+const scopeObjectHoldsNothing = async (s: ScopeId): Promise<boolean> => {
+  const stub = env.SCOPE.get(env.SCOPE.idFromName(s));
+  return runInDurableObject(stub, (_i, state) =>
+    ['_substrat_meta', '_substrat_tuples', '_substrat_outbox', '_substrat_migrations', '_substrat_roles', '_substrat_schedule_state'].every(
+      (table) =>
+        state.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE name = ?`, table).toArray().length === 0 ||
+        state.storage.sql.exec(`SELECT 1 FROM ${table} LIMIT 1`).toArray().length === 0,
+    ),
+  );
+};
+
 // #2541: the vertical-side size reads hold the scope before they open its store. Here the host has
 // a directory, which these reads do not consult: the scope's own storage is what says it is held.
 sizeReadsContractSuite('adapter-cloudflare', async () => {
@@ -443,18 +460,18 @@ sizeReadsContractSuite('adapter-cloudflare', async () => {
     host,
     databaseSizeLocal: (s) => host.databaseSizeLocal(s),
     attachmentSizeLocal: (s) => host.attachmentSizeLocal(s),
-    // Addressing a DO constructs it, so it is listed whatever the read decides; what a refusal must
-    // leave is an object with no state in it, which `holdsScope` would read as held.
-    storeHoldsNothing: async (_t, s) => {
-      const stub = env.SCOPE.get(env.SCOPE.idFromName(s));
-      return runInDurableObject(stub, (_i, state) =>
-        ['_substrat_meta', '_substrat_tuples', '_substrat_outbox', '_substrat_migrations', '_substrat_roles', '_substrat_schedule_state'].every(
-          (table) =>
-            state.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE name = ?`, table).toArray().length === 0 ||
-            state.storage.sql.exec(`SELECT 1 FROM ${table} LIMIT 1`).toArray().length === 0,
-        ),
-      );
-    },
+    storeHoldsNothing: async (_t, s) => scopeObjectHoldsNothing(s),
+    cleanup: async () => host.close(),
+  };
+});
+
+// #2544: the introspection reads hold the scope before they read it, as the size reads do.
+introspectionReadsContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  return {
+    host,
+    ...introspectionReadsOf(host),
+    storeHoldsNothing: async (_t, s) => scopeObjectHoldsNothing(s),
     cleanup: async () => host.close(),
   };
 });
@@ -508,6 +525,52 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
     });
     expect(await stubOf(s).databaseSizeIfHeld()).toBeNull();
     expect(await host.databaseSizeLocal(s).then(() => undefined, (e: unknown) => errorCodeOf(e))).toBe('conflict');
+  });
+
+  // #2544: the introspection reads follow the same shape. Every one of them reaches the object once,
+  // by an `IfHeld` method, never by a check followed by a read (two RPCs a reap could land between).
+  it('each introspection read makes exactly one RPC to the scope, an IfHeld one', async () => {
+    const { host, s } = await heldScope();
+    onTestFinished(async () => host.close());
+    const calls: string[] = [];
+    const real = objectOf(s) as unknown as Record<string, (...args: unknown[]) => unknown>;
+    const counted = new Proxy(real, {
+      get: (_target, name: string) => (...args: unknown[]) => (calls.push(name), real[name]!(...args)),
+    });
+    vi.spyOn(host as unknown as { scopeStub(id: ScopeId): unknown }, 'scopeStub').mockReturnValue(counted);
+    const window = { since: new Date(Date.now() - 60_000).toISOString(), until: new Date(Date.now() + 60_000).toISOString() };
+    await host.facetEventsLocal(s, { groupBy: { kind: 'type' } });
+    await host.eventEffectsLocal(s, { eventId: eventId.parse(ulid()) });
+    await host.invocationEventsLocal(s, { invocationId: ulid() });
+    await host.deadLettersLocal(s, {});
+    await host.lifecycleFlowLocal(s, { entityType: 'test-lifecycle', lifecycle: TEST_LIFECYCLE, ...window });
+    await host.operationSeriesLocal(s, { moves: [{ entityType: 'test-lifecycle', operation: 'test/move' }], bucketMinutes: 1, since: new Date(Math.floor(Date.now() / 1000) * 1000).toISOString(), until: new Date(Math.floor(Date.now() / 1000) * 1000 + 60_000).toISOString() });
+    await host.eventCauseLocal(s, { eventId: eventId.parse(ulid()) });
+    await host.entityHistoryLocal(s, { entityType: 'test-thing', entityId: 'x1' });
+    await host.appliedMigrationsLocal(s);
+    await host.migrationBookmarksLocal(s);
+    await host.introspectScopeTables(s);
+    await host.introspectScopeTable(s, { table: '_substrat_outbox', limit: 5, offset: 0 });
+    await host.introspectScopeQuery(s, { sql: 'SELECT 1 AS one' });
+    await host.undrainedEventsLocal(s, 10);
+    await host.redrainCountLocal(s, new Date().toISOString());
+    expect(calls).toEqual([
+      'facetEventsIfHeld',
+      'eventEffectsIfHeld',
+      'invocationEventsIfHeld',
+      'deadLettersIfHeld',
+      'lifecycleFlowIfHeld',
+      'operationSeriesIfHeld',
+      'eventCauseIfHeld',
+      'entityHistoryIfHeld',
+      'appliedMigrationsIfHeld',
+      'migrationBookmarksIfHeld',
+      'introspectTablesIfHeld',
+      'introspectTableReplyIfHeld',
+      'introspectQueryReplyIfHeld',
+      'undrainedEventsReadIfHeld',
+      'redrainCountIfHeld',
+    ]);
   });
 });
 

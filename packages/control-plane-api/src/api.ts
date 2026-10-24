@@ -155,6 +155,7 @@ import type {
   ScopeDump,
   ScopeId,
   ScopeLineage,
+  ScopeTable,
   ServiceDimensions,
   SwitchedOffInUnit,
   TenantExport,
@@ -4962,6 +4963,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     // Health reads the scope the same way the Data view does, so it leaves the same
     // row: an auditor should not be able to tell which route reached the tables.
+    // #2544: a deployment that does not hold the scope refuses the table read. Health is the one
+    // reader that wants the answer "nothing stored" for it: the scope has no role rows, which is
+    // what `roleProjectionEmpty` reports for an active one, rather than a refusal of the whole route.
+    let notHeld = false;
     const tables = await delegatedRead(
       c, tenantId, scopeId, scope, 'listScopeTables', null,
       {
@@ -4969,9 +4974,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         colocated: () => c.var.admin.listScopeTables(c.get('actor'), tenantId, scopeId),
       },
       (r) => r.length,
-    );
+    ).catch((err: unknown): ScopeTable[] => {
+      if (!isScopeNotHeld(err, scopeId)) throw err;
+      notHeld = true;
+      return [];
+    });
     const roles = tables.find((t) => t.name === '_substrat_roles');
-    const roleCount = roles ? roles.rowCount : null;
+    const roleCount = notHeld ? 0 : roles ? roles.rowCount : null;
     const roleProjectionEmpty = scope.status === 'active' && roleCount === 0;
     const missingStores = scope.vertical
       ? await missingStoresForTenant({

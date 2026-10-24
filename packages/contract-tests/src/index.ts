@@ -62,6 +62,7 @@ export { membershipExecutorContractSuite } from './membership-executor-suite.js'
 export { reservedRoleContractSuite } from './reserved-role-suite.js';
 export { roleStateContractSuite } from './role-state-suite.js';
 export { sizeReadsContractSuite } from './size-reads-suite.js';
+export { introspectionReadsContractSuite, introspectionReadsOf, type IntrospectionReads } from './introspection-reads-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
 export { scopeStoreContractSuite } from './scope-store-suite.js';
 // #2213: what a driver's own runner passes, and the trivial driver both suites run.
@@ -152,6 +153,7 @@ export {
   spineShadowMod,
   ownParentMod,
   PRE_GUARD_REFUSALS_DDL,
+  TEST_LIFECYCLE,
 } from './modules.js';
 export {
   connectorCalls,

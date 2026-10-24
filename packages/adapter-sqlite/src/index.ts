@@ -241,6 +241,23 @@ import {
   REDRAIN_BATCH,
   type OperationTarget,
   errorCodeOf,
+  type EntityHistoryInput,
+  type EventCauseInput,
+  type EventEffectsInput,
+  type EffectsTree,
+  type InvocationEventsInput,
+  type InvocationEvents,
+  type DeadLettersInput,
+  type DeadLetter,
+  type LifecycleFlowInput,
+  type LifecycleFlowResult,
+  type OperationSeriesInput,
+  type OperationSeriesResult,
+  type CauseChain,
+  type EventFacetInput,
+  type EventFacetResult,
+  type HistoryEntry,
+  type Page,
 } from '@substrat-run/contracts';
 import {
   actorOf,
@@ -862,6 +879,7 @@ import {
   replayStoreErasures,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
+  type AppliedMigration,
   type ScopeStoreHostOptions,
   type ScopeStoreLifecycle,
   type ScopeStoreRunner,
@@ -1979,6 +1997,109 @@ const databaseBytesOf = (db: Database.Database): number =>
 
 /** What a scope database's attachment rows sum to (#2501). */
 const attachmentBytesOf = (db: Database.Database): number => (db.prepare(ATTACHMENT_BYTES_SQL).get() as { bytes: number }).bytes;
+
+/**
+ * The introspection reads, over an already-resolved connection: the bodies behind both the
+ * directory-checked admin verbs and the `*Local` verbs a vertical's `/internal/*` routes call by
+ * scope id alone (#2544). How the connection was reached, and what is recorded, stay with the caller.
+ */
+function scopeTablesOf(db: Database.Database): ScopeTable[] {
+  const names = (
+    db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all() as { name: string }[]
+  ).map((r) => r.name);
+  return names.map((name) => ({
+    name,
+    rowCount: (db.prepare(`SELECT COUNT(*) AS c FROM "${name}"`).get() as { c: number }).c,
+    system: isSystemTable(name),
+  }));
+}
+
+function scopeTablePageOf(db: Database.Database, input: ReadScopeTableInput): ScopeTablePage {
+  // Validate the table against the LIVE schema — an unknown name throws, it is
+  // never interpolated blind. That validated name is the only thing that reaches
+  // the query, so the quoted identifier below carries no user input.
+  const known = new Set(
+    (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((r) => r.name),
+  );
+  if (!known.has(input.table)) throw substratError('not_found', `unknown table '${input.table}'`);
+  // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
+  // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
+  const limit = Math.min(assertRowLimit('limit', input.limit ?? SCOPE_TABLE_PAGE_DEFAULT), SCOPE_TABLE_PAGE_MAX);
+  const offset = assertRowOffset('offset', input.offset ?? 0);
+  const stmt = db.prepare(`SELECT * FROM "${input.table}" LIMIT ? OFFSET ?`).raw(true);
+  const rows = (stmt.all(limit, offset) as unknown[][]).map((row) => row.map(cellToJson));
+  const columns = stmt.columns().map((c) => c.name);
+  const rowCount = (db.prepare(`SELECT COUNT(*) AS c FROM "${input.table}"`).get() as { c: number }).c;
+  return { table: input.table, columns, rows, rowCount, limit, offset };
+}
+
+function scopeQueryOf(db: Database.Database, input: QueryScopeInput): ScopeQueryResult {
+  // Layer 1, shared: the kernel's textual gate (single statement, read verbs
+  // only) — the checked statement is the one that runs.
+  const sql = assertReadOnlyQuery(input.sql);
+  // Layer 2, authoritative: sqlite3_stmt_readonly via better-sqlite3. prepare()
+  // itself rejects multi-statement strings and bad SQL with the driver's message.
+  const stmt = db.prepare(sql);
+  if (!stmt.readonly) throw substratError('validation_failed', 'read-only console: statement is not read-only');
+  if (!stmt.reader) return { columns: [], rows: [], truncated: false };
+  stmt.raw(true);
+  const rows: unknown[][] = [];
+  let truncated = false;
+  // Iterate rather than .all(): the row cap bounds what leaves the DB, so an
+  // over-broad SELECT costs a screenful, not the table.
+  for (const row of stmt.iterate()) {
+    if (rows.length >= SCOPE_QUERY_ROW_MAX) {
+      truncated = true;
+      break;
+    }
+    rows.push((row as unknown[]).map(cellToJson));
+  }
+  return { columns: stmt.columns().map((c) => c.name), rows, truncated };
+}
+
+function appliedMigrationsOf(db: Database.Database): AppliedMigration[] {
+  const rows = db
+    .prepare(
+      `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
+        ORDER BY applied_at DESC, module_id, version LIMIT 100`,
+    )
+    .all() as Array<{
+    module_id: string;
+    version: string;
+    applied_at: string | null;
+    duration_ms: number | null;
+    rows_changed: number | null;
+  }>;
+  return rows.map((r) => ({
+    moduleId: r.module_id,
+    version: r.version,
+    appliedAt: r.applied_at ?? null,
+    durationMs: r.duration_ms,
+    rowsChanged: r.rows_changed,
+  }));
+}
+
+function undrainedEventsFrom(db: Database.Database, limit: number): UndrainedEvents {
+  const page = db.prepare(
+    `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL AND ${emittedHere()} ORDER BY id LIMIT ? OFFSET ?`,
+  );
+  // The kernel's read, shared with the DO: the envelope and the columns lifted beside
+  // it (#1242, #1237) are decoded once, and a row that will not decode is stepped over
+  // rather than stalling the scope on it (#1636).
+  return undrainedEventsOf(
+    readUndrainedOutbox((offset, count) => page.all(count, offset) as OutboxRow[], Math.min(assertRowLimit('limit', limit), 1000)),
+  );
+}
+
+const redrainCountOf = (db: Database.Database, drainedBefore: string): number =>
+  (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM _substrat_outbox
+          WHERE drained_at IS NOT NULL AND drained_at < ?`,
+      )
+      .get(drainedBefore) as { c: number }
+  ).c;
 
 /**
  * #119: claim a host directory for this process, for one live `SqliteScopeHost`. The first host in
@@ -5883,6 +6004,77 @@ export class SqliteScopeHost implements ScopeHost {
   /** What the scope's attachment rows sum to (#2501), asked by scope id alone: refused as the size is (#2541). */
   async attachmentSizeLocal(scopeId: ScopeId): Promise<number> {
     return attachmentBytesOf(this.heldReadDb(scopeId));
+  }
+
+  // -- the introspection reads a vertical's `/internal/*` routes make by scope id alone (#2544) --------
+  // The Cloudflare host's `*Local` verbs, refused from the directory before any store is opened
+  // (`heldReadDb`), so a scope this host does not hold is `conflict`, never an empty answer and never
+  // a store file created for it. No audit row, as there: the control plane that called is the auditor.
+
+  async facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
+    return facetEvents({ sql: scopedSql(this.heldReadDb(scopeId)) }, input);
+  }
+
+  async eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree> {
+    return walkEventEffects({ sql: scopedSql(this.heldReadDb(scopeId)) }, input.eventId, input.maxNodes);
+  }
+
+  async invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents> {
+    return readInvocation({ sql: scopedSql(this.heldReadDb(scopeId)) }, input.invocationId, input.limit);
+  }
+
+  async deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>> {
+    return readDeadLetters({ sql: scopedSql(this.heldReadDb(scopeId)) }, { limit: input.limit, cursor: input.cursor });
+  }
+
+  async lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
+    return readLifecycleFlow({ sql: scopedSql(this.heldReadDb(scopeId)) }, input);
+  }
+
+  async operationSeriesLocal(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult> {
+    return readOperationSeries({ sql: scopedSql(this.heldReadDb(scopeId)) }, input);
+  }
+
+  async eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain> {
+    return walkEventCause({ sql: scopedSql(this.heldReadDb(scopeId)) }, input.eventId, input.maxDepth);
+  }
+
+  async entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>> {
+    return readHistory(
+      { sql: scopedSql(this.heldReadDb(scopeId)) },
+      { entityType: input.entityType, entityId: input.entityId },
+      { limit: input.limit, cursor: input.cursor },
+    );
+  }
+
+  async appliedMigrationsLocal(scopeId: ScopeId): Promise<AppliedMigration[]> {
+    return appliedMigrationsOf(this.heldReadDb(scopeId));
+  }
+
+  /** No PITR on plain SQLite: an empty list for a held scope, as `scopeMigrationBookmarks` answers. */
+  async migrationBookmarksLocal(scopeId: ScopeId): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
+    this.heldReadDb(scopeId);
+    return [];
+  }
+
+  async introspectScopeTables(scopeId: ScopeId): Promise<ScopeTable[]> {
+    return scopeTablesOf(this.heldReadDb(scopeId));
+  }
+
+  async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    return scopeTablePageOf(this.heldReadDb(scopeId), input);
+  }
+
+  async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
+    return scopeQueryOf(this.heldReadDb(scopeId), input);
+  }
+
+  async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<UndrainedEvents> {
+    return undrainedEventsFrom(this.heldReadDb(scopeId), Math.max(limit, 1));
+  }
+
+  async redrainCountLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
+    return redrainCountOf(this.heldReadDb(scopeId), drainedBefore);
   }
 
   /**
@@ -10572,19 +10764,9 @@ export class SqliteScopeHost implements ScopeHost {
         // operation's uncommitted event, the drain shipped it, and the rollback left the lake
         // — which is append-only — holding an event the scope never had. The mark that
         // follows needs no such care: it stamps only rows that exist and are undrained.
-        const db = this.scopeReadDbFor(tenantId, scopeId);
-        const page = db.prepare(
-          `SELECT * FROM _substrat_outbox WHERE drained_at IS NULL AND ${emittedHere()} ORDER BY id LIMIT ? OFFSET ?`,
-        );
-        // The kernel's read, shared with the DO: the envelope and the columns lifted beside
-        // it (#1242, #1237) are decoded once, and a row that will not decode is stepped over
-        // rather than stalling the scope on it (#1636).
-        const read = readUndrainedOutbox(
-          (offset, count) => page.all(count, offset) as OutboxRow[],
-          Math.min(assertRowLimit('limit', limit ?? 200), 1000),
-        );
-        this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, read.events.length);
-        return undrainedEventsOf(read);
+        const events = undrainedEventsFrom(this.scopeReadDbFor(tenantId, scopeId), limit ?? 200);
+        this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, events.length);
+        return events;
       },
       markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {
         // BEFORE the empty-batch shortcut, not after. "Nothing to mark" and "you may
@@ -10736,14 +10918,7 @@ export class SqliteScopeHost implements ScopeHost {
         // auditor asking "who counted this tenant's outbox, and how much was there" wants.
         if (countOnly) {
           // The committed count (#1624): a stranger's uncommitted drain mark is not a fact yet.
-          const redrainable = (
-            this.scopeReadDbFor(tenantId, scopeId)
-              .prepare(
-                `SELECT COUNT(*) AS c FROM _substrat_outbox
-                  WHERE drained_at IS NOT NULL AND drained_at < ?`,
-              )
-              .get(drainedBefore) as { c: number }
-          ).c;
+          const redrainable = redrainCountOf(this.scopeReadDbFor(tenantId, scopeId), drainedBefore);
           this.recordAccess(actor, 'redrainEvents', { tenantId, scopeId }, { drainedBefore, countOnly: true }, redrainable);
           return redrainable;
         }
@@ -10874,26 +11049,9 @@ export class SqliteScopeHost implements ScopeHost {
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeReadDbFor(tenantId, scopeId);
-        const rows = db
-          .prepare(
-            `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
-              ORDER BY applied_at DESC, module_id, version LIMIT 100`,
-          )
-          .all() as Array<{
-          module_id: string;
-          version: string;
-          applied_at: string | null;
-          duration_ms: number | null;
-          rows_changed: number | null;
-        }>;
-        this.recordAccess(actor, 'scopeAppliedMigrations', { tenantId, scopeId }, null, rows.length);
-        return rows.map((r) => ({
-          moduleId: r.module_id,
-          version: r.version,
-          appliedAt: r.applied_at ?? null,
-          durationMs: r.duration_ms,
-          rowsChanged: r.rows_changed,
-        }));
+        const migrations = appliedMigrationsOf(db);
+        this.recordAccess(actor, 'scopeAppliedMigrations', { tenantId, scopeId }, null, migrations.length);
+        return migrations;
       },
       scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
         const scope = this.directory
@@ -11320,16 +11478,7 @@ export class SqliteScopeHost implements ScopeHost {
         // K-3: the (tenantId, scopeId) pair is cross-checked before we open anything;
         // a scope under a different tenant is unreachable, never another tenant's DB.
         const db = this.scopeReadDbFor(tenantId, scopeId);
-        const names = (
-          db
-            .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
-            .all() as { name: string }[]
-        ).map((r) => r.name);
-        const tables: ScopeTable[] = names.map((name) => ({
-          name,
-          rowCount: (db.prepare(`SELECT COUNT(*) AS c FROM "${name}"`).get() as { c: number }).c,
-          system: isSystemTable(name),
-        }));
+        const tables = scopeTablesOf(db);
         this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
       },
@@ -11340,29 +11489,9 @@ export class SqliteScopeHost implements ScopeHost {
         input: ReadScopeTableInput,
       ): Promise<ScopeTablePage> => {
         const db = this.scopeReadDbFor(tenantId, scopeId);
-        // Validate the table against the LIVE schema — an unknown name throws, it is
-        // never interpolated blind. That validated name is the only thing that reaches
-        // the query, so the quoted identifier below carries no user input.
-        const known = new Set(
-          (
-            db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as {
-              name: string;
-            }[]
-          ).map((r) => r.name),
-        );
-        if (!known.has(input.table)) throw substratError('not_found', `unknown table '${input.table}'`);
-        // The ceiling clamps; a bound SQLite would misread (NaN, non-finite, fractional,
-        // negative) is refused instead of reaching LIMIT / OFFSET (#1632).
-        const limit = Math.min(assertRowLimit('limit', input.limit ?? SCOPE_TABLE_PAGE_DEFAULT), SCOPE_TABLE_PAGE_MAX);
-        const offset = assertRowOffset('offset', input.offset ?? 0);
-        const stmt = db.prepare(`SELECT * FROM "${input.table}" LIMIT ? OFFSET ?`).raw(true);
-        const rows = (stmt.all(limit, offset) as unknown[][]).map((row) => row.map(cellToJson));
-        const columns = stmt.columns().map((c) => c.name);
-        const rowCount = (
-          db.prepare(`SELECT COUNT(*) AS c FROM "${input.table}"`).get() as { c: number }
-        ).c;
-        this.recordAccess(actor, 'readScopeTable', { tenantId, scopeId }, { table: input.table, limit, offset }, rows.length);
-        return { table: input.table, columns, rows, rowCount, limit, offset };
+        const page = scopeTablePageOf(db, input);
+        this.recordAccess(actor, 'readScopeTable', { tenantId, scopeId }, { table: input.table, limit: page.limit, offset: page.offset }, page.rows.length);
+        return page;
       },
       queryScope: async (
         actor,
@@ -11371,31 +11500,11 @@ export class SqliteScopeHost implements ScopeHost {
         input: QueryScopeInput,
       ): Promise<ScopeQueryResult> => {
         const db = this.scopeReadDbFor(tenantId, scopeId);
-        // Layer 1, shared: the kernel's textual gate (single statement, read verbs
-        // only) — the checked statement is the one that runs.
-        const sql = assertReadOnlyQuery(input.sql);
-        // Layer 2, authoritative: sqlite3_stmt_readonly via better-sqlite3. prepare()
-        // itself rejects multi-statement strings and bad SQL with the driver's message.
-        const stmt = db.prepare(sql);
-        if (!stmt.readonly) throw substratError('validation_failed', 'read-only console: statement is not read-only');
-        if (!stmt.reader) return { columns: [], rows: [], truncated: false };
-        stmt.raw(true);
-        const rows: unknown[][] = [];
-        let truncated = false;
-        // Iterate rather than .all(): the row cap bounds what leaves the DB, so an
-        // over-broad SELECT costs a screenful, not the table.
-        for (const row of stmt.iterate()) {
-          if (rows.length >= SCOPE_QUERY_ROW_MAX) {
-            truncated = true;
-            break;
-          }
-          rows.push((row as unknown[]).map(cellToJson));
-        }
-        const columns = stmt.columns().map((c) => c.name);
+        const result = scopeQueryOf(db, input);
         // The statement itself is the logged argument — the K-24 access log is the
         // evidence trail for what staff read, and here the read IS the SQL.
-        this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql }, rows.length);
-        return { columns, rows, truncated };
+        this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql: assertReadOnlyQuery(input.sql) }, result.rows.length);
+        return result;
       },
       // -- the denial log (K-35, #867) -------------------------------------
       // Same shape as the introspection reads above: `scopeDbFor` is the K-3

@@ -48,6 +48,7 @@ import {
   runCrossVerticalFrom,
   isPrimaryScope,
   StorageReadUnsupported,
+  ScopeNotHeld,
   webCryptoSecretBox,
   globalFetch,
   type CrossVerticalOptions,
@@ -191,6 +192,7 @@ import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@subst
 import { transportFor, senderFor } from './email.js';
 import { sendEmailDepsOf } from './email-intent.js';
 import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
+import { newlyNotHeld } from './event-drain-not-held.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
@@ -1532,6 +1534,9 @@ export function capabilityDelegationOver(
   };
 }
 
+/** #2544: the active scopes already filed as not held by their deployment; see `newlyNotHeld`. */
+const eventDrainNotHeldRecorded = new Set<string>();
+
 /**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
@@ -1559,7 +1564,17 @@ function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
     return client;
   };
   return {
-    readUndrained: async (a) => (await clientFor(a.tenantId, a.scopeId, a.vertical)).undrainedEvents(a.scopeId, a.limit),
+    readUndrained: async (a) => {
+      const client = await clientFor(a.tenantId, a.scopeId, a.vertical);
+      try {
+        return await client.undrainedEvents(a.scopeId, a.limit);
+      } catch (err) {
+        // #2544: the deployment says it does not hold this active scope. Standing, so the sweep counts it
+        // rather than mailing it every tick; the first appearance is filed once (`newlyNotHeld`).
+        if (isScopeNotHeld(err, a.scopeId)) throw new ScopeNotHeld(err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    },
     markDrained: async (a) =>
       (await clientFor(a.tenantId, a.scopeId, a.vertical)).markEventsDrained(a.scopeId, a.eventIds, a.drainedAt),
     // `countOnly` carried through (#1545): a delegated scope asked for a count must not be
@@ -2571,6 +2586,22 @@ export default {
     // never reach the lake while they stay that way, so a pass that met any says so here —
     // they are not `errors` (nothing about the pass failed), and would otherwise be silent.
     const skipped = report.eventDrain?.skipped;
+    // #2544: active scopes whose deployment does not hold them. Standing, so said here on every pass
+    // while it lasts and filed as an ops-failure once, when it appears; never an `errors` entry.
+    const notHeld = report.eventDrain?.notHeld;
+    for (const gone of newlyNotHeld(eventDrainNotHeldRecorded, notHeld)) {
+      void host.admin
+        .recordOpsFailure({
+          actor: SWEEP_ACTOR,
+          operation: 'sweep.event-drain',
+          stage: 'not-held',
+          tenantId: gone.tenantId,
+          scopeId: gone.scopeId,
+          code: 'conflict',
+          message: 'the deployment serving this active scope does not hold it, so its events cannot be drained',
+        })
+        .catch(() => undefined);
+    }
     // #1637: pending intents nothing can settle, and where — the sweep row counts them, this says
     // which scope's journal to open. Standing, like `skipped`, so said on every pass while it lasts.
     const unsettleable = report.platformRequestUnsettleable;
@@ -2599,6 +2630,7 @@ export default {
       (rc !== null && rc.behind > 0) ||
       (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
       skipped !== undefined ||
+      notHeld !== undefined ||
       unsettleable !== undefined ||
       cvActive ||
       orphansActive ||
@@ -2615,6 +2647,7 @@ export default {
         // object the rows landed in, so a question about a pruned row has an address.
         ...(al ? { accessLog: al } : {}),
         ...(skipped ? { eventDrainSkipped: skipped } : {}),
+        ...(notHeld ? { eventDrainNotHeld: { count: notHeld.length, scopeIds: notHeld.slice(0, 20).map((n) => n.scopeId) } } : {}),
         ...(unsettleable ? { platformRequestUnsettleable: unsettleable } : {}),
         ...(cvActive
           ? {
