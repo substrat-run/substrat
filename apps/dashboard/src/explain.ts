@@ -422,7 +422,11 @@ export function cleanText(text: string): string {
     // A heading is a label, not a sentence: dropped whole, or "Summary" runs into the first line.
     .replace(/^\s*#{1,6}\s+.*$/gm, ' ')
     .replace(/^\s*([-*•]|\d+\.)\s+/gm, '')
-    .replace(/[*_`]{1,3}([^*_`]+)[*_`]{1,3}/g, '$1')
+    // Asterisks and backticks are never prose here, so they go wherever they are. An underscore is
+    // emphasis only when it opens and closes at a word boundary: `upstream_unavailable` and
+    // `deploy_upload` are the codes and operations these paragraphs name, and stay as written.
+    .replace(/[*`]+/g, '')
+    .replace(/(^|[^\w])_{1,3}(?=\S)([^_]*?\S)_{1,3}(?![\w])/g, '$1$2')
     .replace(/\s+/g, ' ')
     .trim();
   return flat.length > TEXT_MAX ? `${flat.slice(0, TEXT_MAX - 1)}…` : flat;

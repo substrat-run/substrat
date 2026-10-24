@@ -236,6 +236,12 @@ describe('noteIsCurrent', () => {
 });
 
 describe('cleanText', () => {
+  it('keeps snake_case codes and operations whole, and still drops underscore emphasis', () => {
+    expect(cleanText('The upstream_unavailable code from deploy_upload keeps _recurring_ here.')).toBe(
+      'The upstream_unavailable code from deploy_upload keeps recurring here.',
+    );
+  });
+
   it('drops markdown, links and code, so the stored copy is the copy a person reads', () => {
     expect(cleanText('## Summary\n- **Deploys** keep failing.\n- See [the log](https://evil.example/x).\n```rm -rf```')).toBe(
       'Deploys keep failing. See the log.',
