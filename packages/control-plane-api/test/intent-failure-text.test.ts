@@ -32,9 +32,9 @@ describe('the drain files an intent failure as a pair (#2554)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const intent = (attempts: number): PlatformRequest => ({
+  const intent = (kind: string, attempts: number): PlatformRequest => ({
     id: platformRequestId.parse(ulid()),
-    kind: 'peer-invoke',
+    kind,
     payload: {},
     requestedBy: principalId.parse(ulid()),
     status: 'pending',
@@ -57,7 +57,9 @@ describe('the drain files an intent failure as a pair (#2554)', () => {
   ] as const)('%s: the tenant reads what became of it; staff read the error by either id', async (stage, status, attempts, answered, said) => {
     const upstream = `cf${ulid().toLowerCase()}`;
     const error = `tenant ${other} scope ${scopeId.parse(ulid())}: something private; reference = ${upstream}`;
-    const request = intent(attempts);
+    // A kind of its own per case, so each case reads only its own row.
+    const kind = `peer-invoke-${stage}`;
+    const request = intent(kind, attempts);
     const client = {
       listPlatformRequests: async () => [request],
       settlePlatformRequest: async () => undefined,
@@ -66,12 +68,13 @@ describe('the drain files an intent failure as a pair (#2554)', () => {
     await drainScopePlatformRequests(
       client,
       { tenantId: mine, scopeId: s, vertical: 'demo-vert', scope: { kind: 'app', forkedFrom: null }, lifecycle: { scope: 'active', tenant: 'active' } },
-      { 'peer-invoke': async () => ({ status, error }) },
+      { [kind]: async () => ({ status, error }) },
       { recordFailure: (entry) => void writes.push(host.admin.recordOpsFailure({ actor: staff, ...entry })) },
     );
     await Promise.all(writes);
 
-    const rows = await host.admin.listOpsFailures(staff, { tenantId: mine, operation: 'intent.peer-invoke', stage });
+    const rows = await host.admin.listOpsFailures(staff, { tenantId: mine, operation: `intent.${kind}` });
+    expect(rows.map((r) => r.stage)).toEqual([stage]);
     expect(rows).toHaveLength(1);
     const row = rows[0]!;
     expect(row.reference).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
