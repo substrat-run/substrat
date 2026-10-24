@@ -77,6 +77,14 @@ export function sizeReadsContractSuite(
       expect(await fixture.storeHoldsNothing(t, s)).toBe(true);
     });
 
+    it('reads a scope archived straight from provisioning the same way on both adapters: provisioning built its store, so it is held', async () => {
+      const s = scopeIdSchema.parse(ulid());
+      await fixture.host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'size-reads' });
+      await fixture.host.admin.archiveScope(staff, t, s);
+      expect(await fixture.databaseSizeLocal(s)).toBeGreaterThan(0);
+      expect(await fixture.attachmentSizeLocal(s)).toBe(0);
+    });
+
     it('a scope listed as due and reaped before it is read is refused, while the held one beside it reads', async () => {
       const [gone, kept] = [await newScope(), await newScope()];
       // The sweep lists its due scopes first…

@@ -448,7 +448,7 @@ sizeReadsContractSuite('adapter-cloudflare', async () => {
     storeHoldsNothing: async (_t, s) => {
       const stub = env.SCOPE.get(env.SCOPE.idFromName(s));
       return runInDurableObject(stub, (_i, state) =>
-        ['_substrat_meta', '_substrat_tuples', '_substrat_outbox', '_substrat_migrations', '_substrat_roles'].every(
+        ['_substrat_meta', '_substrat_tuples', '_substrat_outbox', '_substrat_migrations', '_substrat_roles', '_substrat_schedule_state'].every(
           (table) =>
             state.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE name = ?`, table).toArray().length === 0 ||
             state.storage.sql.exec(`SELECT 1 FROM ${table} LIMIT 1`).toArray().length === 0,
@@ -457,6 +457,56 @@ sizeReadsContractSuite('adapter-cloudflare', async () => {
     },
     cleanup: async () => host.close(),
   };
+});
+
+// #2541: the held check and the read are ONE call into the scope's object, so nothing can land between them.
+describe('vertical-side size reads are one call into the scope object (#2541)', () => {
+  const staff = platformActorId.parse(ulid());
+  const heldScope = async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `one-call-${t.slice(-8).toLowerCase()}`, name: 'One call' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'size-reads' });
+    await host.admin.activateScope(staff, t, s);
+    return { host, t, s };
+  };
+  const stubOf = (s: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(s));
+
+  it('each read makes exactly one RPC to the scope, so a reap cannot land between a check and a read', async () => {
+    const { host, s } = await heldScope();
+    onTestFinished(async () => host.close());
+    const calls: string[] = [];
+    const real = stubOf(s);
+    const counted = {
+      databaseSizeIfHeld: () => (calls.push('databaseSizeIfHeld'), real.databaseSizeIfHeld()),
+      attachmentBytesIfHeld: () => (calls.push('attachmentBytesIfHeld'), real.attachmentBytesIfHeld()),
+    };
+    vi.spyOn(host as unknown as { scopeStub(id: ScopeId): unknown }, 'scopeStub').mockReturnValue(counted);
+    expect(await host.databaseSizeLocal(s)).toBeGreaterThan(0);
+    expect(await host.attachmentSizeLocal(s)).toBe(0);
+    expect(calls).toEqual(['databaseSizeIfHeld', 'attachmentBytesIfHeld']);
+  });
+
+  it('the object answers "not held" in the same call that would have read: a reaped scope yields null, never a number', async () => {
+    const { host, t, s } = await heldScope();
+    onTestFinished(async () => host.close());
+    expect(await stubOf(s).databaseSizeIfHeld()).toBeGreaterThan(0);
+    await host.admin.archiveScope(staff, t, s);
+    await host.admin.reapScope(staff, t, s, { force: true });
+    expect(await stubOf(s).databaseSizeIfHeld()).toBeNull();
+    expect(await stubOf(s).attachmentBytesIfHeld()).toBeNull();
+  });
+
+  it('a tombstoned object that still has its rows is not held', async () => {
+    const { host, s } = await heldScope();
+    onTestFinished(async () => host.close());
+    await runInDurableObject(stubOf(s), async (_i, state) => {
+      await state.storage.put('_substrat_reaped', true);
+    });
+    expect(await stubOf(s).databaseSizeIfHeld()).toBeNull();
+    expect(await host.databaseSizeLocal(s).then(() => undefined, (e: unknown) => errorCodeOf(e))).toBe('conflict');
+  });
 });
 
 // #2430: the scope class's own reservations decide at a scope node, whatever the coordinator in

@@ -2045,15 +2045,34 @@ export function defineScopeDO(
     }
 
     /**
-     * #2541: whether this object is a scope the deployment holds, asked by a read that names only a
-     * scope id. False for a DO nothing provisioned or loaded here (never provisioned, or a reaped
-     * scope's name addressed again) and for a copy a carry wiped, whose rows went with the wipe.
-     * The two conditions `servesTenant` reads without a tenant: a provision receipt or role rows,
-     * or state (`holdsData`). Read without migrating, so a refusal leaves the DO as it found it.
+     * #2541: this scope's database size, or null when the deployment does not hold it. The held
+     * check and the read are ONE call: a reap or wipe cannot land between them, so a scope that
+     * stopped being held is answered "not held", never with a number.
      */
-    holdsScope(): boolean {
-      if (this.carriedAwayCopy) return false;
-      return this.tenantVerdict('').verdict !== 'unknown' || this.holdsData();
+    async databaseSizeIfHeld(): Promise<number | null> {
+      return (await this.holdsScope()) ? this.databaseSize() : null;
+    }
+
+    /** #2541: this scope's attachment bytes, or null when the deployment does not hold it; one call, as the size is. */
+    async attachmentBytesIfHeld(): Promise<number | null> {
+      return (await this.holdsScope()) ? this.attachmentBytes() : null;
+    }
+
+    /**
+     * #2541: whether this object is a scope the deployment holds, asked by a read that names only a
+     * scope id. False for a DO nothing provisioned or loaded here (never provisioned), for a reaped
+     * scope's name addressed again (its tombstone), and for a copy a carry wiped, whose rows went
+     * with the wipe. Held otherwise: a provision receipt or role rows, or state (`holdsData`). Read
+     * without migrating, so a refusal leaves the DO as it found it.
+     */
+    private async holdsScope(): Promise<boolean> {
+      if (this.carriedAwayCopy || (await this.isReaped())) return false;
+      return this.provisionedFor() !== null || this.holdsRoles() || this.holdsData();
+    }
+
+    /** Whether the scope holds any role row, of whichever tenant; read without migrating. */
+    private holdsRoles(): boolean {
+      return this.hasTable('_substrat_roles') && this.sql.exec('SELECT 1 FROM _substrat_roles LIMIT 1').toArray().length > 0;
     }
 
     /**
