@@ -426,7 +426,7 @@ describe('the purge lap (#2096)', () => {
       failing: ReadonlySet<string>,
       limit: number,
       capped: ReadonlySet<string> = new Set(),
-      /** #2517: requests the schedules earlier in the same tick enqueued. */
+      /** #2517: requests the purge runs earlier in the same tick enqueued. */
       earlierRequests = 0,
     ) => {
       const due = purgeDueOf(sql, plans, targets, 'b/delete', 'box', NOW, limit);

@@ -339,8 +339,8 @@ export function schedulePlatformRequestsContractSuite(
             (await host.listPlatformRequestHistory(t, fresh, { kind: PURGE_TWO_KIND, limit: 200 })).filter(isPlatformRequest);
 
           // #2517: nothing drains the scope between the two horizons, so the second one's head met a
-          // queue the TICK filled. That is "not yet", not a failure: it keeps its place and waits one
-          // tick (after the drain), not its whole cadence.
+          // queue the tick's own purges filled. That is "not yet", not a failure: it keeps its place
+          // and runs on the next tick, not after its whole cadence.
           it('the second horizon meets the queue the first filled: its head is deferred to the next tick, not failed', async () => {
             const fresh = await freshScope();
             const first = await dueTwo(fresh, 'a', names(OVER));
