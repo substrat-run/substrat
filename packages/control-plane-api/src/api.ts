@@ -193,6 +193,7 @@ import {
   METER_DAYS_LIMIT_MAX,
   releaseRolesAskScopes,
   releaseRoleSetRefusal,
+  withheldOpsFailure,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -2219,17 +2220,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     answered: string,
     cause: unknown,
   ): void => {
+    // The pair is the one the host-level writers file too (`withheldOpsFailure`, #2554): an upstream
+    // trace handle the text carries is named on staff's row only, first, so either id finds the pair.
     // With no tenant, `recordFailure` writes the text as a staff row's.
-    recordFailure(entry.tenantId ? { ...entry, message: answered, detail: staffText(raw) } : { ...entry, tenantId: null, message: raw }, cause);
+    const { tenantId } = entry;
+    recordFailure(
+      tenantId ? withheldOpsFailure({ ...entry, tenantId }, raw, () => answered, entry.reference) : { ...entry, tenantId: null, message: raw },
+      cause,
+    );
   };
-
-  /**
-   * #2540: a withheld failure's text as staff's row keeps it. The pair is filed and answered under
-   * the platform's own reference; an upstream trace handle the text carries (#559's `reference =
-   * <id>`) is named on staff's row only, first, in the form staff's reference search finds
-   * (`withUpstreamReference`), so either id lands on the pair and a bounded row keeps it.
-   */
-  const staffText = (raw: string): string => withUpstreamReference(raw);
 
   /**
    * #2540: a failure whose text is not ours to hand a confined caller: what an upstream or a store

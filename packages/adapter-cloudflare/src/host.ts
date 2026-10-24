@@ -312,6 +312,7 @@ import {
   readableScopes,
   resolveScopeRecord,
   ulid,
+  withheldOpsFailure,
   type CarriedAway,
   type KeptCopy,
   type LoadMarker,
@@ -10949,16 +10950,17 @@ export class CloudflareScopeHost implements ScopeHost {
       } catch (err) {
         report.failed += 1;
         try {
-          await this.admin.recordOpsFailure({
-            actor,
-            operation: 'scope.lifecycle',
-            stage: 'deliver',
-            tenantId,
-            scopeId,
-            message:
-              `the lifecycle (scope ${t.scope_status}, tenant ${t.tenant_status}) did not reach the ` +
-              `deployment serving this scope; the heal sweep will deliver it again: ${err instanceof Error ? err.message : String(err)}`,
-          });
+          // #2554: the throw is the deployment's or its runtime's text, and the deployment serving
+          // a scope is the vertical's code, often another tenant's. The tenant's row says only what
+          // happened; the text is staff's row, under the same reference.
+          const missed = `the lifecycle (scope ${t.scope_status}, tenant ${t.tenant_status}) did not reach the deployment serving this scope; the heal sweep will deliver it again`;
+          await this.admin.recordOpsFailure(
+            withheldOpsFailure(
+              { actor, operation: 'scope.lifecycle', stage: 'deliver', tenantId, scopeId },
+              `${missed}: ${err instanceof Error ? err.message : String(err)}`,
+              (reference) => `${missed} (reference ${reference})`,
+            ),
+          );
         } catch (recordErr) {
           console.error('substrat: could not record a lifecycle delivery failure (#1713)', recordErr);
         }

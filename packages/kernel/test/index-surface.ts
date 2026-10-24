@@ -761,6 +761,8 @@ export const INDEX_VALUE_EXPORTS = [
   'withRecorded',
   'withheldKeysFor',
   'withheldNote',
+  // #2554: a tenant-filed failure whose text only staff read, for every writer, the hosts' included.
+  'withheldOpsFailure',
   // RFC wire-signing §7: the capability record's write, which the adapters' recordWireAuth runs.
   'writeDeploymentWireAuth',
   'writeExplicitTupleIn',
