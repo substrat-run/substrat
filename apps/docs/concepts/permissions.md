@@ -121,7 +121,8 @@ Roles a host defines and seats itself are held to the same rule:
   platform's staff can raise that limit, or promote with an acknowledgement that skips the read
   and is recorded in the promote's audit log.
   A deployment too old to answer the question is moved unjudged and counted in the promote's
-  answer (`roleStateUnread`); any other failed read refuses the promote.
+  answer (`roleStateUnread`); any other failed read refuses the promote. Every one of these answers
+  names only your own scopes; other tenants' scopes appear as counts.
 - **Where the promote could not judge a scope**, or a seat was made after it asked, that scope's
   reconcile still refuses the release, on every pass, naming the tenant, the scope and the role,
   at every scope where a person holds a seat in that role (an archived scope included). Nothing

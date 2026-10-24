@@ -8887,7 +8887,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const exportBreaks = acknowledge?.exportBreak ? await breaksOf() : null;
     // #2446: the scopes whose reconcile this version's roles would hold, before anything moves. The
     // digest and export-break acknowledgements do not pass it: the way through is taking the seats
-    // back, or a release that keeps the role as each scope stores it.
+    // back, or a release that keeps the role as each scope stores it. It runs ahead of the host's
+    // admission and digest gates rather than being skipped when they look set to refuse: those are
+    // judged inside `promoteVersion` against the channel as it stands then, so a read skipped on a
+    // prediction would let a promote through unjudged if an admit or a channel move landed between.
+    // The read is paid only by a release declaring a system-held role, at most the cap.
     // `roleStateUnjudged` skips the read: staff only, and recorded with the promote's acknowledgements.
     if (acknowledge?.roleStateUnjudged && confinedTenant(p) !== null) {
       return refuse(c, 'forbidden', 'acknowledge.roleStateUnjudged is for staff: it skips the role-state read a promote judges its roles with');
