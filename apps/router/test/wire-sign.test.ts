@@ -367,6 +367,9 @@ describe('on: a peer invocation is a router call', () => {
     expect(sent.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
     expect(JSON.parse(await sent.text())).toMatchObject({ operation: 'customer/list', scopeId: TARGET_SCOPE });
     expect(JSON.parse(log.errors[0]!)).toMatchObject({ router: 'wire-sign-failed', kind: 'call', reason: 'claims' });
+    expect(log.lines.filter((l) => l['router'] === 'wire-sign')).toEqual([
+      { router: 'wire-sign', kind: 'call', aud: 'r'.repeat(256), outcome: 'failed', reason: 'claims' },
+    ]);
   });
 
   it('a key that will not import: the invocation goes with its legacy credential and its whole body', async () => {
@@ -377,9 +380,12 @@ describe('on: a peer invocation is a router call', () => {
     expect(sent.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
     expect(sent.headers.get('x-substrat-platform')).toBe(CALL_SECRET);
     expect(JSON.parse(await sent.text())).toMatchObject({ operation: 'customer/list', scopeId: TARGET_SCOPE });
-    // One line for the failure, the alarm, naming why.
+    // The alarm, naming why, and the count beside it (RFC §8): a peer invocation's line is written
+    // whatever the outcome, so a report counting by outcome sees the failure too.
     expect(log.errors.map((e) => JSON.parse(e) as unknown)).toEqual([{ router: 'wire-sign-failed', kind: 'call', aud: PEER_REF, reason: 'not-pkcs8-v1' }]);
-    expect(log.lines.filter((l) => l['router'] === 'wire-sign')).toEqual([]);
+    expect(log.lines.filter((l) => l['router'] === 'wire-sign')).toEqual([
+      { router: 'wire-sign', kind: 'call', aud: PEER_REF, outcome: 'failed', reason: 'not-pkcs8-v1' },
+    ]);
   });
 });
 

@@ -798,8 +798,15 @@ export async function handlePeerCall(
       scopeId: decision.scopeId,
       vertical: decision.vertical,
     });
-    // The signer's count (RFC §8): a route's rides its request line, a peer invocation has its own.
-    if (result.outcome === 'signed') console.log(JSON.stringify({ router: 'wire-sign', kind: 'call', aud: decision.deploymentRef, outcome: 'signed' }));
+    // The signer's count (RFC §8): a route's rides its request line, a peer invocation has its own,
+    // whatever the outcome. A failure also writes the alarm, in `sent`.
+    console.log(JSON.stringify({
+      router: 'wire-sign',
+      kind: 'call',
+      aud: decision.deploymentRef,
+      outcome: result.outcome,
+      ...(result.outcome === 'failed' ? { reason: result.reason } : {}),
+    }));
     return sent(result, 'call', decision.deploymentRef);
   };
   // The same bounded retry the public path takes, and for the same K-29 propagation gap
