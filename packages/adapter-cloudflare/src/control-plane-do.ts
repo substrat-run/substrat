@@ -39,6 +39,15 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  METER_DAYS_DDL,
+  listMeterDayRows,
+  listMeterDayTakeRows,
+  pruneMeterDayRows,
+  recordMeterDayRows,
+  type MeterDayFilter,
+  type MeterDayTakeFilter,
+  type MeterDayTakeInput,
+  type MeterDayTakeResult,
   CONNECT_LINKS_DDL,
   consumeConnectLinkRow,
   insertConnectLink as insertConnectLinkRow,
@@ -196,6 +205,8 @@ import type {
   ScopeStorageSample,
   RequestDay,
   RequestRollupDay,
+  MeterDay,
+  MeterDayTake,
   Tenant,
   TenantId,
   TenantStatus,
@@ -1359,6 +1370,8 @@ const DIRECTORY_DDL = `
   ${SCOPE_STORAGE_DDL}
   -- #2501: the daily request rollup — one row per (UTC day, tenant, vertical, scope), kernel-owned DDL.
   ${REQUEST_ROLLUP_DDL}
+  -- #2501: the daily meter snapshot — one row per (UTC day, tenant), kernel-owned DDL.
+  ${METER_DAYS_DDL}
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
   -- #1713: the lifecycle each hosted scope's deployment last acknowledged, as
   -- "<scope status>/<tenant status>" (lifecycleReceipt). A CP-less deployment has no
@@ -4238,6 +4251,26 @@ export class ControlPlaneDO extends DurableObject {
   pruneRequestDays(limit: number, retentionMonths: number | null): number {
     return this.ctx.storage.transactionSync(() =>
       pruneRequestDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths),
+    );
+  }
+
+  // -- the daily meter snapshot (#2501) — kernel `meter-days.ts` -------------------
+  // One transaction: the snapshot's reads and its rows are one instant of the directory.
+  recordMeterDay(input: MeterDayTakeInput): MeterDayTakeResult {
+    return this.ctx.storage.transactionSync(() => recordMeterDayRows(doRedactionSql(this.sql), input));
+  }
+
+  listMeterDays(filter?: MeterDayFilter): MeterDay[] {
+    return listMeterDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  listMeterDayTakes(filter?: MeterDayTakeFilter): MeterDayTake[] {
+    return listMeterDayTakeRows(doRedactionSql(this.sql), filter);
+  }
+
+  pruneMeterDays(limit: number, retentionMonths: number | null): number {
+    return this.ctx.storage.transactionSync(() =>
+      pruneMeterDayRows(doRedactionSql(this.sql), Date.now(), limit, retentionMonths),
     );
   }
 

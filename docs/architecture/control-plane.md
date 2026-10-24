@@ -1225,9 +1225,9 @@ are honestly computable *honest*, and display them.
     datapoints age out (§5.3). An exact counter at the router comes only when pricing uses
     requests as a unit.
   - **Still pending** ([#2501](https://github.com/substrat-run/substrat/issues/2501), the part
-    after the request rollup): meters 1 and 2 kept over time (a reading is recomputed per call and
-    stored nowhere), attachment bytes beside the storage gauge, a history of vertical ownership,
-    and one retention horizon for billing-relevant rollups. None of it prices anything.
+    after the request rollup and the daily meter snapshot of §5.1): attachment bytes beside the
+    storage gauge, a history of vertical ownership, and one retention horizon for billing-relevant
+    rollups. None of it prices anything.
 - **Meter 4 (network transactions)** needs the cross-tenant order flow (§5.4, plan §8.4),
   which does not exist.
 
@@ -1241,9 +1241,10 @@ actually paying — at which point the pricing conversation will have facts in i
 
 Meters 1 and 2 are one directory read — `HostAdmin.readMeters(actor, { tenantId? })`,
 served at `GET /meters[?tenantId=]` (staff-only) and rendered in the console's **Meters**
-view, plus a per-tenant card on the tenant page. Nothing is stored: a reading is
-recomputed per call and stamped `readAt`, because a persisted running total is the first
-half of the billing ledger D-30 declined to build.
+view, plus a per-tenant card on the tenant page. A reading is recomputed per call and
+stamped `readAt`, because a persisted running total is the first half of the billing ledger
+D-30 declined to build. What is kept instead is a daily snapshot of the reading, not a total
+(below).
 
 Two rules turn row counts into *commercial* numbers, and both live in one place
 (`foldMeterReading` in the kernel, fed by each adapter's three projections) rather than in
@@ -1271,6 +1272,54 @@ cross-tenant order flow), not a slice that was skipped. **Meter 3 is not one rea
 `/meters/storage`, model usage on `/model-usage`, estimated request counts on `/meters/requests`).
 Lake bytes have no reader yet; the console's Meters view says the same. Exact API counts stay
 absent because reads emit nothing on the spine.
+
+#### Kept daily ([#2501](https://github.com/substrat-run/substrat/issues/2501))
+
+A recomputed reading answers for now only. A past day's meters 1 and 2 cannot be read back from
+the directory, and the admin log does not hold them either: it records scope transitions,
+tenant status and entitlement grants and revokes, but not an expiry, which is decided lazily
+from `expires_at` and leaves no trace of its own. So the scheduled pass keeps the reading.
+
+- **One row per (UTC day, tenant)** in the directory's `_substrat_meter_days`: the tenant's
+  status and whether it is billable, its scopes by effective status (`meterScopeCounts`), the
+  same counts split by the vertical each scope runs, and every grant it holds (key, plan,
+  expiry) with whether it was live at the snapshot's instant. The fold is `foldMeterReading`,
+  so a kept day follows the same two rules as `/meters`, and the per-vertical split counts each
+  scope with the fold's own `countScope`, so it sums to the tenant's counts. Counts and keys only.
+- **A reaped tenant has no row.** It is a tombstone that holds no scope and bills nothing; one
+  row per day for every tombstone would grow the table with nothing in it. A tenant being
+  deleted still has a row, not billable.
+- **Taken by the first pass of the day, in one transaction.** The pass reads the tenants, their
+  scopes and their grants and writes the day's rows in the same directory transaction, so the
+  rows are one instant's reading, `readAt`. The first pass of the day takes it, and the later
+  passes find the day taken and do nothing. A snapshot is the state at that instant, early in
+  the day, not an account of the whole day: a scope created and archived between two
+  snapshots is in neither.
+- **Placed after the scheduled work, just before the request rollup.** Its reading is the
+  directory as the pass leaves it, reaps included. Ahead of the rollup, a slow Analytics
+  Engine answer cannot push the reading later, and both run before the access-log drain, which
+  ships their reads in the same pass. The snapshot has a deadline (30 seconds), past which the
+  attempt counts as failed; a snapshot that commits after it still stands.
+- **A failed attempt writes nothing, and the next pass tries again.** `_substrat_meter_day_takes`
+  keeps one record per day: when it was last tried, when it was taken, how many tenants it met,
+  and why the last attempt failed. A failed day is retried on every pass of that day, since the
+  snapshot is a directory read with no outside budget to spare, and the earlier in the day it
+  is taken the closer it is to the day's start. A failure reaches the failure digest once, when
+  its run begins: an attempt that repeats the error of the attempt before it, across midnight
+  too, is counted and not mailed again until a snapshot is taken. Every attempt carries its run
+  on (`failingSince`, `failingCount` on the day's record), and every pass of a day not yet
+  taken makes one, so the scheduled pass's log line names the run on every pass it lasts. A day
+  no pass managed to take keeps its failed record and no rows: a later day cannot take it.
+- **A day no pass took is not a day without tenants.** `GET /meters/days` (staff-only) serves
+  the rows over an inclusive window of days (by default the 31 days ending today), narrowed
+  with `tenantId`, with the record of each day in the window and `truncated` when a page stops
+  at its bound.
+- **Kept for the billing horizon, and through a tenant reap.** The rows follow
+  `BILLING_ROLLUP_RETENTION_MONTHS`, `null` until the maintainer's bookkeeping sets it, so
+  nothing is pruned (§5.3). Reaping a tenant keeps its rows, as it keeps its request rows: they
+  are what a final invoice, or a dispute about one, is answered from.
+- **Opt-in per deployment.** The hosted control plane turns the phase on; a host without the
+  directory methods skips it.
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 
@@ -1424,11 +1473,11 @@ than that, so the scheduled pass keeps a compact copy.
 - **A day without traffic is not a day not yet read.** `GET /meters/requests` (staff-only)
   serves the rows over an inclusive window of days (by default the 31 days ending today),
   together with the record of each day in the window, so a surface can tell the two apart.
-- **Kept for the billing horizon.** The day rows follow `BILLING_ROLLUP_RETENTION_MONTHS`.
-  Until the maintainer's bookkeeping sets that horizon it is `null` and nothing is pruned:
-  keeping everything is the reversible default, since a pruned row cannot come back. No
-  existing retention follows it; the storage gauge stays thirteen months and model usage 400
-  days.
+- **Kept for the billing horizon.** The day rows follow `BILLING_ROLLUP_RETENTION_MONTHS`, as
+  the daily meter snapshot's do (§5.1). Until the maintainer's bookkeeping sets that horizon it
+  is `null` and nothing is pruned: keeping everything is the reversible default, since a pruned
+  row cannot come back. No existing retention follows it; the storage gauge stays thirteen
+  months and model usage 400 days.
 - **Kept when a tenant is reaped, on purpose.** Reaping a tenant (§4.8) deletes the storage
   gauge's rows with its scopes, but not its request rows, as model usage is kept too. They
   are what a final invoice, or a dispute about one, is answered from. They hold counts only,

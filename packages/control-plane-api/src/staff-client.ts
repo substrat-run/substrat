@@ -43,6 +43,7 @@ import type {
   ScopeStatus,
   StorageMeterReading,
   RequestRollupReading,
+  MeterDaysReading,
   SweepRunEntry,
   SweepRunKind,
   SystemGrantsStatusEntry,
@@ -394,6 +395,11 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   readRequestRollup = (
     q: { tenantId?: TenantId; scopeId?: ScopeId; vertical?: string; since?: string; until?: string; limit?: number } = {},
   ): Promise<RequestRollupReading> => this.call(`/meters/requests${query({ ...q })}`);
+  // Meter days (#2501): meters 1 and 2 per tenant as the first scheduled pass of each UTC day found
+  // them, over an inclusive window of days (by default the 31 days ending today), and which of
+  // those days were taken. Omit `tenantId` for the fleet.
+  readMeterDays = (q: { tenantId?: TenantId; since?: string; until?: string; limit?: number } = {}): Promise<MeterDaysReading> =>
+    this.call(`/meters/days${query({ ...q })}`);
   // Meter 3 (#1054) — model usage, the one D-30 could not compute: the lines the
   // `model-usage` intents drained into the directory, folded per (tenant, vertical,
   // model) with the platform's margin applied at read time. Defaults to the current
