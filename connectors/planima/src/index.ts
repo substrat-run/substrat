@@ -11,7 +11,7 @@ import {
   type ConnectionId,
 } from '@substrat-run/contracts';
 import type { ConnectorConnection, FetchLike, HostAdmin, ScopeHost } from '@substrat-run/kernel';
-import { settleConnectionUse } from '@substrat-run/kernel';
+import { deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
 import { PlanimaApi, PlanimaApiError, PLANIMA_API_BASE, planimaSecret } from './api.js';
 import {
   actionFactIn,
@@ -711,8 +711,7 @@ export async function probePlanimaSecret(
     secret: parsed.data,
     // Probe stub, not where expiry is set. Planima is a static token; the provider reports no expiry (api.ts), so null is the true answer. See connections.md §3.6.
     expiresAt: null,
-    fetch: (input, init) =>
-      options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
+    fetch: deadlineFetch(options.fetch, timeoutMs),
   };
   return probeWith(conn, options);
 }
@@ -923,13 +922,14 @@ async function openPlanimaConnection(
         `identity that writes must be the same connection. Re-bind the scope against ${open.id}.`,
     );
   }
+  const bounded = deadlineFetch(fetchImpl, timeoutMs);
   return {
     ...open,
     fetch: async (input, init) => {
       // #1691: timed, so the host's per-call data point carries a duration.
       const started = Date.now();
       try {
-        const res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        const res = await bounded(input, init);
         await admin.recordConnectionUse(
           open.id,
           settleConnectionUse('planima', Date.now() - started, { response: res }),
