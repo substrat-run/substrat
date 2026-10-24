@@ -209,7 +209,10 @@ describe('connector write-back (#574)', () => {
     it('twin: a live scope serves all three doors', async () => {
       await invoke();
       landed = (await upload('live.pdf')).id;
-      expect(await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).not.toBeNull();
+      const opened = await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed);
+      expect(opened).not.toBeNull();
+      // #2519: the client reads the type from the record, so the object must carry the same one.
+      expect(opened!.contentType).toBe(opened!.record.contentType);
     });
 
     it('held: invoke, land and open each refuse in the directory\'s words, and nothing lands', async () => {
