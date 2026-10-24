@@ -62,10 +62,10 @@ export function connectorAttachmentMetaRefusal(bytes: number): string {
  * The most bytes one streamed connector upload may carry (#2516). Streaming took the worker's
  * memory out of the limit, which left nothing bounding a file; this is that bound, held where the
  * bytes arrive (the stream route) and again by the platform before it sends. It sits under the
- * request-body limit of the lowest plan a router fronts, so an over-large file is refused with an
- * answer instead of cut off mid-transfer by the edge.
+ * Workers request-body limit of the lowest plan a router fronts, 100 MB decimal (about 95.4 MiB),
+ * so an over-large file is refused with an answer instead of cut off mid-transfer by the edge.
  */
-export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 100 * 1024 * 1024;
+export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 95 * 1024 * 1024;
 
 /** The one sentence every end uses to refuse a declared size over {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}. */
 export function connectorAttachmentSizeRefusal(declared: number): string {

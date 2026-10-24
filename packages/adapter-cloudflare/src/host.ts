@@ -2734,6 +2734,35 @@ async function compensatingRefusal<T>(
   return reply;
 }
 
+/**
+ * Ask the scope's write gate before a streamed body is read (#2516). A scope DO from before the
+ * verb exists cannot answer it, and a missing answer is never a pass: the call fails closed with a
+ * retryable `unavailable` that says to redeploy, rather than skipping the gate and reading the body.
+ */
+export async function askAttachmentWriteGate(
+  stub: Pick<ScopeStubRpc, 'attachmentCheckWriteReply'>,
+  entity: EntityRef,
+  principal: PrincipalId,
+  tenantId: TenantId,
+  scopeId: ScopeId,
+  connectionId?: string,
+): Promise<void> {
+  let reply: DoReply<null>;
+  try {
+    reply = await stub.attachmentCheckWriteReply(entity, principal, tenantId, scopeId, connectionId);
+  } catch (err) {
+    if (/does not implement|is not a function|no such .*method/i.test(err instanceof Error ? err.message : String(err))) {
+      throw substratError(
+        'unavailable',
+        `the deployment serving scope ${scopeId} predates the upload write check (#2516): a streamed upload ` +
+          `is refused rather than read unchecked. Redeploy the vertical, then retry. Nothing was stored.`,
+      );
+    }
+    throw err;
+  }
+  unwrapReply(reply);
+}
+
 /** A tenant-held module's OFF answered without `deniesTenantGrants` (#1823). */
 const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
   `the deployment serving scope ${scopeId} predates the kill switch's tenant-grant denial (#1823): ` +
@@ -4998,7 +5027,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // A streamed body is the case where bytes are the cost, so the write gate is asked before
         // the first one is read (#2516). The row's own check below stays: this one is only early.
         if (isSizedByteStream(input.body)) {
-          unwrapReply(await stub.attachmentCheckWriteReply(input.entity, asPrincipalId, tenantId, scopeId, connectionId));
+          await askAttachmentWriteGate(stub, input.entity, asPrincipalId, tenantId, scopeId, connectionId);
         }
         // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
         // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
