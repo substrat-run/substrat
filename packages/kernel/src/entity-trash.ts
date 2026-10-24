@@ -414,12 +414,23 @@ export function heldPurgePass(held: string): PurgePass {
  * purge the cap refuses (`isPlatformRequestRefusal`) AFTER the pass has got past its head is
  * deferred rather than failed, and the lap resumes at it. A pass always moves the lap strictly
  * forward, so neither a deferral nor a refused head can hold the head of the walk.
+ *
+ * One more case (#2517): a head the cap refuses is deferred too when `earlierRequests` says that
+ * a schedule earlier in the same scheduled tick enqueued requests. Nothing drains the scope
+ * between two schedules of a tick, so that head met a queue the tick itself filled, not a standing
+ * one, and failing it would make the run wait its whole cadence for nothing. The pass then ends
+ * having tried nothing: the lap is left exactly as it was, `more` is true so the schedule stays
+ * due, and the next tick, after the drain, tries the same head again. It cannot spin or starve: it
+ * needs an earlier schedule that committed a request in the same tick (so the queue is full of
+ * that schedule's progress, and a queue held full by other traffic still fails the head), and the
+ * scheduled tick runs each schedule once.
  */
 export async function runPurgePass(
   operation: string,
   due: PurgeDue,
   purgeOne: (entityId: string) => Promise<void>,
   inScope: (write: (sql: ScopedSql) => void) => unknown,
+  earlierRequests = 0,
 ): Promise<PurgePass> {
   // Where the lap resumes: after this batch's last entity, or null when the batch closes the lap.
   let next = due.next;
@@ -442,6 +453,8 @@ export async function runPurgePass(
       // purge can never fit (it enqueues more than the scope has room for) cannot hold the head of
       // the walk, which is what #2096 is for. Without `keys` there is no position to resume from.
       if (isPlatformRequestRefusal(err)) {
+        // #2517: the head met a queue an earlier schedule of this tick filled — "not yet" too.
+        if (i === 0 && earlierRequests > 0) return { purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0 };
         if (i === 0) headRefused = true;
         if (!headRefused && keys) {
           next = keys[i - 1]!;

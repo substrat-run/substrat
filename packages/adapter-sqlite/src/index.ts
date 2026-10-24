@@ -6110,7 +6110,9 @@ export class SqliteScopeHost implements ScopeHost {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
           // #2431: each purge is an invoke, and reports what it enqueued through `counted` like any other.
-          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId, counted);
+          // #2517: what the schedules before this one in the tick enqueued, so a head the cap refuses
+          // because they filled the queue is deferred to the next tick rather than failed.
+          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId, counted, platformRequests);
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -6192,6 +6194,8 @@ export class SqliteScopeHost implements ScopeHost {
     runInvocationId: string,
     /** #2431: how each purge reports the platform requests it enqueued. */
     counted?: ScopeStubOptions,
+    /** #2517: platform requests the schedules earlier in this tick enqueued. */
+    earlierRequests = 0,
   ): Promise<PurgePass> {
     const entityType = this.modules
       .get(moduleId)
@@ -6224,6 +6228,7 @@ export class SqliteScopeHost implements ScopeHost {
         await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: runInvocationId });
       },
       (write) => rt.actor.turn(() => write(spineSql(rt.db))),
+      earlierRequests,
     );
   }
 

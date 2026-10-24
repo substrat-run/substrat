@@ -327,7 +327,10 @@ export function schedulePlatformRequestsContractSuite(
           const requestsTwo = async (fresh: ScopeId) =>
             (await host.listPlatformRequestHistory(t, fresh, { kind: PURGE_TWO_KIND, limit: 200 })).filter(isPlatformRequest);
 
-          it('the second horizon meets the queue the first filled: its head fails, and what is behind the head still commits', async () => {
+          // #2517: nothing drains the scope between the two horizons, so the second one's head met a
+          // queue the TICK filled. That is "not yet", not a failure: it keeps its place and waits one
+          // tick (after the drain), not its whole cadence.
+          it('the second horizon meets the queue the first filled: its head is deferred to the next tick, not failed', async () => {
             const fresh = await freshScope();
             const first = await dueTwo(fresh, 'a', names(OVER));
             // Oldest first: a row that needs a request, then two that do not.
@@ -336,9 +339,30 @@ export function schedulePlatformRequestsContractSuite(
             // The first horizon filled the queue and stopped there, still due; it did not fail.
             expect(await requestsTwo(fresh)).toHaveLength(MAX_PENDING_PLATFORM_REQUESTS);
             expect(await goneTwo(fresh, 'a', first)).toEqual(first.slice(0, MAX_PENDING_PLATFORM_REQUESTS));
-            // The second: refused at its head like any failure, nothing behind it starved.
+            // The second tried nothing and failed nothing; each request is counted once.
+            expect(report).toMatchObject({ fired: 2, failed: 0, errors: [], platformRequests: MAX_PENDING_PLATFORM_REQUESTS });
+            expect(await goneTwo(fresh, 'b', second)).toEqual([]);
+            // After the drain the very next tick runs both: no cadence wait for either.
+            await drainAll(fresh);
+            const next = await host.runDueSchedules(PURGE_TWO, t, fresh);
+            expect(next).toMatchObject({ fired: 2, failed: 0, errors: [] });
+            expect(await goneTwo(fresh, 'b', second)).toEqual(second);
+            expect(await goneTwo(fresh, 'a', first.slice(MAX_PENDING_PLATFORM_REQUESTS))).toEqual(
+              first.slice(MAX_PENDING_PLATFORM_REQUESTS),
+            );
+          });
+
+          it('a head refused by a queue other traffic filled, with nothing enqueued earlier in the tick, still fails', async () => {
+            const fresh = await freshScope();
+            const stub = await host.getScope(alice, t, fresh);
+            await stub.invoke('purgereq/enqueue', { count: MAX_PENDING_PLATFORM_REQUESTS });
+            // The first horizon purges without a request, so it filled nothing.
+            await dueTwo(fresh, 'a', [QUIET_TWO_ROW, QUIET_TWO_ROW]);
+            const second = await dueTwo(fresh, 'b', ['row', QUIET_TWO_ROW, QUIET_TWO_ROW]);
+            const report = await host.runDueSchedules(PURGE_TWO, t, fresh);
             expect(report).toMatchObject({ fired: 1, failed: 1 });
             expect(report.errors).toHaveLength(1);
+            // As ever: nothing behind the head is starved.
             expect(await goneTwo(fresh, 'b', second.slice(1))).toEqual(second.slice(1));
             expect(await goneTwo(fresh, 'b', [second[0]!])).toEqual([]);
           });

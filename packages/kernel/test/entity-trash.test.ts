@@ -422,7 +422,13 @@ describe('the purge lap (#2096)', () => {
      * One pass: entities in `failing` throw, entities in `capped` meet the scope's full platform-request
      * queue (#2506), every other one is deleted.
      */
-    const pass = async (failing: ReadonlySet<string>, limit: number, capped: ReadonlySet<string> = new Set()) => {
+    const pass = async (
+      failing: ReadonlySet<string>,
+      limit: number,
+      capped: ReadonlySet<string> = new Set(),
+      /** #2517: requests the schedules earlier in the same tick enqueued. */
+      earlierRequests = 0,
+    ) => {
       const due = purgeDueOf(sql, plans, targets, 'b/delete', 'box', NOW, limit);
       const p = await runPurgePass(
         'b/delete',
@@ -433,6 +439,7 @@ describe('the purge lap (#2096)', () => {
           db.prepare('DELETE FROM boxes WHERE id = ?').run(id);
         },
         (write) => write(sql),
+        earlierRequests,
       );
       return { due, pass: p };
     };
@@ -602,6 +609,55 @@ describe('the purge lap (#2096)', () => {
       expect(second.pass).toMatchObject({ purged: 0, more: false });
       expect(purgeStillDue(second.pass)).toBe(false);
       expect(left()).toEqual(['b001', 'b002', 'b003', 'b004']);
+    });
+
+    describe('a head refused by a queue the same tick filled (#2517)', () => {
+      it('is deferred, not failed: nothing tried, the lap untouched, the schedule stays due', async () => {
+        const { sql, pass, left } = setup(4);
+        const first = await pass(new Set(), 4, new Set(['b000']), 3);
+        expect(first.pass).toEqual({ purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0 });
+        expect(purgeStillDue(first.pass)).toBe(true);
+        expect(purgeReportOf('b/delete', 'box', first.pass).failure).toBeUndefined();
+        // Nothing behind the head ran either, and no lap row was written.
+        expect(left()).toEqual(['b000', 'b001', 'b002', 'b003']);
+        expect(readPurgeLap(sql, 'b/delete')).toEqual({ after: null, failed: 0 });
+        // The next tick, after the drain, runs the same head and closes the lap.
+        const next = await pass(new Set(), 4);
+        expect(next.due.ids).toEqual(['b000', 'b001', 'b002', 'b003']);
+        expect(next.pass).toMatchObject({ purged: 4, errors: [], more: false });
+      });
+
+      it('keeps a lap in progress exactly as it was, failures included', async () => {
+        const { sql, pass } = setup(6);
+        await pass(new Set(['b000']), 3);
+        const before = readPurgeLap(sql, 'b/delete');
+        expect(before).toEqual({ after: { at: DUE(2), id: 'b002' }, failed: 1 });
+        const deferred = await pass(new Set(), 3, new Set(['b003']), 1);
+        expect(deferred.pass).toEqual({ purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0 });
+        expect(readPurgeLap(sql, 'b/delete')).toEqual(before);
+      });
+
+      it('twin: with nothing enqueued earlier in the tick the same head is an ordinary failure', async () => {
+        const { pass, left } = setup(4);
+        const { pass: p } = await pass(new Set(), 4, new Set(['b000']), 0);
+        expect(p.errors.map((e) => e.entityId)).toEqual(['b000']);
+        expect(p).toMatchObject({ purged: 3, more: false });
+        expect(left()).toEqual(['b000']);
+      });
+
+      it('twin: a failure that is not the cap\'s refusal is never deferred, whatever the tick enqueued', async () => {
+        const { pass } = setup(3);
+        const { pass: p } = await pass(new Set(['b000']), 3, new Set(), 5);
+        expect(p.errors.map((e) => e.entityId)).toEqual(['b000']);
+        expect(p).toMatchObject({ purged: 2, more: false });
+      });
+
+      it('twin: a refusal past the head is still the ordinary deferral, not a stalled pass', async () => {
+        const { sql, pass } = setup(4);
+        const { pass: p } = await pass(new Set(), 4, new Set(['b002']), 2);
+        expect(p).toMatchObject({ purged: 2, errors: [], more: true });
+        expect(readPurgeLap(sql, 'b/delete').after?.id).toBe('b001');
+      });
     });
 
     it('a refusal is recognised by what threw it, never by how it reads', async () => {

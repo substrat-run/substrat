@@ -1617,6 +1617,11 @@ interface ScopeStubRpc {
     systemDoorInstance: string,
     /** #2192: the schedule run's id, which every purge in the pass runs under. */
     runInvocationId?: string,
+    /**
+     * #2517: the platform requests the schedules before this one in the tick enqueued. LAST and
+     * optional for the positional-RPC reason above; a scope without it fails a refused head.
+     */
+    earlierRequests?: number,
   ): Promise<PurgePass | SystemDoorMoved>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
   freshnessProbe(
@@ -6527,7 +6532,7 @@ export class CloudflareScopeHost implements ScopeHost {
           // #2431, #2440: the scope reports the requests its purges enqueued (`pass.platformRequests`),
           // and the deliveries their events route to the platform are counted below, as an invoke's are.
           const pass = await door.through((instance) =>
-            stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId),
+            stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId, platformRequests),
           );
           platformRequests += pass.platformRequests ?? 0;
           // The purges' events, delivered the way each invoke's own tail delivers them.
