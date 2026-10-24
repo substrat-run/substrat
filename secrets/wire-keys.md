@@ -89,7 +89,8 @@ uploads it (a version's push, or the serve a promote does), and only where `WIRE
 | `canary:<vertical>` | that one vertical's: its versions' scripts and its serving script |
 | `fleet` | every one |
 
-Anything else gives none, and the control plane's error log says why (`substrat: 'wire-upload'`).
+Anything else gives none, and says why in the control plane's error log (`substrat: 'wire-upload'`)
+and its operational failures (`deploy.wire-upload`).
 So do lists that would not load at a deployment: the upload checks them with the function the
 entry loads them with, gives nothing, and names the problem, never a key. Every upload records
 what it gave, or why it gave nothing, for the readiness report (RFC §7).

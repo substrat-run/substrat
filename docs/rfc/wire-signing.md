@@ -681,13 +681,17 @@ never rebuilt keeps the up-calls it was built with.
    - **Which deployments.** The control plane's `WIRE_KEYS_ROLLOUT`: unset or `off` gives none;
      `canary:<vertical>` gives them to that one vertical's deployments, its versions' scripts and
      its serving script; `fleet` gives them to every one. A setting it cannot read, a second
-     vertical in a canary included, gives none and is logged with the reason.
+     vertical in a canary included, gives none, and is logged and recorded as an operational failure
+     with the reason.
    - **The lists are judged first** by `wireUploadSettings`, through the same `wireVerificationKeys`
      the entry loads them with, with each list holding at least one key and the audience one the
-     encoder carries. Lists it refuses are not given, and the log names the problem, never a key.
+     encoder carries. Lists it refuses are not given, and the log and the operational failure name
+     the problem, never a key. Both uploads go through one helper, so a later upload path (the fleet
+     walk) gives the lists by construction.
    - **Every upload records**, given lists or not (§7), after the upload succeeded. A record that
-     cannot be written never fails the upload, which is done: it is logged, and the readiness report
-     reads a deployment with no record as unknown.
+     cannot be written never fails the upload, which is done: it is logged and recorded as an
+     operational failure, and the readiness report reads a deployment with no record as unknown.
+     A record that contradicts itself is refused.
    Notes it leaves for later follow-ons:
    - **A deployment is given lists at its next upload.** A live deployment the rollout names but
      no upload has reached since (a scope bound to an older version's script, a preview) carries
