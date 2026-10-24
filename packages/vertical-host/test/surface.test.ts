@@ -1824,44 +1824,95 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
   });
 
   /**
-   * A row stored before the upload bounds can hold a name of any length. It must still read back:
-   * the file's bytes and every other field exact, the name cut to fit and marked as cut.
+   * A row stored before the upload bounds can hold any string of any length in any field the
+   * header carries. Each, alone and all together, must still read back: the bytes and every exact
+   * field intact, the over-long string brought to its bound and marked as cut.
    */
-  it.each([
-    ['ASCII', 'n'.repeat(10_000)],
-    ['non-BMP', '\ud83d\udcdd'.repeat(5_000)],
-    ['CJK', '\u5951'.repeat(10_000)],
-  ])('connector-attachment GET: a stored %s name of 10k units still reads back, cut to fit', async (_n, filename) => {
+  const LEGACY_RECORD = {
+    id: 'att-1',
+    entity: { entityType: 'protocol', entityId: 'p1' },
+    filename: 'avtal.pdf',
+    contentType: 'application/pdf',
+    size: 8,
+    sha256: 'a'.repeat(64),
+    visibility: 'customer',
+    createdBy: CONN,
+    createdAt: '2026-08-17T00:00:00.000Z',
+  };
+  const readBack = async (record: typeof LEGACY_RECORD) => {
     const bytes = new TextEncoder().encode('%PDF-1.4');
-    const record = {
-      id: 'att-1',
-      entity: { entityType: 'protocol', entityId: 'p1' },
-      filename,
-      contentType: 'application/pdf',
-      size: bytes.byteLength,
-      sha256: 'a'.repeat(64),
-      visibility: 'customer',
-      createdBy: CONN,
-      createdAt: '2026-08-17T00:00:00.000Z',
-    };
-    const host = fakeHost({ connectorAttachmentOpenLocal: async () => ({ record, body: bytes, contentType: 'application/pdf' }) });
+    const host = fakeHost({ connectorAttachmentOpenLocal: async () => ({ record, body: bytes, contentType: record.contentType }) });
     const res = await appWith(host).request(
       `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
       { headers: authed() },
       ENV,
     );
+    return { res, bytes };
+  };
+
+  it.each([
+    ['filename', 'ASCII', (n: number) => 'n'.repeat(n)],
+    ['filename', 'non-BMP', (n: number) => '\ud83d\udcdd'.repeat(n / 2)],
+    ['filename', 'CJK', (n: number) => '\u5951'.repeat(n)],
+    ['entityType', 'en dash', (n: number) => '\u2013'.repeat(n)],
+    ['entityId', 'en dash', (n: number) => '\u2013'.repeat(n)],
+    ['createdBy', 'en dash', (n: number) => '\u2013'.repeat(n)],
+  ] as const)('connector-attachment GET: a stored %s of 10k %s units still reads back, cut to its bound', async (field, _kind, make) => {
+    const stored = make(10_000);
+    const record =
+      field === 'entityType' || field === 'entityId'
+        ? { ...LEGACY_RECORD, entity: { ...LEGACY_RECORD.entity, [field]: stored } }
+        : { ...LEGACY_RECORD, [field]: stored };
+    const { res, bytes } = await readBack(record);
     expect(res.status).toBe(200);
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
     const raw = res.headers.get('x-substrat-attachment')!;
     expect(raw.length).toBeLessThanOrEqual(10 * 1024);
     const read = JSON.parse(raw) as typeof record;
-    expect(read).toEqual({ ...record, filename: read.filename });
-    expect(read.filename.endsWith('\u2026')).toBe(true);
-    expect(read.filename.length).toBeGreaterThan(100);
-    // A prefix of the stored name, cut on a character boundary: no half of a surrogate pair.
-    const kept = read.filename.slice(0, -1);
-    expect(filename.startsWith(kept)).toBe(true);
+    const got = field === 'entityType' || field === 'entityId' ? (read.entity as Record<string, string>)[field]! : (read as Record<string, string>)[field]!;
+    const max = { filename: 512, entityType: 128, entityId: 255, createdBy: 128 }[field];
+    // Marked as cut, within its bound, and a prefix of the stored value on a character boundary.
+    expect(got.endsWith('\u2026')).toBe(true);
+    expect(got.length).toBeLessThanOrEqual(max);
+    expect(got.length).toBeGreaterThan(max - 3);
+    const kept = got.slice(0, -1);
+    expect(stored.startsWith(kept)).toBe(true);
     expect(kept).toBe([...kept].join(''));
+    // Everything else is exact.
+    expect({ ...read, filename: '', entity: {}, createdBy: '' }).toEqual({ ...record, filename: '', entity: {}, createdBy: '' });
+  });
+
+  it('connector-attachment GET: a stored content type of 2,000 units reads back as the opaque default', async () => {
+    const { res, bytes } = await readBack({ ...LEGACY_RECORD, contentType: 'text/' + '\u2013'.repeat(2_000) });
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    expect(raw.length).toBeLessThanOrEqual(10 * 1024);
+    expect(JSON.parse(raw)).toEqual({ ...LEGACY_RECORD, contentType: 'application/octet-stream' });
+  });
+
+  it('connector-attachment GET: every field long at once still reads back under the bound', async () => {
+    const long = '\ud83d\udcdd'.repeat(10_000);
+    const { res } = await readBack({
+      ...LEGACY_RECORD,
+      entity: { entityType: long, entityId: long },
+      filename: long,
+      contentType: long,
+      createdBy: long,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-substrat-attachment')!.length).toBeLessThanOrEqual(10 * 1024);
+  });
+
+  it('connector-attachment GET: a stored record that does not parse is a server error, not a 400', async () => {
+    const { res } = await readBack({ ...LEGACY_RECORD, sha256: 'not-a-digest' });
+    expect(res.status).toBe(500);
+  });
+
+  it('connector-attachment GET: a stored record that fits the header is sent exactly as stored, even over the upload bounds', async () => {
+    const record = { ...LEGACY_RECORD, filename: 'x'.repeat(600) };
+    const { res } = await readBack(record);
+    expect(JSON.parse(res.headers.get('x-substrat-attachment')!)).toEqual(record);
   });
 
   it('connector-attachment: a filename of exactly 512 units and a content type of 255 are still stored', async () => {

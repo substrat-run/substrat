@@ -178,7 +178,9 @@ export const uploadLinkFilename = z
 /** `ctx.attachments.mintUploadUrl`'s input. */
 export const uploadLinkMintInput = z
   .object({
-    entity: entityRef,
+    // Bounded like an upload (#2519): a link for an entity no redemption could store is refused
+    // at the mint, to the minter, not at the redemption, to the uploader.
+    entity: attachmentUploadFields.shape.entity,
     /** Fixes the stored name. Absent: the uploader names the file (`?filename=` or `Content-Disposition`). */
     filename: uploadLinkFilename.optional(),
     /** Narrows the target's `maxBytes`; a larger value is refused, not clamped. */

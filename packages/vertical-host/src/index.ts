@@ -58,7 +58,6 @@ import {
   permissionKey as permissionKeyOf,
   moduleId as moduleIdOf,
   switchedOffInUnit,
-  entityRef,
   visibility,
   instant,
   entitlementGrant,
@@ -184,6 +183,7 @@ import {
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
   entityGrantShape,
+  ATTACHMENT_FIELD_MAX,
   attachmentRecord,
   attachmentUploadFields,
   type AttachmentRecord,
@@ -1003,9 +1003,9 @@ const connectorAttachmentMeta = z.object({
   connectionId: connectionIdOf,
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
-  entity: entityRef,
   // The bounds every door applies (`attachmentUploadFields`), so a refusal comes here as a 400
   // naming the field rather than from the host's own judge (#2519).
+  entity: attachmentUploadFields.shape.entity,
   filename: attachmentUploadFields.shape.filename,
   contentType: attachmentUploadFields.shape.contentType,
   visibility,
@@ -1028,33 +1028,45 @@ function asciiJson(value: unknown): string {
 }
 
 /**
- * The most bytes the record header of a read-back may carry (#2519). A record made under
- * `ATTACHMENT_FIELD_MAX` is under 8.2 KiB however it is escaped, so only a row written before those
- * bounds can reach it, and a server's header limit starts at 16 KiB.
+ * The most bytes the record header of a read-back may carry before its strings are cut (#2519). A
+ * record made under `ATTACHMENT_FIELD_MAX` is under 8.2 KiB however it is escaped, so only a row
+ * stored before those bounds can reach it, and a server's header limit starts at 16 KiB.
  */
 const CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES = 10 * 1024;
 
+/** `text` cut to at most `max` UTF-16 units on a code-point boundary, the cut marked with `…`. */
+function cutTo(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let kept = '';
+  for (const point of text) {
+    if (kept.length + point.length > max - 1) break;
+    kept += point;
+  }
+  return `${kept}\u2026`;
+}
+
 /**
- * The record as the read-back header carries it: {@link asciiJson}, with an oversized filename cut
- * to fit. A row stored before the upload bounds can hold a name of any length, and a header past
- * the server's limit would make that file unreadable. The cut name ends in `…` so it does not read
- * as the stored one; the bytes, size, sha256 and every other field are exact. Only the filename is
- * cut: the identity fields (entity, creator) are not names to shorten and are bounded where written.
+ * The record as the read-back header carries it: {@link asciiJson}, and, when a row stored before
+ * the upload bounds makes that too large, every string the header holds brought to its bound. A
+ * header past the server's limit would make that file unreadable. A cut name or id ends in `…` so
+ * it does not read as the stored one; a content type, which a cut would change the meaning of, is
+ * replaced by `application/octet-stream`. The bytes, size, sha256, visibility and dates are exact,
+ * and a record within the bounds is never touched.
  */
 function recordHeader(record: AttachmentRecord): string {
   const whole = asciiJson(record);
   if (whole.length <= CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES) return whole;
-  const points = [...record.filename];
-  const cut = (keep: number) => asciiJson({ ...record, filename: `${points.slice(0, keep).join('')}\u2026` });
-  // The longest prefix that fits: the size is monotonic in the prefix, so a bisection finds it.
-  let lo = 0;
-  let hi = points.length;
-  while (lo < hi) {
-    const mid = Math.ceil((lo + hi) / 2);
-    if (cut(mid).length <= CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES) lo = mid;
-    else hi = mid - 1;
-  }
-  return cut(lo);
+  const max = ATTACHMENT_FIELD_MAX;
+  return asciiJson({
+    ...record,
+    entity: {
+      entityType: cutTo(record.entity.entityType, max.entityType),
+      entityId: cutTo(record.entity.entityId, max.entityId),
+    },
+    filename: cutTo(record.filename, max.filename),
+    contentType: record.contentType.length <= max.contentType ? record.contentType : 'application/octet-stream',
+    createdBy: cutTo(record.createdBy, max.createdBy),
+  });
 }
 
 /**
@@ -1999,9 +2011,15 @@ export function mountPlatformSurface<Env extends object>(
     // Both values are caller-supplied strings (#2519): a filename or content type outside
     // Latin-1 would make `Headers` throw and leave a stored file unreadable. The record stays
     // plain JSON, which every reader already parses; the type the client reads is the record's.
+    // A stored row that does not parse is the deployment's fault, not the caller's: 500, not the
+    // 400 a parse failure on the request would be.
+    const record = attachmentRecord.safeParse(opened.record);
+    if (!record.success) {
+      throw new HTTPException(500, { message: 'connector-attachment: the stored attachment record is malformed' });
+    }
     return c.body(opened.body as unknown as ArrayBuffer, 200, {
       'content-type': headerSafeContentType(opened.contentType),
-      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: recordHeader(attachmentRecord.parse(opened.record)),
+      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: recordHeader(record.data),
     });
   });
 
