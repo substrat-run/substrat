@@ -29,7 +29,8 @@ const versionsOf = (count: number): readonly string[] => [
 export const MANY_MIGRATIONS_VERSIONS: readonly string[] = versionsOf(MANY_MIGRATIONS_COUNT);
 export const OVER_CAP_MIGRATIONS_VERSIONS: readonly string[] = versionsOf(OVER_CAP_MIGRATIONS_COUNT);
 
-function migrationsMod(id: string, entitlementKey: string, table: string, versions: readonly string[]): ModuleRegistration {
+/** `sqlOf(i)` writes the literal table into each statement: the attachment-writer lint refuses an INSERT whose table is computed. */
+function migrationsMod(id: string, entitlementKey: string, sqlOf: (i: number) => string, versions: readonly string[]): ModuleRegistration {
   return {
     manifest: moduleManifest.parse({
       id,
@@ -43,7 +44,7 @@ function migrationsMod(id: string, entitlementKey: string, table: string, versio
     }),
     migrations: versions.map((version, i) => ({
       version,
-      sql: i === 0 ? `CREATE TABLE ${table} (n INTEGER PRIMARY KEY);` : `INSERT INTO ${table} (n) VALUES (${i});`,
+      sql: sqlOf(i),
     })),
     ...testOperations({}),
   };
@@ -52,7 +53,7 @@ function migrationsMod(id: string, entitlementKey: string, table: string, versio
 export const manyMigrationsMod: ModuleRegistration = migrationsMod(
   MANY_MIGRATIONS_MODULE_ID,
   'many-migrations',
-  'mm_log',
+  (i) => (i === 0 ? 'CREATE TABLE mm_log (n INTEGER PRIMARY KEY);' : `INSERT INTO mm_log (n) VALUES (${i});`),
   MANY_MIGRATIONS_VERSIONS,
 );
 
@@ -63,6 +64,6 @@ export const manyMigrationsMod: ModuleRegistration = migrationsMod(
 export const overCapMigrationsMod: ModuleRegistration = migrationsMod(
   OVER_CAP_MIGRATIONS_MODULE_ID,
   'over-cap-migrations',
-  'oc_log',
+  (i) => (i === 0 ? 'CREATE TABLE oc_log (n INTEGER PRIMARY KEY);' : `INSERT INTO oc_log (n) VALUES (${i});`),
   OVER_CAP_MIGRATIONS_VERSIONS,
 );
