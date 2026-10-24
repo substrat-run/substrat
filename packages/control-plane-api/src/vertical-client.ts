@@ -990,7 +990,9 @@ export class VerticalClient {
     return {
       record,
       body,
-      contentType: res.headers.get('content-type') ?? record.contentType,
+      // The record's, not the response's: the response header carries a type only when the
+      // stored one is header-safe (#2519), and the record is the exact stored value.
+      contentType: record.contentType,
     };
   }
 

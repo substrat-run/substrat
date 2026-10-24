@@ -1736,6 +1736,59 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
   });
 
   /**
+   * #2519: both upload routes store any non-empty filename and content type, and a response
+   * header refuses anything outside Latin-1. The route answered those with a thrown error, so a
+   * stored file could not be read back. Every stored value must now come back unchanged, in the
+   * record header the client parses, and the ordinary file (the positive twin) stays as it was.
+   */
+  it.each([
+    ['ASCII', 'avtal.pdf', 'application/pdf'],
+    ['Latin-1', 'avtal åäö.pdf', 'application/pdf'],
+    ['non-Latin-1 (en dash)', 'avtal – final.pdf', 'application/pdf'],
+    ['CJK', '契約書.pdf', 'application/pdf'],
+    ['emoji (surrogate pair)', 'signed 📝.pdf', 'application/pdf'],
+    ['lone surrogate', 'broken \ud83d.pdf', 'application/pdf'],
+    ['quotes and backslash', 'say "hi" \\ it\'s.pdf', 'application/pdf'],
+    ['CRLF', 'line\r\nbreak: injected.pdf', 'application/pdf'],
+    ['DEL and NUL', 'del\u007f nul\u0000.pdf', 'application/pdf'],
+    ['percent', '100% %41.pdf', 'application/pdf'],
+    ['non-Latin-1 content type', 'avtal.pdf', 'text/plain; name="–"'],
+    ['CRLF content type', 'avtal.pdf', 'text/plain\r\nx-injected: 1'],
+    ['edge whitespace content type', 'avtal.pdf', ' application/pdf '],
+  ])('connector-attachment GET: reads back a stored %s unchanged', async (_name, filename, contentType) => {
+    const bytes = new TextEncoder().encode('%PDF-1.4 the avtal');
+    const record = {
+      id: 'att-1',
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      filename,
+      contentType,
+      size: bytes.byteLength,
+      sha256: 'a'.repeat(64),
+      visibility: 'customer',
+      createdBy: CONN,
+      createdAt: '2026-08-17T00:00:00.000Z',
+    };
+    const host = fakeHost({
+      connectorAttachmentOpenLocal: async () => ({ record, body: bytes, contentType }),
+    });
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
+      { headers: authed() },
+      ENV,
+    );
+
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    // Printable ASCII only, and plain JSON: the form a reader that predates the fix parses.
+    expect(raw).toMatch(/^[\x20-\x7e]*$/);
+    expect(JSON.parse(raw)).toEqual(record);
+    // The response's own type is the stored one when a header accepts it, else the opaque default.
+    const headerSafe = !/[^\x20-\x7e]/.test(contentType) && contentType === contentType.trim();
+    expect(res.headers.get('content-type')).toBe(headerSafe ? contentType : 'application/octet-stream');
+  });
+
+  /**
    * The delivery leg (#726 remedy B). What crosses this seam is the NAME of a delivery,
    * not a claim about which entity the platform may reach — the deployment resolves it
    * against its own outbox — so the only thing the transport has to get right is that

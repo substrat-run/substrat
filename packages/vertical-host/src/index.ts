@@ -1011,6 +1011,26 @@ const connectorAttachmentStreamMeta = connectorAttachmentMeta.extend({
   size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
 
+/**
+ * `JSON.stringify` whose output is printable ASCII, so it can ride a header whatever the
+ * strings in it hold (#2519). JSON already escapes a control character or a lone surrogate;
+ * what is left outside 0x20–0x7e (a non-ASCII character, DEL) becomes a `\uXXXX` escape, which
+ * `JSON.parse` reads back to the same value. The result is still plain JSON, so a reader that
+ * predates this parses it unchanged.
+ */
+function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[^\x20-\x7e]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * A content type a response header accepts, else `application/octet-stream` (#2519). Both upload
+ * routes store any non-empty string, and a header refuses anything outside printable ASCII or
+ * with edge whitespace. The stored type is not lost: the record header carries it exactly.
+ */
+function headerSafeContentType(contentType: string): string {
+  return /^[\x21-\x7e]([\x20-\x7e]*[\x21-\x7e])?$/.test(contentType) ? contentType : 'application/octet-stream';
+}
+
 /** `/internal/system-switch` body (#1666) — the far end of `revokeFromSystem` / `restoreToSystem`. */
 const systemSwitchBody = z.object({
   scopeId: scopeIdOf,
@@ -1941,9 +1961,12 @@ export function mountPlatformSurface<Env extends object>(
         c.req.query('eventId'),
       );
     if (!opened) return c.body(null, 404);
+    // Both values are caller-supplied strings (#2519): a filename or content type outside
+    // Latin-1 would make `Headers` throw and leave a stored file unreadable. The record stays
+    // plain JSON, which every reader already parses; the type the client reads is the record's.
     return c.body(opened.body as unknown as ArrayBuffer, 200, {
-      'content-type': opened.contentType,
-      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: JSON.stringify(opened.record),
+      'content-type': headerSafeContentType(opened.contentType),
+      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: asciiJson(opened.record),
     });
   });
 
