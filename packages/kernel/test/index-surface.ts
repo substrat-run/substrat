@@ -619,6 +619,7 @@ export const INDEX_VALUE_EXPORTS = [
   'resolveScopeRecord',
   'resolveVerticalInstanceFrom',
   'restoreConnectLinkRow',
+  'retireScopeStorage',
   'restoreSwitchRecord',
   'revokeBecomeCapabilityAsPrincipal',
   'revokeCapabilityAsPlatform',

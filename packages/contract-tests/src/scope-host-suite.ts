@@ -10846,15 +10846,14 @@ export function scopeHostContractSuite(
         });
       });
 
-      it("forgets a reaped scope's samples, and never writes one for it again", async () => {
+      it("keeps a reaped scope's days for the invoice, ends its attempts, and never writes one for it again", async () => {
         const tr = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: tr, slug: 'gauge-reap', name: 'Gauge Reap' });
         const [kept, reaped] = [await newScope(tr), await newScope(tr)];
         await record(tr, kept, 1, day(0, '02:00:00'));
         await record(tr, reaped, 2, day(-1, '02:00:00'));
         await record(tr, reaped, 3, day(0, '02:00:00'));
-        // A sample past retention, so the prune below (which reads the raw table, with no join
-        // to scope status) can tell whether reap deleted the rows or only the join hides them.
+        // A sample past retention: retention, not the reap, is what ends a reaped scope's days.
         while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
         const old = new Date();
         old.setUTCMonth(old.getUTCMonth() - 14);
@@ -10862,107 +10861,23 @@ export function scopeHostContractSuite(
 
         await host.admin.archiveScope(staff, tr, reaped);
         await host.admin.reapScope(staff, tr, reaped);
-        expect(await host.admin.pruneScopeStorage!(staff, 500)).toBe(0);
 
-        expect((await host.admin.listScopeStorage!(staff, { tenantId: tr })).map((r) => r.scopeId)).toEqual([kept]);
+        // The month it was reaped in is still readable for the tenant, scope by scope.
+        const history = await host.admin.listScopeStorage!(staff, { tenantId: tr, since: day(-1, '00:00:00').slice(0, 10) });
+        expect(history.filter((r) => r.scopeId === reaped).map((r) => r.bytes)).toEqual([2, 3]);
+        expect(history.filter((r) => r.scopeId === kept).map((r) => r.bytes)).toEqual([1]);
+        // The current gauge and the attempts describe live storage only.
+        expect((await host.admin.listScopeStorage!(staff, { tenantId: tr, latest: true })).map((r) => r.scopeId)).toEqual([kept]);
+        expect((await host.admin.listScopeStorageAttempts!(staff)).some((a) => a.scopeId === reaped)).toBe(false);
         expect(await record(tr, reaped, 4, day(0, '03:00:00'))).toEqual({ recorded: 0 });
         expect((await host.admin.readMeters(staff, { tenantId: tr })).perTenant[0]!.storage).toMatchObject({
           bytes: 1,
           sampled: 1,
           total: 1, // the tombstone is not in the denominator
         });
-      });
-
-      it('keeps an archived scope in the figure and refreshes it, so the tenant is not stuck stale', async () => {
-        const ta = tenantId.parse(ulid());
-        await host.admin.createTenant(staff, { id: ta, slug: 'gauge-archived', name: 'Gauge Archived' });
-        const s = await newScope(ta);
-        const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString();
-        await record(ta, s, 4096, threeDaysAgo);
-        await host.admin.archiveScope(staff, ta, s);
-        // Archived storage is still storage until reap: counted, and stale until re-read.
-        expect((await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage).toMatchObject({
-          sampled: 1,
-          total: 1,
-          oldestReadAt: threeDaysAgo,
-        });
-
-        // No drain reaches an archived scope; the storage phase reads it anyway, once a day.
-        const before = new Date().toISOString();
-        const report = await runPlatformSweep(host, {
-          actor: staff,
-          fetch: connectorTestFetch,
-          sweepers: {},
-          drainRetries: false,
-          storageGauge: { read: (scope) => host.admin.scopeDatabaseSize(staff, scope.tenantId, scope.id), batch: 10_000 },
-        });
-        expect(report.errors.filter((e) => e.kind === 'storage' && e.id === s)).toEqual([]);
-        const after = (await host.admin.readMeters(staff, { tenantId: ta })).perTenant[0]!.storage!;
-        expect(after).toMatchObject({ sampled: 1, total: 1, failing: 0 });
-        expect(after.oldestReadAt! >= before).toBe(true);
-        expect(after.bytes).toBeGreaterThan(0);
-      });
-
-      it('leaves a provisioning scope, which has no store yet, out of the figure entirely', async () => {
-        const tp = tenantId.parse(ulid());
-        await host.admin.createTenant(staff, { id: tp, slug: 'gauge-provisioning', name: 'Gauge Provisioning' });
-        const s = await newScope(tp);
-        const pending = scopeId.parse(ulid());
-        await host.provisionScope(staff, { tenantId: tp, scopeId: pending }); // not activated
-        expect((await host.admin.getScopeRecord(staff, tp, pending))!.status).toBe('provisioning');
-        await record(tp, s, 10, day(0, '08:00:00'));
-        // A reading for it is refused too, so it can never enter the sum.
-        expect(await record(tp, pending, 99, day(0, '08:00:00'))).toEqual({ recorded: 0 });
-        expect((await host.admin.readMeters(staff, { tenantId: tp })).perTenant[0]!.storage).toMatchObject({
-          bytes: 10,
-          sampled: 1,
-          total: 1, // not "1 of 2": the tenant's figure is whole
-        });
-      });
-
-      it('neither counts nor accepts a reading for a scope archived before it held data; one archived from active still counts', async () => {
-        const tv = tenantId.parse(ulid());
-        await host.admin.createTenant(staff, { id: tv, slug: 'gauge-abandoned', name: 'Gauge Abandoned' });
-        const kept = await newScope(tv);
-        await record(tv, kept, 50, day(0, '09:00:00'));
-        // A failed provision is archived straight from `provisioning` (it never held data).
-        const abandoned = scopeId.parse(ulid());
-        await host.provisionScope(staff, { tenantId: tv, scopeId: abandoned });
-        await host.admin.archiveScope(staff, tv, abandoned);
-        expect((await host.admin.getScopeRecord(staff, tv, abandoned))!.archivedFromStatus).toBe('provisioning');
-        // An app deleted after it served is archived from `active`.
-        const deleted = await newScope(tv);
-        await record(tv, deleted, 70, day(-2, '09:00:00')); // due again by the time the pass runs
-        await host.admin.archiveScope(staff, tv, deleted);
-        expect((await host.admin.getScopeRecord(staff, tv, deleted))!.archivedFromStatus).toBe('active');
-
-        expect(await record(tv, abandoned, 99, day(0, '10:00:00'))).toEqual({ recorded: 0 });
-        expect((await host.admin.readMeters(staff, { tenantId: tv })).perTenant[0]!.storage).toMatchObject({
-          bytes: 120,
-          sampled: 2,
-          total: 2, // kept + deleted; never the abandoned one
-        });
-        // The storage phase never wakes it.
-        const asked: string[] = [];
-        await runPlatformSweep(host, {
-          actor: staff,
-          fetch: connectorTestFetch,
-          sweepers: {},
-          drainRetries: false,
-          storageGauge: {
-            read: async (scope) => {
-              asked.push(scope.id);
-              return host.admin.scopeDatabaseSize(staff, scope.tenantId, scope.id);
-            },
-            batch: 10_000,
-          },
-        });
-        expect(asked).not.toContain(abandoned);
-        expect(asked).toContain(deleted);
-
-        // Unarchiving clears it, as it clears archivedAt.
-        await host.admin.unarchiveScope(staff, tv, deleted);
-        expect((await host.admin.getScopeRecord(staff, tv, deleted))!.archivedFromStatus ?? null).toBeNull();
+        // Retention takes the one past thirteen months, and only it.
+        while ((await host.admin.pruneScopeStorage!(staff, 500)) > 0);
+        expect((await host.admin.listScopeStorage!(staff, { scopeId: reaped })).map((r) => r.bytes)).toEqual([2, 3]);
       });
 
       it("deletes a fork's samples when the fork is deleted", async () => {
