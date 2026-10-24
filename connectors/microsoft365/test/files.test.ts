@@ -699,10 +699,12 @@ describe('reads: the sync lands what is in the folder', () => {
       const w = await world();
       w.drive.put(w.general, 'a.txt', 'a');
       await w.bind();
-      const timeout = vi.spyOn(AbortSignal, 'timeout');
+      // The call's deadline is a timer armed with the connection's `timeoutMs` (#2518); the
+      // default 15 s would show here if the sync's own value were not the one in force.
+      const timer = vi.spyOn(globalThis, 'setTimeout');
       await w.sync();
-      expect(timeout).toHaveBeenCalled();
-      expect(new Set(timeout.mock.calls.map(([ms]) => ms))).toEqual(new Set([SYNC_TIMEOUT_MS]));
+      expect(timer).toHaveBeenCalled();
+      expect(new Set(timer.mock.calls.map(([, ms]) => ms))).toEqual(new Set([SYNC_TIMEOUT_MS]));
     });
 
     // r2 #1: an enumeration spanning many calls may miss a live item; it is checked, not deleted.

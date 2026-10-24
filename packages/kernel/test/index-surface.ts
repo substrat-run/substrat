@@ -176,6 +176,9 @@ export const INDEX_VALUE_EXPORTS = [
   'SHAPE_MARKER_READS_PER_ROW',
   'STORE_DRIVER_RELEASES_DDL',
   'STORE_LOCAL_META_KEYS',
+  // #2518: the idle window of a streamed connector response body.
+  'STREAM_IDLE_TIMEOUT_MS',
+  'STREAM_MAX_DURATION_MS',
   'SUBJECT_ERASURE_CLAIM_SQL',
   'SWEEP_RUNS_INTENT_INDEX',
   'SWEEP_RUN_RETENTION_DAYS',
@@ -322,6 +325,8 @@ export const INDEX_VALUE_EXPORTS = [
   'createUlid',
   'crossVerticalHealth',
   'cursorOf',
+  // #2518: a connector call's bounds: the call's total, and a streamed body's idle window.
+  'deadlineFetch',
   'delegatedRevokeSql',
   'denialListQuery',
   'denialSummaryQuery',

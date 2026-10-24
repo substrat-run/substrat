@@ -17,7 +17,7 @@ import type {
   HostAdmin,
   ScopeHost,
 } from '@substrat-run/kernel';
-import { settleConnectionUse } from '@substrat-run/kernel';
+import { deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
 import {
   FortnoxApi,
   FortnoxApiError,
@@ -564,8 +564,7 @@ export async function probeFortnoxSecret(
     secret: parsed.data,
     // Probe stub, not where expiry is set. Fortnox mints 1h access tokens via client_credentials and has NO refresh token (api.ts); recording the access token expiry here would warn on every row. See connections.md §3.6.
     expiresAt: null,
-    fetch: (input, init) =>
-      options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
+    fetch: deadlineFetch(options.fetch, timeoutMs),
   };
   return probeWith(conn, options);
 }
@@ -752,13 +751,14 @@ async function openFortnoxConnection(
         `that writes must be the same connection. Re-bind the scope against ${account.expected}.`,
     );
   }
+  const bounded = deadlineFetch(fetchImpl, timeoutMs);
   return {
     ...open,
     fetch: async (input, init) => {
       // #1691: timed, so the host's per-call data point carries a duration.
       const started = Date.now();
       try {
-        const res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        const res = await bounded(input, init);
         await admin.recordConnectionUse(
           open.id,
           settleConnectionUse('fortnox', Date.now() - started, { response: res }),
