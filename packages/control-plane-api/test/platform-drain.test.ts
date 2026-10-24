@@ -821,8 +821,9 @@ describe('provisionSiblingHandler — provisions a sibling of the drained scope'
   it.each([
     ['a whitespace-only name, refused by the payload', { slug: 'courts', name: '   ' }, /^provision-sibling payload is malformed: name: /],
     ['a slug provisioning does not admit, refused by the provision', { slug: 'Not A Slug', name: 'Courts' }, /./],
+    ['an owner that is not a principal, refused by the payload', { slug: 'courts', name: 'Courts', owner: 'not-a-principal' }, /^provision-sibling payload is malformed: owner: /],
   ])('settles %s failed at once, as validation_failed, creating nothing', async (_case, fields, error) => {
-    const req = intent('provision-sibling', { payload: { ...fields, owner } });
+    const req = intent('provision-sibling', { payload: { owner, ...fields } });
     const { client, settled } = fakeTransport([req]);
     const before = (await host.admin.listScopes(staff, { tenantId: t })).length;
 
@@ -980,6 +981,7 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     ["vertical ''", (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: '' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
     ['vertical a/b/c', (p: Payload) => ({ ...p, instance: { ...p.instance, vertical: 'a/b/c' } }), /^provision-tenant payload is malformed: instance\.vertical: /],
     ['a whitespace-only instance name', (p: Payload) => ({ ...p, instance: { ...p.instance, name: '   ' } }), /^provision-tenant payload is malformed: instance\.name: /],
+    ['an owner that is not a principal', (p: Payload) => ({ ...p, instance: { ...p.instance, owner: 'not-a-principal' } }), /^provision-tenant payload is malformed: instance\.owner: /],
     // These parse as a payload; the writes below them would refuse them, so the check before
     // any write does.
     ['an instance slug provisioning does not admit', (p: Payload) => ({ ...p, instance: { ...p.instance, slug: 'Main Site' } }), /./],
@@ -1006,6 +1008,7 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     ]);
     expect((await host.admin.listTenants(staff)).some((t) => t.id === newTenant)).toBe(false);
     expect(await host.admin.listEntitlements(staff, tenantId.parse(newTenant))).toEqual([]);
+    expect(await host.admin.listScopes(staff, { tenantId: tenantId.parse(newTenant) })).toEqual([]);
   });
 
   it.each([
