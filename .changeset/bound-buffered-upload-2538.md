@@ -14,6 +14,6 @@ The buffered connector upload is held to a size bound before it is buffered (#25
 - **The sentences.** Each `413` says to use the streaming upload above 16 MiB. The body-level refusals name the request body, not the attachment (`connectorAttachmentBodyRefusal`); the file part and the client use `connectorAttachmentBufferedRefusal`; the stream route's sentence is unchanged.
 - **Connectors.** `connectorUploadBody` (kernel) hands a connector's bytes to an upload as the buffer up to the bound and as a sized stream above it. The Microsoft 365 file sync (files up to 50 MiB) and the Scrive sealed PDF use it, so a file over 16 MiB keeps landing by the streamed route.
 
-Rollout: on a deployment that predates the streamed route (#2498), a 16–95 MiB upload has no working path until the vertical is re-pushed: the client refuses a buffer that large, and the stream route answers 501 "redeploy".
+Rollout: on a deployment that predates the streamed route (#2498), a 16–95 MiB upload has no working path until the vertical is re-pushed: the client refuses a buffer that large, and the stream route answers 501 "redeploy". Until then the Microsoft 365 sync holds such a file without its bytes, reports it (`skipped` on the sync result, naming the item, and in its held state), carries on with the rest of the pass, and tries the file again when the drive next presents it. Any other upload failure still stops the pass and retries the page, as before.
 
 A multipart upload over 16 MiB, which the route accepted until now, is refused. Use a streamed body for a file that large.

@@ -3,6 +3,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES } from '@substrat-run/contracts';
 import {
   attachmentSha256,
   connectorUploadBody,
@@ -383,11 +384,12 @@ describe('globalFetch with a sized stream body (#2498)', () => {
 });
 
 describe('connectorUploadBody (#2538)', () => {
-  const BOUND = 16 * 1024 * 1024;
+  const BOUND = CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES;
 
   it('keeps a buffer at or under the buffered bound as the buffer itself', () => {
     const at = new Uint8Array(BOUND);
-    expect(connectorUploadBody(at)).toBe(at);
+    // Identity by `===`: a failing `toBe` would try to diff 16 MiB of numbers.
+    expect(connectorUploadBody(at) === at).toBe(true);
   });
 
   it('hands a buffer over the bound as a sized stream carrying exactly its bytes', async () => {

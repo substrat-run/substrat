@@ -170,7 +170,19 @@ interface ItemEntry {
   seenIn?: string;
   /** How many lookups of this item were refused in a way that does not pass by itself. */
   unplaced?: number;
+  /**
+   * Set when this file's bytes could not be landed because the serving deployment cannot take a file
+   * this large yet (#2538). The item is held and reported, and its bytes are tried again the next time
+   * the drive presents it.
+   */
+  skipped?: string;
 }
+
+/** Why a file's bytes were not landed when the deployment predates the streamed upload route. */
+export const SKIPPED_NEEDS_REDEPLOY = 'the deployment serving this scope must be re-pushed to take a file this large';
+
+/** The streamed route's own "this deployment does not have me" answer: the platform client's 501. */
+const needsRedeploy = (e: unknown): boolean => typeof e === 'object' && e !== null && (e as { status?: unknown }).status === 501;
 
 /**
  * Declare that a connection syncs one scope with one channel folder.
@@ -467,6 +479,8 @@ export interface Microsoft365SyncResult {
   pages: number;
   /** False when the pass stopped at its page budget; the next call resumes where it stopped. */
   complete: boolean;
+  /** Files held without their bytes by this call, and why (#2538). Retried when the drive next presents them. */
+  skipped?: { itemId: string; reason: string }[];
   /**
    * Set when the binding was unbound or bound again while this call ran: the call stopped without
    * writing the binding back, so the operator's change stands.
@@ -568,6 +582,7 @@ export async function syncMicrosoft365Scope(
   const scope = await host.getConnectorScope(connectionId, scopeRef);
   let attachments: Awaited<ReturnType<ScopeHost['getConnectorAttachments']>> | undefined;
   const base = { connectionId };
+  const skipped: { itemId: string; reason: string }[] = [];
   const put = async (id: string, entry: ItemEntry | null) => {
     await host.admin.putConnectorState(connectionId, `${prefix}${id}`, entry);
     if (entry) index.set(id, entry);
@@ -606,28 +621,40 @@ export async function syncMicrosoft365Scope(
       if (target.success && target.data.entity) {
         const body = await contentOf(client, binding.driveId, item.id, MAX_FILE_BYTES);
         attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
-        const record = await attachments.upload({
-          entity: target.data.entity,
-          filename: p.entry.name,
-          contentType: item.file?.mimeType ?? 'application/octet-stream',
-          visibility: 'internal',
-          // A file over the buffered bound goes by the streamed route (#2538).
-          body: connectorUploadBody(body),
-        });
-        await scope.invoke(
-          binding.operation,
-          microsoft365ChannelChange.parse({
-            change: 'content',
-            ...base,
-            itemId: item.id,
-            kind: 'file',
-            path: p.entry.path,
-            name: p.entry.name,
-            attachment: record,
-            replaces: entry.attachmentId,
-          }),
-        );
-        entry.attachmentId = record.id;
+        let record: Awaited<ReturnType<NonNullable<typeof attachments>['upload']>> | undefined;
+        try {
+          record = await attachments.upload({
+            entity: target.data.entity,
+            filename: p.entry.name,
+            contentType: item.file?.mimeType ?? 'application/octet-stream',
+            visibility: 'internal',
+            // A file over the buffered bound goes by the streamed route (#2538).
+            body: connectorUploadBody(body),
+          });
+        } catch (e) {
+          // A deployment without the streamed route cannot take this file until it is re-pushed, and
+          // every later pass would meet the same file: hold it without its bytes, say so, and go on.
+          // Any other failure is what it was before, a reason to stop the pass and retry the page.
+          if (!needsRedeploy(e)) throw e;
+          entry.skipped = SKIPPED_NEEDS_REDEPLOY;
+          skipped.push({ itemId: item.id, reason: SKIPPED_NEEDS_REDEPLOY });
+        }
+        if (record) {
+          await scope.invoke(
+            binding.operation,
+            microsoft365ChannelChange.parse({
+              change: 'content',
+              ...base,
+              itemId: item.id,
+              kind: 'file',
+              path: p.entry.path,
+              name: p.entry.name,
+              attachment: record,
+              replaces: entry.attachmentId,
+            }),
+          );
+          entry.attachmentId = record.id;
+        }
       }
     }
     await put(item.id, entry);
@@ -743,7 +770,7 @@ export async function syncMicrosoft365Scope(
   const maxVerify = options.maxVerify ?? SYNC_VERIFY_PER_CALL;
   let pages = 0;
   let changes = 0;
-  const incomplete = (): Microsoft365SyncResult => ({ scopeId: binding.scopeId, changes, full: pass.full, pages, complete: false });
+  const incomplete = (): Microsoft365SyncResult => ({ scopeId: binding.scopeId, changes, full: pass.full, pages, complete: false, ...(skipped.length ? { skipped } : {}) });
   // One bounded unit per turn — a page of a folder's children, one item checked, or a page of the
   // feed — each landed and saved before the next, so a call stops anywhere and the next resumes.
   for (;;) {
@@ -797,7 +824,7 @@ export async function syncMicrosoft365Scope(
           { endPass: true },
         );
         if (!saved) return superseded(pages, changes, pass.full);
-        return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
+        return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true, ...(skipped.length ? { skipped } : {}) };
       }
       if (gets >= maxVerify) {
         pass = { ...pass, verify: next(queue) };
@@ -966,7 +993,9 @@ function planChanges(
       cTag: source.cTag ?? null,
       eTag: source.eTag ?? null,
     };
-    const contentChanged = kind === 'file' && (!prior || prior.cTag !== entry.cTag);
+    // A file held without its bytes is tried again when the drive presents it, not on every page that
+    // merely walks past it (an unpresented item carries no size to judge).
+    const contentChanged = kind === 'file' && (!prior || prior.cTag !== entry.cTag || (prior.skipped !== undefined && item !== undefined));
     if (prior && prior.path === entry.path && prior.eTag === entry.eTag && !contentChanged) continue;
     // A size Graph does not state is not taken as small: those bytes are not brought in either.
     const content =

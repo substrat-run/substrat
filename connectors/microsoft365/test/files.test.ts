@@ -20,6 +20,7 @@ import { testOperations } from '@substrat-run/contract-tests';
 import {
   MAX_FILE_BYTES,
   MICROSOFT365_FILES_EVENT,
+  SKIPPED_NEEDS_REDEPLOY,
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
   MAX_UNPLACED_ATTEMPTS,
@@ -511,8 +512,71 @@ describe('reads: the sync lands what is in the folder', () => {
     expect((bodies.get('big.bin') as { length: number }).length).toBe(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1);
     expect(bodies.get('edge.bin')).toBeInstanceOf(Uint8Array);
     expect(bodies.get('small.txt')).toBeInstanceOf(Uint8Array);
+    // And the stored bytes are the file's, read back.
     const big = w.landed.find((c) => c.change === 'content' && c.path === 'big.bin');
     expect(big).toBeDefined();
+    const opened = await w.attachments.open((big as { attachment: { id: string } }).attachment.id);
+    const stored = opened!.body as Uint8Array;
+    expect(stored.byteLength).toBe(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1);
+    expect(stored[0]).toBe(7);
+    expect(stored[stored.byteLength - 1]).toBe(7);
+  });
+
+  describe('a deployment that cannot take a file over the buffered bound (#2538)', () => {
+    /** Make the upload of `big.bin` answer as the platform client does for a deployment predating the streamed route. */
+    const refuseBig = (w: Awaited<ReturnType<typeof world>>, answer: () => unknown) => {
+      const real = w.host.getConnectorAttachments.bind(w.host);
+      vi.spyOn(w.host, 'getConnectorAttachments').mockImplementation(async (...args) => {
+        const inner = await real(...args);
+        return {
+          ...inner,
+          upload: async (input) => {
+            if (input.filename === 'big.bin') throw answer();
+            return inner.upload(input);
+          },
+        };
+      });
+    };
+    const redeploy = () => Object.assign(new Error('the deployment predates streamed connector uploads'), { status: 501 });
+
+    it('holds the file without its bytes, reports it, and lands the rest of the pass', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+      w.drive.put(w.general, 'small.txt', 'small');
+      await w.bind();
+      refuseBig(w, redeploy);
+      const r = await w.sync();
+      expect(r.complete).toBe(true);
+      expect(r.skipped).toEqual([{ itemId: expect.any(String), reason: SKIPPED_NEEDS_REDEPLOY }]);
+      expect(w.landed.some((c) => c.change === 'content' && c.path === 'small.txt')).toBe(true);
+      expect(w.landed.some((c) => c.change === 'content' && c.path === 'big.bin')).toBe(false);
+      // Held, so the vertical knows the item: the upsert landed and the state names the skip.
+      expect(w.landed.some((c) => c.change === 'upsert' && c.path === 'big.bin')).toBe(true);
+      expect(await w.state()).toContain('re-pushed');
+    });
+
+    it('tries the file again when the drive next presents it, and lands it once the deployment takes it', async () => {
+      const w = await world();
+      const id = w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+      await w.bind();
+      refuseBig(w, redeploy);
+      expect((await w.sync()).skipped).toHaveLength(1);
+      vi.restoreAllMocks();
+      w.drive.edit(id, 'now small');
+      w.landed.length = 0;
+      const r = await w.sync();
+      expect(r.skipped).toBeUndefined();
+      expect(w.landed.some((c) => c.change === 'content' && c.path === 'big.bin')).toBe(true);
+      expect(await w.state()).not.toContain('re-pushed');
+    });
+
+    it('a genuine transient failure still stops the pass, as before', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'big.bin', new Uint8Array(CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES + 1).fill(7));
+      await w.bind();
+      refuseBig(w, () => Object.assign(new Error('unavailable'), { status: 503 }));
+      await expect(w.sync()).rejects.toThrow('unavailable');
+    });
   });
 
   it('follows adds, edits, renames, moves and deletes from Teams', async () => {

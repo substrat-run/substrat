@@ -46,7 +46,8 @@ export type ByteBody = Uint8Array | SizedByteStream;
  * Bytes a connector already holds, in the shape a connector upload takes (#2538): the buffer itself
  * up to {@link CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES}, and above it a {@link SizedByteStream} of the
  * same bytes, which the platform sends by the streamed route instead of refusing. It does not shrink
- * what the connector holds; it keeps a file the connector could fetch landing end to end.
+ * what the connector holds; it keeps a file the connector could fetch landing end to end. The stream
+ * is one-shot: read it once, and call this again for another upload of the same bytes.
  */
 export function connectorUploadBody(bytes: Uint8Array): ByteBody {
   if (bytes.byteLength <= CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES) return bytes;
