@@ -709,7 +709,9 @@ never rebuilt keeps the up-calls it was built with.
    corroborates them with a count taken on the platform side, for example the router's own count
    of the requests it sent each deployment over the same window. A deployment whose entry count is
    missing, or does not agree with the platform's within the expected loss of log delivery, is not
-   ready, by name, whatever its own counts say.
+   ready, by name, whatever its own counts say. Key lists are pasted from the key tool's own output
+   only (`generate`, `rotate`); its `doctor` refuses values that look like private material, but it
+   cannot recognise every encoding of one.
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step

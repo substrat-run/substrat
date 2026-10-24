@@ -2877,7 +2877,12 @@ export interface HostAdmin {
    * report reads a deployment with no record as unknown, never as ready.
    */
   recordWireAuth?(actor: PlatformActorId, input: DeploymentWireAuthInput): Promise<void>;
-  /** The stored capability records, every one or one vertical's, by script name. Access-logged (K-24). */
+  /**
+   * The stored capability records, every one or one vertical's, by script name. A page at a time when
+   * the filter asks (`ListPage`: `limit`, `cursor` the last script name of the page before, `order`);
+   * unset, every one. A version's script keeps its record for as long as its vertical exists, so a
+   * reader of the whole fleet pages. Access-logged (K-24). Reached through the host API only today.
+   */
   listWireAuth?(actor: PlatformActorId, filter?: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   /**
    * Point a scope's ROUTING at the serving script its data now lives in. Per-scope

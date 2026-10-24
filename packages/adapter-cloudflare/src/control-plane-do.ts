@@ -3531,7 +3531,7 @@ export class ControlPlaneDO extends DurableObject {
     }, audit);
   }
 
-  /** The stored capability records, every one or one vertical's. */
+  /** The stored capability records, every one or one vertical's, a page at a time when the filter asks. */
   listWireAuth(filter: DeploymentWireAuthFilter): DeploymentWireAuth[] {
     return deploymentWireAuthOf(this.kernelSql, filter);
   }

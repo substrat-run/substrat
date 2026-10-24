@@ -120,8 +120,9 @@ which keeps them until it is uploaded again. In `dual` that changes nothing it s
 
 So neither `off` nor dropping a key from the lists withdraws that key from a script already given
 it. When a key must stop being trusted, take the break-glass path below, and until the fleet walk
-exists, count every script given a list naming that key as still trusting it: the capability
-records (`HostAdmin.listWireAuth`) name each script given lists and the key ids of each list.
+exists, count every script given a list naming that key as still trusting it. The admin log's
+`recordWireAuth` rows name each script an upload gave lists to and the key ids of each list (the
+records themselves are reachable only through the host API today, until the readiness report).
 
 ## Turning signing off
 
@@ -145,8 +146,10 @@ pnpm wire-keys doctor --file <env file> --key-file ~/keys/new.key
 
 It prints each issuer's listed kids and public keys, marks which one the signer uses, and names
 the rotation phase: `steady` is the key in use and its standby. It exits 1 on any problem the store
-tool's `doctor` refuses, warns on values that look like private material, and warns when a list has
-no standby. A failure names the variable and the check, never a value. `doctor` reads the env file; it cannot see what is deployed.
+tool's `doctor` refuses, refuses a list holding a value that looks like private material (an error:
+`doctor` exits 1 and `rotate` refuses), and warns when a list has no standby. Paste a list's
+entries only from the tool's own output (`generate`, `rotate`): it cannot recognise private
+material in every encoding. A failure names the variable and the check, never a value. `doctor` reads the env file; it cannot see what is deployed.
 
 ## Rotation
 
