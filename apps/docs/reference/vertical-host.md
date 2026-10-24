@@ -73,7 +73,12 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   to hold, `connector-attachment-stream`, whose body is the file itself, read into the
   bucket as it arrives, with the metadata and declared size in a header, #2498) or out (the
   raw bytes, with the record in a header), and the `connection:<id>` grant tuple the first
-  three are checked against.
+  three are checked against. Both upload routes hold the metadata to
+  `CONNECTOR_ATTACHMENT_META_MAX_BYTES` (8 KiB once URI-encoded) and answer one `400` for
+  more; the stream route also refuses a declared size over
+  `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES` (100 MiB) with a `413`, before it reads a byte, and a
+  streamed upload asks the connection's write gate before the first byte is read, so a
+  connection that may not write stores no object (#2516).
   Each is authorized in the scope's own DO like any other caller, and the grant has no
   revoke mirror because every delegated call re-passes the platform's live-connection
   gate first. Generic in the same sense as the group above: owned by the package,
