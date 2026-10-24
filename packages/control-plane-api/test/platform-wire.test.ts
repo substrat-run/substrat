@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, ULID_PATTERN, type ScopeId } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import { assertPlatformCall } from '@substrat-run/contracts/wire-auth';
 import {
@@ -28,6 +28,9 @@ import { PAGE_CALL_DEADLINE_MS, VerticalClient } from '../src/vertical-client.js
 
 const T = tenantId.parse('01JZ0000000000000000TEN001');
 const S = scopeId.parse('01JZ0000000000000000SCP001');
+/** A second pair, for look-alikes a body holds below its top level. */
+const X = '01JZ0000000000000000TEN0X1';
+const Y = '01JZ0000000000000000SCP0Y1';
 const AUD = 'acme-widgets-01jz';
 const SECRET = 'platform-legacy-value';
 
@@ -122,6 +125,8 @@ describe('platformCallScope: the tenant and scope a call names itself', () => {
 });
 
 describe('topLevelIds: the walk reads what a parse reads, for every body JSON.stringify writes', () => {
+  const URL_ = 'https://vertical.invalid/internal/x';
+  const at = (url: string) => new Request(url, { headers: { 'content-type': 'application/json' } });
   const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
   /** What a full parse gives for the two keys: the value when it is a string of a ULID's length, else null. */
   const parsed = (value: unknown) => {
@@ -136,6 +141,7 @@ describe('topLevelIds: the walk reads what a parse reads, for every body JSON.st
   it.each([
     ['both first', { tenantId: T, scopeId: S, rest: [1, 2] }],
     ['both last, after nested look-alikes', { a: { tenantId: 'n', scopeId: 'n' }, b: [{ tenantId: T }], scopeId: S, tenantId: T }],
+    ['nested look-alikes after a comma, ahead of the real ones', { a: { x: 1, tenantId: X, scopeId: Y }, tenantId: T, scopeId: S }],
     ['look-alikes inside strings', { s: '"tenantId":"01JZ0000000000000000TEN009"', t: '\\"', scopeId: S, tenantId: T }],
     ['keys that only begin like the names', { tenantIds: T, scopeIdentity: S, tenant: T }],
     ['non-string values', { tenantId: 7, scopeId: null, x: true }],
@@ -153,6 +159,61 @@ describe('topLevelIds: the walk reads what a parse reads, for every body JSON.st
     for (const value of [[{ tenantId: T, scopeId: S }], 'tenantId', 7, null]) expect(topLevelIds(bytes(value))).toEqual({});
     expect(topLevelIds(new TextEncoder().encode('  \n {"tenantId":"' + T + '","scopeId":"' + S + '"}'))).toEqual({ tenantId: T, scopeId: S });
     expect(topLevelIds(new TextEncoder().encode('{"tenantId":"' + T))).toEqual({});
+  });
+
+  it('names what a parse names over thousands of seeded bodies, compact and indented', () => {
+    // A seeded generator, so a failure names a body that can be reproduced: nested objects and
+    // arrays, the two names and look-alikes at every depth, and strings full of what the walk skips.
+    let seed = 0x2532;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pick = <V,>(from: readonly V[]): V => from[Math.floor(random() * from.length)]!;
+    const KEYS = ['tenantId', 'scopeId', 'tenantId', 'scopeId', 'tenantIds', 'scope', 'Id', 'x', 'k"\\', '{,}', 'é'];
+    const STRINGS = [T, S, X, Y, `${T}x`, '"', '\\', '{}[],:', '\u2028', '\ud800', '𝄞', 'é'.repeat(13), '"'.repeat(26), ''];
+    const value = (depth: number): unknown => {
+      const kind = pick(depth < 3 ? ['string', 'string', 'number', 'literal', 'object', 'array'] : ['string', 'number', 'literal']);
+      if (kind === 'string') return pick(STRINGS);
+      if (kind === 'number') return pick([0, -1.5e3, 7, 1e21]);
+      if (kind === 'literal') return pick([true, false, null]);
+      if (kind === 'array') return Array.from({ length: Math.floor(random() * 4) }, () => value(depth + 1));
+      return object(depth + 1);
+    };
+    const object = (depth: number) => Object.fromEntries(Array.from({ length: Math.floor(random() * 6) }, () => [pick(KEYS), value(depth)]));
+    /** A top-level body: random entries, and most of the time a ULID under each name, at random places among them. */
+    const top = () => {
+      const entries = Object.entries(object(0));
+      if (random() < 0.6) {
+        entries.splice(Math.floor(random() * (entries.length + 1)), 0, ['tenantId', pick([T, X])]);
+        entries.splice(Math.floor(random() * (entries.length + 1)), 0, ['scopeId', pick([S, Y])]);
+      }
+      return Object.fromEntries(entries);
+    };
+    /** The pair the full parse this walk replaced named, and which of the two keys it saw. */
+    const reference = (json: string) => {
+      const parsedBody = JSON.parse(json) as Record<string, unknown>;
+      const ulid = (v: unknown) => typeof v === 'string' && ULID_PATTERN.test(v);
+      return {
+        pair: ulid(parsedBody['tenantId']) && ulid(parsedBody['scopeId']) ? { tenantId: parsedBody['tenantId'], scopeId: parsedBody['scopeId'] } : null,
+        keys: ['tenantId', 'scopeId'].filter((k) => k in parsedBody),
+      };
+    };
+    let named = 0;
+    for (let n = 0; n < 3000; n++) {
+      const body = top();
+      for (const json of [JSON.stringify(body), JSON.stringify(body, null, 2), JSON.stringify(body, null, '\t')]) {
+        const encoded = new TextEncoder().encode(json);
+        const want = reference(json);
+        const keys = Object.keys(topLevelIds(encoded)).sort();
+        expect({ pair: platformCallScope(at(URL_), encoded.buffer as ArrayBuffer), keys }, json).toEqual({ ...want, keys: [...want.keys].sort() });
+        if (want.pair) named++;
+      }
+    }
+    // The bodies exercised the case that matters: a pair the parse names.
+    expect(named).toBeGreaterThan(100);
   });
 
   it('stops once both keys are seen: what follows them is never walked', () => {
