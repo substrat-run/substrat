@@ -221,14 +221,23 @@ export function decodeWireEnvelope(header: string): { readonly canonical: string
   return claims ? { canonical, claims } : undefined;
 }
 
-/** Fifteen lines, no trailing newline. Throws on a field the parser would refuse. */
+/**
+ * The encoder's refusal of claims no verifier would accept: a field the parser would refuse, a body
+ * where the pair binds none or none where it binds one, a lifetime past the maximum. Its own class, so
+ * a signer counts it as `claims` and every other throw as `error` (RFC §8).
+ */
+export class WireClaimsError extends Error {
+  override readonly name = 'WireClaimsError';
+}
+
+/** Fifteen lines, no trailing newline. Throws {@link WireClaimsError} on a field the parser would refuse. */
 export function canonicalWireEnvelope(claims: WireClaims): string {
-  if (claims.v !== WIRE_ENVELOPE_VERSION) throw new Error(`unknown wire envelope version ${claims.v}`);
+  if (claims.v !== WIRE_ENVELOPE_VERSION) throw new WireClaimsError(`unknown wire envelope version ${claims.v}`);
   for (const time of [claims.iat, claims.exp]) {
-    if (!Number.isSafeInteger(time) || time < 0) throw new Error('a wire envelope time is not a non-negative integer');
+    if (!Number.isSafeInteger(time) || time < 0) throw new WireClaimsError('a wire envelope time is not a non-negative integer');
   }
   const optional = (value: string | null) => {
-    if (value === '') throw new Error('a wire envelope field is empty: an absent field is null');
+    if (value === '') throw new WireClaimsError('a wire envelope field is empty: an absent field is null');
     return value ?? '';
   };
   const lines = [
@@ -248,9 +257,9 @@ export function canonicalWireEnvelope(claims: WireClaims): string {
     String(claims.exp),
     claims.nonce,
   ];
-  if (lines.some((line) => line.includes('\n'))) throw new Error('a wire envelope field contains a newline');
+  if (lines.some((line) => line.includes('\n'))) throw new WireClaimsError('a wire envelope field contains a newline');
   const canonical = lines.join('\n');
-  if (!parseWireEnvelope(canonical)) throw new Error('a wire envelope field is malformed');
+  if (!parseWireEnvelope(canonical)) throw new WireClaimsError('a wire envelope field is malformed');
   return canonical;
 }
 
@@ -354,16 +363,16 @@ export interface IssuedWireEnvelope {
   readonly signature: string;
 }
 
-/** Build, digest and sign one envelope. Throws on an input no verifier would accept. */
+/** Build, digest and sign one envelope. Throws {@link WireClaimsError} on an input no verifier would accept. */
 export async function signWireEnvelope(key: WireSigningKey, input: WireEnvelopeInput): Promise<IssuedWireEnvelope> {
   // A pair the table does not admit fails in the encoder below, as malformed.
   const body = wireEnvelopeShape(input.iss, input.kind)?.body;
-  if (body === 'absent' && input.body !== undefined) throw new Error(`a ${input.kind} envelope binds no body`);
+  if (body === 'absent' && input.body !== undefined) throw new WireClaimsError(`a ${input.kind} envelope binds no body`);
   // `== null`, as the verifier reads it: a null body is a read that failed, never the empty body.
-  if (body === 'required' && input.body == null) throw new Error(`a ${input.kind} envelope binds its body: pass it, empty or not`);
+  if (body === 'required' && input.body == null) throw new WireClaimsError(`a ${input.kind} envelope binds its body: pass it, empty or not`);
   const iat = input.iat ?? Math.floor(Date.now() / 1000);
   const exp = input.exp ?? iat + WIRE_ENVELOPE_LIFETIME_SECONDS;
-  if (!lifetimeAdmitted(iat, exp)) throw new Error('a wire envelope lives for at most the maximum lifetime, and ends after it starts');
+  if (!lifetimeAdmitted(iat, exp)) throw new WireClaimsError('a wire envelope lives for at most the maximum lifetime, and ends after it starts');
   const claims: WireClaims = {
     v: 1,
     iss: input.iss,
@@ -876,11 +885,16 @@ export function wireSignerOf(settings: { readonly sign?: unknown; readonly key?:
     } catch (error) {
       return { request, outcome: 'failed', reason: error instanceof WireKeyError ? error.reason : 'error' };
     }
-    const body = await bodyToBind(request, claims.kind);
+    let body: ArrayBuffer | undefined;
     try {
+      body = await bodyToBind(request, claims.kind);
       return { request: await signedWith(key, request, { ...claims, ...named?.(request, body) }, body), outcome: 'signed' };
-    } catch {
-      return { request: body === undefined ? request : new Request(request, { body }), outcome: 'failed', reason: 'claims' };
+    } catch (error) {
+      // `claims` only for the encoder's own refusal; a body that cannot be read, a throw from
+      // `named`, the rebuild or the signing call is `error`. A body read before the failure goes
+      // back on the request, so it is sent whole.
+      const reason = error instanceof WireClaimsError ? 'claims' : 'error';
+      return { request: body === undefined ? request : new Request(request, { body }), outcome: 'failed', reason };
     }
   };
 }

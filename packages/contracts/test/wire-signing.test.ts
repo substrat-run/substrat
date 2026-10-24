@@ -36,6 +36,7 @@ import {
   wireReplayOf,
   WIRE_REPLAY_FREE_CALLS,
   wireEnvelopeShape,
+  WireClaimsError,
   WireKeyError,
   wireRequestBinding,
   wireStateOf,
@@ -47,6 +48,7 @@ import {
   WIRE_STATES,
   type WireBodyReader,
   type WireBytes,
+  type WireClaims,
   type WireEnvelopeInput,
   type WireExpectation,
   type WireIssuer,
@@ -700,6 +702,19 @@ describe('wire envelope: the encoder', () => {
     await expect(signWireEnvelope(key, { ...route, iat: -5, exp: 10 })).rejects.toThrow(/time/);
     await expect(signWireEnvelope(key, { ...route, nonce: 'n' })).rejects.toThrow(/malformed/);
   });
+
+  it('every refusal is the encoder’s own class, which a signer counts as `claims` (RFC §8)', async () => {
+    const key = await importWireSigningKey(fixture.keys.router.privateKeyPkcs8);
+    const claims = parseWireEnvelope(ROUTE.canonical)!;
+    for (const patch of [{ vertical: '' }, { vertical: 'a\nb' }, { iat: -1 }, { v: 2 }, { scopeId: null }]) {
+      expect(() => canonicalWireEnvelope({ ...claims, ...patch } as WireClaims), JSON.stringify(patch)).toThrow(WireClaimsError);
+    }
+    const { body: _body, ...bodiless } = ROUTER_CALL.input;
+    for (const input of [{ ...ROUTE.input, body: '' }, bodiless, { ...ROUTE.input, iat: 10, exp: 500 }, { ...ROUTE.input, method: 'get' }]) {
+      await expect(signWireEnvelope(key, input)).rejects.toThrow(WireClaimsError);
+    }
+    expect(new WireClaimsError('x')).toBeInstanceOf(Error);
+  });
 });
 
 describe('wire envelope: replay', () => {
@@ -1135,6 +1150,23 @@ describe('wireSignerOf: one signer decision for the router and the control plane
     expect(result).toMatchObject({ outcome: 'failed', reason: 'claims' });
     expect(result.request.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
     expect(await result.request.text()).toBe('{"a":1}');
+  });
+
+  it('any other throw after the body was read is `error`, never `claims`: the request still comes back whole', async () => {
+    const named = () => {
+      throw new TypeError('not a claims refusal');
+    };
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(call(), CALL_CLAIMS, named);
+    expect(result).toMatchObject({ outcome: 'failed', reason: 'error' });
+    expect(result.request.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
+    expect(await result.request.text()).toBe('{"a":1}');
+  });
+
+  it('a body that cannot be read fails the signing, not the request: handed back, failed as error', async () => {
+    const broken = new ReadableStream<Uint8Array>({ pull: (controller) => controller.error(new Error('gone')) });
+    const request = new Request('https://vertical/internal/provision', { method: 'POST', body: broken, duplex: 'half' } as RequestInit);
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(request, CALL_CLAIMS);
+    expect(result).toEqual({ request, outcome: 'failed', reason: 'error' });
   });
 });
 
