@@ -1742,20 +1742,20 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
    * record header the client parses, and the ordinary file (the positive twin) stays as it was.
    */
   it.each([
-    ['ASCII', 'avtal.pdf', 'application/pdf'],
-    ['Latin-1', 'avtal åäö.pdf', 'application/pdf'],
-    ['non-Latin-1 (en dash)', 'avtal – final.pdf', 'application/pdf'],
-    ['CJK', '契約書.pdf', 'application/pdf'],
-    ['emoji (surrogate pair)', 'signed 📝.pdf', 'application/pdf'],
-    ['lone surrogate', 'broken \ud83d.pdf', 'application/pdf'],
-    ['quotes and backslash', 'say "hi" \\ it\'s.pdf', 'application/pdf'],
-    ['CRLF', 'line\r\nbreak: injected.pdf', 'application/pdf'],
-    ['DEL and NUL', 'del\u007f nul\u0000.pdf', 'application/pdf'],
-    ['percent', '100% %41.pdf', 'application/pdf'],
-    ['non-Latin-1 content type', 'avtal.pdf', 'text/plain; name="–"'],
-    ['CRLF content type', 'avtal.pdf', 'text/plain\r\nx-injected: 1'],
-    ['edge whitespace content type', 'avtal.pdf', ' application/pdf '],
-  ])('connector-attachment GET: reads back a stored %s unchanged', async (_name, filename, contentType) => {
+    ['ASCII', 'avtal.pdf', 'application/pdf', true],
+    ['Latin-1', 'avtal åäö.pdf', 'application/pdf', true],
+    ['non-Latin-1 (en dash)', 'avtal – final.pdf', 'application/pdf', true],
+    ['CJK', '契約書.pdf', 'application/pdf', true],
+    ['emoji (surrogate pair)', 'signed 📝.pdf', 'application/pdf', true],
+    ['lone surrogate', 'broken \ud83d.pdf', 'application/pdf', true],
+    ['quotes and backslash', 'say "hi" \\ it\'s.pdf', 'application/pdf', true],
+    ['CRLF', 'line\r\nbreak: injected.pdf', 'application/pdf', true],
+    ['DEL and NUL', 'del\u007f nul\u0000.pdf', 'application/pdf', true],
+    ['percent', '100% %41.pdf', 'application/pdf', true],
+    ['non-Latin-1 content type', 'avtal.pdf', 'text/plain; name="–"', false],
+    ['CRLF content type', 'avtal.pdf', 'text/plain\r\nx-injected: 1', false],
+    ['edge whitespace content type', 'avtal.pdf', ' application/pdf ', false],
+  ])('connector-attachment GET: reads back a stored %s unchanged', async (_name, filename, contentType, keepsType) => {
     const bytes = new TextEncoder().encode('%PDF-1.4 the avtal');
     const record = {
       id: 'att-1',
@@ -1784,8 +1784,112 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(raw).toMatch(/^[\x20-\x7e]*$/);
     expect(JSON.parse(raw)).toEqual(record);
     // The response's own type is the stored one when a header accepts it, else the opaque default.
-    const headerSafe = !/[^\x20-\x7e]/.test(contentType) && contentType === contentType.trim();
-    expect(res.headers.get('content-type')).toBe(headerSafe ? contentType : 'application/octet-stream');
+    // A type a header carries is sent as stored; one it refuses falls back to the opaque default.
+    const sent = res.headers.get('content-type')!;
+    expect(sent).toBe(keepsType ? contentType : 'application/octet-stream');
+    expect(() => new Headers({ 'content-type': sent })).not.toThrow();
+  });
+
+  /**
+   * The longest a stored record can be: the connector upload routes cap the filename at 512 UTF-16
+   * units and the content type at 255, and an astral or non-BMP character escapes to 6 bytes a unit.
+   * The header has to stay under a stated bound (6 KiB, well under a transport's header limit) at
+   * that worst case, or a stored file is unreadable again (#2519).
+   */
+  it('connector-attachment GET: the record header stays under 6 KiB at the longest admitted record', async () => {
+    const filename = '\ud83d\udcdd'.repeat(256); // 512 UTF-16 units, all escaped
+    const contentType = 'text/' + '\u2013'.repeat(250); // 255 units
+    expect(filename).toHaveLength(512);
+    expect(contentType).toHaveLength(255);
+    const record = {
+      id: 'att-1',
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      filename,
+      contentType,
+      size: 1,
+      sha256: 'a'.repeat(64),
+      visibility: 'customer',
+      createdBy: CONN,
+      createdAt: '2026-08-17T00:00:00.000Z',
+    };
+    const host = fakeHost({
+      connectorAttachmentOpenLocal: async () => ({ record, body: new Uint8Array(1), contentType }),
+    });
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    expect(raw.length).toBeLessThan(6 * 1024);
+    expect(JSON.parse(raw)).toEqual(record);
+  });
+
+  it('connector-attachment: a filename of exactly 512 units and a content type of 255 are still stored', async () => {
+    // The twin of the refusals below: the same request shape, one unit shorter, lands.
+    const host = fakeHost({ connectorAttachmentUploadLocal: async () => ({ id: 'att1' }) as never });
+    const form = new FormData();
+    form.append(
+      'meta',
+      JSON.stringify({
+        connectionId: CONN,
+        tenantId: TENANT,
+        scopeId: SCOPE,
+        entity: { entityType: 'protocol', entityId: 'p1' },
+        visibility: 'customer',
+        filename: 'a'.repeat(512),
+        contentType: 'a'.repeat(255),
+      }),
+    );
+    form.append('body', new Blob(['x']));
+    const res = await appWith(host).request(
+      '/internal/connector-attachment',
+      { method: 'POST', headers: authed(), body: form },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it.each([
+    ['filename', { filename: 'a'.repeat(513), contentType: 'application/pdf' }],
+    ['content type', { filename: 'a.pdf', contentType: 'a'.repeat(256) }],
+  ])('connector-attachment: a %s over its cap is refused before anything is stored', async (_name, over) => {
+    let stored = 0;
+    const host = fakeHost({
+      connectorAttachmentUploadLocal: async () => {
+        stored++;
+        return {} as never;
+      },
+    });
+    const meta = {
+      connectionId: CONN,
+      tenantId: TENANT,
+      scopeId: SCOPE,
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      visibility: 'customer',
+      ...over,
+    };
+    const form = new FormData();
+    form.append('meta', JSON.stringify(meta));
+    form.append('body', new Blob(['x']));
+    const multipart = await appWith(host).request(
+      '/internal/connector-attachment',
+      { method: 'POST', headers: authed(), body: form },
+      ENV,
+    );
+    expect(multipart.status).toBe(400);
+    const streamed = await appWith(host).request(
+      '/internal/connector-attachment-stream',
+      {
+        method: 'POST',
+        headers: { ...authed(), 'x-substrat-attachment-meta': encodeURIComponent(JSON.stringify({ ...meta, size: 1 })) },
+        body: 'x',
+      },
+      ENV,
+    );
+    expect(streamed.status).toBe(400);
+    expect(stored).toBe(0);
   });
 
   /**

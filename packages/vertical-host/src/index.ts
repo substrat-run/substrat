@@ -1001,8 +1001,11 @@ const connectorAttachmentMeta = z.object({
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
   entity: entityRef,
-  filename: z.string().min(1),
-  contentType: z.string().min(1),
+  // Bounded so the record header a read-back escapes to ASCII (up to 6 bytes a UTF-16 unit) stays
+  // under 6 KiB at the worst case: 512 + 255 units, about 4.6 KiB, against a transport limit of
+  // 16 KiB and up (#2519). 512 keeps a realistic 400-character path (#2498) storable.
+  filename: z.string().min(1).max(512),
+  contentType: z.string().min(1).max(255),
   visibility,
 });
 

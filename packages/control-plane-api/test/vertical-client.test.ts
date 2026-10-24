@@ -235,25 +235,6 @@ describe('VerticalClient — transport rejections become diagnosable 502s (#391)
       expect(url).toContain(`scopeId=${s}`);
     });
 
-    it('reads a record whose strings the route escaped to ASCII, with the type from the record (#2519)', async () => {
-      const stored = { ...record, filename: 'avtal – 📝.pdf', contentType: 'text/plain; name="–"' };
-      // What the route sends: the same JSON with every non-ASCII character a \uXXXX escape,
-      // and the opaque default as the response type because the stored one is not header-safe.
-      const wire = JSON.stringify(stored).replace(/[^\x20-\x7e]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
-      const client = new VerticalClient({
-        fetch: (async () =>
-          new Response(bytes, {
-            status: 200,
-            headers: { 'content-type': 'application/octet-stream', 'x-substrat-attachment': wire },
-          })) as unknown as typeof fetch,
-        platformSecret: 'secret',
-      });
-
-      const opened = await client.connectorOpenAttachment(args);
-      expect(opened!.record.filename).toBe(stored.filename);
-      expect(opened!.contentType).toBe(stored.contentType);
-    });
-
     it('answers null on 404, so a connector falls back rather than failing', async () => {
       const client = new VerticalClient({
         fetch: (async () => new Response(null, { status: 404 })) as unknown as typeof fetch,

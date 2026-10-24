@@ -120,6 +120,27 @@ describe('attachment surface (pure adapter)', () => {
     expect(opened!.contentType).toBe('image/jpeg');
   });
 
+  // #2519: the connector read returns the record AND the type, and the client trusts the record's.
+  // That holds only while the stored object carries the type the row does, even for a type no
+  // header could carry.
+  it('opens an attachment with the content type its record holds, whatever the type', async () => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    for (const contentType of ['image/jpeg', 'text/plain; name="\u2013"', ' application/pdf ']) {
+      const rec = await att.upload({
+        entity: { entityType: 'doc', entityId: 'd1' },
+        filename: 'x.bin',
+        contentType,
+        visibility: 'internal',
+        body: bytes('b'),
+      });
+      const opened = await att.open(rec.id);
+      expect(rec.contentType).toBe(contentType);
+      expect(opened!.contentType).toBe(rec.contentType);
+      expect(opened!.record.contentType).toBe(rec.contentType);
+    }
+  });
+
   // #1575: a host refuses, when it is built, an extractor declaration it could not honour.
   it('refuses at construction an extractor whose input bound is not a positive integer', () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-att-bad-'));
