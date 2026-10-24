@@ -1017,6 +1017,7 @@ export type {
 export {
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
   listScopeStoreStorageRows,

@@ -4559,8 +4559,8 @@ export interface HostAdmin {
    */
   recordScopeStorage?(actor: PlatformActorId, readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
   /**
-   * Stored storage samples (#1524) — the latest per scope, or a bounded history. See
-   * `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
+   * Stored storage samples (#1524) — the latest per scope, or a bounded history,
+   * which includes a reaped scope's kept days (#2515). See `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
    */
   listScopeStorage?(actor: PlatformActorId, filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
   /** Every stored scope's latest storage-read attempt (#1524): the storage phase's due list. Access-logged. */

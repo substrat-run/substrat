@@ -354,6 +354,7 @@ import {
   FINDINGS_DDL,
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
   listScopeStoreStorageRows,
@@ -8363,8 +8364,8 @@ export class SqliteScopeHost implements ScopeHost {
         }
         if (to === 'reaped') {
           forgetSwitchesOf(switchSqlOf(this.directory), scopeId);
-          // #1524: its storage is gone, so its samples describe nothing.
-          forgetScopeStorage(redactionSqlOf(this.directory), scopeId);
+          // #2515: its storage is gone, and its measured days are kept for the invoice (retention ends them).
+          retireScopeStorage(redactionSqlOf(this.directory), scopeId);
         }
         // The audit target carries the scope's vertical (control-plane.md §4.4:
         // "vertical stays null until §4.2 lifecycle actions that name one"). It is

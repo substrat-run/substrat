@@ -7,9 +7,10 @@ import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
- * #1524: reap and fork delete DELETE a scope's storage samples and its attempt row. Every read of either
- * also joins on scope status, so the shared contract suite cannot see whether the rows are
- * gone or only hidden; this reads the directory tables themselves.
+ * #1524: fork delete DELETEs a scope's storage samples and its attempt row; a reap (#2515) keeps the
+ * samples and deletes the attempt row. The latest, attempt and meter reads join on scope status,
+ * so the shared contract suite cannot see whether those rows are gone or only hidden; this reads
+ * the directory tables themselves.
  */
 describe('storage gauge rows at reap (#1524)', () => {
   it('measures a legacy archived row whose archived_from_status is NULL, as before the column existed', async () => {
@@ -38,7 +39,7 @@ describe('storage gauge rows at reap (#1524)', () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  it("deletes a reaped scope's and a deleted fork's samples and attempt, and keeps its sibling's", async () => {
+  it("keeps a reaped scope's samples and drops its attempt, deletes a deleted fork's, and keeps its sibling's", async () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-gauge-reap-'));
     dirs.push(dir);
     const host = new SqliteScopeHost({ dir });
@@ -69,7 +70,8 @@ describe('storage gauge rows at reap (#1524)', () => {
     await host.admin.archiveScope(staff, t, reaped);
     await host.admin.reapScope(staff, t, reaped);
 
-    expect(rows(reaped)).toEqual([0, 0, 0]);
+    // #2515: the days stay for the invoice; only the attempt, which has no retention, goes.
+    expect(rows(reaped)).toEqual([1, 0, 2]);
     expect(rows(kept)).toEqual([1, 1, 2]);
 
     // Fork delete (`deleteSnapshot`) removes the directory row itself, so the rows it leaves
