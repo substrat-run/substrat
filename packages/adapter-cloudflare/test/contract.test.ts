@@ -471,7 +471,9 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
     await host.admin.activateScope(staff, t, s);
     return { host, t, s };
   };
-  const stubOf = (s: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(s));
+  type SizeStub = { databaseSizeIfHeld(): Promise<number | null>; attachmentBytesIfHeld(): Promise<number | null> };
+  const objectOf = (s: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(s));
+  const stubOf = (s: ScopeId) => objectOf(s) as unknown as SizeStub;
 
   it('each read makes exactly one RPC to the scope, so a reap cannot land between a check and a read', async () => {
     const { host, s } = await heldScope();
@@ -501,7 +503,7 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
   it('a tombstoned object that still has its rows is not held', async () => {
     const { host, s } = await heldScope();
     onTestFinished(async () => host.close());
-    await runInDurableObject(stubOf(s), async (_i, state) => {
+    await runInDurableObject(objectOf(s), async (_i, state) => {
       await state.storage.put('_substrat_reaped', true);
     });
     expect(await stubOf(s).databaseSizeIfHeld()).toBeNull();
