@@ -42,40 +42,6 @@ export const CONNECTOR_ATTACHMENT_META_HEADER = 'x-substrat-attachment-meta';
 export const CONNECTOR_ATTACHMENT_META_MAX_BYTES = 8 * 1024;
 
 /**
- * How many bytes a connector upload's metadata takes on the wire: its JSON, URI-encoded, which is
- * what the stream route's header carries. The multipart route carries the same JSON in a field and
- * is held to the same count, so one filename is accepted or refused the same way on both (#2516).
- */
-export function connectorAttachmentMetaBytes(metaJson: string): number {
-  return encodeURIComponent(metaJson).length;
-}
-
-/** The one sentence every end uses to refuse metadata over {@link CONNECTOR_ATTACHMENT_META_MAX_BYTES}. */
-export function connectorAttachmentMetaRefusal(bytes: number): string {
-  return (
-    `the attachment's metadata is ${bytes} bytes once encoded, over the ` +
-    `${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound a connector upload carries it in — shorten the filename`
-  );
-}
-
-/**
- * The most bytes one streamed connector upload may carry (#2516). Streaming took the worker's
- * memory out of the limit, which left nothing bounding a file; this is that bound, held where the
- * bytes arrive (the stream route) and again by the platform before it sends. It sits under the
- * Workers request-body limit of the lowest plan a router fronts, 100 MB decimal (about 95.4 MiB),
- * so an over-large file is refused with an answer instead of cut off mid-transfer by the edge.
- */
-export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 95 * 1024 * 1024;
-
-/** The one sentence every end uses to refuse a declared size over {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}. */
-export function connectorAttachmentSizeRefusal(declared: number): string {
-  return (
-    `the attachment declares ${declared} bytes, over the ${CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}-byte ` +
-    `bound on a streamed connector upload`
-  );
-}
-
-/**
  * The RESPONSE header a vertical sets when the operation it just ran enqueued
  * platform requests (`ctx.requestPlatform`). The router — the one hop that sees
  * every response — reads it and kicks an immediate drain of that scope (#381),
