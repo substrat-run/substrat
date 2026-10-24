@@ -283,14 +283,7 @@ describe('AI-written text in the dashboard (#1749)', () => {
     it('a spent budget is refused before the model is called', async () => {
       const dash = await host.getScope(people.viewer, tenant, dashScope);
       for (let i = 0; i < EXPLANATION_LIMITS.perPersonPerDay; i++) {
-        await dash.invoke('dashboard/record-explanation', {
-          subject: `finding:filler-${i}`,
-          digest: '0'.repeat(64),
-          text: 'filler',
-          provenance: { writtenAt: clock.read(), model: 'm', since: 's', until: 'u', sources: [], summary: '' },
-          model: 'cloudflare:@cf/x',
-          usage: { inputTokens: 1, outputTokens: 1, listUsd: null },
-        });
+        await dash.invoke('dashboard/reserve-explanation', { subject: `finding:filler-${i}` });
       }
       const f = await myFinding();
       const res = await as('viewer', 'POST', `/findings/${f.id}/explanation`);
@@ -301,9 +294,47 @@ describe('AI-written text in the dashboard (#1749)', () => {
       expect(owner.budget).toMatchObject({ person: { used: 1 }, team: { used: EXPLANATION_LIMITS.perPersonPerDay + 1 } });
     });
 
-    it('with the flag off, nothing is offered and nothing is called', async () => {
+    it('parallel writes at the last unit of budget make one model call, not one each', async () => {
+      const dash = await host.getScope(people.viewer, tenant, dashScope);
+      for (let i = 0; i < EXPLANATION_LIMITS.perPersonPerDay - 1; i++) {
+        await dash.invoke('dashboard/reserve-explanation', { subject: `finding:filler-${i}` });
+      }
+      const f = await myFinding();
+      const answers = await Promise.all(Array.from({ length: 5 }, () => as('viewer', 'POST', `/findings/${f.id}/explanation`)));
+      expect(answers.map((r) => r.status).sort()).toEqual([200, 429, 429, 429, 429]);
+      expect(modelCalls).toHaveLength(1);
+    });
+
+    it('a model that fails is a 502, and the call still counts against the budget', async () => {
+      env.AI = {
+        run: async (model: string, inputs: unknown) => {
+          modelCalls.push({ model, inputs });
+          throw new Error('upstream 529: overloaded at account 8cbb');
+        },
+      };
+      const f = await myFinding();
+      const res = await as('viewer', 'POST', `/findings/${f.id}/explanation`);
+      expect(res.status).toBe(502);
+      // The upstream detail stays in the log; the tenant reads that the model could not answer.
+      expect(await res.text()).not.toContain('8cbb');
+      const view = await ok(as('viewer', 'GET', `/findings/${f.id}/explanation`));
+      expect(view.explanation).toBeNull();
+      expect(view.budget!.person.used).toBe(1);
+    });
+
+    it('acknowledging a finding does not stale its explanation', async () => {
+      const f = await myFinding();
+      await ok(as('viewer', 'POST', `/findings/${f.id}/explanation`));
+      await host.admin.setFindingStatus(staff, tenant, f.id, 'acked');
+      const view = await ok(as('viewer', 'GET', `/findings/${f.id}/explanation?status=acked&kind=${f.kind}`));
+      expect(view.explanation).toMatchObject({ current: true });
+    });
+
+    it('with the flag off, nothing is offered, nothing is read and nothing is called', async () => {
       env.AI_EXPLANATIONS = undefined;
       const f = await myFinding();
+      planeCalls = [];
+      expect(await ok(as('viewer', 'GET', '/explanations'))).toMatchObject({ available: false, reason: 'off' });
       expect(await ok(as('viewer', 'GET', `/findings/${f.id}/explanation`))).toEqual({
         available: false,
         reason: 'off',
@@ -312,6 +343,17 @@ describe('AI-written text in the dashboard (#1749)', () => {
         budget: null,
       });
       expect((await as('viewer', 'POST', `/findings/${f.id}/explanation`)).status).toBe(409);
+      expect(modelCalls).toEqual([]);
+      // Not one evidence read: the off answer comes before the walk.
+      expect(planeCalls).toEqual([]);
+    });
+
+    it('one read tells a page whether to draw the blocks at all, and the budget', async () => {
+      expect(await ok(as('viewer', 'GET', '/explanations'))).toMatchObject({
+        available: true,
+        explanation: null,
+        budget: { person: { used: 0 }, team: { used: 0 } },
+      });
       expect(modelCalls).toEqual([]);
     });
 
@@ -323,17 +365,20 @@ describe('AI-written text in the dashboard (#1749)', () => {
   });
 
   describe('the record in the team’s scope', () => {
-    const record = (who: PrincipalId, subject: string, text = 'filed') =>
-      host.getScope(who, tenant, dashScope).then((dash) =>
-        dash.invoke('dashboard/record-explanation', {
-          subject,
+    const record = async (who: PrincipalId, subject: string, text = 'filed') => {
+      const dash = await host.getScope(who, tenant, dashScope);
+      const { id } = (await dash.invoke('dashboard/reserve-explanation', { subject })) as { id: string };
+      return dash.invoke('dashboard/settle-explanation', {
+        id,
+        outcome: 'filed',
+        usage: { model: 'cloudflare:@cf/x', inputTokens: 10, outputTokens: 5, listUsd: '0.0001' },
+        filed: {
           digest: 'a'.repeat(64),
           text,
           provenance: { writtenAt: clock.read(), model: 'm', since: 's', until: 'u', sources: [], summary: '1 failure record' },
-          model: 'cloudflare:@cf/x',
-          usage: { inputTokens: 10, outputTokens: 5, listUsd: '0.0001' },
-        }),
-      );
+        },
+      });
+    };
     const budget = async (who: PrincipalId) => (await host.getScope(who, tenant, dashScope)).invoke('dashboard/explanation-budget', {});
     const newest = async (subject: string) =>
       ((await (await host.getScope(people.viewer, tenant, dashScope)).invoke('dashboard/get-explanation', { subject })) as { explanation: { text: string } | null }).explanation;
@@ -365,6 +410,18 @@ describe('AI-written text in the dashboard (#1749)', () => {
       expect(await newest('finding:ancient')).not.toBeNull();
       await record(people.viewer, 'finding:today');
       expect(await newest('finding:ancient')).toBeNull();
+    });
+
+    it('a reservation is settled once, and only by the person who took it', async () => {
+      const viewer = await host.getScope(people.viewer, tenant, dashScope);
+      const owner = await host.getScope(people.owner, tenant, dashScope);
+      const { id } = (await viewer.invoke('dashboard/reserve-explanation', { subject: 'finding:a' })) as { id: string };
+      const failed = { id, outcome: 'failed', usage: null, filed: null };
+      expect(await owner.invoke('dashboard/settle-explanation', failed)).toEqual({ settled: false });
+      expect(await viewer.invoke('dashboard/settle-explanation', failed)).toEqual({ settled: true });
+      const filed = { ...failed, outcome: 'filed', filed: { digest: 'a'.repeat(64), text: 'late', provenance: { writtenAt: 'w', model: 'm', since: 's', until: 'u', sources: [], summary: '' } } };
+      expect(await viewer.invoke('dashboard/settle-explanation', filed)).toEqual({ settled: false });
+      expect(await newest('finding:a')).toBeNull();
     });
 
     it('a person with no role in the team can neither read nor file', async () => {

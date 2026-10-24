@@ -151,6 +151,13 @@ export const explanationView = z.object({
     .nullable(),
 });
 
+/**
+ * Which finding: its id, plus the status and kind the page last saw it under. The plane lists
+ * findings and does not get one, so these narrow the walk to the tab it is in; they are hints,
+ * and a finding that moved tab is still found.
+ */
+const findingExplanationInput = z.object({ id: z.string().min(1), status: z.string().max(32).optional(), kind: z.string().max(32).optional() });
+
 /** The process map a note is about: the app's scope, the lifecycle and the period, as the map reads them. */
 const processNoteInput = z.object({
   scopeId: z.string().min(1),
@@ -1048,15 +1055,21 @@ export const dashboardRoutes = defineRoutes({
   },
 
   // -- AI-written text (#1749) ------------------------------------------------
+  'dashboard/explanations-status': {
+    summary: 'Whether this deployment writes AI text, and the caller’s budget for today',
+    input: z.object({}),
+    output: explanationView,
+    http: { method: 'GET', path: '/explanations' },
+  },
   'dashboard/get-finding-explanation': {
     summary: "The newest AI explanation of one of this team's findings, and today's budget",
-    input: z.object({ id: z.string().min(1) }),
+    input: findingExplanationInput,
     output: explanationView,
     http: { method: 'GET', path: '/findings/{id}/explanation' },
   },
   'dashboard/write-finding-explanation': {
     summary: "Write an AI explanation of one of this team's findings from its evidence",
-    input: z.object({ id: z.string().min(1) }),
+    input: findingExplanationInput,
     output: explanationView,
     http: { method: 'POST', path: '/findings/{id}/explanation' },
   },

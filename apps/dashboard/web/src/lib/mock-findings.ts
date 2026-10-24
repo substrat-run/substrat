@@ -9,6 +9,7 @@ export type FindingsClient = Pick<
   | 'listFindingRules'
   | 'createFindingRule'
   | 'revokeFindingRule'
+  | 'explanationsStatus'
   | 'getFindingExplanation'
   | 'writeFindingExplanation'
 >;
@@ -50,6 +51,7 @@ export function mockFindingsClient(): FindingsClient {
   ];
   const explanations = mockExplanations();
   return {
+    explanationsStatus: async () => explanations.get('status'),
     getFindingExplanation: async ({ id }) => explanations.get(`finding:${id}`),
     writeFindingExplanation: async ({ id }) => {
       const f = entries.find((e) => e.id === id)!;

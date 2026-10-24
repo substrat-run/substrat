@@ -127,7 +127,6 @@ export interface FindingFacts {
   finding: {
     kind: string;
     severity: string;
-    status: string;
     title: string;
     operation: string | null;
     codes: string[];
@@ -140,6 +139,8 @@ export interface FindingFacts {
   };
   failures: {
     inWindow: number;
+    /** False when the read stopped at its cap: `inWindow` is then the newest rows, not all of them. */
+    complete: boolean;
     stages: string[];
     /** Who refused (contracts `platformRequestFailureOrigin`): platform, provider, unknown. */
     origins: Record<string, number>;
@@ -195,13 +196,15 @@ export function findingFacts(
   f: FindingEntry,
   failures: readonly OpsFailureEntry[],
   sweeps: readonly SweepRunEntry[],
+  failuresComplete = true,
 ): FindingFacts {
   const versions = new Set(failures.map((r) => r.version).filter((v): v is string => v !== null));
   return {
     finding: {
       kind: f.kind,
       severity: f.severity,
-      status: f.status,
+      // Not the triage status: acknowledging a finding is a person's verdict, not new evidence,
+      // and a status in the digest would mark the explanation stale the moment it was acted on.
       // The plane composes a title from the operation and code; redacted anyway, since a
       // future title could quote an operation's own text.
       title: redact(f.title, 160),
@@ -220,6 +223,7 @@ export function findingFacts(
       f.evidence?.source === 'ops-failures'
         ? {
             inWindow: failures.length,
+            complete: failuresComplete,
             stages: [...new Set(failures.map((r) => r.stage).filter((s): s is string => s !== null))],
             origins: tally(failures, (r) => r.origin),
             statuses: tally(failures, (r) => (r.status === null ? null : String(r.status))),
@@ -264,7 +268,7 @@ export function findingProvenance(f: FindingEntry, facts: FindingFacts, at: { wr
   const parts: string[] = [];
   if (facts.failures) {
     sources.push({ kind: 'ops-failures', count: facts.failures.inWindow, href: evidenceHref(f) });
-    parts.push(plural(facts.failures.inWindow, 'failure record'));
+    parts.push(facts.failures.complete ? plural(facts.failures.inWindow, 'failure record') : `the newest ${plural(facts.failures.inWindow, 'failure record')}`);
     if (facts.failures.versions > 0) parts.push(plural(facts.failures.versions, 'version'));
   }
   if (facts.sweeps) {
@@ -294,13 +298,18 @@ interface FlowFacts {
   medianLifecycleMs: number | null;
   funnel: Record<string, number>;
   edges: { from: string; to: string; count: number; declared: boolean }[];
-  states: { state: string; terminal: boolean; current: number; entered: number; medianDwellMs: number | null; stuck: number }[];
+  states: { state: string; terminal: boolean; current: number; entered: number; medianDwellMs: number | null; stuckListed?: number }[];
   refused: { from: string; operation: string; count: number }[] | null;
   inferred: number;
   unexplained: number;
 }
 
-function flowFacts(r: LifecycleFlowResult): FlowFacts {
+/**
+ * One window's facts. `stuckListed` is the length of the replay's list of longest-waiting records,
+ * which the replay caps (five by default, one for the previous window the map reads), so it is a
+ * lower bound and is only sent for the window it is meaningful in: never compared across windows.
+ */
+function flowFacts(r: LifecycleFlowResult, withStuck: boolean): FlowFacts {
   return {
     started: r.totals.started,
     finished: r.totals.finished,
@@ -308,14 +317,14 @@ function flowFacts(r: LifecycleFlowResult): FlowFacts {
     medianLifecycleMs: r.totals.medianLifecycleMs,
     funnel: { ...r.funnel.reached },
     edges: r.edges.map((e) => ({ from: e.from, to: e.to, count: e.count, declared: e.declared })),
-    // `stuck` is a list of entity ids; only its length is a fact the note needs.
+    // `stuck` is a list of entity ids; only how many were listed is sent.
     states: r.states.map((s) => ({
       state: s.state,
       terminal: s.terminal,
       current: s.current,
       entered: s.entered,
       medianDwellMs: s.dwell?.medianMs ?? null,
-      stuck: s.stuck.length,
+      ...(withStuck ? { stuckListed: s.stuck.length } : {}),
     })),
     refused: r.refused ? r.refused.map((x) => ({ from: x.from, operation: x.operation, count: x.count })) : null,
     inferred: r.observation.inferred,
@@ -328,8 +337,8 @@ export function processFacts(entity: string, period: string, current: LifecycleF
     entity,
     period,
     complete: current.observation.complete,
-    current: flowFacts(current),
-    previous: previous ? flowFacts(previous) : null,
+    current: flowFacts(current, true),
+    previous: previous ? flowFacts(previous, false) : null,
   };
 }
 
@@ -366,6 +375,7 @@ export function findingPrompt(facts: FindingFacts): { system: string; prompt: st
       'Write three or four sentences: what is going wrong, since when and how often, and whose side it is on.',
       'Name the side from the failure origins: "platform" means the platform’s side, "provider" means a supplier’s side (an upstream service), and anything else means the team’s own app or configuration, or that it is not yet clear. Say which.',
       'If there is a likely cause, say what it is and that it is likely, not certain.',
+      'If the failures are not "complete", their counts are the newest records only: say "at least".',
       SHARED_RULES,
     ].join('\n'),
     prompt: `Facts:\n${JSON.stringify(facts)}`,
@@ -378,10 +388,23 @@ export function processPrompt(facts: ProcessFacts): { system: string; prompt: st
       'You write a short note under a process map: the declared lifecycle of one kind of record in an app, replayed over a period.',
       'Write two or three sentences: where most records go, where they wait longest or get stuck, and what changed against the previous period when it is given.',
       'If "complete" is false, say the counts are lower bounds.',
+      '"stuckListed" is how many of the longest-waiting records the replay listed, capped at a handful: a lower bound, never a total, and not something to compare between periods.',
       SHARED_RULES,
     ].join('\n'),
     prompt: `Facts:\n${JSON.stringify(facts)}`,
   };
+}
+
+/**
+ * How long a process note stays current. A note's facts are a window that rolls with the clock,
+ * so a digest of them changes on almost every read; instead a note is current for a slice of its
+ * own period, after which the page offers a rewrite. A finding's explanation uses the digest,
+ * since a finding's evidence only moves when something happens.
+ */
+export const NOTE_FRESH_MS = { '24h': 3_600_000, '7d': 6 * 3_600_000, '30d': 24 * 3_600_000 } as const;
+
+export function noteIsCurrent(period: keyof typeof NOTE_FRESH_MS, writtenAt: string, now: number): boolean {
+  return now - Date.parse(writtenAt) < NOTE_FRESH_MS[period];
 }
 
 /** The longest text kept. Three or four sentences fit well inside it; more is the model ignoring the brief. */

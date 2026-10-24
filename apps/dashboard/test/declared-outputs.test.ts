@@ -152,13 +152,16 @@ describe('the dashboard’s declared outputs (#2426)', () => {
 
     // -- AI-written text (#1749)
     await call(own, 'dashboard/explanation-budget');
-    await call(own, 'dashboard/record-explanation', {
-      subject: 'finding:one',
-      digest: 'a'.repeat(64),
-      text: 'Written.',
-      provenance: { writtenAt: '2026-10-23T00:00:00.000Z', model: 'm', since: 's', until: 'u', sources: [{ kind: 'finding', count: null, href: null }], summary: '1 failure record' },
-      model: 'cloudflare:@cf/x',
-      usage: { inputTokens: 1, outputTokens: 1, listUsd: null },
+    const reserved = await call<{ id: string }>(own, 'dashboard/reserve-explanation', { subject: 'finding:one' });
+    await call(own, 'dashboard/settle-explanation', {
+      id: reserved.id,
+      outcome: 'filed',
+      usage: { model: 'cloudflare:@cf/x', inputTokens: 1, outputTokens: 1, listUsd: null },
+      filed: {
+        digest: 'a'.repeat(64),
+        text: 'Written.',
+        provenance: { writtenAt: '2026-10-23T00:00:00.000Z', model: 'm', since: 's', until: 'u', sources: [{ kind: 'finding', count: null, href: null }], summary: '1 failure record' },
+      },
     });
     await call(own, 'dashboard/get-explanation', { subject: 'finding:one' });
 

@@ -34,6 +34,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/get-deployment-traffic markers[].kind': 'derived in this worker from the push and go-live instants',
   'dashboard/business-volumes apps[].unavailable': 'the worker’s own labels for absent versions, moves or a supported read',
   'dashboard/move-scopes refusal.reason': 'read from the plane’s refusal by `rebindReviewReasonIn`, which drops a reason it does not know',
+  'dashboard/explanations-status explanation.provenance.sources[].kind': EXPLANATION_SOURCE,
   'dashboard/get-finding-explanation explanation.provenance.sources[].kind': EXPLANATION_SOURCE,
   'dashboard/write-finding-explanation explanation.provenance.sources[].kind': EXPLANATION_SOURCE,
   'dashboard/get-process-note explanation.provenance.sources[].kind': EXPLANATION_SOURCE,

@@ -25,4 +25,4 @@ once it is on the base branch: add a new migration instead.
 | @substrat-run/dashboard | 0012-install-steps | `caa0439c0cac89cfd40f27f96abff78dee8955eb5c1dbc677c878c5ef287df22` |
 | @substrat-run/dashboard | 0013-connect-links | `8a563dd06f8fe1c6c76dc66aa2ada1d2db5b6d92a3a7460107158e1876ca85e9` |
 | @substrat-run/dashboard | 0014-member-joining | `6ef177e99563151f4943558b4ab08e3400ea25ab1883059949a0a156b86a94c7` |
-| @substrat-run/dashboard | 0015-explanations | `0e0e3eea41ddcafbce88c0b5078ab52800ed41284299f219792c5bd1b455d04e` |
+| @substrat-run/dashboard | 0015-explanations | `3d52d3c04300adce3777d2c3f3eabe79e59bb87a3786248fdf945da3ab1fab18` |

@@ -304,9 +304,12 @@ records, 2 versions · 3 sources*. The dashboard counts that line from the recor
 the model, and each source links to the page where you can check it.
 
 Nothing is sent until you choose to write. Opening the block only reads the text already filed
-for that finding or map, so loading a page costs nothing. When the evidence has moved since a
-text was written (a new occurrence, a changed count), the text is marked as written against
-older data and offers **Rewrite**.
+for that finding or map, so loading a page costs nothing. When a finding's evidence has moved
+since its explanation was written (a new occurrence, a changed count), the text is marked as
+written against older data and offers **Rewrite**; acknowledging or resolving the finding does
+not count as new evidence. A process note covers a window that moves with the clock, so it is
+offered for a rewrite after a while instead: an hour for the 24-hour map, six hours for 7 days,
+a day for 30 days.
 
 What reaches the model is a fixed list of fields: the finding's kind, severity, codes, counts,
 timestamps, versions and likely cause; for a failure, who refused it and up to three error
@@ -315,10 +318,11 @@ redaction step first, which removes what looks like a key, a token, a password, 
 credentials, an email address or a phone number. Tenant, scope and person ids are never sent,
 and neither are the ids of the records in a state. The block names the provider beside the
 button. The platform pays for these calls, so each person can write 20 a day and each team 100,
-counted in UTC days. Texts are kept for 90 days.
+counted in UTC days. A unit is taken before the model is called, so a call that fails still
+counts. Texts are kept for 90 days.
 
 Whether a deployment offers this is the `AI_EXPLANATIONS` setting. It is on in the test
-environment.
+environment. Where it is off, the toggles are not shown.
 
 ## Status
 

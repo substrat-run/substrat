@@ -439,6 +439,13 @@ export interface DashboardClient {
   deleteTeam(input: { confirm: string }): Promise<{ deleted: true }>;
 
   /**
+   * Whether this deployment writes AI text, and the caller’s budget for today
+   *
+   * `GET /explanations` — `dashboard/explanations-status`
+   */
+  explanationsStatus(input: Record<string, never>): Promise<ExplanationView>;
+
+  /**
    * An app's durable install record: directory, provision, activate, hostname, identity
    *
    * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
@@ -464,7 +471,7 @@ export interface DashboardClient {
    *
    * `GET /findings/{id}/explanation` — `dashboard/get-finding-explanation`
    */
-  getFindingExplanation(input: { id: string }): Promise<ExplanationView>;
+  getFindingExplanation(input: { id: string; status?: string; kind?: string }): Promise<ExplanationView>;
 
   /**
    * The newest AI note under one app's process map, and today's budget
@@ -758,7 +765,7 @@ export interface DashboardClient {
    *
    * `POST /findings/{id}/explanation` — `dashboard/write-finding-explanation`
    */
-  writeFindingExplanation(input: { id: string }): Promise<ExplanationView>;
+  writeFindingExplanation(input: { id: string; status?: string; kind?: string }): Promise<ExplanationView>;
 
   /**
    * Write an AI note under one app's process map from its replayed counts
@@ -863,6 +870,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}`, "DELETE", undefined, omit(input, ["slug","tag"])),
     deleteTeam: (input: Args) =>
       send("/delete", "POST", input, undefined),
+    explanationsStatus: (input: Args) =>
+      send("/explanations", "GET", undefined, input),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
     getDeploymentReleases: (input: Args) =>

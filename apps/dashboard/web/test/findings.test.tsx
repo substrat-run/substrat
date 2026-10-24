@@ -177,8 +177,13 @@ describe('Findings view', () => {
     // Like the plane: `active` keeps the unexpired rules, and a revoke pulls the expiry back to now.
     let rules = initialRules;
     const calls: Record<string, unknown[]> = { set: [], create: [], revoke: [], list: [] };
+    const off = { available: false, reason: 'off', disclosure: null, explanation: null, budget: null };
     return {
       calls,
+      // A deployment with AI text off (#1749): the rows draw no toggle; ai-text.test.tsx covers it on.
+      explanationsStatus: async () => off,
+      getFindingExplanation: async () => off,
+      writeFindingExplanation: async () => off,
       // Like the plane: narrowed by status, newest first with id breaking a tie, a cursor naming the
       // last row read, and a full page carrying a cursor (pageOf) even when nothing follows it.
       listFindings: async (input) => {
@@ -464,9 +469,7 @@ describe('Findings view', () => {
 
   it('offers a suppressed finding no move', async () => {
     await mount(fake(entries), 'suppressed');
-    // The AI explanation toggle (#1749) reads; it is not a move.
-    const moves = [...row('s').querySelectorAll('button')].filter((b) => b.textContent?.trim() !== 'AI explanation');
-    expect(moves).toHaveLength(0);
+    expect(row('s').querySelectorAll('button')).toHaveLength(0);
   });
 
   it('draws no actions when the caller may not manage — and the twin draws them', async () => {
@@ -738,6 +741,8 @@ describe('Findings view', () => {
       expect(button('Resolve')).toBeUndefined(); // the viewer's page
       // One first page per tab, each narrowed to its status (#2198), and the active rules.
       expect(urls.sort()).toEqual([
+        // #1749: whether the page draws AI toggles, read once and from the same team.
+        '/api/teams/T1/explanations',
         '/api/teams/T1/findings/rules?active=true',
         '/api/teams/T1/findings?status=acked',
         '/api/teams/T1/findings?status=open',

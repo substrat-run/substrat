@@ -7,6 +7,7 @@ import {
   findingFacts,
   findingPrompt,
   findingProvenance,
+  noteIsCurrent,
   processFacts,
   processProvenance,
   redact,
@@ -114,14 +115,27 @@ describe('the facts a model may read about a finding', () => {
     const facts = findingFacts(finding(), [failure(), failure({ id: '01JZFAIL0000000000000000002', origin: 'platform', status: 500 })], []);
     expect(Object.keys(facts).sort()).toEqual(['failures', 'finding', 'sweeps']);
     expect(Object.keys(facts.finding).sort()).toEqual(
-      ['codes', 'firstSeen', 'kind', 'lastSeen', 'lastVersion', 'likelyCause', 'occurrences', 'operation', 'regressed', 'severity', 'status', 'title'].sort(),
+      ['codes', 'firstSeen', 'kind', 'lastSeen', 'lastVersion', 'likelyCause', 'occurrences', 'operation', 'regressed', 'severity', 'title'].sort(),
     );
-    expect(Object.keys(facts.failures!).sort()).toEqual(['inWindow', 'origins', 'samples', 'stages', 'statuses', 'versions']);
+    expect(Object.keys(facts.failures!).sort()).toEqual(['complete', 'inWindow', 'origins', 'samples', 'stages', 'statuses', 'versions']);
     const sent = findingPrompt(facts).prompt;
     for (const id of [TENANT, SCOPE, PRINCIPAL, '01JZFINDING000000000000001', '01JZFAIL0000000000000000001']) expect(sent).not.toContain(id);
     expect(sent).not.toContain('ops@acme.example');
     expect(facts.failures).toMatchObject({ inWindow: 2, origins: { provider: 1, platform: 1 }, statuses: { '503': 1, '500': 1 }, versions: 1 });
     expect(facts.failures!.samples).toEqual(['upstream refused for [email]']);
+  });
+
+  it('leaves the triage status out, so acting on a finding does not stale its explanation', async () => {
+    const rows = [failure()];
+    const open = await factsDigest(findingFacts(finding({ status: 'open' }), rows, []));
+    expect(await factsDigest(findingFacts(finding({ status: 'acked', acknowledgedAt: '2026-10-23T09:00:00.000Z' as FindingEntry['acknowledgedAt'] }), rows, []))).toBe(open);
+  });
+
+  it('says when the failure read stopped at its cap', () => {
+    const f = finding();
+    const facts = findingFacts(f, [failure()], [], false);
+    expect(facts.failures!.complete).toBe(false);
+    expect(findingProvenance(f, facts, { writtenAt: 'w', model: 'm', until: 'u' }).summary).toBe('the newest 1 failure record, 1 version, 1 deploy');
   });
 
   it('keeps three distinct samples at most, distinct after redaction', () => {
@@ -201,12 +215,23 @@ describe('the facts a model may read about a process map', () => {
   it('carries counts and declared names, never the ids of the records in a state', () => {
     const facts = processFacts('order', '7d', flow(), null);
     expect(JSON.stringify(facts)).not.toContain('ORDER-SECRET-ID');
-    expect(facts.current.states[0]).toEqual({ state: 'open', terminal: false, current: 2, entered: 6, medianDwellMs: 3_600_000, stuck: 1 });
+    expect(facts.current.states[0]).toEqual({ state: 'open', terminal: false, current: 2, entered: 6, medianDwellMs: 3_600_000, stuckListed: 1 });
     expect(facts.previous).toBeNull();
+    // The previous window's list is capped at one: never sent, so nothing compares the two.
+    expect(processFacts('order', '7d', flow(), flow()).previous!.states[0]).not.toHaveProperty('stuckListed');
     expect(processProvenance(SCOPE, flow(), { writtenAt: 'w', model: 'm' })).toMatchObject({
       summary: '10 events, 6 orders',
       sources: [{ kind: 'lifecycle-flow', count: 10, href: `/observability?app=${SCOPE}&view=map` }],
     });
+  });
+});
+
+describe('noteIsCurrent', () => {
+  it('holds a note for a slice of its period, since its window rolls with the clock', () => {
+    const at = Date.parse('2026-10-23T12:00:00.000Z');
+    expect(noteIsCurrent('7d', '2026-10-23T12:00:00.000Z', at + 5 * 3_600_000)).toBe(true);
+    expect(noteIsCurrent('7d', '2026-10-23T12:00:00.000Z', at + 7 * 3_600_000)).toBe(false);
+    expect(noteIsCurrent('24h', '2026-10-23T12:00:00.000Z', at + 2 * 3_600_000)).toBe(false);
   });
 });
 

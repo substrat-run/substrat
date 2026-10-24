@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { Button, Select, Tabs } from '@substrat-run/ui';
 import { api, teamApi, type AppRow, type LifecycleFlowResult, type ProcessMapView, type ProcessPeriod } from '../lib/api';
-import { AiText } from '../components/AiText';
+import { AiText, useAiOffered } from '../components/AiText';
 import { mockExplanations } from '../lib/explanations';
 import { card } from '../components/ui';
 import { DEV_MOCK } from '../lib/mock';
@@ -202,6 +202,8 @@ const MOCK_NOTES = mockExplanations();
  */
 function ProcessNote({ teamId, scopeId, entity, period }: { teamId: string; scopeId: string; entity: string; period: ProcessPeriod }) {
   const [open, setOpen] = useState(false);
+  const status = useCallback(() => (DEV_MOCK ? MOCK_NOTES.get('status') : teamApi(teamId).explanationsStatus({})), [teamId]);
+  const offered = useAiOffered(status);
   const subject = `process:${scopeId}:${entity}:${period}`;
   const load = useCallback(
     () => (DEV_MOCK ? MOCK_NOTES.get(subject) : teamApi(teamId).getProcessNote({ scopeId, entity, period })),
@@ -214,6 +216,8 @@ function ProcessNote({ teamId, scopeId, entity, period }: { teamId: string; scop
         : teamApi(teamId).writeProcessNote({ scopeId, entity, period }),
     [teamId, scopeId, entity, period, subject],
   );
+  // A deployment that writes no AI text draws no toggle (#1749).
+  if (offered !== true) return null;
   return (
     <div style={{ padding: '8px 16px 14px', display: 'grid', gap: 8 }}>
       <div>

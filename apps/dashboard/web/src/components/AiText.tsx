@@ -123,3 +123,23 @@ function Line({ children, tone }: { children: React.ReactNode; tone?: 'danger' }
     </div>
   );
 }
+
+/**
+ * Whether this deployment writes AI text at all: one read for a whole page, so a toggle is only
+ * drawn where pressing it can lead somewhere. `null` while the answer is out; a failed read is
+ * treated as "not offered", since the block would fail the same way.
+ */
+export function useAiOffered(status: () => Promise<ExplanationView>): boolean | null {
+  const [offered, setOffered] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    Promise.resolve()
+      .then(status)
+      .then((v) => live && setOffered(v.available))
+      .catch(() => live && setOffered(false));
+    return () => {
+      live = false;
+    };
+  }, [status]);
+  return offered;
+}
