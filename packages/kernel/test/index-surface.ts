@@ -257,6 +257,8 @@ export const INDEX_VALUE_EXPORTS = [
   'assertRowOffset',
   'assertSessionUsable',
   'assertSpineTablesBuilt',
+  // RFC wire-signing §7: a capability-record read's filter, judged before the read (and before the RPC).
+  'assertWireAuthFilter',
   'asyncInvocationId',
   'asyncLinePass',
   'attachmentBlobKey',

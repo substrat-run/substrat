@@ -10,8 +10,7 @@
  * A vertical's rows go with the vertical (`forgetVerticalWireAuth`), so none outlives what it
  * describes.
  */
-import { deploymentWireAuth, type DeploymentWireAuth, type ListPage } from '@substrat-run/contracts';
-import { assertRowLimit } from './scope-host.js';
+import { deploymentWireAuth, LIST_PAGE_MAX, substratError, tenantId, type DeploymentWireAuth } from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
 
 export type { DeploymentWireAuthInput } from '@substrat-run/contracts';
@@ -29,12 +28,54 @@ export const DEPLOYMENT_WIRE_AUTH_DDL = `
 `;
 
 /**
- * Which records a read returns: every one, or one vertical's, a page at a time when it asks for one
- * (the keyset convention: by script name, `cursor` the last name of the page before). A version's
- * script keeps its record for as long as its vertical exists, so a reader of the whole fleet pages.
+ * Whose records a read may return: the verticals one tenant owns now (`verticals.owner_tenant`), or
+ * the whole fleet, said in so many words. There is no default, so a reader that forgets to confine
+ * itself is refused rather than handed every tenant's deployments: a record names scripts, versions
+ * and key ids, and a tenant reads only its own. A record whose vertical no tenant owns, or that the
+ * registry does not know, is reached only by the fleet.
  */
-export interface DeploymentWireAuthFilter extends ListPage {
+export type DeploymentWireAuthReach = { readonly tenantId: string } | { readonly fleet: true };
+
+/**
+ * Which records a read returns, one page of them: the keyset convention by script name, `cursor` the
+ * last name of the page before. A version's script keeps its record for as long as its vertical
+ * exists, so a read is always a page: `limit` is required, at most `LIST_PAGE_MAX`.
+ */
+export interface DeploymentWireAuthFilter {
+  readonly reach: DeploymentWireAuthReach;
   readonly verticalSlug?: string;
+  readonly limit: number;
+  readonly cursor?: string;
+  readonly order?: 'asc' | 'desc';
+}
+
+const refused = (message: string) => substratError('validation_failed', message);
+
+/**
+ * The filter a read is allowed to run, or a `validation_failed` refusal: a reach that is exactly one
+ * tenant (a tenant id) or exactly the fleet, a limit from 1 to `LIST_PAGE_MAX`, and the optional
+ * fields in their own types. Both adapters judge it before the read, and the Cloudflare host before
+ * the call into the directory's object, so the refusal keeps its code across the RPC.
+ */
+export function assertWireAuthFilter(filter: unknown): DeploymentWireAuthFilter {
+  if (typeof filter !== 'object' || filter === null) throw refused('a capability-record read needs a filter naming its reach and its limit');
+  const f = filter as Record<string, unknown>;
+  const reach = f['reach'];
+  if (typeof reach !== 'object' || reach === null) throw refused('a capability-record read names its reach: one tenant ({ tenantId }) or the fleet ({ fleet: true })');
+  const r = reach as Record<string, unknown>;
+  const keys = Object.keys(r);
+  const isTenant = keys.length === 1 && keys[0] === 'tenantId' && tenantId.safeParse(r['tenantId']).success;
+  const isFleet = keys.length === 1 && keys[0] === 'fleet' && r['fleet'] === true;
+  if (!isTenant && !isFleet) throw refused('a capability-record read names its reach: one tenant ({ tenantId }) or the fleet ({ fleet: true }), exactly one');
+  const limit = f['limit'];
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > LIST_PAGE_MAX) {
+    throw refused(`limit must be an integer from 1 to ${LIST_PAGE_MAX}, got ${String(limit)}`);
+  }
+  for (const name of ['verticalSlug', 'cursor'] as const) {
+    if (f[name] !== undefined && (typeof f[name] !== 'string' || f[name] === '')) throw refused(`${name} must be a non-empty string`);
+  }
+  if (f['order'] !== undefined && f['order'] !== 'asc' && f['order'] !== 'desc') throw refused('order must be asc or desc');
+  return filter as DeploymentWireAuthFilter;
 }
 
 /**
@@ -59,11 +100,20 @@ export function writeDeploymentWireAuth(db: SwitchSql, row: DeploymentWireAuth):
   );
 }
 
-/** The stored records, by script name. A row that does not parse throws: it is a corrupt directory, not a fact. */
-export function deploymentWireAuthOf(db: SwitchSql, filter: DeploymentWireAuthFilter): DeploymentWireAuth[] {
+/**
+ * One page of the stored records the filter reaches, by script name. The filter is judged here too
+ * (`assertWireAuthFilter`), so no caller reaches the table unconfined or unbounded. A row that does
+ * not parse throws: it is a corrupt directory, not a fact.
+ */
+export function deploymentWireAuthOf(db: SwitchSql, input: DeploymentWireAuthFilter): DeploymentWireAuth[] {
+  const filter = assertWireAuthFilter(input);
   const desc = filter.order === 'desc';
   const where: string[] = [];
   const params: (string | number)[] = [];
+  if ('tenantId' in filter.reach) {
+    where.push('vertical_slug IN (SELECT slug FROM verticals WHERE owner_tenant = ?)');
+    params.push(filter.reach.tenantId);
+  }
   if (filter.verticalSlug !== undefined) {
     where.push('vertical_slug = ?');
     params.push(filter.verticalSlug);
@@ -72,12 +122,11 @@ export function deploymentWireAuthOf(db: SwitchSql, filter: DeploymentWireAuthFi
     where.push(desc ? 'deployment_ref < ?' : 'deployment_ref > ?');
     params.push(filter.cursor);
   }
-  if (filter.limit !== undefined) params.push(assertRowLimit('limit', filter.limit));
+  params.push(filter.limit);
   const rows = db.all(
     'SELECT deployment_ref, vertical_slug, version_id, record, recorded_at FROM vertical_wire_auth' +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
-      ` ORDER BY deployment_ref ${desc ? 'DESC' : 'ASC'}` +
-      (filter.limit !== undefined ? ' LIMIT ?' : ''),
+      ` ORDER BY deployment_ref ${desc ? 'DESC' : 'ASC'} LIMIT ?`,
     ...params,
   );
   return rows.map((r) =>

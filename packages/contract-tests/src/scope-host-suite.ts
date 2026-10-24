@@ -21,6 +21,7 @@ import {
   scopeId,
   tenantId,
   SCOPE_QUERY_ROW_MAX,
+  LIST_PAGE_MAX,
   type EntityRef,
   type ErrorCode,
   type LifecycleFlowResult,
@@ -11241,6 +11242,8 @@ export function scopeHostContractSuite(
       const withheld = (reason: NonNullable<WireAuthRecord['withheld']>): WireAuthRecord =>
         record({ state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: reason });
       const at = (time: string) => `2026-10-24T${time}.000Z`;
+      /** The whole fleet, one full page: every read names its reach and its limit. */
+      const fleet = { reach: { fleet: true }, limit: LIST_PAGE_MAX } as const;
       /** Record `rec` for the script `<vertical>-<script>`. */
       const put = (vertical: string, script: string, versionId: string | null, rec: WireAuthRecord, time: string) =>
         host.admin.recordWireAuth!(staff, { deploymentRef: `${vertical}-${script}`, verticalSlug: vertical, versionId, record: rec, recordedAt: at(time) });
@@ -11253,15 +11256,15 @@ export function scopeHostContractSuite(
         // The serving script uploaded again, for another version, given nothing this time: its record is replaced.
         await put(a, 'serving', 'v2', withheld('lists-refused'), '10:05:00');
 
-        expect(await host.admin.listWireAuth!(staff, { verticalSlug: a })).toEqual([
+        expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a })).toEqual([
           { deploymentRef: `${a}-archive`, verticalSlug: a, versionId: 'v1', record: record({ audience: `${a}-archive` }), recordedAt: at('10:00:01') },
           { deploymentRef: `${a}-serving`, verticalSlug: a, versionId: 'v2', record: withheld('lists-refused'), recordedAt: at('10:05:00') },
         ]);
-        const all = await host.admin.listWireAuth!(staff);
+        const all = await host.admin.listWireAuth!(staff, { ...fleet });
         expect(all.filter((r) => r.verticalSlug === a || r.verticalSlug === b).map((r) => r.deploymentRef)).toEqual([`${a}-archive`, `${a}-serving`, `${b}-serving`]);
         // An entry the uploader left off is recorded as such: no envelope, and why.
         await put(b, 'serving', null, record({ envelope: null, entrySkipped: 'an older bundle' }), '10:06:00');
-        expect((await host.admin.listWireAuth!(staff, { verticalSlug: b }))[0]!.record).toMatchObject({ envelope: null, entrySkipped: 'an older bundle' });
+        expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: b }))[0]!.record).toMatchObject({ envelope: null, entrySkipped: 'an older bundle' });
       });
 
       it('writes each record to the admin log, naming the vertical, the script and the version, never a key', async () => {
@@ -11295,27 +11298,96 @@ export function scopeHostContractSuite(
         ]) {
           await expectRefusal(host.admin.recordWireAuth!(staff, bad as never), 'validation_failed');
         }
-        expect(await host.admin.listWireAuth!(staff, { verticalSlug: a })).toEqual([]);
+        expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a })).toEqual([]);
       });
 
       it('reads a page at a time by script name, and each read is access-logged', async () => {
         const a = slugOf('wire-page');
         for (const [i, script] of ['a1', 'a2', 'a3'].entries()) await put(a, script, null, record(), `14:00:0${i}`);
-        const first = await host.admin.listWireAuth!(staff, { verticalSlug: a, limit: 2 });
+        const reach = { fleet: true } as const;
+        const first = await host.admin.listWireAuth!(staff, { reach, verticalSlug: a, limit: 2 });
         expect(first.map((r) => r.deploymentRef)).toEqual([`${a}-a1`, `${a}-a2`]);
-        const rest = await host.admin.listWireAuth!(staff, { verticalSlug: a, limit: 2, cursor: first.at(-1)!.deploymentRef });
+        const rest = await host.admin.listWireAuth!(staff, { reach, verticalSlug: a, limit: 2, cursor: first.at(-1)!.deploymentRef });
         expect(rest.map((r) => r.deploymentRef)).toEqual([`${a}-a3`]);
-        expect((await host.admin.listWireAuth!(staff, { verticalSlug: a, order: 'desc', limit: 1 })).map((r) => r.deploymentRef)).toEqual([`${a}-a3`]);
-        for (const limit of [0, -1, 1.5]) await expectRefusal(host.admin.listWireAuth!(staff, { verticalSlug: a, limit }), 'validation_failed');
+        expect((await host.admin.listWireAuth!(staff, { reach, verticalSlug: a, order: 'desc', limit: 1 })).map((r) => r.deploymentRef)).toEqual([`${a}-a3`]);
+        // The cap is a full page, and one past it is refused, not clamped.
+        expect(await host.admin.listWireAuth!(staff, { reach, verticalSlug: a, limit: LIST_PAGE_MAX })).toHaveLength(3);
 
         const reads = (await host.admin.accessLog(staff, { method: 'listWireAuth' }))
           .map((e) => ({ actor: e.actor, params: JSON.parse(e.params ?? 'null') as Record<string, unknown>, count: e.resultCount }))
           .filter((e) => e.params?.['verticalSlug'] === a);
         expect(reads).toEqual([
-          { actor: staff, params: { verticalSlug: a, limit: 2 }, count: 2 },
-          { actor: staff, params: { verticalSlug: a, limit: 2, cursor: `${a}-a2` }, count: 1 },
-          { actor: staff, params: { verticalSlug: a, order: 'desc', limit: 1 }, count: 1 },
+          { actor: staff, params: { reach, verticalSlug: a, limit: 2 }, count: 2 },
+          { actor: staff, params: { reach, verticalSlug: a, limit: 2, cursor: `${a}-a2` }, count: 1 },
+          { actor: staff, params: { reach, verticalSlug: a, order: 'desc', limit: 1 }, count: 1 },
+          { actor: staff, params: { reach, verticalSlug: a, limit: LIST_PAGE_MAX }, count: 3 },
         ]);
+      });
+
+      it('refuses a read that does not name its reach and its limit, and logs no access for it', async () => {
+        const a = slugOf('wire-refuse');
+        await put(a, 'serving', null, record(), '15:00:00');
+        const t = ulid();
+        for (const bad of [
+          // No filter, no reach, an empty reach, both reaches, a reach that is not one.
+          undefined,
+          { limit: 10, verticalSlug: a },
+          { reach: {}, limit: 10, verticalSlug: a },
+          { reach: { tenantId: t, fleet: true }, limit: 10, verticalSlug: a },
+          { reach: { fleet: false }, limit: 10, verticalSlug: a },
+          { reach: { fleet: 'yes' }, limit: 10, verticalSlug: a },
+          { reach: { tenantId: 'acme' }, limit: 10, verticalSlug: a },
+          { reach: { tenantId: '' }, limit: 10, verticalSlug: a },
+          { reach: { tenantId: t, extra: 1 }, limit: 10, verticalSlug: a },
+          { reach: 'fleet', limit: 10, verticalSlug: a },
+          // No limit, or one outside 1..LIST_PAGE_MAX.
+          { reach: { fleet: true }, verticalSlug: a },
+          ...[0, -1, 1.5, LIST_PAGE_MAX + 1, Number.POSITIVE_INFINITY, Number.NaN, '10'].map((limit) => ({ reach: { fleet: true }, limit, verticalSlug: a })),
+          // The optional fields in their own types.
+          { reach: { fleet: true }, limit: 10, verticalSlug: '' },
+          { reach: { fleet: true }, limit: 10, verticalSlug: a, cursor: 7 },
+          { reach: { fleet: true }, limit: 10, verticalSlug: a, order: 'sideways' },
+        ]) {
+          await expectRefusal(host.admin.listWireAuth!(staff, bad as never), 'validation_failed');
+        }
+        const reads = (await host.admin.accessLog(staff, { method: 'listWireAuth' })).filter((e) => (e.params ?? '').includes(a));
+        expect(reads).toEqual([]);
+      });
+
+      it('confines a tenant’s read to the verticals it owns now', async () => {
+        const [owner, other] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
+        await host.admin.createTenant(staff, { id: owner, slug: `wire-own-${owner.slice(-6).toLowerCase()}`, name: 'Wire Owner' });
+        await host.admin.createTenant(staff, { id: other, slug: `wire-oth-${other.slice(-6).toLowerCase()}`, name: 'Wire Other' });
+        const [mine, theirs, platform, unregistered] = [slugOf('wire-mine'), slugOf('wire-theirs'), slugOf('wire-plat'), slugOf('wire-unreg')];
+        await host.admin.registerVertical(staff, { slug: mine, name: 'Mine', source: 'cli', ownerTenant: owner });
+        await host.admin.registerVertical(staff, { slug: theirs, name: 'Theirs', source: 'cli', ownerTenant: other });
+        await host.admin.registerVertical(staff, { slug: platform, name: 'Platform', source: 'cli' });
+        for (const [i, slug] of [mine, theirs, platform, unregistered].entries()) {
+          await put(slug, 'serving', null, record(), `16:00:0${i}`);
+          await put(slug, 'archive', 'v1', record(), `16:00:1${i}`);
+        }
+        const refs = async (reach: { tenantId: string } | { fleet: true }, verticalSlug?: string) =>
+          (await host.admin.listWireAuth!(staff, { reach, limit: LIST_PAGE_MAX, ...(verticalSlug ? { verticalSlug } : {}) }))
+            .map((r) => r.deploymentRef)
+            .filter((ref) => [mine, theirs, platform, unregistered].some((slug) => ref.startsWith(`${slug}-`)));
+
+        expect(await refs({ tenantId: owner })).toEqual([`${mine}-archive`, `${mine}-serving`]);
+        expect(await refs({ tenantId: other })).toEqual([`${theirs}-archive`, `${theirs}-serving`]);
+        // Naming another tenant's vertical inside one tenant's reach reaches nothing, not that vertical.
+        expect(await refs({ tenantId: owner }, theirs)).toEqual([]);
+        expect(await refs({ tenantId: owner }, mine)).toEqual([`${mine}-archive`, `${mine}-serving`]);
+        // A tenant that owns nothing reaches nothing; a vertical no tenant owns, or the registry does not
+        // know, is reached by the fleet alone.
+        expect(await refs({ tenantId: ulid() })).toEqual([]);
+        for (const slug of [mine, theirs, platform, unregistered]) {
+          expect(await refs({ fleet: true }, slug)).toEqual([`${slug}-archive`, `${slug}-serving`]);
+        }
+        // A page inside the reach pages over the tenant's records only.
+        const page = await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: 1 });
+        expect(page.map((r) => r.deploymentRef)).toEqual([`${mine}-archive`]);
+        const next = await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: 1, cursor: page[0]!.deploymentRef });
+        expect(next.map((r) => r.deploymentRef)).toEqual([`${mine}-serving`]);
+        expect(await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: 1, cursor: next[0]!.deploymentRef })).toEqual([]);
       });
 
       it('forgets a vertical’s records with the vertical', async () => {
@@ -11325,9 +11397,9 @@ export function scopeHostContractSuite(
         const kept = slugOf('wire-kept');
         await put(kept, 'serving', null, record(), '13:00:01');
         await host.admin.deleteVertical(staff, a);
-        expect(await host.admin.listWireAuth!(staff, { verticalSlug: a })).toEqual([]);
+        expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a })).toEqual([]);
         // Another vertical's record is not touched.
-        expect(await host.admin.listWireAuth!(staff, { verticalSlug: kept })).toHaveLength(1);
+        expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: kept })).toHaveLength(1);
       });
     });
 

@@ -556,7 +556,7 @@ import {
   verticalOwnerNow,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { assertWireAuthFilter, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
@@ -8813,9 +8813,9 @@ export class CloudflareScopeHost implements ScopeHost {
           { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
         ));
       },
-      listWireAuth: async (actor, filter = {}) => {
+      listWireAuth: async (actor, input) => {
         // Judged here, before the call into the directory's object, so a refusal keeps its code.
-        if (filter.limit !== undefined) assertRowLimit('limit', filter.limit);
+        const filter = assertWireAuthFilter(input);
         const rows = await this.cp.listWireAuth(filter);
         await this.recordAccess(actor, 'listWireAuth', {}, filter, rows.length);
         return rows;

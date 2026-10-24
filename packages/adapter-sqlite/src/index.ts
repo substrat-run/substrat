@@ -10506,7 +10506,7 @@ export class SqliteScopeHost implements ScopeHost {
           { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
         ));
       },
-      listWireAuth: async (actor, filter = {}) => {
+      listWireAuth: async (actor, filter) => {
         const rows = deploymentWireAuthOf(switchSqlOf(this.directory), filter);
         this.recordAccess(actor, 'listWireAuth', {}, filter, rows.length);
         return rows;

@@ -274,7 +274,7 @@ const CASES: DirectoryCase[] = [
       };
       return {
         call: () => host.admin.recordWireAuth!(staff, { deploymentRef, verticalSlug: slug, versionId: 'v1', record, recordedAt: '2026-10-24T10:00:00.000Z' }),
-        state: async () => (await host.admin.listWireAuth!(staff, { verticalSlug: slug }))[0]?.record ?? null,
+        state: async () => (await host.admin.listWireAuth!(staff, { reach: { fleet: true }, limit: 1, verticalSlug: slug }))[0]?.record ?? null,
         changed: record,
         row: { before: null, after: { vertical: slug, deploymentRef, versionId: 'v1', record } },
       };

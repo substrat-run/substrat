@@ -489,7 +489,11 @@ step 6, withdraws the credential.
   `listWireAuth`): whether the bundle carries the platform's entry (envelope `1`, or none and the
   entry's own reason for leaving it off), the state, the audience, each list's key ids, and, when it
   gave nothing, why: no rollout, not in the rollout, a rollout setting it could not read, or lists
-  it refused. A version's records go with its vertical.
+  it refused. A version's records go with its vertical. Follow-on 4 bounds the read before any
+  reader exists: `listWireAuth` is one page (`limit` required, at most `LIST_PAGE_MAX`) and names its
+  reach, one tenant's verticals (`{ tenantId }`, the verticals it owns now) or the whole fleet
+  (`{ fleet: true }`), with no default; anything else is `validation_failed`
+  (`assertWireAuthFilter`), judged before the call into the directory's object.
 - **A readiness report per environment** lists every live version: the serving version of every
   install, every preview, and every version a scope is bound to. For each it shows whether it
   verifies, which key lists it carries (the standby keys included), which state it is in, and
