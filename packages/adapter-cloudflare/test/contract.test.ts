@@ -420,6 +420,31 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       await host.admin.defineRole(staff, tn, { key: 'mixed-3', permissions: [MIXED[0]!], source: 'vertical' });
     });
 
+    it('fails closed for a system-held definition its seats could decide, even beside an active scope; unarchived, the seat itself refuses it (round 5)', async () => {
+      const { tn, early } = await tenantWithEarlyScope();
+      const live = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: tn, scopeId: live, vertical: 'rsv-front' });
+      await host.admin.activateScope(staff, tn, live);
+      // A person seated in `esc` there (unarchived to seat it), then the scope archived again and its row
+      // made to read as archived straight from provisioning with no migration recorded.
+      await host.admin.unarchiveScope(staff, tn, early);
+      await host.admin.defineRole(staff, tn, { key: 'esc', permissions: [MIXED[0]!], source: 'vertical' });
+      await host.admin.assignRole(staff, { principalId: principalId.parse(ulid()), roleKey: 'esc', node: { tenantId: tn, scopeId: early } });
+      await host.admin.archiveScope(staff, tn, early);
+      await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_instance, state) => {
+        state.storage.sql.exec('UPDATE scopes SET archived_from_status = ?, schema_version = ? WHERE scope_id = ?', 'provisioning', '0', early);
+      });
+      const system = { key: 'esc', permissions: [MIXED[1]!], source: 'vertical' as const, holder: 'system' as const };
+      const refused = await refusalOf(host.admin.defineRole(staff, tn, system));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toContain(`role 'esc' cannot be judged: scope ${early} was archived straight from provisioning and records no migration`);
+      // The twin: unarchived, the scope is read, and its seat refuses the same definition for what it is.
+      await host.admin.unarchiveScope(staff, tn, early);
+      const seated = await refusalOf(host.admin.defineRole(staff, tn, system));
+      expect(errorCodeOf(seated)).toBe('forbidden');
+      expect(seated?.message).toMatch(/role 'esc' is held by a principal/);
+    });
+
     it('fails closed when that scope records no migration (its DO may never have run), naming it; unarchived, the same definition is judged', async () => {
       const { tn, early } = await tenantWithEarlyScope();
       await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_instance, state) => {
