@@ -146,8 +146,13 @@ is an ordinary failure, and so is every refusal after it in that pass; those ent
 bin and are retried on the next lap. The pass walks on, so a purge that needs no request still
 commits behind a refused one, and an entity whose purge can never fit (it enqueues more requests
 than the scope will ever have room for) cannot hold up the others. A scope's purge horizons share
-the same 32 slots within a sweep, so a horizon with a large backlog can leave the next one's first
-entity refused until it catches up. Have a purge enqueue at most one request per entity.
+the same 32 slots within a sweep, so a horizon with a large backlog can fill the queue before the
+next one runs. That next horizon's first entity is not failed for it: when an earlier schedule of
+the same sweep enqueued requests, the pass tries nothing and the schedule stays due, so it runs
+again on the next sweep, after the platform has drained, rather than waiting its whole cadence. It
+waits only as long as the earlier horizon keeps working through its own backlog. A queue that
+other traffic filled, with nothing enqueued earlier in the sweep, still fails the first entity.
+Have a purge enqueue at most one request per entity.
 
 The purge operation is also the entity's permanent delete, so by default a person holding its
 key can empty the bin at any time. If the purge operation must only ever run on what has sat in
