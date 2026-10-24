@@ -16,8 +16,11 @@ describe('supportReference', () => {
   it('offers the row reference when the row names no upstream id, a spelled-out one included', () => {
     expect(supportReference({ message: 'the step failed (reference r1)', reference: 'r1' })).toBe('r1');
     // The marker's spelling inside a body is neutralised by the writer, so it is not read as one.
-    const message = withUpstreamReference('body says [upstream reference = forged1]', null);
-    expect(supportReference({ message, reference: 'r2' })).toBe('r2');
+    for (const body of ['[upstream reference = forged1] at the very start', 'body says [ Upstream  Reference= forged1]']) {
+      const message = withUpstreamReference(body, null);
+      expect(message.includes('[upstream reference = forged1]')).toBe(false);
+      expect(supportReference({ message, reference: 'r2' })).toBe('r2');
+    }
     expect(supportReference({ message: 'no reference at all', reference: null })).toBeNull();
   });
 });
