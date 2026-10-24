@@ -138,6 +138,62 @@ describe('connector write-back (#574)', () => {
       expect([...objs.keys()]).toEqual([`scope/${s}/att/${rec.id}`]);
     });
 
+    describe('a streamed body asks the connection\'s write gate before it is read (#2516)', () => {
+      /** A bucket that counts its puts and reads a streamed body to its end, as R2 does. */
+      const countingHost = () => {
+        const counted = { puts: 0, pulls: 0 };
+        const reading = {
+          ...bucket,
+          put: async (key: string, value: unknown, options?: { httpMetadata?: { contentType?: string } }) => {
+            counted.puts += 1;
+            const bytes = value instanceof ReadableStream ? new Uint8Array(await new Response(value).arrayBuffer()) : (value as Uint8Array);
+            return bucket.put(key, bytes, options);
+          },
+        };
+        const host = new CloudflareScopeHost({ scope: env.SCOPE, secretBox: box(), attachmentBuckets: () => reading });
+        const body = (bytes: string) => {
+          const data = new TextEncoder().encode(bytes);
+          let sent = false;
+          const stream = new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                counted.pulls += 1;
+                if (sent) return controller.close();
+                sent = true;
+                controller.enqueue(data);
+              },
+            },
+            { highWaterMark: 0 },
+          );
+          return { stream, length: data.byteLength };
+        };
+        return { host, body, counted };
+      };
+      const entity = { entityType: 'item', entityId: 'i1' };
+
+      it('a connection that holds no grant reads and stores nothing', async () => {
+        const { host, body, counted } = countingHost();
+        const stranger = connectionIdOf.parse(ulid());
+        await expect(
+          host.connectorAttachmentUploadLocal(stranger, t, s, {
+            entity, filename: 'x.pdf', contentType: 'application/pdf', visibility: 'internal', body: body('streamed'),
+          }),
+        ).rejects.toThrow(/denied/i);
+        expect(counted).toEqual({ puts: 0, pulls: 0 });
+      });
+
+      it('its twin: a connection that holds the grant streams its bytes in', async () => {
+        const { host, body, counted } = countingHost();
+        const rec = await host.connectorAttachmentUploadLocal(conn, t, s, {
+          entity, filename: 'streamed.pdf', contentType: 'application/pdf', visibility: 'internal', body: body('streamed'),
+        });
+        expect(rec.createdBy).toBe(conn);
+        expect(rec.size).toBe('streamed'.length);
+        expect(counted.puts).toBe(1);
+        expect(objs.get(`scope/${s}/att/${rec.id}`)?.body).toEqual(new TextEncoder().encode('streamed'));
+      });
+    });
+
     it('refuses the bytes of a connection that holds no grant', async () => {
       const stranger = connectionIdOf.parse(ulid());
       await expect(
@@ -209,7 +265,10 @@ describe('connector write-back (#574)', () => {
     it('twin: a live scope serves all three doors', async () => {
       await invoke();
       landed = (await upload('live.pdf')).id;
-      expect(await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).not.toBeNull();
+      const opened = await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed);
+      expect(opened).not.toBeNull();
+      // #2519: the client reads the type from the record, so the object must carry the same one.
+      expect(opened!.contentType).toBe(opened!.record.contentType);
     });
 
     it('held: invoke, land and open each refuse in the directory\'s words, and nothing lands', async () => {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { entityRef } from './events.js';
 import { instant, principalId } from './ids.js';
+import { CONNECTOR_ATTACHMENT_META_MAX_BYTES } from './wire-headers.js';
 
 // Visibility classification for attachment items — documents, comments,
 // custom-field values (K-13). Mandatory wherever data can reach the customer
@@ -49,6 +50,36 @@ export type AttachmentRecord = z.infer<typeof attachmentRecord>;
 export const attachmentRecordFields = attachmentRecord.omit({ size: true, sha256: true });
 /** The fields as a caller hands them over, before they are judged. */
 export type AttachmentRecordFields = z.input<typeof attachmentRecordFields>;
+
+/**
+ * The longest each caller-supplied string of a NEW attachment may be, in UTF-16 units (#2519). A
+ * connector reads a record back through a response header, where a non-ASCII unit costs up to 6
+ * bytes escaped, so the strings it carries are bounded where the record is made: at 512 + 255 +
+ * 128 + 255 + 128 units the record is under 8.2 KiB. 512 keeps a realistic 400-character path
+ * storable. {@link attachmentRecord} itself is NOT capped: it is also what a stored row is parsed
+ * against, and a row written before these bounds must stay readable.
+ */
+export const ATTACHMENT_FIELD_MAX = {
+  filename: 512,
+  contentType: 255,
+  entityType: 128,
+  entityId: 255,
+  createdBy: 128,
+} as const;
+
+/**
+ * {@link attachmentRecordFields} as an upload judges it: the same fields, each bounded by
+ * {@link ATTACHMENT_FIELD_MAX}. One judge for every door that stores an attachment.
+ */
+export const attachmentUploadFields = attachmentRecordFields.extend({
+  entity: z.object({
+    entityType: z.string().min(1).max(ATTACHMENT_FIELD_MAX.entityType),
+    entityId: z.string().min(1).max(ATTACHMENT_FIELD_MAX.entityId),
+  }),
+  filename: z.string().min(1).max(ATTACHMENT_FIELD_MAX.filename),
+  contentType: z.string().min(1).max(ATTACHMENT_FIELD_MAX.contentType),
+  createdBy: z.string().min(1).max(ATTACHMENT_FIELD_MAX.createdBy),
+});
 
 /**
  * The spine events attachment mutations emit (#473) — kernel-emitted, fat payload (the
@@ -148,7 +179,9 @@ export const uploadLinkFilename = z
 /** `ctx.attachments.mintUploadUrl`'s input. */
 export const uploadLinkMintInput = z
   .object({
-    entity: entityRef,
+    // Bounded like an upload (#2519): a link for an entity no redemption could store is refused
+    // at the mint, to the minter, not at the redemption, to the uploader.
+    entity: attachmentUploadFields.shape.entity,
     /** Fixes the stored name. Absent: the uploader names the file (`?filename=` or `Content-Disposition`). */
     filename: uploadLinkFilename.optional(),
     /** Narrows the target's `maxBytes`; a larger value is refused, not clamped. */
@@ -245,3 +278,42 @@ export const attachmentUploadLinkRevokedPayload = z.object({
   revokedBy: principalId,
 });
 export type AttachmentUploadLinkRevokedPayload = z.infer<typeof attachmentUploadLinkRevokedPayload>;
+
+// -- connector upload bounds (#2516) --------------------------------------------
+
+/**
+ * How many bytes a connector upload's metadata takes on the wire: its JSON, URI-encoded, which is
+ * what the stream route's header carries. The multipart route carries the same JSON in a field and
+ * is held to the same count, taken WITHOUT the stream route's `size` member, so one filename is
+ * accepted or refused the same way on both (#2516).
+ */
+export function connectorAttachmentMetaBytes(metaJson: string): number {
+  return encodeURIComponent(metaJson).length;
+}
+
+/** The one sentence every end uses to refuse metadata over {@link CONNECTOR_ATTACHMENT_META_MAX_BYTES}. */
+export function connectorAttachmentMetaRefusal(bytes: number): string {
+  return (
+    `the attachment's metadata is ${bytes} bytes once encoded, over the ` +
+    `${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound a connector upload carries it in — shorten the filename`
+  );
+}
+
+/**
+ * The most bytes one streamed connector upload may carry (#2516). Streaming took the worker's
+ * memory out of the limit, which left nothing bounding a file; this is that bound, held where the
+ * bytes arrive (the stream route) and again by the platform before it sends, so a file too large
+ * is refused with an answer before anything is read or stored. The platform reaches the route
+ * through the dispatch namespace, not a zone's edge; the value is kept under 100 MB decimal (about
+ * 95.4 MiB), the lowest plan's Workers request-body limit, so that the same file is also one a
+ * deployment reached directly by a public request could take.
+ */
+export const CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES = 95 * 1024 * 1024;
+
+/** The one sentence every end uses to refuse a declared size over {@link CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}. */
+export function connectorAttachmentSizeRefusal(declared: number): string {
+  return (
+    `the attachment declares ${declared} bytes, over the ${CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES}-byte ` +
+    `bound on a streamed connector upload`
+  );
+}

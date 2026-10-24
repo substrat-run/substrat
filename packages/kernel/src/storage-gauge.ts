@@ -125,7 +125,9 @@ export interface ScopeStorageAttempt {
  * Filter for `listScopeStorage`. `latest` returns one row per stored scope, its most
  * recent day, and ignores `since`/`until`/`limit`: that set is bounded by the scope count,
  * the same as `listScopes`. Otherwise it is history, ordered (scope, day), `since`/`until`
- * inclusive UTC days, at most `limit` rows.
+ * inclusive UTC days, at most `limit` rows. History also holds a reaped scope's days (#2515),
+ * which count against `limit` as any row does; there is no cursor, so a tenant with many
+ * reaped scopes reaches the cap sooner and the scopes sorting last can be cut off.
  */
 export interface ScopeStorageFilter {
   tenantId?: TenantId;
@@ -238,7 +240,9 @@ interface SampleRow {
 
 /** Read samples — see `ScopeStorageFilter`. Every row is parsed on the way out. */
 export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilter = {}): ScopeStorageSample[] {
-  const where: string[] = [holdsStoreSql('s.')];
+  // History also reads a reaped scope's days (#2515): its storage is gone, but the bytes it held
+  // on those days are what a later invoice is cut from. `latest` stays on scopes that hold a store.
+  const where: string[] = [filter.latest ? holdsStoreSql('s.') : `(${holdsStoreSql('s.')} OR s.status = 'reaped')`];
   const params: (string | number)[] = [];
   if (filter.tenantId) {
     where.push('s.tenant_id = ?');
@@ -268,8 +272,8 @@ export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilt
     tail = ' LIMIT ?';
     params.push(Math.min(limit, STORAGE_HISTORY_LIMIT_MAX));
   }
-  // The join to `scopes` is the belt to the reap's braces: a reaped scope's rows are
-  // deleted at reap, and any that survived are still never read.
+  // The join to `scopes` keeps a fork's leftovers (its row is gone) and a scope that never held
+  // a store out of every read; a reaped scope's tombstone row is what admits its kept days.
   const rows = sql(
     `SELECT g.tenant_id, g.scope_id, g.day, g.bytes, g.read_at
        FROM scopes s
@@ -345,7 +349,16 @@ export function listScopeStoreStorageRows(
   return rows.map((r) => ({ tenantId: r.tenant_id as TenantId, bytes: r.bytes, readAt: r.read_at }));
 }
 
-/** Drop a scope's samples and attempt: its storage is gone, so its history describes nothing billable. */
+/**
+ * A reap ends a scope's measuring (#2515): the attempt row goes, the day rows stay. They are the
+ * bytes the scope held on the days it held them, which a later invoice for that month is cut
+ * from, so they leave only with retention (`pruneScopeStorageRows`) or the tenant's own reap.
+ */
+export function retireScopeStorage(sql: RedactionSql, scopeId: string): void {
+  sql('DELETE FROM _substrat_scope_storage_attempts WHERE scope_id = ?', [scopeId]);
+}
+
+/** Drop everything of a scope's: a deleted fork's rows have no scope row left to be read through. */
 export function forgetScopeStorage(sql: RedactionSql, scopeId: string): void {
   sql('DELETE FROM _substrat_scope_storage WHERE scope_id = ?', [scopeId]);
   sql('DELETE FROM _substrat_scope_storage_attempts WHERE scope_id = ?', [scopeId]);

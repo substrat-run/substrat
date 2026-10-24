@@ -377,6 +377,14 @@ export const promotionAcknowledgement = z.object({
    */
   exportBreak: z.boolean().optional(),
   /**
+   * #2446: staff only. A prod promote of a release that declares a system-held role reads the
+   * roles each scope it moves stores, and refuses one whose reconcile would refuse the release.
+   * This skips that read, for a promote that moves more scopes than one promote reads. The
+   * promote's audit row records it with the other acknowledgements, and each scope's reconcile
+   * still refuses a role set it cannot define. A confined caller sending it is refused.
+   */
+  roleStateUnjudged: z.boolean().optional(),
+  /**
    * #2333: the review these acknowledgements were given against. A promote review is computed
    * from the version being promoted over the channel's CURRENT version, and a concurrent promote
    * between showing it and acknowledging it changes that base — so a bare flag would acknowledge

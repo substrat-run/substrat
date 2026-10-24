@@ -616,7 +616,7 @@ export interface DashboardClient {
    *
    * `POST /deployments/{slug}/promote` — `dashboard/promote-deployment`
    */
-  promoteDeployment(input: { slug: string; channel: "prod"; versionId: string; acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean; review?: { base: string | null; digest: string } } }): Promise<{ promoted: true }>;
+  promoteDeployment(input: { slug: string; channel: "prod"; versionId: string; acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean; roleStateUnjudged?: boolean; review?: { base: string | null; digest: string } } }): Promise<{ promoted: true }>;
 
   /**
    * Delete one of this team's apps: deprovision its scope and take its hostname offline

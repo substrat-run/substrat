@@ -115,6 +115,10 @@ import {
   substratError,
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
+  connectorAttachmentMetaBytes,
+  connectorAttachmentMetaRefusal,
+  connectorAttachmentSizeRefusal,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
   LOAD_STAMP_HEADER,
   PLATFORM_SECRET_HEADER,
@@ -122,7 +126,7 @@ import {
   mergeDumpPages,
   scopeDumpPage,
 } from '@substrat-run/contracts';
-import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { isSizedByteStream, knownLengthInit, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
@@ -153,6 +157,14 @@ const orphanSweepReportWire = z.object({
   dryRun: z.boolean(),
   bucket: z.literal('none').optional(),
   consumeFailed: z.literal(true).optional(),
+});
+
+/** #2446: a scope's role state as it crosses the wire (`RoleState`), checked. */
+const roleStateWire = z.object({
+  roles: z.array(
+    z.object({ key: z.string().min(1), permissions: z.array(z.string()), holder: z.enum(['person', 'system']).optional() }),
+  ),
+  seated: z.array(z.string()),
 });
 
 /** `routeAnswer`'s word for a deployment that predates the route it was asked (#1722, #2010). */
@@ -867,8 +879,10 @@ export class VerticalClient {
   }): Promise<AttachmentRecord> {
     const { body, ...meta } = input;
     if (isSizedByteStream(body)) return this.connectorStreamAttachment(meta, body);
+    const metaJson = JSON.stringify(meta);
+    this.assertWithinAttachmentBounds('connector-attachment', connectorAttachmentMetaBytes(metaJson));
     const form = new FormData();
-    form.append('meta', JSON.stringify(meta));
+    form.append('meta', metaJson);
     form.append('body', new Blob([body as BlobPart], { type: input.contentType }), input.filename);
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const res = await this.reach('connector-attachment', () =>
@@ -881,6 +895,19 @@ export class VerticalClient {
     );
     if (!res.ok) throw await this.refusal('connector-attachment', res);
     return this.parseInternal<AttachmentRecord>('connector-attachment', '/internal/connector-attachment', res);
+  }
+
+  /**
+   * Hold an upload to the bounds the far end holds it to (#2516), so it is refused here, with
+   * nothing sent, in the words the route would use. `declared` is a streamed body's length.
+   */
+  private assertWithinAttachmentBounds(verb: string, metaBytes: number, declared?: number): void {
+    if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
+      throw new ControlPlaneError(400, `${verb}: ${connectorAttachmentMetaRefusal(metaBytes)}. Nothing was sent.`);
+    }
+    if (declared !== undefined && declared > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
+      throw new ControlPlaneError(413, `${verb}: ${connectorAttachmentSizeRefusal(declared)}. Nothing was sent.`);
+    }
   }
 
   /**
@@ -900,19 +927,13 @@ export class VerticalClient {
     // The metadata is the only header a caller's strings reach. Its characters are always safe:
     // JSON escapes a control character or a lone surrogate, and URI encoding everything else.
     // Its SIZE is not, since it grows with the filename, so it is held to a named bound here and
-    // refused before a byte is sent rather than answered with a server's bare 431. (The
-    // multipart route carries the same metadata in its body and has no such bound.) The file's
-    // own type rides inside it (the route reads `contentType` from there), so the request's own
+    // refused before a byte is sent rather than answered with a server's bare 431. (The multipart
+    // route is held to the same bound, #2516.) The file's own type rides inside it (the route
+    // reads `contentType` from there), so the request's own
     // `content-type` is the plain octet-stream it is.
+    // Counted without `size`, as the multipart route's `meta` is, so one name passes or fails alike.
+    this.assertWithinAttachmentBounds(verb, connectorAttachmentMetaBytes(JSON.stringify(meta)), body.length);
     const encodedMeta = encodeURIComponent(JSON.stringify({ ...meta, size: body.length }));
-    if (encodedMeta.length > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
-      throw new ControlPlaneError(
-        400,
-        `${verb}: the attachment's metadata is ${encodedMeta.length} bytes once encoded, over the ` +
-          `${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound a streamed upload carries it in a header — ` +
-          `shorten the filename. Nothing was sent.`,
-      );
-    }
     const init = knownLengthInit({
       method: 'POST',
       headers: {
@@ -990,7 +1011,9 @@ export class VerticalClient {
     return {
       record,
       body,
-      contentType: res.headers.get('content-type') ?? record.contentType,
+      // The record's, not the response's: the response header carries a type only when the
+      // stored one is header-safe (#2519), and the record is the exact stored value.
+      contentType: record.contentType,
     };
   }
 
@@ -1163,6 +1186,30 @@ export class VerticalClient {
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
+  }
+
+  /**
+   * #2446: the roles the deployment serving `scopeId` stores for `tenantId` there, and the role keys
+   * seated there (`/internal/role-state`): what its reconcile judges a role set against. `'predates'`
+   * on a 404, the deployment's own proof it has no such route, and on its 501, which a vertical-host
+   * carrying the route answers when its scope host predates `roleStateLocal`. Either is a deployment
+   * built before the read, which a promote counts rather than refuses on, since the promote that
+   * upgrades it is judged by it. Every other failure throws, as does a wrong-shaped answer.
+   */
+  async roleState(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<RoleState | 'predates'> {
+    const verb = 'role-state';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const q = new URLSearchParams({ tenantId: input.tenantId, scopeId: input.scopeId });
+    const answer = await this.routeAnswer(verb, { legacy501: true, lost: 'nothing was changed; the read is safe to repeat.' }, () =>
+      this.options.fetch(`${base}/internal/role-state?${q}`, {
+        method: 'GET',
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === PREDATES) return 'predates';
+    const parsed = roleStateWire.safeParse(answer);
+    if (!parsed.success) throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
+    return parsed.data;
   }
 
   /**

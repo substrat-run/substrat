@@ -25,6 +25,7 @@ import {
   FINDINGS_DDL,
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
+  retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
   listScopeStoreStorageRows,
@@ -2845,8 +2846,8 @@ export class ControlPlaneDO extends DurableObject {
       if (to === 'reaped') {
         forgetSwitchesOf(this.kernelSql, scopeId);
         this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
-        // #1524: its storage is gone, so its samples describe nothing.
-        forgetScopeStorage(doRedactionSql(this.sql), scopeId);
+        // #2515: its storage is gone, and its measured days are kept for the invoice (retention ends them).
+        retireScopeStorage(doRedactionSql(this.sql), scopeId);
       }
       this.bumpLifecycleRevision(`scope:${scopeId}`); // #1713, with the status it counts
     });

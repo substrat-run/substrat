@@ -1397,8 +1397,9 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **One row per scope per UTC day** in the directory's `_substrat_scope_storage`, the day's
   latest reading (a later same-day reading replaces it, an older one never does). The row is
   written only for a non-reaped scope the directory holds under the named tenant. Kept
-  **thirteen months**, pruned by the same phase at most 500 rows per pass. A reaped scope's
-  rows are deleted at reap, and reads join on scope status as a second guard.
+  **thirteen months**, pruned by the same phase at most 500 rows per pass. A reap deletes
+  the scope's attempt row and keeps its day rows until retention (#2515): history reads admit a
+  reaped scope through its tombstone row, while `latest`, the attempts and `/meters` do not.
 - **A failed read keeps the last value, and is named.** It is a `storage` error in the pass
   report and the scope's attempt row, and the figure on `/meters` counts it (`failing`, with
   `lastFailedAt`), so the console says "the last read of N scopes failed" rather than letting
