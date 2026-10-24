@@ -3447,8 +3447,9 @@ export class ControlPlaneDO extends DurableObject {
    * Remove a vertical's registry presence: channels, versions, the row. The bound-scope
    * refusal lives host-side (the audited seam), not here — this is the storage verb.
    */
-  deleteVertical(slug: string, audit?: AdminEntryInput): void {
-    // #2501: one transaction, so the row and its ownership period close together.
+  deleteVertical(slug: string, until: string, audit?: AdminEntryInput): void {
+    // #2501: one transaction, so the row and its ownership period close together. `until` is the
+    // host's clock, the one the period's `since` (the row's created_at) was read on.
     this.writeAndAudit(() => {
       this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
       this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
@@ -3461,7 +3462,7 @@ export class ControlPlaneDO extends DurableObject {
       forgetVerticalWireAuth(this.kernelSql, slug);
       this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
       const changed = this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug).rowsWritten > 0;
-      if (changed) closeVerticalOwnerRow(doRedactionSql(this.sql), slug, new Date().toISOString());
+      if (changed) closeVerticalOwnerRow(doRedactionSql(this.sql), slug, until);
       return changed;
     }, audit);
   }

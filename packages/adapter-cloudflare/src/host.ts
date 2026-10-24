@@ -920,7 +920,7 @@ interface ControlPlaneStub {
   updateVerticalTenantProvisioner(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   updateVerticalEmailSender(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
-  deleteVertical(slug: string, audit: AdminEntry): Promise<void>;
+  deleteVertical(slug: string, until: string, audit: AdminEntry): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
   insertVersion(v: {
@@ -8369,7 +8369,8 @@ export class CloudflareScopeHost implements ScopeHost {
             `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
           );
         }
-        await this.cp.deleteVertical(slug, this.adminEntry(
+        // #2501: the period's `until` is read on this clock, the one its `since` was.
+        await this.cp.deleteVertical(slug, new Date().toISOString(), this.adminEntry(
           actor,
           'deleteVertical',
           { tenantId: null },

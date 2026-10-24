@@ -1,4 +1,4 @@
-import { verticalOwnerPeriod, type VerticalOwnerPeriod } from '@substrat-run/contracts';
+import { instant, verticalOwnerPeriod, type VerticalOwnerPeriod } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
 
 /**
@@ -40,6 +40,20 @@ export const VERTICAL_OWNERS_BACKFILL = `INSERT INTO _substrat_vertical_owners (
   SELECT v.slug, v.owner_tenant, v.created_at, NULL FROM verticals v
    WHERE NOT EXISTS (SELECT 1 FROM _substrat_vertical_owners o WHERE o.slug = v.slug AND o.until IS NULL)`;
 
+/**
+ * Close every open period whose slug has no `verticals` row, at `at` (or at the period's own
+ * `since`, if that is later). A directory restore runs it once the dump's rows are in, so the
+ * periods it keeps are consistent with the verticals it restores: an open period with no row
+ * would otherwise make the next registration of that slug fail on the open-period index. Closed,
+ * not dropped, so the period stays in the history.
+ */
+export function verticalOwnersStrayCloseSql(at: string): string {
+  // Interpolated, not bound: the adapters run it through `exec`. `instant` holds it to an
+  // ISO-8601 UTC timestamp, which carries no quote, or throws.
+  return `UPDATE _substrat_vertical_owners SET until = MAX(since, '${instant.parse(at)}')
+   WHERE until IS NULL AND NOT EXISTS (SELECT 1 FROM verticals v WHERE v.slug = _substrat_vertical_owners.slug)`;
+}
+
 /** Open the slug's period as its `verticals` row is inserted, in that insert's transaction. */
 export function openVerticalOwnerRow(sql: RedactionSql, slug: string, owner: string | null, since: string): void {
   sql('INSERT INTO _substrat_vertical_owners (slug, owner, since, until) VALUES (?, ?, ?, NULL)', [slug, owner, since]);
@@ -52,11 +66,12 @@ export function closeVerticalOwnerRow(sql: RedactionSql, slug: string, until: st
 
 /**
  * Every period of a slug's ownership, oldest first. Parsed on the way out. Two periods with the same
- * `since` are ordered closed first, since only the last can be open.
+ * `since` are ordered closed first, since only the last can be open; `rowid` breaks whatever tie
+ * is left, so the order never depends on the plan.
  */
 export function listVerticalOwnerRows(sql: RedactionSql, slug: string): VerticalOwnerPeriod[] {
   const rows = sql(
-    'SELECT slug, owner, since, until FROM _substrat_vertical_owners WHERE slug = ? ORDER BY since, until IS NULL, until',
+    'SELECT slug, owner, since, until FROM _substrat_vertical_owners WHERE slug = ? ORDER BY since, until IS NULL, until, rowid',
     [slug],
   ) as {
     slug: string;

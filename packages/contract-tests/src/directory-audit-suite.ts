@@ -60,6 +60,10 @@ const publish = async (host: ScopeHost, staff: PlatformActorId, slug: string): P
 const verticalOf = async (host: ScopeHost, staff: PlatformActorId, slug: string) =>
   (await host.admin.listVerticals(staff)).find((v) => v.slug === slug);
 
+/** #2501: how many of the slug's ownership periods are open (at most one). */
+const openPeriodsOf = async (host: ScopeHost, staff: PlatformActorId, slug: string) =>
+  (await host.admin.listVerticalOwners!(staff, slug)).filter((p) => p.until === null).length;
+
 /** One vertical flag flipped by staff: the case is the same shape for each. */
 const flagCase = (
   action: 'setVerticalListed' | 'setVerticalInstallsBlocked' | 'setVerticalTenantProvisioner' | 'setVerticalEmailSender',
@@ -142,8 +146,9 @@ const CASES: DirectoryCase[] = [
       const slug = slugOf();
       return {
         call: () => host.admin.registerVertical(staff, { slug, name: 'Registered', source: 'builtin' }),
-        state: async () => (await verticalOf(host, staff, slug))?.name ?? null,
-        changed: 'Registered',
+        // #2501: the ownership period opens in the same unit as the row and its admin entry.
+        state: async () => [(await verticalOf(host, staff, slug))?.name ?? null, await openPeriodsOf(host, staff, slug)],
+        changed: ['Registered', 1],
         row: { before: null, after: expect.objectContaining({ slug, name: 'Registered', source: 'builtin' }) },
       };
     },
@@ -188,9 +193,14 @@ const CASES: DirectoryCase[] = [
       const version = await publish(host, staff, slug);
       return {
         call: () => host.admin.deleteVertical(staff, slug),
-        // The versions it deletes first go back with the row.
-        state: async () => [(await verticalOf(host, staff, slug)) !== undefined, (await host.admin.getVersion(staff, version)) !== undefined],
-        changed: [false, false],
+        // The versions it deletes first go back with the row, and so does the closing of its
+        // ownership period (#2501).
+        state: async () => [
+          (await verticalOf(host, staff, slug)) !== undefined,
+          (await host.admin.getVersion(staff, version)) !== undefined,
+          await openPeriodsOf(host, staff, slug),
+        ],
+        changed: [false, false, 0],
         row: { before: { slug, source: 'builtin', ownerTenant: null }, after: null },
       };
     },

@@ -11,6 +11,7 @@ import {
   tenantTokenAuth,
   DEV_ACTOR_HEADER,
   SERVICE_TOKEN_HEADER,
+  TENANT_HEADER,
   UNSAFE_devPlatformActorAuth,
 } from '../src/index.js';
 
@@ -73,6 +74,14 @@ describe('GET /verticals/:slug/owners (#2501)', () => {
       owners: [],
     });
     expect((await app.request('/verticals/Not%20A%20Slug/owners', { headers: asStaff })).status).toBe(400);
+  });
+
+  it('reads the full slug as given: a tenant pin does not resolve a bare name', async () => {
+    const pinned = { ...asStaff, [TENANT_HEADER]: 'acme' };
+    expect(await (await app.request('/verticals/crm/owners', { headers: pinned })).json()).toEqual({ slug: 'crm', owners: [] });
+    // Its twin: the full slug under the same pin answers with the history.
+    const full = await (await app.request(`/verticals/${encodeURIComponent(SLUG)}/owners`, { headers: pinned })).json();
+    expect(full.owners).toHaveLength(2);
   });
 
   it('is staff-only: the builder that owns the slug today and a tenant token are refused', async () => {

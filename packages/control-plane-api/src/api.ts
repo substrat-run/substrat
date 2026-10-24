@@ -8417,6 +8417,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // closed when it was deleted, so a past period bills the builder who owned the vertical then.
   // Staff-only, like `/meters`: absent from BUILDER_ROUTES and from the tenant credential's pins.
   // Served for a deleted slug too, which is the point; a slug never registered has no period.
+  // The FULL slug, read as given: unlike the routes behind `resolveVerticalId`, the tenant pin is
+  // ignored, since it resolves a bare name through the registry row a deleted slug no longer has.
+  // A bare name is read as a slug of its own; one never registered answers with no periods.
   app.get('/verticals/:slug/owners', async (c) => {
     const admin = c.var.admin;
     if (!admin.listVerticalOwners) return refuseStatus(c, 501, 'this control plane keeps no ownership history');

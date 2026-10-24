@@ -423,6 +423,45 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
+    it('keeps the periods consistent with the restored verticals: an open period with no vertical is closed (#2501)', async () => {
+      await using(async (dir, fresh) => {
+        const verticals = find(fresh, 'verticals');
+        const owners = find(fresh, '_substrat_vertical_owners');
+        const base = Object.fromEntries(verticals.columns.map((c) => [c, valueFor('verticals', c)]));
+        const since = '2026-01-02T03:04:05.000Z';
+        // `kept` has its row and its open period; `stray`'s period is open and its row is gone.
+        const dump = withTable(
+          withTable(fresh, 'verticals', (t) => ({ ...t, rows: [rowOf(verticals.columns, { ...base, slug: 'kept', created_at: since })] })),
+          '_substrat_vertical_owners',
+          (t) => ({
+            ...t,
+            rows: [
+              rowOf(owners.columns, { slug: 'kept', owner: null, since, until: null }),
+              rowOf(owners.columns, { slug: 'stray', owner: 'tenant-a', since, until: null }),
+            ],
+          }),
+        );
+        await dir.restore(dump);
+        await dir.settle();
+        const periods = async () =>
+          recordsOf(find(await dir.snapshot(), '_substrat_vertical_owners'))
+            .sort((a, b) => `${a.slug}${a.since}`.localeCompare(`${b.slug}${b.since}`));
+        const restored = await periods();
+        // The kept vertical's open period is left alone; the stray one is closed, not dropped.
+        expect(restored).toEqual([
+          { slug: 'kept', owner: null, since, until: null },
+          { slug: 'stray', owner: 'tenant-a', since, until: expect.any(String) },
+        ]);
+        expect(String(restored[1]!.until) >= since).toBe(true);
+
+        // So the slug registers again, and holds exactly one open period: the new one.
+        await dir.registerVertical('stray');
+        const open = (await periods()).filter((p) => p.slug === 'stray' && p.until === null);
+        expect(open).toHaveLength(1);
+        expect(open[0]!.owner).toBeNull();
+      });
+    });
+
     describe('refused, and the directory is left exactly as it was', () => {
       const refusals: Refusal[] = [
         [

@@ -5,7 +5,7 @@ import { isSearchIndexTable } from './search-index.js';
 import { SWITCH_KINDS, dumpCarriesSwitches, switchesBackfillSqlOf } from './system-switch-record.js';
 import { dumpCarriesMembershipFences, membershipFencesBackfillSql } from './membership-fence.js';
 import { mapLegacyStoreDriverDump } from './store-driver-releases.js';
-import { VERTICAL_OWNERS_BACKFILL } from './vertical-owners.js';
+import { VERTICAL_OWNERS_BACKFILL, verticalOwnersStrayCloseSql } from './vertical-owners.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One
@@ -252,8 +252,9 @@ function assertWithinColumnCap(
  *    refuse one named for the rowid (`spineColumnAdditions`);
  * 3. insert every row by column name, against the columns read back after step 2
  *    (`spineRowsInsert`);
- * 4. fill a pre-directory scope row's naming columns (`LEGACY_SCOPE_ROWS_BACKFILL`), and open an
- *    ownership period for each vertical that has none (`VERTICAL_OWNERS_BACKFILL`, #2501);
+ * 4. fill a pre-directory scope row's naming columns (`LEGACY_SCOPE_ROWS_BACKFILL`), close an
+ *    open ownership period whose slug has no vertical (`verticalOwnersStrayCloseSql`) and open
+ *    one for each vertical that has none (`VERTICAL_OWNERS_BACKFILL`, #2501);
  * 5. backfill each kill switch's record (the schedule switch's, #1674, and the peer switch's,
  *    #2029) from the dump's own admin log, when the dump predates that record. One that carried
  *    it keeps its rows and is never backfilled over;
@@ -287,7 +288,10 @@ export function loadDirectoryDump(
     if (t.rows.length > 0) host.insert(spineRowsInsert(t, host.columnsOf(t.name)), t.rows);
   }
   for (const stmt of LEGACY_SCOPE_ROWS_BACKFILL) host.exec(stmt);
-  // #2501: a dump from before the ownership history comes back with one period per vertical.
+  // #2501: the periods kept are consistent with the verticals restored. A dump from before the
+  // history comes back with one period per vertical, and a period left open for a slug the dump
+  // has no row for is closed.
+  host.exec(verticalOwnersStrayCloseSql(host.now()));
   host.exec(VERTICAL_OWNERS_BACKFILL);
   const names = tables.map((t) => t.name);
   for (const kind of SWITCH_KINDS) if (!dumpCarriesSwitches(names, kind)) host.exec(switchesBackfillSqlOf(kind));
