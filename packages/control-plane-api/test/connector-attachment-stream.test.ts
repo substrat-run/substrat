@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import {
+  ATTACHMENT_FIELD_MAX,
   CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
   CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
@@ -143,11 +144,11 @@ function world(flow: Flow = { produced: 0, consumed: 0, maxLead: 0 }, overrides:
   return { client, landed };
 }
 
-const upload = (body: ByteBody, filename = 'drawing-set.pdf', contentType = 'application/pdf') => ({
+const upload = (body: ByteBody, filename = 'drawing-set.pdf', contentType = 'application/pdf', entity = { entityType: 'document', entityId: 'd1' }) => ({
   connectionId: conn,
   tenantId: t,
   scopeId: s,
-  entity: { entityType: 'document', entityId: 'd1' },
+  entity,
   filename,
   contentType,
   visibility: 'internal' as const,
@@ -345,14 +346,16 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
  * these before it sends: what a caller that does not go through it meets. Neither route reaches
  * the host, nor reads a byte, for a request it refuses.
  */
+const narrow = { entity: { entityType: 'document', entityId: 'd1' }, contentType: 'application/pdf' };
+
 describe('mountPlatformSurface — the bounds on a connector upload (#2516)', () => {
-  const metaOf = (filename: string, size?: number) => ({
+  const metaOf = (filename: string, size?: number, fixed: { entity: { entityType: string; entityId: string }; contentType: string } = narrow) => ({
     connectionId: conn,
     tenantId: t,
     scopeId: s,
-    entity: { entityType: 'document', entityId: 'd1' },
+    entity: fixed.entity,
     filename,
-    contentType: 'application/pdf',
+    contentType: fixed.contentType,
     visibility: 'internal',
     ...(size === undefined ? {} : { size }),
   });
@@ -431,14 +434,21 @@ describe('mountPlatformSurface — the bounds on a connector upload (#2516)', ()
   });
 
   it('a name exactly at the bound passes on both routes and the client alike; one byte more fails on all (#2516)', async () => {
-    const fill = CONNECTOR_ATTACHMENT_META_MAX_BYTES - connectorAttachmentMetaBytes(JSON.stringify(metaOf('')));
-    const atBound = 'a'.repeat(fill);
-    expect(connectorAttachmentMetaBytes(JSON.stringify(metaOf(atBound)))).toBe(CONNECTOR_ATTACHMENT_META_MAX_BYTES);
+    // The filename alone is capped at ATTACHMENT_FIELD_MAX.filename (#2519), so the other bounded
+    // fields carry the bulk: a non-ASCII unit costs 9 bytes once encoded, an ASCII one 1.
+    const wide = {
+      entity: { entityType: 'e', entityId: '報'.repeat(ATTACHMENT_FIELD_MAX.entityId) },
+      contentType: '報'.repeat(ATTACHMENT_FIELD_MAX.contentType),
+    };
+    const fill = CONNECTOR_ATTACHMENT_META_MAX_BYTES - connectorAttachmentMetaBytes(JSON.stringify(metaOf('', undefined, wide)));
+    const atBound = '報'.repeat(Math.floor(fill / 9)) + 'a'.repeat(fill % 9);
+    expect(atBound.length + 1).toBeLessThanOrEqual(ATTACHMENT_FIELD_MAX.filename);
+    expect(connectorAttachmentMetaBytes(JSON.stringify(metaOf(atBound, undefined, wide)))).toBe(CONNECTOR_ATTACHMENT_META_MAX_BYTES);
     const { app, reached } = surface();
-    expect((await streamPost(app, metaOf(atBound, CHUNK), producer(1).stream)).status).toBe(201);
-    expect((await multipartPost(app, metaOf(atBound))).status).toBe(201);
-    expect((await streamPost(app, metaOf(atBound + 'a', CHUNK), producer(1).stream)).status).toBe(400);
-    expect((await multipartPost(app, metaOf(atBound + 'a'))).status).toBe(400);
+    expect((await streamPost(app, metaOf(atBound, CHUNK, wide), producer(1).stream)).status).toBe(201);
+    expect((await multipartPost(app, metaOf(atBound, undefined, wide))).status).toBe(201);
+    expect((await streamPost(app, metaOf(atBound + 'a', CHUNK, wide), producer(1).stream)).status).toBe(400);
+    expect((await multipartPost(app, metaOf(atBound + 'a', undefined, wide))).status).toBe(400);
     expect(reached).toHaveLength(2);
     const sent: string[] = [];
     const client = new VerticalClient({
@@ -448,8 +458,8 @@ describe('mountPlatformSurface — the bounds on a connector upload (#2516)', ()
       }) as typeof fetch,
       platformSecret: SECRET,
     });
-    await client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound));
-    await expect(client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound + 'a'))).rejects.toThrow(/Nothing was sent/);
+    await client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound, wide.contentType, wide.entity));
+    await expect(client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound + 'a', wide.contentType, wide.entity))).rejects.toThrow(/Nothing was sent/);
     expect(sent).toHaveLength(1);
   });
 
