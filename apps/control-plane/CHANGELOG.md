@@ -1,5 +1,82 @@
 # @substrat-run/control-plane
 
+## 0.16.0
+
+### Minor Changes
+
+- 8e8af88: Attachment bytes beside the storage gauge (#2501). The stored gauge measured scope databases only. The scheduled pass now also reads what each due scope's attachment rows sum to, in the same attempt, and keeps it as its own day row, with the database sample's rules: the day's latest reading, and thirteen months of days. A scope reap keeps them until retention, as it keeps the scope's database days (#2515). A reaped tenant and a deleted fork forget them. `/meters` serves it as `storage.attachments {bytes, sampled}`, beside `bytes`, never in it: the basis stays the scope databases, and attachments stay in `excluded`. The figure is what each scope's rows record, not what the blob store holds: an orphan blob no row names is not in it, and a fork or snapshot that is itself a stored scope counts its copied rows again, though they name the parent's blobs.
+
+  - contracts: `storageGauge.attachments`.
+  - kernel: `ATTACHMENT_BYTES_SQL`, the `_substrat_scope_attachment_storage` table in `SCOPE_STORAGE_DDL`, `listScopeAttachmentStorageRows`, `attachments` on a storage reading, and the storage phase's optional `readAttachments`, bounded by `storeReadTimeoutMs` like the store read. A deployment that cannot read attachment bytes (`StorageReadUnsupported`) is neither a failure nor a size of 0. A failed attachment read keeps the database sample and the store reading, and is the scope's error. Also the optional `HostAdmin.scopeAttachmentBytes`, the co-located read, access-logged.
+  - adapter-sqlite, adapter-cloudflare: the table, the co-located read, and the scope DO's `attachmentBytes`. contract-tests holds both adapters to them, from an upload to `/meters`.
+  - vertical-host: `GET /internal/attachment-size`, behind the same platform gate as every `/internal` route, answering 501 on a host without `attachmentSizeLocal`.
+  - control-plane-api: `VerticalClient.attachmentSize`.
+  - control-plane: the storage phase reads attachment bytes through the deployment that holds each scope, found once per scope for both reads.
+
+  No existing retention changes.
+
+- dc3b911: Meters 1 and 2, kept daily (#2501). `/meters` recomputes its reading on every call, so a past day's reading was gone. The platform sweep now keeps one row per (UTC day, tenant), taken by the first pass of the day: the tenant's status and whether it is billable, its scopes by effective status, the same counts split by vertical, and every grant (key, plan, expiry) with whether it was live at the snapshot's instant.
+
+  - contracts: `meterDay`, `meterDayVertical`, `meterDayGrant`, `meterDayTake` (the record of a day, with `failingSince`/`failingCount` while a run of failures lasts) and `meterDaysReading`.
+  - kernel: `METER_DAYS_DDL` and its statements, and the sweep's opt-in `meterSnapshot` phase. One directory transaction reads the tenants, their scopes and their grants, folds them with `foldMeterReading` and writes the day, so a kept day follows the same billable rule as `/meters`. A reaped tenant has no row. The first pass of the day takes it, and the later passes of the day do nothing. It runs after the scheduled work, just before the request rollup and the access-log drain, with a 30-second deadline. A failed attempt writes nothing and the next pass of the day tries again. A run of identical failures, across midnight too, reaches `report.errors` once, and the report's `streak` carries it on every pass until a snapshot is taken. Options that would misconfigure it are refused. Also four optional `HostAdmin` methods (`recordMeterDay`, `listMeterDays`, `listMeterDayTakes`, `pruneMeterDays`). The snapshots prune by the request rollup's horizon, `BILLING_ROLLUP_RETENTION_MONTHS`, still `null`, so nothing is pruned.
+  - adapter-sqlite, adapter-cloudflare: the two directory tables, created on start, and the methods. contract-tests holds both adapters to them.
+  - control-plane-api: the staff-only `GET /meters/days` (by default the 31 days ending today, narrowed with `tenantId`, with the record of each day) and `readMeterDays` on the staff client.
+  - control-plane: the scheduled pass takes the day's snapshot, and its log line names the day taken and a failing run (error, start, attempts) on every pass it lasts.
+
+  No existing retention changes.
+
+- 69868f3: Daily request rollup, kept for billing (#2501). The platform sweep now reads each closed UTC day of the router's Analytics Engine request datapoints and keeps one row per (day, tenant, vertical, scope) in the directory before the datapoints age out: the total routed, and its split by status class and 429s. Every count is an estimate (`sum(_sample_interval)`), marked `estimated: true` on every row.
+
+  - contracts: `requestDay` (the total and its split, with the split held inside the total), `requestRollupDay` (with `saturated`, and `failingSince`/`failingCount` while a run of failures lasts), `requestRollupReading`, a strict `utcDay`, and `ROUTER_REQUEST_POINT`, the router datapoint's published ordinals.
+  - kernel: `REQUEST_ROLLUP_DDL` and its statements, `RequestRollupSaturated`, and the sweep's `requestRollup` phase. It runs after the scheduled work, just before the access-log drain, and reads one closed day per query, oldest unread first, at most seven a pass, up to 88 days back. Each read has a 30-second deadline. A failed read writes nothing, is retried after an hour, and ends the pass's reads. A run of identical failures reaches `report.errors` once, and the report's `streak` carries it on every pass until a read succeeds, including the passes between retries, which take it from the newest attempt on record. A saturated day (more groups than one read answers) is recorded `saturated` and not read again, and the days after it go on. Options that would corrupt the history are refused. Also four optional `HostAdmin` methods (`recordRequestDay`, `listRequestDays`, `listRequestRollupDays`, `pruneRequestDays`), and `BILLING_ROLLUP_RETENTION_MONTHS`, `null` until a billing horizon is set, so nothing is pruned.
+  - adapter-sqlite, adapter-cloudflare: the two directory tables, created on start, and the methods. contract-tests holds both adapters to them.
+  - control-plane-api: `createRouterRequestDayReader` (asks one row past the 50,000-group ceiling, refuses only above it), the staff-only `GET /meters/requests` (by default the 31 days ending today), and `readRequestRollup` on the staff client.
+  - control-plane: the scheduled pass runs the rollup when the Analytics Engine credential and `ROUTER_ANALYTICS_DATASET` are set, and its log line names days read, a failing run (error, start, attempts) on every pass it lasts, between retries too, and saturated days.
+
+  No existing retention changes.
+
+- 5f75359: The router and the control plane can sign what they send a deployed vertical (RFC wire-signing, step 2, the signers). Each is off until its own `WIRE_SIGN` setting is exactly `on`, and off it sends exactly what it sent before. On, the router puts a `route` envelope beside the legacy headers on every request it dispatches to a deployment, and a router `call` envelope on every peer invocation; the control plane puts a `call` envelope on every call it makes to a deployment. Each attempt is signed afresh. A signer whose key is missing or will not import never fails a request: it goes with its legacy headers, and the signer's log line says why, never the key. A call whose body is streamed (the connector attachment upload's streamed route) is not signed in this version: it goes with its legacy header, its body unread, counted `skipped`. No deployment is given key lists yet, so an envelope is carried and ignored, and every deployed vertical is served as before.
+
+  `@substrat-run/contracts/wire-signing` gains `wireSignerOf` (a signer's whole decision: `null` while its flag is off; on, sign each request or hand it back whole with the reason it could not), `signWireRequest` (a fresh envelope on a request about to be sent, every other header kept, a call's exact body bound), `wireSigningOn` (the `sign` flag's one reading), `wireSigningKeyOf` (a signer's key, imported once per isolate), and `WIRE_UNSIGNED_HEADERS` with `wireUnsignedHeadersOf`: the field-coverage sample and a peer call's parent request id, listed by name as carrying no authority. It also gains `WireClaimsError`, which the encoder now throws for the claims it refuses (`canonicalWireEnvelope`, `signWireEnvelope`): a subclass of `Error` with the messages unchanged. A signer counts only that refusal as reason `claims`, and any other failure, a body that cannot be read included, as `error`. When an envelope alone admits a request, the platform's entry now hands each of these on, on its own kind of request and only when its value passes its reader's own check, and still drops every other unsigned `x-substrat-*` header.
+
+  `@substrat-run/control-plane-api` gains `platformSignedFetch`: the `fetch` a `VerticalClient` for one deployment is given, which is the caller's own while the flag is off and signs every call for that deployment while it is on.
+
+  The key tool gains the wire's two issuers as `pnpm wire-keys`, with a standby key per issuer (runbook `secrets/wire-keys.md`). Its `rotate --drop` refuses to print a list that would leave the key in use with no standby beside it, unless `--without-standby` is passed.
+
+- bc629db: The control plane's uploads can give a deployed vertical what its entry needs to verify a signed envelope (RFC wire-signing, step 2, the uploader). Both uploads, a version's push and the in-place serve a promote does, give the script they go to the router's and the control plane's public key lists, its own name and the state `dual`, as plain configuration each upload rewrites, but only the deployments the control plane's new `WIRE_KEYS_ROLLOUT` setting names: none while it is unset or `off`, one vertical's as a canary (`canary:<vertical>`), or every one (`fleet`). A setting it cannot read gives none and says why in the error log. The lists are checked before they are given, by the function the entry loads them with, and lists it would refuse are not given; the log names the problem, never a key. No upload gives a state other than `dual`. Unset, every upload is exactly what it was before.
+
+  Every upload also records what it gave, or why it gave nothing: the capability record a readiness report will read (RFC §7). `@substrat-run/contracts` gains `wireUploadSettings` and `WIRE_UPLOAD_STATE` on its `wire-signing` subpath, and the `wireAuthRecord` and `deploymentWireAuth` schemas and the `recordWireAuth` admin action. `@substrat-run/kernel` gains the optional `HostAdmin.recordWireAuth` (audited) and `listWireAuth` (access-logged, a page at a time by script name with the `ListPage` convention), with the directory table both adapters build (`DEPLOYMENT_WIRE_AUTH_DDL`); a vertical's records are removed with it. Both adapters implement them, and `@substrat-run/contract-tests` holds them to one contract, including a refused write or admin row rolling the record back. `@substrat-run/control-plane-api`'s `createControlPlaneApi` takes the settings as `wireUpload`.
+
+### Patch Changes
+
+- Updated dependencies [8e8af88]
+- Updated dependencies [f0b5904]
+- Updated dependencies [2519c08]
+- Updated dependencies [dc3b911]
+- Updated dependencies [a283098]
+- Updated dependencies [95bdb79]
+- Updated dependencies [26db572]
+- Updated dependencies [279f8e8]
+- Updated dependencies [c304fbd]
+- Updated dependencies [69868f3]
+- Updated dependencies [5147141]
+- Updated dependencies [8a979fb]
+- Updated dependencies [ee05879]
+- Updated dependencies [78a0c96]
+- Updated dependencies [ecbed6e]
+- Updated dependencies [bc36021]
+- Updated dependencies [286f3b4]
+- Updated dependencies [5f75359]
+- Updated dependencies [bc629db]
+  - @substrat-run/contracts@0.160.0
+  - @substrat-run/kernel@0.160.0
+  - @substrat-run/adapter-cloudflare@0.160.0
+  - @substrat-run/control-plane-api@0.160.0
+  - @substrat-run/connector-microsoft365@0.0.21
+  - @substrat-run/connector-fortnox@0.4.62
+  - @substrat-run/connector-planima@0.2.57
+  - @substrat-run/connector-scrive@0.14.66
+
 ## 0.15.22
 
 ### Patch Changes
