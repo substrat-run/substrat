@@ -60,7 +60,7 @@ says otherwise) until the response headers arrive, for any buffered read (`text(
 over to two limits:
 
 - **Idle:** the stream errors when the provider sends no byte for 30 seconds
-  (`STREAM_IDLE_TIMEOUT_MS`). An empty chunk is not a byte. A transfer that keeps flowing
+  (`STREAM_IDLE_TIMEOUT_MS`). An empty chunk is not a byte, and a source that makes no progress (a thousand empty chunks in a row) errors the stream too. A transfer that keeps flowing
   completes however long it takes. The window runs only while the stream waits on the provider,
   so a slow store does not spend it.
 - **Absolute:** the stream errors 10 minutes after its first read (`STREAM_MAX_DURATION_MS`),
