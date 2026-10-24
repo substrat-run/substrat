@@ -298,6 +298,7 @@ import {
   type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
+  isSizedByteStream,
   putAttachmentBytes,
   entitlementDenial,
   requiredEntitlementFor,
@@ -1736,6 +1737,15 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     connectionId?: string,
   ): Promise<DoReply<AttachmentRecord>>;
+  /** The add's write gate alone (#2516): asked before a streamed body is read, so a refusal costs no
+   *  object. Writes nothing; a refusal is recorded as the upload's own would be. */
+  attachmentCheckWriteReply(
+    entity: EntityRef,
+    principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    connectionId?: string,
+  ): Promise<DoReply<null>>;
   /** An upload-link redemption's metadata half: the add above, with the link spent in the same
    *  transaction. Its own verb so a DO that predates links refuses rather than ignores the secret. */
   attachmentRedeemUploadLinkReply(
@@ -2723,6 +2733,38 @@ async function compensatingRefusal<T>(
   const reply = await call();
   if (reply.failure) await store.delete(key).catch(() => {});
   return reply;
+}
+
+/**
+ * Ask the scope's write gate before a streamed body is read (#2516). A scope DO from before the
+ * verb exists cannot answer it, and a missing answer is never a pass: the call fails closed with a
+ * retryable `unavailable` that says to redeploy, rather than skipping the gate and reading the body.
+ */
+export async function askAttachmentWriteGate(
+  stub: Pick<ScopeStubRpc, 'attachmentCheckWriteReply'>,
+  entity: EntityRef,
+  principal: PrincipalId,
+  tenantId: TenantId,
+  scopeId: ScopeId,
+  connectionId?: string,
+): Promise<void> {
+  let reply: DoReply<null>;
+  try {
+    reply = await stub.attachmentCheckWriteReply(entity, principal, tenantId, scopeId, connectionId);
+  } catch (err) {
+    // By shape, not wording: the scope answers every refusal as data (`replyOf`), so what is
+    // THROWN here is a failure of the call itself, and a verb the receiver does not have is a
+    // `TypeError` however workerd phrases it. A dropped connection is a plain `Error`, rethrown.
+    if (err instanceof TypeError || (err as { name?: unknown } | null)?.name === 'TypeError') {
+      throw substratError(
+        'unavailable',
+        `the deployment serving scope ${scopeId} predates the upload write check (#2516): a streamed upload ` +
+          `is refused rather than read unchecked. Redeploy the vertical, then retry. Nothing was stored.`,
+      );
+    }
+    throw err;
+  }
+  unwrapReply(reply);
 }
 
 /** A tenant-held module's OFF answered without `deniesTenantGrants` (#1823). */
@@ -4986,6 +5028,11 @@ export class CloudflareScopeHost implements ScopeHost {
           createdBy,
           createdAt: new Date().toISOString(),
         };
+        // A streamed body is the case where bytes are the cost, so the write gate is asked before
+        // the first one is read (#2516). The row's own check below stays: this one is only early.
+        if (isSizedByteStream(input.body)) {
+          await askAttachmentWriteGate(stub, input.entity, asPrincipalId, tenantId, scopeId, connectionId);
+        }
         // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
         // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
         // A streamed body is hashed and counted as R2 reads it (#2498).
