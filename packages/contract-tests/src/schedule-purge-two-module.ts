@@ -7,9 +7,16 @@
  *
  * Each purge enqueues one request, except for a row named `QUIET_TWO_ROW`, which enqueues none.
  * In a module of its own, as `schedule-purge-request-module.ts` is, so no other suite's counts move.
+ *
+ * #2517: it also declares one ORDINARY schedule, `purgetwo/fill`, ahead of the two horizons, as a
+ * module's declared schedules come before its derived purges. It fills the scope's queue to the cap
+ * when a first-kind row named `FILL_TWO_ROW` exists, and enqueues nothing otherwise, so it fires in
+ * every pass and moves no case that adds no such row. Here rather than in a module of its own: every
+ * fixture migration lands in the one shared scope, whose read of its applied migrations is capped.
  */
 import { z } from 'zod';
 import {
+  MAX_PENDING_PLATFORM_REQUESTS,
   defineEntities,
   defineOperations,
   manifestEntities,
@@ -26,6 +33,9 @@ export const PURGE_TWO_MODULE_ID = '@test/purge-two';
 export const PURGE_TWO_KIND = 'test.purged-two';
 export const PURGE_TWO_DAYS = 7;
 export const QUIET_TWO_ROW = 'quiet';
+/** #2517: a first-kind row by this name, binned or not, makes `purgetwo/fill` fill the queue. */
+export const FILL_TWO_ROW = 'fill';
+export const FILL_TWO_KIND = 'test.purge-two-fill';
 
 export const purgeTwoEntities = defineEntities({
   pa: {
@@ -40,7 +50,14 @@ export const purgeTwoEntities = defineEntities({
   },
 });
 
-const PERMISSIONS = ['purgetwo:write', 'purgetwo:trash-a', 'purgetwo:trash-b', 'purgetwo:purge-a', 'purgetwo:purge-b'] as const;
+const PERMISSIONS = [
+  'purgetwo:write',
+  'purgetwo:trash-a',
+  'purgetwo:trash-b',
+  'purgetwo:purge-a',
+  'purgetwo:purge-b',
+  'purgetwo:fill',
+] as const;
 const ok = z.object({ ok: z.boolean() });
 const addInput = z.object({ id: z.string(), name: z.string() });
 const rowInput = z.object({ rowId: z.string() });
@@ -74,6 +91,7 @@ export const purgeTwoOperations = defineOperations(purgeTwoEntities, PERMISSIONS
     input: z.strictObject({ rowId: z.string() }),
     output: ok,
   },
+  'purgetwo/fill': { summary: 'Fill the platform-request queue', permission: 'purgetwo:fill', input: z.object({}), output: ok },
 });
 
 type Handler = OperationHandler<never, unknown>;
@@ -117,11 +135,15 @@ export const purgeTwoMod: ModuleRegistration = {
         'purgetwo:trash-b': 'bin a row of the second kind',
         'purgetwo:purge-a': 'delete a row of the first kind for good',
         'purgetwo:purge-b': 'delete a row of the second kind for good',
+        'purgetwo:fill': 'fill the platform-request queue',
       },
       consumes: [],
     }),
     ...manifestEntities(purgeTwoEntities, {}),
-    schedules: purgeSchedulesOf(purgeTwoOperations, purgeTwoEntities),
+    schedules: [
+      { operation: 'purgetwo/fill', cadence: { everyMinutes: 60 }, permissions: ['purgetwo:fill'], input: {} },
+      ...purgeSchedulesOf(purgeTwoOperations, purgeTwoEntities),
+    ],
     entitlementKey: 'sched',
   }),
   migrations: [
@@ -150,6 +172,12 @@ export const purgeTwoMod: ModuleRegistration = {
         'DELETE FROM purgetwo_b WHERE id = ?',
         'purgetwo:purge-b',
       ),
+      'purgetwo/fill': (async (ctx) => {
+        assertAllowed(await ctx.check(P('purgetwo:fill')));
+        if (ctx.sql.query('SELECT 1 FROM purgetwo_a WHERE name = ?', [FILL_TWO_ROW]).length === 0) return { ok: true };
+        for (let n = 0; n < MAX_PENDING_PLATFORM_REQUESTS; n++) ctx.requestPlatform({ kind: FILL_TWO_KIND, payload: { n } });
+        return { ok: true };
+      }) as Handler,
     },
     { inputs: operationInputsOf(purgeTwoOperations) },
   ),
