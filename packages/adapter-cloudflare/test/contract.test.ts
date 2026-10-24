@@ -67,6 +67,7 @@ import {
   connectorTestFetch,
   permissionContractSuite,
   reservedRoleContractSuite,
+  roleStateContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -419,6 +420,18 @@ reservedRoleContractSuite('adapter-cloudflare', async (options) => {
   const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
   const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, secretBox, ...options });
   return { host, cleanup: async () => host.close() };
+});
+
+// #2446: the role state a promote judges a release against, through the ScopeDO's `roleStateHere`.
+roleStateContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  return {
+    host,
+    roleState: (t, s) => host.roleStateLocal(t, s),
+    // A pushed vertical's scope stores the roles its reconcile projects, which is what a promote reads.
+    projectRoles: (t, s, roles) => host.projectRolesLocal(t, s, roles),
+    cleanup: async () => host.close(),
+  };
 });
 
 // #2430: the scope class's own reservations decide at a scope node, whatever the coordinator in

@@ -49,7 +49,12 @@ describe('attachment surface (pure adapter)', () => {
         consumes: [],
       },
       migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
-      attachmentTargets: [{ entityType: 'doc', readPermission: 'doc:read', writePermission: 'doc:write' }],
+      attachmentTargets: [
+        { entityType: 'doc', readPermission: 'doc:read', writePermission: 'doc:write' },
+        // Declared at and one past the entity-type bound (#2519), so the bound is what refuses.
+        { entityType: 'e'.repeat(128), readPermission: 'doc:read', writePermission: 'doc:write' },
+        { entityType: 'e'.repeat(129), readPermission: 'doc:read', writePermission: 'doc:write' },
+      ],
       entitlementKey: 'doc',
     }),
   };
@@ -118,6 +123,80 @@ describe('attachment surface (pure adapter)', () => {
     expect(opened).not.toBeNull();
     expect(new TextDecoder().decode(opened!.body)).toBe('the photo bytes');
     expect(opened!.contentType).toBe('image/jpeg');
+  });
+
+  // #2519: the connector read returns the record AND the type, and the client trusts the record's.
+  // That holds only while the stored object carries the type the row does, even for a type no
+  // header could carry.
+  it('opens an attachment with the content type its record holds, whatever the type', async () => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    for (const contentType of ['image/jpeg', 'text/plain; name="\u2013"', ' application/pdf ']) {
+      const rec = await att.upload({
+        entity: { entityType: 'doc', entityId: 'd1' },
+        filename: 'x.bin',
+        contentType,
+        visibility: 'internal',
+        body: bytes('b'),
+      });
+      const opened = await att.open(rec.id);
+      expect(rec.contentType).toBe(contentType);
+      expect(opened!.contentType).toBe(rec.contentType);
+      expect(opened!.record.contentType).toBe(rec.contentType);
+    }
+  });
+
+  // #2519: every door that stores an attachment is judged by one schema, so a record the read-back
+  // header could not carry is refused before a byte is written, and the twin at the bound lands.
+  it.each([
+    ['filename', { filename: 'f'.repeat(513) }, /filename/],
+    ['content type', { contentType: 'c'.repeat(256) }, /contentType/],
+    ['entity type', { entity: { entityType: 'e'.repeat(129), entityId: 'd1' } }, /entityType/],
+    ['entity id', { entity: { entityType: 'doc', entityId: 'd'.repeat(256) } }, /entityId/],
+  ])('refuses an upload whose %s is over its bound, and stores nothing', async (_name, over, field) => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    const fields = {
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'ok.jpg',
+      contentType: 'image/jpeg',
+      visibility: 'internal' as const,
+      body: bytes('b'),
+    };
+    // The bound's own refusal: it names the field, so it is not any other failure.
+    await expect(att.upload({ ...fields, ...over })).rejects.toThrow(field);
+    expect(await att.list({ entityType: 'doc', entityId: 'd1' })).toEqual([]);
+    // The twin at the bound lands, for the same declared targets.
+    const atBound = await att.upload({
+      ...fields,
+      entity: { entityType: 'e'.repeat(128), entityId: 'd'.repeat(255) },
+      filename: 'f'.repeat(512),
+      contentType: 'c'.repeat(255),
+    });
+    expect(atBound.filename).toHaveLength(512);
+    expect(atBound.entity.entityType).toHaveLength(128);
+  });
+
+  // The creator is the acting principal, so its bound is reached through a principal id that is
+  // over it (a cast, since the brand is a ULID in practice): the same judge, the same refusal.
+  it('refuses an upload by a creator over its bound, and stores nothing', async () => {
+    const { host, staff, t, s } = await world();
+    const fields = {
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'ok.jpg',
+      contentType: 'image/jpeg',
+      visibility: 'internal' as const,
+      body: bytes('b'),
+    };
+    const as = async (length: number) => {
+      const who = 'p'.repeat(length) as PrincipalId;
+      await host.admin.assignRole(staff, { principalId: who, roleKey: 'editor', node: { tenantId: t, scopeId: s } });
+      return host.attachments(who, t, s);
+    };
+    // Named by its field. Without the bound the upload still fails, later and for another reason
+    // (an event actor must be a ULID), so only the bound's own refusal matches. No twin lands here:
+    // a creator through this door is always a 26-character id; the contracts test holds the bound.
+    await expect((await as(129)).upload(fields)).rejects.toThrow(/createdBy/);
   });
 
   // #1575: a host refuses, when it is built, an extractor declaration it could not honour.

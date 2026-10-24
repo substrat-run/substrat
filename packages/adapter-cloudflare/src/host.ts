@@ -526,6 +526,7 @@ import {
   SEAT_HOLDING_SCOPE_STATUSES,
   dumpRoleState,
   type DumpTable,
+  type RoleState,
   type DeclaredPermissions,
   type PurgePass,
   type AsyncLinePass,
@@ -11967,6 +11968,16 @@ export class CloudflareScopeHost implements ScopeHost {
       { reserved: new Set([...this.reservedKeys, ...here.reserved]), declared: new Set([...this.declaredKeys, ...here.declared]) },
       dump ? dumpRoleState(dump.tables, dump.tenantId, new Date().toISOString()) : undefined,
     );
+  }
+
+  /**
+   * #2446: the roles `scopeId` stores for `tenantId` and the role keys anyone but a system principal
+   * holds a live seat in there: what `refuseReservedRoleSet` judges a reconcile's role set against
+   * (`roleStateHere`), read for a promote to judge the incoming version's set with
+   * (`releaseRoleSetRefusal`) before it moves the scope. Read-only, and names no principal.
+   */
+  async roleStateLocal(tenantId: TenantId, scopeId: ScopeId): Promise<RoleState> {
+    return this.scopeStub(scopeId).roleStateHere(tenantId);
   }
 
   /**

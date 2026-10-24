@@ -600,6 +600,9 @@ export {
   assertModuleDeclared,
   noteDeclaredKeys,
   noteReservedKeys,
+  registryReservations,
+  releaseRolesAskScopes,
+  releaseRoleSetRefusal,
   reservedGrantRefusal,
   reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
@@ -613,6 +616,7 @@ export {
   type DumpTable,
   type HostReservations,
   type RoleShape,
+  type RoleState,
   type StoredRoles,
 } from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
@@ -1019,6 +1023,7 @@ export {
   SCOPE_STORAGE_DDL,
   forgetScopeStorage,
   listScopeAttachmentStorageRows,
+  retireScopeStorage,
   listScopeStorageAttemptRows,
   listScopeStorageRows,
   listScopeStoreStorageRows,

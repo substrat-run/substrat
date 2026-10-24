@@ -30,6 +30,7 @@ import { externalInput, externalJson } from './wire.js';
 import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
   type CarriedAway,
+  type RoleState,
   type KeptCopy,
   type LoadMarker,
   type CopyRestoreFence,
@@ -58,7 +59,6 @@ import {
   permissionKey as permissionKeyOf,
   moduleId as moduleIdOf,
   switchedOffInUnit,
-  entityRef,
   visibility,
   instant,
   entitlementGrant,
@@ -184,6 +184,10 @@ import {
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
   entityGrantShape,
+  ATTACHMENT_FIELD_MAX,
+  attachmentRecord,
+  attachmentUploadFields,
+  type AttachmentRecord,
   type EntityGrantShape,
 } from '@substrat-run/contracts';
 
@@ -334,6 +338,13 @@ export interface VerticalScopeHost {
     /** The dump about to be imported, when the caller has it: the set is judged against its roles and seats. */
     dump?: { tenantId: TenantId; tables: { name: string; columns: string[]; rows: unknown[][] }[] },
   ): Promise<string | null>;
+  /**
+   * #2446: the roles `scopeId` stores for `tenantId` and the role keys anyone but a system principal
+   * holds a live seat in there (`RoleState`), what `projectRolesLocal` judges a role set against.
+   * Optional: a host without it answers the route 501, which a promote counts as a deployment built
+   * before the read and moves unjudged, as it does one without the route.
+   */
+  roleStateLocal?(tenantId: TenantId, scopeId: ScopeId): Promise<RoleState>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
   /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
    *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
@@ -1006,9 +1017,11 @@ const connectorAttachmentMeta = z.object({
   connectionId: connectionIdOf,
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
-  entity: entityRef,
-  filename: z.string().min(1),
-  contentType: z.string().min(1),
+  // The bounds every door applies (`attachmentUploadFields`), so a refusal comes here as a 400
+  // naming the field rather than from the host's own judge (#2519).
+  entity: attachmentUploadFields.shape.entity,
+  filename: attachmentUploadFields.shape.filename,
+  contentType: attachmentUploadFields.shape.contentType,
   visibility,
 });
 
@@ -1016,6 +1029,72 @@ const connectorAttachmentMeta = z.object({
 const connectorAttachmentStreamMeta = connectorAttachmentMeta.extend({
   size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 });
+
+/**
+ * `JSON.stringify` whose output is printable ASCII, so it can ride a header whatever the
+ * strings in it hold (#2519). JSON already escapes a control character or a lone surrogate;
+ * what is left outside 0x20–0x7e (a non-ASCII character, DEL) becomes a `\uXXXX` escape, which
+ * `JSON.parse` reads back to the same value. The result is still plain JSON, so a reader that
+ * predates this parses it unchanged.
+ */
+function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[^\x20-\x7e]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * The most bytes the record header of a read-back may carry before its strings are cut (#2519). A
+ * record made under `ATTACHMENT_FIELD_MAX` is under 8.2 KiB however it is escaped, so only a row
+ * stored before those bounds can reach it, and a server's header limit starts at 16 KiB.
+ */
+const CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES = 10 * 1024;
+
+/** `text` cut to at most `max` UTF-16 units on a code-point boundary, the cut marked with `…`. */
+function cutTo(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let kept = '';
+  for (const point of text) {
+    if (kept.length + point.length > max - 1) break;
+    kept += point;
+  }
+  return `${kept}\u2026`;
+}
+
+/**
+ * The record as the read-back header carries it: {@link asciiJson}, and, when a row stored before
+ * the upload bounds makes that too large, every string the header holds brought to its bound. A
+ * header past the server's limit would make that file unreadable. A cut name or id ends in `…` so
+ * it does not read as the stored one; a content type, which a cut would change the meaning of, is
+ * replaced by `application/octet-stream`. The bytes, size, sha256, visibility and dates are exact,
+ * and a record within the bounds is never touched.
+ */
+function recordHeader(record: AttachmentRecord): string {
+  const whole = asciiJson(record);
+  if (whole.length <= CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES) return whole;
+  const max = ATTACHMENT_FIELD_MAX;
+  return asciiJson({
+    ...record,
+    entity: {
+      entityType: cutTo(record.entity.entityType, max.entityType),
+      entityId: cutTo(record.entity.entityId, max.entityId),
+    },
+    filename: cutTo(record.filename, max.filename),
+    contentType: record.contentType.length <= max.contentType ? record.contentType : 'application/octet-stream',
+    createdBy: cutTo(record.createdBy, max.createdBy),
+  });
+}
+
+/**
+ * A content type a response header accepts, else `application/octet-stream` (#2519). Both upload
+ * routes store any non-empty string, and a header refuses anything outside printable ASCII or
+ * with edge whitespace, and a stored row can hold one of any length, so over the upload bound it
+ * falls back too. The record header carries the stored type (itself cut to the bound, see
+ * {@link recordHeader}).
+ */
+function headerSafeContentType(contentType: string): string {
+  // Bounded like the upload: a row stored before the bound can hold a type of any length.
+  if (contentType.length > ATTACHMENT_FIELD_MAX.contentType) return 'application/octet-stream';
+  return /^[\x21-\x7e]([\x20-\x7e]*[\x21-\x7e])?$/.test(contentType) ? contentType : 'application/octet-stream';
+}
 
 /** `/internal/system-switch` body (#1666) — the far end of `revokeFromSystem` / `restoreToSystem`. */
 const systemSwitchBody = z.object({
@@ -1618,6 +1697,15 @@ export function mountPlatformSurface<Env extends object>(
     c.json(await deps.hostFor(c.env).appliedMigrationsLocal(scopeIdOf.parse(c.req.query('scopeId')))),
   );
 
+  // #2446: the roles this scope stores for the tenant and the role keys seated there — what this
+  // deployment's reconcile judges a role set against. A promote reads it to judge the incoming
+  // version's set before it moves the scope. Read-only; it names role keys, never a principal.
+  app.get('/internal/role-state', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.roleStateLocal) return refuseStatus(c, 501, 'this deployment cannot report its role state (#2446): its scope host predates roleStateLocal — upgrade the adapter beside vertical-host');
+    return c.json(await host.roleStateLocal(tenantIdOf.parse(c.req.query('tenantId')), scopeIdOf.parse(c.req.query('scopeId'))));
+  });
+
   // #1524: one scope's database size, for the console's on-demand storage reading.
   // Metadata only, and no scope bytes cross. The read wakes the scope's DO, which is why
   // the platform asks only when a person opens the card and pages what it asks for.
@@ -1959,9 +2047,18 @@ export function mountPlatformSurface<Env extends object>(
         c.req.query('eventId'),
       );
     if (!opened) return c.body(null, 404);
+    // Both values are caller-supplied strings (#2519): a filename or content type outside
+    // Latin-1 would make `Headers` throw and leave a stored file unreadable. The record stays
+    // plain JSON, which every reader already parses; the type the client reads is the record's.
+    // A stored row that does not parse is the deployment's fault, not the caller's: 500, not the
+    // 400 a parse failure on the request would be.
+    const record = attachmentRecord.safeParse(opened.record);
+    if (!record.success) {
+      throw new HTTPException(500, { message: 'connector-attachment: the stored attachment record is malformed' });
+    }
     return c.body(opened.body as unknown as ArrayBuffer, 200, {
-      'content-type': opened.contentType,
-      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: JSON.stringify(opened.record),
+      'content-type': headerSafeContentType(opened.contentType),
+      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: recordHeader(record.data),
     });
   });
 

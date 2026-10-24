@@ -207,7 +207,7 @@ import type { CapabilityVerbs } from './capability.js';
 import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import {
-  attachmentRecordFields,
+  attachmentUploadFields,
   permissionKey,
   substratError,
   type AttachmentRecordFields,
@@ -4567,8 +4567,8 @@ export interface HostAdmin {
    */
   recordScopeStorage?(actor: PlatformActorId, readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
   /**
-   * Stored storage samples (#1524) — the latest per scope, or a bounded history. See
-   * `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
+   * Stored storage samples (#1524) — the latest per scope, or a bounded history,
+   * which includes a reaped scope's kept days (#2515). See `ScopeStorageFilter`. A directory read that wakes no scope. Access-logged (K-24).
    */
   listScopeStorage?(actor: PlatformActorId, filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
   /** Every stored scope's latest storage-read attempt (#1524): the storage phase's due list. Access-logged. */
@@ -5000,7 +5000,7 @@ export async function putAttachmentBytes(
   body: ByteBody,
   sha256: () => IncrementalSha256,
 ): Promise<AttachmentRecord> {
-  const judged = attachmentRecordFields.parse(fields);
+  const judged = attachmentUploadFields.parse(fields);
   const opts = { contentType: judged.contentType };
   if (!isSizedByteStream(body)) {
     const record = { ...judged, size: body.byteLength, sha256: await attachmentSha256(body) };

@@ -90,6 +90,40 @@ describe('VerticalClient ↔ mountPlatformSurface — connector write-back round
     ]);
   });
 
+  // #2519: the real route against the real client. The stored name and type reach the client
+  // unchanged however a header would treat them, and the type is the record's, not the response's.
+  it.each([
+    ['en dash and emoji', 'avtal \u2013 \ud83d\udcdd.pdf', 'application/pdf'],
+    ['CRLF and quotes', 'a"b\r\nc.pdf', 'text/plain; name="\u2013"'],
+    ['the longest the route admits', '\ud83d\udcdd'.repeat(256), 'text/' + '\u2013'.repeat(250)],
+  ])('connectorOpenAttachment: reads back %s unchanged', async (_name, filename, contentType) => {
+    const bytes = new TextEncoder().encode('%PDF-1.4');
+    const stored = {
+      id: 'att-1',
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      filename,
+      contentType,
+      size: bytes.byteLength,
+      sha256: 'a'.repeat(64),
+      visibility: 'customer' as const,
+      createdBy: conn,
+      createdAt: '2026-08-17T00:00:00.000Z',
+    };
+    const { client } = world({
+      // The object's own type differs from the row's: the record is the one source of truth.
+      connectorAttachmentOpenLocal: async () => ({ record: stored, body: bytes, contentType: 'image/png' }),
+    });
+    const opened = await client.connectorOpenAttachment({
+      connectionId: conn,
+      tenantId: t,
+      scopeId: s,
+      attachmentId: 'att-1',
+    });
+    expect(opened!.record).toEqual(stored);
+    expect(opened!.contentType).toBe(contentType);
+    expect(opened!.body).toEqual(bytes);
+  });
+
   it("connectorInvoke: the far scope's permission denial comes back as a 403 ControlPlaneError", async () => {
     const { client } = world({
       connectorInvokeLocal: async () => {

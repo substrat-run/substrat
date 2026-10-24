@@ -34,6 +34,7 @@ import {
   connectorTestFetch,
   permissionContractSuite,
   reservedRoleContractSuite,
+  roleStateContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -284,6 +285,20 @@ membershipExecutorContractSuite('adapter-sqlite', async () => {
   });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2446: the role state a promote judges a release against, read as the Cloudflare host reads it.
+roleStateContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-role-state-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    roleState: (t, s) => host.roleStateLocal(t, s),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

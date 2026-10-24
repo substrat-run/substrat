@@ -596,6 +596,10 @@ export const INDEX_VALUE_EXPORTS = [
   'registerMembershipExecutor',
   'registerTrashTargets',
   'registryImportCandidates',
+  // #2446: the reservation a pushed registry marks, and the promote's question of a scope it moves.
+  'registryReservations',
+  'releaseRoleSetRefusal',
+  'releaseRolesAskScopes',
   'releaseStoreDriverHoldIn',
   'repairDerivedObjects',
   'replayFor',
@@ -623,6 +627,7 @@ export const INDEX_VALUE_EXPORTS = [
   'resolveVerticalInstanceFrom',
   'restoreConnectLinkRow',
   'restoreSwitchRecord',
+  'retireScopeStorage',
   'revokeBecomeCapabilityAsPrincipal',
   'revokeCapabilityAsPlatform',
   'revokeConnectLinkRow',

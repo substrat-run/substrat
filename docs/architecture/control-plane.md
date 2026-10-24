@@ -1399,8 +1399,9 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **One row per scope per UTC day** in the directory's `_substrat_scope_storage`, the day's
   latest reading (a later same-day reading replaces it, an older one never does). The row is
   written only for a non-reaped scope the directory holds under the named tenant. Kept
-  **thirteen months**, pruned by the same phase at most 500 rows per pass. A reaped scope's
-  rows are deleted at reap, and reads join on scope status as a second guard.
+  **thirteen months**, pruned by the same phase at most 500 rows per pass. A reap deletes
+  the scope's attempt row and keeps its day rows until retention (#2515): history reads admit a
+  reaped scope through its tombstone row, while `latest`, the attempts and `/meters` do not.
 - **A failed read keeps the last value, and is named.** It is a `storage` error in the pass
   report and the scope's attempt row, and the figure on `/meters` counts it (`failing`, with
   `lastFailedAt`), so the console says "the last read of N scopes failed" rather than letting
@@ -1419,8 +1420,8 @@ as `storage` on each `perTenant` row and summed on the reading. Serving it is a 
 - **Attachment bytes beside it ([#2501](https://github.com/substrat-run/substrat/issues/2501)).**
   The same attempt reads what the scope's attachment rows sum to, and keeps it as its own day
   row in `_substrat_scope_attachment_storage`, the database table's shape and rules: the day's
-  latest reading and thirteen months of days. A scope reap treats them as it treats the
-  scope's database days, and a reaped tenant or a deleted fork forgets them. `/meters` serves
+  latest reading and thirteen months of days. A scope reap keeps them until retention, as it
+  keeps its database days (#2515), and a reaped tenant or a deleted fork forgets them. `/meters` serves
   it as `storage.attachments {bytes, sampled}`. It never enters `bytes`, whose basis stays the
   scope databases, and attachments stay in `excluded` for that reason.
   - The figure is what the rows record, not what the blob store holds, and it can be off in
