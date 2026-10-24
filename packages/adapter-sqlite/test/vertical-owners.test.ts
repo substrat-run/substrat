@@ -80,13 +80,14 @@ describe('vertical ownership history on a directory file (#2501)', () => {
       return [];
     };
     const at = '2026-03-01T00:00:00.000Z';
+    const [a, b] = ['01JZ00000000000000000000WA', '01JZ00000000000000000000WB'];
     try {
-      openVerticalOwnerRow(sql, 'acme-crm', 'tenant-a', at);
+      openVerticalOwnerRow(sql, 'acme-crm', a, at);
       closeVerticalOwnerRow(sql, 'acme-crm', at);
-      openVerticalOwnerRow(sql, 'acme-crm', 'tenant-b', at);
+      openVerticalOwnerRow(sql, 'acme-crm', b, at);
       expect(listVerticalOwnerRows(sql, 'acme-crm')).toEqual([
-        { slug: 'acme-crm', owner: 'tenant-a', since: at, until: at },
-        { slug: 'acme-crm', owner: 'tenant-b', since: at, until: null },
+        { slug: 'acme-crm', owner: a, since: at, until: at },
+        { slug: 'acme-crm', owner: b, since: at, until: null },
       ]);
     } finally {
       raw.close();
