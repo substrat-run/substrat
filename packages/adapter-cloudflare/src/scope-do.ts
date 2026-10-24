@@ -4331,6 +4331,39 @@ export function defineScopeDO(
       });
     }
 
+    /**
+     * The upload's write gate and nothing else (#2516): asked by the host before a streamed body is
+     * read, so a connection that may not write costs no object. Checked and recorded exactly as
+     * `addAttachment` does, which still checks again when the row is written.
+     */
+    private async checkAttachmentWrite(
+      entity: EntityRef,
+      principal: PrincipalId,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+      connectionId?: string,
+    ): Promise<null> {
+      await this.ensureMigrations();
+      const gate = this.attachmentGate(entity.entityType);
+      try {
+        const ctx = this.operationContext(
+          principal, tenantId, scopeId, undefined, connectionId,
+          undefined, undefined, undefined, 'attachments.upload',
+        );
+        assertAllowed(await ctx.check(gate.write, entity));
+      } catch (err) {
+        if (err instanceof PermissionDenied) {
+          this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.upload', err, null);
+        }
+        throw err;
+      }
+      return null;
+    }
+
+    attachmentCheckWriteReply(...args: Parameters<ScopeDO['checkAttachmentWrite']>): Promise<DoReply<null>> {
+      return replyOf(() => this.checkAttachmentWrite(...args));
+    }
+
     /** Records for one entity, newest first — read gate first. */
     private async listAttachments(
       entity: EntityRef,

@@ -4085,6 +4085,17 @@ export class SqliteScopeHost implements ScopeHost {
           });
         }
         const gate = targetGate(input.entity.entityType);
+        // A streamed body is the case where bytes are the cost, so the write gate is asked before
+        // the first one is read (#2516). The row's own check below stays: this one is only early.
+        if (isSizedByteStream(input.body)) {
+          // A read that writes nothing: one actor turn, no transaction and no drain (the denial is
+          // still recorded). Already inside the turn on a reentrant surface, which must not queue again.
+          const askGate = () =>
+            reentrant('attachments.upload', async (ctx) => {
+              assertAllowed(await ctx.check(gate.write, input.entity));
+            });
+          await (opts.reentrant ? askGate() : rt.actor.enqueue(askGate));
+        }
         const creator = authority as CheckSubject;
         const id = ulid();
         const key = attachmentBlobKey(rt.scopeId, id);

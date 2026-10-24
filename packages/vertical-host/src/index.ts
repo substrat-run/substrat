@@ -180,7 +180,12 @@ import {
   type ImportResult,
   type ImportState,
   CONNECTOR_ATTACHMENT_META_HEADER,
+  CONNECTOR_ATTACHMENT_META_MAX_BYTES,
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
+  CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
+  connectorAttachmentMetaBytes,
+  connectorAttachmentMetaRefusal,
+  connectorAttachmentSizeRefusal,
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
   entityGrantShape,
@@ -1972,6 +1977,10 @@ export function mountPlatformSurface<Env extends object>(
     if (typeof metaRaw !== 'string') {
       throw new HTTPException(400, { message: 'connector-attachment needs a `meta` JSON field' });
     }
+    const metaBytes = connectorAttachmentMetaBytes(metaRaw);
+    if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
+      return refuse(c, 'validation_failed', connectorAttachmentMetaRefusal(metaBytes));
+    }
     const meta = connectorAttachmentMeta.parse(JSON.parse(metaRaw));
     const blob = form.get('body');
     if (blob === null || typeof blob === 'string') {
@@ -2001,7 +2010,18 @@ export function mountPlatformSurface<Env extends object>(
     if (raw === undefined) {
       throw new HTTPException(400, { message: `connector-attachment-stream needs a ${CONNECTOR_ATTACHMENT_META_HEADER} header` });
     }
-    const meta = connectorAttachmentStreamMeta.parse(JSON.parse(decodeURIComponent(raw)));
+    const { size: _declared, ...described } = z.record(z.string(), z.unknown()).parse(JSON.parse(decodeURIComponent(raw)));
+    // Counted without `size`, as the multipart route's `meta` is, so one name passes or fails alike.
+    const metaBytes = connectorAttachmentMetaBytes(JSON.stringify(described));
+    if (metaBytes > CONNECTOR_ATTACHMENT_META_MAX_BYTES) {
+      return refuse(c, 'validation_failed', connectorAttachmentMetaRefusal(metaBytes));
+    }
+    const meta = connectorAttachmentStreamMeta.parse({ ...described, size: _declared });
+    // The declared size is judged before the body is touched (#2516). The bytes are held to it as
+    // they flow (`witnessedStream` errors on one more than declared), so this is the bound on all of them.
+    if (meta.size > CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES) {
+      return refuseStatus(c, 413, connectorAttachmentSizeRefusal(meta.size));
+    }
     const stream = c.req.raw.body;
     if (stream === null && meta.size > 0) {
       throw new HTTPException(400, { message: `connector-attachment-stream declared ${meta.size} bytes and sent no body` });

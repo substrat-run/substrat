@@ -3,8 +3,14 @@ import { describe, it, expect } from 'vitest';
 import { Hono } from 'hono';
 import { mountPlatformSurface, type VerticalScopeHost } from '@substrat-run/vertical-host';
 import {
+  CONNECTOR_ATTACHMENT_META_HEADER,
   CONNECTOR_ATTACHMENT_META_MAX_BYTES,
+  CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES,
+  connectorAttachmentMetaBytes,
+  PLATFORM_SECRET_HEADER,
   connectionId as connectionIdOf,
+  connectorAttachmentMetaRefusal,
+  connectorAttachmentSizeRefusal,
   scopeId as scopeIdOf,
   substratError,
   tenantId as tenantIdOf,
@@ -272,6 +278,46 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
     expect((err as ControlPlaneError).message).not.toMatch(/re-push/);
   });
 
+  it('a declared size over the bound is refused 413 before a byte is sent (#2516)', async () => {
+    let sent = 0;
+    const client = new VerticalClient({
+      fetch: (async () => {
+        sent += 1;
+        return new Response('{}', { status: 201 });
+      }) as typeof fetch,
+      platformSecret: SECRET,
+    });
+    const source = producer(1);
+    const err = await client
+      .connectorUploadAttachment(upload({ stream: source.stream, length: CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1 }))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(413);
+    expect((err as ControlPlaneError).message).toContain(connectorAttachmentSizeRefusal(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1));
+    expect(sent).toBe(0);
+    expect(source.state.produced).toBe(0);
+  });
+
+  it('a buffered upload\'s metadata over its bound is refused before a byte is sent, as a streamed one is (#2516)', async () => {
+    let sent = 0;
+    const client = new VerticalClient({
+      fetch: (async () => {
+        sent += 1;
+        return new Response('{}', { status: 201 });
+      }) as typeof fetch,
+      platformSecret: SECRET,
+    });
+    const err = await client
+      .connectorUploadAttachment(upload(new Uint8Array(8), `${'報'.repeat(2000)}.pdf`))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect((err as ControlPlaneError).status).toBe(400);
+    expect((err as ControlPlaneError).message).toMatch(
+      new RegExp(`over the ${CONNECTOR_ATTACHMENT_META_MAX_BYTES}-byte bound.*Nothing was sent`),
+    );
+    expect(sent).toBe(0);
+  });
+
   it('a stream route call without the platform secret reaches no host', async () => {
     const app = new Hono<{ Bindings: Env }>();
     mountPlatformSurface<Env>(app, {
@@ -291,5 +337,127 @@ describe('VerticalClient ↔ mountPlatformSurface — streamed connector upload 
       .connectorUploadAttachment(upload({ stream: source.stream, length: CHUNK }))
       .catch((e: unknown) => e);
     expect((err as ControlPlaneError).status).toBe(403);
+  });
+});
+
+/**
+ * The routes' own answers (#2516), driven without the client, since the client refuses most of
+ * these before it sends: what a caller that does not go through it meets. Neither route reaches
+ * the host, nor reads a byte, for a request it refuses.
+ */
+describe('mountPlatformSurface — the bounds on a connector upload (#2516)', () => {
+  const metaOf = (filename: string, size?: number) => ({
+    connectionId: conn,
+    tenantId: t,
+    scopeId: s,
+    entity: { entityType: 'document', entityId: 'd1' },
+    filename,
+    contentType: 'application/pdf',
+    visibility: 'internal',
+    ...(size === undefined ? {} : { size }),
+  });
+  const longName = `${'報'.repeat(2000)}.pdf`;
+
+  function surface() {
+    const reached: unknown[][] = [];
+    const host = {
+      connectorAttachmentUploadLocal: async (...args: unknown[]) => {
+        reached.push(args);
+        return { id: 'att1' };
+      },
+    } as unknown as VerticalScopeHost;
+    const app = new Hono<{ Bindings: Env }>();
+    mountPlatformSurface<Env>(app, {
+      platformSecret: (env) => env.PLATFORM_SECRET,
+      hostFor: () => host,
+      roles: [],
+      ownerRoleKey: 'admin',
+    });
+    return { app, reached };
+  }
+
+  const streamPost = (app: Hono<{ Bindings: Env }>, meta: unknown, body: ReadableStream<Uint8Array> | null) =>
+    app.request(
+      '/internal/connector-attachment-stream',
+      {
+        method: 'POST',
+        headers: { [PLATFORM_SECRET_HEADER]: SECRET, [CONNECTOR_ATTACHMENT_META_HEADER]: encodeURIComponent(JSON.stringify(meta)) },
+        body,
+        ...(body ? { duplex: 'half' } : {}),
+      } as RequestInit,
+      ENV,
+    );
+
+  const multipartPost = (app: Hono<{ Bindings: Env }>, meta: unknown) => {
+    const form = new FormData();
+    form.append('meta', JSON.stringify(meta));
+    form.append('body', new Blob([new Uint8Array(8)]), 'x.pdf');
+    return app.request(
+      '/internal/connector-attachment',
+      { method: 'POST', headers: { [PLATFORM_SECRET_HEADER]: SECRET }, body: form },
+      ENV,
+    );
+  };
+
+  it('a declared size over the bound is a 413, and the body is never read', async () => {
+    const { app, reached } = surface();
+    const source = producer(1);
+    const res = await streamPost(app, metaOf('a.pdf', CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1), source.stream);
+    expect(res.status).toBe(413);
+    expect(await res.text()).toContain(connectorAttachmentSizeRefusal(CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES + 1));
+    expect(reached).toEqual([]);
+    expect(source.state.produced).toBe(0);
+  });
+
+  it('its twin: a declared size exactly at the bound is let through to the host', async () => {
+    const { app, reached } = surface();
+    const res = await streamPost(app, metaOf('a.pdf', CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES), producer(1).stream);
+    expect(res.status).toBe(201);
+    expect(reached).toHaveLength(1);
+  });
+
+  it('metadata over its bound is the same 400 on the stream route and on the multipart route', async () => {
+    const { app, reached } = surface();
+    const streamed = await streamPost(app, metaOf(longName, CHUNK), producer(1).stream);
+    const buffered = await multipartPost(app, metaOf(longName));
+    expect(streamed.status).toBe(400);
+    expect(buffered.status).toBe(400);
+    const sentence = (text: string) => /the attachment's metadata is \d+ bytes once encoded, over the 8192-byte bound[^"]*/.exec(text)?.[0];
+    expect(sentence(await streamed.text())).toMatch(/shorten the filename$/);
+    expect(sentence(await buffered.text())).toMatch(/shorten the filename$/);
+    expect(reached).toEqual([]);
+    // The sentence is the one the client uses, not a copy of it.
+    expect(connectorAttachmentMetaRefusal(18_000)).toContain('over the 8192-byte bound');
+  });
+
+  it('a name exactly at the bound passes on both routes and the client alike; one byte more fails on all (#2516)', async () => {
+    const fill = CONNECTOR_ATTACHMENT_META_MAX_BYTES - connectorAttachmentMetaBytes(JSON.stringify(metaOf('')));
+    const atBound = 'a'.repeat(fill);
+    expect(connectorAttachmentMetaBytes(JSON.stringify(metaOf(atBound)))).toBe(CONNECTOR_ATTACHMENT_META_MAX_BYTES);
+    const { app, reached } = surface();
+    expect((await streamPost(app, metaOf(atBound, CHUNK), producer(1).stream)).status).toBe(201);
+    expect((await multipartPost(app, metaOf(atBound))).status).toBe(201);
+    expect((await streamPost(app, metaOf(atBound + 'a', CHUNK), producer(1).stream)).status).toBe(400);
+    expect((await multipartPost(app, metaOf(atBound + 'a'))).status).toBe(400);
+    expect(reached).toHaveLength(2);
+    const sent: string[] = [];
+    const client = new VerticalClient({
+      fetch: ((input: RequestInfo, init?: RequestInit) => {
+        sent.push(String(input));
+        return app.request(input, init, ENV);
+      }) as typeof fetch,
+      platformSecret: SECRET,
+    });
+    await client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound));
+    await expect(client.connectorUploadAttachment(upload({ stream: producer(1).stream, length: CHUNK }, atBound + 'a'))).rejects.toThrow(/Nothing was sent/);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('its twin: a long but realistic name is accepted by both routes', async () => {
+    const { app, reached } = surface();
+    const name = `${'Projekt/Ritningar/'.repeat(22)}plan.pdf`.slice(0, 400);
+    expect((await streamPost(app, metaOf(name, CHUNK), producer(1).stream)).status).toBe(201);
+    expect((await multipartPost(app, metaOf(name))).status).toBe(201);
+    expect(reached).toHaveLength(2);
   });
 });
