@@ -615,7 +615,7 @@ describe('the purge lap (#2096)', () => {
       it('is deferred, not failed: nothing tried, the lap untouched, the schedule stays due', async () => {
         const { sql, pass, left } = setup(4);
         const first = await pass(new Set(), 4, new Set(['b000']), 3);
-        expect(first.pass).toEqual({ purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0 });
+        expect(first.pass).toEqual({ purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0, deferred: true });
         expect(purgeStillDue(first.pass)).toBe(true);
         expect(purgeReportOf('b/delete', 'box', first.pass).failure).toBeUndefined();
         // Nothing behind the head ran either, and no lap row was written.
@@ -633,7 +633,7 @@ describe('the purge lap (#2096)', () => {
         const before = readPurgeLap(sql, 'b/delete');
         expect(before).toEqual({ after: { at: DUE(2), id: 'b002' }, failed: 1 });
         const deferred = await pass(new Set(), 3, new Set(['b003']), 1);
-        expect(deferred.pass).toEqual({ purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0 });
+        expect(deferred.pass).toEqual({ purged: 0, skipped: 0, errors: [], more: true, lapFailed: 0, deferred: true });
         expect(readPurgeLap(sql, 'b/delete')).toEqual(before);
       });
 
@@ -642,7 +642,33 @@ describe('the purge lap (#2096)', () => {
         const { pass: p } = await pass(new Set(), 4, new Set(['b000']), 0);
         expect(p.errors.map((e) => e.entityId)).toEqual(['b000']);
         expect(p).toMatchObject({ purged: 3, more: false });
+        expect(p.deferred).toBeUndefined();
         expect(left()).toEqual(['b000']);
+      });
+
+      // The bound: each deferral needs an earlier purge to have committed a request THIS tick, so
+      // the first tick on which none did runs the head like any other — and one that never fits fails.
+      it('a head that never fits is deferred only while earlier purges commit requests, then fails as before', async () => {
+        const { pass, left } = setup(3);
+        const never = new Set(['b000']);
+        for (let tick = 0; tick < 3; tick++) {
+          const { pass: p } = await pass(new Set(), 3, never, 1);
+          expect(p.deferred).toBe(true);
+          expect(left()).toEqual(['b000', 'b001', 'b002']);
+        }
+        // The earlier purges enqueued nothing this tick: the head fails and what is behind it commits.
+        const { pass: p } = await pass(new Set(), 3, never, 0);
+        expect(p.errors.map((e) => e.entityId)).toEqual(['b000']);
+        expect(p.deferred).toBeUndefined();
+        expect(left()).toEqual(['b000']);
+      });
+
+      it('twin: a head that fits once the tick runs it first purges, with nothing behind it held', async () => {
+        const { pass, left } = setup(3);
+        expect((await pass(new Set(), 3, new Set(['b000']), 2)).pass.deferred).toBe(true);
+        const { pass: p } = await pass(new Set(), 3, new Set(), 0);
+        expect(p).toMatchObject({ purged: 3, errors: [], more: false });
+        expect(left()).toEqual([]);
       });
 
       it('twin: a failure that is not the cap\'s refusal is never deferred, whatever the tick enqueued', async () => {

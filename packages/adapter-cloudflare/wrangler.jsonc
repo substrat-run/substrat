@@ -40,6 +40,8 @@
       // — see scope-sweeper.test.ts (same isolation reasoning as SWEEP_SCOPE).
       { "name": "SCOPE_SWEEPER", "class_name": "ScopeSweeperDO" },
       { "name": "LOCAL_SWEEP_SCOPE", "class_name": "ScopeDO" },
+      // #2517: the same trigger over a fake host — what each module's call was told.
+      { "name": "TICK_SWEEPER", "class_name": "TickSweeperDO" },
       // #938: live reads. Its OWN class (only `liveMod` is registered, so only this
       // class declares a `liveTargets` entity) and its own namespace, for the same
       // isolation reason SWEEP_SCOPE has one.
@@ -172,6 +174,10 @@
     {
       "tag": "v19",
       "new_sqlite_classes": ["CopyJobTestDO", "CopyJobShortDO"]
+    },
+    {
+      "tag": "v20",
+      "new_sqlite_classes": ["TickSweeperDO"]
     }
   ]
 }
