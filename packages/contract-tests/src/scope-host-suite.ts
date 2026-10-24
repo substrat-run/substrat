@@ -52,6 +52,7 @@ import {
   SCOPE_COPY_LEASE_MS,
   isSearchIndexTable,
   platformIntentFailureMessage,
+  withheldOpsFailure,
   REDACTED_DELIVERY_NOTE,
   REDACTED_FAILURE_NOTE,
   REDACTED_INTENT_MARKER,
@@ -3702,6 +3703,46 @@ export function scopeHostContractSuite(
               [t2, 'the step failed (reference r)'],
               [null, REDACTED_FAILURE_NOTE],
             ]);
+          });
+
+          it("#2554: the drain's pair about a tombstoned intent is redacted on staff's row and the platform's sample too", async () => {
+            const kind = `connector:erasure-${ulid()}`;
+            const erased = dataSubjectId.parse(ulid());
+            const spared = dataSubjectId.parse(ulid());
+            const linked = await routeIntent(kind, erased, 'Anna Ek');
+            const unlinked = await routeIntent(kind, spared, 'Bo Lund');
+            // As the drain files it (`withheldOpsFailure`): the tenant's row says what became of the
+            // intent, staff's row (no tenant, the same scope) quotes the error, marker first.
+            const pair = (operation: string, id: string, error: string) =>
+              host.admin.recordOpsFailure(
+                withheldOpsFailure(
+                  { actor: staff, operation, stage: 'terminal', tenantId: t1, scopeId: s1 },
+                  platformIntentFailureMessage(id, `failed: ${error}; reference = up${ulid().toLowerCase()}`),
+                  (r) => platformIntentFailureMessage(id, `failed (reference ${r})`),
+                ),
+              );
+            const ops = { linked: op('pair-linked'), unlinked: op('pair-unlinked'), elsewhere: op('pair-elsewhere') };
+            await pair(ops.linked, linked, 'HTTP 409: Anna Ek needs a personal number');
+            await pair(ops.unlinked, unlinked, 'HTTP 409: Bo Lund needs a personal number');
+            // The twin: a staff row naming the same intent under another scope is not this erasure's.
+            await host.admin.recordOpsFailure({
+              actor: staff, operation: ops.elsewhere, stage: 'terminal', tenantId: null, scopeId: s2,
+              message: platformIntentFailureMessage(linked, 'failed: HTTP 409: Anna Ek'),
+            });
+            const rowsOf = async (operation: string) =>
+              (await host.admin.listOpsFailures(staff, { operation })).map((r) => [r.tenantId, r.message]);
+            const before = { linked: await rowsOf(ops.linked), unlinked: await rowsOf(ops.unlinked), elsewhere: await rowsOf(ops.elsewhere) };
+            expect(before.linked[1]![1]).toMatch(/^\[upstream reference = up[0-9a-z]+\] platform intent /);
+            expect(await exemplarOwnerOf(ops.linked)).toEqual({ kind: 'platform', tenant: null });
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            expect(await rowsOf(ops.linked)).toEqual([before.linked[0], [null, REDACTED_FAILURE_NOTE]]);
+            expect((await issueOf(ops.linked)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
+            expect(await rowsOf(ops.unlinked)).toEqual(before.unlinked);
+            expect((await issueOf(ops.unlinked)).lastMessage).toBe(before.unlinked[1]![1]);
+            expect(await rowsOf(ops.elsewhere)).toEqual(before.elsewhere);
+            await host.settlePlatformRequest(t1, s1, unlinked, { status: 'done' });
           });
 
           /** Whose an exemplar is, as the directory stores it — not on the issue read shape. */
