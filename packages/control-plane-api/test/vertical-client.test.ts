@@ -1784,9 +1784,10 @@ describe('the paged copy verbs answer within PAGE_CALL_DEADLINE_MS (#2450)', () 
 });
 
 /**
- * #2446: the role-state read a promote judges a release against. Only a 404 is the deployment's
- * proof that it predates the route (`'predates'`, which the promote moves unjudged and counts);
- * everything else that is not a well-shaped answer is a failure, which refuses the promote.
+ * #2446: the role-state read a promote judges a release against. A 404 (no route) and the
+ * deployment's own 501 (no host method) are its proof that it predates the read (`'predates'`, which
+ * the promote moves unjudged and counts); everything else that is not a well-shaped answer is a
+ * failure, which refuses the promote.
  */
 describe('VerticalClient.roleState (#2446)', () => {
   const t = tenantId.parse('01JZ0000000000000000TEN001');
@@ -1808,12 +1809,16 @@ describe('VerticalClient.roleState (#2446)', () => {
     expect(seen).toEqual([{ path: '/internal/role-state', search: `?tenantId=${t}&scopeId=${s}`, secret: 'secret' }]);
   });
 
-  it('a 404 is the deployment saying it predates the route', async () => {
-    await expect(answering(() => new Response('404 Not Found', { status: 404 })).roleState(input)).resolves.toBe('predates');
+  it.each([
+    ['a 404: the route is not there', () => new Response('404 Not Found', { status: 404 })],
+    ['its own 501: the route is there, its scope host predates the method', () => new Response(JSON.stringify({ error: 'cannot report' }), { status: 501 })],
+  ])('%s is the deployment saying it predates the read', async (_name, res) => {
+    await expect(answering(res).roleState(input)).resolves.toBe('predates');
   });
 
   it.each([
-    ['its own 501 (the route exists, the host cannot answer)', () => new Response(JSON.stringify({ error: 'cannot report' }), { status: 501 }), 501],
+    ['a 401 (the platform credential refused)', () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }), 401],
+    ['a 403 (the platform gate refused)', () => new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }), 403],
     ['a 500', () => new Response('boom', { status: 500 }), 500],
     ['an HTML 200', spaShell, 502],
     ['truncated JSON', truncated('{"roles":'), 502],

@@ -1176,14 +1176,16 @@ export class VerticalClient {
   /**
    * #2446: the roles the deployment serving `scopeId` stores for `tenantId` there, and the role keys
    * seated there (`/internal/role-state`): what its reconcile judges a role set against. `'predates'`
-   * only on a 404, the deployment's own proof it has no such route; every other failure throws (its
-   * own 501 included: the route exists and the host cannot answer), as does a wrong-shaped answer.
+   * on a 404, the deployment's own proof it has no such route, and on its 501, which a vertical-host
+   * carrying the route answers when its scope host predates `roleStateLocal`. Either is a deployment
+   * built before the read, which a promote counts rather than refuses on, since the promote that
+   * upgrades it is judged by it. Every other failure throws, as does a wrong-shaped answer.
    */
   async roleState(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<RoleState | 'predates'> {
     const verb = 'role-state';
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const q = new URLSearchParams({ tenantId: input.tenantId, scopeId: input.scopeId });
-    const answer = await this.routeAnswer(verb, { legacy501: false, lost: 'nothing was changed; the read is safe to repeat.' }, () =>
+    const answer = await this.routeAnswer(verb, { legacy501: true, lost: 'nothing was changed; the read is safe to repeat.' }, () =>
       this.options.fetch(`${base}/internal/role-state?${q}`, {
         method: 'GET',
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },

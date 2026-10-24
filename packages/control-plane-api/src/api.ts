@@ -159,7 +159,7 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
+import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
@@ -845,6 +845,53 @@ const ROLE_STATE_CONCURRENCY = 8;
 export const ROLE_STATE_UNREAD_NOTE =
   "their deployment predates the role-state read, so this version's roles were not judged against them before the " +
   'promote; their reconcile still refuses a role set it cannot define';
+
+/** #2446: what a promote's role-state read found across the scopes it moves (`releaseRoleRefusalsOf`). */
+interface RoleStateJudgement {
+  refused: { tenantId: TenantId; scopeId: ScopeId; refusal: string }[];
+  /** `detail` is what the deployment said: for the log and staff only. */
+  failed: { tenantId: TenantId; scopeId: ScopeId; detail: string }[];
+  unread: number;
+}
+
+/**
+ * #2446: the promote's refusal for a role-state judgement, or null when it passes, as `pin` may
+ * read it. A confined caller sees only its own tenant's scopes by id and every other tenant as a
+ * count, and never what a deployment answered (that is logged where it was read); staff see all of
+ * it. A refusal found (409) is answered ahead of a read that failed (502), since it stands either way.
+ */
+function roleStateAnswer(
+  roles: RoleStateJudgement,
+  pin: string | null,
+): { status: 409 | 502; message: string; extra: Record<string, unknown> } | null {
+  if (roles.refused.length > 0) {
+    const { visible, otherTenants } = narrowToCaller(roles.refused, pin);
+    const why = visible[0] ? `: ${visible[0].refusal}` : ', none of them yours';
+    return {
+      status: 409,
+      message:
+        `promotion refused: this version's roles cannot be defined in ${roles.refused.length} of the scopes it would move, ` +
+        `so their reconcile would be refused there${why}. Nothing was promoted`,
+      extra: { roleRefusals: { affected: visible, ...(otherTenants ? { otherTenants } : {}) } },
+    };
+  }
+  if (roles.failed.length > 0) {
+    const { visible, otherTenants } = narrowToCaller(roles.failed, pin);
+    return {
+      status: 502,
+      message:
+        `the roles of ${roles.failed.length} of the scopes this version would move could not be read, and its roles are ` +
+        `judged against them before it moves them. Nothing was promoted; retry the promote`,
+      extra: {
+        roleStateUnreadable: {
+          affected: pin === null ? visible : visible.map(({ tenantId, scopeId }) => ({ tenantId, scopeId })),
+          ...(otherTenants ? { otherTenants } : {}),
+        },
+      },
+    };
+  }
+  return null;
+}
 
 /**
  * A fleet-wide report, narrowed to what a caller may see: a confined caller gets its own
@@ -8662,18 +8709,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * At most `roleStateScopeCap` scopes are read, `ROLE_STATE_CONCURRENCY` at a time in (tenant,
    * scope) order; more is a 503 naming the two ways through (raise the cap, or staff's
    * `acknowledge.roleStateUnjudged`, which skips the read and is audited), never a partial
-   * judgement. A deployment that predates the route (a 404) cannot be asked, and is counted in the
-   * answer instead; its reconcile still refuses. Any other failed read refuses the promote, with
-   * nothing moved.
+   * judgement. A deployment that cannot answer the read (one that predates the route, a 404, or one
+   * whose scope host predates the method, its 501) is counted instead; its reconcile still refuses.
+   * Any other failed read is collected in `failed`, with what the deployment said, and refuses the
+   * promote with nothing moved. Nothing here is phrased for a caller: the route narrows every answer
+   * to the scopes the caller may see, and what a deployment said reaches only the log and staff.
    */
   const releaseRoleRefusalsOf = async (
     c: ReqCtx,
     slug: string,
     versionId: string,
-    // The tenant the caller is confined to, if any: a refusal names no other tenant's scope to it.
-    pin: string | null,
-  ): Promise<{ refused: { tenantId: TenantId; scopeId: ScopeId; refusal: string }[]; unread: number }> => {
-    const none = { refused: [], unread: 0 };
+  ): Promise<RoleStateJudgement> => {
+    const none: RoleStateJudgement = { refused: [], failed: [], unread: 0 };
     if (!options.deployVertical || !options.fetchVerticalModules) return none; // no in-place serve moves anything
     const actor = c.get('actor');
     const incoming = await host.admin.getVersion(actor, versionId, slug);
@@ -8696,37 +8743,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           'is recorded in the promote\'s audit row',
       );
     }
-    const refused: { tenantId: TenantId; scopeId: ScopeId; refusal: string }[] = [];
+    const refused: RoleStateJudgement['refused'] = [];
+    const failed: RoleStateJudgement['failed'] = [];
     let unread = 0;
     for (let i = 0; i < moved.length; i += ROLE_STATE_CONCURRENCY) {
       const batch = moved.slice(i, i + ROLE_STATE_CONCURRENCY);
       const states = await Promise.all(
-        batch.map(async (s) => {
-          // Another tenant's scope is not named to a caller confined to its own.
-          const named = pin === null || s.tenantId === pin ? `scope ${s.id}` : 'a scope of another tenant';
+        batch.map(async (s): Promise<RoleState | 'predates' | { failed: string }> => {
           try {
             const client = await verticalForScope(c, s);
-            if (!client) throw new Error('no deployment serves it');
+            if (!client) return { failed: 'no deployment serves it' };
             return await client.roleState({ tenantId: s.tenantId, scopeId: s.id });
           } catch (e) {
-            const status = e instanceof ControlPlaneError && e.status >= 500 ? e.status : 502;
-            throw new ControlPlaneError(
-              status,
-              `the roles of ${named} could not be read (${e instanceof Error ? e.message : String(e)}), and this version's ` +
-                `roles are judged against them before it moves the scope. Nothing was promoted; retry the promote`,
-            );
+            return { failed: e instanceof Error ? e.message : String(e) };
           }
         }),
       );
       batch.forEach((s, j) => {
         const state = states[j]!;
         if (state === 'predates') return void unread++;
+        if ('failed' in state) {
+          console.warn('promote.role-state.unreadable', { slug, versionId, tenantId: s.tenantId, scopeId: s.id, detail: state.failed });
+          return void failed.push({ tenantId: s.tenantId, scopeId: s.id, detail: state.failed });
+        }
         const refusal = releaseRoleSetRefusal(registry, state);
         if (refusal) refused.push({ tenantId: s.tenantId, scopeId: s.id, refusal });
       });
     }
     if (unread > 0) console.warn('promote.role-state.predates', { slug, versionId, scopes: unread });
-    return { refused, unread };
+    return { refused, failed, unread };
   };
 
   /**
@@ -8847,17 +8892,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (acknowledge?.roleStateUnjudged && confinedTenant(p) !== null) {
       return refuse(c, 'forbidden', 'acknowledge.roleStateUnjudged is for staff: it skips the role-state read a promote judges its roles with');
     }
-    const roles = acknowledge?.roleStateUnjudged ? { refused: [], unread: 0 } : await releaseRoleRefusalsOf(c, slug, versionId, confinedTenant(p));
-    if (roles.refused.length > 0) {
-      const { visible, otherTenants } = narrowToCaller(roles.refused, confinedTenant(p));
-      return refuse(
-        c,
-        'conflict',
-        `promotion refused: this version's roles cannot be defined in ${roles.refused.length} of the scopes it would move, ` +
-          `so their reconcile would be refused there: ${roles.refused[0]!.refusal}. Nothing was promoted`,
-        { roleRefusals: { affected: visible, ...(otherTenants ? { otherTenants } : {}) } },
-      );
-    }
+    const roles = acknowledge?.roleStateUnjudged
+      ? { refused: [], failed: [], unread: 0 }
+      : await releaseRoleRefusalsOf(c, slug, versionId);
+    const answer = roleStateAnswer(roles, confinedTenant(p));
+    if (answer) return refuseStatus(c, answer.status, answer.message, answer.extra);
     // The blast-radius moment: refuses a changed digest without the acknowledgement,
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.

@@ -29,6 +29,7 @@ export function roleStateContractSuite(
     const other = scopeId.parse(ulid());
     const alice = principalId.parse(ulid());
     const bob = principalId.parse(ulid());
+    const carol = principalId.parse(ulid());
     const USE = 'rst:use' as PermissionKey;
     const RUN = 'rst:run' as PermissionKey;
     const flip = {
@@ -48,11 +49,13 @@ export function roleStateContractSuite(
         { key: 'member', permissions: [USE], source: 'vertical' },
         { key: 'runner', permissions: [RUN], source: 'vertical', holder: 'system' },
         { key: 'tenant-wide', permissions: [USE], source: 'vertical' },
+        { key: 'elsewhere', permissions: [USE], source: 'vertical' },
       ];
       for (const role of roles) await host.admin.defineRole(staff, t, role);
       for (const id of [s, other]) await fixture.projectRoles?.(t, id, roles);
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'member', node: { tenantId: t, scopeId: s } });
       await host.admin.assignRole(staff, { principalId: bob, roleKey: 'tenant-wide', node: { tenantId: t, scopeId: null } });
+      await host.admin.assignRole(staff, { principalId: carol, roleKey: 'elsewhere', node: { tenantId: t, scopeId: other } });
     });
     afterAll(async () => fixture?.cleanup());
 
@@ -64,14 +67,15 @@ export function roleStateContractSuite(
       expect(byKey['runner']).toEqual({ key: 'runner', permissions: [RUN], holder: 'system' });
       // A tenant-level seat (bob's) is not this scope's.
       expect(state.seated).toEqual(['member']);
-      // Another scope of the tenant holds no seat.
-      expect((await fixture.roleState(t, other)).seated).toEqual([]);
+      // A seat in another scope of the tenant is that scope's, not this one's.
+      expect((await fixture.roleState(t, other)).seated).toEqual(['elsewhere']);
     });
 
     it('names role keys only, never a principal', async () => {
       const wire = JSON.stringify(await fixture.roleState(t, s));
       expect(wire).not.toContain(alice);
       expect(wire).not.toContain(bob);
+      expect(JSON.stringify(await fixture.roleState(t, other))).not.toContain(carol);
     });
 
     it('the promote’s question over it refuses a seated person’s role made holder: system; twin: another scope passes', async () => {

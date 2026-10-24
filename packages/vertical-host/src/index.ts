@@ -338,7 +338,8 @@ export interface VerticalScopeHost {
   /**
    * #2446: the roles `scopeId` stores for `tenantId` and the role keys anyone but a system principal
    * holds a live seat in there (`RoleState`), what `projectRolesLocal` judges a role set against.
-   * Optional: a host without it answers the route 501, and a promote that must ask is refused.
+   * Optional: a host without it answers the route 501, which a promote counts as a deployment built
+   * before the read and moves unjudged, as it does one without the route.
    */
   roleStateLocal?(tenantId: TenantId, scopeId: ScopeId): Promise<RoleState>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
@@ -1624,7 +1625,7 @@ export function mountPlatformSurface<Env extends object>(
   // version's set before it moves the scope. Read-only; it names role keys, never a principal.
   app.get('/internal/role-state', async (c) => {
     const host = deps.hostFor(c.env);
-    if (!host.roleStateLocal) return refuseStatus(c, 501, 'this deployment cannot report its role state (#2446) — redeploy it');
+    if (!host.roleStateLocal) return refuseStatus(c, 501, 'this deployment cannot report its role state (#2446): its scope host predates roleStateLocal — upgrade the adapter beside vertical-host');
     return c.json(await host.roleStateLocal(tenantIdOf.parse(c.req.query('tenantId')), scopeIdOf.parse(c.req.query('scopeId'))));
   });
 

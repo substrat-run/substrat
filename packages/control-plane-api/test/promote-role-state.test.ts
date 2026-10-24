@@ -202,21 +202,91 @@ describe('a promote judges its roles against the scopes it moves (#2446)', () =>
     expect(await prodOf(slug)).toBe(v2.id);
   });
 
-  it('any other failed read refuses the promote with nothing moved: a 501 from the deployment, or a throw', async () => {
-    const { pin, slug, sc, v1 } = await setup('closed');
+  it('any other failed read refuses the promote with nothing moved, and staff read what the deployment said', async () => {
+    const { pin, t, slug, sc, v1 } = await setup('closed');
     expect((await promote(slug, v1.id)).status).toBe(200);
     const v2 = await push(pin, manifest('0.2.0', SYSTEM));
-    for (const failure of [new ControlPlaneError(501, 'this deployment cannot report its role state'), new Error('connection reset')]) {
+    for (const failure of [new ControlPlaneError(500, 'boom from the deployment'), new Error('connection reset')]) {
       answers.set(sc, failure);
       deploys.length = 0;
       const res = await promote(slug, v2.id);
-      expect(res.status).toBe(failure instanceof ControlPlaneError ? 501 : 502);
-      expect(((await res.json()) as { error: string }).error).toMatch(
-        new RegExp(`^the roles of scope ${sc} could not be read \\(.+\\), and this version's roles are judged against them before it moves the scope\\. Nothing was promoted; retry the promote$`),
+      expect(res.status).toBe(502);
+      const said = (await res.json()) as { error: string; roleStateUnreadable: { affected: object[] } };
+      expect(said.error).toBe(
+        "the roles of 1 of the scopes this version would move could not be read, and its roles are judged against them before it moves them. Nothing was promoted; retry the promote",
       );
+      expect(said.roleStateUnreadable.affected).toEqual([{ tenantId: t, scopeId: sc, detail: failure.message }]);
       expect(deploys).toEqual([]);
       expect(await prodOf(slug)).toBe(v1.id);
     }
+  });
+
+  it('a confined caller sees only its own scopes by id, every other tenant as a count, and nothing a deployment said', async () => {
+    const { pin, t, slug, sc, v1 } = await setup('two');
+    expect((await promote(slug, v1.id)).status).toBe(200);
+    // A second tenant's scope on the same serving script.
+    const b = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: b, slug: `${pin}-b`, name: 'b' });
+    const foreign = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: b, scopeId: foreign, vertical: slug });
+    await host.admin.activateScope(staff, b, foreign);
+    if (!(await host.admin.getScopeRecord(staff, b, foreign))?.servingRef) {
+      await host.admin.setScopeServingRef(staff, b, foreign, stableDeploymentRefFor(slug));
+    }
+    const v2 = await push(pin, manifest('0.2.0', SYSTEM));
+    const minted = await app.request('/tenant-tokens', { method: 'POST', headers: auth, body: JSON.stringify({ tenantId: t }) });
+    const asTenant = { [SERVICE_TOKEN_HEADER]: ((await minted.json()) as { token: string }).token, 'content-type': 'application/json' };
+    const confined = (via = app) => promote(slug, v2.id, via, {}, asTenant);
+    const LEAK = `upstream text naming scope ${foreign} and something private`;
+    const clean = (body: string) => {
+      expect(body).not.toContain(foreign);
+      expect(body).not.toContain(b);
+      expect(body).not.toContain('something private');
+    };
+
+    // 409, both seated: the caller's own refusal and scope, the other tenant as a count.
+    answers.set(sc, seatedPerson);
+    answers.set(foreign, seatedPerson);
+    let res = await confined();
+    expect(res.status).toBe(409);
+    let text = await res.text();
+    clean(text);
+    let said = JSON.parse(text) as { error: string; roleRefusals: { affected: { scopeId: string }[]; otherTenants?: number } };
+    expect(said.error).toMatch(/^promotion refused: this version's roles cannot be defined in 2 of the scopes it would move, so their reconcile would be refused there: role 'runner'/);
+    expect(said.roleRefusals.affected.map((a) => a.scopeId)).toEqual([sc]);
+    expect(said.roleRefusals.otherTenants).toBe(1);
+
+    // 409, only the other tenant's scope seated: no refusal sentence is quoted, only the count.
+    answers.set(sc, { ...seatedPerson, seated: [] });
+    res = await confined();
+    expect(res.status).toBe(409);
+    text = await res.text();
+    clean(text);
+    said = JSON.parse(text);
+    expect(said.error).toBe("promotion refused: this version's roles cannot be defined in 1 of the scopes it would move, so their reconcile would be refused there, none of them yours. Nothing was promoted");
+    expect(said.roleRefusals).toEqual({ affected: [], otherTenants: 1 });
+
+    // 502: the other tenant's deployment answers with text naming its scope; the caller's own fails too.
+    answers.set(foreign, new ControlPlaneError(502, LEAK));
+    answers.set(sc, new Error(`own failure: something private`));
+    res = await confined();
+    expect(res.status).toBe(502);
+    text = await res.text();
+    clean(text);
+    const failed = JSON.parse(text) as { roleStateUnreadable: unknown };
+    expect(failed.roleStateUnreadable).toEqual({ affected: [{ tenantId: t, scopeId: sc }], otherTenants: 1 });
+    // Staff keep the detail.
+    res = await promote(slug, v2.id);
+    expect(res.status).toBe(502);
+    text = await res.text();
+    expect(text).toContain(foreign);
+    expect(text).toContain('something private');
+
+    // 503 above the cap: counts only.
+    res = await confined(capped);
+    expect(res.status).toBe(503);
+    clean(await res.text());
+    expect(await prodOf(slug)).toBe(v1.id);
   });
 
   it('above the cap the promote is refused, naming the ways through, rather than judged in part', async () => {
