@@ -448,7 +448,10 @@ export const TickSweeperDO = defineScopeSweeperDO<Record<string, never>>({
     };
     return {
       drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
-      runDueJobs: async () => ({ attempted: 0, advanced: 0, completed: 0, retrying: 0, failed: 0, errors: [] }),
+      // `runJobs` is off, so the pass never drives a job.
+      runDueJobs: async () => {
+        throw new Error('the tick sweeper drives no jobs');
+      },
       registeredSchedules: () =>
         Object.keys(answers).map((m) => ({ moduleId: m, schedules: [{ operation: `${m}/x` }] })) as unknown as ScheduleRegistration[],
       runDueSchedules: async (m, _t, _s, tick) => ({
