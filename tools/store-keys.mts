@@ -31,6 +31,8 @@ import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, 
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  base64UrlToBytes,
+  bytesToBase64Url,
   generateScopeStoreKeyPair,
   ScopeStoreKeyError,
   scopeStoreKeyId,
@@ -219,8 +221,40 @@ const SIGNER_PROBLEM: Readonly<Record<ScopeStoreKeyProblem, string>> = {
   'small-order': 'is a small-order point',
 };
 
+/**
+ * The private material a set's env file and staged files hold, in each form a list entry could take
+ * by mistake: a key's PKCS8 text and its raw 32-byte seed. Only ever compared, never printed.
+ */
+function privateForms(texts: readonly (string | undefined)[]): Set<string> {
+  const forms = new Set<string>();
+  for (const text of texts) {
+    const value = text?.trim();
+    const bytes = value ? base64UrlToBytes(value) : undefined;
+    if (!value || !bytes || bytes.length !== 48) continue;
+    forms.add(value);
+    forms.add(bytesToBase64Url(bytes.slice(16)));
+  }
+  return forms;
+}
+
+/** Whether a list entry is itself a usable private key, whoever's it is. */
+async function isPrivateKey(entry: string): Promise<boolean> {
+  try {
+    await scopeStoreSignerPublicKey(entry);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** One member's public-key list, entry by entry. Findings never carry an entry's text. */
-async function readList(name: string, text: string | undefined, findings: Finding[], family: KeyFamily): Promise<ListedKey[] | undefined> {
+async function readList(
+  name: string,
+  text: string | undefined,
+  findings: Finding[],
+  family: KeyFamily,
+  secrets: ReadonlySet<string>,
+): Promise<ListedKey[] | undefined> {
   if (text === undefined) {
     findings.push({ level: 'error', subject: name, check: `is unset: ${family.listedFor}, and the upload refuses without it` });
     return undefined;
@@ -229,6 +263,12 @@ async function readList(name: string, text: string | undefined, findings: Findin
   const entries = text.split(',').map((entry) => entry.trim());
   for (const [i, entry] of entries.entries()) {
     const position = i + 1;
+    // A private key, or a seed of one this set holds, pasted where a public key belongs would be
+    // handed to every deployment the list reaches. Said before any other check, and never shown.
+    if (secrets.has(entry) || (await isPrivateKey(entry))) {
+      findings.push({ level: 'error', subject: name, check: `entry ${position} looks like private material: a list holds public keys only` });
+      continue;
+    }
     const problem = scopeStorePublicKeyProblem(entry);
     if (problem) {
       findings.push({ level: 'error', subject: name, check: `entry ${position} ${PUBLIC_KEY_PROBLEM[problem]}` });
@@ -312,9 +352,13 @@ export async function doctor(
   const members = membersOf(family);
   const lists: Record<string, ListedKey[] | undefined> = {};
   const signers: Record<string, Signer | undefined> = {};
+  const secrets = privateForms([
+    ...members.map((m) => values[family.members[m]!.privateKey]),
+    ...stagedFiles.flatMap((file) => Object.values(parseEnvText(file.text) as Record<string, string>)),
+  ]);
   for (const m of members) {
     const names = family.members[m]!;
-    lists[m] = await readList(names.publicKeys, values[names.publicKeys], findings, family);
+    lists[m] = await readList(names.publicKeys, values[names.publicKeys], findings, family, secrets);
     signers[m] = await readSigner(names.privateKey, values[names.privateKey], findings);
   }
   const staged: Record<string, (Signer & { label: string })[]> = Object.fromEntries(members.map((m) => [m, []]));

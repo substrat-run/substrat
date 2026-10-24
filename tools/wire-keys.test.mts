@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { generateScopeStoreKeyPair, scopeStoreSignerPublicKey } from '../packages/contracts/src/scope-store-envelope.ts';
+import { base64UrlToBytes, generateScopeStoreKeyPair, scopeStoreSignerPublicKey } from '../packages/contracts/src/scope-store-envelope.ts';
 import { wireVerificationKeys } from '../packages/contracts/src/wire-signing.ts';
 import { MANIFEST } from '../scripts/secrets.mjs';
 import { repoRoot } from './repo-path.mjs';
@@ -90,6 +90,27 @@ test('doctor: a signer switched before its key was listed, and one key for both 
   assert.ok(unlisted.some((f) => /WIRE_ROUTER_KEY signs as kid .*, which WIRE_ROUTER_PUBLIC_KEYS does not list: every router call is refused/.test(f)), unlisted.join('\n'));
   const shared = await findings({ ...good, WIRE_PLATFORM_KEY: A.private, WIRE_PLATFORM_PUBLIC_KEYS: B.public }, 'error');
   assert.ok(shared.some((f) => /WIRE_ROUTER_KEY is the same key as WIRE_PLATFORM_KEY: each issuer needs its own/.test(f)), shared.join('\n'));
+});
+
+test('doctor: private material pasted into a list is refused by entry, and never shown', async () => {
+  const seedA = b64u('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+  const cases: [string, Record<string, string>, readonly string[]][] = [
+    // The router signer's raw seed, where its public key belongs.
+    ['the signer’s seed', { ...good, WIRE_ROUTER_PUBLIC_KEYS: `${A.public},${seedA}` }, []],
+    // A whole private key, anyone's: the platform standby's, which this env does not hold.
+    ['a private key', { ...good, WIRE_PLATFORM_PUBLIC_KEYS: `${B.public},${D.private}` }, []],
+    // A staged key's seed: the file the operator generated, not yet the signer.
+    ['a staged key’s seed', { ...good, WIRE_ROUTER_PUBLIC_KEYS: `${A.public},${C.public},${b64u(Buffer.from(base64UrlToBytes(C.private)!).subarray(16).toString('hex'))}` }, [`WIRE_ROUTER_KEY=${C.private}\n`]],
+  ];
+  for (const [label, values, stagedTexts] of cases) {
+    const report = await doctor(values, stagedTexts.map((text, i) => ({ label: `staged-${i}.key`, text })), WIRE_FAMILY);
+    const errors = report.findings.filter((f) => f.level === 'error').map((f) => `${f.subject} ${f.check}`);
+    assert.ok(errors.some((f) => /^WIRE_(ROUTER|PLATFORM)_PUBLIC_KEYS entry \d looks like private material: a list holds public keys only$/.test(f)), `${label}: ${errors.join('\n')}`);
+    const printed = JSON.stringify(report.findings);
+    for (const secret of [seedA, A.private, D.private, C.private]) assert.ok(!printed.includes(secret), `${label} printed a private value`);
+  }
+  // Its twin: the same lists with public keys only are clean.
+  assert.deepEqual(await findings(good, 'error'), []);
 });
 
 test('doctor: the store family is untouched by the wire family, and neither reads the other’s names', async () => {
@@ -189,6 +210,7 @@ test('no wire-keys command echoes a private value, on any path, success or refus
   const files = {
     fakeEverywhere: `WIRE_ROUTER_KEY=${FAKE}\nWIRE_PLATFORM_KEY=${FAKE}x\nWIRE_ROUTER_PUBLIC_KEYS=${A.public},${FAKE}\nWIRE_PLATFORM_PUBLIC_KEYS=${A.private}\n`,
     privateInList: `WIRE_ROUTER_KEY=${A.private}\nWIRE_PLATFORM_KEY=${B.private}\nWIRE_ROUTER_PUBLIC_KEYS=${A.private},${C.public}\nWIRE_PLATFORM_PUBLIC_KEYS=${B.public},${D.public}\n`,
+    seedInList: `WIRE_ROUTER_KEY=${A.private}\nWIRE_PLATFORM_KEY=${B.private}\nWIRE_ROUTER_PUBLIC_KEYS=${A.public},${b64u('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')}\nWIRE_PLATFORM_PUBLIC_KEYS=${B.public},${D.public}\n`,
     good: Object.entries(good).map(([k, v]) => `${k}=${v}`).join('\n'),
   };
   const keyFile = join(dir, 'staged.key');
@@ -210,7 +232,7 @@ test('no wire-keys command echoes a private value, on any path, success or refus
   for (const argv of runs) {
     const io = recorder();
     await main(argv, io, WIRE_FAMILY);
-    for (const s of [FAKE, A.private, B.private, D.private]) {
+    for (const s of [FAKE, A.private, B.private, D.private, b64u('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')]) {
       assert.ok(!io.out.includes(s) && !io.err.includes(s), `${argv.join(' ')} echoed a private value:\n${io.out}${io.err}`);
     }
   }
