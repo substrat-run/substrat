@@ -8053,10 +8053,12 @@ export class SqliteScopeHost implements ScopeHost {
           entry.code ?? null,
           at,
           at,
-          // The issues are staff's (#2540): a pair's exemplar is its own text, not the tenant's sentence.
+          // The issues are staff's (#2540): a pair's exemplar is its own text, not the tenant's
+          // sentence, and it is owned as the row it is copied from is, the platform's — so erasure
+          // reaches it on an id match, as it reaches that row.
           (detail ?? entry.message).slice(0, 2000),
-          entry.tenantId ?? null,
-          issueExemplarOwner(entry.tenantId ?? null),
+          detail !== null ? null : (entry.tenantId ?? null),
+          issueExemplarOwner(detail !== null ? null : (entry.tenantId ?? null)),
           entry.vertical ?? null,
           entry.version ?? null,
         );

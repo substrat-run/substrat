@@ -739,8 +739,6 @@ export const INDEX_VALUE_EXPORTS = [
   'unknownRoleError',
   'unsettledCopyRefusal',
   'uploadContentTypeAllowed',
-  // #2540: how a withheld failure's staff text names an upstream trace handle.
-  'upstreamReferenceMarker',
   'versionMigrationsOf',
   'versionsAwaitDigest',
   'versionsAwaitSplit',

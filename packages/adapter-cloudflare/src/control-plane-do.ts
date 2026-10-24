@@ -5639,10 +5639,12 @@ export class ControlPlaneDO extends DurableObject {
         row.code,
         row.at,
         row.at,
-        // The issues are staff's (#2540): a pair's exemplar is its own text, not the tenant's sentence.
+        // The issues are staff's (#2540): a pair's exemplar is its own text, not the tenant's
+        // sentence, and it is owned as the row it is copied from is, the platform's — so erasure
+        // reaches it on an id match, as it reaches that row.
         detail ?? row.message,
-        row.tenant_id,
-        issueExemplarOwner(row.tenant_id),
+        detail !== null ? null : row.tenant_id,
+        issueExemplarOwner(detail !== null ? null : row.tenant_id),
         row.vertical,
         row.version,
       );

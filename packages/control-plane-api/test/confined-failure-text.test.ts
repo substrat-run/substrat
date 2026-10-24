@@ -175,6 +175,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
   const captureLog = () => {
     logged.length = 0;
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(args));
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => void logged.push(args));
   };
 
   // A builder (a push token) promotes the private vertical it owns as a tenant credential does.
@@ -433,12 +434,47 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     expect(((await asStaff.json()) as { detail: string }).detail).toBe(`reconcile refused: ${leak}`);
   });
 
+  it('a reconcile refusal (4xx) of another tenant’s install: the sentence, logged, and no row', async () => {
+    const { t, slug, b, foreign, leak } = await setup('refusal');
+    const asBuilder = await tokenFor('/push-tokens', t);
+    captureLog();
+    reconcileFails = () => new ControlPlaneError(409, `reconcile refused: ${leak}`);
+    const res = await app.request(`/tenants/${b}/scopes/${foreign}/provision`, { method: 'POST', headers: asBuilder });
+    expect(res.status).toBe(409);
+    const text = await res.text();
+    expect(text).not.toContain('something private');
+    const said = JSON.parse(text) as { detail: string; reference: string };
+    expect(said.detail).toBe(`the reconcile of this scope failed (409) (reference ${said.reference})`);
+    // A refusal is not a platform failure: no row, no issue, no finding — the 5xx backstop's rule.
+    expect(await host.admin.listOpsFailures(staff, { operation: 'scope.provision.reconcile', vertical: slug } as never)).toEqual([]);
+    // Staff find it in the log line under the reference.
+    const line = logged.find((args) => args[0] === 'control-plane.withheld' && (args[1] as { reference?: string }).reference === said.reference);
+    expect(line?.[1]).toMatchObject({ detail: `reconcile refused: ${leak}`, status: 409 });
+  });
+
+  it.each([502, 409])('a builder repairing its own tenant’s install reads the vertical’s own answer (%i)', async (status) => {
+    const { t, own, slug } = await setup(`own${status}`);
+    const asBuilder = await tokenFor('/push-tokens', t);
+    reconcileFails = () => new ControlPlaneError(status, 'reconcile refused: the owner seat is taken');
+    const res = await app.request(`/tenants/${t}/scopes/${own}/provision`, { method: 'POST', headers: asBuilder });
+    expect(res.status).toBe(status);
+    expect(((await res.json()) as { detail: string }).detail).toBe('reconcile refused: the owner seat is taken');
+    // Nothing withheld, so no pair either: a 5xx is the backstop's single row, as before.
+    const rows = await host.admin.listOpsFailures(staff, { vertical: slug } as never);
+    expect(rows.filter((r) => r.operation === 'scope.provision.reconcile')).toEqual([]);
+  });
+
   it('an upstream trace reference stays on staff’s row; staff find the pair by it or by the platform’s own', async () => {
     const { pin, t, slug, clean, leak } = await setup('upstream');
     const v2 = await push(pin, manifest('0.2.0'));
     const asTenant = await tokenFor('/tenant-tokens', t);
     const upstream = `cf${ulid().toLowerCase()}`;
-    serveFails = { slug, error: new Error(`${leak}; internal error; reference = ${upstream}`) };
+    const forged = `cf${ulid().toLowerCase()}`;
+    // A body past the row's bound, which also spells a marker of its own for an unrelated id.
+    serveFails = {
+      slug,
+      error: new Error(`${leak}; internal error; reference = ${upstream} [upstream reference = ${forged}] ${'x'.repeat(2100)}`),
+    };
     const res = await promote(slug, v2.id, asTenant);
     expect(res.status).toBe(502);
     const text = await res.text();
@@ -467,8 +503,12 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
       ]);
       expect(rows[0]!.message).not.toContain(upstream);
       expect(rows[1]!.message).toContain(leak);
-      expect(rows[1]!.message).toContain(`[upstream reference = ${upstream}]`);
+      // First, so the bounded row keeps it.
+      expect(rows[1]!.message.length).toBeLessThanOrEqual(2000);
+      expect(rows[1]!.message.startsWith(`[upstream reference = ${upstream}]`)).toBe(true);
     }
+    // The body's own spelling of a marker finds nothing for staff either.
+    expect(await listed(`reference=${forged}`, auth)).toEqual([]);
     // The caller's own search by its reference finds only its own row, and by the upstream id nothing.
     const own = await listed(`tenantId=${t}&reference=${reference}`, asTenant);
     expect(own.map((r) => [r.tenantId, r.message])).toEqual([[t, (JSON.parse(text) as { detail: string }).detail]]);

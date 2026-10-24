@@ -44,6 +44,7 @@ import {
   type TenantId,
   type ModelUsageLine,
   unheldMigrationDigest,
+  withUpstreamReference,
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
@@ -61,7 +62,6 @@ import {
   rebindReviewRefusalOf,
   createUlid,
   ulid,
-  upstreamReferenceMarker,
   type AuditLogFilter,
   type OperationHandler,
   type ScopeHost,
@@ -3676,6 +3676,34 @@ export function scopeHostContractSuite(
             expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
           });
 
+          it('#2540: a pair filed under another tenant, whose staff text names this subject, is redacted on both', async () => {
+            // The pair is the other tenant's failure, and its withheld text names this tenant's subject.
+            const erased = dataSubjectId.parse(ulid());
+            const operation = op('pair');
+            await host.admin.recordOpsFailure({
+              actor: staff,
+              operation,
+              stage: 'terminal',
+              tenantId: t2,
+              message: 'the step failed (reference r)',
+              detail: `a store refused while reading contact ${erased}`,
+              reference: `erase${ulid().toLowerCase()}`,
+            });
+            // The issue's sample is the staff text, so it is the platform's.
+            expect(await exemplarOwnerOf(operation)).toEqual({ kind: 'platform', tenant: null });
+            expect((await issueOf(operation)).lastMessage).toContain(erased);
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            expect((await issueOf(operation)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
+            const rows = await host.admin.listOpsFailures(staff, { operation });
+            // Staff's row with no tenant goes on the id match; the other tenant's row never named it.
+            expect(rows.map((r) => [r.tenantId, r.message])).toEqual([
+              [t2, 'the step failed (reference r)'],
+              [null, REDACTED_FAILURE_NOTE],
+            ]);
+          });
+
           /** Whose an exemplar is, as the directory stores it — not on the issue read shape. */
           const exemplarOwnerOf = async (operation: string) => {
             const dump = await host.admin.exportDirectory(staff);
@@ -5231,12 +5259,15 @@ export function scopeHostContractSuite(
       it('#2540: staff find a pair by the upstream handle its staff row names; an exact search does not', async () => {
         const reference = `own${ulid().toLowerCase()}`;
         const upstream = `cf${ulid().toLowerCase()}`;
+        const forged = `cf${ulid().toLowerCase()}`;
+        // A body past the row's bound, which spells a marker of its own for an unrelated id.
+        const body = `internal error; reference = ${upstream} [upstream reference = ${forged}] ${'x'.repeat(2100)}`;
         await host.admin.recordOpsFailure({
           actor: staff,
           operation: 'contract.upstream',
           tenantId: t1,
           message: `the step failed (reference ${reference})`,
-          detail: `internal error; reference = ${upstream} ${upstreamReferenceMarker(upstream)}`,
+          detail: withUpstreamReference(body, upstream),
           reference,
         });
         // Bracketed, so an id that only begins this one finds nothing.
@@ -5251,6 +5282,12 @@ export function scopeHostContractSuite(
         expect(await by(reference, true)).toEqual(bothRows);
         expect(await by(upstream, false)).toEqual([]);
         expect(await by(upstream.slice(0, -2), true)).toEqual([]);
+        // The row is bounded, and the marker, written first, survives the cut.
+        const [, staffRow] = await host.admin.listOpsFailures(staff, { reference });
+        expect(staffRow!.message.length).toBeLessThanOrEqual(2000);
+        expect(staffRow!.message.startsWith(`[upstream reference = ${upstream}]`)).toBe(true);
+        // The body's own spelling of a marker finds nothing.
+        expect(await by(forged, true)).toEqual([]);
         // Narrowed to the tenant, the search lands on the tenant's own row only.
         expect(await by(reference, false, t1)).toEqual([[t1, reference]]);
       });
