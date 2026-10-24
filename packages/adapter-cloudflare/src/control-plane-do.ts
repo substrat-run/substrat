@@ -104,6 +104,11 @@ import {
   tenantHeldOf,
   VERSION_MIGRATIONS_DDL,
   VERTICAL_SCOPE_STORES_DDL,
+  DEPLOYMENT_WIRE_AUTH_DDL,
+  deploymentWireAuthOf,
+  forgetVerticalWireAuth,
+  writeDeploymentWireAuth,
+  type DeploymentWireAuthFilter,
   STORE_DRIVER_RELEASES_DDL,
   legacyStoreDriverConflict,
   legacyStoreDriverRenames,
@@ -218,7 +223,7 @@ import type {
   ErrorCode,
 } from '@substrat-run/contracts';
 import { assertReplayableDump, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
-import type { FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
+import type { DeploymentWireAuth, FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
 /**
@@ -1033,6 +1038,7 @@ const DIRECTORY_DDL = `
   );
   ${VERSION_MIGRATIONS_DDL}
   ${VERTICAL_SCOPE_STORES_DDL}
+  ${DEPLOYMENT_WIRE_AUTH_DDL}
   CREATE TABLE IF NOT EXISTS vertical_channels (
     vertical_slug TEXT NOT NULL,
     channel       TEXT NOT NULL,
@@ -3434,6 +3440,7 @@ export class ControlPlaneDO extends DurableObject {
         slug,
       );
       forgetVerticalScopeStores(this.kernelSql, slug);
+      forgetVerticalWireAuth(this.kernelSql, slug);
       this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
       return this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug).rowsWritten > 0;
     }, audit);
@@ -3514,6 +3521,19 @@ export class ControlPlaneDO extends DurableObject {
               serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
       s.ref, s.versionId, s.doClassesJson, s.migrationTag, slug,
     ).rowsWritten > 0, audit);
+  }
+
+  /** One upload's capability record (RFC wire-signing §7, Q8), replacing the script's earlier one. */
+  recordWireAuth(row: DeploymentWireAuth, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => {
+      writeDeploymentWireAuth(this.kernelSql, row);
+      return true;
+    }, audit);
+  }
+
+  /** The stored capability records, every one or one vertical's, a page at a time when the filter asks. */
+  listWireAuth(filter: DeploymentWireAuthFilter): DeploymentWireAuth[] {
+    return deploymentWireAuthOf(this.kernelSql, filter);
   }
 
   /** Point a scope's routing at the serving script its data now lives in (#286). False when a

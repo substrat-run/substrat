@@ -6,6 +6,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
+import type { DeploymentWireAuthFilter, DeploymentWireAuthInput } from './deployment-wire-auth.js';
 import type { StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverRolloutTarget, StoreDriverState } from './store-driver-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
@@ -119,6 +120,7 @@ import type {
   PublishVersionInput,
   RegisterVerticalInput,
   VerticalServingState,
+  DeploymentWireAuth,
   RouteTarget,
   DirectoryDump,
   IdentityMembership,
@@ -2866,6 +2868,22 @@ export interface HostAdmin {
     verticalSlug: string,
     versionId: string,
   ): Promise<DeclaredMigration[] | null>;
+  /**
+   * Record what one upload gave the script it went to (RFC wire-signing §7, Q8): the capability
+   * record, written by the uploader from what it built and injected, never declared by the
+   * vertical. It replaces that script's earlier record, so it is always the last upload's. Audited.
+   *
+   * Optional, like the gauge's methods: a host that lacks them records nothing, and the readiness
+   * report reads a deployment with no record as unknown, never as ready.
+   */
+  recordWireAuth?(actor: PlatformActorId, input: DeploymentWireAuthInput): Promise<void>;
+  /**
+   * The stored capability records, every one or one vertical's, by script name. A page at a time when
+   * the filter asks (`ListPage`: `limit`, `cursor` the last script name of the page before, `order`);
+   * unset, every one. A version's script keeps its record for as long as its vertical exists, so a
+   * reader of the whole fleet pages. Access-logged (K-24). Reached through the host API only today.
+   */
+  listWireAuth?(actor: PlatformActorId, filter?: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   /**
    * Point a scope's ROUTING at the serving script its data now lives in. Per-scope
    * truth, deliberately not derived from the vertical: rerouting a scope whose DOs

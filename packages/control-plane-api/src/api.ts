@@ -236,6 +236,8 @@ import type {
   DeployVerticalFn,
   FetchVerticalAssetFn,
   FetchVerticalModulesFn,
+  InPlaceUpload,
+  VerticalBundle,
 } from './deploy.js';
 import type { PatchScriptBindingsFn } from './wfp.js';
 
@@ -299,6 +301,7 @@ import type {
 } from './backups.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
+import { wireUploadFor, type WireUpload, type WireUploadSettings } from './wire-upload.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
 import { queryLakeEvents, type LakeQueryEngine } from './lake-gateway.js';
 import { LakeQueryError } from './r2-sql-engine.js';
@@ -455,6 +458,12 @@ export interface ControlPlaneApiOptions {
    * one: the hosted worker passes none, so the reviewed registry is the one it runs.
    */
   storeDrivers?: readonly StoreDriverRegistration[];
+  /**
+   * RFC wire-signing step 2 (follow-on 3): what both uploads give a deployment for the envelope's
+   * verifier, and which deployments they give it to (`wireUploadFor`). Absent, or with the rollout
+   * unset, no upload gives anything, and each still records that it gave nothing.
+   */
+  wireUpload?: WireUploadSettings;
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
    *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
   copyLeaseMs?: number;
@@ -8501,6 +8510,47 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
+   * Upload `bundle` to the script `ref`, a deployment of `slug`, with what the control plane's
+   * settings give it for the envelope's verifier (RFC wire-signing step 2, follow-on 3:
+   * `wireUploadFor`) added to its bindings. Both uploads of a vertical's script go through here, so
+   * no upload path can leave the lists out. A refused setting or refused lists give nothing, and are
+   * logged and recorded as an operational failure by reason, never with a key. Answers what the
+   * upload gave, for its record (`recordWireUpload`).
+   */
+  const deployVerticalScript = async (
+    deploy: DeployVerticalFn,
+    actor: PlatformActorId,
+    slug: string,
+    ref: string,
+    bundle: VerticalBundle,
+    inPlace?: InPlaceUpload,
+  ): Promise<WireUpload> => {
+    const wire = await wireUploadFor(options.wireUpload, { vertical: slug, deploymentRef: ref, bundle });
+    if (wire.refusal !== null) {
+      console.error(JSON.stringify({ substrat: 'wire-upload', vertical: slug, deploymentRef: ref, withheld: wire.record.withheld, reason: wire.refusal }));
+      recordFailure({ actor, operation: 'deploy.wire-upload', stage: wire.record.withheld, vertical: slug, message: `no key lists given to ${ref}: ${wire.refusal}` });
+    }
+    await deploy(ref, { ...bundle, bindings: [...bundle.bindings, ...wire.bindings] }, inPlace);
+    return wire;
+  };
+
+  /**
+   * The capability record of an upload that succeeded (RFC wire-signing §7, Q8). A write that fails
+   * never fails the upload, which is done: it is logged and recorded as an operational failure, and
+   * the readiness report reads a deployment with no record as unknown, never as ready.
+   */
+  const recordWireUpload = async (admin: HostAdmin, actor: PlatformActorId, versionId: string, wire: WireUpload): Promise<void> => {
+    if (!admin.recordWireAuth) return;
+    const { vertical, deploymentRef, record } = wire;
+    try {
+      await admin.recordWireAuth(actor, { deploymentRef, verticalSlug: vertical, versionId, record, recordedAt: new Date().toISOString() });
+    } catch (error) {
+      console.error(JSON.stringify({ substrat: 'wire-upload-record-failed', vertical, deploymentRef, error: error instanceof Error ? error.name : 'error' }));
+      recordFailure({ actor, operation: 'deploy.wire-record', vertical, version: versionId, message: `the capability record of ${deploymentRef} was not written` }, error);
+    }
+  };
+
+  /**
    * Serve a version IN PLACE (#286): upload its bundle onto the vertical's ONE stable
    * serving script, where every scope's data DO lives — this is the step that makes a
    * promote carry data forward instead of stranding it in the outgoing version's
@@ -8562,7 +8612,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
     // #2210: the store scripts first, so the vertical is never served before what it reaches.
     await ensureScopeStoresOf(actor, 'serve', slug, manifest.scopeStores, async () => (await ownerOf(actor, slug)) ?? null);
-    await options.deployVertical(
+    const wire = await deployVerticalScript(
+      options.deployVertical,
+      actor,
+      slug,
       ref,
       {
         entry: manifest.entry,
@@ -8621,6 +8674,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? { priorDoClasses: serving.doClasses, priorMigrationTag: serving.migrationTag }
         : undefined,
     );
+    await recordWireUpload(admin, actor, versionId, wire);
     const addedClasses = serving ? doClasses.some((cls) => !serving.doClasses.includes(cls)) : false;
     await admin.setVerticalServing(actor, slug, {
       ref,
@@ -9242,8 +9296,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2210: the store scripts first, outside the vertical upload's try, so a store failure
     // answers as itself and the vertical is not uploaded at all.
     await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null);
+    let wire: WireUpload;
     try {
-      await options.deployVertical(deploymentRef, {
+      wire = await deployVerticalScript(options.deployVertical, c.get('actor'), slug, deploymentRef, {
         entry: manifest.entry,
         compatibilityDate: manifest.compatibilityDate,
         compatibilityFlags: manifest.compatibilityFlags,
@@ -9347,6 +9402,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #1902: with the sweeper decision the push made, which no later upload re-makes.
       manifestJson: JSON.stringify({ ...manifest, platformSweeper: sweeper.supply }),
     });
+    await recordWireUpload(c.var.admin, c.get('actor'), id, wire);
     // Same spirit as the permission-surface gate, advisory tier: when the push DECLARES
     // surfaces, name any surface that hostnames are still bound to but the declaration
     // dropped — the URL keeps resolving (routing never keys on the declaration), it just

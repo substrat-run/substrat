@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: kernel
-description: One-way trust between the platform and a deployed vertical. The router and the control plane sign what they send a vertical with Ed25519, a vertical holds public keys only, and a vertical's calls up to the control plane give way to its outbox. Envelope, verifier states, key management, the readiness gate and a rollout that breaks no live app. Primitives, the verifier in the platform's entry, inert until key lists are given, and the signers, off until their flag is set.
+description: One-way trust between the platform and a deployed vertical. The router and the control plane sign what they send a vertical with Ed25519, a vertical holds public keys only, and a vertical's calls up to the control plane give way to its outbox. Envelope, verifier states, key management, the readiness gate and a rollout that breaks no live app. Primitives, the verifier in the platform's entry, inert until key lists are given, the signers, off until their flag is set, and the uploader, which gives a deployment key lists only where the rollout setting names it.
 ---
 
 # RFC: wire signing
@@ -14,7 +14,9 @@ proposed · **Primitives:**
 `packages/control-plane-api/platform-entry/wire-gate.ts`, in the platform's entry, inert until a
 deployment is given key lists · **Signers:** the router (`apps/router/src/worker.ts`) and the
 control plane (`packages/control-plane-api/src/platform-wire.ts`), each off until its `WIRE_SIGN`
-flag is `on` · **Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
+flag is `on` · **Uploader:** `packages/control-plane-api/src/wire-upload.ts`, giving key lists only
+to the deployments `WIRE_KEYS_ROLLOUT` names, and recording every upload's capability ·
+**Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
 the scope-store envelope, whose scheme this reuses.
 
@@ -55,12 +57,14 @@ is gone. Every step reverts on its own.
 **Where it stands.** Step 0 (#2503) added this RFC, the K-58 draft and the primitives, with tests
 and vectors. Step 1 (#2511) added the verifier to the platform's entry module, with all three states
 and the counters, inert until an upload gives a deployment key lists. Step 2 lands in two pull
-requests, along §10's follow-ons 2 and 3. The first adds the signers: the router signs routes and
-its peer invocations, the control plane signs its calls, each beside the legacy headers and each
-off until its own `sign` flag is set, and the key tool gains the two issuers. The second is the
-uploader's injection of the key lists. Until it lands no deployment is given lists, so an envelope
-a signer sends is carried and ignored, and a deployment behaves exactly as before. §11 is step 0's
-scope.
+requests, along §10's follow-ons 2 and 3. The first (#2532) adds the signers: the router signs
+routes and its peer invocations, the control plane signs its calls, each beside the legacy headers
+and each off until its own `sign` flag is set, and the key tool gains the two issuers. The second
+adds the uploader's half: both uploads give a deployment the two key lists, its own name and
+`dual`, but only the deployments the control plane's `WIRE_KEYS_ROLLOUT` names (one vertical as a
+canary, then the fleet), and every upload records what it gave. Until an environment sets the
+rollout, no deployment is given lists, so an envelope a signer sends is carried and ignored, and a
+deployment behaves exactly as before. §11 is step 0's scope.
 
 **Decided questions** (§12): new key pairs, one per issuer, not the store keys; the verifier runs
 in the platform's entry module; a deployment learns its state from an explicit per-environment
@@ -480,6 +484,12 @@ step 6, withdraws the credential.
 - **Each version records `wireAuth` at upload**: the envelope version its verifier understands
   and the key lists it was given. The uploader writes it from what it built and injected. The
   vertical never declares it, because a claim the vertical makes about itself proves nothing.
+  Built in follow-on 3 as one record per deployment, the script an upload went to, replaced by each
+  upload of it (`vertical_wire_auth` in the directory, `HostAdmin.recordWireAuth` and
+  `listWireAuth`): whether the bundle carries the platform's entry (envelope `1`, or none and the
+  entry's own reason for leaving it off), the state, the audience, each list's key ids, and, when it
+  gave nothing, why: no rollout, not in the rollout, a rollout setting it could not read, or lists
+  it refused. A version's records go with its vertical.
 - **A readiness report per environment** lists every live version: the serving version of every
   install, every preview, and every version a scope is bound to. For each it shows whether it
   verifies, which key lists it carries (the standby keys included), which state it is in, and
@@ -585,7 +595,7 @@ step 6, withdraws the credential.
 |---|---|---|---|
 | 0 | This PR: RFC, K-58 draft, primitives. Nothing wired. | delete the files | the envelope format and the plan |
 | 1 | The verifier, `dual`-capable, inert without key lists, in the platform's entry module (Q2) | revert the package | a pushed demo with no keys behaves exactly as before |
-| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest. The signers' `sign` flag on, `legacy` still on. The informational headers the router sends (the field-coverage sample, a peer call's parent request id) are listed by the entry as carrying no authority, decided by name (§5). Lands as two pull requests, the signers (follow-on 2) and then the uploader (follow-on 3); the check to the right is made once both are deployed. Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and no envelope is refused (no `reason` but the untouched vertical's `missing`, whatever the `outcome`), each read from the environment's own log query (below) |
+| 2 | Keys generated per environment, the standby keys with them. The uploader injects the lists, the deployment's name and the capability record, and refuses to inject a list `wireVerificationKeys` refuses. The first deployment in each environment given lists is a single canary, before the rest (`WIRE_KEYS_ROLLOUT=canary:<vertical>`, then `fleet`). The signers' `sign` flag on, `legacy` still on. The informational headers the router sends (the field-coverage sample, a peer call's parent request id) are listed by the entry as carrying no authority, decided by name (§5). Lands as two pull requests, the signers (follow-on 2) and then the uploader (follow-on 3); the check to the right is made once both are deployed. Test environment first. | `sign` off (refused by §7 once any environment is `signed-only`) | in test, a re-pushed demo counts `signed-accepted`, an untouched vertical counts `legacy-accepted`, and no envelope is refused (no `reason` but the untouched vertical's `missing`, whatever the `outcome`), each read from the environment's own log query (below) |
 | 3 | The fleet re-uploaded so every live version the entry wraps carries the verifier and the lists. Readiness report and tooling. A version uploaded without the entry is not reached by any re-upload, and is named in the report until its author pushes again (§7). | none needed: `dual` accepts legacy | the report is clean, or lists only named exceptions, counters steady |
 | 4 | Watch. Fix every `refused:*` and `dual-mismatch`. | none | the cutover criterion (§8) holds for the environment |
 | 5 | A person flips one environment's down-channel to `signed-only` (test, then production), and the fleet is walked again. **The shared credential stays injected**, because the up-channel still uses it. | the setting back to `dual` and walk, or re-upload one deployment | full demo walk in test, zero `legacy-accepted` on the down-channel, every live app answering, its up-channel features included, field coverage still arming and peer-call lines still naming their parent (§5) |
@@ -657,11 +667,38 @@ never rebuilt keeps the up-calls it was built with.
      event reads and marks, a scope's table reads), and a platform envelope names its tenant with
      its scope or neither, so they are signed naming neither. The ones that change state keep
      nonces with no scope to spend them in: follow-on 5 decides where their nonces are spent.
-3. **The uploader** injects the key lists (standby keys included), the deployment's name, the
-   state and the capability record, and
-   the key tool gains the two issuers. It refuses a list `wireVerificationKeys` refuses before
+3. **The uploader** injects the key lists (standby keys included), the deployment's name and the
+   state, and writes the capability record. It refuses a list `wireVerificationKeys` refuses before
    injecting it, and gives an environment's lists to one canary deployment first. A list that
-   still will not load at a deployment is the counted `keys` fault (§3.4).
+   still will not load at a deployment is the counted `keys` fault (§3.4). Decided in its PR:
+   - **What an upload gives.** Both uploads, a version's push and the in-place serve, give the
+     script they go to `SUBSTRAT_WIRE_ROUTER_KEYS` and `SUBSTRAT_WIRE_PLATFORM_KEYS` (the lists as
+     configured, trimmed), `SUBSTRAT_WIRE_AUDIENCE` (that script's own name) and
+     `SUBSTRAT_WIRE_STATE`, as plain configuration the next upload rewrites. The state is always
+     `dual` (`WIRE_UPLOAD_STATE`): no code that gives these can name `signed-only`, which is the flip
+     (follow-on 7). A vertical cannot declare any of them: the `SUBSTRAT_` namespace is refused at
+     push.
+   - **Which deployments.** The control plane's `WIRE_KEYS_ROLLOUT`: unset or `off` gives none;
+     `canary:<vertical>` gives them to that one vertical's deployments, its versions' scripts and
+     its serving script; `fleet` gives them to every one. A setting it cannot read, a second
+     vertical in a canary included, gives none, and is logged and recorded as an operational failure
+     with the reason.
+   - **The lists are judged first** by `wireUploadSettings`, through the same `wireVerificationKeys`
+     the entry loads them with, with each list holding at least one key and the audience one the
+     encoder carries. Lists it refuses are not given, and the log and the operational failure name
+     the problem, never a key. Both uploads go through one helper, so a later upload path (the fleet
+     walk) gives the lists by construction.
+   - **Every upload records**, given lists or not (§7), after the upload succeeded. A record that
+     cannot be written never fails the upload, which is done: it is logged and recorded as an
+     operational failure, and the readiness report reads a deployment with no record as unknown.
+     A record that contradicts itself is refused.
+   Notes it leaves for later follow-ons:
+   - **A deployment is given lists at its next upload.** A live deployment the rollout names but
+     no upload has reached since (a scope bound to an older version's script, a preview) carries
+     none until it is uploaded again: the fleet walk is follow-on 4, and the records are what it
+     reads to know which are left.
+   - **A bundle uploaded without the entry** is given the lists like any other, and recorded as
+     verifying nothing (envelope none, with the entry's reason), for the readiness report to name.
 4. **The fleet walk and readiness report**, with the gates on `signed-only` (standby keys listed,
    the cutover criterion, versions without the entry named, and every route a signer leaves unsigned
    by design, today `/internal/connector-attachment-stream`, answered first: §3.6, Q5), on dropping a key (and its
@@ -672,7 +709,9 @@ never rebuilt keeps the up-calls it was built with.
    corroborates them with a count taken on the platform side, for example the router's own count
    of the requests it sent each deployment over the same window. A deployment whose entry count is
    missing, or does not agree with the platform's within the expected loss of log delivery, is not
-   ready, by name, whatever its own counts say.
+   ready, by name, whatever its own counts say. Key lists are pasted from the key tool's own output
+   only (`generate`, `rotate`); its `doctor` refuses values that look like private material, but it
+   cannot recognise every encoding of one.
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step
@@ -844,5 +883,16 @@ path is Q2's wrapper or retirement (§7).
   no key, signed for the serving script with one. `platform-entry.workerd.test.ts`: the signers' own
   requests through the entry as uploaded, with no key lists, served as before, no wire line.
   `tools/wire-keys.test.mts`: the key tool's wire family, no command echoing a private value.
-- **Not shown.** No envelope has yet met a deployed entry given key lists: the uploader's injection
-  is follow-on 3. The nonce store.
+- **Shown, step 2, the uploader.** `packages/control-plane-api/test/upload-wire-keys.test.ts`,
+  through the real routes and the real uploader: under `fleet`, the push and the serving upload
+  each carry both lists, their own name and `dual`, and record it; unset, `off` or left out, no
+  upload carries anything, the bindings are those sent with no setting at all, and each records that
+  it gave nothing; a canary gives only its vertical's deployments lists; a re-upload under `off`
+  takes them back; lists the verifier would refuse, and a rollout setting it cannot read, give
+  nothing and are recorded and logged as such, never with a key; a bundle without the entry is
+  recorded as verifying nothing; a vertical declaring any of the names is refused before anything is
+  uploaded; a record that cannot be written leaves the upload as it was; and no upload gives a state
+  but `dual`. The record's contract suite runs on both adapters, with its faults in the directory
+  audit suite: a refused admin row rolls the record back, and a refused write records no row.
+- **Not shown.** No envelope has yet met a deployed entry given key lists by a real upload: that is
+  the canary, in an environment. The nonce store.

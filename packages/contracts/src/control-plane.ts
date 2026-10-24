@@ -255,6 +255,10 @@ export const adminAction = z.enum([
   // condemned and deleted them (or, in a dry run, reported the ones it would). Names the scope, the
   // pass's counts and every key it deleted or would delete.
   'sweepOrphanAttachments',
+  // RFC wire-signing §7 (Q8) — the capability record of one upload: what the uploader gave the
+  // script it went to (the state, the audience, the key ids of each list, or why it gave none).
+  // Names the vertical, the script and the version; never a key.
+  'recordWireAuth',
   // Historic, never written: the same three actions as #2300 wrote them, before K-53 renamed a
   // store's code its driver. Kept so a log that already holds one still reads.
   ...HISTORIC_ADMIN_ACTIONS,
@@ -1993,6 +1997,64 @@ export const requestRollupReading = z.object({
   days: z.array(requestRollupDay),
 });
 export type RequestRollupReading = z.infer<typeof requestRollupReading>;
+
+/**
+ * The capability record (RFC wire-signing §7, Q8): what the uploader gave one deployment, written
+ * from what it built and injected, never declared by the vertical. The readiness report (follow-on
+ * 4) reads it to tell a deployment that can verify from one that cannot. A record that contradicts
+ * itself (an envelope beside a reason the entry was left off, lists beside a reason none were given)
+ * is refused, so the report never has to choose which half to believe.
+ */
+export const wireAuthRecord = z
+  .object({
+    /**
+     * The envelope version the uploaded entry verifies (`WIRE_ENVELOPE_VERSION`), or null when the
+     * bundle was uploaded without the platform's entry, which carries the verifier. A wrapped bundle
+     * whose default export has no `fetch` verifies nothing either; no upload can see that, so the
+     * report reads it from the counts.
+     */
+    envelope: z.literal(1).nullable(),
+    /** Why the platform's entry was left off, when it was. */
+    entrySkipped: z.string().nullable(),
+    /** The state the upload gave (one of `WIRE_STATES`; `legacy-only` when it gave no lists). */
+    state: z.enum(['legacy-only', 'dual', 'signed-only']),
+    /** The name its envelopes must name, when lists were given. */
+    audience: z.string().min(1).nullable(),
+    /** The key ids each list named, the standby keys included. Empty when no lists were given. */
+    routerKids: z.array(z.string().min(1)),
+    platformKids: z.array(z.string().min(1)),
+    /**
+     * Why no lists were given: the rollout names no deployment yet (`unconfigured`), names others but
+     * not this one's vertical (`not-in-rollout`), could not be read (`rollout-refused`), or the lists
+     * it would have given were refused before injecting (`lists-refused`). Null when lists were given.
+     */
+    withheld: z.enum(['unconfigured', 'not-in-rollout', 'rollout-refused', 'lists-refused']).nullable(),
+  })
+  .superRefine((r, ctx) => {
+    if ((r.envelope === null) === (r.entrySkipped === null)) {
+      ctx.addIssue({ code: 'custom', path: ['entrySkipped'], message: 'an envelope version, or the reason the entry was left off: exactly one' });
+    }
+    const given = r.audience !== null && r.routerKids.length > 0 && r.platformKids.length > 0 && r.state !== 'legacy-only';
+    const none = r.audience === null && r.routerKids.length === 0 && r.platformKids.length === 0 && r.state === 'legacy-only';
+    if (r.withheld === null ? !given : !none) {
+      ctx.addIssue({ code: 'custom', path: ['withheld'], message: 'lists given (an audience, both lists, a state) or withheld with a reason: exactly one' });
+    }
+  });
+export type WireAuthRecord = z.infer<typeof wireAuthRecord>;
+
+/** One deployment's capability record: the last upload of that script's. */
+export const deploymentWireAuth = z.object({
+  /** The script uploaded: a version's archive script or a vertical's serving script. */
+  deploymentRef: z.string().min(1),
+  verticalSlug: z.string().min(1),
+  /** The version the upload carried; null for an upload that named none. */
+  versionId: z.string().nullable(),
+  record: wireAuthRecord,
+  recordedAt: instant,
+});
+export type DeploymentWireAuth = z.infer<typeof deploymentWireAuth>;
+// `z.input`, not `z.infer`: the uploader hands in a plain ISO string; the adapters parse (and brand).
+export type DeploymentWireAuthInput = z.input<typeof deploymentWireAuth>;
 
 /** Meter 1, per tenant: the scopes under it, and how many SKUs it holds. */
 export const tenantMeterRow = z.object({

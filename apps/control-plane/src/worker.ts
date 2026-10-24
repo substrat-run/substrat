@@ -647,11 +647,17 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
   /**
    * The public halves a deployment verifies each wire issuer with (RFC wire-signing §6): raw
    * Ed25519 keys, base64url, comma-separated, the key in use and a standby. Not secret. Held here
-   * because this worker uploads deployments; nothing reads them until the uploader injects them
-   * (RFC §9 step 2, follow-on 3), so today no deployment is given them.
+   * because this worker uploads deployments: an upload gives them to the deployments
+   * `WIRE_KEYS_ROLLOUT` names, and judges them first (`wireUploadFor`).
    */
   WIRE_ROUTER_PUBLIC_KEYS?: string;
   WIRE_PLATFORM_PUBLIC_KEYS?: string;
+  /**
+   * Which deployments an upload gives the two lists to (RFC wire-signing §9 step 2): unset or `off`
+   * gives none, `canary:<vertical>` that one vertical's deployments, `fleet` every one. Anything
+   * else gives none and says why in the error log. Each deployment is given them at its next upload.
+   */
+  WIRE_KEYS_ROLLOUT?: string;
   /**
    * The public halves a store script verifies with (#2287): raw Ed25519 keys, base64url,
    * comma-separated, one list per audience, read through `scopeStorePublicKeysFrom`. Not secret. The
@@ -3199,6 +3205,8 @@ export default {
         ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
+        // RFC wire-signing step 2 (follow-on 3): what both uploads give a deployment's verifier.
+        wireUpload: { rollout: env.WIRE_KEYS_ROLLOUT, routerKeys: env.WIRE_ROUTER_PUBLIC_KEYS, platformKeys: env.WIRE_PLATFORM_PUBLIC_KEYS },
         ensureScopeStores: ensureScopeStoresFor(env),
         storeReleases: storeReleasesFor(env),
         humanStaffActor: humanStaffActorFor(env),

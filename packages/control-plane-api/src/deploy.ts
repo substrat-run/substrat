@@ -119,6 +119,9 @@ export interface InPlaceUpload {
 /**
  * Upload a built bundle to the platform runtime under `deploymentRef`. Injected by the
  * host so the transport package never imports a Cloudflare SDK and tests use a fake.
+ * An implementation uploads `withPlatformEntry(bundle)`, as `createWfpUploader` does: the
+ * capability record (RFC wire-signing §7) says a bundle verifies exactly when the entry's own
+ * skip rules would wrap it, so an uploader that left the entry off would be recorded wrongly.
  */
 export type DeployVerticalFn = (
   deploymentRef: string,

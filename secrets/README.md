@@ -127,6 +127,7 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `WIRE_ROUTER_KEY` | — | — | `WIRE_ROUTER_KEY` |
 | `WIRE_ROUTER_PUBLIC_KEYS` / `WIRE_PLATFORM_PUBLIC_KEYS` | same names | — | — |
 | `WIRE_PLATFORM_SIGN` | `WIRE_SIGN` | — | — |
+| `WIRE_KEYS_ROLLOUT` | same name | — | — |
 | `WIRE_ROUTER_SIGN` | — | — | `WIRE_SIGN` |
 
 The social relay (`id.substrat.net`, #1544) takes one OAuth client per upstream, under
@@ -148,7 +149,8 @@ pair, never the store key. The two public lists are not secret and live on the c
 each carries the key in use and a standby whose private half is held offline. `WIRE_ROUTER_SIGN`
 and `WIRE_PLATFORM_SIGN` are each signer's `sign` flag, off unless set to `on`; once `on` has been
 pushed, turning one off takes an explicit `off` (a blank line is skipped by `push`, which deletes
-nothing).
+nothing). `WIRE_KEYS_ROLLOUT` names which deployments the control plane's uploads give the two
+lists to (`off`, `canary:<vertical>`, `fleet`); the same holds for going back to `off`.
 [wire-keys.md](./wire-keys.md) is their runbook, and the same check holds them to
 `WIRE_KEY_ISSUERS` in `scripts/secrets.mjs`.
 

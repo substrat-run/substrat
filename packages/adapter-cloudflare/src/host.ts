@@ -66,6 +66,8 @@ import {
   registerVerticalInput,
   vertical as verticalSchema,
   verticalServingState,
+  deploymentWireAuth,
+  type DeploymentWireAuth,
   verticalChannel,
   verticalVersion,
   connection,
@@ -549,7 +551,7 @@ import {
   type MeterDayTakeResult,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
@@ -950,6 +952,8 @@ interface ControlPlaneStub {
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit: AdminEntry,
   ): Promise<void>;
+  recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<void>;
+  listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
@@ -8740,6 +8744,23 @@ export class CloudflareScopeHost implements ScopeHost {
         }
         await this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
+      },
+      recordWireAuth: async (actor, input) => {
+        const row = deploymentWireAuth.parse(input);
+        await this.cp.recordWireAuth(row, this.adminEntry(
+          actor,
+          'recordWireAuth',
+          { tenantId: null, vertical: row.verticalSlug },
+          null,
+          { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
+        ));
+      },
+      listWireAuth: async (actor, filter = {}) => {
+        // Judged here, before the call into the directory's object, so a refusal keeps its code.
+        if (filter.limit !== undefined) assertRowLimit('limit', filter.limit);
+        const rows = await this.cp.listWireAuth(filter);
+        await this.recordAccess(actor, 'listWireAuth', {}, filter, rows.length);
+        return rows;
       },
       setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
