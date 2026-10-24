@@ -30,6 +30,16 @@ That leaves one gap. An [MCP](./mcp.md) client calling an operation has no cooki
 bearer for the vertical's own route, and a file of any real size cannot go through a tool call
 as base64. Upload links close it.
 
+## Bounds on what an upload names
+
+Every door that stores a file judges the strings that describe it before a byte is written, and
+refuses one that is too long: a filename over 512 characters, a content type over 255, an entity
+type over 128, an entity id over 255 or a creator over 128 (counted in UTF-16 units, the unit
+JavaScript's `length` counts). A connector reads the record back through a response header, and
+these bounds keep it small however many of those characters are non-ASCII. A file stored before
+the bounds is still read back; if its name is long enough to overflow the header, the name is cut
+to fit and ends in `…`, and everything else about it is exact.
+
 ## Streamed bodies
 
 `upload` takes the bytes as a buffer or as a sized stream, `{ stream, length }`, where `length` is

@@ -141,6 +141,33 @@ describe('attachment surface (pure adapter)', () => {
     }
   });
 
+  // #2519: every door that stores an attachment is judged by one schema, so a record the read-back
+  // header could not carry is refused before a byte is written, and the twin at the bound lands.
+  it.each([
+    ['filename', { filename: 'f'.repeat(513) }],
+    ['content type', { contentType: 'c'.repeat(256) }],
+    ['entity type', { entity: { entityType: 'e'.repeat(129), entityId: 'd1' } }],
+    ['entity id', { entity: { entityType: 'doc', entityId: 'd'.repeat(256) } }],
+  ])('refuses an upload whose %s is over its bound, and stores nothing', async (_name, over) => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    const fields = {
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'ok.jpg',
+      contentType: 'image/jpeg',
+      visibility: 'internal' as const,
+      body: bytes('b'),
+    };
+    await expect(att.upload({ ...fields, ...over })).rejects.toThrow();
+    expect(await att.list({ entityType: 'doc', entityId: 'd1' })).toEqual([]);
+    const atBound = await att.upload({
+      ...fields,
+      filename: 'f'.repeat(512),
+      contentType: 'c'.repeat(255),
+    });
+    expect(atBound.filename).toHaveLength(512);
+  });
+
   // #1575: a host refuses, when it is built, an extractor declaration it could not honour.
   it('refuses at construction an extractor whose input bound is not a positive integer', () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-att-bad-'));

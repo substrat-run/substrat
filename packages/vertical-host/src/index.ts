@@ -184,6 +184,9 @@ import {
   LOAD_STAMP_HEADER,
   WRITE_REVISION_HEADER,
   entityGrantShape,
+  attachmentRecord,
+  attachmentUploadFields,
+  type AttachmentRecord,
   type EntityGrantShape,
 } from '@substrat-run/contracts';
 
@@ -1001,11 +1004,10 @@ const connectorAttachmentMeta = z.object({
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
   entity: entityRef,
-  // Bounded so the record header a read-back escapes to ASCII (up to 6 bytes a UTF-16 unit) stays
-  // under 6 KiB at the worst case: 512 + 255 units, about 4.6 KiB, against a transport limit of
-  // 16 KiB and up (#2519). 512 keeps a realistic 400-character path (#2498) storable.
-  filename: z.string().min(1).max(512),
-  contentType: z.string().min(1).max(255),
+  // The bounds every door applies (`attachmentUploadFields`), so a refusal comes here as a 400
+  // naming the field rather than from the host's own judge (#2519).
+  filename: attachmentUploadFields.shape.filename,
+  contentType: attachmentUploadFields.shape.contentType,
   visibility,
 });
 
@@ -1023,6 +1025,36 @@ const connectorAttachmentStreamMeta = connectorAttachmentMeta.extend({
  */
 function asciiJson(value: unknown): string {
   return JSON.stringify(value).replace(/[^\x20-\x7e]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
+ * The most bytes the record header of a read-back may carry (#2519). A record made under
+ * `ATTACHMENT_FIELD_MAX` is under 8.2 KiB however it is escaped, so only a row written before those
+ * bounds can reach it, and a server's header limit starts at 16 KiB.
+ */
+const CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES = 10 * 1024;
+
+/**
+ * The record as the read-back header carries it: {@link asciiJson}, with an oversized filename cut
+ * to fit. A row stored before the upload bounds can hold a name of any length, and a header past
+ * the server's limit would make that file unreadable. The cut name ends in `…` so it does not read
+ * as the stored one; the bytes, size, sha256 and every other field are exact. Only the filename is
+ * cut: the identity fields (entity, creator) are not names to shorten and are bounded where written.
+ */
+function recordHeader(record: AttachmentRecord): string {
+  const whole = asciiJson(record);
+  if (whole.length <= CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES) return whole;
+  const points = [...record.filename];
+  const cut = (keep: number) => asciiJson({ ...record, filename: `${points.slice(0, keep).join('')}\u2026` });
+  // The longest prefix that fits: the size is monotonic in the prefix, so a bisection finds it.
+  let lo = 0;
+  let hi = points.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (cut(mid).length <= CONNECTOR_ATTACHMENT_RECORD_MAX_BYTES) lo = mid;
+    else hi = mid - 1;
+  }
+  return cut(lo);
 }
 
 /**
@@ -1969,7 +2001,7 @@ export function mountPlatformSurface<Env extends object>(
     // plain JSON, which every reader already parses; the type the client reads is the record's.
     return c.body(opened.body as unknown as ArrayBuffer, 200, {
       'content-type': headerSafeContentType(opened.contentType),
-      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: asciiJson(opened.record),
+      [CONNECTOR_ATTACHMENT_RECORD_HEADER]: recordHeader(attachmentRecord.parse(opened.record)),
     });
   });
 

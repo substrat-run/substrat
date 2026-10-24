@@ -1791,29 +1791,26 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
   });
 
   /**
-   * The longest a stored record can be: the connector upload routes cap the filename at 512 UTF-16
-   * units and the content type at 255, and an astral or non-BMP character escapes to 6 bytes a unit.
-   * The header has to stay under a stated bound (6 KiB, well under a transport's header limit) at
-   * that worst case, or a stored file is unreadable again (#2519).
+   * The longest a record made under the upload bounds can be (`ATTACHMENT_FIELD_MAX`): every
+   * bounded string at its cap, each unit a non-BMP character that escapes to 6 bytes. It has to
+   * come back whole and under 8.2 KiB, or a stored file is unreadable again (#2519).
    */
-  it('connector-attachment GET: the record header stays under 6 KiB at the longest admitted record', async () => {
-    const filename = '\ud83d\udcdd'.repeat(256); // 512 UTF-16 units, all escaped
-    const contentType = 'text/' + '\u2013'.repeat(250); // 255 units
-    expect(filename).toHaveLength(512);
-    expect(contentType).toHaveLength(255);
+  it('connector-attachment GET: a record at every upload bound reads back whole, under 8.2 KiB', async () => {
+    const units = (n: number, ch: string) => ch.repeat(n);
     const record = {
       id: 'att-1',
-      entity: { entityType: 'protocol', entityId: 'p1' },
-      filename,
-      contentType,
+      entity: { entityType: units(128, '\u2013'), entityId: units(255, '\u2013') },
+      filename: units(256, '\ud83d\udcdd'), // 512 UTF-16 units
+      contentType: 'text/' + units(250, '\u2013'), // 255 units
       size: 1,
       sha256: 'a'.repeat(64),
       visibility: 'customer',
-      createdBy: CONN,
+      createdBy: units(128, '\u2013'),
       createdAt: '2026-08-17T00:00:00.000Z',
     };
+    expect(record.filename).toHaveLength(512);
     const host = fakeHost({
-      connectorAttachmentOpenLocal: async () => ({ record, body: new Uint8Array(1), contentType }),
+      connectorAttachmentOpenLocal: async () => ({ record, body: new Uint8Array(1), contentType: record.contentType }),
     });
     const res = await appWith(host).request(
       `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
@@ -1822,8 +1819,49 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     );
     expect(res.status).toBe(200);
     const raw = res.headers.get('x-substrat-attachment')!;
-    expect(raw.length).toBeLessThan(6 * 1024);
+    expect(raw.length).toBeLessThan(8.2 * 1024);
     expect(JSON.parse(raw)).toEqual(record);
+  });
+
+  /**
+   * A row stored before the upload bounds can hold a name of any length. It must still read back:
+   * the file's bytes and every other field exact, the name cut to fit and marked as cut.
+   */
+  it.each([
+    ['ASCII', 'n'.repeat(10_000)],
+    ['non-BMP', '\ud83d\udcdd'.repeat(5_000)],
+    ['CJK', '\u5951'.repeat(10_000)],
+  ])('connector-attachment GET: a stored %s name of 10k units still reads back, cut to fit', async (_n, filename) => {
+    const bytes = new TextEncoder().encode('%PDF-1.4');
+    const record = {
+      id: 'att-1',
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      filename,
+      contentType: 'application/pdf',
+      size: bytes.byteLength,
+      sha256: 'a'.repeat(64),
+      visibility: 'customer',
+      createdBy: CONN,
+      createdAt: '2026-08-17T00:00:00.000Z',
+    };
+    const host = fakeHost({ connectorAttachmentOpenLocal: async () => ({ record, body: bytes, contentType: 'application/pdf' }) });
+    const res = await appWith(host).request(
+      `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    const raw = res.headers.get('x-substrat-attachment')!;
+    expect(raw.length).toBeLessThanOrEqual(10 * 1024);
+    const read = JSON.parse(raw) as typeof record;
+    expect(read).toEqual({ ...record, filename: read.filename });
+    expect(read.filename.endsWith('\u2026')).toBe(true);
+    expect(read.filename.length).toBeGreaterThan(100);
+    // A prefix of the stored name, cut on a character boundary: no half of a surrogate pair.
+    const kept = read.filename.slice(0, -1);
+    expect(filename.startsWith(kept)).toBe(true);
+    expect(kept).toBe([...kept].join(''));
   });
 
   it('connector-attachment: a filename of exactly 512 units and a content type of 255 are still stored', async () => {
@@ -1851,10 +1889,44 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(res.status).toBe(201);
   });
 
+  it('connector-attachment-stream: a CJK filename of exactly 512 units and a content type of 255 are still stored', async () => {
+    // The streamed route carries the metadata URI-encoded (up to 9 bytes a unit), so its at-limit
+    // twin is the widest header it sees: 767 CJK units, about 7 KB.
+    let landed: { filename: string; contentType: string } | undefined;
+    const host = fakeHost({
+      connectorAttachmentUploadLocal: async (...args: unknown[]) => {
+        landed = args[3] as { filename: string; contentType: string };
+        return { id: 'att1' } as never;
+      },
+    });
+    const meta = {
+      connectionId: CONN,
+      tenantId: TENANT,
+      scopeId: SCOPE,
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      visibility: 'customer',
+      filename: '\u5951'.repeat(512),
+      contentType: 'text/' + '\u5951'.repeat(250),
+      size: 1,
+    };
+    const res = await appWith(host).request(
+      '/internal/connector-attachment-stream',
+      {
+        method: 'POST',
+        headers: { ...authed(), 'x-substrat-attachment-meta': encodeURIComponent(JSON.stringify(meta)) },
+        body: 'x',
+      },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+    expect(landed!.filename).toBe(meta.filename);
+    expect(landed!.contentType).toBe(meta.contentType);
+  });
+
   it.each([
-    ['filename', { filename: 'a'.repeat(513), contentType: 'application/pdf' }],
-    ['content type', { filename: 'a.pdf', contentType: 'a'.repeat(256) }],
-  ])('connector-attachment: a %s over its cap is refused before anything is stored', async (_name, over) => {
+    ['filename', { filename: 'a'.repeat(513), contentType: 'application/pdf' }, 'filename'],
+    ['content type', { filename: 'a.pdf', contentType: 'a'.repeat(256) }, 'contentType'],
+  ])('connector-attachment: a %s over its cap is refused before anything is stored', async (_name, over, field) => {
     let stored = 0;
     const host = fakeHost({
       connectorAttachmentUploadLocal: async () => {
@@ -1879,6 +1951,8 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
       ENV,
     );
     expect(multipart.status).toBe(400);
+    // The 400 is this cap's, not another parse failure: it names the field.
+    expect(await multipart.text()).toContain(field);
     const streamed = await appWith(host).request(
       '/internal/connector-attachment-stream',
       {
@@ -1889,6 +1963,7 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
       ENV,
     );
     expect(streamed.status).toBe(400);
+    expect(await streamed.text()).toContain(field);
     expect(stored).toBe(0);
   });
 

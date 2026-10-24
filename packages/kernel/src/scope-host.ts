@@ -207,7 +207,7 @@ import type { CapabilityVerbs } from './capability.js';
 import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import {
-  attachmentRecordFields,
+  attachmentUploadFields,
   permissionKey,
   substratError,
   type AttachmentRecordFields,
@@ -4992,7 +4992,7 @@ export async function putAttachmentBytes(
   body: ByteBody,
   sha256: () => IncrementalSha256,
 ): Promise<AttachmentRecord> {
-  const judged = attachmentRecordFields.parse(fields);
+  const judged = attachmentUploadFields.parse(fields);
   const opts = { contentType: judged.contentType };
   if (!isSizedByteStream(body)) {
     const record = { ...judged, size: body.byteLength, sha256: await attachmentSha256(body) };
