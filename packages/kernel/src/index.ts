@@ -746,6 +746,14 @@ export {
   type VerticalScopeStore,
 } from './vertical-scope-stores.js';
 export {
+  DEPLOYMENT_WIRE_AUTH_DDL,
+  forgetVerticalWireAuth,
+  deploymentWireAuthOf,
+  writeDeploymentWireAuth,
+  type DeploymentWireAuthFilter,
+  type DeploymentWireAuthInput,
+} from './deployment-wire-auth.js';
+export {
   STORE_DRIVER_RELEASES_DDL,
   advanceStoreDriverRebuildIn,
   beginStoreDriverRolloutIn,

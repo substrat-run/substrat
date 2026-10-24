@@ -221,6 +221,7 @@ import {
   SCOPE_TABLE_PAGE_MAX,
   SCOPE_QUERY_ROW_MAX,
   verticalServingState,
+  deploymentWireAuth,
   callsOfManifestJson,
   outboundOfManifestJson,
   listLimitOf,
@@ -543,6 +544,10 @@ import {
   VERSION_MIGRATIONS_DDL,
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
+  DEPLOYMENT_WIRE_AUTH_DDL,
+  deploymentWireAuthOf,
+  forgetVerticalWireAuth,
+  writeDeploymentWireAuth,
   indexVersionScopeStores,
   driverDeclarationsOf,
   verticalScopeStoresOf,
@@ -2513,6 +2518,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
       ${VERSION_MIGRATIONS_DDL}
       ${VERTICAL_SCOPE_STORES_DDL}
+      ${DEPLOYMENT_WIRE_AUTH_DDL}
       -- Channels (#31 step 2): a named pointer per vertical. Promotion moves it,
       -- and promotion is where the migration and permission diffs fire — the
       -- moment a change reaches anyone, rather than the moment it was typed.
@@ -9814,6 +9820,7 @@ export class SqliteScopeHost implements ScopeHost {
             )
             .run(slug);
           forgetVerticalScopeStores(switchSqlOf(this.directory), slug);
+          forgetVerticalWireAuth(switchSqlOf(this.directory), slug);
           this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
           return this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug).changes > 0;
         }, () => this.recordAdmin(
@@ -10344,6 +10351,24 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.recordAccess(actor, 'versionMigrations', {}, { verticalSlug, versionId }, v.migrations?.length ?? 0);
         return v.migrations;
+      },
+      recordWireAuth: async (actor, input) => {
+        const row = deploymentWireAuth.parse(input);
+        this.directoryWriteAndAudit(() => {
+          writeDeploymentWireAuth(switchSqlOf(this.directory), row);
+          return true;
+        }, () => this.recordAdmin(
+          actor,
+          'recordWireAuth',
+          { tenantId: null, vertical: row.verticalSlug },
+          null,
+          { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
+        ));
+      },
+      listWireAuth: async (actor, filter = {}) => {
+        const rows = deploymentWireAuthOf(switchSqlOf(this.directory), filter);
+        this.recordAccess(actor, 'listWireAuth', {}, { ...filter }, rows.length);
+        return rows;
       },
       setScopeServingRef: async (actor, tenantId, scopeId, servingRef, opts) => {
         const scope = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as ScopeRow | undefined;

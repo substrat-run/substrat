@@ -40,7 +40,9 @@ import {
   WireKeyError,
   wireRequestBinding,
   wireStateOf,
+  wireUploadBindings,
   wireVerificationKeys,
+  WIRE_UPLOAD_STATE,
   WIRE_AUDIENCE_VAR,
   WIRE_PLATFORM_KEYS_VAR,
   WIRE_ROUTER_KEYS_VAR,
@@ -885,6 +887,41 @@ describe('wire envelope: replay', () => {
     await expect(check({ vector: CALL, nonces: broken })).rejects.toThrow(/storage unavailable/);
     const rejecting: WireNonceCache = { claim: () => Promise.reject(new Error('storage unavailable')) };
     await expect(check({ vector: CALL, nonces: rejecting })).rejects.toThrow(/storage unavailable/);
+  });
+});
+
+describe('wireUploadBindings: what an upload gives a deployment, judged as its verifier loads it (RFC §5, §6)', () => {
+  const router = fixture.keys.router.publicKey;
+  const platform = fixture.keys.platform.publicKey;
+
+  it('both lists as given, trimmed, the deployment’s own name and `dual`, all plain configuration, with each list’s kids', async () => {
+    const given = await wireUploadBindings({ routerKeys: ` ${router} `, platformKeys: platform, audience: 'acme-serving' });
+    expect(given.bindings).toEqual([
+      { type: 'plain_text', name: WIRE_ROUTER_KEYS_VAR, text: router },
+      { type: 'plain_text', name: WIRE_PLATFORM_KEYS_VAR, text: platform },
+      { type: 'plain_text', name: WIRE_AUDIENCE_VAR, text: 'acme-serving' },
+      { type: 'plain_text', name: WIRE_STATE_VAR, text: 'dual' },
+    ]);
+    expect(WIRE_UPLOAD_STATE).toBe('dual');
+    expect(given.routerKids).toEqual([fixture.keys.router.kid]);
+    expect(given.platformKids).toEqual([fixture.keys.platform.kid]);
+    // Exactly what the entry then loads and reads as `dual`.
+    const env = Object.fromEntries(given.bindings.map((b) => [b.name, b.text]));
+    const keys = await wireVerificationKeys({ router: env[WIRE_ROUTER_KEYS_VAR], platform: env[WIRE_PLATFORM_KEYS_VAR] });
+    expect([...keys.router.keys()]).toEqual(given.routerKids);
+    expect(wireStateOf({ routerKeys: env[WIRE_ROUTER_KEYS_VAR], platformKeys: env[WIRE_PLATFORM_KEYS_VAR], state: env[WIRE_STATE_VAR] })).toBe('dual');
+  });
+
+  it('refuses what the verifier would refuse, a missing list, and an audience the encoder would not carry', async () => {
+    await expect(wireUploadBindings({ routerKeys: router, platformKeys: `${platform},${router}`, audience: 'a' })).rejects.toThrow(/both issuers/);
+    await expect(wireUploadBindings({ routerKeys: router, platformKeys: '', audience: 'a' })).rejects.toThrow(/at least one key/);
+    await expect(wireUploadBindings({ routerKeys: '  ', platformKeys: platform, audience: 'a' })).rejects.toThrow(/at least one key/);
+    await expect(wireUploadBindings({ routerKeys: `${router},AAAA`, platformKeys: platform, audience: 'a' })).rejects.toThrow();
+    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: '' })).rejects.toThrow(/audience/);
+    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: 'a'.repeat(256) })).rejects.toThrow(/audience/);
+    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: 'a\nb' })).rejects.toThrow(/audience/);
+    // Its twin: the longest name the encoder carries is given.
+    await expect(wireUploadBindings({ routerKeys: router, platformKeys: platform, audience: 'a'.repeat(255) })).resolves.toBeDefined();
   });
 });
 

@@ -122,6 +122,9 @@ const MANIFEST = {
       // standby. The control plane uploads deployments, so it holds both lists.
       WIRE_ROUTER_PUBLIC_KEYS: 'WIRE_ROUTER_PUBLIC_KEYS',
       WIRE_PLATFORM_PUBLIC_KEYS: 'WIRE_PLATFORM_PUBLIC_KEYS',
+      // Which deployments an upload gives the two lists to: `off`, `canary:<vertical>` or `fleet`.
+      // Not secret. Push skips a blank and deletes nothing, so going back is writing `off`.
+      WIRE_KEYS_ROLLOUT: 'WIRE_KEYS_ROLLOUT',
       PUSH_TOKEN_SECRET: 'CP_PUSH_TOKEN_SECRET',
       // A DEDICATED value (#1602) — never the push-token secret and never
       // PLATFORM_SECRET, same reasoning as PUSH_TOKEN_SECRET above but its own key,

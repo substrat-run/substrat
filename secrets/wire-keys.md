@@ -3,18 +3,18 @@
 The router and the control plane sign what they send a deployed vertical with Ed25519
 ([RFC wire-signing](../docs/rfc/wire-signing.md),
 [K-58](../docs/decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md)).
-This page covers making those keys, storing them, turning signing on and off, checking a set,
-rotating a key, and what to do when one leaks. The tool is `pnpm wire-keys` (`tools/wire-keys.mts`),
+This page covers making those keys, storing them, giving deployments the public lists, turning
+signing on and off, checking a set, rotating a key, and what to do when one leaks. The tool is `pnpm wire-keys` (`tools/wire-keys.mts`),
 the scope-store key tool ([store-keys.md](./store-keys.md)) run over the wire's two issuers: every
 check, refusal and rule about where a private key may be written is the same.
 
 > **Status.** K-58 is *proposed*, not ratified. What this page describes is the code on `main`:
-> the signers (RFC §9, step 2, follow-on 2). The control plane does not yet give any deployment
-> the public lists (follow-on 3), so no deployment verifies an envelope yet: a signer that is on
-> sends envelopes that are carried and ignored. If K-58 changes before it is ratified, this page
-> changes with it.
+> the signers and the uploader (RFC §9, step 2, follow-ons 2 and 3). The control plane gives a
+> deployment the public lists only where `WIRE_KEYS_ROLLOUT` names it, at its next upload; until
+> then a signer that is on sends envelopes that are carried and ignored. If K-58 changes before it
+> is ratified, this page changes with it.
 
-## The six values
+## The seven values
 
 | Env file key | What it is | Secret | Held by |
 |---|---|---|---|
@@ -24,6 +24,7 @@ check, refusal and rule about where a private key may be written is the same.
 | `WIRE_PLATFORM_PUBLIC_KEYS` | The `platform` public keys, same format | no | the same |
 | `WIRE_ROUTER_SIGN` | The router's `sign` flag (its `WIRE_SIGN`) | no | the router |
 | `WIRE_PLATFORM_SIGN` | The control plane's `sign` flag (its `WIRE_SIGN`) | no | the control plane |
+| `WIRE_KEYS_ROLLOUT` | Which deployments an upload gives the two public lists to: `off`, `canary:<vertical>` or `fleet` | no | the control plane |
 
 These are their own pairs, never the store keys (RFC Q1): a leaked key then opens one channel, and
 each can rotate without the other. A key listed for both issuers is refused wherever the lists are
@@ -58,8 +59,8 @@ Public keys go out before private keys, and signing goes on last. Test environme
    `pnpm wire-keys doctor --env <env> --key-file ~/keys/wire-router.key --key-file ~/keys/wire-platform.key`
    reports the two private keys as unset, which is expected here, and must report nothing else.
 3. Push the lists: `node scripts/secrets.mjs push --env <env> --only control-plane`, and deploy the
-   control plane. Once the uploader injects them (follow-on 3), every deployment uploaded from then
-   on carries them.
+   control plane. This gives no deployment anything yet: an upload gives the lists only to the
+   deployments `WIRE_KEYS_ROLLOUT` names ([Giving deployments their lists](#giving-deployments-their-lists)).
 4. Paste the two in-use lines in as `WIRE_ROUTER_KEY=` and `WIRE_PLATFORM_KEY=`, then delete those
    two files. Move the standby files to the password manager and delete them locally.
    `pnpm wire-keys doctor --env <env>` must now print `✓ ok`.
@@ -76,6 +77,39 @@ for dispatched requests carry `wire: 'signed'`, a peer invocation writes `router
 log. A failed signature never fails a request: it goes with its legacy headers, as before. A
 control-plane line with `outcome: 'skipped'` and `reason: 'stream'` is a streamed call left unsigned
 by design (RFC §3.6), not a failure.
+
+## Giving deployments their lists
+
+The control plane gives a deployment the two lists, its own name and the state `dual` when it
+uploads it (a version's push, or the serve a promote does), and only where `WIRE_KEYS_ROLLOUT` says:
+
+| Value | Which deployments an upload gives the lists to |
+|---|---|
+| unset, or `off` | none |
+| `canary:<vertical>` | that one vertical's: its versions' scripts and its serving script |
+| `fleet` | every one |
+
+Anything else gives none, and the control plane's error log says why (`substrat: 'wire-upload'`).
+So do lists that would not load at a deployment: the upload checks them with the function the
+entry loads them with, gives nothing, and names the problem, never a key. Every upload records
+what it gave, or why it gave nothing, for the readiness report (RFC §7).
+
+One canary first, in the test environment:
+
+1. Set `WIRE_KEYS_ROLLOUT=canary:<vertical>`, naming one vertical by its registry slug. Push
+   `--only control-plane` and deploy the control plane.
+2. Upload that vertical: push a version and promote it, so its version's script and its serving
+   script are both uploaded with the lists.
+3. Check from the environment's Workers Logs: the entry's `substrat: 'wire'` lines for that
+   vertical's requests read `signed-accepted` (once the signers are on) with no `reason` and no
+   `fault`, and the control plane wrote no `wire-upload` line for it. Every other vertical's
+   requests write no wire line at all: it was given no lists.
+4. Then the fleet: set `WIRE_KEYS_ROLLOUT=fleet`, push and deploy the control plane. Each deployment
+   is given the lists at its next upload; one no upload reaches keeps none, and serves as before.
+
+Going back is writing `off` and pushing again: as with the flags, a blank line is skipped by `push`
+and leaves the last value live. The next upload of each deployment takes its lists back; until then
+it keeps them, which in `dual` changes nothing it serves.
 
 ## Turning signing off
 

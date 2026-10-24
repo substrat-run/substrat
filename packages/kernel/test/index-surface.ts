@@ -56,6 +56,8 @@ export const INDEX_VALUE_EXPORTS = [
   'DEFAULT_SEARCH_LIMIT',
   'DELIVERY_ERROR_REDACTION_SQL',
   'DENIAL_WINDOW_QUERY',
+  // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
+  'DEPLOYMENT_WIRE_AUTH_DDL',
   'DO_SQL_LIMITS',
   'EMITTED_REPORT_CAP',
   'ENTITY_STATE_MOVES_DDL',
@@ -323,6 +325,8 @@ export const INDEX_VALUE_EXPORTS = [
   'denialSummaryQuery',
   'denialTotalsQuery',
   'denyAllChecker',
+  // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
+  'deploymentWireAuthOf',
   'deriveMigrationDigestsBatch',
   'deriveVersionMigrationDigest',
   'derivedMigrationDigest',
@@ -366,6 +370,8 @@ export const INDEX_VALUE_EXPORTS = [
   'forgetScopeStorage',
   'forgetSwitchesOf',
   'forgetVerticalScopeStores',
+  // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
+  'forgetVerticalWireAuth',
   'frozenClock',
   'generateSealingKeyPair',
   'globalFetch',
@@ -734,6 +740,8 @@ export const INDEX_VALUE_EXPORTS = [
   'withRecorded',
   'withheldKeysFor',
   'withheldNote',
+  // RFC wire-signing §7: the capability record's directory table and its statements, shared by both adapters.
+  'writeDeploymentWireAuth',
   'writeExplicitTupleIn',
   'writeLifecycle',
   'writeVersionMigrations',

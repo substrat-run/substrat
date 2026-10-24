@@ -251,6 +251,25 @@ const CASES: DirectoryCase[] = [
       };
     },
   },
+  {
+    // RFC wire-signing §7 (Q8): the capability record of one upload.
+    action: 'recordWireAuth',
+    write: { table: 'vertical_wire_auth', verb: 'INSERT' },
+    arrange: async (host, staff) => {
+      const slug = slugOf();
+      const deploymentRef = `${slug}-serving`;
+      const record = {
+        envelope: 1 as const, entrySkipped: null, state: 'dual' as const, audience: deploymentRef,
+        routerKids: ['If4x36FUomE'], platformKids: ['OfcT0KZEJT8'], withheld: null,
+      };
+      return {
+        call: () => host.admin.recordWireAuth!(staff, { deploymentRef, verticalSlug: slug, versionId: 'v1', record, recordedAt: '2026-10-24T10:00:00.000Z' }),
+        state: async () => (await host.admin.listWireAuth!(staff, { verticalSlug: slug }))[0]?.record ?? null,
+        changed: record,
+        row: { before: null, after: { vertical: slug, deploymentRef, versionId: 'v1', record } },
+      };
+    },
+  },
 ];
 
 /**
