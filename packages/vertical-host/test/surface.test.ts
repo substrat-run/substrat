@@ -1869,7 +1869,7 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     const raw = res.headers.get('x-substrat-attachment')!;
     expect(raw.length).toBeLessThanOrEqual(10 * 1024);
     const read = JSON.parse(raw) as typeof record;
-    const got = field === 'entityType' || field === 'entityId' ? (read.entity as Record<string, string>)[field]! : (read as Record<string, string>)[field]!;
+    const got = field === 'entityType' || field === 'entityId' ? (read.entity as Record<string, string>)[field]! : (read as unknown as Record<string, string>)[field]!;
     const max = { filename: 512, entityType: 128, entityId: 255, createdBy: 128 }[field];
     // Marked as cut, within its bound, and a prefix of the stored value on a character boundary.
     expect(got.endsWith('\u2026')).toBe(true);
