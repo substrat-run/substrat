@@ -377,7 +377,9 @@ describe('on: a peer invocation is a router call', () => {
     expect(sent.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
     expect(sent.headers.get('x-substrat-platform')).toBe(CALL_SECRET);
     expect(JSON.parse(await sent.text())).toMatchObject({ operation: 'customer/list', scopeId: TARGET_SCOPE });
-    expect(log.lines).toContainEqual({ router: 'wire-sign', kind: 'call', aud: PEER_REF, outcome: 'failed' });
+    // One line for the failure, the alarm, naming why.
+    expect(log.errors.map((e) => JSON.parse(e) as unknown)).toEqual([{ router: 'wire-sign-failed', kind: 'call', aud: PEER_REF, reason: 'not-pkcs8-v1' }]);
+    expect(log.lines.filter((l) => l['router'] === 'wire-sign')).toEqual([]);
   });
 });
 

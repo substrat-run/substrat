@@ -102,7 +102,7 @@ test('doctor: the store family is untouched by the wire family, and neither read
 // ── rotate ──────────────────────────────────────────────────────────────────────
 
 test('rotate: the ordered steps by wire-keys, the standby kept, and the break-glass order for a compromise', async () => {
-  const plan = rotatePlan(await doctor(good, [], WIRE_FAMILY), 'router', 'test', undefined, WIRE_FAMILY);
+  const plan = rotatePlan(await doctor(good, [], WIRE_FAMILY), 'router', 'test');
   for (const step of ['1. pnpm wire-keys generate --issuer router', '2. Add the new public key to WIRE_ROUTER_PUBLIC_KEYS', '4. Switch the signer', '5. Drop the old key: pnpm wire-keys rotate --issuer router --drop']) {
     assert.ok(plan.includes(step), step);
   }
@@ -116,15 +116,15 @@ test('rotate: the ordered steps by wire-keys, the standby kept, and the break-gl
 
 test('rotate --drop: refuses the signer’s key and an unlisted kid; prints the rest otherwise', async () => {
   const report = await doctor(good, [], WIRE_FAMILY);
-  assert.throws(() => rotatePlan(report, 'router', 'prod', A.kid, WIRE_FAMILY), /is the key WIRE_ROUTER_KEY signs with/);
-  assert.throws(() => rotatePlan(report, 'router', 'prod', 'AAAAAAAAAAA', WIRE_FAMILY), /lists no key with kid AAAAAAAAAAA/);
-  const out = rotatePlan(report, 'router', 'prod', C.kid, WIRE_FAMILY);
+  assert.throws(() => rotatePlan(report, 'router', 'prod', A.kid), /is the key WIRE_ROUTER_KEY signs with/);
+  assert.throws(() => rotatePlan(report, 'router', 'prod', 'AAAAAAAAAAA'), /lists no key with kid AAAAAAAAAAA/);
+  const out = rotatePlan(report, 'router', 'prod', C.kid);
   assert.match(out, new RegExp(`^WIRE_ROUTER_PUBLIC_KEYS=${A.public}$`, 'm'));
   assert.match(out, /--only control-plane/);
 });
 
 test('rotate: refuses a set doctor fails', async () => {
-  await assert.rejects(async () => rotatePlan(await doctor({ ...good, WIRE_ROUTER_KEY: D.private }, [], WIRE_FAMILY), 'router', 'prod', undefined, WIRE_FAMILY), StoreKeysError);
+  await assert.rejects(async () => rotatePlan(await doctor({ ...good, WIRE_ROUTER_KEY: D.private }, [], WIRE_FAMILY), 'router', 'prod'), StoreKeysError);
 });
 
 // ── generate ────────────────────────────────────────────────────────────────────

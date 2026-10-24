@@ -547,8 +547,9 @@ step 6, withdraws the credential.
   `wire: 'signed' | 'failed'` for a dispatch it tried to sign, and a peer invocation writes
   `{ router: 'wire-sign', kind, aud, outcome }`; the control plane writes
   `{ substrat: 'wire-sign', issuer: 'platform', aud, outcome }` per call, with a `reason` beside
-  `failed`. A failure names why (`unset`, the key form's refusal, or `claims`), never a key. None of
-  these is written while `sign` is off. A signer whose key will not import keeps sending the legacy
+  `failed`. A failure names why (`unset`, the key form's refusal, `claims`, or `error` for anything
+  else), never a key. Both signers decide through one function, contracts' `wireSignerOf`, so the
+  reasons are the same on both. None of these is written while `sign` is off. A signer whose key will not import keeps sending the legacy
   headers and raises an alarm (`router: 'wire-sign-failed'` on the router's error log). Where
   every environment it signs for is still `dual`, that is degraded but serving. In a
   `signed-only` environment it is an outage that pages, and the fix is at the signer: its standby

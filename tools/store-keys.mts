@@ -74,6 +74,8 @@ export interface KeyFamily {
   /** How both lists are named at once, and who verifies against them. */
   readonly lists: string;
   readonly verifier: string;
+  /** What an unset list leaves without one, for the finding. */
+  readonly listedFor: string;
   /** What a key in both lists breaks. */
   readonly bothLists: string;
   /** Whether each list carries a standby beside the key in use (RFC wire-signing §6). */
@@ -101,13 +103,14 @@ const STORE_REACH_CAVEAT =
   '       for every driver; `substrat store-driver rebuild --driver <driver>` runs a pass at once.';
 
 /** The scope-store envelope's keys (K-52): two audiences, one key each. */
-export const STORE_FAMILY: KeyFamily = {
+const STORE_FAMILY: KeyFamily = {
   command: 'store-keys',
   member: 'audience',
   members: STORE_KEY_AUDIENCES,
   uploader: STORE_KEY_UPLOADER,
   lists: 'STORE_*_PUBLIC_KEYS',
   verifier: 'the store',
+  listedFor: 'every store script is uploaded with this list',
   bothLists: 'every store refuses every call while a key is in both lists',
   standby: false,
   load: async (lists) => scopeStorePublicKeysFrom({ caller: lists['caller'] ?? '', platform: lists['platform'] ?? '' }),
@@ -149,6 +152,7 @@ export const WIRE_FAMILY: KeyFamily = {
   uploader: WIRE_KEY_UPLOADER,
   lists: 'WIRE_*_PUBLIC_KEYS',
   verifier: 'a deployment',
+  listedFor: 'every deployment is to be uploaded with this list',
   bothLists: 'a deployment refuses to load lists that share a key, so the router could otherwise sign as the platform',
   standby: true,
   load: async (lists) => wireVerificationKeys({ router: lists['router'] ?? '', platform: lists['platform'] ?? '' }),
@@ -173,6 +177,12 @@ export const WIRE_FAMILY: KeyFamily = {
 
 const membersOf = (family: KeyFamily) => Object.keys(family.members);
 const otherOf = (family: KeyFamily, member: string) => membersOf(family).find((m) => m !== member)!;
+
+/** One member's names, or the refusal naming the members there are. */
+function memberNames(family: KeyFamily, member: string): Member {
+  if (!Object.hasOwn(family.members, member)) throw new StoreKeysError(`--${family.member} must be ${membersOf(family).join(' or ')}`);
+  return family.members[member]!;
+}
 
 // ── reading one member ───────────────────────────────────────────────────────────
 
@@ -211,8 +221,7 @@ const SIGNER_PROBLEM: Readonly<Record<ScopeStoreKeyProblem, string>> = {
 /** One member's public-key list, entry by entry. Findings never carry an entry's text. */
 async function readList(name: string, text: string | undefined, findings: Finding[], family: KeyFamily): Promise<ListedKey[] | undefined> {
   if (text === undefined) {
-    const what = family === STORE_FAMILY ? 'every store script is uploaded with this list' : 'every deployment is to be uploaded with this list';
-    findings.push({ level: 'error', subject: name, check: `is unset: ${what}, and the upload refuses without it` });
+    findings.push({ level: 'error', subject: name, check: `is unset: ${family.listedFor}, and the upload refuses without it` });
     return undefined;
   }
   const listed: ListedKey[] = [];
@@ -269,6 +278,8 @@ interface MemberReport {
 }
 
 interface DoctorReport {
+  /** The family the report was made for, which its rotation is planned in. */
+  readonly family: KeyFamily;
   readonly findings: readonly Finding[];
   /** Per audience (the store's) or issuer (the wire's). */
   readonly members: Readonly<Record<string, MemberReport>>;
@@ -280,9 +291,10 @@ interface DoctorReport {
  */
 function phaseOf(listed: readonly ListedKey[] | undefined, signer: Signer | undefined, staged: readonly Signer[], steady: number): Phase {
   if (!listed || !signer || !listed.some((key) => key.publicKey === signer.publicKey)) return 'unknown';
+  if (listed.length <= steady) return 'steady';
   const stagedListed = staged.find((key) => listed.some((l) => l.publicKey === key.publicKey));
   if (stagedListed) return stagedListed.publicKey === signer.publicKey ? 'switched' : 'listed';
-  return listed.length <= steady ? 'steady' : 'two-listed';
+  return 'two-listed';
 }
 
 /**
@@ -334,17 +346,18 @@ export async function doctor(
 
   const steady = family.standby ? 2 : 1;
   for (const m of members) {
+    const other = otherOf(family, m);
     const names = family.members[m]!;
-    const otherNames = family.members[otherOf(family, m)]!;
+    const otherNames = family.members[other]!;
     const own = lists[m];
-    const theirs = lists[otherOf(family, m)];
+    const theirs = lists[other];
     const signer = signers[m];
     if (signer) {
       if (own && !own.some((key) => key.publicKey === signer.publicKey)) {
         findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${names.publicKeys} does not list: every ${m} call is refused (the signer was switched before its key was listed)` });
       }
       if (theirs?.some((key) => key.publicKey === signer.publicKey)) {
-        findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${otherNames.publicKeys} lists: its holder could sign ${otherOf(family, m)} envelopes` });
+        findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${otherNames.publicKeys} lists: its holder could sign ${other} envelopes` });
       }
       // RFC wire-signing §6: a standby listed ahead of need, so a signer that cannot sign switches
       // to a key every verifier already holds. Needed before an environment goes signed-only.
@@ -356,7 +369,7 @@ export async function doctor(
       if (theirs?.some((t) => t.publicKey === key.publicKey)) {
         findings.push({ level: 'error', subject: key.label, check: `(kid ${key.kid}, ${m}) is listed in ${otherNames.publicKeys}` });
       }
-      if (signers[otherOf(family, m)]?.publicKey === key.publicKey) {
+      if (signers[other]?.publicKey === key.publicKey) {
         findings.push({ level: 'error', subject: key.label, check: `is the same key as ${otherNames.privateKey}` });
       }
       if (own && !own.some((l) => l.publicKey === key.publicKey)) {
@@ -383,10 +396,11 @@ export async function doctor(
   for (const m of members) {
     report[m] = { listed: lists[m], signer: signers[m], staged: staged[m]!, phase: phaseOf(lists[m], signers[m], staged[m]!, steady) };
   }
-  return { findings, members: report };
+  return { family, findings, members: report };
 }
 
-function formatDoctor(report: DoctorReport, family: KeyFamily): string {
+function formatDoctor(report: DoctorReport): string {
+  const { family } = report;
   const lines: string[] = [];
   for (const m of membersOf(family)) {
     const names = family.members[m]!;
@@ -418,8 +432,9 @@ function formatDoctor(report: DoctorReport, family: KeyFamily): string {
  * `drop` names a kid to remove. Throws {@link StoreKeysError} on an ordering it can see is unsafe;
  * it cannot see what is deployed, and says so.
  */
-export function rotatePlan(report: DoctorReport, member: string, env: string, drop?: string, family: KeyFamily = STORE_FAMILY): string {
-  const names = family.members[member]!;
+export function rotatePlan(report: DoctorReport, member: string, env: string, drop?: string): string {
+  const { family } = report;
+  const names = memberNames(family, member);
   const a = report.members[member]!;
   const flag = `--${family.member} ${member}`;
   // Any error blocks, the other member's included: a key in both lists breaks both.
@@ -452,7 +467,7 @@ export function rotatePlan(report: DoctorReport, member: string, env: string, dr
     `Rotating the ${member} key (signer: ${names.signer}, ${names.privateKey}). Current phase: ${a.phase}.`,
     'Each step is finished before the next starts. This tool sees the env file, not what is deployed.',
     ...(a.phase === 'two-listed'
-      ? [`${a.listed?.length ?? 0} keys are listed and no staged key was given: pass --key-file <the staged file> to tell step 3 from step 5.`]
+      ? [`${a.listed!.length === 2 ? 'Two' : a.listed!.length} keys are listed and no staged key was given: pass --key-file <the staged file> to tell step 3 from step 5.`]
       : []),
     ...(family.standby
       ? ['The standby key stays listed throughout; only the key in use is rotated. Its private half stays offline.']
@@ -593,8 +608,7 @@ export async function generate(
   options: { readonly repoRoot?: string; readonly fs?: WriteFs; readonly family?: KeyFamily } = {},
 ): Promise<{ readonly publicKey: string; readonly kid: string }> {
   const family = options.family ?? STORE_FAMILY;
-  const names = family.members[member];
-  if (!names) throw new StoreKeysError(`--${family.member} must be ${membersOf(family).join(' or ')}`);
+  const names = memberNames(family, member);
   // Every refusal happens before the key exists.
   const out = 'out' in target ? assertPrivateOutPath(target.out, options.repoRoot) : undefined;
   if ('toTerminal' in target && io.stdout.isTTY && !target.toTerminal) {
@@ -655,8 +669,8 @@ function parseArgs(argv: readonly string[]): Args {
 const one = (args: Args, name: string) => args.flags.get(name)?.at(-1);
 
 function memberOf(args: Args, family: KeyFamily): string {
-  const member = one(args, family.member);
-  if (member === undefined || !Object.hasOwn(family.members, member)) throw new StoreKeysError(`--${family.member} must be ${membersOf(family).join(' or ')}`);
+  const member = one(args, family.member) ?? '';
+  memberNames(family, member);
   return member;
 }
 
@@ -707,13 +721,13 @@ export async function main(argv: readonly string[], io: GenerateIo, family: KeyF
       case 'doctor': {
         const { values } = readEnv(args);
         const report = await doctor(values, readStaged(args), family);
-        io.stdout.write(`${formatDoctor(report, family)}\n`);
+        io.stdout.write(`${formatDoctor(report)}\n`);
         return report.findings.some((f) => f.level === 'error') ? 1 : 0;
       }
       case 'rotate': {
         const member = memberOf(args, family);
         const { values, env } = readEnv(args);
-        io.stdout.write(`${rotatePlan(await doctor(values, readStaged(args), family), member, env, one(args, 'drop'), family)}\n`);
+        io.stdout.write(`${rotatePlan(await doctor(values, readStaged(args), family), member, env, one(args, 'drop'))}\n`);
         return 0;
       }
       default:

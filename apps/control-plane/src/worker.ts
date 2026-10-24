@@ -166,7 +166,7 @@ import {
 import {
   ControlPlaneError,
   VerticalClient,
-  platformCallSignerFor,
+  platformSignedFetch,
   isRouteMiss,
   sweepScopeAttachments,
   hostedCrossVerticalReach,
@@ -1020,8 +1020,8 @@ function resolveVerticalFor(
  */
 function verticalClientAt(env: Env, dispatch: DispatchNamespace, ref: string, secret: string): VerticalClient {
   const fetcher = dispatch.get(ref);
-  const sign = platformCallSignerFor({ sign: env.WIRE_SIGN, key: env.WIRE_PLATFORM_KEY }, ref);
-  return new VerticalClient({ fetch: fetcher.fetch.bind(fetcher), platformSecret: secret, ...(sign ? { sign } : {}) });
+  const fetch = platformSignedFetch({ sign: env.WIRE_SIGN, key: env.WIRE_PLATFORM_KEY }, ref, fetcher.fetch.bind(fetcher));
+  return new VerticalClient({ fetch, platformSecret: secret });
 }
 
 /** Resolve a vertical by a KNOWN dispatch script name (#286) — scopes on the stable

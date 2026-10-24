@@ -43,9 +43,10 @@
  * built some other way, a call expectation with no replay policy (or a cache with no pinned
  * scope), and a nonce cache that cannot answer.
  *
- * Imports nothing but its sibling subpath `scope-store-envelope.ts`, which imports nothing, so
- * an entry bundle that imports this subpath pulls in no schema and no zod.
+ * Imports nothing but its siblings `scope-store-envelope.ts` and `invocation-record.ts`, which
+ * import nothing, so an entry bundle that imports this subpath pulls in no schema and no zod.
  */
+import { FIELD_COVERAGE_HEADER, PARENT_REQUEST_ID_HEADER, parentRequestIdOf } from './invocation-record.js';
 import {
   base64UrlToBytes,
   bytesToBase64Url,
@@ -784,8 +785,9 @@ export interface WireVerificationLine {
 
 /*
  * The signers (RFC §5, §9 step 2): the router signs a route and its own calls, the control plane
- * signs its calls. Both read their flag and their key the same way and put an envelope on a request
- * the same way, beside every header the request already carries. The legacy headers stay.
+ * signs its calls. Both decide through {@link wireSignerOf}, so they read their flag and their key,
+ * put an envelope on a request and fall back when they cannot in exactly one way. The legacy
+ * headers stay.
  */
 
 /**
@@ -821,8 +823,15 @@ export type WireRequestClaims = Omit<WireEnvelopeInput, 'method' | 'target' | 'b
  * spent nonce (RFC §4).
  */
 export async function signWireRequest(key: WireSigningKey, request: Request, claims: WireRequestClaims): Promise<Request> {
+  return signedWith(key, request, claims, await bodyToBind(request, claims.kind));
+}
+
+/** A call's body, read once to be bound; a route binds none and its body is not read. */
+const bodyToBind = async (request: Request, kind: WireKind) => (kind === 'call' && request.body !== null ? request.arrayBuffer() : undefined);
+
+/** {@link signWireRequest} over a body already read (`undefined` for a route, or an absent body). */
+async function signedWith(key: WireSigningKey, request: Request, claims: WireRequestClaims, body: ArrayBuffer | undefined): Promise<Request> {
   const { method, target } = wireRequestBinding(request);
-  const body = claims.kind === 'call' && request.body !== null ? await request.arrayBuffer() : undefined;
   const issued = await signWireEnvelope(key, { ...claims, method, target, ...(claims.kind === 'call' ? { body: body ?? '' } : {}) });
   const headers = new Headers(request.headers);
   headers.set(WIRE_ENVELOPE_HEADER, issued.header);
@@ -831,33 +840,82 @@ export async function signWireRequest(key: WireSigningKey, request: Request, cla
 }
 
 /**
- * The headers the router adds that the envelope does not sign, listed by name as carrying no
- * authority (RFC §5, decided in step 2), with the kind of request each rides on: the field-coverage
- * sample on a route (the dispatch id that arms the per-response field walk) and a peer call's parent
- * request id on a call (which links the target's line to the request that made it). Each is a claim
- * its own reader already treats as one: the walk's report counts only when the router's own line
- * names its dispatch id, and the parent id only relates two lines. So when the envelope alone admits
- * a request, the entry hands each on, on its own kind of request, when its value passes the check its
- * reader applies (one ULID), and drops it otherwise, as it drops every other `x-substrat-*` header
- * the envelope did not sign. Signing them instead would take a new envelope version (`substrat-wire/2`).
- * The names are `invocation-record.ts`'s `FIELD_COVERAGE_HEADER` and `PARENT_REQUEST_ID_HEADER`,
- * spelled here so the entry's bundle imports nothing more; a test holds the two spellings together.
+ * What a signer did with one request (RFC §8): signed it, or sent it as it came because it could
+ * not, saying why: `unset` (no key), the key form's refusal (a {@link WireKeyError} reason), `claims`
+ * (claims the encoder refuses), or `error` (anything else).
  */
-export const WIRE_UNSIGNED_HEADERS: Readonly<Record<string, WireKind>> = Object.freeze({
-  'x-substrat-field-coverage': 'route',
-  'x-substrat-parent-request-id': 'call',
-});
+export type WireSignResult =
+  | { readonly request: Request; readonly outcome: 'signed' }
+  | { readonly request: Request; readonly outcome: 'failed'; readonly reason: string };
+
+/**
+ * One signer's decision for one request. `named`, when given, adds the tenant and scope the call's
+ * own body names, read from the bytes the signer already holds.
+ */
+export type WireSigner = (
+  request: Request,
+  claims: WireRequestClaims,
+  named?: (request: Request, body: ArrayBuffer | undefined) => { readonly tenantId: string; readonly scopeId: string } | null,
+) => Promise<WireSignResult>;
+
+/**
+ * A signer's whole decision (RFC §5, §8): `null` while its `sign` flag is off, which is the default,
+ * so nothing is read and nothing is signed. On, each request is signed afresh with the key, imported
+ * once per isolate. A signer that cannot sign never fails the request: it is handed back with its
+ * legacy headers and its whole body (a call's body is read once, and the request rebuilt from those
+ * bytes when signing fails after reading it), and the result says why, never with the key.
+ */
+export function wireSignerOf(settings: { readonly sign?: unknown; readonly key?: string }): WireSigner | null {
+  if (!wireSigningOn(settings.sign)) return null;
+  const pkcs8 = settings.key;
+  if (!pkcs8) return async (request) => ({ request, outcome: 'failed', reason: 'unset' });
+  return async (request, claims, named) => {
+    let key: WireSigningKey;
+    try {
+      key = await wireSigningKeyOf(pkcs8);
+    } catch (error) {
+      return { request, outcome: 'failed', reason: error instanceof WireKeyError ? error.reason : 'error' };
+    }
+    const body = await bodyToBind(request, claims.kind);
+    try {
+      return { request: await signedWith(key, request, { ...claims, ...named?.(request, body) }, body), outcome: 'signed' };
+    } catch {
+      return { request: body === undefined ? request : new Request(request, { body }), outcome: 'failed', reason: 'claims' };
+    }
+  };
+}
+
+/**
+ * The headers the router adds that the envelope does not sign, listed by name as carrying no
+ * authority (RFC §5, decided in step 2), with the kind of request each rides on and the check its
+ * own reader applies: the field-coverage sample on a route (the dispatch id that arms the
+ * per-response field walk, one ULID as vertical-host reads it) and a peer call's parent request id
+ * on a call (which links the target's line to the request that made it, read by
+ * {@link parentRequestIdOf}). Each is a claim its reader already treats as one: the walk's report
+ * counts only when the router's own line names its dispatch id, and the parent id only relates two
+ * lines. So when the envelope alone admits a request, the entry hands each on, on its own kind of
+ * request, when its value passes that check, and drops it otherwise, as it drops every other
+ * `x-substrat-*` header the envelope did not sign. Signing them instead would take a new envelope
+ * version (`substrat-wire/2`).
+ */
+const UNSIGNED: readonly (readonly [name: string, kind: WireKind, valid: (value: string) => boolean])[] = Object.freeze([
+  [FIELD_COVERAGE_HEADER, 'route', (value: string) => ULID.test(value)],
+  [PARENT_REQUEST_ID_HEADER, 'call', (value: string) => parentRequestIdOf(value) !== undefined],
+]);
+
+/** The listed headers by name, each with the kind of request it rides on. */
+export const WIRE_UNSIGNED_HEADERS: Readonly<Record<string, WireKind>> = Object.freeze(Object.fromEntries(UNSIGNED.map(([name, kind]) => [name, kind])));
 
 /**
  * The listed headers ({@link WIRE_UNSIGNED_HEADERS}) a request of `kind` hands on, as name and value:
- * only those listed for that kind, and only a value that is exactly one ULID. A header sent twice
- * reads as both values joined, which is not one ULID, so it is dropped whole.
+ * only those listed for that kind, and only a value its reader's check accepts. A header sent twice
+ * reads as both values joined, which is not one id, so it is dropped whole.
  */
 export function wireUnsignedHeadersOf(kind: WireKind, headers: { get(name: string): string | null }): [name: string, value: string][] {
   const kept: [string, string][] = [];
-  for (const [name, on] of Object.entries(WIRE_UNSIGNED_HEADERS)) {
+  for (const [name, on, valid] of UNSIGNED) {
     const value = on === kind ? headers.get(name) : null;
-    if (value !== null && ULID.test(value)) kept.push([name, value]);
+    if (value !== null && valid(value)) kept.push([name, value]);
   }
   return kept;
 }

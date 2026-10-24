@@ -20,6 +20,7 @@ import {
   signWireRequest,
   verifyWireEnvelope,
   WIRE_UNSIGNED_HEADERS,
+  wireSignerOf,
   wireSigningKeyOf,
   wireSigningOn,
   wireUnsignedHeadersOf,
@@ -1093,6 +1094,47 @@ describe('the signers: their flag, their key, and an envelope on a request (RFC 
     await expect(signWireRequest(key, request(), { iss: 'platform', kind: 'call', aud: 'acme', tenantId: ROUTE.input.tenantId! })).rejects.toThrow();
     // Its twin: the same request with admissible claims is signed.
     await expect(signWireRequest(key, request(), { iss: 'platform', kind: 'call', aud: 'acme', tenantId: ROUTE.input.tenantId!, scopeId: ROUTE.input.scopeId! })).resolves.toBeInstanceOf(Request);
+  });
+});
+
+describe('wireSignerOf: one signer decision for the router and the control plane (RFC §5, §8)', () => {
+  const call = () => new Request('https://vertical/internal/provision', { method: 'POST', body: '{"a":1}' });
+  const CALL_CLAIMS = { iss: 'platform', kind: 'call', aud: 'acme' } as const;
+
+  it('is null while the flag is off, whatever the key', () => {
+    for (const sign of [undefined, '', 'off', 'ON']) expect(wireSignerOf({ sign, key: fixture.keys.platform.privateKeyPkcs8 })).toBeNull();
+    expect(wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })).toBeTypeOf('function');
+  });
+
+  it('with no key, hands the very request back unread, failed as unset', async () => {
+    const request = call();
+    const result = await wireSignerOf({ sign: 'on' })!(request, CALL_CLAIMS);
+    expect(result).toEqual({ request, outcome: 'failed', reason: 'unset' });
+    expect(request.bodyUsed).toBe(false);
+  });
+
+  it('with a key that will not import, hands the very request back unread, with the key form’s reason', async () => {
+    const request = call();
+    const result = await wireSignerOf({ sign: 'on', key: 'AAAA' })!(request, CALL_CLAIMS);
+    expect(result).toEqual({ request, outcome: 'failed', reason: 'not-pkcs8-v1' });
+    expect(request.bodyUsed).toBe(false);
+  });
+
+  it('signs, adding the pair `named` reads off the bytes it read once', async () => {
+    const seen: string[] = [];
+    const named = (_: Request, body: ArrayBuffer | undefined) => (seen.push(new TextDecoder().decode(body)), { tenantId: ROUTE.input.tenantId!, scopeId: ROUTE.input.scopeId! });
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(call(), CALL_CLAIMS, named);
+    expect(result.outcome).toBe('signed');
+    expect(seen).toEqual(['{"a":1}']);
+    expect(decodeWireEnvelope(result.request.headers.get(WIRE_ENVELOPE_HEADER)!)!.claims).toMatchObject({ tenantId: ROUTE.input.tenantId, bodyDigest: await wireDigest('{"a":1}') });
+    expect(await result.request.text()).toBe('{"a":1}');
+  });
+
+  it('claims the encoder refuses, after the body was read: the request comes back whole, failed as claims', async () => {
+    const result = await wireSignerOf({ sign: 'on', key: fixture.keys.platform.privateKeyPkcs8 })!(call(), { ...CALL_CLAIMS, aud: '' });
+    expect(result).toMatchObject({ outcome: 'failed', reason: 'claims' });
+    expect(result.request.headers.has(WIRE_ENVELOPE_HEADER)).toBe(false);
+    expect(await result.request.text()).toBe('{"a":1}');
   });
 });
 

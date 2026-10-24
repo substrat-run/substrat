@@ -43,15 +43,7 @@ import {
   type RateLimiter,
   type RouteTarget,
 } from '@substrat-run/contracts';
-import {
-  signWireRequest,
-  wireEndpoint,
-  WireKeyError,
-  wireSigningKeyOf,
-  wireSigningOn,
-  type WireRequestClaims,
-  type WireSigningKey,
-} from '@substrat-run/contracts/wire-signing';
+import { wireEndpoint, wireSignerOf, type WireSignResult } from '@substrat-run/contracts/wire-signing';
 import { fieldCoverageSampled, fieldCoverageSampleRate, mintDispatchId } from './field-coverage-sample.js';
 
 export interface Env {
@@ -207,7 +199,12 @@ const ASSERTED_PREFIX = 'x-substrat-';
 const bindingNameFor = (slug: string): string =>
   `VERTICAL_${slug.toUpperCase().replace(/-/g, '_')}`;
 
-function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher | undefined {
+/**
+ * Who answers a resolved request, and as what: `aud` is the name a deployment in the namespace is
+ * dispatched as, which is what its route envelope names (RFC wire-signing), and `null` for a static
+ * binding, which no platform entry wraps and nothing signs for.
+ */
+function verticalFor(env: Env, target: RouteTarget, hostname: string): { fetcher: Fetcher; aud: string | null } | undefined {
   // Dispatch on the scope's bound version, if the namespace is bound and the scope
   // has one (orchestration.md §5.4). `get` returns a stub unconditionally; a script
   // that is not there (or not yet propagated, K-29) surfaces as `Worker not found.`
@@ -231,14 +228,15 @@ function verticalFor(env: Env, target: RouteTarget, hostname: string): Fetcher |
       hostname,
       hostnames: target.hostnames,
     };
-    return env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
+    const fetcher = env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
+    return { fetcher, aud: target.deploymentRef };
   }
   // Fallback: the milestone-one static service binding, for a route with no version.
   if (!target.verticalSlug) return undefined;
   const binding = env[bindingNameFor(target.verticalSlug)];
   // A Fetcher is an object with .fetch; anything else in this slot is misconfiguration.
   return binding && typeof (binding as Fetcher).fetch === 'function'
-    ? (binding as Fetcher)
+    ? { fetcher: binding as Fetcher, aud: null }
     : undefined;
 }
 
@@ -271,52 +269,21 @@ function assertNode(
 }
 
 /** What the router's signer did for one request (RFC wire-signing §8). Absent when it did not try. */
-type WireSignOutcome = 'signed' | 'failed';
-
-/** The router's signing key while its flag is on, or why it cannot sign. */
-type RouterWire = { readonly key: WireSigningKey } | { readonly unusable: string };
+type WireSignOutcome = WireSignResult['outcome'];
 
 /**
  * The router's wire signer (RFC wire-signing §5, step 2): `null` while `WIRE_SIGN` is off, which is
- * the default, so nothing below is reached and every request goes out as it did before signing
- * existed. On, the key is imported once per isolate; a key that is unset or will not import is
- * `unusable`, and every request then goes out with its legacy headers alone.
+ * the default, so every request goes out as it did before signing existed.
  */
-async function routerWireOf(env: Env): Promise<RouterWire | null> {
-  if (!wireSigningOn(env.WIRE_SIGN)) return null;
-  if (!env.WIRE_ROUTER_KEY) return { unusable: 'unset' };
-  try {
-    return { key: await wireSigningKeyOf(env.WIRE_ROUTER_KEY) };
-  } catch (error) {
-    return { unusable: error instanceof WireKeyError ? error.reason : 'error' };
-  }
-}
+const routerSignerOf = (env: Env) => wireSignerOf({ sign: env.WIRE_SIGN, key: env.WIRE_ROUTER_KEY });
 
 /**
- * One request as `make` builds it, with a fresh envelope beside its legacy headers. A signer that
- * cannot sign never fails the request: it goes out as `make` builds it, with its legacy headers,
- * and the alarm line names why, never a key (RFC §8). A call's body is read to be signed, so a
- * failed call is built again rather than sent half-read.
+ * The request the signer handed back, writing the alarm for one it could not sign (RFC §8): why,
+ * never a key. It goes either way, with its legacy headers and its whole body.
  */
-async function signedRequest(
-  make: () => Request,
-  wire: RouterWire,
-  claims: WireRequestClaims,
-): Promise<{ request: Request; outcome: WireSignOutcome }> {
-  const request = make();
-  let reason: string;
-  if ('key' in wire) {
-    try {
-      return { request: await signWireRequest(wire.key, request, claims), outcome: 'signed' };
-    } catch {
-      // Claims no verifier would accept (a value the encoder refuses): a fault of this router's.
-      reason = 'claims';
-    }
-  } else {
-    reason = wire.unusable;
-  }
-  console.error(JSON.stringify({ router: 'wire-sign-failed', kind: claims.kind, aud: claims.aud, reason }));
-  return { request: claims.kind === 'call' ? make() : request, outcome: 'failed' };
+function sent(result: WireSignResult, kind: 'route' | 'call', aud: string): Request {
+  if (result.outcome === 'failed') console.error(JSON.stringify({ router: 'wire-sign-failed', kind, aud, reason: result.reason }));
+  return result.request;
 }
 
 /**
@@ -560,8 +527,8 @@ async function dispatch(
   /** What the signer did for this request, for the request line: set only when it tried. */
   signing: { outcome?: WireSignOutcome },
 ): Promise<Response> {
-  const vertical = verticalFor(env, target, hostname);
-  if (!vertical) {
+  const reached = verticalFor(env, target, hostname);
+  if (!reached) {
     // The map says which vertical answers and no binding provides it. That is our
     // misconfiguration, not the caller's — 502, and it is worth logging loudly.
     console.error(
@@ -578,30 +545,27 @@ async function dispatch(
   // termination and processing at the edge, ahead of this worker, and the DO
   // jurisdiction pins storage and execution (K-7). Both halves are configuration.
   // Re-checking it in code would be a third enforcement point that can disagree.
+  const { fetcher: vertical, aud } = reached;
   const assertion = { secret: env.ROUTER_SECRET, fieldCoverageId };
+  const make = () => assertNode(request, target, assertion);
   // RFC wire-signing step 2: a route envelope beside the legacy headers, for the deployment the
-  // request is dispatched to (its `aud`), minted again for the retry. Only a dispatch into the
-  // namespace is signed, since only those deployments carry the platform's entry; and a request to
-  // a path the entry reads as the internal surface is never signed, as a route or as a call.
-  const wire =
-    target.deploymentRef && env.DISPATCH && wireEndpoint(new URL(request.url).pathname).kind === 'route'
-      ? await routerWireOf(env)
-      : null;
-  const claims: WireRequestClaims = {
-    iss: 'router',
-    kind: 'route',
-    aud: target.deploymentRef ?? '',
-    tenantId: target.tenantId,
-    scopeId: target.scopeId,
-    surface: target.surface,
-    vertical: target.verticalSlug,
-  };
+  // request is dispatched to (`aud`), minted again for the retry. Only a dispatch into the namespace
+  // is signed, since only those deployments carry the platform's entry; and a request to a path the
+  // entry reads as the internal surface is never signed, as a route or as a call.
+  const signer = aud === null ? null : routerSignerOf(env);
   const forward = async (): Promise<Request> => {
-    const make = () => assertNode(request, target, assertion);
-    if (!wire) return make();
-    const out = await signedRequest(make, wire, claims);
-    signing.outcome = out.outcome;
-    return out.request;
+    if (aud === null || !signer || wireEndpoint(new URL(request.url).pathname).kind !== 'route') return make();
+    const result = await signer(make(), {
+      iss: 'router',
+      kind: 'route',
+      aud,
+      tenantId: target.tenantId,
+      scopeId: target.scopeId,
+      surface: target.surface,
+      vertical: target.verticalSlug,
+    });
+    signing.outcome = result.outcome;
+    return sent(result, 'route', aud);
   };
   const forwarded = await forward();
 
@@ -823,10 +787,10 @@ export async function handlePeerCall(
   // RFC wire-signing step 2: the router signs the calls it makes itself (`iss` router, `kind` call),
   // beside the legacy credential, for the target deployment and the scope the resolver chose, and
   // binding the exact body. Signed per attempt, so the retry below carries a fresh nonce.
-  const wire = await routerWireOf(env);
+  const signer = routerSignerOf(env);
   const invocation = async (): Promise<Request> => {
-    if (!wire) return unsigned();
-    const out = await signedRequest(unsigned, wire, {
+    if (!signer) return unsigned();
+    const result = await signer(unsigned(), {
       iss: 'router',
       kind: 'call',
       aud: decision.deploymentRef,
@@ -834,8 +798,9 @@ export async function handlePeerCall(
       scopeId: decision.scopeId,
       vertical: decision.vertical,
     });
-    console.log(JSON.stringify({ router: 'wire-sign', kind: 'call', aud: decision.deploymentRef, outcome: out.outcome }));
-    return out.request;
+    // The signer's count (RFC §8): a route's rides its request line, a peer invocation has its own.
+    if (result.outcome === 'signed') console.log(JSON.stringify({ router: 'wire-sign', kind: 'call', aud: decision.deploymentRef, outcome: 'signed' }));
+    return sent(result, 'call', decision.deploymentRef);
   };
   // The same bounded retry the public path takes, and for the same K-29 propagation gap
   // (#1719 review). Two differences, both in this path's favour: a peer call is always

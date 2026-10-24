@@ -162,6 +162,17 @@ test('doctor: the rotation phase follows the staged key', async () => {
   assert.equal(report.findings.filter((f) => f.level === 'error').length, 0);
 });
 
+test('doctor: one listed key that is also the staged one is steady, not a rotation to finish', async () => {
+  const report = await doctor(good, [{ label: 'done.key', text: `STORE_CALLER_KEY=${A.private}\n` }]);
+  assert.equal(report.members['caller']!.phase, 'steady');
+  assert.match(rotatePlan(report, 'caller', 'prod'), /→ 1\./);
+});
+
+test('rotate: two listed keys and no staged one are named as two, as the plan has always said', async () => {
+  const plan = rotatePlan(await doctor({ ...good, STORE_CALLER_PUBLIC_KEYS: `${A.public},${C.public}` }), 'caller', 'prod');
+  assert.match(plan, /^Two keys are listed and no staged key was given/m);
+});
+
 test('doctor: a staged key listed for the other audience, or equal to its signer, is an error', async () => {
   const listedThere = await errors({ ...good, STORE_PLATFORM_PUBLIC_KEYS: `${B.public},${C.public}` }, [
     { label: 'new.key', text: `STORE_CALLER_KEY=${C.private}` },

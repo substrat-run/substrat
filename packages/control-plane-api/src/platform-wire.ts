@@ -1,19 +1,12 @@
 /**
  * The control plane's wire signer (RFC wire-signing §5, §9 step 2): a `call` envelope, issuer
  * `platform`, on every call the control plane makes to a deployment, beside the legacy header,
- * which stays. Off by default: while the control plane's `sign` flag is off, no signer exists and
- * every call goes out exactly as it did before signing existed.
+ * which stays. Off by default: while the control plane's `sign` flag is off, the `fetch` a client is
+ * given is the very one it would have had, and every call goes out exactly as it did before signing
+ * existed.
  */
-import {
-  signWireRequest,
-  WireKeyError,
-  wireSigningKeyOf,
-  wireSigningOn,
-  type WireRequestClaims,
-} from '@substrat-run/contracts/wire-signing';
-
-/** What a signer does to one call: the same call, with an envelope beside its headers. */
-export type PlatformCallSigner = (request: Request) => Promise<Request>;
+import { ULID_PATTERN } from '@substrat-run/contracts';
+import { wireSignerOf, type WireSignResult } from '@substrat-run/contracts/wire-signing';
 
 /** The control plane's own signing settings, as its env holds them. */
 export interface PlatformWireSettings {
@@ -25,8 +18,8 @@ export interface PlatformWireSettings {
   readonly log?: (line: string) => void;
 }
 
-/** The ULID grammar the envelope's tenant and scope lines take. */
-const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+/** Bodies that are bytes rather than JSON (a multipart attachment, an octet stream) name no scope. */
+const BYTES = /^(multipart\/|application\/octet-stream)/i;
 
 /**
  * The tenant and scope a call names itself: its JSON body's top-level `tenantId` and `scopeId`,
@@ -35,10 +28,12 @@ const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
  * names only a scope, or nothing, is signed naming neither: where its nonce is spent is follow-on 5's
  * to decide.
  */
-export function platformCallScope(url: string, body: ArrayBuffer | undefined): { tenantId: string; scopeId: string } | null {
+export function platformCallScope(request: Request, body: ArrayBuffer | undefined): { tenantId: string; scopeId: string } | null {
   const pair = (tenantId: unknown, scopeId: unknown) =>
-    typeof tenantId === 'string' && typeof scopeId === 'string' && ULID.test(tenantId) && ULID.test(scopeId) ? { tenantId, scopeId } : null;
-  if (body !== undefined && body.byteLength > 0) {
+    typeof tenantId === 'string' && typeof scopeId === 'string' && ULID_PATTERN.test(tenantId) && ULID_PATTERN.test(scopeId)
+      ? { tenantId, scopeId }
+      : null;
+  if (body !== undefined && body.byteLength > 0 && !BYTES.test(request.headers.get('content-type') ?? '')) {
     try {
       const json: unknown = JSON.parse(new TextDecoder().decode(body));
       if (json !== null && typeof json === 'object' && !Array.isArray(json)) {
@@ -49,48 +44,27 @@ export function platformCallScope(url: string, body: ArrayBuffer | undefined): {
       // Not JSON: it names nothing in its body.
     }
   }
-  const query = new URL(url).searchParams;
+  const query = new URL(request.url).searchParams;
   return pair(query.get('tenantId'), query.get('scopeId'));
 }
 
 /**
- * A signer for calls to the deployment the dispatch namespace knows as `aud`, or `undefined` while
- * the flag is off. The caller builds it for the same name it makes the dispatch stub from, so the
- * envelope always names the script the call reaches. Each call is signed afresh, a retry included
- * (RFC §4). A signer that cannot sign (no key, a key that will not import, claims the encoder
- * refuses) never fails the call: it goes out with its legacy header and its whole body, and the
- * line says why, never a key.
+ * The `fetch` a client for the deployment the dispatch namespace knows as `aud` is given: `send`
+ * itself while the flag is off; on, `send` behind the signer, so every call, a retry included, is
+ * signed afresh for that deployment (RFC §4). The caller builds it for the same name it makes the
+ * dispatch stub from, so the envelope always names the script the call reaches. A signer that cannot
+ * sign never fails the call: it goes with its legacy header and its whole body, and the line says
+ * why, never a key.
  */
-export function platformCallSignerFor(settings: PlatformWireSettings, aud: string): PlatformCallSigner | undefined {
-  if (!wireSigningOn(settings.sign)) return undefined;
+export function platformSignedFetch(settings: PlatformWireSettings, aud: string, send: typeof fetch): typeof fetch {
+  const signer = wireSignerOf(settings);
+  if (!signer) return send;
   const log = settings.log ?? ((line: string) => console.log(line));
-  const count = (outcome: 'signed' | 'failed', reason?: string) => {
-    try {
-      log(JSON.stringify({ substrat: 'wire-sign', issuer: 'platform', aud, outcome, ...(reason ? { reason } : {}) }));
-    } catch {
-      // A counter never fails a call.
-    }
-  };
-  return async (request) => {
-    // Read once: the claims name what the body names, and the call goes on with these bytes
-    // whether or not it could be signed.
-    const body = request.body === null ? undefined : await request.arrayBuffer();
-    const again = () => (body === undefined ? request : new Request(request, { body }));
-    let reason: string;
-    if (!settings.key) {
-      reason = 'unset';
-    } else {
-      try {
-        const key = await wireSigningKeyOf(settings.key);
-        const claims: WireRequestClaims = { iss: 'platform', kind: 'call', aud, ...(platformCallScope(request.url, body) ?? {}) };
-        const signed = await signWireRequest(key, again(), claims);
-        count('signed');
-        return signed;
-      } catch (error) {
-        reason = error instanceof WireKeyError ? error.reason : 'claims';
-      }
-    }
-    count('failed', reason);
-    return again();
-  };
+  const count = (result: WireSignResult) =>
+    log(JSON.stringify({ substrat: 'wire-sign', issuer: 'platform', aud, outcome: result.outcome, ...(result.outcome === 'failed' ? { reason: result.reason } : {}) }));
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const result = await signer(new Request(input, init), { iss: 'platform', kind: 'call', aud }, platformCallScope);
+    count(result);
+    return send(result.request);
+  }) as typeof fetch;
 }
