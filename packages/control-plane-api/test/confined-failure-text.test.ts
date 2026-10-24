@@ -546,6 +546,40 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     expect(((await byForged.json()) as { entries: unknown[] }).entries).toEqual([]);
   });
 
+  it('a staff row with no tenant is written as staff rows are: a spelled marker in its text is no handle', async () => {
+    const { pin, slug } = await setup('tenantless');
+    const v2 = await push(pin, manifest('0.2.0', { blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] }));
+    const forged = `cf${ulid().toLowerCase()}`;
+    // The store backfill spans every install, so its row has no tenant.
+    vi.spyOn(host, 'provisionBlobStore').mockRejectedValue(new Error(`[upstream reference = ${forged}] the store refused`));
+    expect((await promote(slug, v2.id)).status).toBe(200);
+    const row = await staffRow('promote.store-backfill', slug);
+    expect(row.message).toBe(`(upstream reference = ${forged}] the store refused`);
+    const byForged = await app.request(`/ops-failures?reference=${forged}`, { headers: auth });
+    expect(((await byForged.json()) as { entries: unknown[] }).entries).toEqual([]);
+  });
+
+  it('a staff repair whose store mint and reconcile both fail: the tenant’s row says the store sentences, not the text', async () => {
+    const { b, foreign, leak } = await setup('staffboth', { blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] });
+    vi.spyOn(host, 'provisionBlobStore').mockRejectedValue(new Error(leak));
+    reconcileFails = () => new ControlPlaneError(502, 'reconcile refused: the store is not bound');
+    const res = await app.request(`/tenants/${b}/scopes/${foreign}/provision`, { method: 'POST', headers: auth });
+    expect(res.status).toBe(502);
+    const said = (await res.json()) as { detail: string; reference: string };
+    // Staff read both halves, the store's own text included.
+    expect(said.detail).toContain('reconcile refused: the store is not bound');
+    expect(said.detail).toContain('something private');
+    const rows = await vi.waitFor(async () => {
+      const r = await host.admin.listOpsFailures(staff, { reference: said.reference } as never);
+      expect(r.length).toBe(2);
+      return r;
+    });
+    const tenantRow = rows.find((r) => r.tenantId === b)!;
+    expect(tenantRow.message).toMatch(/^reconcile refused: the store is not bound \(stores: a declared store could not be minted \(blob-stores, reference [0-9A-Z]{26}\)\)$/);
+    expect(rows.find((r) => r.tenantId === null)!.message).toContain('something private');
+    expect(await failuresSeenBy(await tokenFor('/tenant-tokens', b), b)).not.toContain('something private');
+  });
+
   it('a failed upload of a builder’s own bundle keeps the upstream handle it was answered as its row’s reference (#559)', async () => {
     const { pin, t, b } = await setup('upload');
     const upstream = `cf${ulid().toLowerCase()}`;

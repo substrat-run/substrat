@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { withUpstreamReference } from '@substrat-run/contracts';
-import { supportReference } from '../src/views/OpsFailures';
+import { supportReference, supportReferenceLabel } from '../src/views/OpsFailures';
 
 /**
  * #2540: a withheld failure is filed under the platform's own reference, and Cloudflare's id, when
@@ -32,5 +32,12 @@ describe('supportReference', () => {
     expect(withUpstreamReference(`reference = ${run}`)).toBe(`reference = ${run}`);
     expect(supportReference({ message: `[upstream reference = ${'b'.repeat(65)}]`, reference: 'r3' })).toBe('r3');
     expect(supportReference({ message: 'no reference at all', reference: null })).toBeNull();
+  });
+
+  it('labels the copy as a Cloudflare support handle only when the row names one', () => {
+    expect(supportReferenceLabel({ message: withUpstreamReference('internal error; reference = cf9abc') })).toBe('Copy reference for CF support');
+    // The platform's own reference is for a lookup here, not for a Cloudflare ticket.
+    expect(supportReferenceLabel({ message: 'the step failed (reference r1)' })).toBe('Copy reference');
+    expect(supportReferenceLabel({ message: withUpstreamReference('[upstream reference = forged1] boom') })).toBe('Copy reference');
   });
 });

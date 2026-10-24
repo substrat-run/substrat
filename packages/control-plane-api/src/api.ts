@@ -159,7 +159,7 @@ import type {
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
-import { upstreamHandleIn, withUpstreamReference } from '@substrat-run/contracts';
+import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
@@ -2175,18 +2175,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2540: a row filed under a tenant is read back by it, so its reference is always the
     // platform's own. When its text carries an upstream trace handle (#559), that handle is kept
     // on a staff row beside it (`detail`, under the same reference), where staff's search finds it.
-    // A row with no tenant is staff's, and takes the handle as its reference, as before.
+    // A row with no tenant is staff's: its text is written as a staff row's always is
+    // (`withUpstreamReference`: any marker spelling neutralised, a genuine handle's marker first),
+    // and it takes that handle as its reference, as before.
     const handle = upstreamHandleIn(entry.message);
-    const shaped: OpsFailureInput =
-      entry.tenantId && UPSTREAM_REFERENCE_KEPT.has(entry.operation)
+    const staffMessage = entry.tenantId ? entry.message : withUpstreamReference(entry.message);
+    const shaped: OpsFailureInput = !entry.tenantId
+      ? { ...entry, message: staffMessage, reference: entry.reference ?? upstreamReferenceOf(staffMessage) }
+      : UPSTREAM_REFERENCE_KEPT.has(entry.operation)
         ? { ...entry, reference: entry.reference ?? handle }
-        : entry.tenantId && entry.detail == null && handle
-        ? {
-            ...entry,
-            reference: entry.reference && entry.reference !== handle ? entry.reference : ulid(),
-            detail: withUpstreamReference(entry.message),
-          }
-        : { ...entry, reference: entry.reference ?? (entry.tenantId ? null : handle) };
+        : entry.detail == null && handle
+          ? {
+              ...entry,
+              reference: entry.reference && entry.reference !== handle ? entry.reference : ulid(),
+              detail: withUpstreamReference(entry.message),
+            }
+          : { ...entry, reference: entry.reference ?? null };
     const write = host.admin
       .recordOpsFailure({
         ...shaped,
@@ -2214,8 +2218,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     answered: string,
     cause: unknown,
   ): void => {
-    const text = staffText(raw);
-    recordFailure(entry.tenantId ? { ...entry, message: answered, detail: text } : { ...entry, tenantId: null, message: text }, cause);
+    // With no tenant, `recordFailure` writes the text as a staff row's.
+    recordFailure(entry.tenantId ? { ...entry, message: answered, detail: staffText(raw) } : { ...entry, tenantId: null, message: raw }, cause);
   };
 
   /**
@@ -5101,6 +5105,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // ready-gate and a fresh install without it is simply broken, so a failed mint must
     // fail the provision rather than hand back a half-built scope.
     const storeErrors: string[] = [];
+    // #2540: the same failures as the scope's tenant may read them: the sentences, never the text.
+    const storeSentences: string[] = [];
     const mintBestEffort = async <T>(stage: string, mint: () => Promise<T>): Promise<T | undefined> => {
       try {
         return await mint();
@@ -5125,6 +5131,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           sentence,
         );
         storeErrors.push(withheld.detail ? `${withheld.detail} (reference ${withheld.reference})` : sentence(withheld.reference));
+        storeSentences.push(sentence(withheld.reference));
         return undefined;
       }
     };
@@ -5213,7 +5220,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #2540: the vertical's answer about a scope is its tenant's own text. Staff, and a confined
         // caller repairing an install of its own tenant, read it as before.
         if (staffCaller(c) || confinedTenant(c.get('principal')) === tenantId) {
-          return refuseStatus(c, failedWith(c, e), `${e.message}${stores}`);
+          const answer = `${e.message}${stores}`;
+          // Staff are answered the store text too, which the tenant's row must not say: a 5xx the
+          // backstop would file is filed here as a pair, the tenant's row with the sentences only.
+          const tenantStores = storeSentences.length ? ` (stores: ${storeSentences.join('; ')})` : '';
+          if (e.status >= 500 && e.status !== 501 && tenantStores !== stores) {
+            const reference = ulid();
+            recordWithheld(
+              {
+                actor,
+                operation: `${c.req.method} ${c.req.routePath}`,
+                tenantId,
+                scopeId,
+                vertical: scope.vertical,
+                version: scope.verticalVersionId ?? null,
+                status: e.status,
+                reference,
+              },
+              answer,
+              `${e.message}${tenantStores}`,
+              e,
+            );
+            c.set('failureRecorded', true);
+            return refuseStatus(c, failedWith(c, e), answer, { reference });
+          }
+          return refuseStatus(c, failedWith(c, e), answer);
         }
         // A builder repairing another tenant's install of its vertical reads the status, the store
         // sentences and a reference; what that deployment answered is staff's.

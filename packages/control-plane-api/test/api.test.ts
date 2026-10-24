@@ -2954,7 +2954,8 @@ describe('control-plane API', () => {
     expect(rows[0]).toMatchObject({
       operation: 'GET /__literal-5xx',
       status: 500,
-      message: 'reconcile failed: reference = l1t3ra1l1t3ra1',
+      // #2540: a row with no tenant is a staff row, whose text names its upstream handle first.
+      message: '[upstream reference = l1t3ra1l1t3ra1] reconcile failed: reference = l1t3ra1l1t3ra1',
     });
   });
 
@@ -2986,7 +2987,8 @@ describe('control-plane API', () => {
     await new Promise((r) => setTimeout(r, 20));
     const rows = await host.admin.listOpsFailures(staff, { reference: 'pr0b1empr0b1em' });
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ status: 502, message: 'reference = pr0b1empr0b1em' });
+    // #2540: a row with no tenant is a staff row, whose text names its upstream handle first.
+    expect(rows[0]).toMatchObject({ status: 502, message: '[upstream reference = pr0b1empr0b1em] reference = pr0b1empr0b1em' });
   });
 
   it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {

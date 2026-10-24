@@ -14,6 +14,11 @@ export function supportReference(e: Pick<OpsFailureEntry, 'message' | 'reference
   return upstreamReferenceOf(e.message) ?? e.reference;
 }
 
+/** What the copy button calls that reference: a Cloudflare support handle only when it is one. */
+export function supportReferenceLabel(e: Pick<OpsFailureEntry, 'message'>): string {
+  return upstreamReferenceOf(e.message) ? 'Copy reference for CF support' : 'Copy reference';
+}
+
 /** Debounce a text filter so an exact-match server param isn't refetched per keystroke. */
 function useDebounced(value: string, ms = 400): string {
   const [settled, setSettled] = useState(value);
@@ -260,7 +265,7 @@ export function OpsFailures({ api, tenants, initialVertical, initialFingerprint,
                               when there is one, is named at the start of staff's row. */}
                           {supportReference(e) && (
                             <Button size="sm" variant="secondary" onClick={() => copyReference(supportReference(e)!)}>
-                              {copied === supportReference(e) ? 'Copied' : 'Copy reference for CF support'}
+                              {copied === supportReference(e) ? 'Copied' : supportReferenceLabel(e)}
                             </Button>
                           )}
                           {/* #2540: a tenant's row may say only what was answered; the failure's own
@@ -270,7 +275,9 @@ export function OpsFailures({ api, tenants, initialVertical, initialFingerprint,
                               size="sm"
                               variant="ghost"
                               onClick={() => {
+                                // Every filter the staff row could miss: the tenant and the page text.
                                 setTenantFilter('all');
+                                setQ('');
                                 setReferenceInput(e.reference!);
                               }}
                             >
