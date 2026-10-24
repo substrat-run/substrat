@@ -2033,7 +2033,7 @@ function scopeTablePageOf(db: Database.Database, input: ReadScopeTableInput): Sc
   return { table: input.table, columns, rows, rowCount, limit, offset };
 }
 
-function scopeQueryOf(db: Database.Database, input: QueryScopeInput): ScopeQueryResult {
+function scopeQueryOf(db: Database.Database, input: QueryScopeInput): { sql: string; reader: boolean; result: ScopeQueryResult } {
   // Layer 1, shared: the kernel's textual gate (single statement, read verbs
   // only) — the checked statement is the one that runs.
   const sql = assertReadOnlyQuery(input.sql);
@@ -2041,7 +2041,7 @@ function scopeQueryOf(db: Database.Database, input: QueryScopeInput): ScopeQuery
   // itself rejects multi-statement strings and bad SQL with the driver's message.
   const stmt = db.prepare(sql);
   if (!stmt.readonly) throw substratError('validation_failed', 'read-only console: statement is not read-only');
-  if (!stmt.reader) return { columns: [], rows: [], truncated: false };
+  if (!stmt.reader) return { sql, reader: false, result: { columns: [], rows: [], truncated: false } };
   stmt.raw(true);
   const rows: unknown[][] = [];
   let truncated = false;
@@ -2054,7 +2054,7 @@ function scopeQueryOf(db: Database.Database, input: QueryScopeInput): ScopeQuery
     }
     rows.push((row as unknown[]).map(cellToJson));
   }
-  return { columns: stmt.columns().map((c) => c.name), rows, truncated };
+  return { sql, reader: true, result: { columns: stmt.columns().map((c) => c.name), rows, truncated } };
 }
 
 function appliedMigrationsOf(db: Database.Database): AppliedMigration[] {
@@ -11492,10 +11492,12 @@ export class SqliteScopeHost implements ScopeHost {
         input: QueryScopeInput,
       ): Promise<ScopeQueryResult> => {
         const db = this.scopeReadDbFor(tenantId, scopeId);
-        const result = scopeQueryOf(db, input);
+        const { sql, reader, result } = scopeQueryOf(db, input);
+        // A statement that reads nothing returns before any row is recorded, as it always has.
+        if (!reader) return result;
         // The statement itself is the logged argument — the K-24 access log is the
         // evidence trail for what staff read, and here the read IS the SQL.
-        this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql: assertReadOnlyQuery(input.sql) }, result.rows.length);
+        this.recordAccess(actor, 'queryScope', { tenantId, scopeId }, { sql }, result.rows.length);
         return result;
       },
       // -- the denial log (K-35, #867) -------------------------------------

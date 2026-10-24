@@ -48,7 +48,6 @@ import {
   runCrossVerticalFrom,
   isPrimaryScope,
   StorageReadUnsupported,
-  ScopeNotHeld,
   webCryptoSecretBox,
   globalFetch,
   type CrossVerticalOptions,
@@ -192,7 +191,7 @@ import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@subst
 import { transportFor, senderFor } from './email.js';
 import { sendEmailDepsOf } from './email-intent.js';
 import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
-import { newlyNotHeld } from './event-drain-not-held.js';
+import { fileNotHeld, undrainedOrNotHeld } from './event-drain-not-held.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
@@ -1534,7 +1533,10 @@ export function capabilityDelegationOver(
   };
 }
 
-/** #2544: the active scopes already filed as not held by their deployment; see `newlyNotHeld`. */
+/** Where a scope routes, as the drain tells a carry's bind from a scope its deployment lost (#2544). */
+const drainRouteKey = (s: Scope): string => `${s.servingRef ?? ''}|${s.verticalVersionId ?? ''}`;
+
+/** #2544: the active scopes the ledger was found to hold a not-held row for; see `fileNotHeld`. */
 const eventDrainNotHeldRecorded = new Set<string>();
 
 /**
@@ -1554,26 +1556,28 @@ const eventDrainNotHeldRecorded = new Set<string>();
  */
 function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
   if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
-  const clientFor = async (tenantId: TenantId, scopeId: ScopeId, vertical: string): Promise<VerticalClient> => {
-    const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const resolved = async (tenantId: TenantId, scopeId: ScopeId, vertical: string): Promise<{ client: VerticalClient; rec: Scope }> => {
     const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
     const client = rec ? await resolveVerticalForScopeFor(env)(rec) : undefined;
-    if (!client) {
+    if (!rec || !client) {
       throw new Error(`no deployment serving scope ${scopeId} (vertical '${vertical}') — cannot drain its events`);
     }
-    return client;
+    return { client, rec };
   };
+  const clientFor = async (tenantId: TenantId, scopeId: ScopeId, vertical: string): Promise<VerticalClient> =>
+    (await resolved(tenantId, scopeId, vertical)).client;
   return {
     readUndrained: async (a) => {
-      const client = await clientFor(a.tenantId, a.scopeId, a.vertical);
-      try {
-        return await client.undrainedEvents(a.scopeId, a.limit);
-      } catch (err) {
-        // #2544: the deployment says it does not hold this active scope. Standing, so the sweep counts it
-        // rather than mailing it every tick; the first appearance is filed once (`newlyNotHeld`).
-        if (isScopeNotHeld(err, a.scopeId)) throw new ScopeNotHeld(err instanceof Error ? err.message : String(err));
-        throw err;
-      }
+      const { client, rec } = await resolved(a.tenantId, a.scopeId, a.vertical);
+      // #2544: a deployment that does not hold an active scope is a standing condition, judged here.
+      return undrainedOrNotHeld({
+        scopeId: a.scopeId,
+        read: () => client.undrainedEvents(a.scopeId, a.limit),
+        record: () => directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId),
+        routeAtRead: drainRouteKey(rec),
+        routeOf: drainRouteKey,
+      });
     },
     markDrained: async (a) =>
       (await clientFor(a.tenantId, a.scopeId, a.vertical)).markEventsDrained(a.scopeId, a.eventIds, a.drainedAt),
@@ -2589,19 +2593,7 @@ export default {
     // #2544: active scopes whose deployment does not hold them. Standing, so said here on every pass
     // while it lasts and filed as an ops-failure once, when it appears; never an `errors` entry.
     const notHeld = report.eventDrain?.notHeld;
-    for (const gone of newlyNotHeld(eventDrainNotHeldRecorded, notHeld)) {
-      void host.admin
-        .recordOpsFailure({
-          actor: SWEEP_ACTOR,
-          operation: 'sweep.event-drain',
-          stage: 'not-held',
-          tenantId: gone.tenantId,
-          scopeId: gone.scopeId,
-          code: 'conflict',
-          message: 'the deployment serving this active scope does not hold it, so its events cannot be drained',
-        })
-        .catch(() => undefined);
-    }
+    await fileNotHeld({ admin: host.admin, actor: SWEEP_ACTOR, recorded: eventDrainNotHeldRecorded, notHeld });
     // #1637: pending intents nothing can settle, and where — the sweep row counts them, this says
     // which scope's journal to open. Standing, like `skipped`, so said on every pass while it lasts.
     const unsettleable = report.platformRequestUnsettleable;

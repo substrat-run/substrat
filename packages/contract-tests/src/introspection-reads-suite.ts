@@ -54,6 +54,35 @@ export const introspectionReadsOf = (host: IntrospectionReads): IntrospectionRea
   redrainCountLocal: (s, b) => host.redrainCountLocal(s, b),
 });
 
+/** One valid call of each read, for a suite that asks every one of them the same question. */
+export function introspectionReadCalls(r: IntrospectionReads): Record<keyof IntrospectionReads, (s: ScopeId) => Promise<unknown>> {
+  const window = () => {
+    const since = Math.floor(Date.now() / 1000) * 1000;
+    return { since: new Date(since - 60_000).toISOString(), until: new Date(since + 60_000).toISOString() };
+  };
+  return {
+    facetEventsLocal: (s) => r.facetEventsLocal(s, { groupBy: { kind: 'type' } }),
+    eventEffectsLocal: (s) => r.eventEffectsLocal(s, { eventId: eventId.parse(ulid()) }),
+    invocationEventsLocal: (s) => r.invocationEventsLocal(s, { invocationId: ulid() }),
+    deadLettersLocal: (s) => r.deadLettersLocal(s, {}),
+    lifecycleFlowLocal: (s) =>
+      r.lifecycleFlowLocal(s, { entityType: 'test-lifecycle', lifecycle: TEST_LIFECYCLE, ...window() }),
+    operationSeriesLocal: (s) =>
+      r.operationSeriesLocal(s, {
+        moves: [{ entityType: 'test-lifecycle', operation: 'test/move' }],
+        bucketMinutes: 1,
+        ...window(),
+      }),
+    eventCauseLocal: (s) => r.eventCauseLocal(s, { eventId: eventId.parse(ulid()) }),
+    entityHistoryLocal: (s) => r.entityHistoryLocal(s, { entityType: 'test-thing', entityId: 'x1' }),
+    appliedMigrationsLocal: (s) => r.appliedMigrationsLocal(s),
+    migrationBookmarksLocal: (s) => r.migrationBookmarksLocal(s),
+    introspectScopeTables: (s) => r.introspectScopeTables(s),
+    undrainedEventsLocal: (s) => r.undrainedEventsLocal(s, 10),
+    redrainCountLocal: (s) => r.redrainCountLocal(s, new Date().toISOString()),
+  };
+}
+
 /**
  * The introspection reads that name only a scope id hold the scope before they read it (#2544), as
  * the size reads do (#2541): a scope this deployment does not hold (reaped, or never provisioned
@@ -98,36 +127,18 @@ export function introspectionReadsContractSuite(
       );
     const refusedAs = (s: ScopeId) => ({ code: 'conflict', message: scopeNotHeldRefusal(s) });
 
-    const window = () => {
-      const since = Math.floor(Date.now() / 1000) * 1000;
-      return { since: new Date(since - 60_000).toISOString(), until: new Date(since + 60_000).toISOString() };
-    };
-    const reads: Record<keyof IntrospectionReads, (s: ScopeId) => Promise<unknown>> = {
-      facetEventsLocal: (s) => fixture.facetEventsLocal(s, { groupBy: { kind: 'type' } }),
-      eventEffectsLocal: (s) => fixture.eventEffectsLocal(s, { eventId: eventId.parse(ulid()) }),
-      invocationEventsLocal: (s) => fixture.invocationEventsLocal(s, { invocationId: ulid() }),
-      deadLettersLocal: (s) => fixture.deadLettersLocal(s, {}),
-      lifecycleFlowLocal: (s) =>
-        fixture.lifecycleFlowLocal(s, { entityType: 'test-lifecycle', lifecycle: TEST_LIFECYCLE, ...window() }),
-      operationSeriesLocal: (s) =>
-        fixture.operationSeriesLocal(s, {
-          moves: [{ entityType: 'test-lifecycle', operation: 'test/move' }],
-          bucketMinutes: 1,
-          ...window(),
-        }),
-      eventCauseLocal: (s) => fixture.eventCauseLocal(s, { eventId: eventId.parse(ulid()) }),
-      entityHistoryLocal: (s) => fixture.entityHistoryLocal(s, { entityType: 'test-thing', entityId: 'x1' }),
-      appliedMigrationsLocal: (s) => fixture.appliedMigrationsLocal(s),
-      migrationBookmarksLocal: (s) => fixture.migrationBookmarksLocal(s),
-      introspectScopeTables: (s) => fixture.introspectScopeTables(s),
-      undrainedEventsLocal: (s) => fixture.undrainedEventsLocal(s, 10),
-      redrainCountLocal: (s) => fixture.redrainCountLocal(s, new Date().toISOString()),
-    };
+    // The calls are built before the fixture is (they name the cases), so each one reaches it late.
+    const lazy = new Proxy({} as IntrospectionReads, {
+      get: (_target, name: string) => (...args: unknown[]) =>
+        (fixture as unknown as Record<string, (...a: unknown[]) => unknown>)[name]!(...args),
+    });
+    const reads = introspectionReadCalls(lazy);
 
     describe.each(Object.entries(reads))('%s', (_name, read) => {
-      it('reads a held scope', async () => {
+      it('reads a held scope, and answers something', async () => {
         const s = await newScope();
-        expect(await refusal(read(s))).toBeUndefined();
+        expect(await read(s)).not.toBeNull();
+        expect(await read(s)).toBeDefined();
       });
 
       it('refuses a reaped scope, in the shared words, and leaves nothing stored for it', async () => {

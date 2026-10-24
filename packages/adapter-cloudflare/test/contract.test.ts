@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { r2TenantBlobStore } from '../src/r2.js';
 import { REWIND_REFUSED } from '../src/rewind-refusal.js';
-import { ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey } from '@substrat-run/kernel';
+import { LOAD_STAMP_KEY, ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey, dumpMetaValue } from '@substrat-run/kernel';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
@@ -72,6 +72,7 @@ import {
   sizeReadsContractSuite,
   introspectionReadsContractSuite,
   introspectionReadsOf,
+  introspectionReadCalls,
   TEST_LIFECYCLE,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
@@ -525,6 +526,20 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
     });
     expect(await stubOf(s).databaseSizeIfHeld()).toBeNull();
     expect(await host.databaseSizeLocal(s).then(() => undefined, (e: unknown) => errorCodeOf(e))).toBe('conflict');
+  });
+
+  // #2544: a copy a carry wiped is refused by every introspection read, as a reaped scope is. Carrying
+  // is a Cloudflare-only mechanism (the SQLite host has none), so the case lives here, not in the shared suite.
+  it('a wiped carried copy is refused by every introspection read', async () => {
+    const { host, s } = await heldScope();
+    onTestFinished(async () => host.close());
+    const calls = introspectionReadCalls(introspectionReadsOf(host));
+    for (const read of Object.values(calls)) expect(await read(s).then(() => undefined, (e: unknown) => errorCodeOf(e))).toBeUndefined();
+    const stamp = dumpMetaValue(await host.exportScopeLocal(s), LOAD_STAMP_KEY);
+    expect(await host.wipeCarriedLocal(s, stamp, { to: 'elsewhere', at: '2026-10-10T00:00:00.000Z' })).toBe(true);
+    for (const [name, read] of Object.entries(calls)) {
+      expect([name, await read(s).then(() => undefined, (e: unknown) => errorCodeOf(e))]).toEqual([name, 'conflict']);
+    }
   });
 
   // #2544: the introspection reads follow the same shape. Every one of them reaches the object once,
