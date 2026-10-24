@@ -41,7 +41,8 @@
  * **What this is, and is not.** A regression TRIPWIRE that reads text, not a proof, and it is not
  * meant to be made evasion-proof. Known ways past it, each an innocent refactor away:
  * - a guard on a branch that does not dominate the write (asked in an `if`, written after it);
- * - an answer that is tested but only logged or otherwise ignored;
+ * - an answer that is tested but only logged or otherwise ignored, or acted on the wrong way round
+ *   (`if (refusal) { write }`, `if (!refusal) return; write`);
  * - a literal hoisted into a constant or split (`const ROLE = 'role:'`, `'role' + ':' + key`), or the
  *   role table named through a constant;
  * - the write moved into a helper in another function, file or package (a kernel helper);

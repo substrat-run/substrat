@@ -90,8 +90,11 @@ Roles a host defines and seats itself are held to the same rule:
   scope) is refused when a person's role would hold a reserved key, or a system-held role a key
   a person may hold. A redefinition is judged against the role it replaces: a key it adds
   meets the same rule; a system-held role redefined as a person's counts its old keys as
-  reserved; and a person's role cannot become `holder: 'system'` while anyone holds it, since
-  those seats were made through a person's door. So a role assigned through a door cannot be
+  reserved; and a role cannot be declared `holder: 'system'` while anyone but a system principal
+  holds a seat in it, unless it is already stored system-held. That holds when its stored row is
+  a person's, a row from before the holder was recorded, or gone altogether (a seat can outlive
+  its row), and it counts seats in archived scopes too. A first definition of a role nobody
+  holds is judged by its keys alone. So a role assigned through a door cannot be
   widened afterwards, by a key or by a holder change. A definition is never refused for a key
   it takes out, only for a reserved key it still holds.
 - **The owner's seat**, which a provision gives the owner of record, and **the owner
