@@ -171,6 +171,7 @@ import {
   platformSignedFetch,
   isRouteMiss,
   isScopeNotHeld,
+  notHeldIsBenign,
   sweepScopeAttachments,
   hostedCrossVerticalReach,
   retireClientsOfReapedScope,
@@ -1750,9 +1751,9 @@ function deploymentForScopeFor(
  */
 export function storageReaderFor(
   resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'databaseSize'> | undefined>,
-  servesNow?: ScopeServesNow,
+  recordNow?: ScopeRecordNow,
 ): (scope: Scope) => Promise<number | null> {
-  return deploymentSizeReaderFor(resolve, (client, scopeId) => client.databaseSize(scopeId), 'a database size', servesNow);
+  return deploymentSizeReaderFor(resolve, (client, scopeId) => client.databaseSize(scopeId), 'a database size', recordNow);
 }
 
 /**
@@ -1763,9 +1764,9 @@ export function storageReaderFor(
  */
 export function attachmentReaderFor(
   resolve: (scope: Scope) => Promise<Pick<VerticalClient, 'attachmentSize'> | undefined>,
-  servesNow?: ScopeServesNow,
+  recordNow?: ScopeRecordNow,
 ): (scope: Scope) => Promise<number | null> {
-  return deploymentSizeReaderFor(resolve, (client, scopeId) => client.attachmentSize(scopeId), 'attachment bytes', servesNow);
+  return deploymentSizeReaderFor(resolve, (client, scopeId) => client.attachmentSize(scopeId), 'attachment bytes', recordNow);
 }
 
 /**
@@ -1786,30 +1787,31 @@ export function oncePerScope<C>(resolve: (scope: Scope) => Promise<C>): (scope: 
 }
 
 /**
- * Whether the directory, read NOW, still says this scope serves (is `active`): the question behind a
- * deployment's "not held" answer (#2541). The scope in hand was listed earlier in the pass, so it can
- * be reaped, or archived straight from provisioning, by the time its size is read.
+ * The directory's record of this scope, read NOW: the question behind a deployment's "not held"
+ * answer (#2541). The scope in hand was listed earlier in the pass, so it can have been reaped by
+ * the time its size is read. A read that fails rejects; it is not an answer.
  */
-export type ScopeServesNow = (scope: Scope) => Promise<boolean>;
+export type ScopeRecordNow = (scope: Scope) => Promise<Pick<Scope, 'status'> | undefined>;
 
-/** `ScopeServesNow` over the directory: no record, or any status but `active`, is a scope that no longer serves. */
-export const scopeServesNowIn =
-  (admin: Pick<HostAdmin, 'getScopeRecord'>, actor: PlatformActorId): ScopeServesNow =>
-  async (scope) => (await admin.getScopeRecord(actor, scope.tenantId, scope.id).catch(() => null))?.status === 'active';
+/** `ScopeRecordNow` over the directory. */
+export const scopeRecordNowIn =
+  (admin: Pick<HostAdmin, 'getScopeRecord'>, actor: PlatformActorId): ScopeRecordNow =>
+  (scope) =>
+    admin.getScopeRecord(actor, scope.tenantId, scope.id);
 
 /**
  * One size of a scope, read through the deployment that holds its DO (see `storageReaderFor`).
  *
  * A deployment answers 409 for a scope it does not hold (#2541). That is a skip (`null`, asked again
- * a day later) when the directory no longer has the scope serving: listed, then reaped or archived
- * before it held a store. A scope the directory still has `active` that its deployment does not hold
- * is a real fault and stays an error that reaches the digest. Without `servesNow` every such answer is one.
+ * a day later) when the directory says the scope is gone (`notHeldIsBenign`: reaped or archived since
+ * the listing, or no record). Any other status holds a store, so it stays an error that reaches the
+ * digest, and so does a directory read that fails. Without `recordNow` every such answer is an error.
  */
 function deploymentSizeReaderFor<C>(
   resolve: (scope: Scope) => Promise<C | undefined>,
   read: (client: C, scopeId: ScopeId) => Promise<number>,
   what: string,
-  servesNow?: ScopeServesNow,
+  recordNow?: ScopeRecordNow,
 ): (scope: Scope) => Promise<number | null> {
   return async (scope) => {
     if (!scope.vertical) return null;
@@ -1818,7 +1820,7 @@ function deploymentSizeReaderFor<C>(
     try {
       return await read(client, scope.id);
     } catch (err) {
-      if (servesNow && isScopeNotHeld(err, scope.id) && !(await servesNow(scope))) return null;
+      if (recordNow && isScopeNotHeld(err, scope.id) && (await notHeldIsBenign(() => recordNow(scope)))) return null;
       // A deployment built before the route answers 501 (the route, without the host's read)
       // or a ROUTE MISS (no route at all). Standing until it is redeployed, so not a digest
       // entry. Any other 404 is a real failure that reaches the digest.
@@ -2425,7 +2427,7 @@ export default {
     const requestRollup = requestRollupFor(env);
     // #2501: the storage gauge's database and attachment reads go through one deployment per scope.
     const gaugeDeployment = oncePerScope(resolveVerticalForScopeFor(env));
-    const servesNow = scopeServesNowIn(host.admin, SWEEP_ACTOR);
+    const recordNow = scopeRecordNowIn(host.admin, SWEEP_ACTOR);
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
@@ -2499,10 +2501,10 @@ export default {
       // #1524: the stored storage gauge. The kernel reads only scopes the drain above just
       // reached, so a reading lands on a DO that is already awake and never wakes an idle one.
       storageGauge: {
-        read: storageReaderFor(gaugeDeployment, servesNow),
+        read: storageReaderFor(gaugeDeployment, recordNow),
         readStores: storeStorageReaderFor((scope) => declaredStoreSizes(env, host.admin, scope)),
         // #2501: attachment bytes beside the database, through the same deployment, found once.
-        readAttachments: attachmentReaderFor(gaugeDeployment, servesNow),
+        readAttachments: attachmentReaderFor(gaugeDeployment, recordNow),
       },
       // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
       // install, so a scope serving code whose provision hook never ran against it is

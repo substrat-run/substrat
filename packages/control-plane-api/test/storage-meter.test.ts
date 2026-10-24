@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, onTestFinished, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,7 @@ import {
   SERVICE_TOKEN_HEADER,
   STORAGE_PAGE_MAX,
   STORAGE_READ_CONCURRENCY,
+  notHeldIsBenign,
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
 } from '../src/index.js';
@@ -232,34 +233,73 @@ describe('GET /meters/storage when a deployment holds no store for a scope (#254
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const tenantWith = async (...statuses: ('active' | 'archived')[]) => {
+  const tenantWith = async (...stages: ('provisioning' | 'active' | 'suspended' | 'archived')[]) => {
     const t = tenantId.parse(ulid());
     await host.admin.createTenant(staff, { id: t, slug: `held-${t.slice(-8).toLowerCase()}`, name: 'Held' });
     const ids: ScopeId[] = [];
-    for (const status of statuses) {
+    for (const stage of stages) {
       const s = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert' });
-      await host.admin.activateScope(staff, t, s);
-      if (status === 'archived') await host.admin.archiveScope(staff, t, s);
+      if (stage !== 'provisioning') await host.admin.activateScope(staff, t, s);
+      if (stage === 'suspended') await host.admin.suspendScope(staff, t, s);
+      if (stage === 'archived') await host.admin.archiveScope(staff, t, s);
       ids.push(s);
     }
     return { t, ids };
   };
+  const pageOf = async (t: string) => (await app.request(`/meters/storage?tenantId=${t}`, { headers: asStaff })).json();
 
-  it('reads 0 for a scope the directory no longer has serving, and the tenant page is complete', async () => {
+  it('reads 0 for a scope the directory has archived, and the tenant page is complete', async () => {
     const { t, ids } = await tenantWith('archived');
-    const body = await (await app.request(`/meters/storage?tenantId=${t}`, { headers: asStaff })).json();
+    const body = await pageOf(t);
     expect(body.scopes).toEqual([expect.objectContaining({ scopeId: ids[0], bytes: 0 })]);
     expect(body).toMatchObject({ read: 1, failed: 0, complete: true, bytes: 0 });
   });
 
-  it('keeps a scope the directory has active as a failure: the deployment should hold it', async () => {
-    const { t, ids } = await tenantWith('active', 'archived');
-    const body = await (await app.request(`/meters/storage?tenantId=${t}`, { headers: asStaff })).json();
+  it('keeps a not-held answer a failure for every status that holds a store: provisioning, active, suspended', async () => {
+    const { t, ids } = await tenantWith('provisioning', 'active', 'suspended', 'archived');
+    const body = await pageOf(t);
     const by = new Map<string, { bytes: number | null; error?: string }>(body.scopes.map((x: { scopeId: string }) => [x.scopeId, x]));
-    expect(by.get(ids[0]!)).toMatchObject({ bytes: null, error: expect.stringMatching(/not held by this deployment/) });
-    expect(by.get(ids[1]!)?.bytes).toBe(0);
-    expect(body).toMatchObject({ read: 1, failed: 1, complete: false });
+    for (const id of ids.slice(0, 3)) {
+      expect(by.get(id)).toMatchObject({ bytes: null, error: expect.stringMatching(/not held by this deployment/) });
+    }
+    expect(by.get(ids[3]!)?.bytes).toBe(0);
+    expect(body).toMatchObject({ read: 1, failed: 3, complete: false });
+  });
+
+  it('reads 0 when the directory has no record of the scope by the time it is read', async () => {
+    const { t, ids } = await tenantWith('active');
+    const spy = vi.spyOn(host.admin, 'getScopeRecord').mockResolvedValue(undefined);
+    onTestFinished(() => spy.mockRestore());
+    const body = await pageOf(t);
+    expect(body.scopes).toEqual([expect.objectContaining({ scopeId: ids[0], bytes: 0 })]);
+  });
+
+  it('keeps a failing directory read a failure of that scope, never a silent 0', async () => {
+    const { t, ids } = await tenantWith('archived');
+    const spy = vi.spyOn(host.admin, 'getScopeRecord').mockRejectedValue(new Error('directory unavailable'));
+    onTestFinished(() => spy.mockRestore());
+    const body = await pageOf(t);
+    expect(body.scopes).toEqual([expect.objectContaining({ scopeId: ids[0], bytes: null, error: expect.stringMatching(/directory unavailable/) })]);
+    expect(body).toMatchObject({ failed: 1, complete: false });
+  });
+});
+
+describe('notHeldIsBenign (#2541)', () => {
+  it.each([
+    ['reaped', true],
+    ['archived', true],
+    ['provisioning', false],
+    ['active', false],
+    ['suspended', false],
+    ['archiving', false],
+  ] as const)('a %s scope: benign is %s', async (status, benign) => {
+    expect(await notHeldIsBenign(async () => ({ status }))).toBe(benign);
+  });
+
+  it('is benign when the directory has no record, and rejects when the directory read does', async () => {
+    expect(await notHeldIsBenign(async () => undefined)).toBe(true);
+    await expect(notHeldIsBenign(async () => Promise.reject(new Error('directory unavailable')))).rejects.toThrow(/directory unavailable/);
   });
 });
 

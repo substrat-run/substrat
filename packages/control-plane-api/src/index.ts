@@ -45,7 +45,7 @@ export type {
 // The console's staff surface (#971). Browser-safe, so it is ALSO a subpath of its own
 // (`./browser`): a bundler resolving the root entry would pull the whole server.
 export * from './browser.js';
-export { VerticalClient, AUDITED_CALL_DEADLINE_MS, isRouteMiss, isScopeNotHeld } from './vertical-client.js';
+export { VerticalClient, AUDITED_CALL_DEADLINE_MS, isRouteMiss, isScopeNotHeld, notHeldIsBenign } from './vertical-client.js';
 export { platformSignedFetch, type PlatformWireSettings } from './platform-wire.js';
 export {
   advanceCopyJob,

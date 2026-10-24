@@ -1965,7 +1965,6 @@ type TupleReadRow = { subject: string; relation: string; expires_at: string | nu
  */
 const PROCESS_HOST_DIRS = new Map<string, { lock: Database.Database; hosts: number }>();
 
-
 /** A scope database's size in bytes: allocated pages, free ones included, which is what the file costs on disk (#1524). */
 const databaseBytesOf = (db: Database.Database): number =>
   (db.pragma('page_count', { simple: true }) as number) * (db.pragma('page_size', { simple: true }) as number);
