@@ -1891,6 +1891,25 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(JSON.parse(raw)).toEqual({ ...LEGACY_RECORD, contentType: 'application/octet-stream' });
   });
 
+  it('connector-attachment GET: a stored ASCII content type of 30k units does not become a 30k response header', async () => {
+    const { res, bytes } = await readBack({ ...LEGACY_RECORD, contentType: 'text/' + 'a'.repeat(30_000) });
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(bytes);
+    expect(res.headers.get('content-type')).toBe('application/octet-stream');
+    expect(res.headers.get('x-substrat-attachment')!.length).toBeLessThanOrEqual(10 * 1024);
+  });
+
+  it('connector-attachment GET: a JSON-encoded creator cut to its bound is still read, as a marked string', async () => {
+    // A connection's creator is a JSON actor. Cut, it is no longer JSON, and says so with its end.
+    const createdBy = JSON.stringify({ connection: 'c'.repeat(10_000) });
+    const { res } = await readBack({ ...LEGACY_RECORD, createdBy });
+    expect(res.status).toBe(200);
+    const read = JSON.parse(res.headers.get('x-substrat-attachment')!) as { createdBy: string };
+    expect(read.createdBy.endsWith('\u2026')).toBe(true);
+    expect(read.createdBy).toHaveLength(128);
+    expect(() => JSON.parse(read.createdBy)).toThrow();
+  });
+
   it('connector-attachment GET: every field long at once still reads back under the bound', async () => {
     const long = '\ud83d\udcdd'.repeat(10_000);
     const { res } = await readBack({

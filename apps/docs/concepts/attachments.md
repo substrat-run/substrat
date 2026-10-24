@@ -38,7 +38,8 @@ type over 128, an entity id over 255 or a creator over 128 (counted in UTF-16 un
 JavaScript's `length` counts). A connector reads the record back through a response header, and
 these bounds keep it small however many of those characters are non-ASCII. A file stored before
 the bounds is still read back; if a string on it is long enough to overflow the header, that
-string is cut to its bound and ends in `…` (a content type is sent as `application/octet-stream`),
+string is cut to its bound and ends in `…` (a content type is sent as `application/octet-stream`; a creator recorded as a JSON actor, once cut,
+is no longer valid JSON, and the `…` marks it),
 and everything else about the file is exact. A link's entity is held to the same bounds when the
 link is minted.
 

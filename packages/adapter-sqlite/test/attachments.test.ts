@@ -177,6 +177,28 @@ describe('attachment surface (pure adapter)', () => {
     expect(atBound.entity.entityType).toHaveLength(128);
   });
 
+  // The creator is the acting principal, so its bound is reached through a principal id that is
+  // over it (a cast, since the brand is a ULID in practice): the same judge, the same refusal.
+  it('refuses an upload by a creator over its bound, and stores nothing', async () => {
+    const { host, staff, t, s } = await world();
+    const fields = {
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'ok.jpg',
+      contentType: 'image/jpeg',
+      visibility: 'internal' as const,
+      body: bytes('b'),
+    };
+    const as = async (length: number) => {
+      const who = 'p'.repeat(length) as PrincipalId;
+      await host.admin.assignRole(staff, { principalId: who, roleKey: 'editor', node: { tenantId: t, scopeId: s } });
+      return host.attachments(who, t, s);
+    };
+    // Named by its field. Without the bound the upload still fails, later and for another reason
+    // (an event actor must be a ULID), so only the bound's own refusal matches. No twin lands here:
+    // a creator through this door is always a 26-character id; the contracts test holds the bound.
+    await expect((await as(129)).upload(fields)).rejects.toThrow(/createdBy/);
+  });
+
   // #1575: a host refuses, when it is built, an extractor declaration it could not honour.
   it('refuses at construction an extractor whose input bound is not a positive integer', () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-att-bad-'));

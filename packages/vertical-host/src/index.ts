@@ -1072,9 +1072,13 @@ function recordHeader(record: AttachmentRecord): string {
 /**
  * A content type a response header accepts, else `application/octet-stream` (#2519). Both upload
  * routes store any non-empty string, and a header refuses anything outside printable ASCII or
- * with edge whitespace. The stored type is not lost: the record header carries it exactly.
+ * with edge whitespace, and a stored row can hold one of any length, so over the upload bound it
+ * falls back too. The record header carries the stored type (itself cut to the bound, see
+ * {@link recordHeader}).
  */
 function headerSafeContentType(contentType: string): string {
+  // Bounded like the upload: a row stored before the bound can hold a type of any length.
+  if (contentType.length > ATTACHMENT_FIELD_MAX.contentType) return 'application/octet-stream';
   return /^[\x21-\x7e]([\x20-\x7e]*[\x21-\x7e])?$/.test(contentType) ? contentType : 'application/octet-stream';
 }
 
