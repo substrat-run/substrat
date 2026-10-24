@@ -14,4 +14,4 @@ Who owned a vertical, and when (#2501). `verticals.owner_tenant` says who owns a
 - adapter-sqlite, adapter-cloudflare: a period opens in the transaction that inserts a `verticals` row and closes in the one that deletes it, and the backfill runs at start. contract-tests holds both adapters to it, a restore from a dump without the history included.
 - control-plane-api: the staff-only `GET /verticals/:slug/owners`, served for a deleted slug too, and `readVerticalOwners` on the staff client.
 
-The history is kept for good: it is not governed by `BILLING_ROLLUP_RETENTION_MONTHS`, and nothing prunes it. A horizon for it later would be an additive change.
+The history is kept for good: it is not governed by `BILLING_ROLLUP_RETENTION_MONTHS`, and nothing prunes it. A tenant reap keeps the periods that tenant owned, as it keeps the tenant's tombstone: a period names a tenant id, never a person. A horizon for it later would be an additive change.

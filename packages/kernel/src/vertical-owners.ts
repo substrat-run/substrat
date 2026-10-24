@@ -14,16 +14,18 @@ import type { RedactionSql } from './subject-redaction.js';
  * (a conflicting re-registration is refused), so those two are the only transitions.
  *
  * At most one period of a slug is open, held by a partial unique index. `owner` is NULL for a
- * platform-owned vertical.
+ * platform-owned vertical. `(slug, since)` is deliberately not a key: a slug deleted and registered
+ * again within one millisecond has two periods with the same `since`, and the second registration
+ * must not fail for it.
  */
 export const VERTICAL_OWNERS_DDL = `
   CREATE TABLE IF NOT EXISTS _substrat_vertical_owners (
     slug TEXT NOT NULL,
     owner TEXT,
     since TEXT NOT NULL,
-    until TEXT,
-    PRIMARY KEY (slug, since)
+    until TEXT
   );
+  CREATE INDEX IF NOT EXISTS _substrat_vertical_owners_slug ON _substrat_vertical_owners (slug, since);
   CREATE UNIQUE INDEX IF NOT EXISTS _substrat_vertical_owners_open ON _substrat_vertical_owners (slug) WHERE until IS NULL;
 `;
 
@@ -48,9 +50,15 @@ export function closeVerticalOwnerRow(sql: RedactionSql, slug: string, until: st
   sql('UPDATE _substrat_vertical_owners SET until = ? WHERE slug = ? AND until IS NULL', [until, slug]);
 }
 
-/** Every period of a slug's ownership, oldest first. Parsed on the way out. */
+/**
+ * Every period of a slug's ownership, oldest first. Parsed on the way out. Two periods with the same
+ * `since` are ordered closed first, since only the last can be open.
+ */
 export function listVerticalOwnerRows(sql: RedactionSql, slug: string): VerticalOwnerPeriod[] {
-  const rows = sql('SELECT slug, owner, since, until FROM _substrat_vertical_owners WHERE slug = ? ORDER BY since', [slug]) as {
+  const rows = sql(
+    'SELECT slug, owner, since, until FROM _substrat_vertical_owners WHERE slug = ? ORDER BY since, until IS NULL, until',
+    [slug],
+  ) as {
     slug: string;
     owner: string | null;
     since: string;

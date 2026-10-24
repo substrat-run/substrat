@@ -11868,6 +11868,20 @@ export function scopeHostContractSuite(
         await host.admin.deleteVertical(staff, slug);
       });
 
+      it("a tenant reap keeps the periods it owned: the history is the invoice's, kept for good", async () => {
+        const owner = await newOwner();
+        const [past, standing] = [newSlug(), newSlug()];
+        await host.admin.registerVertical(staff, { slug: past, name: 'Past', source: 'cli', ownerTenant: owner });
+        await host.admin.deleteVertical(staff, past);
+        await host.admin.registerVertical(staff, { slug: standing, name: 'Standing', source: 'cli', ownerTenant: owner });
+        const before = [await host.admin.listVerticalOwners!(staff, past), await host.admin.listVerticalOwners!(staff, standing)];
+        await host.admin.setTenantStatus(staff, owner, 'deleting');
+        await host.admin.reapTenant(staff, owner);
+        expect([await host.admin.listVerticalOwners!(staff, past), await host.admin.listVerticalOwners!(staff, standing)]).toEqual(before);
+        expect(before.flat().map((p) => p.owner)).toEqual([owner, owner]);
+        await host.admin.deleteVertical(staff, standing);
+      });
+
       it('a delete refused while a scope still runs the vertical leaves the period open', async () => {
         const owner = await newOwner();
         const slug = newSlug();

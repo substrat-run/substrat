@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { platformActorId } from '@substrat-run/contracts';
-import { openVerticalOwnerRow } from '@substrat-run/kernel';
+import { closeVerticalOwnerRow, listVerticalOwnerRows, openVerticalOwnerRow } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -63,6 +63,31 @@ describe('vertical ownership history on a directory file (#2501)', () => {
       raw.prepare(`INSERT INTO _substrat_vertical_owners (slug, owner, since, until) VALUES ('acme-crm', NULL, '2026-01-01T00:00:00.000Z', '2026-02-01T00:00:00.000Z')`).run();
       openVerticalOwnerRow(sql, 'acme-crm', null, '2026-03-01T00:00:00.000Z');
       expect(() => openVerticalOwnerRow(sql, 'acme-crm', null, '2026-04-01T00:00:00.000Z')).toThrow(/UNIQUE/);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('a slug deleted and registered again within one millisecond opens its second period, listed after the first', async () => {
+    const dir = newDir();
+    const host = new SqliteScopeHost({ dir });
+    await host.close();
+    const raw = new Database(join(dir, '_directory.sqlite'));
+    const sql = (statement: string, params: readonly (string | number | null)[]) => {
+      const stmt = raw.prepare(statement);
+      if (stmt.reader) return stmt.all(...params) as unknown[];
+      stmt.run(...params);
+      return [];
+    };
+    const at = '2026-03-01T00:00:00.000Z';
+    try {
+      openVerticalOwnerRow(sql, 'acme-crm', 'tenant-a', at);
+      closeVerticalOwnerRow(sql, 'acme-crm', at);
+      openVerticalOwnerRow(sql, 'acme-crm', 'tenant-b', at);
+      expect(listVerticalOwnerRows(sql, 'acme-crm')).toEqual([
+        { slug: 'acme-crm', owner: 'tenant-a', since: at, until: at },
+        { slug: 'acme-crm', owner: 'tenant-b', since: at, until: null },
+      ]);
     } finally {
       raw.close();
     }

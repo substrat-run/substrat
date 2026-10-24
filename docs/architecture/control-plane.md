@@ -1342,7 +1342,9 @@ log. So the directory keeps each registration as a period.
   period, oldest first; a slug never registered has none.
 - **Kept for good.** One row per registration is tiny, and it is the record a later invoice or a
   dispute needs, so it is not governed by `BILLING_ROLLUP_RETENTION_MONTHS` and nothing prunes it.
-  A horizon for it later would be an additive change.
+  A tenant reap keeps the periods that tenant owned, as it keeps the `tenants` tombstone and the
+  billing day rows: a period names a tenant id, never a person. A horizon for it later would be
+  an additive change.
 
 ### 5.2 Storage, read on demand ([#1524](https://github.com/substrat-run/substrat/issues/1524))
 
