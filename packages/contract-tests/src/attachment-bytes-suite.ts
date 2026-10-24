@@ -106,6 +106,8 @@ export function attachmentBytesContractSuite(adapterName: string, makeFixture: (
       expect(storage.basis).toBe('scope-databases');
       expect(storage.excluded).toContain('attachments');
       expect(storage.bytes).toBeGreaterThan(0);
-    });
+      // A whole storage pass, and on workerd every read wakes a scope DO: past vitest's 5 s
+      // default on a loaded machine, though it finishes in about one.
+    }, 30_000);
   });
 }
