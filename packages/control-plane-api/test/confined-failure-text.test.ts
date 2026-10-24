@@ -151,15 +151,17 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     expect(res.status).toBe(200);
     return res.text();
   };
-  /** Staff's row for `operation`, once it has landed (rows are written beside the answer). */
-  const staffRow = (operation: string, vertical: string) =>
+  /** The rows staff read for `operation`, once one has landed (rows are written beside the answer). */
+  const rowsOf = (operation: string, vertical: string) =>
     vi.waitFor(async () => {
-      const res = await app.request(`/ops-failures?operation=${operation}&vertical=${encodeURIComponent(vertical)}`, { headers: auth });
+      const res = await app.request(`/ops-failures?operation=${encodeURIComponent(operation)}&vertical=${encodeURIComponent(vertical)}`, { headers: auth });
       expect(res.status).toBe(200);
-      const row = ((await res.json()) as { entries: Record<string, unknown>[] }).entries.at(0);
-      expect(row).toBeDefined();
-      return row!;
+      const rows = ((await res.json()) as { entries: Record<string, unknown>[] }).entries;
+      expect(rows.some((r) => r.tenantId === null)).toBe(true);
+      return rows;
     });
+  /** Staff's own row for `operation`: the one with no tenant, which carries the text. */
+  const staffRow = async (operation: string, vertical: string) => (await rowsOf(operation, vertical)).find((r) => r.tenantId === null)!;
 
   /** The `control-plane.unhandled` log line carrying `reference`. */
   const logLine = (reference: string) =>
@@ -191,8 +193,10 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
 
     // The row is staff's, and says it whole; none the confined caller can read back says it; the
     // log line under the same reference does.
-    const row = await staffRow('promote.serve', slug);
-    expect(row).toMatchObject({ tenantId: null, message: leak, reference: said.reference, version: v2.id });
+    const rows = await rowsOf('promote.serve', slug);
+    expect(rows.find((r) => r.tenantId === null)).toMatchObject({ message: leak, reference: said.reference, version: v2.id });
+    // The tenant's own row says what it was answered, under the same reference.
+    expect(rows.find((r) => r.tenantId === t)).toMatchObject({ message: said.detail, reference: said.reference });
     clean(await failuresSeenBy(asTenant, t));
     expect(logLine(said.reference)).toMatchObject({ operation: 'promote.serve', vertical: slug, detail: leak });
 
@@ -270,14 +274,49 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     expect(said.storeError).toMatch(/^a declared store could not be minted \(blob-stores, reference [0-9A-Z]{26}\)$/);
     expect(said.storeError).not.toContain('something private');
     const reference = /reference ([0-9A-Z]{26})/.exec(said.storeError)![1]!;
-    expect(await staffRow('scope.provision.stores', slug)).toMatchObject({ tenantId: null, message: leak, stage: 'blob-stores', reference });
-    // The foreign tenant's own failure list gets no row of this request's text either.
+    const rows = await rowsOf('scope.provision.stores', slug);
+    expect(rows.find((r) => r.tenantId === null)).toMatchObject({ message: leak, stage: 'blob-stores', reference });
+    // The install's tenant reads that a store could not be minted, and the reference, nothing more.
+    expect(rows.find((r) => r.tenantId === b)).toMatchObject({ message: said.storeError, reference });
     const asForeign = await tokenFor('/tenant-tokens', b);
     expect(await failuresSeenBy(asForeign, b)).not.toContain('something private');
     clean(await failuresSeenBy(await tokenFor('/tenant-tokens', t), t));
+  });
 
-    const asStaff = await app.request(`/tenants/${b}/scopes/${foreign}/provision`, { method: 'POST', headers: auth });
-    expect(((await asStaff.json()) as { storeError: string }).storeError).toBe(leak);
+  /**
+   * A staff request still files its failure under the tenant it acted on, and that tenant reads the
+   * row back. So the tenant's row says what the request was answered and the reference, and staff
+   * read the text on the row with no tenant under that reference.
+   */
+  it('a staff-initiated request: the tenant reads only the answered message and the reference; staff find the text by it', async () => {
+    const { pin, t, slug, b, foreign, leak, clean } = await setup('staffside', { blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] });
+    captureLog();
+
+    // A store mint fails during staff's repair of the foreign tenant's install.
+    vi.spyOn(host, 'provisionBlobStore').mockRejectedValue(new Error(leak));
+    const repair = await app.request(`/tenants/${b}/scopes/${foreign}/provision`, { method: 'POST', headers: auth });
+    expect(repair.status).toBe(200);
+    expect(((await repair.json()) as { storeError: string }).storeError).toBe(leak);
+    const minted = await rowsOf('scope.provision.stores', slug);
+    const own = minted.find((r) => r.tenantId === b)!;
+    expect(own.message).toMatch(/^a declared store could not be minted \(blob-stores, reference [0-9A-Z]{26}\)$/);
+    expect(minted.find((r) => r.tenantId === null)).toMatchObject({ message: leak, reference: own.reference });
+    // Its own row names its own scope, which is no secret to it; what the store said is.
+    expect(await failuresSeenBy(await tokenFor('/tenant-tokens', b), b)).not.toContain('something private');
+    vi.restoreAllMocks();
+    captureLog();
+
+    // An unhandled throw on staff's promote of the owner's vertical: the owner's row.
+    const v2 = await push(pin, manifest('0.2.0'));
+    vi.spyOn(host.admin, 'listChannels').mockImplementation(async () => Promise.reject(new Error(leak)));
+    const res = await promote(slug, v2.id);
+    expect(res.status).toBe(500);
+    const promoted = await rowsOf('POST /verticals/:slug/channels/:channel/promote', slug);
+    const tenantRow = promoted.find((r) => r.tenantId === t)!;
+    expect(tenantRow.message).toBe('internal error');
+    expect(promoted.find((r) => r.tenantId === null)).toMatchObject({ message: leak, reference: tenantRow.reference });
+    expect(logLine(tenantRow.reference as string)).toMatchObject({ detail: leak });
+    clean(await failuresSeenBy(await tokenFor('/tenant-tokens', t), t));
   });
 
   it('an unhandled throw: a confined caller’s failure row says what it was answered, staff’s the throw', async () => {
@@ -302,16 +341,9 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
       return found!;
     });
     expect(row.message).toBe('internal error');
-    // The log line under the row's reference carries the throw.
+    // The log line under the row's reference carries the throw, and so does staff's row under it.
     expect(logLine(row.reference!)).toMatchObject({ detail: leak });
-
-    // Staff's own request keeps the throw on its row.
-    const asStaff = await promote(slug, v2.id);
-    expect(asStaff.status).toBe(500);
-    // The backstop writes its row without holding the answer up.
-    await vi.waitFor(async () => {
-      const rows = await host.admin.listOpsFailures(staff, { limit: 500 } as never);
-      expect(rows.filter((r) => r.operation.endsWith('/promote')).map((r) => [r.tenantId, r.message])).toContainEqual([t, leak]);
-    });
+    const rows = await rowsOf('POST /verticals/:slug/channels/:channel/promote', slug);
+    expect(rows.find((r) => r.tenantId === null)).toMatchObject({ message: leak, reference: row.reference });
   });
 });
