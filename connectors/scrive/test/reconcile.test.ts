@@ -382,10 +382,11 @@ describe('scrive connector — return path (record signatures back)', () => {
     });
 
     it('cuts off a body that declares no length at the ceiling and holds it', async () => {
-      const { instanceId, docId } = await closedWith(null, MAX + 1);
+      const CHUNK = 1024 * 1024; // the mock serves in 1 MiB reads
+      const { instanceId, docId } = await closedWith(null, MAX + 10 * CHUNK);
       const first = await reconcile(instanceId);
       expect(first.sealedDocument).toEqual({ skipped: expect.stringMatching(/over the \d+ bytes/) });
-      expect(scrive.sealedBytesServed.get(docId)).toBeLessThanOrEqual(MAX + 1);
+      expect(scrive.sealedBytesServed.get(docId)).toBeLessThanOrEqual(MAX + CHUNK);
       const spy = fetches();
       await reconcile(instanceId);
       expect(spy).not.toHaveBeenCalled();

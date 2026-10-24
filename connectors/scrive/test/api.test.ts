@@ -81,12 +81,13 @@ describe('ScriveApi.getMainFile size bound (#2552)', () => {
   });
 
   it('counts a body that declares no length and cuts it off at the ceiling', async () => {
-    const { mock, api, doc } = await sealed(null, MAX + 1);
+    const CHUNK = 1024 * 1024; // the mock serves in 1 MiB reads
+    const { mock, api, doc } = await sealed(null, MAX + 10 * CHUNK);
     const err = await api.getMainFile(doc.id).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ScriveFileTooLargeError);
     expect((err as ScriveFileTooLargeError).bytes).toBeUndefined();
-    // Cut off one chunk past the bound, never the whole file read to its end.
-    expect(mock.sealedBytesServed.get(doc.id)).toBeLessThanOrEqual(MAX + 1);
+    // Cut off at the read that crossed the bound, never the whole file read to its end.
+    expect(mock.sealedBytesServed.get(doc.id)).toBeLessThanOrEqual(MAX + CHUNK);
   });
 
   it('takes a body that declares no length and is under the ceiling', async () => {
