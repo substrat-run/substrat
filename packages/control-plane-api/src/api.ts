@@ -751,6 +751,8 @@ type Vars = {
   failure?: unknown;
   /** A step recorded this request's failure with no error object to mark (a literal 5xx). */
   failureRecorded?: true;
+  /** #2540: the reference `onError` logged an unhandled 5xx under, which the backstop's row carries. */
+  failureReference?: string;
 };
 
 /** What a helper needs of a request: its actor and the host it writes through (#977). */
@@ -1888,6 +1890,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const marked = typeof cause === 'object' && cause !== null && recordedCauses.has(cause);
       if (!marked) {
         const { vertical, tenantId } = await failureSubject(c);
+        // #2540: the row is attributed to a tenant, which reads it back. A confined caller's row says
+        // what the caller was answered, never the throw's own text (an unhandled throw's is unreviewed,
+        // and is in `onError`'s log line under the same reference). Staff's rows keep the throw's text.
+        const message = cause !== undefined && staffCaller(c) ? messageOfThrow(cause) : await answeredMessage(c.res);
         recordFailure(
           {
             actor,
@@ -1896,7 +1902,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             tenantId,
             scopeId: (c.req.param('scopeId') as OpsFailureInput['scopeId']) ?? null,
             status,
-            message: cause !== undefined ? messageOfThrow(cause) : await answeredMessage(c.res),
+            message,
+            // An upstream's own trace reference first, as before; else the one the log line carries.
+            reference: UPSTREAM_REFERENCE.exec(message)?.[1] ?? c.get('failureReference') ?? null,
           },
           cause === undefined ? NO_CAUSE : cause,
         );
@@ -2158,6 +2166,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     inflightRecords.add(write);
   };
 
+  /** #2540: whether this request's principal is staff. Anything else, or no principal yet, is confined. */
+  const staffCaller = (c: Context<{ Variables: Vars }>): boolean => c.get('principal')?.kind === 'staff';
+
+  /**
+   * #2540: a failure whose text is not ours to hand a confined caller: what an upstream or a store
+   * answered, often while the request reached scopes that are not the caller's (a promote's serve
+   * and store backfill run across every install). The text goes to the `control-plane.unhandled`
+   * log line and to an ops-failure row with no tenant on it, which only staff read, both under one
+   * reference. The answer carries the reference, and the text too when the caller is staff. Who
+   * the caller is is decided by the request's principal alone (`staffCaller`), never by a scope or
+   * tenant the request names. The cause is marked recorded, so the 5xx backstop writes no second row
+   * for it; a route that answers the failure as a 5xx of its own also sets `failureRecorded`.
+   */
+  const withheldFailure = (
+    c: Context<{ Variables: Vars }>,
+    entry: Omit<OpsFailureInput, 'actor' | 'tenantId' | 'reference'>,
+    cause: unknown,
+  ): { reference: string; detail?: string } => {
+    const reference = ulid();
+    console.error('control-plane.unhandled', {
+      method: c.req.method,
+      path: c.req.path,
+      reference,
+      operation: entry.operation,
+      stage: entry.stage ?? null,
+      vertical: entry.vertical ?? null,
+      version: entry.version ?? null,
+      scopeId: entry.scopeId ?? null,
+      detail: entry.message,
+    });
+    recordFailure({ ...entry, actor: c.get('actor'), tenantId: null, reference }, cause);
+    return staffCaller(c) ? { reference, detail: entry.message } : { reference };
+  };
+
   /**
    * Whose failure the backstop is recording, so the dashboard's tenant-pinned failure view lists
    * it. The path's tenant when it names one; otherwise the credential's own (a CI push token, a
@@ -2249,9 +2291,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // (the 503 for a plane with no seal key, #603) passes through here too: its body already
     // says what is wrong, and the tail line is what ties it to the request that hit it.
     if (status >= 500) {
+      const reference = ulid();
+      c.set('failureReference', reference);
       console.error('control-plane.unhandled', {
         method: c.req.method,
         path: c.req.path,
+        reference,
+        tenantId: c.req.param('tenantId') ?? null,
+        scopeId: c.req.param('scopeId') ?? null,
         detail: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
       });
@@ -4960,6 +5007,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         return await mint();
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
+        const status = e instanceof ControlPlaneError ? e.status : null;
+        // #2540: a confined caller (a builder may repair any install of its own vertical, whoever's)
+        // reads that the mint failed and the reference; what the store answered is staff's.
+        if (!staffCaller(c)) {
+          const withheld = withheldFailure(
+            c,
+            { operation: 'scope.provision.stores', stage, scopeId, vertical: scope.vertical, version: scope.verticalVersionId ?? null, status, message },
+            e,
+          );
+          storeErrors.push(`a declared store could not be minted (${stage}, reference ${withheld.reference})`);
+          return undefined;
+        }
         console.error('stores.provision.failed', { tenantId, scopeId, vertical: scope.vertical, stage, detail: message });
         recordFailure({
           actor,
@@ -4969,7 +5028,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           scopeId,
           vertical: scope.vertical,
           version: scope.verticalVersionId ?? null,
-          status: e instanceof ControlPlaneError ? e.status : null,
+          status,
           message,
         }, e);
         storeErrors.push(message);
@@ -8711,7 +8770,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * `substrat scope provision` remains the per-scope retry.
    */
   const backfillFleetStores = async (
-    c: ReqCtx,
+    c: Context<{ Variables: Vars }>,
     slug: string,
   ): Promise<{ minted: MintedStore[]; error?: string }> => {
     const actor = c.get('actor');
@@ -8736,10 +8795,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       return { minted };
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      console.error('stores.backfill.failed', { slug, detail: message });
-      recordFailure({ actor, operation: 'promote.store-backfill', vertical: slug, message }, e);
-      return { minted: [], error: message };
+      // The sweep mints across every installed tenant, so what failed is withheld from a confined
+      // caller (#2540): it reads that the backfill failed, and the reference.
+      const withheld = withheldFailure(c, { operation: 'promote.store-backfill', vertical: slug, message: messageOfThrow(e) }, e);
+      return {
+        minted: [],
+        error: `${withheld.detail ?? 'the stores this version declares could not be minted for every install'} (reference ${withheld.reference})`,
+      };
     }
   };
 
@@ -8964,12 +9026,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (!isExportBreakRefusal(err)) throw err;
       // The refusal stands whether or not the listing can be read. A listing that fails turns
       // into a note, never into a 500 that would hide that the promote was refused.
+      // The listing is read across every tenant that installed the vertical, so what failed is
+      // withheld from a confined caller (#2540).
       const listing = await breaksOf().then(
         (exportBreaks) => ({ exportBreaks }),
-        (e: unknown) => ({
-          exportBreaks: null,
-          exportBreaksUnavailable: `which apps it breaks could not be read: ${e instanceof Error ? e.message : String(e)}`,
-        }),
+        (e: unknown) => {
+          const withheld = withheldFailure(
+            c,
+            { operation: 'promote.export-breaks', vertical: slug, version: versionId, message: messageOfThrow(e) },
+            e,
+          );
+          return {
+            exportBreaks: null,
+            exportBreaksUnavailable:
+              `which apps it breaks could not be read: ${withheld.detail ?? 'the platform recorded why'} ` +
+              `(reference ${withheld.reference})`,
+          };
+        },
       );
       return refuse(c, 'conflict', listing.exportBreaks ? exportBreakRefusal(counted) : err.message, listing);
     }
@@ -8994,9 +9067,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // installed — after the serve, so the declaration being read is the one now live.
         backfill = await backfillFleetStores(c, slug);
       } catch (e) {
-        const detail = e instanceof Error ? e.message : String(e);
-        console.error('serve.inplace.failed', { slug, versionId, detail });
-        return refuseStatus(c, 502, 'promoted, but the in-place serve failed — scopes still run the previous code; promote again to retry', { detail });
+        // The serve, the adopt and the backfill reach every install of the vertical, whoever's, so
+        // what failed is withheld from a confined caller (#2540). Its row is the staff-only one.
+        const withheld = withheldFailure(
+          c,
+          { operation: 'promote.serve', stage: 'serve-in-place', vertical: slug, version: versionId, status: 502, message: messageOfThrow(e) },
+          e,
+        );
+        c.set('failureRecorded', true);
+        return refuseStatus(
+          c,
+          502,
+          `promoted, but the in-place serve failed — scopes still run the previous code; promote again to retry (reference ${withheld.reference})`,
+          withheld,
+        );
       }
     }
     // #1756: served, and every install that could move has moved and been backfilled, but one
