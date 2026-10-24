@@ -17,6 +17,7 @@ import {
   StorageReadUnsupported,
   globalFetch,
   runPlatformSweep,
+  scopeNotHeldRefusal,
   ulid,
   type PlatformSweepReport,
 } from '@substrat-run/kernel';
@@ -456,6 +457,42 @@ describe('storageReaderFor (#1524)', () => {
     }
   });
 
+  it("skips a deployment's 'not held' 409 once the directory no longer has the scope serving, and keeps it an error while it does (#2541)", async () => {
+    const s = scope('todo');
+    const notHeld = () => Response.json({ error: scopeNotHeldRefusal(s.id) }, { status: 409 });
+    const reader = (serves: boolean) =>
+      storageReaderFor(
+        async () => new VerticalClient({ fetch: (async () => notHeld()) as unknown as typeof fetch, platformSecret: 'secret' }),
+        async () => serves,
+      );
+    await expect(reader(false)(s)).resolves.toBeNull();
+    const err = await reader(true)(s).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err).not.toBeInstanceOf(StorageReadUnsupported);
+    // Without a directory to ask, the answer is an error, as before.
+    expect(await answeredBy(notHeld)(s).catch((e: unknown) => e)).toBeInstanceOf(ControlPlaneError);
+    // A 409 that is some other conflict is never taken for it, whatever the directory says.
+    const other = storageReaderFor(
+      async () =>
+        new VerticalClient({
+          fetch: (async () => Response.json({ error: 'something else conflicted' }, { status: 409 })) as unknown as typeof fetch,
+          platformSecret: 'secret',
+        }),
+      async () => false,
+    );
+    expect(await other(s).catch((e: unknown) => e)).toBeInstanceOf(ControlPlaneError);
+  });
+
+  it('asks the directory only after a not-held answer', async () => {
+    let asked = 0;
+    const read = storageReaderFor(
+      async () => new VerticalClient({ fetch: (async () => Response.json({ bytes: 4_096 })) as unknown as typeof fetch, platformSecret: 'secret' }),
+      async () => ((asked += 1), false),
+    );
+    await expect(read(scope('todo'))).resolves.toBe(4_096);
+    expect(asked).toBe(0);
+  });
+
   it('skips a scope bound to no vertical, without resolving anything', async () => {
     let resolved = 0;
     const read = storageReaderFor(async () => {
@@ -504,6 +541,17 @@ describe('attachmentReaderFor (#2501)', () => {
     const read = attachmentReaderFor(async () => ((resolved += 1), undefined));
     await expect(read(scope(null))).resolves.toBeNull();
     expect(resolved).toBe(0);
+  });
+
+  it("skips a 'not held' 409 once the directory no longer has the scope serving, as the database read does (#2541)", async () => {
+    const s = scope('todo');
+    const client = () =>
+      new VerticalClient({
+        fetch: (async () => Response.json({ error: scopeNotHeldRefusal(s.id) }, { status: 409 })) as unknown as typeof fetch,
+        platformSecret: 'secret',
+      });
+    await expect(attachmentReaderFor(async () => client(), async () => false)(s)).resolves.toBeNull();
+    expect(await attachmentReaderFor(async () => client(), async () => true)(s).catch((e: unknown) => e)).toBeInstanceOf(ControlPlaneError);
   });
 
   it('shares one deployment lookup per scope with the database read, through oncePerScope', async () => {

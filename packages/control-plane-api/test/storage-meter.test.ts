@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid } from '@substrat-run/kernel';
+import { scopeNotHeldRefusal, ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeId, type ScopeStatus } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
@@ -17,6 +17,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
 } from '../src/index.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
  * The on-demand storage reading (#1524). Each scope it reads is a Durable Object it
@@ -205,6 +206,60 @@ describe('GET /meters/storage (#1524)', () => {
     // their allowlist does name. The refusal above is this route's, not a bad credential.
     expect((await app.request('/scopes', { headers: { [BUILDER_HEADER]: acme } })).status).toBe(200);
     expect((await app.request(`/tenants/${acme}`, { headers: { [SERVICE_TOKEN_HEADER]: token } })).status).toBe(200);
+  });
+});
+
+describe('GET /meters/storage when a deployment holds no store for a scope (#2541)', () => {
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff };
+  let dir: string;
+  let host: SqliteScopeHost;
+  let app: ReturnType<typeof createControlPlaneApi>;
+  const fakeVertical = {
+    // The deployment holds none of these scopes: every read is its "not held" 409.
+    databaseSize: async (s: ScopeId) => {
+      throw new ControlPlaneError(409, scopeNotHeldRefusal(s));
+    },
+  } as unknown as VerticalClient;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-storage-held-'));
+    host = new SqliteScopeHost({ dir });
+    app = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { 'demo-vert': fakeVertical } });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const tenantWith = async (...statuses: ('active' | 'archived')[]) => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `held-${t.slice(-8).toLowerCase()}`, name: 'Held' });
+    const ids: ScopeId[] = [];
+    for (const status of statuses) {
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'demo-vert' });
+      await host.admin.activateScope(staff, t, s);
+      if (status === 'archived') await host.admin.archiveScope(staff, t, s);
+      ids.push(s);
+    }
+    return { t, ids };
+  };
+
+  it('reads 0 for a scope the directory no longer has serving, and the tenant page is complete', async () => {
+    const { t, ids } = await tenantWith('archived');
+    const body = await (await app.request(`/meters/storage?tenantId=${t}`, { headers: asStaff })).json();
+    expect(body.scopes).toEqual([expect.objectContaining({ scopeId: ids[0], bytes: 0 })]);
+    expect(body).toMatchObject({ read: 1, failed: 0, complete: true, bytes: 0 });
+  });
+
+  it('keeps a scope the directory has active as a failure: the deployment should hold it', async () => {
+    const { t, ids } = await tenantWith('active', 'archived');
+    const body = await (await app.request(`/meters/storage?tenantId=${t}`, { headers: asStaff })).json();
+    const by = new Map<string, { bytes: number | null; error?: string }>(body.scopes.map((x: { scopeId: string }) => [x.scopeId, x]));
+    expect(by.get(ids[0]!)).toMatchObject({ bytes: null, error: expect.stringMatching(/not held by this deployment/) });
+    expect(by.get(ids[1]!)?.bytes).toBe(0);
+    expect(body).toMatchObject({ read: 1, failed: 1, complete: false });
   });
 });
 

@@ -194,7 +194,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
   type CopyJobRecord, type CopyJobs,
@@ -2448,7 +2448,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         read: async (scope) => {
           if (!scope.vertical) return c.var.admin.scopeDatabaseSize(actor, q.tenantId, scope.id);
           const vertical = await verticalForScope(c, scope);
-          if (vertical) return vertical.databaseSize(scope.id);
+          if (vertical) {
+            try {
+              return await vertical.databaseSize(scope.id);
+            } catch (err) {
+              // #2541: a deployment that holds nothing for a scope the directory no longer has serving
+              // (reaped since the listing, or archived straight from provisioning) reads 0, as it did
+              // before the refusal existed; one still `active` stays a failure on this page.
+              if (!isScopeNotHeld(err, scope.id)) throw err;
+              const now = await c.var.admin.getScopeRecord(actor, q.tenantId, scope.id).catch(() => null);
+              if (now?.status === 'active') throw err;
+              return 0;
+            }
+          }
           if (delegatesToVerticals) throw new Error(`no deployment resolves for vertical ${scope.vertical}`);
           return c.var.admin.scopeDatabaseSize(actor, q.tenantId, scope.id);
         },

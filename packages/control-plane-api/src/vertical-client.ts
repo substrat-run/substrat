@@ -127,7 +127,7 @@ import {
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { isSizedByteStream, knownLengthInit, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
+import { isSizedByteStream, knownLengthInit, scopeNotHeldRefusal, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -144,6 +144,16 @@ export function isRouteMiss(err: ControlPlaneError): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * The 409 a deployment answers a size read for a scope it does not hold (#2541): never provisioned
+ * there, reaped, or carried away. Told by its sentence (`scopeNotHeldRefusal`) as well as its status,
+ * since a 409 on the same route could be any other conflict. Whether that is benign depends on what
+ * the directory says the scope should be doing: the caller judges that.
+ */
+export function isScopeNotHeld(err: unknown, scopeId: ScopeId): boolean {
+  return err instanceof ControlPlaneError && err.status === 409 && err.message.includes(scopeNotHeldRefusal(scopeId));
 }
 
 /** The orphan-attachment report as it crosses the wire (#2314): `OrphanSweepReport`, checked. */
