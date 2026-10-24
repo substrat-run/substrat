@@ -483,9 +483,12 @@ export async function runPurgePass(
 /**
  * Whether a purge pass leaves its schedule due, so the next sweep pass continues its lap rather
  * than waiting the cadence: more is due after its batch (#2096). It cannot spin (#2087): every pass
- * moves the lap strictly forward, whatever its purges did — a pass that defers an entity the
- * platform-request cap turned away (#2506) has already got past its head, and the entity is the
- * head of the next pass, where a refusal is a failure like any other — and the pass that runs out
+ * moves the lap strictly forward, whatever its purges did, bar one — the pass that defers its head
+ * to the next tick because an earlier schedule of the same tick filled the queue (#2517), which
+ * needs that schedule to have committed a request (so it made progress) and which nothing re-runs
+ * within the tick. A pass that defers an entity the platform-request cap turned away (#2506) has
+ * already got past its head, and the entity is the head of the next pass, where a refusal is a
+ * failure like any other — and the pass that runs out
  * of due entities closes the lap and records the run. So a cadence window holds one lap, and an
  * entity that keeps failing is tried once per window, not once per sweep tick. A scope running
  * code older than the lap answers no `more`, and its pass waits its cadence.
