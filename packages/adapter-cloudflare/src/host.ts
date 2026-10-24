@@ -2030,7 +2030,7 @@ interface ScopeStubRpc {
   ): Promise<SubjectRedactionCounts | LegacySubjectRedactionCounts | number | { failure: WireFailure }>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
-  appliedMigrations(limit?: number): Promise<AppliedMigration[]>;
+  appliedMigrations(): Promise<AppliedMigration[]>;
   /** `SqlStorage.databaseSize` of this scope (#1524). */
   databaseSize(): Promise<number>;
   /** What this scope's attachment rows sum to (#2501). */

@@ -10877,7 +10877,7 @@ export class SqliteScopeHost implements ScopeHost {
         const rows = db
           .prepare(
             `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
-              ORDER BY applied_at DESC, module_id, version LIMIT 100`,
+              ORDER BY applied_at DESC, module_id, version`,
           )
           .all() as Array<{
           module_id: string;

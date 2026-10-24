@@ -69,6 +69,7 @@ import {
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
+  manyMigrationsContractSuite,
   migrationFenceContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
@@ -1023,6 +1024,19 @@ bindingInviteContractSuite(
 // #2068 r5: commented migration DDL, then a DROP COLUMN of the last column.
 migrationCommentsContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-comments-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2553: the applied-migrations read answers with every row, past the 100 it once stopped at.
+manyMigrationsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-many-migrations-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,
