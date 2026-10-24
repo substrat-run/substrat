@@ -1,0 +1,5 @@
+---
+"@substrat-run/connector-scrive": patch
+---
+
+A sealed document too large to upload is no longer downloaded, and no longer fetched again on every poll (#2552). The connector reads the response's `Content-Length` before the body: a file over the streamed-upload ceiling (95 MiB) is skipped without a byte of it read, and a response that declares no length is counted and cut off at the ceiling rather than held whole. The reconcile reports it as skipped with a neutral reason and remembers the decision on the dispatch row (`sealedHeld`); a later poll that finds the document unchanged reports the same reason and fetches nothing, and a changed document (a different provider `mtime`) is tried again. The marker goes when the file lands. Any other failure is still retried on the next poll. The activity view shows a held sealed copy as not stored. `ScriveApi.getMainFile` takes an optional byte bound and throws `ScriveFileTooLargeError` above it; `ScriveMock` gains `mtime`, `touch` and `setSealedFile` for tests.
