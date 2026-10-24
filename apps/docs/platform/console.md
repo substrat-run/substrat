@@ -47,8 +47,11 @@ a filter recipe over Fleet.
   the upstream
   `reference = <id>` when one was extracted, so the handle a CI log prints
   resolves to something on our side — and copies out for a provider support ticket, the only
-  place a redacted storage fault's reference actually resolves. A vertical's failures strip
-  jumps here pre-narrowed to that vertical.
+  place a redacted storage fault's reference actually resolves. A failure filed under a tenant
+  carries the platform's own reference, which is what the tenant sees; the upstream handle is kept
+  on a staff row beside it, under the same reference, and the reference filter finds both by
+  either id. A failed upload of a builder's own bundle is the exception: its row keeps the
+  upstream handle the builder was shown. A vertical's failures strip jumps here pre-narrowed to that vertical.
 - **Issues** — the same failures grouped by fingerprint (operation + stage + taxonomy code) into
   counted defects with a lifecycle, read over `/issues`: one row per fingerprint with a rising
   count, not one row per retry. Staff give a verdict — **resolve**, **ignore** or **reopen**

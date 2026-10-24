@@ -198,6 +198,7 @@ import {
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
+import { opsFailureReferenceWhere } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -592,6 +593,12 @@ export interface OpsFailureRow {
   code: string | null;
   fingerprint: string | null;
   at: string;
+  /**
+   * #2540: the failure's own text when `message` is only what was answered: written on a second row
+   * with no tenant (`id` + `detail_id`), and the issue's exemplar. Absent from an older coordinator.
+   */
+  detail?: string | null;
+  detail_id?: string;
 }
 
 /** One issue row as stored (#1233) — see the issueEntry contract for field semantics. */
@@ -722,6 +729,8 @@ export interface OpsFailureQuery {
   code?: string;
   fingerprint?: string;
   reference?: string;
+  /** #2540: staff's search — `OpsFailureFilter.referenceInText`. */
+  referenceInText?: boolean;
   since?: string;
   until?: string;
   limit?: number;
@@ -5573,26 +5582,32 @@ export class ControlPlaneDO extends DurableObject {
 
   /** The body of `recordOpsFailure`, for a caller already inside a transaction. */
   private insertOpsFailure(row: OpsFailureRow): void {
-    this.sql.exec(
-      `INSERT INTO _substrat_ops_failures
-         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      row.id,
-      row.actor,
-      row.operation,
-      row.stage,
-      row.tenant_id,
-      row.scope_id,
-      row.vertical,
-      row.version,
-      row.status,
-      row.message,
-      row.reference,
-      row.origin,
-      row.code,
-      row.fingerprint,
-      row.at,
-    );
+    // #2540: a tenant's row with a `detail` is a pair — the tenant's row says what was answered, and
+    // a row with no tenant, which only staff read, carries the failure's own text. Counted once.
+    const detail = row.tenant_id && row.detail_id && typeof row.detail === 'string' ? row.detail.slice(0, 2000) : null;
+    const insert = (id: string, tenantId: string | null, message: string) =>
+      this.sql.exec(
+        `INSERT INTO _substrat_ops_failures
+           (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        row.actor,
+        row.operation,
+        row.stage,
+        tenantId,
+        row.scope_id,
+        row.vertical,
+        row.version,
+        row.status,
+        message,
+        row.reference,
+        row.origin,
+        row.code,
+        row.fingerprint,
+        row.at,
+      );
+    if (detail !== null) insert(row.detail_id!, null, detail);
+    insert(row.id, row.tenant_id, row.message);
     // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
     // pays for its own housekeeping, so the table stays bounded even on a deployment
     // whose scheduled pass is broken (the exact circumstance this table records).
@@ -5624,9 +5639,12 @@ export class ControlPlaneDO extends DurableObject {
         row.code,
         row.at,
         row.at,
-        row.message,
-        row.tenant_id,
-        issueExemplarOwner(row.tenant_id),
+        // The issues are staff's (#2540): a pair's exemplar is its own text, not the tenant's
+        // sentence, and it is owned as the row it is copied from is, the platform's — so erasure
+        // reaches it on an id match, as it reaches that row.
+        detail ?? row.message,
+        detail !== null ? null : row.tenant_id,
+        issueExemplarOwner(detail !== null ? null : row.tenant_id),
         row.vertical,
         row.version,
       );
@@ -5686,8 +5704,9 @@ export class ControlPlaneDO extends DurableObject {
       params.push(query.fingerprint);
     }
     if (query.reference) {
-      where.push('reference = ?');
-      params.push(query.reference);
+      const byReference = opsFailureReferenceWhere(query.reference, query.referenceInText === true);
+      where.push(byReference.sql);
+      params.push(...byReference.params);
     }
     if (query.since) {
       where.push('at >= ?');

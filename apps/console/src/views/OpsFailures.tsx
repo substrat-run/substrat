@@ -1,10 +1,23 @@
 import { Fragment, useEffect, useState } from 'react';
-import type { OpsFailureEntry, Tenant, TenantId } from '@substrat-run/contracts';
+import { upstreamReferenceOf, type OpsFailureEntry, type Tenant, type TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Input, Select, Tag } from '../components';
 import { ActorCell } from '../patterns/ActorCell';
 import type { Api } from '../lib/api';
 
 const PAGE = 20;
+
+/**
+ * The handle a Cloudflare support ticket wants for a row: Cloudflare's own when the row names it
+ * (#2540: a withheld failure keeps it at the start of staff's row), else the row's reference.
+ */
+export function supportReference(e: Pick<OpsFailureEntry, 'message' | 'reference'>): string | null {
+  return upstreamReferenceOf(e.message) ?? e.reference;
+}
+
+/** What the copy button calls that reference: a Cloudflare support handle only when it is one. */
+export function supportReferenceLabel(e: Pick<OpsFailureEntry, 'message'>): string {
+  return upstreamReferenceOf(e.message) ? 'Copy reference for CF support' : 'Copy reference';
+}
 
 /** Debounce a text filter so an exact-match server param isn't refetched per keystroke. */
 function useDebounced(value: string, ms = 400): string {
@@ -248,9 +261,27 @@ export function OpsFailures({ api, tenants, initialVertical, initialFingerprint,
                           {e.scopeId && (
                             <span style={{ fontFamily: 'var(--font-mono)' }}>scope {e.scopeId}</span>
                           )}
-                          {e.reference && (
-                            <Button size="sm" variant="secondary" onClick={() => copyReference(e.reference!)}>
-                              {copied === e.reference ? 'Copied' : 'Copy reference for CF support'}
+                          {/* #2540: a withheld failure's own reference is the platform's; Cloudflare's,
+                              when there is one, is named at the start of staff's row. */}
+                          {supportReference(e) && (
+                            <Button size="sm" variant="secondary" onClick={() => copyReference(supportReference(e)!)}>
+                              {copied === supportReference(e) ? 'Copied' : supportReferenceLabel(e)}
+                            </Button>
+                          )}
+                          {/* #2540: a tenant's row may say only what was answered; the failure's own
+                              text is on a row with no tenant under the same reference. */}
+                          {e.tenantId && e.reference && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                // Every filter the staff row could miss: the tenant and the page text.
+                                setTenantFilter('all');
+                                setQ('');
+                                setReferenceInput(e.reference!);
+                              }}
+                            >
+                              All rows with this reference
                             </Button>
                           )}
                         </div>
