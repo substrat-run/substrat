@@ -975,6 +975,7 @@ export {
   exportBreaksOf,
   exportBreakRefusal,
   isExportBreakRefusal,
+  isExportBreakUnjudged,
   bindExportBreaksOf,
   scopeMoveOf,
   bindExportBreakRefusal,

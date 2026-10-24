@@ -10446,7 +10446,10 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows.map((r) => adminLogEntry.parse(r));
       },
       recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
+        // #2540: a pair's staff row is minted first, so the tenant's row lists above it.
+        const detail = entry.tenantId && typeof entry.detail === 'string' ? { detail: entry.detail.slice(0, 2000), detail_id: ulid() } : {};
         await this.cp.recordOpsFailure({
+          ...detail,
           id: ulid(),
           actor: entry.actor,
           operation: entry.operation,

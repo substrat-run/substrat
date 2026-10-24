@@ -170,6 +170,15 @@ export async function exportBreaksOf(input: {
   );
 }
 
+/**
+ * #2540: whether a throw is `exportBreaksOf`'s refusal to judge (`unavailable`, "cannot say whom
+ * this … breaks"). Its sentence names what could not be read, which may be another tenant's app and
+ * the read's own error, so a door answering it phrases it for its caller.
+ */
+export function isExportBreakUnjudged(err: unknown): boolean {
+  return errorCodeOf(err) === 'unavailable' && err instanceof Error && err.message.startsWith('cannot say whom this ');
+}
+
 /** How `exportBreakRefusal` begins: what lets the promote route recognise it and add the listing. */
 const EXPORT_BREAK_REFUSAL = 'promotion drops or re-versions';
 

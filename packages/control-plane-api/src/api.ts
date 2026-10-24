@@ -174,6 +174,7 @@ import {
   exportBreakRefusal,
   isBindExportBreakRefusal,
   isExportBreakRefusal,
+  isExportBreakUnjudged,
   isPrimaryScope,
   promoteReviewDigest,
   rebindReviewDigest,
@@ -1900,7 +1901,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           // row with no tenant, which only staff read, and to the log line, under the same reference.
           let reference = c.get('failureReference');
           if (!reference) {
-            reference = ulid();
+            reference = withheldReference(raw);
             console.error('control-plane.unhandled', { method: c.req.method, path: c.req.path, reference, tenantId, scopeId, detail: raw });
           }
           recordWithheld({ ...base, tenantId, reference }, raw, answered, cause);
@@ -2178,19 +2179,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const staffCaller = (c: Context<{ Variables: Vars }>): boolean => c.get('principal')?.kind === 'staff';
 
   /**
-   * #2540: one failure whose text is not ours to hand a tenant, as two rows under one reference:
-   * the text on a row with no tenant, which only staff read, and — when the failure is a tenant's —
-   * what was answered on that tenant's row, which the tenant reads back.
+   * #2540: one failure whose text is not ours to hand a tenant. Filed under a tenant, it is one
+   * write with a `detail`: the host puts what was answered on the tenant's row, which the tenant
+   * reads back, and the text on a row with no tenant under the same reference, which only staff
+   * read, and counts the failure once. With no tenant, the text is the row's message.
    */
   const recordWithheld = (
-    entry: Omit<OpsFailureInput, 'message' | 'reference'> & { reference: string },
+    entry: Omit<OpsFailureInput, 'message' | 'reference' | 'detail'> & { reference: string },
     raw: string,
     answered: string,
     cause: unknown,
   ): void => {
-    recordFailure({ ...entry, tenantId: null, message: raw }, cause);
-    if (entry.tenantId) recordFailure({ ...entry, message: answered }, cause);
+    recordFailure(entry.tenantId ? { ...entry, message: answered, detail: raw } : { ...entry, tenantId: null, message: raw }, cause);
   };
+
+  /**
+   * #2540: the reference a withheld failure is filed and answered under. An upstream's own trace
+   * handle when the text carries one, so the #559 lookup by `reference = <id>` still lands on its
+   * rows; else a fresh one. Either is an opaque id, never the text around it.
+   */
+  const withheldReference = (raw: string): string => UPSTREAM_REFERENCE.exec(raw)?.[1] ?? ulid();
 
   /**
    * #2540: a failure whose text is not ours to hand a confined caller: what an upstream or a store
@@ -2209,7 +2217,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     cause: unknown,
     answered?: (reference: string) => string,
   ): { reference: string; detail?: string } => {
-    const reference = ulid();
+    const reference = withheldReference(entry.message);
     console.error('control-plane.unhandled', {
       method: c.req.method,
       path: c.req.path,
@@ -2299,7 +2307,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // One error boundary for every route: adapters throw plain Errors, and each
   // one is a fail-closed refusal that must reach the caller as a status, not a
   // stack trace.
-  app.onError((err, c) => {
+  app.onError(async (err, c) => {
     // A parse failure goes through the same builder as everything else (#113 phase 4):
     // `toProblem` maps zod's `issues` onto the declared `errors: [{ path, message }]`
     // extension, which is the shape the model documents and a client can act on. The raw
@@ -2310,6 +2318,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (err instanceof ExportBreakRefused) return refuse(c, 'conflict', err.message, exportBreaksOf(err));
     if (err instanceof CarrySourceChanged) {
       return refuse(c, 'conflict', err.message, { carrySourceChanged: { scopeId: err.scopeId, from: err.from, to: err.to, attempts: err.attempts } });
+    }
+    // Whose failure this is, as the backstop files it, so a log line names the same tenant as its row.
+    // Read only for an answer that is logged or filed: a 4xx refusal pays nothing.
+    const subjectOf = () => failureSubject(c).catch(() => ({ vertical: null, tenantId: null }));
+    // #2540: a refusal to judge what a promote or bind breaks names what could not be read, which may
+    // be another tenant's app, and that read's own error. Every door that reaches it answers here.
+    if (isExportBreakUnjudged(err)) {
+      const subject = await subjectOf();
+      const sentence = (reference: string) =>
+        `cannot say whom this change breaks: what an installed app imports could not be read, so nothing was changed. Retry (reference ${reference})`;
+      const withheld = withheldFailure(
+        c,
+        {
+          operation: `${c.req.method} ${c.req.routePath}`,
+          stage: 'export-breaks',
+          vertical: subject.vertical,
+          tenantId: subject.tenantId,
+          scopeId: (c.req.param('scopeId') as OpsFailureInput['scopeId']) ?? null,
+          status: 503,
+          code: 'unavailable',
+          message: messageOfThrow(err),
+        },
+        err,
+        sentence,
+      );
+      c.set('failureRecorded', true);
+      return refuse(c, 'unavailable', sentence(withheld.reference), withheld);
     }
     const { status, body } = mapError(err);
     // The 5xx backstop (registered first, above) records it, with this throw as the cause.
@@ -2323,13 +2358,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // (the 503 for a plane with no seal key, #603) passes through here too: its body already
     // says what is wrong, and the tail line is what ties it to the request that hit it.
     if (status >= 500) {
-      const reference = ulid();
+      const subject = await subjectOf();
+      const reference = withheldReference(messageOfThrow(err));
       c.set('failureReference', reference);
       console.error('control-plane.unhandled', {
         method: c.req.method,
         path: c.req.path,
         reference,
-        tenantId: c.req.param('tenantId') ?? null,
+        tenantId: subject.tenantId,
+        vertical: subject.vertical,
         scopeId: c.req.param('scopeId') ?? null,
         detail: err instanceof Error ? err.message : String(err),
         stack: err instanceof Error ? err.stack : undefined,
@@ -5057,7 +5094,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           e,
           sentence,
         );
-        storeErrors.push(withheld.detail ?? sentence(withheld.reference));
+        storeErrors.push(withheld.detail ? `${withheld.detail} (reference ${withheld.reference})` : sentence(withheld.reference));
         return undefined;
       }
     };
@@ -5142,8 +5179,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // Both halves failed. The store fault is usually the CAUSE (an unmigrated or
         // unbound store is exactly what makes a vertical refuse its own reconcile), so
         // it must not be the half that gets dropped.
-        const detail = storeErrors.length ? `${e.message} (stores: ${storeErrors.join('; ')})` : e.message;
-        return refuseStatus(c, failedWith(c, e), detail);
+        const stores = storeErrors.length ? ` (stores: ${storeErrors.join('; ')})` : '';
+        if (staffCaller(c)) return refuseStatus(c, failedWith(c, e), `${e.message}${stores}`);
+        // #2540: what the deployment answered is staff's, as the store half's is. A confined caller
+        // (a builder may repair any install of its own vertical, whoever's) reads the status, the
+        // store sentences and the reference.
+        const sentence = (reference: string) => `the reconcile of this scope failed (${e.status})${stores} (reference ${reference})`;
+        const withheld = withheldFailure(
+          c,
+          {
+            operation: 'scope.provision.reconcile',
+            tenantId,
+            scopeId,
+            vertical: scope.vertical,
+            version: scope.verticalVersionId ?? null,
+            status: e.status,
+            message: e.message,
+          },
+          e,
+          sentence,
+        );
+        c.set('failureRecorded', true);
+        return refuseStatus(c, e.status, sentence(withheld.reference), withheld);
       }
       throw e;
     }

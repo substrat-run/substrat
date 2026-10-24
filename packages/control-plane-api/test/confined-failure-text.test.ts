@@ -16,6 +16,7 @@ import {
   stableDeploymentRefFor,
   type VerticalClient,
 } from '../src/index.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { heldManifest } from './held-manifest.js';
 
 /**
@@ -38,12 +39,13 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
   let serveFails: { slug: string; error: Error } | null = null;
   const logged: unknown[][] = [];
 
+  /** Set to make every deployment's reconcile answer with this. */
+  let reconcileFails: (() => Error) | null = null;
   const vertical = {
-    reconcileInstance: async (input: { tenantId: string; scopeId?: string }) => ({
-      tenantId: input.tenantId,
-      scopeId: input.scopeId,
-      owner: '01JZ00000000000000000000OW',
-    }),
+    reconcileInstance: async (input: { tenantId: string; scopeId?: string }) => {
+      if (reconcileFails) throw reconcileFails();
+      return { tenantId: input.tenantId, scopeId: input.scopeId, owner: '01JZ00000000000000000000OW' };
+    },
     exportScope: async () => [],
     exportScopeStamped: async () => ({ tables: [], loadStamp: null }),
     restoreScope: async (_t: string, _s: string, tables: unknown[]) => ({ tables: tables.length }),
@@ -82,6 +84,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
   });
   afterEach(() => {
     serveFails = null;
+    reconcileFails = null;
     vi.restoreAllMocks();
   });
 
@@ -168,15 +171,17 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     logged.find((args) => args[0] === 'control-plane.unhandled' && (args[1] as { reference?: string })?.reference === reference)?.[1] as
       | Record<string, unknown>
       | undefined;
+  const escaped = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const captureLog = () => {
     logged.length = 0;
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(args));
   };
 
-  it('the in-place serve: a fixed sentence and a reference for a confined caller, the text for staff', async () => {
+  // A builder (a push token) promotes the private vertical it owns as a tenant credential does.
+  it.each(['/tenant-tokens', '/push-tokens'] as const)('the in-place serve as %s: a fixed sentence and a reference, the text for staff', async (mint) => {
     const { pin, t, slug, leak, clean } = await setup('serve');
     const v2 = await push(pin, manifest('0.2.0'));
-    const asTenant = await tokenFor('/tenant-tokens', t);
+    const asTenant = await tokenFor(mint, t);
     captureLog();
     serveFails = { slug, error: new Error(leak) };
 
@@ -226,7 +231,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
 
     const asStaff = await promote(slug, v2.id);
     expect(((await asStaff.json()) as { storeBackfill: { error: string } }).storeBackfill.error).toMatch(
-      new RegExp(`^${leak.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(reference [0-9A-Z]{26}\\)$`),
+      new RegExp(`^${escaped(leak)} \\(reference [0-9A-Z]{26}\\)$`),
     );
   });
 
@@ -296,7 +301,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     vi.spyOn(host, 'provisionBlobStore').mockRejectedValue(new Error(leak));
     const repair = await app.request(`/tenants/${b}/scopes/${foreign}/provision`, { method: 'POST', headers: auth });
     expect(repair.status).toBe(200);
-    expect(((await repair.json()) as { storeError: string }).storeError).toBe(leak);
+    expect(((await repair.json()) as { storeError: string }).storeError).toMatch(new RegExp(`^${escaped(leak)} \\(reference [0-9A-Z]{26}\\)$`));
     const minted = await rowsOf('scope.provision.stores', slug);
     const own = minted.find((r) => r.tenantId === b)!;
     expect(own.message).toMatch(/^a declared store could not be minted \(blob-stores, reference [0-9A-Z]{26}\)$/);
@@ -345,5 +350,104 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     expect(logLine(row.reference!)).toMatchObject({ detail: leak });
     const rows = await rowsOf('POST /verticals/:slug/channels/:channel/promote', slug);
     expect(rows.find((r) => r.tenantId === null)).toMatchObject({ message: leak, reference: row.reference });
+  });
+
+  /**
+   * The promote gate's refusal to judge whom a promote breaks, which the kernel words with the app
+   * it could not read (another tenant's, here) and that read's error. Reached through three doors:
+   * the gate inside the promote, the listing an `exportBreak` acknowledgement reads first, and the
+   * dialog's `promote-impact` read.
+   */
+  it('a refusal to judge whom a promote breaks: no other tenant’s app or read error, through every door', async () => {
+    const { pin, t, slug, b, leak, clean } = await setup('unjudged');
+    const v2 = await push(pin, manifest('0.2.0'));
+    const consumer = `${pin}-b/board@${ulid()}`;
+    const unjudged = () =>
+      substratError('unavailable', `cannot say whom this promotion breaks: the registry could not be asked what ${consumer} imports (${leak}) — retry`);
+    // Fresh per call: the backstop skips a cause it has already recorded.
+    vi.spyOn(host, 'attributed').mockImplementation(function (this: SqliteScopeHost, ...args: Parameters<SqliteScopeHost['attributed']>) {
+      const view = SqliteScopeHost.prototype.attributed.apply(host, args);
+      view.admin.promoteVersion = async () => Promise.reject(unjudged());
+      return view;
+    });
+    vi.spyOn(host.admin, 'promoteVersion').mockImplementation(async () => Promise.reject(unjudged()));
+    const asTenant = await tokenFor('/tenant-tokens', t);
+    const cleanOf = (text: string) => {
+      clean(text);
+      expect(text).not.toContain(consumer);
+    };
+    const doors: [string, () => Promise<Response>][] = [
+      ['the gate', () => promote(slug, v2.id, asTenant)],
+      ['the acknowledged listing', () => promote(slug, v2.id, asTenant, { exportBreak: true })],
+      ['promote-impact', () => app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote-impact?versionId=${v2.id}`, { headers: asTenant })],
+    ];
+    vi.spyOn(host.admin, 'promotionImpact').mockImplementation(async () => Promise.reject(unjudged()));
+    for (const [door, call] of doors) {
+      captureLog();
+      const res = await call();
+      expect(res.status, door).toBe(503);
+      const text = await res.text();
+      cleanOf(text);
+      const said = JSON.parse(text) as { detail: string; reference: string };
+      expect(said.detail).toBe(
+        `cannot say whom this change breaks: what an installed app imports could not be read, so nothing was changed. Retry (reference ${said.reference})`,
+      );
+      // Staff's row carries the kernel's sentence; the caller's tenant row says what it was answered.
+      const rows = (await host.admin.listOpsFailures(staff, { reference: said.reference } as never)).map((r) => [r.tenantId, r.message]);
+      expect(rows, door).toEqual([
+        [t, said.detail],
+        [null, unjudged().message],
+      ]);
+      expect(logLine(said.reference)).toMatchObject({ detail: unjudged().message, tenantId: t });
+      cleanOf(await failuresSeenBy(asTenant, t));
+    }
+    // Staff read the kernel's sentence whole.
+    const asStaff = await promote(slug, v2.id);
+    expect(asStaff.status).toBe(503);
+    const staffText = await asStaff.text();
+    expect(staffText).toContain(consumer);
+    expect(staffText).toContain(b);
+  });
+
+  it('a builder repairing another tenant’s install reads no reconcile text; staff do', async () => {
+    const { t, slug, b, foreign, leak } = await setup('reconcile');
+    const asBuilder = await tokenFor('/push-tokens', t);
+    captureLog();
+    reconcileFails = () => new ControlPlaneError(502, `reconcile refused: ${leak}`);
+
+    const res = await app.request(`/tenants/${b}/scopes/${foreign}/provision`, { method: 'POST', headers: asBuilder });
+    expect(res.status).toBe(502);
+    const text = await res.text();
+    expect(text).not.toContain('something private');
+    const said = JSON.parse(text) as { detail: string; reference: string };
+    expect(said.detail).toBe(`the reconcile of this scope failed (502) (reference ${said.reference})`);
+    const rows = await rowsOf('scope.provision.reconcile', slug);
+    expect(rows.find((r) => r.tenantId === null)).toMatchObject({ message: `reconcile refused: ${leak}`, reference: said.reference });
+    expect(rows.find((r) => r.tenantId === b)).toMatchObject({ message: said.detail, reference: said.reference });
+    expect(await failuresSeenBy(await tokenFor('/tenant-tokens', b), b)).not.toContain('something private');
+    expect(await failuresSeenBy(await tokenFor('/tenant-tokens', t), t)).not.toContain('something private');
+
+    // Staff read the deployment's answer.
+    const asStaff = await app.request(`/tenants/${b}/scopes/${foreign}/provision`, { method: 'POST', headers: auth });
+    expect(asStaff.status).toBe(502);
+    expect(((await asStaff.json()) as { detail: string }).detail).toBe(`reconcile refused: ${leak}`);
+  });
+
+  it('an upstream trace reference in the withheld text is the pair’s reference, so the #559 lookup still finds it', async () => {
+    const { pin, t, slug, clean, leak } = await setup('upstream');
+    const v2 = await push(pin, manifest('0.2.0'));
+    const asTenant = await tokenFor('/tenant-tokens', t);
+    const upstream = `cf${ulid().toLowerCase()}`;
+    serveFails = { slug, error: new Error(`${leak}; internal error; reference = ${upstream}`) };
+    const res = await promote(slug, v2.id, asTenant);
+    expect(res.status).toBe(502);
+    const text = await res.text();
+    clean(text);
+    expect((JSON.parse(text) as { reference: string }).reference).toBe(upstream);
+    // `GET /ops-failures?reference=<upstream id>` lands on both rows, the text on staff's.
+    const found = await app.request(`/ops-failures?reference=${upstream}`, { headers: auth });
+    const rows = ((await found.json()) as { entries: { tenantId: string | null; message: string }[] }).entries;
+    expect(rows.map((r) => r.tenantId)).toEqual([t, null]);
+    expect(rows[1]!.message).toContain(leak);
   });
 });

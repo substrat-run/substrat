@@ -253,6 +253,20 @@ export function OpsFailures({ api, tenants, initialVertical, initialFingerprint,
                               {copied === e.reference ? 'Copied' : 'Copy reference for CF support'}
                             </Button>
                           )}
+                          {/* #2540: a tenant's row may say only what was answered; the failure's own
+                              text is on a row with no tenant under the same reference. */}
+                          {e.tenantId && e.reference && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setTenantFilter('all');
+                                setReferenceInput(e.reference!);
+                              }}
+                            >
+                              All rows with this reference
+                            </Button>
+                          )}
                         </div>
                       </div>
                     </td>

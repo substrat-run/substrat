@@ -5196,6 +5196,37 @@ export function scopeHostContractSuite(
         expect(both.map((r) => r.origin).sort()).toEqual(['platform', null].sort());
       });
 
+      it('#2540: a tenant row with a detail is a pair under one reference, counted once', async () => {
+        const reference = `pair${ulid().toLowerCase()}`;
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'contract.paired',
+          stage: 'withheld',
+          tenantId: t1,
+          vertical: 'acme/paired',
+          status: 502,
+          message: `the step failed (reference ${reference})`,
+          detail: 'what the upstream said about something private',
+          reference,
+        });
+        // The tenant's read: its own row, which says what was answered.
+        const own = await host.admin.listOpsFailures(staff, { tenantId: t1, operation: 'contract.paired' });
+        expect(own.map((r) => r.message)).toEqual([`the step failed (reference ${reference})`]);
+        // Staff's read by the reference: both rows, the text on the one with no tenant.
+        const both = await host.admin.listOpsFailures(staff, { reference });
+        expect(both.map((r) => [r.tenantId, r.message])).toEqual([
+          [t1, `the step failed (reference ${reference})`],
+          [null, 'what the upstream said about something private'],
+        ]);
+        // One failure, one count, and the issue's sample is staff's text.
+        const [issue] = await host.admin.listIssues(staff, { operation: 'contract.paired' });
+        expect(issue).toMatchObject({ count: 1, lastMessage: 'what the upstream said about something private' });
+        // A row with no tenant has no tenant row to pair with: `detail` is ignored there.
+        await host.admin.recordOpsFailure({ actor: staff, operation: 'contract.unpaired', message: 'staff text', detail: 'ignored' });
+        const lone = await host.admin.listOpsFailures(staff, { operation: 'contract.unpaired' });
+        expect(lone.map((r) => [r.tenantId, r.message])).toEqual([[null, 'staff text']]);
+      });
+
       it('bounds the recorded message — a runaway upstream body never becomes a runaway row', async () => {
         await host.admin.recordOpsFailure({
           actor: staff,

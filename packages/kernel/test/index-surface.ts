@@ -411,6 +411,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2349: which migration versions the set digest leaves out.
   'isDerivedMigrationVersion',
   'isExportBreakRefusal',
+  // #2540: `exportBreaksOf`'s refusal to judge, which a door phrases for its caller.
+  'isExportBreakUnjudged',
   'isLifecycleWrite',
   'isMediaTypeEssence',
   'isModuleErasureCounts',

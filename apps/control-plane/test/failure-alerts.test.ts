@@ -9,6 +9,7 @@ import {
   SWEEP_INTERVAL_MS,
   failureDigestEmail,
   failureDigestWatermark,
+  pairedFailuresMerged,
   parseRecipients,
   sendFailureDigest,
   type FailureDigestOptions,
@@ -291,6 +292,55 @@ describe('sendFailureDigest', () => {
       expect(out.status).toBe('sent');
       expect(transport.sent).toHaveLength(1);
       expect(transport.last!.text).toContain(marker);
+    } finally {
+      await host.close();
+    }
+  });
+});
+
+describe('a withheld failure in the digest (#2540)', () => {
+  it('pairs only a tenant row and a tenant-less row sharing reference, operation and instant', () => {
+    const at = '2026-09-18T09:55:00.000Z';
+    const t = tenantId.parse(ulid());
+    const answered = failure(at, 'the step failed (reference r1)', { tenantId: t, reference: 'r1' });
+    const text = failure(at, 'what the upstream said', { reference: 'r1' });
+    const alone = failure(at, 'another failure, no pair', { tenantId: t, reference: 'r2' });
+    const elsewhen = failure('2026-09-18T09:56:00.000Z', 'same reference, another instant', { tenantId: t, reference: 'r1' });
+    expect(
+      pairedFailuresMerged([answered, text, alone, elsewhen]).map((r) => [r.tenantId, r.message]),
+    ).toEqual([
+      [t, 'what the upstream said'],
+      [t, 'another failure, no pair'],
+      [t, 'same reference, another instant'],
+    ]);
+  });
+
+  it('lists a pair recorded on the real ledger once, as its own text, under its tenant', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    try {
+      const t = tenantId.parse(ulid());
+      const reference = `pair${ulid().toLowerCase()}`;
+      const since = new Date(Date.now() - 1_000).toISOString();
+      await host.admin.recordOpsFailure({
+        actor: ACTOR,
+        operation: 'promote.serve',
+        tenantId: t,
+        message: `the serve failed (reference ${reference})`,
+        detail: `upstream text for ${reference}`,
+        reference,
+      });
+      // The ledger holds both rows; the tenant's says only what was answered.
+      const rows = await host.admin.listOpsFailures(ACTOR, { reference });
+      expect(rows.map((r) => [r.tenantId, r.message])).toEqual([
+        [t, `the serve failed (reference ${reference})`],
+        [null, `upstream text for ${reference}`],
+      ]);
+      const transport = new MockEmailTransport();
+      const out = await sendFailureDigest({ admin: host.admin, actor: ACTOR, transport, from: FROM, recipients: 'ops@example.com', since, reportErrors: [] });
+      expect(out.status).toBe('sent');
+      const mail = transport.last!.text;
+      expect(mail).toContain(`upstream text for ${reference}`);
+      expect(mail).not.toContain(`the serve failed (reference ${reference})`);
     } finally {
       await host.close();
     }
