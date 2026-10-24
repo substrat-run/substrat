@@ -111,13 +111,24 @@ Roles a host defines and seats itself are held to the same rule:
   therefore not caught on a host that does not register its module; the control plane checking
   the registry's marks against the engines it knows is #2446.
 - **A release that makes a person's role system-held while people hold it passes push**, because
-  push cannot see who holds a role. Each scope's reconcile then refuses it, on every pass, naming
-  the tenant, the scope and the role, at every scope where a person holds a seat in that role
-  (an archived scope included). Nothing is written, but that scope's **whole** reconcile is held:
-  the release's other roles, its new schedules' grants, delivered connection grants and entity-grant
-  retirements are not applied there while the scope runs the new code. To clear it, take those
-  seats back in each such scope, or ship a release that keeps the role a person's. Refusing the
-  change at push or promote is part of #2446.
+  push cannot see who holds a role, **and its promote is refused.** When a release declares a
+  system-held role, promoting it to prod first asks every scope the promote would move onto it for
+  the roles it stores and which of them are held there, and judges the release's roles the way
+  each scope's reconcile would. If any scope would refuse them, the promote answers 409 and
+  nothing is served, adopted or moved. Take those seats back, or ship a release that keeps the
+  role a person's, and promote again. A release with no system-held role is judged by no scope.
+  A promote that would move more scopes than one promote reads is refused with a 503; the
+  platform's staff can raise that limit, or promote with an acknowledgement that skips the read
+  and is recorded in the promote's audit log.
+  A deployment too old to answer the question is moved unjudged and counted in the promote's
+  answer (`roleStateUnread`); any other failed read refuses the promote.
+- **Where the promote could not judge a scope**, or a seat was made after it asked, that scope's
+  reconcile still refuses the release, on every pass, naming the tenant, the scope and the role,
+  at every scope where a person holds a seat in that role (an archived scope included). Nothing
+  is written, but that scope's **whole** reconcile is held: the release's other roles, its new
+  schedules' grants, delivered connection grants and entity-grant retirements are not applied
+  there while the scope runs the new code. To clear it, take those seats back in each such scope,
+  or ship a release that keeps the role a person's.
 - **The same happens to a system-held role a release drops and a later one adds back** while
   its host principal is still seated: the scope cannot tell that seat from a person's, since what
   kind of principal holds a seat is not recorded. Keep the role defined across releases, or take

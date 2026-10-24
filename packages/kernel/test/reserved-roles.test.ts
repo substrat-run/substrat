@@ -7,6 +7,9 @@ import {
   assertModuleDeclared,
   noteDeclaredKeys,
   noteReservedKeys,
+  registryReservations,
+  releaseRolesAskScopes,
+  releaseRoleSetRefusal,
   reservedGrantRefusal,
   reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
@@ -320,3 +323,62 @@ describe('dumpRoleState (#2447 round 2)', () => {
   });
 });
 
+
+describe('a release’s role set against a scope it moves (#2446)', () => {
+  const registry = (roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[]) => ({
+    permissions: [
+      { key: 'a:use', description: 'use' },
+      { key: 'a:run', description: 'run', holder: 'system' as const },
+    ],
+    roles,
+  });
+  const flip = registry([{ key: 'runner', permissions: ['a:run'], holder: 'system' }]);
+  const personStored = { roles: [{ key: 'runner', permissions: ['a:use'], holder: 'person' as const }], seated: [] as string[] };
+
+  it('reads the registry’s marks as the reservation: marked keys reserved, every listed key declared', () => {
+    const r = registryReservations(flip);
+    expect([...r.reserved]).toEqual(['a:run']);
+    expect([...r.declared].sort()).toEqual(['a:run', 'a:use']);
+  });
+
+  it('refuses a release that makes a seated person’s role holder: system, as the reconcile there would', () => {
+    const state = { ...personStored, seated: ['runner'] };
+    const refusal = releaseRoleSetRefusal(flip, state);
+    expect(refusal).toMatch(/^role 'runner' is held by a principal \(stored as a person's role\), so it cannot be declared holder: 'system'/);
+    // The same function and inputs the scope's reconcile judges with.
+    expect(refusal).toBe(reservedRoleSetRefusal(flip.roles, registryReservations(flip), { roles: state.roles, seated: new Set(state.seated) }));
+  });
+
+  it('twin: the same release where nobody holds a seat in the role passes', () => {
+    expect(releaseRoleSetRefusal(flip, personStored)).toBeNull();
+  });
+
+  it('refuses a seated key whose stored row is gone, and admits the release where a system-held row is stored', () => {
+    expect(releaseRoleSetRefusal(flip, { roles: [], seated: ['runner'] })).toMatch(/with no definition stored/);
+    expect(releaseRoleSetRefusal(flip, { roles: [{ key: 'runner', permissions: ['a:run'], holder: 'system' }], seated: ['runner'] })).toBeNull();
+  });
+
+  it('asks the scopes only for a release with a system-held role, or a role holding a key its registry does not declare', () => {
+    expect(releaseRolesAskScopes(flip)).toBe(true);
+    expect(releaseRolesAskScopes(registry([{ key: 'member', permissions: ['a:use'] }]))).toBe(false);
+    expect(releaseRolesAskScopes(registry([{ key: 'member', permissions: ['a:use'], holder: 'person' }]))).toBe(false);
+    expect(releaseRolesAskScopes(registry([{ key: 'member', permissions: ['x:other'] }]))).toBe(true);
+    expect(releaseRolesAskScopes(registry([]))).toBe(false);
+  });
+
+  it('a release that asks no scope is one no stored state refuses (the property the skip rests on)', () => {
+    const quiet = registry([{ key: 'member', permissions: ['a:use'] }]);
+    const states = [
+      { roles: [], seated: ['member'] },
+      { roles: [{ key: 'member', permissions: ['a:run'], holder: 'system' as const }], seated: ['member'] },
+      { roles: [{ key: 'other', permissions: ['a:use'], holder: 'system' as const }], seated: [] },
+      { roles: [{ key: 'member', permissions: ['a:use'] }], seated: ['member'] },
+    ];
+    for (const s of states) expect(releaseRoleSetRefusal(quiet, s)).toBeNull();
+    // Its positive twin: an undeclared key is judged against a stored system-held row.
+    const undeclared = registry([{ key: 'member', permissions: ['x:other'] }]);
+    expect(releaseRoleSetRefusal(undeclared, { roles: [{ key: 'member', permissions: ['x:other'], holder: 'system' }], seated: [] })).toMatch(
+      /would hold x:other \(held by its stored system-held definition\)/,
+    );
+  });
+});

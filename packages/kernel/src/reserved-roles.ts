@@ -213,6 +213,54 @@ export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostRe
 }
 
 /**
+ * #2446: a scope's stored roles and seated role keys as they cross the wire (`roleStateLocal`, the
+ * vertical's `/internal/role-state`): what `StoredRoles` holds, with the set as a list. Role keys,
+ * permissions and holders only; no principal is named.
+ */
+export interface RoleState {
+  roles: RoleShape[];
+  seated: string[];
+}
+
+/**
+ * #2446: the reservations a pushed registry's rows mark — `reserved`, every key marked
+ * `holder: 'system'`; `declared`, every key it lists. The push boundary holds those marks to the
+ * module declarations shipped beside them (`pushedModuleRegistryProblems`), so they are what the
+ * incoming version's modules reserve and declare, the reservation its reconcile judges with.
+ */
+export function registryReservations(registry: { permissions: readonly { key: string; holder?: 'system' }[] }): HostReservations {
+  return {
+    reserved: new Set(registry.permissions.filter((p) => p.holder === 'system').map((p) => p.key)),
+    declared: new Set(registry.permissions.map((p) => p.key)),
+  };
+}
+
+/**
+ * #2446: why a release's role set would be refused where a scope stores `state`, or null: the
+ * question that scope's reconcile asks (`reservedRoleSetRefusal`, with the incoming version's
+ * reservations), asked before a promote moves it. A promote that would hold a seated scope's
+ * reconcile is refused instead.
+ */
+export function releaseRoleSetRefusal(
+  registry: { permissions: readonly { key: string; holder?: 'system' }[]; roles: readonly RoleShape[] },
+  state: RoleState,
+): string | null {
+  return reservedRoleSetRefusal(registry.roles, registryReservations(registry), { roles: state.roles, seated: new Set(state.seated) });
+}
+
+/**
+ * #2446: whether a release's role set can be refused by any scope's stored state, so its promote
+ * must ask the scopes it moves. A system-held role meets the seat rule and the stored definitions
+ * (`reservedRoleDefinitionRefusal`). A person's role is judged against stored state only for a key
+ * its registry does not declare: every declared key is a reserved one, refused at push, or a
+ * person's, which no stored row overrides. A release with neither asks no scope.
+ */
+export function releaseRolesAskScopes(registry: { permissions: readonly { key: string }[]; roles: readonly RoleShape[] }): boolean {
+  const declared = new Set(registry.permissions.map((p) => p.key));
+  return registry.roles.some((r) => r.holder === 'system' || r.permissions.some((p) => !declared.has(p)));
+}
+
+/**
  * #2447: the role keys a scope's own tuples seat anyone but a system principal in, live now — what
  * a role set defined on the scope is judged against. One parameter: now (ISO text).
  */

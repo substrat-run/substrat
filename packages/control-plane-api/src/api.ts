@@ -188,6 +188,8 @@ import {
   REQUEST_ROLLUP_LIMIT_MAX,
   METER_DAYS_LIMIT_DEFAULT,
   METER_DAYS_LIMIT_MAX,
+  releaseRolesAskScopes,
+  releaseRoleSetRefusal,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
@@ -456,6 +458,12 @@ export interface ControlPlaneApiOptions {
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
    *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
   copyLeaseMs?: number;
+  /**
+   * #2446: the most scopes one promote reads the role state of (`ROLE_STATE_SCOPE_CAP` unless a
+   * test needs a smaller one). A promote that would move more is refused, retryable, rather than
+   * judged in part.
+   */
+  roleStateScopeCap?: number;
   /**
    * Uploads a built vertical bundle to the platform runtime (a WfP dispatch
    * namespace), injected by the host so this package holds no Cloudflare SDK and the
@@ -828,6 +836,15 @@ function withholdIfPredatesRule(input: EventFacetInput, answer: EventFacetResult
     truncated: false,
   };
 }
+
+/** #2446: the most scopes one promote reads the role state of (`roleStateScopeCap`). */
+export const ROLE_STATE_SCOPE_CAP = 500;
+/** #2446: how many of those reads are in flight at once. */
+const ROLE_STATE_CONCURRENCY = 8;
+/** #2446: what a promote answers about the scopes it could not ask for their roles. */
+export const ROLE_STATE_UNREAD_NOTE =
+  "their deployment predates the role-state read, so this version's roles were not judged against them before the " +
+  'promote; their reconcile still refuses a role set it cannot define';
 
 /**
  * A fleet-wide report, narrowed to what a caller may see: a confined caller gets its own
@@ -8626,6 +8643,93 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
+   * #2446: the scopes a prod promote of `versionId` would hold at their reconcile, judged before
+   * anything moves. A pushed vertical's reconcile defines the incoming version's role set in each
+   * scope it runs in (`refuseReservedRoleSet`), and refuses it where the scope's stored roles and
+   * seats forbid it (#2525: a seated person's role made `holder: 'system'`, among others), which
+   * holds that scope's whole reconcile while it serves the new code. So each scope the promote moves
+   * onto the incoming version is asked for that state (`/internal/role-state`) and judged with the
+   * reconcile's own rule and inputs (`releaseRoleSetRefusal`: the incoming registry's roles and
+   * marks, which the push holds to the module declarations it carries).
+   *
+   * The scopes moved are the ones the in-place serve and the adopt after it move: every live primary
+   * scope of the vertical already on its serving script, and, for a private vertical, every one the
+   * owning tenant runs. Only a dispatch-backed version served in place moves them here; an embedded
+   * vertical's roles are its host's, defined by no reconcile of the registry, so it is asked nothing.
+   * Nor is a release no stored state can refuse (`releaseRolesAskScopes`), so a vertical with no
+   * system-held role pays no read.
+   *
+   * At most `roleStateScopeCap` scopes are read, `ROLE_STATE_CONCURRENCY` at a time in (tenant,
+   * scope) order; more is a 503 naming the two ways through (raise the cap, or staff's
+   * `acknowledge.roleStateUnjudged`, which skips the read and is audited), never a partial
+   * judgement. A deployment that predates the route (a 404) cannot be asked, and is counted in the
+   * answer instead; its reconcile still refuses. Any other failed read refuses the promote, with
+   * nothing moved.
+   */
+  const releaseRoleRefusalsOf = async (
+    c: ReqCtx,
+    slug: string,
+    versionId: string,
+    // The tenant the caller is confined to, if any: a refusal names no other tenant's scope to it.
+    pin: string | null,
+  ): Promise<{ refused: { tenantId: TenantId; scopeId: ScopeId; refusal: string }[]; unread: number }> => {
+    const none = { refused: [], unread: 0 };
+    if (!options.deployVertical || !options.fetchVerticalModules) return none; // no in-place serve moves anything
+    const actor = c.get('actor');
+    const incoming = await host.admin.getVersion(actor, versionId, slug);
+    if (!incoming?.deploymentRef) return none;
+    const manifestJson = await host.admin.versionManifest(actor, slug, versionId);
+    const registry = manifestJson ? storedDeployManifest.parse(JSON.parse(manifestJson)).registry : undefined;
+    if (!registry || !releaseRolesAskScopes(registry)) return none;
+    const v = await verticalOf(actor, slug);
+    const owner = v && v.ownerTenant !== null && !v.listed ? v.ownerTenant : null;
+    const moved = (await c.var.admin.listScopes(actor, { vertical: slug, status: ['active', 'suspended'] }))
+      .filter((s) => !s.forkedFrom && s.kind !== 'preview' && (!!s.servingRef || (s.tenantId === owner && s.status === 'active')))
+      .sort((a, b) => (a.tenantId === b.tenantId ? a.id.localeCompare(b.id) : a.tenantId.localeCompare(b.tenantId)));
+    const cap = options.roleStateScopeCap ?? ROLE_STATE_SCOPE_CAP;
+    if (moved.length > cap) {
+      throw new ControlPlaneError(
+        503,
+        `this version declares a system-held role, so a promote judges the roles of every scope it moves before moving ` +
+          `any, and it would move ${moved.length}, more than the ${cap} one promote reads. Nothing was promoted. Raise the control ` +
+          'plane\'s `roleStateScopeCap`, or, as staff, promote with `acknowledge.roleStateUnjudged`, which skips the read and ' +
+          'is recorded in the promote\'s audit row',
+      );
+    }
+    const refused: { tenantId: TenantId; scopeId: ScopeId; refusal: string }[] = [];
+    let unread = 0;
+    for (let i = 0; i < moved.length; i += ROLE_STATE_CONCURRENCY) {
+      const batch = moved.slice(i, i + ROLE_STATE_CONCURRENCY);
+      const states = await Promise.all(
+        batch.map(async (s) => {
+          // Another tenant's scope is not named to a caller confined to its own.
+          const named = pin === null || s.tenantId === pin ? `scope ${s.id}` : 'a scope of another tenant';
+          try {
+            const client = await verticalForScope(c, s);
+            if (!client) throw new Error('no deployment serves it');
+            return await client.roleState({ tenantId: s.tenantId, scopeId: s.id });
+          } catch (e) {
+            const status = e instanceof ControlPlaneError && e.status >= 500 ? e.status : 502;
+            throw new ControlPlaneError(
+              status,
+              `the roles of ${named} could not be read (${e instanceof Error ? e.message : String(e)}), and this version's ` +
+                `roles are judged against them before it moves the scope. Nothing was promoted; retry the promote`,
+            );
+          }
+        }),
+      );
+      batch.forEach((s, j) => {
+        const state = states[j]!;
+        if (state === 'predates') return void unread++;
+        const refusal = releaseRoleSetRefusal(registry, state);
+        if (refusal) refused.push({ tenantId: s.tenantId, scopeId: s.id, refusal });
+      });
+    }
+    if (unread > 0) console.warn('promote.role-state.predates', { slug, versionId, scopes: unread });
+    return { refused, unread };
+  };
+
+  /**
    * Which installed apps promoting `versionId` to `channel` would break: the promote gate's own
    * answer (`promotionImpact`, judged from the channel's previous version), and — for a PRIVATE,
    * dispatch-backed vertical's prod — what adopting each owned install still on its own version
@@ -8736,6 +8840,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return { affected: visible, ...(otherTenants ? { otherTenants } : {}) };
     };
     const exportBreaks = acknowledge?.exportBreak ? await breaksOf() : null;
+    // #2446: the scopes whose reconcile this version's roles would hold, before anything moves. The
+    // digest and export-break acknowledgements do not pass it: the way through is taking the seats
+    // back, or a release that keeps the role as each scope stores it.
+    // `roleStateUnjudged` skips the read: staff only, and recorded with the promote's acknowledgements.
+    if (acknowledge?.roleStateUnjudged && confinedTenant(p) !== null) {
+      return refuse(c, 'forbidden', 'acknowledge.roleStateUnjudged is for staff: it skips the role-state read a promote judges its roles with');
+    }
+    const roles = acknowledge?.roleStateUnjudged ? { refused: [], unread: 0 } : await releaseRoleRefusalsOf(c, slug, versionId, confinedTenant(p));
+    if (roles.refused.length > 0) {
+      const { visible, otherTenants } = narrowToCaller(roles.refused, confinedTenant(p));
+      return refuse(
+        c,
+        'conflict',
+        `promotion refused: this version's roles cannot be defined in ${roles.refused.length} of the scopes it would move, ` +
+          `so their reconcile would be refused there: ${roles.refused[0]!.refusal}. Nothing was promoted`,
+        { roleRefusals: { affected: visible, ...(otherTenants ? { otherTenants } : {}) } },
+      );
+    }
     // The blast-radius moment: refuses a changed digest without the acknowledgement,
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
@@ -8828,6 +8950,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...promoted,
       // What the acknowledged break reached, so a promoter who passed `exportBreak` reads it.
       ...(exportBreaks ? { exportBreaks } : {}),
+      // #2446: scopes whose deployment predates the role-state read were moved unjudged, in counts.
+      ...(roles.unread > 0 ? { roleStateUnread: { scopes: roles.unread, note: ROLE_STATE_UNREAD_NOTE } } : {}),
       ...(backfill.minted.length || backfill.error
         ? {
             storeBackfill: {

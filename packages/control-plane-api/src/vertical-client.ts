@@ -122,7 +122,7 @@ import {
   mergeDumpPages,
   scopeDumpPage,
 } from '@substrat-run/contracts';
-import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { isSizedByteStream, knownLengthInit, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
@@ -153,6 +153,14 @@ const orphanSweepReportWire = z.object({
   dryRun: z.boolean(),
   bucket: z.literal('none').optional(),
   consumeFailed: z.literal(true).optional(),
+});
+
+/** #2446: a scope's role state as it crosses the wire (`RoleState`), checked. */
+const roleStateWire = z.object({
+  roles: z.array(
+    z.object({ key: z.string().min(1), permissions: z.array(z.string()), holder: z.enum(['person', 'system']).optional() }),
+  ),
+  seated: z.array(z.string()),
 });
 
 /** `routeAnswer`'s word for a deployment that predates the route it was asked (#1722, #2010). */
@@ -1163,6 +1171,28 @@ export class VerticalClient {
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
+  }
+
+  /**
+   * #2446: the roles the deployment serving `scopeId` stores for `tenantId` there, and the role keys
+   * seated there (`/internal/role-state`): what its reconcile judges a role set against. `'predates'`
+   * only on a 404, the deployment's own proof it has no such route; every other failure throws (its
+   * own 501 included: the route exists and the host cannot answer), as does a wrong-shaped answer.
+   */
+  async roleState(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<RoleState | 'predates'> {
+    const verb = 'role-state';
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    const q = new URLSearchParams({ tenantId: input.tenantId, scopeId: input.scopeId });
+    const answer = await this.routeAnswer(verb, { legacy501: false, lost: 'nothing was changed; the read is safe to repeat.' }, () =>
+      this.options.fetch(`${base}/internal/role-state?${q}`, {
+        method: 'GET',
+        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+      }),
+    );
+    if (answer === PREDATES) return 'predates';
+    const parsed = roleStateWire.safeParse(answer);
+    if (!parsed.success) throw new ControlPlaneError(502, `vertical answered ${verb} with an unexpected shape for scope ${input.scopeId}.`);
+    return parsed.data;
   }
 
   /**
