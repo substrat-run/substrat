@@ -231,7 +231,8 @@ describe('bytesStream', () => {
     expect(out.chunks.map((c) => c.byteLength)).toEqual([1024 * 1024, 1024 * 1024, 5]);
     expect(out.chunks.every((c) => c.buffer !== bytes.buffer)).toBe(true);
     // Taking the first chunk's buffer leaves the source whole.
-    structuredClone(out.chunks[0]!.buffer, { transfer: [out.chunks[0]!.buffer] });
+    const taken = out.chunks[0]!.buffer as ArrayBuffer;
+    structuredClone(taken, { transfer: [taken] });
     expect(bytes.byteLength).toBe(2 * 1024 * 1024 + 5);
     expect(out).toMatchObject({ ok: true, sha256: sha256Of([bytes]) });
   });
