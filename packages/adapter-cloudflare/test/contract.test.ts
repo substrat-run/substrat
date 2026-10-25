@@ -125,6 +125,7 @@ import {
   SWITCH_HOLD_SETTLE_MS,
   SWITCH_HOLD_SNAPSHOT_MS,
   SWITCH_HOLDS_NAME,
+  type ConnectorDelegation,
 } from './test-host.js';
 import type { DoReply } from '../src/do-reply.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
@@ -325,6 +326,164 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
     } finally {
       await host.close();
       await reader.close();
+    }
+  });
+});
+
+/**
+ * #2526: the role, grant and org writes at a tenant node, across the same skew. An old coordinator
+ * calls the DO's methods directly, without a row, and records its own; the new coordinator calls
+ * each through `reply`, which an old DO refuses for a method it does not list, writing nothing.
+ */
+describe('#2526: role, grant and org writes across a coordinator/DO version skew', () => {
+  const staff = platformActorId.parse(ulid());
+  const AUDIT_READ = permissionKey.parse('audit:read');
+  const cpStub = () => env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+    defineRoleOrRefusal(tenantId: string, role: unknown, reservation: unknown, seatedInScopes: boolean): Promise<{ before: unknown } | { refused: string }>;
+    writeTenantTuple(tenantId: string, subject: string, relation: string, object: string, expiresAt: string | null): Promise<void>;
+    writeTenantSystemGrant(tenantId: string, moduleId: string, relation: string, expiresAt: string | null): Promise<string[]>;
+    createOrg(orgId: string, tenantId: string, slug: string, name: string, createdAt: string): Promise<boolean>;
+    recordConnectionGrant(row: Record<string, unknown>): Promise<void>;
+  };
+  const newHost = (controlPlane = env.CONTROL_PLANE) => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  const tuples = async (t: string) => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
+    (_, state) => state.storage.sql.exec('SELECT subject, relation FROM _substrat_tenant_tuples WHERE tenant_id = ? AND revoked_at IS NULL', t).toArray());
+  const newTenant = async (host: CloudflareScopeHost) => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `skew-${ulid().toLowerCase()}`, name: 'Skew' });
+    return t;
+  };
+
+  it('an old coordinator\'s direct calls still write, without a row of their own', async () => {
+    const host = newHost();
+    try {
+      const cp = cpStub();
+      const t = await newTenant(host);
+      const since = new Date().toISOString();
+      await expect(cp.defineRoleOrRefusal(t, { key: 'auditor', permissions: [AUDIT_READ], source: 'vertical' }, { reserved: [], declared: [] }, false))
+        .resolves.toEqual({ before: null });
+      await cp.writeTenantTuple(t, 'principal:p1', `granted:${AUDIT_READ}`, `tenant:${t}`, null);
+      await expect(cp.writeTenantSystemGrant(t, 'skew-module', `granted:${AUDIT_READ}`, null)).resolves.toEqual([]);
+      const org = orgId.parse(ulid());
+      await expect(cp.createOrg(org, t, `skew-${ulid().toLowerCase()}`, 'Skew org', since)).resolves.toBe(true);
+      await cp.recordConnectionGrant({ connectionId: ulid(), tenantId: t, vertical: 'skew', permission: AUDIT_READ, scopeId: null,
+        expiresAt: null, grantedBy: staff, grantedAt: since });
+      expect((await host.admin.listRoles(staff, { tenantId: t })).map((r) => r.key)).toEqual(['auditor']);
+      expect(await tuples(t)).toEqual(expect.arrayContaining([
+        { subject: 'principal:p1', relation: `granted:${AUDIT_READ}` },
+        { subject: 'system:skew-module', relation: `granted:${AUDIT_READ}` },
+      ]));
+      expect(await host.admin.getOrg(staff, t, org)).toBeDefined();
+      expect(await host.admin.listConnectionGrants(staff, t)).toHaveLength(1);
+      // The old coordinator records its own rows; the DO wrote none for it.
+      expect(await host.admin.auditLog(staff, { tenantId: t, since, action: ['defineRole', 'grant', 'grantToSystem', 'createOrg', 'grantToConnection'] }))
+        .toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  const NEW_REPLIED = ['defineRoleOrRefusal', 'assignTenantRole', 'writeTenantTuple', 'writeOrgTenantTuple', 'writeTenantSystemGrant',
+    'grantConnectionInDirectory', 'insertOrg'];
+  const oldDo = () => interceptedControlPlane(async (args, method) => {
+    if (method !== 'reply' || !NEW_REPLIED.includes(args[0] as string)) return;
+    return { answer: { failure: toWireFailure(new Error(`not a replied directory method: ${String(args[0])}`)) } };
+  });
+
+  it('a new coordinator against an old DO fails closed, naming the method, and writes nothing', async () => {
+    const reader = newHost();
+    const host = newHost(oldDo());
+    try {
+      const t = await newTenant(reader);
+      const org = orgId.parse(ulid());
+      await reader.admin.createOrg(staff, { id: org, tenantId: t, slug: `skew-${ulid().toLowerCase()}`, name: 'Skew org' });
+      await reader.admin.defineRole(staff, t, { key: 'auditor', permissions: [AUDIT_READ], source: 'vertical' });
+      const conn = connectionId.parse(ulid());
+      await reader.admin.createConnection(staff, { id: conn, tenantId: t, vertical: 'skew', provider: `skew-${conn.toLowerCase()}`,
+        label: 'Skew', secret: { accessToken: 'tok' } });
+      const node = { tenantId: t, scopeId: null };
+      const who = principalId.parse(ulid());
+      const since = new Date().toISOString();
+      const refused: [Promise<unknown>, string][] = [
+        [host.admin.defineRole(staff, t, { key: 'other', permissions: [AUDIT_READ], source: 'vertical' }), 'defineRoleOrRefusal'],
+        [host.admin.assignRole(staff, { principalId: who, roleKey: 'auditor', node }), 'assignTenantRole'],
+        [host.admin.grant(staff, { principalId: who, permission: AUDIT_READ, node, grantedBy: who }), 'writeTenantTuple'],
+        [host.admin.grantToOrg(staff, org, AUDIT_READ, node), 'writeOrgTenantTuple'],
+        [host.admin.addMember(staff, t, who, org), 'writeOrgTenantTuple'],
+        [host.admin.grantToSystem(staff, { moduleId: moduleId.parse('skew-module'), permission: AUDIT_READ, node, grantedBy: staff }), 'writeTenantSystemGrant'],
+        [host.admin.grantToConnection(staff, { connectionId: conn, permission: AUDIT_READ, node, grantedBy: staff }), 'grantConnectionInDirectory'],
+        [host.admin.createOrg(staff, { id: orgId.parse(ulid()), tenantId: t, slug: `skew-${ulid().toLowerCase()}`, name: 'New org' }), 'insertOrg'],
+      ];
+      for (const [call, method] of refused) await expect(call).rejects.toThrow(`not a replied directory method: ${method}`);
+      expect((await reader.admin.listRoles(staff, { tenantId: t })).map((r) => r.key)).toEqual(['auditor']);
+      expect(await tuples(t)).toEqual([]);
+      expect(await reader.admin.listOrgs(staff, t)).toHaveLength(1);
+      expect(await reader.admin.listConnectionGrants(staff, t)).toEqual([]);
+      expect(await reader.admin.auditLog(staff, { tenantId: t, since,
+        action: ['defineRole', 'assignRole', 'grant', 'grantToOrg', 'addMember', 'grantToSystem', 'grantToConnection'] }))
+        .toEqual([]);
+      // `createOrg` by its own: the arrange's org shares the `since` millisecond.
+      expect((await reader.admin.auditLog(staff, { tenantId: t, action: ['createOrg'] }))).toHaveLength(1);
+    } finally {
+      await host.close();
+      await reader.close();
+    }
+  });
+});
+
+/**
+ * #2526: `grantToConnection` at a scope node writes its directory record and admin row as one unit,
+ * then delivers the tuple to the deployment serving the scope. A refused delivery fails the call
+ * and leaves the record and its row; the reconcile's re-seat from the record (that deployment's
+ * `seatScopeLocal`, with the grants the platform gathers from `listConnectionGrants`) delivers it.
+ * The shape is the hosted one: a delegating platform host, and a CP-less host as the deployment.
+ */
+describe('#2526: a refused connection-grant delivery is repaired from the record', () => {
+  it('leaves the record and its row, and a re-seat from the record restores the tuple', async () => {
+    const staff = platformActorId.parse(ulid());
+    const USE = permissionKey.parse('delivery:use');
+    const vertical = `delivery-${ulid().toLowerCase()}`;
+    const deployment = new CloudflareScopeHost({ scope: env.SCOPE });
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      connectorDelegation: {
+        invoke: async () => { throw new Error('not used'); },
+        grant: async (a) => deployment.connectorGrantLocal(a.connectionId, a.scopeId, a.permission, a.expiresAt),
+      } as unknown as ConnectorDelegation });
+    try {
+      const t = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: t, slug: `delivery-${ulid().toLowerCase()}`, name: 'Delivery' });
+      const s = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical });
+      await host.admin.activateScope(staff, t, s);
+      await deployment.provisionScopeLocal({ tenantId: t, scopeId: s, owner: principalId.parse(ulid()),
+        roles: [{ key: 'member', permissions: [USE], source: 'vertical' }], ownerRoleKey: 'member' });
+      const conn = connectionId.parse(ulid());
+      await host.admin.createConnection(staff, { id: conn, tenantId: t, vertical, provider: `delivery-${conn.toLowerCase()}`,
+        label: 'Delivery', secret: { accessToken: 'tok' } });
+      const scopeDo = env.SCOPE.get(env.SCOPE.idFromName(s));
+      const scopeSql = (sql: string) => runInDurableObject(scopeDo, (_, state) => { state.storage.sql.exec(sql); });
+      const recorded = async () => (await host.admin.listConnectionGrants(staff, t)).filter((g) => g.connectionId === conn);
+      const rows = async () => (await host.admin.auditLog(staff, { tenantId: t, action: ['grantToConnection'] })).length;
+      const delivered = async () => runInDurableObject(scopeDo, (_, state) => state.storage.sql.exec(
+        'SELECT 1 FROM _substrat_tuples WHERE subject = ? AND relation = ? AND revoked_at IS NULL', `connection:${conn}`, `granted:${USE}`,
+      ).toArray().length);
+
+      await scopeSql(`CREATE TRIGGER test_refuse_delivery BEFORE INSERT ON _substrat_tuples
+        BEGIN SELECT RAISE(ABORT, 'refused by test_refuse_delivery (test fault)'); END`);
+      await expect(host.admin.grantToConnection(staff, { connectionId: conn, permission: USE, node: { tenantId: t, scopeId: s }, grantedBy: staff }))
+        .rejects.toThrow(/test fault/);
+      expect([(await recorded()).length, await rows(), await delivered()]).toEqual([1, 1, 0]);
+
+      await scopeSql('DROP TRIGGER test_refuse_delivery');
+      const gathered = (await recorded()).filter((g) => g.scopeId === s)
+        .map((g) => ({ connectionId: g.connectionId, permission: g.permission }));
+      await deployment.seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: gathered });
+      expect([(await recorded()).length, await rows(), await delivered()]).toEqual([1, 1, 1]);
+    } finally {
+      await host.close();
+      await deployment.close();
     }
   });
 });
