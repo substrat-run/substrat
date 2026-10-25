@@ -1,5 +1,29 @@
 # @substrat-run/kernel
 
+## 0.162.0
+
+### Minor Changes
+
+- 3310b4d: A CP-less deployment judges the role set a provision, a reconcile or a restore writes inside the transaction that writes it (#2531).
+
+  - **adapter-cloudflare, provision and repair.** `provisionScopeLocal` and `projectRolesLocal` judge their role set again inside the projection's own unit, against the roles, tombstones and seats the scope holds as it writes, so a seat made after the first check is seen. Refused: `forbidden`, nothing written (no role row, tombstone, owner seat, receipt or enforcement flip). On a provision the module migrations have already run by then, as before.
+  - **adapter-cloudflare, restore.** `restoreScopeLocal` and `restoreStagedScopeLocal` take an optional `roles` (with `tenantId`): the role repair is judged on the seats the dump has just brought and projected in the load's own transaction, answered `rolesProjected: true`. Refused: `conflict`, the scope keeps its rows and a staged load its stage.
+  - **The refusal** is one fixed sentence naming the role key only: `role '<key>' is refused by the reserved-key rule, judged against the roles and seats this scope holds as the write lands (K-55); nothing was written`.
+  - **Version skew.** The judged calls are new ScopeDO methods (`applyJudgedProjectionReply`, `importDumpJudged`, `commitStagedDumpJudged`): a host meeting an older ScopeDO is refused with nothing written. The old methods stay and behave as before. The directory fan-out is not judged (K-55).
+  - **vertical-host.** `/internal/restore` and `/internal/restore-staged` hand the vertical's roles to the load, and repair with `projectRolesLocal` only when the load does not answer `rolesProjected: true` (an older adapter, or a retry answered as already applied).
+  - **kernel.** `reservedRoleSetRefusedRole` (the set's walk, with the refused role's key) and `inUnitRoleRefusal` (the sentence).
+
+- 7d71f13: The wire-signing readiness report (RFC wire-signing, follow-on 4). `POST /wire-auth/readiness` reads the fleet's capability records and the fleet walk's admin rows, and lists what still blocks three rollout steps: moving an environment to `signed-only`, dropping a public key (when the body names the key, its issuer and `since`, the moment the control plane's list stopped naming it), and withdrawing the shared credential. The report is advisory and read-only. It informs the person taking the step, and no tooling enforces it yet. It calls nothing and writes nothing; its record reads leave their access-log rows. It takes a staff sign-in, and it is paged like the walk: `limit` runs from 1 to 50, and a value outside that is refused.
+
+  A script with no record, a held record and an unverified one are listed as unknown, and every gate blocks on them. A record is trusted as current only when it was written after the last applied confirming walk began. When that walk cannot be found whole in the admin log, confirmation is unknown and blocks the move to `signed-only` and every key drop. Everything that blocks `signed-only`, except that step's standing blockers, also blocks the credential withdrawal. A script that does not carry and verify signed calls still needs the shared credential, and that includes a script given no lists under a canary or with the rollout off. While the settings are refused, the report names only the refusal, not the rollout state it hides. Every page says its answer is as of each record's recorded time, not live (`asOf`): run the confirming pass immediately before any flip or drop, and run the report after it. Every reason is a fixed sentence that names at most a setting or a vertical, never a key, a key id or a tenant.
+
+  `@substrat-run/contracts` adds `WIRE_UNSIGNED_ROUTES`, the routes a signer leaves unsigned by design (today `POST /internal/connector-attachment-stream`), each with its method, path and reason, and `wireUnsignedRouteOf`. The report lists each of these routes as a standing blocker of `signed-only`. The control plane's signer counts a streamed call to a listed route as `skipped`, as before. A streamed call to any other route is still sent as given, but is now counted `failed` with the reason `stream-unlisted`. `@substrat-run/kernel` adds the optional `startedAt` to the walk's `WireWalkAudit`, and every `walkWireAuth` row now records when its pass began.
+
+### Patch Changes
+
+- Updated dependencies [7d71f13]
+  - @substrat-run/contracts@0.162.0
+
 ## 0.161.0
 
 ### Minor Changes
@@ -7065,7 +7089,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
