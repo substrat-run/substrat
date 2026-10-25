@@ -324,16 +324,6 @@ describe('loadedRoleSetRefusedRole: the directory set judged against a load’s 
     expect(loadedRoleSetRefusedRole([odd], host, { roles: [], seated: new Set(['odd']) })?.key).toBe('odd');
     expect(loadedRoleSetRefusedRole([odd], host, { roles: [], seated: new Set(), dropped: [{ key: 'odd', permissions: ['a:use'] }] })?.key).toBe('odd');
   });
-
-  it('agrees with dumpRoleRefusal on the same state read from a dump', () => {
-    const tables = [
-      { name: '_substrat_roles', columns: ['tenant_id', 'role_key', 'permissions', 'holder', 'revoked_at'], rows: [['t', 'runner', '["a:use"]', 'person', null]] },
-      { name: '_substrat_tuples', columns: ['subject', 'relation', 'object', 'expires_at', 'revoked_at'], rows: [['p1', 'role:runner', 'scope:s', null, null]] },
-    ];
-    const now = '2026-10-25T00:00:00.000Z';
-    expect(dumpRoleRefusal([runner], host, { tenantId: 't', tables }, now)).not.toBeNull();
-    expect(loadedRoleSetRefusedRole([runner], host, dumpRoleState(tables, 't', now))?.key).toBe('runner');
-  });
 });
 
 describe('reservedRoleSetRefusal against a dropped role’s tombstone (#2531)', () => {

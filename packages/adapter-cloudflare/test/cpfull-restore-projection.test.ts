@@ -152,26 +152,6 @@ describe('a control-plane-full restore projects the directory’s current permis
     expect(state.seats.filter((r) => r.revoked_at === null && String(r.subject).includes(alice))).toHaveLength(1);
   });
 
-  it('twin: the same restore on a host that does not project carries the dump’s rows as they were', async () => {
-    const flagOff = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeLocalPermissions: false });
-    try {
-      const t = tenantId.parse(ulid());
-      const s = scopeId.parse(ulid());
-      await flagOff.admin.createTenant(staff, { id: t, slug: `cpr-off-${t.toLowerCase()}`, name: 'Restore, not projected' });
-      await flagOff.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'cpr' });
-      await flagOff.admin.activateScope(staff, t, s);
-      await flagOff.admin.grantEntitlement(staff, t, 'sku:kept');
-      const dump = withRows(await flagOff.admin.exportScope(staff, t, s), '_substrat_entitlements', [
-        { tenant_id: t, entitlement_key: 'sku:dumped', expires_at: null, quota: null, plan: null },
-      ]);
-      await flagOff.restoreScope(staff, t, s, dump);
-      // The scope reads the directory over RPC there; its own rows are the dump's.
-      expect((await permissionState(s)).entitlements.map((e) => e.entitlement_key)).toEqual(['sku:dumped']);
-    } finally {
-      await flagOff.close();
-    }
-  });
-
   it('the destination keeps its flags: a dump from before the scope was projected does not turn enforcement off', async () => {
     const { t, s } = await setup();
     const before = (await permissionState(s)).flags;

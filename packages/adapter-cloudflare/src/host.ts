@@ -12274,7 +12274,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * load only keeps the destination's permission flags.
    */
   private async loadProjectionFor(tenantId: TenantId, vertical: string | null | undefined): Promise<LoadProjection | null> {
-    if (!this.scopeLocalPermissions || this.cpLess) return null;
+    if (!this.scopeLocalPermissions) return null;
     const [state, connectionKeys] = await Promise.all([this.tenantProjection(tenantId), this.connectionKeyRows(tenantId, vertical)]);
     return { tenantId, ...state, connectionKeys, judge: this.roleJudge() };
   }
