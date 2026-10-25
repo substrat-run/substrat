@@ -655,16 +655,15 @@ describe('the fleet walk', () => {
     await host.admin.publishVersion(person, {
       id: 'zz-custom-id', verticalSlug: v.slug, version: '9.9.9', manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
     });
-    const first = await pass(app, { limit: 4 });
-    expect(first.scripts.at(-1)?.deploymentRef).toBe(ref);
-    expect(first.next).toBeNull();
-    const ending = await pass(app, { limit: 3 });
-    expect(ending.next).not.toBeNull();
-    const rest = await pass(app, { limit: 10, cursor: ending.next });
-    expect(rest.scripts.map((s) => s.deploymentRef)).toEqual([ref]);
-    // And a pass that ends on it answers a cursor the next pass takes.
+    // A second vertical sorts after it, so a pass that ends on the custom version answers a `next` naming it.
+    const after = await vertical(app, await tenantOf('walk-idt'));
     const onIt = await pass(app, { limit: 4 });
     expect(onIt.scripts.at(-1)?.deploymentRef).toBe(ref);
+    expect(onIt.next).toBe(`${v.slug}|zz-custom-id`);
+    // And the next pass takes that cursor, and walks on from it.
+    const rest = await pass(app, { limit: 10, cursor: onIt.next });
+    expect(rest.scripts.map((s) => s.deploymentRef)).toEqual(after.scripts);
+    expect(rest.next).toBeNull();
   });
 
   it('a hold keeps 64 binding names and counts the rest; a hold that cannot be written is retried, then said', async () => {
