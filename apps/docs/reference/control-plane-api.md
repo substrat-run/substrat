@@ -176,7 +176,8 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   observability routes a non-staff builder may reach, because they answer about one
   tenant: a builder's tenant is forced from the principal, and a staff caller must name
   one, since answering fleet-wide on a forgotten parameter is the leak these exist to
-  close) — the permission surface, the append-only audit history, operational failures,
+  close; both log routes set `x-substrat-logs-incomplete: 1` beside the list when the page
+  may be missing lines) — the permission surface, the append-only audit history, operational failures,
   billable readings, and fleet telemetry.
 - **Sweep runs** — `/sweep-runs`: the durable record of what a sweep pass touched, one row
   per unit (a connection swept, skipped or failed, a schedule run, a freshness verdict).

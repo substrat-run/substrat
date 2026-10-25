@@ -1585,14 +1585,16 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       from: input.since ? Date.parse(input.since) : to - input.hours * 3_600_000,
       to,
     };
-    // #2521: set when a page of this tenant's lines was FULL when the backend returned it and a
-    // line was taken out afterwards (`telemetryPage` leaves the wire line out once the backend has
-    // spent a slot on it), so lines may lie behind the cut. It is the service grain's `incomplete`:
-    // a short page is then not "the window held no more". Read by this tenant's own queries only —
-    // an account-wide query's filtered line is not necessarily this tenant's to account for.
+    // #2521: set when a page of this tenant's lines came back FULL from the backend and held fewer
+    // than the read wanted once a line was taken out (`telemetryPage` leaves the wire line out after
+    // the backend has spent a slot on it), so lines may lie behind the cut. It is the service
+    // grain's `incomplete`: a short page is then not "the window held no more". `wanted` is what the
+    // read keeps of a full page: all of it, except where it over-fetched a slot to give back (the
+    // per-request read, below), which a single filtered line leaves whole. Set by this tenant's own
+    // queries only: an account-wide query's filtered line is not necessarily this tenant's.
     let incomplete = false;
-    const noteCut = (page: { events: unknown[]; fetched: number }, asked: number) => {
-      if (page.fetched >= asked && page.events.length < page.fetched) incomplete = true;
+    const noteCut = (page: { events: unknown[]; fetched: number }, asked: number, wanted = asked) => {
+      if (page.fetched >= asked && page.events.length < wanted) incomplete = true;
     };
     const readTenant = async (filters: TelemetryFilter[], asked: number) => {
       const page = await queryRawPage(filters, timeframe, asked);
@@ -1735,9 +1737,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         // dropped — a line shown to the wrong tenant is exactly the leak the tenant grain
         // exists to prevent, so the conservative direction is the only allowed one.
         if (!trustedIds.has(id) && !events.some((e) => ownsInvocation(e, input))) return [];
-        // Only an invocation this tenant owns can be incomplete for it. A full page the wire line
-        // was taken out of may hold lines past the cap.
-        noteCut(page, linesPerInvocation + 1);
+        // Only an invocation this tenant owns can be incomplete for it. The slot over-fetched above
+        // gives one filtered line back; a full page that lost more than that is short of its share.
+        noteCut(page, linesPerInvocation + 1, linesPerInvocation);
         return events;
       }),
     );

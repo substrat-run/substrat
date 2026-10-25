@@ -6587,6 +6587,8 @@ describe('control-plane API — observability proxy', () => {
   describe('tenant grain', () => {
     const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
     const tenantSeen: { metrics: unknown[]; logs: unknown[] } = { metrics: [], logs: [] };
+    /** What the faked tenant log read answers; a test sets it and puts it back. */
+    let tenantLogsAnswer: { events: RecentLogEvent[]; incomplete: boolean } = { events: [], incomplete: false };
     const tenantReader = {
       ...reader,
       tenantMetrics: async (input: unknown) => {
@@ -6605,7 +6607,7 @@ describe('control-plane API — observability proxy', () => {
       },
       tenantLogs: async (input: unknown) => {
         tenantSeen.logs.push(input);
-        return [];
+        return tenantLogsAnswer;
       },
     };
 
@@ -6711,6 +6713,25 @@ describe('control-plane API — observability proxy', () => {
       const res = await app.request(`/observability/tenant-metrics?tenantId=${someone}`, { headers: asStaff });
       expect(res.status).toBe(200);
       expect(tenantSeen.metrics.at(-1)).toMatchObject({ tenantId: someone });
+    });
+
+    // #2521: the tenant grain says what the service grain says, in the same words.
+    it('says beside the tenant list when the read behind it may be missing lines, and only then', async () => {
+      const app = appWith(tenantReader);
+      const event = { timestamp: 1, message: 'a line' } as RecentLogEvent;
+      try {
+        tenantLogsAnswer = { events: [event], incomplete: true };
+        const short = await app.request('/observability/tenant-logs', { headers: asBuilder });
+        expect(short.headers.get(LOGS_INCOMPLETE_HEADER)).toBe('1');
+        // The body is the same list either way: every caller that reads it reads it unchanged.
+        expect(await short.json()).toEqual([event]);
+        tenantLogsAnswer = { events: [event], incomplete: false };
+        const whole = await app.request('/observability/tenant-logs', { headers: asBuilder });
+        expect(whole.headers.has(LOGS_INCOMPLETE_HEADER)).toBe(false);
+        expect(await whole.json()).toEqual([event]);
+      } finally {
+        tenantLogsAnswer = { events: [], incomplete: false };
+      }
     });
 
     it('passes the within-tenant narrowing through and bounds the window', async () => {
@@ -6965,7 +6986,7 @@ describe('control-plane API — observability proxy', () => {
         },
         tenantLogs: async (input: unknown) => {
           seen.logs.push(input);
-          return [];
+          return { events: [], incomplete: false };
         },
       };
 

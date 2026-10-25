@@ -67,7 +67,7 @@ describe('cf tenant logs', () => {
    */
   it('gives a stamped line a readable message composed from its own fields', async () => {
     const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation()] : []));
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     expect(events[0]!.message).toBe('POST /api/orders → 200 (42 ms)');
     expect(events[0]!.level).toBe('info');
@@ -77,7 +77,7 @@ describe('cf tenant logs', () => {
     const { reader } = readerOver((f) =>
       keyed(f, 'substrat') ? [invocation({ status: null, threw: true })] : [],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events[0]!.message).toBe('POST /api/orders → threw (42 ms)');
     expect(events[0]!.level).toBe('error');
   });
@@ -110,7 +110,7 @@ describe('cf tenant logs', () => {
     const { reader } = readerOver((f) =>
       keyed(f, 'substrat') ? [invocation({ method: 'GET', path: '/internal/owner-seat', status: 501, durationMs: 3 })] : [],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     expect(events[0]!.message).toBe('GET /internal/owner-seat → 501 capability absent (3 ms)');
     expect(events[0]!.level).toBe('info');
@@ -118,7 +118,7 @@ describe('cf tenant logs', () => {
 
   it('still reads a 500 as an error row', async () => {
     const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ status: 500 })] : []));
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events[0]!.message).toBe('POST /api/orders → 500 (42 ms)');
     expect(events[0]!.level).toBe('error');
   });
@@ -127,7 +127,7 @@ describe('cf tenant logs', () => {
     const { reader } = readerOver((f) =>
       keyed(f, 'substrat') ? [invocation({ status: 501, threw: true })] : [],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events[0]!.message).toBe('POST /api/orders → threw (42 ms)');
     expect(events[0]!.level).toBe('error');
   });
@@ -135,7 +135,7 @@ describe('cf tenant logs', () => {
   it('keeps a 501 out of an error read', async () => {
     // Whatever phase one is asked, a 501 that reaches the merge is not an error row.
     const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ status: 501 })] : []));
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     expect(events).toEqual([]);
   });
 
@@ -199,7 +199,7 @@ describe('cf tenant logs', () => {
       }
       return [];
     });
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     expect(events.map((e) => e.message)).toContain('charge declined');
   });
 
@@ -221,7 +221,7 @@ describe('cf tenant logs', () => {
       }
       return [];
     });
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     expect(events).toEqual([]);
   });
 
@@ -233,7 +233,7 @@ describe('cf tenant logs', () => {
       if (keyed(f, '$metadata.requestId')) return [ownLine('error', 'a platform worker’s crash', 'req-01NONE', '01Y')];
       return [];
     });
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     expect(events).toEqual([]);
   });
 
@@ -246,7 +246,7 @@ describe('cf tenant logs', () => {
     const { reader } = readerOver((f) =>
       keyed(f, 'substrat') ? [invocation({ status: 500 })] : [], // phase two finds nothing
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     expect(events[0]!.message).toContain('→ 500');
   });
@@ -261,7 +261,7 @@ describe('cf tenant logs', () => {
         ? [invocation({ status: 500 })]
         : [ownLine('error', 'TypeError: undefined is not a function', 'req-01EV', '01SIB')],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
     const messages = events.map((e) => e.message);
     expect(messages).toContain('TypeError: undefined is not a function');
     // Both the failure record and the exception behind it — that pairing is the feature.
@@ -275,7 +275,7 @@ describe('cf tenant logs', () => {
         ? [invocation()]
         : [{ timestamp: 1002, source: { router: 'request', tenantId: '01TENANT' }, $metadata: { id: '01RTR', requestId: 'req-01EV' } }],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     expect(events[0]!.message).toContain('/api/orders');
   });
@@ -290,7 +290,7 @@ describe('cf tenant logs', () => {
             ownLine('info', 'the vertical’s own line', 'req-01EV', '01SIB'),
           ],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events).toHaveLength(2);
     expect(events.map((e) => e.message)).toContain('the vertical’s own line');
     expect(JSON.stringify(events)).not.toContain('legacy-accepted');
@@ -302,7 +302,7 @@ describe('cf tenant logs', () => {
     const { reader, sent } = readerOver((f) =>
       keyed(f, 'tenantId')?.value === '01OTHER' && keyed(f, 'invocationId') ? [theirs] : [],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', invocationId: '01JABCDEFGHJKMNPQRSTVWXYZ0', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', invocationId: '01JABCDEFGHJKMNPQRSTVWXYZ0', hours: 24, limit: 10 });
     expect(events).toEqual([]);
     expect(keyed(sent[0]!, 'tenantId')).toMatchObject({ value: '01TENANT', operation: 'eq' });
     expect(keyed(sent[0]!, 'invocationId')).toMatchObject({ value: '01JABCDEFGHJKMNPQRSTVWXYZ0', operation: 'eq' });
@@ -760,7 +760,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
 
   it('returns a call of the caller’s own tenant, with the lines its handler wrote', async () => {
     const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
-    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 50 });
+    const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 50 });
     expect(events.find((e) => e.invocationId === A1)).toMatchObject({ invocationId: A1, requestId: 'req-A1' });
     expect(messages(events)).toEqual(['POST /api/orders → 200 (42 ms)', 'charge declined']);
   });
@@ -768,7 +768,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
   // The boundary. Positive twin above; this is the leak it guards.
   it('returns NOTHING for an invocation id that belongs to another tenant', async () => {
     const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
-    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: B1, hours: 24, limit: 50 });
+    const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: B1, hours: 24, limit: 50 });
     expect(events).toEqual([]);
     // Nothing of theirs was even fetched: with no stamped line of ours there is no
     // request id to expand, so phase two never runs.
@@ -791,20 +791,20 @@ describe('cf tenant logs — filtered to one invocation', () => {
 
   it('narrows to that one call, though the tenant has others', async () => {
     const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
-    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A2, hours: 24, limit: 50 });
+    const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: A2, hours: 24, limit: 50 });
     expect(messages(events)).toEqual(['POST /api/orders → 500 (42 ms)']);
   });
 
   it('treats an empty id as a filter that matches nothing, never as no filter', async () => {
     const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
-    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: '', hours: 24, limit: 50 });
+    const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: '', hours: 24, limit: 50 });
     expect(events).toEqual([]);
     expect(keyed(sent[0]!, 'invocationId')).toMatchObject({ value: '' });
   });
 
   it('with no id, is unfiltered as before — every call of the tenant, none of the other’s', async () => {
     const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
-    const events = await reader.tenantLogs!({ tenantId: OURS, hours: 24, limit: 50 });
+    const { events } = await reader.tenantLogs!({ tenantId: OURS, hours: 24, limit: 50 });
     expect(messages(events)).toEqual([
       'POST /api/orders → 200 (42 ms)',
       'POST /api/orders → 500 (42 ms)',
@@ -821,7 +821,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
    */
   it('does not widen an error read past the one call, and never searches account-wide', async () => {
     const { reader, sent } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
-    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A2, level: 'error', hours: 24, limit: 50 });
+    const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: A2, level: 'error', hours: 24, limit: 50 });
     expect(messages(events)).toEqual(['POST /api/orders → 500 (42 ms)']);
     expect(sent.some((f) => keyed(f, '$metadata.level'))).toBe(false);
   });
@@ -845,7 +845,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
 
     it('reads up to the caller’s limit, past the per-invocation share', async () => {
       const { reader, limits } = over();
-      const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 100 });
+      const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 100 });
       // One more than the budget: the slot a request's wire line takes before the reader drops it.
       expect(limits).toEqual([100 + 1]);
       expect(events).toHaveLength(46); // the stamped line and all 45 of its own
@@ -853,7 +853,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
 
     it('still bounds the merged answer by the limit', async () => {
       const { reader } = over();
-      const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 30 });
+      const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, hours: 24, limit: 30 });
       expect(events).toHaveLength(30);
     });
 
@@ -867,7 +867,7 @@ describe('cf tenant logs — filtered to one invocation', () => {
 
   it('applies the level to the lines of that one call', async () => {
     const { reader } = readerOver((f) => CORPUS.filter((e) => matches(f, e)));
-    const events = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, level: 'error', hours: 24, limit: 50 });
+    const { events } = await reader.tenantLogs!({ tenantId: OURS, invocationId: A1, level: 'error', hours: 24, limit: 50 });
     expect(messages(events)).toEqual(['charge declined']);
   });
 });
@@ -921,7 +921,7 @@ describe('cf tenant logs — ctx.log lines', () => {
 
   it('reads them with every filter in the query, tenant first, and shows their own message and level', async () => {
     const { reader, sent } = readerOver((f) => (isModuleQuery(f) ? [moduleLine()] : []));
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', scopeId: '01SCOPE', level: 'warn', search: 'bounced', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', scopeId: '01SCOPE', level: 'warn', search: 'bounced', hours: 24, limit: 10 });
     const q = sent.find(isModuleQuery)!;
     expect(q[0]).toEqual({ key: 'tenantId', operation: 'eq', type: 'string', value: '01TENANT' });
     expect(keyed(q, 'scopeId')).toMatchObject({ value: '01SCOPE' });
@@ -938,13 +938,13 @@ describe('cf tenant logs — ctx.log lines', () => {
       // Phase two: the stamped line's request carries the same `ctx.log` line again.
       return [invocation({}, '01EV'), moduleLine()];
     });
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events.filter((e) => e.message === 'reply to t1 bounced')).toHaveLength(1);
   });
 
   it('answers a template read with that template’s lines only, and no correlation', async () => {
     const { reader, sent } = readerOver((f) => (isModuleQuery(f) ? [moduleLine()] : [invocation()]));
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', template: 'reply to {ticketId} bounced', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', template: 'reply to {ticketId} bounced', hours: 24, limit: 10 });
     expect(sent).toHaveLength(1);
     expect(keyed(sent[0]!, 'template')).toMatchObject({ value: 'reply to {ticketId} bounced' });
     expect(events.map((e) => e.message)).toEqual(['reply to t1 bounced']);
@@ -983,7 +983,7 @@ describe('cf tenant logs — the runtime record folds into the stamped row', () 
     const { reader } = readerOver((f) =>
       keyed(f, 'substrat') ? [invocation({}, '01EV')] : [invocation({}, '01EV'), runtime('req-01EV', '01RT')],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ message: 'POST /api/orders → 200 (42 ms)', cpuTimeMs: 7, wallTimeMs: 55, outcome: 'ok' });
   });
@@ -994,7 +994,7 @@ describe('cf tenant logs — the runtime record folds into the stamped row', () 
         ? [invocation({ status: null, threw: true }, '01EV')]
         : [invocation({ status: null, threw: true }, '01EV'), runtime('req-01EV', '01RT', { outcome: 'exceededCpu', cpuTimeMs: 30_000 })],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ outcome: 'exceededCpu', cpuTimeMs: 30_000, level: 'error' });
   });
@@ -1007,7 +1007,7 @@ describe('cf tenant logs — the runtime record folds into the stamped row', () 
       $workers: { requestId: 'req-01EV', event: { request: { method: 'POST', url: 'https://acme.example/api/orders' } } },
     };
     const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({}, '01EV')] : [invocation({}, '01EV'), own]));
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events.map((e) => e.message).sort()).toEqual(['POST /api/orders', 'POST /api/orders → 200 (42 ms)']);
   });
 });
@@ -1051,7 +1051,7 @@ describe('cf tenant logs — async work (#1901)', () => {
           ]
         : [],
     );
-    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    const { events } = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
     expect(events.map((e) => [e.message, e.level]).sort()).toEqual([
       ['consumer executor:notify ← ticket.created (attempt 2) → retrying (12 ms)', 'error'],
       ['consumer: 5 more lines withheld (consumer:dead-lettered 5)', 'warn'],
