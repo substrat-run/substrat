@@ -276,6 +276,33 @@ describe('a CP-less restore judges and projects its role repair in the load’s 
     expect((await snapshot(dest)).notes).toEqual([{ id: 'from-source' }]);
   });
 
+  it('a reaped store takes no role repair: it lands exactly as a load with no repair, and is not acknowledged', async () => {
+    const { tenant, source } = await world();
+    const dump = await local.exportScopeLocal(source);
+    /** A store provisioned, then reaped, then served by a fresh instance (which builds its spine again). */
+    const reaped = async () => {
+      const id = scopeId.parse(ulid());
+      await local.provisionScopeLocal({ tenantId: tenant, scopeId: id, owner: principalId.parse(ulid()), roles: [member], ownerRoleKey: 'member' });
+      await local.deleteScopeLocal(id); // the reap: storage destroyed, the store marked reaped
+      await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(id)), (_instance, state) => state.abort('restart')).catch(() => undefined);
+      return id;
+    };
+    // `viewer` is in no dump: only a repair could write it.
+    const viewer: RoleDefinition = { key: 'viewer', permissions: [MIXED[0]!], source: 'vertical' };
+    const repaired = await reaped();
+    const plain = await reaped();
+    // The load itself has no reaped guard (as before #2531): both go through. Only the repair is held to the marker.
+    const out = await local.restoreScopeLocal(repaired, dump, opts(tenant, source, [member, staffer, viewer]));
+    await local.restoreScopeLocal(plain, dump, { sourceScopeId: source, exact: true, tenantId: tenant });
+    expect(out.rolesProjected).toBeUndefined();
+    const [withRoles, without] = [await snapshot(repaired), await snapshot(plain)];
+    expect(withRoles.notes).toEqual([{ id: 'from-source' }]); // the load landed
+    expect(withRoles.roles.some((r) => r.role_key === 'viewer')).toBe(false);
+    // Nothing the repair writes (roles, tombstones, the receipt, the enforcement flip) differs from no repair.
+    const scopeFree = (s: typeof withRoles) => ({ roles: s.roles, meta: s.meta });
+    expect(scopeFree(withRoles)).toEqual(scopeFree(without));
+  });
+
   it('a restore given no roles loads as before and says nothing about a repair (an older vertical-host)', async () => {
     const { source, dest } = await world();
     const out = await local.restoreScopeLocal(dest, await local.exportScopeLocal(source), { sourceScopeId: source, exact: true });

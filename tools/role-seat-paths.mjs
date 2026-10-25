@@ -17,7 +17,8 @@
  * 3. a call of the kernel's scope-role writers, `applyScopeRoleChange(` and `changeScopeRole(`;
  * 4. a call of a ScopeDO's role projection, `.applyProjection(`, `.applyProjectionReply(` and
  *    `.projectRole(`, each of which defines the roles it is handed in the scope, and the judged ones
- *    (#2531) `.applyJudgedProjectionReply(`, `.importDumpJudged(` and `.commitStagedDumpJudged(`. The
+ *    (#2531) `.applyJudgedProjectionReply(`, `.importDumpJudged(` and `.commitStagedDumpJudged(`, and
+ *    the ScopeDO's own ways into the projection's writes, `.projectInUnit(` and `.projectionBody(`. The
  *    ScopeDO's one-role `projectRole` RPC was removed (#2531); the name stays matched so a new one is caught.
  *
  * Each seat must be covered by a GUARD of its own kind — before it, in its function or one
@@ -98,9 +99,18 @@ export const ALLOWED = {
     "a fan-out of the directory's stored definitions, each judged when `defineRole` wrote it; re-judged here, a stored role would be dropped and its seats revoked (#2447)",
   'packages/adapter-cloudflare/src/host.ts#fanOut':
     "a fan-out of the directory's stored definitions, each judged when `defineRole` wrote it; re-judged here, a stored role would be dropped and its seats revoked (#2447)",
-  'packages/adapter-cloudflare/src/scope-do.ts#applyProjectionReply': '`applyProjection` with its refusal answered as data: the same write, judged where its caller defines the roles',
+  'packages/adapter-cloudflare/src/scope-do.ts#applyProjectionReply':
+    "`applyProjection` with its refusal answered as data: the unjudged projection, whose only callers are the directory fan-out (`fanOut`, `projectScope`), not re-judged by K-55's decision (#2447, #2531)",
+  'packages/adapter-cloudflare/src/scope-do.ts#applyProjection':
+    "the unjudged projection (`projectInUnit` with no judge): the directory fan-out's write of definitions judged when `defineRole` stored them, not re-judged by K-55's decision (#2447, #2531)",
+  'packages/adapter-cloudflare/src/scope-do.ts#applyJudgedProjectionReply':
+    'the judged projection RPC: hands its `judge` to the unit (`projectInUnit`), which judges the role set before it writes (#2531)',
+  'packages/adapter-cloudflare/src/scope-do.ts#projectInUnit':
+    "the projection's unit: hands its caller's `judge`, or none from `applyProjection` alone, to `projectionBody` (#2531)",
+  'packages/adapter-cloudflare/src/scope-do.ts#loadTables':
+    "a load's role repair, always with its judge: `projectionBody` judges the set on the seats the dump brought, in the load's transaction (#2531)",
   'packages/adapter-cloudflare/src/scope-do.ts#projectionBody':
-    "the ScopeDO's write of the role set and seats its caller sends: judged in this unit when the caller passes `judge` (`refuseRoleSetInUnit`: the CP-less provision, repair and restore, #2531); a directory fan-out passes none and is not re-judged (#2447, K-55)",
+    "the ScopeDO's write of the role set and seats its caller sends: judged in this unit when the caller passes `judge` (`refuseRoleSetInUnit`: the CP-less provision, repair and restore, #2531); a directory fan-out passes none and is not re-judged (#2447, K-55). Every caller is matched and listed on its own",
   'packages/adapter-cloudflare/src/host.ts#projectJudged':
     'the judged projection (`applyJudgedProjectionReply`): the ScopeDO judges the role set inside the unit that writes it (#2531), after the callers\' own first check',
   'packages/adapter-cloudflare/src/host.ts#restoreScopeLocal':
@@ -113,7 +123,20 @@ const ROLE_TABLE_WRITE_ALL = /\b(?:(?:INSERT(?:\s+OR\s+\w+)?|REPLACE)\s+INTO|UPD
 /** A role tuple's relation formed in a string: `` `role:${…}` `` or `'role:' + …`. */
 const ROLE_RELATION = /`role:\$\{|['"`]role:['"`]\s*\+/g;
 const KERNEL_WRITERS = ['applyScopeRoleChange', 'changeScopeRole'];
-const PROJECTIONS = ['applyProjection', 'applyProjectionReply', 'projectRole', 'applyJudgedProjectionReply', 'importDumpJudged', 'commitStagedDumpJudged'];
+const PROJECTIONS = [
+  'applyProjection',
+  'applyProjectionReply',
+  'projectRole',
+  'applyJudgedProjectionReply',
+  'importDumpJudged',
+  'commitStagedDumpJudged',
+  // #2531: the ScopeDO's own ways into the projection's writes, so a new caller (one passing no
+  // judge, say) is reported unless it is listed with its reason.
+  'projectInUnit',
+  'projectionBody',
+];
+/** A file worth reading at all: one naming a seat of any kind. Built from the lists above, so a name added there is read (#2531). */
+const MAY_SEAT = new RegExp(['role:', '_substrat_roles', ...KERNEL_WRITERS, ...PROJECTIONS].join('|'));
 const NOT_A_NAME = new Set(['async', 'function', 'if', 'for', 'while', 'switch', 'catch', 'with', 'return', 'await']);
 
 /** The token index opening each function id (`functionChains` numbers them in order). */
@@ -239,7 +262,7 @@ export function findUnguardedSeats(files, allowed = ALLOWED) {
   for (const { path, text: source } of files) {
     if (!inScope(path)) continue;
     const text = blankComments(source);
-    if (!/role:|_substrat_roles|applyScopeRoleChange|changeScopeRole|applyProjection|projectRole/.test(text)) continue;
+    if (!MAY_SEAT.test(text)) continue;
     const t = lex(text);
     const chains = functionChains(t);
     const openings = functionOpenings(t, chains);

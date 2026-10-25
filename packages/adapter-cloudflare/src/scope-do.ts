@@ -1034,6 +1034,9 @@ type ImportDumpOptions = {
   /** #2531: the role repair, judged on the seats the load has just written and projected in the
    *  load's transaction. Reached only through `importDumpJudged` / `commitStagedDumpJudged`. */
   roleRepair?: LoadRoleRepair;
+  /** #2531: told when the repair was written in the load (it is not on a reaped store). Set by the
+   *  judged methods in this object, never sent over the wire. */
+  onRolesProjected?: () => void;
 };
 
 /** A load's answer, its refusals as values (#1722). `roles` (#2531): the repair's role set was refused in the unit. */
@@ -7532,6 +7535,7 @@ export function defineScopeDO(
         provisionedFor,
         fence,
         roleRepair,
+        onRolesProjected,
       }: ImportDumpOptions = {},
       stageId?: string,
     ): Promise<SwitchedOff[]> {
@@ -7571,6 +7575,10 @@ export function defineScopeDO(
       if (exact && !sourceScopeId) {
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
+      // #2531: a reaped store takes no role repair, judged or not, as `projectInUnit` drops a
+      // projection there: the load comes back with no roles, no receipt and no enforcement flip,
+      // as it did before the repair rode the load. Read before the unit, as `projectInUnit` reads it.
+      const repair = roleRepair && !(await this.isReaped()) ? roleRepair : undefined;
       const switched = await this.revision.transaction(async () => {
         // #1722: first, before any read: a store a reap has since emptied must refuse the late load
         // too, and the check is against this store's clock, inside the load's own transaction.
@@ -7749,9 +7757,9 @@ export function defineScopeDO(
           // seats the dump has just brought (`refuseRoleSetInUnit`), then projected exactly as
           // `projectRolesLocal` projects it. A refusal rolls the whole load back, so the scope keeps
           // its rows and a staged load keeps its stage; an admitted load lands with its repair.
-          if (roleRepair) {
+          if (repair) {
             try {
-              this.projectionBody(roleRepair.judge, roleRepair.tenantId, roleRepair.roles, []);
+              this.projectionBody(repair.judge, repair.tenantId, repair.roles, []);
             } catch (e) {
               // The projection's own tenant refusal (its receipt check) is a tenant refusal of the
               // load, not the kept-copy `conflict` `checkedLoad` would otherwise read it as.
@@ -7759,6 +7767,7 @@ export function defineScopeDO(
               throw e;
             }
           }
+          if (repair) onRolesProjected?.();
           return switchedOff;
         } finally {
           this.revisionSuspended = false;
@@ -7825,31 +7834,39 @@ export function defineScopeDO(
 
     /**
      * #2531: `importDumpChecked` with the role repair judged and projected in the load's own
-     * transaction (`roleRepair`), answered `rolesProjected: true` when it landed. A method of its
+     * transaction (`roleRepair`), answered `rolesProjected: true` when it landed there. A reaped
+     * store takes no repair (`loadTables`), so its load answers without it. A method of its
      * own, so a host meeting a ScopeDO from before it is refused by the runtime, nothing loaded,
      * rather than loading with the repair silently dropped.
      */
     async importDumpJudged(
       tables: ScopeDumpTable[],
       destScopeId: ScopeId,
-      opts: Omit<ImportDumpOptions, 'roleRepair'>,
+      opts: Omit<ImportDumpOptions, 'roleRepair' | 'onRolesProjected'>,
       roleRepair: LoadRoleRepair,
     ): Promise<CheckedLoad> {
-      return this.judgedLoad(await this.checkedLoad(() => this.importDump(tables, destScopeId, { ...opts, roleRepair })));
+      return this.judgedLoad((onRolesProjected) =>
+        this.checkedLoad(() => this.importDump(tables, destScopeId, { ...opts, roleRepair, onRolesProjected })),
+      );
     }
 
     /** #2531: `commitStagedDumpChecked` with the role repair in the load's transaction (`importDumpJudged`). */
     async commitStagedDumpJudged(
       stageId: string,
       destScopeId: ScopeId,
-      opts: Omit<ImportDumpOptions, 'roleRepair'>,
+      opts: Omit<ImportDumpOptions, 'roleRepair' | 'onRolesProjected'>,
       roleRepair: LoadRoleRepair,
     ): Promise<CheckedLoad & { tables?: number }> {
-      return this.judgedLoad(await this.commitStagedDumpChecked(stageId, destScopeId, { ...opts, roleRepair }));
+      return this.judgedLoad((onRolesProjected) => this.commitStagedDumpChecked(stageId, destScopeId, { ...opts, roleRepair, onRolesProjected }));
     }
 
-    private judgedLoad<T extends CheckedLoad>(out: T): T {
-      return out.refused === false ? { ...out, rolesProjected: true } : out;
+    /** A judged load, answered `rolesProjected: true` only when its repair was written in it. */
+    private async judgedLoad<T extends CheckedLoad>(run: (onRolesProjected: () => void) => Promise<T>): Promise<T> {
+      let projected = false;
+      const out = await run(() => {
+        projected = true;
+      });
+      return out.refused === false && projected ? { ...out, rolesProjected: true } : out;
     }
 
     /**
