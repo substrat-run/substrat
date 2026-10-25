@@ -982,8 +982,9 @@ async function admitManager(
 
 /**
  * The manager's ownership bound (#2564): the refusal when `tenantId` is not a tenant the drained
- * scope's tenant provisioned, or `undefined` when it is. One sentence whether the tenant exists or
- * not, naming neither, so the answer says nothing about a tenant the manager did not make.
+ * scope's tenant provisioned, or `undefined` when it is. The sentence names no tenant. For
+ * `set-entitlements` it is the same for a foreign tenant and a missing one; `provision-tenant` runs
+ * this after its create, so a free id is created and an existing tenant it does not own is refused.
  */
 async function refuseUnmanagedTenant(
   deps: ManagedTenantDeps,
