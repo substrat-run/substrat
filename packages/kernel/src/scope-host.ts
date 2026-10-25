@@ -1709,8 +1709,11 @@ export interface ScopedConnectorConnection extends ConnectorConnection {
    * `openAttachment`, with the bytes as a stream that is never held whole (#2514), for a connector
    * that sends a file on to a provider. Gated the same way, before any byte is read. The sha256 is
    * checked as the bytes flow, and a mismatch errors the stream before its last chunk is handed on
-   * (see {@link OpenedAttachmentStream}), so a connector that sends what it read must treat a stream
-   * error as "nothing was read", never as a shorter file. A stream it decides not to read is
+   * (see {@link OpenedAttachmentStream}). The bytes delivered before a stream error are a prefix of
+   * an unverified file, never a shorter file: a connector that sends what it read discards them and
+   * undoes anything it wrote from them (an upload session cancelled, a request aborted before it
+   * completes), as the hosted read's refusal says (`STREAMED_ATTACHMENT_UNVERIFIED` in
+   * `@substrat-run/control-plane-api`). A stream it decides not to read is
    * cancelled (`body.stream.getReader().cancel()`), which releases the stored object at once.
    */
   openAttachmentStream(attachmentId: string): Promise<OpenedAttachmentStream | null>;

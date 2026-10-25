@@ -126,9 +126,11 @@ folder to one scope of your app, and from then on:
   folder, states each file's size, and says what happens when a name is taken: `replace`, `rename`
   or `fail`. Files of up to 4 MB go in one request, larger ones by upload session, up to 50 MB each
   and 100 MB per request; a request over either, by the sizes it states, is refused before any file
-  is read. Files are sent one at a time. A stated size that is not the file's own is refused too,
-  but only once that file has been read: the platform hands the connector a file's bytes whole, so
-  the check cannot come sooner.
+  is read. Files are sent one at a time, each read as it is uploaded rather than held whole. A stated
+  size that is not the file's own is refused too, when that file is opened and before any of it is
+  sent. A file whose bytes fail their integrity check while they are read is never saved: a file of
+  up to 4 MB is checked before it is sent, and the upload of a larger one is cancelled before it
+  completes. The request is then retried, like any failed one.
 - **Files people change in Teams reach the app.** A periodic sync reads the library's change feed
   and passes the app every file and folder added, edited, renamed, moved or deleted inside the
   folder. File contents come in as attachments on the record the app keeps for each file, and are
