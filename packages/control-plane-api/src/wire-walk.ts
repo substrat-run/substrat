@@ -114,10 +114,15 @@ export interface WireWalkScript {
   readonly action: WireWalkAction;
   /** The settings that differ (`would-change`, `updated`), by name. */
   readonly changes?: readonly string[];
-  /** Why it failed (`concurrent-change`, `serve-in-flight`, `verify`, `entry-unknown`, `settings` or `record`), or was skipped (`no-entry`). */
+  /**
+   * Why it failed (`concurrent-change`, `serve-in-flight`, `verify`, `entry-unknown`, `settings`,
+   * `settings-refused` or `record`), or was skipped (`no-entry`).
+   */
   readonly reason?: string;
   /** For `verify`: the binding names that differed. Never a value. */
   readonly bindings?: readonly string[];
+  /** For `verify`: how many more bindings differed than `bindings` names (it keeps the first `WALK_HOLD_BINDINGS_MAX`). */
+  readonly more?: number;
   /** Whether the pass left the script held. */
   readonly held?: true;
   /** Whether it was held and a person released it for this pass. */
@@ -332,7 +337,9 @@ export async function runWireWalk(
       const given = await wireUploadGiven(settings, { vertical: script.vertical, deploymentRef: script.deploymentRef, entry });
       // Refused settings give nothing, and nothing is not a withdrawal to write: the route refuses such a
       // pass before it starts, and a script never acts on one here either.
-      if (given.refusal !== null) return failed('settings-refused', `the control plane's settings are refused (${given.record.withheld}): nothing was written`);
+      // The route refuses a pass under refused settings before it starts, so what is refused here is
+      // this script alone (its name is not one the lists can be given as an audience).
+      if (given.refusal !== null) return failed('settings-refused', `the lists are refused for this script (${given.refusal}): nothing was written`);
       if (!input.confirm && stored && !stored.record.walkHold && carriesAlready(stored.record, given.record)) return { ...base, action: 'current' };
 
       let outcome: WireSettingsOutcome;
@@ -376,7 +383,7 @@ export async function runWireWalk(
           const held = await hold(entry, 'serve-in-flight', []);
           return failed(
             'serve-in-flight',
-            `the served version moved while it was updated, ${holdNote(held)}; promote again, then release it`,
+            `the served version moved while it was updated, ${holdNote(held)}; ${held ? 'promote again, then release it' : 'promote again'}`,
             held ? { held: true } : {},
           );
         }
@@ -385,7 +392,11 @@ export async function runWireWalk(
           return failed(
             'verify',
             `after its update, these bindings read differently: ${named(outcome.bindings)}; ${holdNote(held)}`,
-            { bindings: outcome.bindings.slice(0, WALK_HOLD_BINDINGS_MAX), ...(held ? { held: true as const } : {}) },
+            {
+              bindings: outcome.bindings.slice(0, WALK_HOLD_BINDINGS_MAX),
+              ...(outcome.bindings.length > WALK_HOLD_BINDINGS_MAX ? { more: outcome.bindings.length - WALK_HOLD_BINDINGS_MAX } : {}),
+              ...(held ? { held: true as const } : {}),
+            },
           );
         }
       }

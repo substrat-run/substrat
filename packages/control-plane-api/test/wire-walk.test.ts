@@ -646,6 +646,21 @@ describe('the fleet walk', () => {
     expect((await walk(appWith(off()), { limit: 10 })).status).toBe(200);
   });
 
+  it('a valid canary is not refused: the canary’s vertical is walked current, one outside it is withdrawn', async () => {
+    const inside = await vertical(appWith(fleet()), await tenantOf('walk-canary-in'));
+    const outside = await vertical(appWith(fleet()), await tenantOf('walk-canary-out'));
+    const canary = { rollout: `canary:${inside.slug}`, routerKeys, platformKeys };
+    const res = await walk(appWith(canary), { apply: true, limit: 10 });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const walked = ((await res.json()) as WireWalkPass).scripts;
+    expect(walked.filter((s) => inside.scripts.includes(s.deploymentRef)).map((s) => s.action)).toEqual(['current', 'current', 'current']);
+    expect(walked.filter((s) => outside.scripts.includes(s.deploymentRef)).map((s) => s.action)).toEqual(['updated', 'updated', 'updated']);
+    expect(walked.some((s) => s.reason === 'settings-refused')).toBe(false);
+    for (const s of inside.scripts) expect(wireOf(s)[WIRE_STATE_VAR], s).toBe('dual');
+    for (const s of outside.scripts) expect(wireOf(s), s).toEqual({});
+    expect(Object.values(await recordsOf(outside.slug)).map((r) => r.record.withheld)).toEqual(['not-in-rollout', 'not-in-rollout', 'not-in-rollout']);
+  });
+
   it('a pass can end on a version whose id is not a ULID, and the next pass resumes from it', async () => {
     const app = appWith(off());
     const v = await vertical(app, await tenantOf('walk-ids'));
@@ -677,6 +692,7 @@ describe('the fleet walk', () => {
     const hit = walked.find((s) => s.deploymentRef === odd)!;
     expect(hit).toMatchObject({ action: 'failed', reason: 'verify', held: true });
     expect(hit.bindings).toHaveLength(64);
+    expect(hit.more).toBe(6);
     const hold = (await recordsOf(v.slug))[odd]?.record.walkHold;
     expect(hold?.bindings).toHaveLength(64);
     expect(hold?.more).toBe(6);
