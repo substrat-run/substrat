@@ -321,8 +321,9 @@ button. The platform pays for these calls, so each person can write 20 a day and
 counted in UTC days. A unit is taken before the model is called, so a call that fails still
 counts. Texts are kept for 90 days.
 
-Whether a deployment offers this is the `AI_EXPLANATIONS` setting. It is on in the test
-environment. Where it is off, the toggles are not shown.
+Whether a deployment offers this is the `AI_EXPLANATIONS` setting. It is on in the hosted
+platform. Where it is off (a self-hosted deployment that sets nothing), the toggles are not
+shown. The privacy policy describes what is sent ([AI features in the dashboard](/privacy#ai-features-in-the-dashboard)).
 
 ### Ask {#ask}
 

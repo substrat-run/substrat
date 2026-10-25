@@ -120,6 +120,7 @@ import {
   noteDeclaredKeys,
   noteReservedKeys,
   SCOPE_SEATED_ROLES_SQL,
+  type RoleState,
   reservedGrantRefusal,
   reservedRoleRefusal,
   reservedShapeRefusal,
@@ -5224,21 +5225,26 @@ export function defineScopeDO(
      * principal holds a live scope-level seat in here — what a role
      * set defined on this scope, or a role definition fanned out to it, is judged against.
      */
-    async roleStateHere(tenantId: TenantId): Promise<{ roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[]; seated: string[] }> {
+    async roleStateHere(tenantId: TenantId): Promise<RoleState> {
       // Spine tables only (built in the constructor), so no module migration runs ahead of a provision's.
       const now = new Date().toISOString();
-      const roles = this.hasTable('_substrat_roles')
-        ? (this.sql.exec('SELECT role_key, permissions, holder FROM _substrat_roles WHERE tenant_id = ? AND revoked_at IS NULL', tenantId).toArray() as {
+      const rows = this.hasTable('_substrat_roles')
+        ? (this.sql.exec('SELECT role_key, permissions, holder, revoked_at FROM _substrat_roles WHERE tenant_id = ?', tenantId).toArray() as {
             role_key: string;
             permissions: string;
             holder: 'person' | 'system' | null;
-          }[]).map((r) => ({ key: r.role_key, permissions: JSON.parse(r.permissions) as string[], ...(r.holder ? { holder: r.holder } : {}) }))
+            revoked_at: string | null;
+          }[])
         : [];
+      const shapeOf = (r: (typeof rows)[number]) => ({ key: r.role_key, permissions: JSON.parse(r.permissions) as string[], ...(r.holder ? { holder: r.holder } : {}) });
+      const roles = rows.filter((r) => r.revoked_at === null).map(shapeOf);
+      // #2531: the tombstones `applyProjection` leaves for the roles a projection dropped.
+      const dropped = rows.filter((r) => r.revoked_at !== null).map(shapeOf);
       // Scope-level seats only. The tenant-level ones are the directory's (the ControlPlaneDO reads
       // them in its own unit), and this scope's projected copy can be stale: a fan-out skips an
       // archived scope, and a CP-less projection carries none.
       const seated = new Set(this.sql.exec(SCOPE_SEATED_ROLES_SQL, now).toArray().map((r) => (r as { role_key: string }).role_key));
-      return { roles, seated: [...seated] };
+      return { roles, seated: [...seated], dropped };
     }
 
     /** #2447: what this class's modules reserve and declare — a coordinator judging a role definition joins its own. */
@@ -6971,12 +6977,16 @@ export function defineScopeDO(
           .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*' ORDER BY name`)
           .toArray() as unknown as { name: string }[]
       ).map((r) => r.name);
+      const count = (sql: string) => Number((this.sql.exec(sql).toArray()[0] as { c: number }).c);
       return names.map((name) => ({
         name,
-        rowCount: Number(
-          (this.sql.exec(`SELECT COUNT(*) AS c FROM "${name}"`).toArray()[0] as { c: number }).c,
-        ),
+        rowCount: count(`SELECT COUNT(*) AS c FROM "${name}"`),
         system: isSystemTable(name),
+        // #2531: rows whose `revoked_at` is null, for any table with that column (`ScopeTable.liveRowCount`).
+        // Scope health reads it for `_substrat_roles`, where a dropped role is kept revoked.
+        ...(doBuiltColumnsOf(this.sql, name)?.includes('revoked_at')
+          ? { liveRowCount: count(`SELECT COUNT(*) AS c FROM "${name}" WHERE revoked_at IS NULL`) }
+          : {}),
       }));
     }
 
@@ -9179,7 +9189,17 @@ export function defineScopeDO(
           }
           // Written before any guard below can return early, so every projection leaves it.
           this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
-          this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
+          // #2531: a role the new set leaves out is TOMBSTONED, not deleted: it keeps the keys and the
+          // holder it had, and grants nothing (every reader skips a revoked row). Kept for good, as
+          // evidence (K-21): the reserved-key rule reads a system-held tombstone as the stored
+          // definition it was, so a release that drops a role and a later one that adds it back
+          // are judged as one that kept it. A row already tombstoned keeps its first `revoked_at`;
+          // a role the set names is written live again below, which clears it.
+          this.sql.exec(
+            `UPDATE _substrat_roles SET revoked_at = ? WHERE tenant_id = ? AND revoked_at IS NULL`,
+            new Date().toISOString(),
+            tenantId,
+          );
           for (const r of roles) {
             this.sql.exec(
               `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder, revoked_at)

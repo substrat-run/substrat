@@ -1612,7 +1612,8 @@ interface ScopeStubRpc {
   /** #2447: what the scope class's modules reserve and declare. */
   reservationHere(): Promise<{ reserved: string[]; declared: string[] }>;
   /** #2447: the tenant's roles as the scope stores them, and the keys of those seated there. */
-  roleStateHere(tenantId: TenantId): Promise<{ roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[]; seated: string[] }>;
+  /** `dropped` (#2531): the tombstones of the roles a projection dropped; absent from an older ScopeDO. */
+  roleStateHere(tenantId: TenantId): Promise<RoleState>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -12165,7 +12166,9 @@ export class CloudflareScopeHost implements ScopeHost {
     const refusal = reservedRoleSetRefusal(
       roles,
       { reserved, declared: new Set([...this.declaredKeys, ...here.declared]) },
-      { roles: state.roles, seated: new Set(state.seated) },
+      // #2531: with the tombstones the scope keeps, so a system-held role a release dropped is judged
+      // as the stored definition it was. A ScopeDO from before them answers none.
+      { roles: state.roles, seated: new Set(state.seated), ...(state.dropped ? { dropped: state.dropped } : {}) },
     );
     // Named by tenant and scope as well as role: a release push admitted can be refused here at every
     // scope where the role is seated, and staff find each one by this line (K-55).

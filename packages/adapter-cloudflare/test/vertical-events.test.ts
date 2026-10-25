@@ -1024,23 +1024,27 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
     await sql(s, `DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`);
     const rolesOf = () =>
       runInDurableObject(stubOf(s), async (_i, state) =>
-        state.storage.sql.exec(`SELECT tenant_id, role_key, permissions FROM _substrat_roles ORDER BY role_key`).toArray(),
+        state.storage.sql.exec(`SELECT tenant_id, role_key, permissions, revoked_at FROM _substrat_roles ORDER BY role_key`).toArray(),
       );
+    const live = (rows: unknown[]) => (rows as { role_key: string; revoked_at: string | null }[]).filter((r) => r.revoked_at === null).map((r) => r.role_key);
     const before = await rolesOf();
     expect(before.length).toBeGreaterThan(0);
     const stub = stubOf(s) as unknown as {
       applyProjection(t: string, roles: unknown[], tuples: unknown[]): Promise<unknown>;
     };
     const good = { role_key: 'ok', permissions: '[]', source: 'vertical' };
-    // `permissions` is NOT NULL: this insert throws AFTER the roles were deleted and `ok` inserted.
+    // `permissions` is NOT NULL: this insert throws AFTER the roles were tombstoned (#2531) and `ok` inserted.
     const bad = { role_key: 'bad', permissions: null, source: 'vertical' };
     await expect(() => stub.applyProjection(t, [good, bad], [])).rejects.toThrow();
     expect(await receiptOf(s)).toBeNull();
+    // Rolled back whole: no tombstone of the prior roles survives the failed unit either.
     expect(await rolesOf()).toEqual(before);
-    // The twin: a valid projection commits the receipt and the new roles together.
+    // The twin: a valid projection commits the receipt and the new roles together; the prior ones
+    // it leaves out are kept as tombstones, never live.
     await stub.applyProjection(t, [good], []);
     expect(await receiptOf(s)).toBe(t);
-    expect((await rolesOf()).map((r) => (r as { role_key: string }).role_key)).toEqual(['ok']);
+    expect(live(await rolesOf())).toEqual(['ok']);
+    expect((await rolesOf()).length).toBe(before.length + 1);
   });
 
   it('the receipt survives a restore of the same tenant\'s own dump', async () => {

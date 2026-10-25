@@ -1,7 +1,8 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { r2TenantBlobStore } from '../src/r2.js';
 import { REWIND_REFUSED } from '../src/rewind-refusal.js';
-import { LOAD_STAMP_KEY, ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey, dumpMetaValue } from '@substrat-run/kernel';
+import { LOAD_STAMP_KEY, ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey, dumpMetaValue, effectiveRoleGrantQuery } from '@substrat-run/kernel';
+import { createLocalControlPlaneReader } from '../src/checker.js';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 import { seedProjectedRole, seedProjectedTenantTuple, tombstoneProjectedRole } from './seed-projection.js';
@@ -1288,23 +1289,25 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
       const rowOf = () =>
         runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
-          state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, 'staffer').toArray());
+          (state.storage.sql.exec('SELECT holder, permissions, revoked_at FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, 'staffer').toArray() as {
+            holder: string; permissions: string; revoked_at: string | null;
+          }[]).map((r) => ({ holder: r.holder, permissions: r.permissions, tombstoned: r.revoked_at !== null })));
       // Release 1: a person's role, and someone seated in it.
       await release([member, staffer]);
       const who = principalId.parse(ulid());
       await local.assignScopeRole(scope, who, 'staffer');
       // The twin: release 3 straight after release 1 is refused.
       expect(errorCodeOf(await failure(release([member, system])))).toBe('forbidden');
-      // Release 2 drops the role: its row goes, the seat stays.
+      // Release 2 drops the role: its row is tombstoned as the person's role it was (#2531), the seat stays.
       await release([member]);
-      expect(await rowOf()).toEqual([]);
-      // Release 3 defines it holder: system: refused as well, nothing written.
+      expect(await rowOf()).toEqual([{ holder: 'person', permissions: JSON.stringify([MIXED[0]]), tombstoned: true }]);
+      // Release 3 defines it holder: system: refused as well (a person's tombstone is no evidence), nothing written.
       const refused = await failure(release([member, system]));
       expect(errorCodeOf(refused)).toBe('forbidden');
       expect(refused?.message).toMatch(/role 'staffer' is held by a principal \(with no definition stored\)/);
       // Named by scope as well as role, so staff can find every scope a release is refused at (SF4).
       expect(refused?.message).toContain(`tenant ${tenant}, scope ${scope}: the vertical's roles cannot be defined here`);
-      expect(await rowOf()).toEqual([]);
+      expect(await rowOf()).toEqual([{ holder: 'person', permissions: JSON.stringify([MIXED[0]]), tombstoned: true }]);
     });
 
     it('a reconcile refuses making a seated legacy holder-less role system-held, with the same keys; an unseated one upgrades (round 3)', async () => {
@@ -1331,7 +1334,7 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       expect(await holderOf('idle')).toBe('system');
     });
 
-    it('a system-held role dropped and added back is refused while its host principal is seated, saying what is true; taking the seat back admits it (round 3)', async () => {
+    it('a system-held role dropped and added back while its host principal is seated is admitted: the tombstone is the stored definition it was (#2531)', async () => {
       const scope = scopeId.parse(ulid());
       const tenant = tenantId.parse(ulid());
       const owner = principalId.parse(ulid());
@@ -1340,7 +1343,29 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       const hostPrincipal = principalId.parse(ulid());
       await local.assignScopeRole(scope, hostPrincipal, 'runner'); // the platform's door, K-55's shape
       await release([member, runner]); // an identical re-apply is admitted
-      await release([member]); // the role dropped; the seat stays
+      await release([member]); // the role dropped: tombstoned as system-held; the seat stays
+      const state = await local.roleStateLocal(tenant, scope);
+      expect(state.roles.map((r) => r.key)).toEqual(['member']);
+      expect(state.dropped).toEqual([{ key: 'runner', permissions: [MIXED[1]], holder: 'system' }]);
+      expect(state.seated).toContain('runner');
+      await release([member, runner]); // added back: judged as the stored system-held row it was
+      expect((await local.roleStateLocal(tenant, scope)).dropped).toEqual([]);
+      expect((await local.roleStateLocal(tenant, scope)).roles.map((r) => r.key).sort()).toEqual(['member', 'runner']);
+    });
+
+    it('twin: the same drop and re-add with the tombstone gone is refused, saying what is true (round 3)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await release([member, runner]);
+      const hostPrincipal = principalId.parse(ulid());
+      await local.assignScopeRole(scope, hostPrincipal, 'runner');
+      await release([member]);
+      // A scope that dropped the row before tombstones were kept: the row is simply gone.
+      await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, s) => {
+        s.storage.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ? AND role_key = 'runner'`, tenant);
+      });
       const refused = await failure(release([member, runner]));
       expect(errorCodeOf(refused)).toBe('forbidden');
       expect(refused?.message).toMatch(/role 'runner' is held by a principal \(with no definition stored\).*the seat may be a person's/);
@@ -1350,6 +1375,68 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       await local.revokeScopeRole(scope, hostPrincipal, 'runner');
       await release([member, runner]);
       await local.assignScopeRole(scope, hostPrincipal, 'runner');
+    });
+
+    // This class reserves the key itself, so the refusal here does not depend on the tombstone; the
+    // kernel's module-less case (`reserved-roles.test.ts`, #2531) is what holds the tombstone's half.
+    it('a person’s role re-added under a dropped system-held role’s key may not hold its reserved key; its twin is defined (#2531)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      await release([member, runner]);
+      await release([member]);
+      const asPerson = { key: 'runner', permissions: [MIXED[1]!], source: 'vertical' as const };
+      const refused = await failure(release([member, asPerson]));
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(refused?.message).toMatch(/role 'runner' is a person's role and would hold rsv:run/);
+      // Twin: re-added as a person's role without the reserved key, it is defined.
+      await release([member, { key: 'runner', permissions: [MIXED[0]!], source: 'vertical' }]);
+      expect((await local.roleStateLocal(tenant, scope)).roles.find((r) => r.key === 'runner')?.holder).toBe('person');
+    });
+
+    it('the table listing counts the roles in force apart from the tombstones, so health still sees an empty projection (#2531)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const staffer = { key: 'staffer', permissions: [MIXED[0]!], source: 'vertical' as const };
+      await local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles: [member, staffer], ownerRoleKey: 'member' });
+      await local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles: [member], ownerRoleKey: 'member' });
+      const rolesTable = async () => (await local.introspectScopeTables(scope)).find((t) => t.name === '_substrat_roles');
+      expect(await rolesTable()).toMatchObject({ rowCount: 2, liveRowCount: 1 });
+      // Every role tombstoned: rows kept, nothing in force, which is what scope health flags (#321).
+      await tombstoneProjectedRole(env.SCOPE.get(env.SCOPE.idFromName(scope)), tenant, 'member', new Date().toISOString());
+      expect(await rolesTable()).toMatchObject({ rowCount: 2, liveRowCount: 0 });
+      // A table that does not tombstone answers no live count.
+      expect((await local.introspectScopeTables(scope)).find((t) => t.name === '_substrat_outbox')).not.toHaveProperty('liveRowCount');
+    });
+
+    it('a tombstone grants nothing: a seat in a dropped role authorizes as it did when the row was deleted, and again once it is added back (#2531)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const release = (roles: RoleDefinition[]) => local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles, ownerRoleKey: 'member' });
+      const staffer = { key: 'staffer', permissions: [MIXED[0]!], source: 'vertical' as const };
+      await release([member, staffer]);
+      const who = principalId.parse(ulid());
+      await local.assignScopeRole(scope, who, 'staffer');
+      const role = () =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, s) => createLocalControlPlaneReader(s.storage.sql).getRole(tenant, 'staffer'));
+      const effective = () =>
+        runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, s) => {
+          const q = effectiveRoleGrantQuery(tenant, new Date().toISOString(), `principal:${who}`);
+          return (s.storage.sql.exec(q.sql, ...q.params).toArray()[0] as { effective: number }).effective;
+        });
+      expect((await role())?.permissions).toEqual([MIXED[0]]);
+      expect(await effective()).toBe(1);
+      await release([member]); // dropped: tombstoned, and expanded by nobody
+      expect(await role()).toBeUndefined();
+      expect(await effective()).toBe(0);
+      expect(await local.hasScopeRoleLocal(tenant, scope, who)).toBe(false);
+      await release([member, staffer]); // added back: the seat grants through it again
+      expect((await role())?.permissions).toEqual([MIXED[0]]);
+      expect(await effective()).toBe(1);
+      expect(await local.hasScopeRoleLocal(tenant, scope, who)).toBe(true);
     });
 
     it('roleSetRefusalLocal answers the refusal a restore asks before importing, writing nothing; its twin answers null (round 1)', async () => {
