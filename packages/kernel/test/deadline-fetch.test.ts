@@ -758,7 +758,11 @@ describe('a streamed body is not retained once delivered (#2498, #2518)', () => 
       }
     }
     expect(read).toBe(CHUNKS * MB);
-    // 120 MB went through. A chunk kept alive per read would leave ~120 MB; one chunk is about 1.
-    expect(buffers() - before).toBeLessThan(10 * MB);
+    // The last chunks are not collected until a collection runs, so the end reading follows one, as
+    // the mid-stream samples do (#2576: 11.5 MB unforced on a loaded runner).
+    for (let i = 0; i < 3; i++) gc();
+    await settle();
+    // 120 MB went through. A chunk kept alive per read would leave ~120 MB at both readings; one chunk is about 1.
+    expect(Math.max(peak, buffers() - before)).toBeLessThan(10 * MB);
   });
 });

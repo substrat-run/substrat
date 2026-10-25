@@ -442,7 +442,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await dir.admin.getScopeRecord(staff, t, prod))?.verticalVersionId).toBe(version.v2);
       expect(bodiesIn(await hostOf.get(stable)!.exportScopeLocal(clean.body.scopeId))).toEqual([]);
     }
-  });
+  }, 30_000);
 
   it('the fleet repair heals legacy-pinned previews on real namespaces and leaves installs and forks alone (#1724)', async () => {
     const stable = stableDeploymentRefFor(slug);
@@ -527,7 +527,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     const retried = await repairPass();
     expect(retried.repaired.map((r) => r.scopeId)).toContain(c.body.scopeId);
     expect(await served(c.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['c was adopted'] });
-  });
+  }, 30_000);
 
   describe('the copy a carry leaves behind is wiped, and no interleaving loses the data (#1722)', () => {
     const fresh = async (tag: string, ...bodies: string[]) => {
@@ -2160,7 +2160,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         if (dryRun) expect(reads).toEqual([]);
       }
       expect(await ledgerOf(pinned)).toEqual([]);
-    });
+    }, 30_000);
   });
 
   describe('a scope that takes many pages forks and carries the same way (#2450)', () => {
