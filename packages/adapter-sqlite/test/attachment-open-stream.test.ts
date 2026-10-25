@@ -56,6 +56,8 @@ describe('streamed attachment open (pure adapter)', () => {
     ...store,
     get: (key) => {
       flow.get++;
+      beforeOpen?.();
+      beforeOpen = undefined;
       return store.get(key);
     },
     getStream: async (key) => {
@@ -203,11 +205,11 @@ describe('streamed attachment open (pure adapter)', () => {
     await expect((await host.attachments(reader, t, s)).openStream(record.id)).rejects.toThrow(/bytes missing/);
   });
 
-  it('an object removed after the read gate, before the open, is that same error, naming no host path', async () => {
+  it.each(['openStream', 'open'] as const)('an object removed after the read gate, before %s reads it, is that same error, naming no host path', async (verb) => {
     const { host, t, s, reader, record } = await world();
     const file = objectFile();
     beforeOpen = () => rmSync(file);
-    const err = await (await host.attachments(reader, t, s)).openStream(record.id).then(
+    const err = await (await host.attachments(reader, t, s))[verb](record.id).then(
       () => undefined,
       (e: unknown) => e as Error,
     );

@@ -3832,8 +3832,15 @@ export class SqliteScopeHost implements ScopeHost {
       },
       get: async (key) => {
         const p = resolveKey(key);
-        if (!existsSync(p)) return null;
-        return { body: new Uint8Array(readFileSync(p)), ...contentTypeOf(p) };
+        let body: Uint8Array;
+        try {
+          body = new Uint8Array(readFileSync(p));
+        } catch (err) {
+          // Absent, or removed after the read gate: one answer either way, naming no host path (#2514).
+          if ((err as { code?: string }).code === 'ENOENT') return null;
+          throw err;
+        }
+        return { body, ...contentTypeOf(p) };
       },
       // #2514: the file read as the stream is read, never whole.
       getStream: async (key) => {
