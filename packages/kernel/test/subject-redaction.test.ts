@@ -6,6 +6,7 @@ import {
   instant,
   scopeId,
   tenantId,
+  withUpstreamReference,
   type ConnectorDispatchPayload,
 } from '@substrat-run/contracts';
 import {
@@ -153,6 +154,16 @@ describe('subject redaction — the drain failure that quotes an intent (#1632)'
     expect(
       intentIdOfFailureMessage(platformIntentFailureMessage(id, 'gave up after 5 drain attempts — last error: x')),
     ).toBe(id);
+  });
+
+  it("#2554: reads past the upstream marker a staff row's text begins with, and only that marker", () => {
+    const id = ulid();
+    const staff = withUpstreamReference(platformIntentFailureMessage(id, 'failed: internal error; reference = abc123'));
+    expect(staff.startsWith('[upstream reference = abc123] platform intent ')).toBe(true);
+    expect(intentIdOfFailureMessage(staff)).toBe(id);
+    expect(intentIdOfFailureMessage(`[upstream reference = abc123]platform intent ${id} x`)).toBeNull();
+    expect(intentIdOfFailureMessage(`[something else] platform intent ${id} x`)).toBeNull();
+    expect(intentIdOfFailureMessage(`note: [upstream reference = abc123] platform intent ${id} x`)).toBeNull();
   });
 
   it('names no intent for a message the drain did not write', () => {

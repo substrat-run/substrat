@@ -1881,8 +1881,18 @@ export function defineScopeDO(
      * written since this table shipped and selected by nobody — the frontier
      * readers want `(module_id, version)` only — so "when did this scope's
      * schema change" had no answer. A pre-column row reads null, a fact.
+     *
+     * Every row, never a page (#2553): the caller treats the list as the scope's whole
+     * migration history, and a cap truncated it silently once a scope passed 100 rows.
+     * A row is a few short columns (~150 B on the wire) and every row is an authored
+     * migration a push shipped, so the set is bounded by authored migrations × pushes:
+     * hundreds of rows, tens of KB, far under the RPC and response limits.
+     *
+     * `rowid DESC` breaks a tie: each migration reads its own clock, so neighbours can
+     * share a millisecond, and the rowid is the order they were written in. `module_id,
+     * version` ascending would read those oldest-first.
      */
-    appliedMigrations(limit = 100): {
+    appliedMigrations(): {
       moduleId: string;
       version: string;
       appliedAt: string | null;
@@ -1892,8 +1902,7 @@ export function defineScopeDO(
       return this.sql
         .exec(
           `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
-            ORDER BY applied_at DESC, module_id, version LIMIT ?`,
-          limit,
+            ORDER BY applied_at DESC, rowid DESC`,
         )
         .toArray()
         .map((r) => ({
@@ -9067,56 +9076,9 @@ export function defineScopeDO(
     // into a scope's own storage (Phase 2), then flips the source to 'local'. Public
     // RPC methods so `CloudflareScopeHost` (and the projection sweep) can call them.
 
-    /** Project (upsert) a role definition into this scope. */
-    async projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string; holder?: 'person' | 'system' }): Promise<void> {
-      await this.queue.enqueue(() => {
-        this.sql.exec(
-          `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder, revoked_at)
-           VALUES (?, ?, ?, ?, ?, NULL)`,
-          tenantId,
-          role.key,
-          JSON.stringify(role.permissions),
-          role.source,
-          role.holder ?? null,
-        );
-      });
-    }
-
-    /** Tombstone a projected role — it stops granting but stays as evidence (K-21). */
-    async revokeProjectedRole(tenantId: string, key: string, revokedAt: string): Promise<void> {
-      await this.queue.enqueue(() => {
-        this.sql.exec(
-          `UPDATE _substrat_roles SET revoked_at = ? WHERE tenant_id = ? AND role_key = ?`,
-          revokedAt,
-          tenantId,
-          key,
-        );
-      });
-    }
-
-    /** Project (upsert) a tenant-level tuple into this scope. `revokedAt` tombstones it. */
-    async projectTenantTuple(
-      tenantId: string,
-      subject: string,
-      relation: string,
-      object: string,
-      expiresAt: string | null,
-      revokedAt: string | null = null,
-    ): Promise<void> {
-      await this.queue.enqueue(() => {
-        this.sql.exec(
-          `INSERT OR REPLACE INTO _substrat_tenant_tuples
-             (tenant_id, subject, relation, object, expires_at, revoked_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          tenantId,
-          subject,
-          relation,
-          object,
-          expiresAt,
-          revokedAt,
-        );
-      });
-    }
+    // #2531: no per-row role or tenant-tuple projection RPC. Every projected row arrives through
+    // `applyProjection`, whose callers judge what they project (or fan out definitions already
+    // judged), so no RPC writes a role row unjudged.
 
     /** Flip which reader the checker uses. 'local' makes projections authoritative. */
     async setPermissionSource(source: 'local' | 'control-plane'): Promise<void> {

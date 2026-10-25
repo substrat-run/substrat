@@ -8,6 +8,7 @@ import { createLocalControlPlaneReader } from '../src/checker.js';
 import { defineScopeDO } from '../src/scope-do.js';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
+import { seedProjectedRole } from './seed-projection.js';
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
 
@@ -35,12 +36,10 @@ it('adds the directory holder column to an old role and persists the same role r
 });
 
 it('adds the scope projection column to an old role and reads a new holder', async () => {
-  const stub = env.SCOPE.get(env.SCOPE.idFromName(`role-holder-${ulid()}`)) as unknown as {
-    projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string; holder?: 'system' }): Promise<void>;
-  };
+  const stub = env.SCOPE.get(env.SCOPE.idFromName(`role-holder-${ulid()}`));
   const tenant = ulid();
   const role = { key: 'runner', permissions: ['rsv:run'], source: 'vertical' };
-  await stub.projectRole(tenant, role);
+  await seedProjectedRole(stub, tenant, role);
   const old = await runInDurableObject(stub as never, async (_instance, state) => {
     state.storage.sql.exec('ALTER TABLE _substrat_roles DROP COLUMN holder');
     const ScopeDO = defineScopeDO([], {});
@@ -49,7 +48,7 @@ it('adds the scope projection column to an old role and reads a new holder', asy
   });
   expect(old?.holder).toBeUndefined();
   expect(reservedRoleRefusal(old!, new Set(['rsv:run']), 'platform')).toBeNull();
-  await stub.projectRole(tenant, { ...role, holder: 'system' });
+  await seedProjectedRole(stub, tenant, { ...role, holder: 'system' });
   const current = await runInDurableObject(stub as never, async (_instance, state) =>
     createLocalControlPlaneReader(state.storage.sql).getRole(tenant, 'runner'));
   expect(current?.holder).toBe('system');

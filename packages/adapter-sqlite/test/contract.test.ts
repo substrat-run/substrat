@@ -71,6 +71,8 @@ import {
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
+  manyMigrationsContractSuite,
+  overCapMigrationsContractSuite,
   migrationFenceContractSuite,
   spineGuardContractSuite,
   sqlLimitsContractSuite,
@@ -1041,6 +1043,33 @@ bindingInviteContractSuite(
 migrationCommentsContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-comments-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2553: the applied-migrations read answers with every row, past the 100 it once stopped at.
+manyMigrationsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-many-migrations-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// The same read on a clock that never moves: every migration of a pass is stamped with one instant,
+// so only the order they were written in says which ran last (the DO host takes no clock, #956).
+overCapMigrationsContractSuite('adapter-sqlite, one instant', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-many-migrations-tied-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker, clock: manualClock().read });
   return {
     host,
     cleanup: async () => {

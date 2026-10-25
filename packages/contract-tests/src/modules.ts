@@ -40,6 +40,7 @@ import { stampsMod } from './stamps-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
 import { uploadLinkMod } from './upload-link-module.js';
+import { manyMigrationsMod } from './many-migrations.js';
 import { commentedDdlMod } from './migration-comments.js';
 import { fenceDeclaredMod, fenceReusedRightMod, fenceReusedWrongMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 import {
@@ -3133,6 +3134,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #2068 r5: a module whose migrations comment their DDL and then drop the last column. Every
   // scope in the kit migrates it, so a regression fails loudly everywhere.
   commentedDdlMod,
+  // #2553: a module with more migrations than the applied-migrations read once capped at. Every
+  // scope in the kit carries it, so the #1236 case reads back over 100 rows on every adapter.
+  manyMigrationsMod,
   // #115: the data-loss fence suite's modules. Every scope in the kit migrates them, and on every
   // scope but the fence suite's their table is empty when its drop arrives, so the drop is free —
   // which also proves the fence lets an empty table go, everywhere.

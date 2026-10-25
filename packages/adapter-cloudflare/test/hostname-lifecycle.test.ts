@@ -78,10 +78,11 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
   const owner = principalId.parse(ulid());
   const deliveries: { scopeId: string; scope: string; tenant: string; lifecycle: ScopeLifecycle }[] = [];
   let failing = false;
+  let failText = 'deployment unreachable';
   const deployment = () => new CloudflareScopeHost({ scope: env.SCOPE });
   const lifecycleDelegation: LifecycleDelegation = {
     deliver: async ({ scopeId: s, lifecycle }) => {
-      if (failing) throw new Error('deployment unreachable');
+      if (failing) throw new Error(failText);
       deliveries.push({ scopeId: s, scope: lifecycle.scope, tenant: lifecycle.tenant, lifecycle });
       return deployment().setLifecycleLocal(s, lifecycle);
     },
@@ -180,8 +181,12 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
       failing = false;
     }
     expect((await platform().admin.getScopeRecord(actor, t, s))?.status).toBe('suspended');
+    // The tenant's row and staff's row beside it (#2554).
     const failures = await platform().admin.listOpsFailures(actor, { scopeId: s });
-    expect(failures.map((f) => [f.operation, f.stage])).toEqual([['scope.lifecycle', 'deliver']]);
+    expect(failures.map((f) => [f.operation, f.stage, f.tenantId])).toEqual([
+      ['scope.lifecycle', 'deliver', t],
+      ['scope.lifecycle', 'deliver', null],
+    ]);
     // The gap the sweep exists for: the deployment still runs the scope.
     await expect(servedHere(t, s)).resolves.toBeDefined();
 
@@ -194,6 +199,45 @@ describe('the platform delivers a scope lifecycle to the deployment serving it (
     // a restore landed without it.
     await platform().healLifecycles(actor, { limit: 1000 });
     expect(deliveredTo(s)).toEqual(['suspended/active', 'suspended/active']);
+  });
+
+  it("#2554: a failed delivery's throw is staff's row only; the scope's tenant reads what happened and the platform's reference", async () => {
+    const t = await tenantOf();
+    const other = await tenantOf();
+    const s = await hosted(t);
+    const upstream = `cf${ulid().toLowerCase()}`;
+    const foreign = `tenant ${other} scope ${scopeId.parse(ulid())}: something private; reference = ${upstream}`;
+    failing = true;
+    failText = foreign;
+    try {
+      await platform().admin.suspendScope(actor, t, s);
+    } finally {
+      failing = false;
+      failText = 'deployment unreachable';
+    }
+    const [mine, ...more] = await platform().admin.listOpsFailures(actor, { tenantId: t, scopeId: s });
+    expect(more).toEqual([]);
+    expect(mine).toMatchObject({ operation: 'scope.lifecycle', stage: 'deliver', tenantId: t, scopeId: s });
+    expect(mine!.reference).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(mine!.message).toBe(
+      'the lifecycle (scope suspended, tenant active) did not reach the deployment serving this scope; ' +
+        `the heal sweep will deliver it again (reference ${mine!.reference})`,
+    );
+    for (const text of [other, 'something private', upstream]) expect(JSON.stringify(mine)).not.toContain(text);
+    // The other tenant has no row of it, and an exact search by the upstream id finds nothing.
+    expect(await platform().admin.listOpsFailures(actor, { tenantId: other })).toEqual([]);
+    expect(await platform().admin.listOpsFailures(actor, { tenantId: t, reference: upstream })).toEqual([]);
+    // Staff: the pair by either id, and the throw on the row with no tenant, its marker first.
+    for (const reference of [mine!.reference!, upstream]) {
+      const pair = await platform().admin.listOpsFailures(actor, { reference, referenceInText: true });
+      expect(pair.map((f) => f.tenantId)).toEqual([t, null]);
+      expect(pair[1]!.reference).toBe(mine!.reference);
+      expect(pair[1]!.message).toBe(
+        `[upstream reference = ${upstream}] the lifecycle (scope suspended, tenant active) did not reach the deployment ` +
+          `serving this scope; the heal sweep will deliver it again: ${foreign}`,
+      );
+    }
+    await platform().healLifecycles(actor, { limit: 1000 });
   });
 
   it('every transition delivers a strictly newer revision, counted in the directory', async () => {

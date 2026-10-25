@@ -157,6 +157,7 @@ export {
   scopeScriptCopyOf,
   type ScopeScriptCopyRow,
 } from './scope-copy-ledger.js';
+export { STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_DURATION_MS, deadlineFetch, type DeadlineOptions } from './deadline-fetch.js';
 export {
   connectorUploadBody,
   isSizedByteStream,
@@ -974,7 +975,7 @@ export type {
 // every receipt writer and the sweep answer both questions the same way.
 export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
 export type { ServingPointer } from './scope-identity.js';
-export { opsFailureReferenceWhere } from './ops-failure-reference.js';
+export { opsFailureReferenceWhere, withheldOpsFailure } from './ops-failure-reference.js';
 export {
   exportBreaksOf,
   exportBreakRefusal,

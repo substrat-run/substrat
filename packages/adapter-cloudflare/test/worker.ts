@@ -640,7 +640,18 @@ export class ScopeStoreCounterDO extends DurableObject {
 }
 
 export default {
-  fetch(): Response {
+  fetch(request: Request): Response {
+    // A response whose headers arrive and whose body then never does: what a stalled provider looks
+    // like to `deadlineFetch` (#2518), over workerd's own `fetch` and its own abort.
+    if (new URL(request.url).pathname === '/stall') {
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(4));
+          },
+        }),
+      );
+    }
     return new Response('substrat adapter-cloudflare test worker', { status: 200 });
   },
 };

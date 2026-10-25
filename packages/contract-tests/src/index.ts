@@ -166,6 +166,8 @@ export { STORE_KIND_RELEASES_DDL_BEFORE_RENAME } from './directory-shapes.js';
 export { SPLIT_CASES } from './split-cases.js';
 export { migrationCommentsContractSuite } from './migration-comments-suite.js';
 export { commentedDdlMod } from './migration-comments.js';
+export { manyMigrationsContractSuite, overCapMigrationsContractSuite } from './many-migrations-suite.js';
+export { manyMigrationsMod, overCapMigrationsMod, MANY_MIGRATIONS_COUNT, MANY_MIGRATIONS_MODULE_ID, MANY_MIGRATIONS_VERSIONS, OVER_CAP_MIGRATIONS_VERSIONS } from './many-migrations.js';
 export { migrationFenceContractSuite } from './migration-fence-suite.js';
 export { fenceDeclaredMod, fenceReusedRightMod, fenceReusedWrongMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 export { shapeBackfillTies } from './shape-backfill-ties.js';

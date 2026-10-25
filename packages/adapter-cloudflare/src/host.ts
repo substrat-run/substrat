@@ -312,6 +312,7 @@ import {
   readableScopes,
   resolveScopeRecord,
   ulid,
+  withheldOpsFailure,
   type CarriedAway,
   type KeptCopy,
   type LoadMarker,
@@ -433,6 +434,7 @@ import {
   type SubjectTextTarget,
   globalFetch,
   fetchLikeOf,
+  deadlineFetch,
   assertRedrainWindow,
   platformRequestOf,
   type PlatformRequestRawRow,
@@ -2030,7 +2032,7 @@ interface ScopeStubRpc {
   ): Promise<SubjectRedactionCounts | LegacySubjectRedactionCounts | number | { failure: WireFailure }>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
-  appliedMigrations(limit?: number): Promise<AppliedMigration[]>;
+  appliedMigrations(): Promise<AppliedMigration[]>;
   /** `SqlStorage.databaseSize` of this scope (#1524). */
   databaseSize(): Promise<number>;
   /** What this scope's attachment rows sum to (#2501). */
@@ -2445,6 +2447,12 @@ export interface CloudflareScopeHostOptions {
    * provider can be stood up in memory for tests and dev.
    */
   fetch?: FetchLike;
+  /**
+   * How long a streamed connector response body may go without a byte before it errors (#2518).
+   * Defaults to `STREAM_IDLE_TIMEOUT_MS`. A buffered read stays under the connector's `timeoutMs`.
+   * Here so a test can use a short window.
+   */
+  streamIdleTimeoutMs?: number;
   /**
    * #1691: where each connector call's data point goes, beside the health line
    * `recordConnectionUse` settles — on the platform, the control plane's Analytics
@@ -3039,6 +3047,7 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Executor id → {eventType, handler} (K-22 §4.2). Coordinator-side, not in the DO. */
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
+  private readonly streamIdleMs: number | undefined;
   private readonly connectorCalls: ConnectorCallRecorder;
   /** The live D1 client for per-tenant stores (#301); undefined ⇒ refuse loudly. */
   private readonly tenantStores?: D1TenantStores;
@@ -3129,6 +3138,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
     // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
     this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
+    this.streamIdleMs = options.streamIdleTimeoutMs;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
@@ -3201,7 +3211,8 @@ export class CloudflareScopeHost implements ScopeHost {
     const scope = await this.cp.getScopeRecord(tenantId, scopeId);
     const vertical = scope?.vertical ?? null;
     const admin = this.admin;
-    const fetchImpl = this.fetchImpl;
+    // #2518: the call under `timeoutMs`, a streamed body under the idle window instead.
+    const fetchImpl = deadlineFetch(this.fetchImpl, timeoutMs, { idleMs: this.streamIdleMs });
     return {
       admin,
       tenantId,
@@ -3250,10 +3261,7 @@ export class CloudflareScopeHost implements ScopeHost {
             // #1691: timed where the call is made, so the data point carries a duration.
             const started = Date.now();
             try {
-              const res = await fetchImpl(input, {
-                ...init,
-                signal: AbortSignal.timeout(timeoutMs),
-              });
+              const res = await fetchImpl(input, init);
               await admin.recordConnectionUse(
                 open.id,
                 settleConnectionUse(provider, Date.now() - started, { response: res }),
@@ -10972,16 +10980,17 @@ export class CloudflareScopeHost implements ScopeHost {
       } catch (err) {
         report.failed += 1;
         try {
-          await this.admin.recordOpsFailure({
-            actor,
-            operation: 'scope.lifecycle',
-            stage: 'deliver',
-            tenantId,
-            scopeId,
-            message:
-              `the lifecycle (scope ${t.scope_status}, tenant ${t.tenant_status}) did not reach the ` +
-              `deployment serving this scope; the heal sweep will deliver it again: ${err instanceof Error ? err.message : String(err)}`,
-          });
+          // #2554: the throw is the deployment's or its runtime's text, and the deployment serving
+          // a scope is the vertical's code, often another tenant's. The tenant's row says only what
+          // happened; the text is staff's row, under the same reference.
+          const missed = `the lifecycle (scope ${t.scope_status}, tenant ${t.tenant_status}) did not reach the deployment serving this scope; the heal sweep will deliver it again`;
+          await this.admin.recordOpsFailure(
+            withheldOpsFailure(
+              { actor, operation: 'scope.lifecycle', stage: 'deliver', tenantId, scopeId },
+              `${missed}: ${err instanceof Error ? err.message : String(err)}`,
+              (reference) => `${missed} (reference ${reference})`,
+            ),
+          );
         } catch (recordErr) {
           console.error('substrat: could not record a lifecycle delivery failure (#1713)', recordErr);
         }

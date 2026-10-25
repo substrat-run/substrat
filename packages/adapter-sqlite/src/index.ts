@@ -846,6 +846,7 @@ import {
   replayFor,
   globalFetch,
   fetchLikeOf,
+  deadlineFetch,
   createUlid,
   type UlidMint,
   type IdempotencyRow,
@@ -1172,6 +1173,12 @@ export interface SqliteScopeHostOptions {
    * provider will not produce on demand.
    */
   fetch?: FetchLike;
+  /**
+   * How long a streamed connector response body may go without a byte before it errors (#2518).
+   * Defaults to `STREAM_IDLE_TIMEOUT_MS`. A buffered read stays under the connector's `timeoutMs`.
+   * Here so a test can use a short window.
+   */
+  streamIdleTimeoutMs?: number;
   /**
    * #1691: where each connector call's data point goes, beside the health line
    * `recordConnectionUse` settles. Defaults to the no-op recorder, so self-host keeps
@@ -2061,7 +2068,7 @@ function appliedMigrationsOf(db: Database.Database): AppliedMigration[] {
   const rows = db
     .prepare(
       `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
-        ORDER BY applied_at DESC, module_id, version LIMIT 100`,
+        ORDER BY applied_at DESC, rowid DESC`,
     )
     .all() as Array<{
     module_id: string;
@@ -2327,6 +2334,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly wrapBlobStore: (store: TenantBlobStore, ref: string) => TenantBlobStore;
   private readonly attachmentTextBounds: AttachmentTextBounds;
   private readonly fetchImpl: FetchLike;
+  private readonly streamIdleMs: number | undefined;
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
   private readonly versionId: string | null;
@@ -2349,6 +2357,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
     // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
     this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
+    this.streamIdleMs = options.streamIdleTimeoutMs;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
@@ -3191,7 +3200,8 @@ export class SqliteScopeHost implements ScopeHost {
           .get(rt.scopeId) as { vertical: string | null } | undefined
       )?.vertical ?? null;
     const admin = this.admin;
-    const fetchImpl = this.fetchImpl;
+    // #2518: the call under `timeoutMs`, a streamed body under the idle window instead.
+    const fetchImpl = deadlineFetch(this.fetchImpl, timeoutMs, { idleMs: this.streamIdleMs });
     return {
       admin,
       tenantId: rt.tenantId,
@@ -3249,10 +3259,7 @@ export class SqliteScopeHost implements ScopeHost {
             // records beside the health line carries a duration.
             const started = Date.now();
             try {
-              const res = await fetchImpl(input, {
-                ...init,
-                signal: AbortSignal.timeout(timeoutMs),
-              });
+              const res = await fetchImpl(input, init);
               // A 5xx is the provider failing; a 4xx is usually us. Both are
               // worth recording, because "the connection stopped working" is the
               // question a health view answers.
@@ -11039,6 +11046,7 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'operationSeries', { tenantId, scopeId }, delegatedReadParams.operationSeries(input), operationSeriesCount(series));
         return series;
       },
+      // Every row, newest first (#2553); `rowid DESC` orders migrations stamped in one millisecond.
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeReadDbFor(tenantId, scopeId);
         const migrations = appliedMigrationsOf(db);

@@ -4,6 +4,7 @@ import { REWIND_REFUSED } from '../src/rewind-refusal.js';
 import { LOAD_STAMP_KEY, ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey, dumpMetaValue } from '@substrat-run/kernel';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
+import { seedProjectedRole, seedProjectedTenantTuple, tombstoneProjectedRole } from './seed-projection.js';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { armRewind, awaitRestart, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
 import {
@@ -108,6 +109,7 @@ import {
   TRASH_MODULE_ID,
   subjectErasureContractSuite,
   migrationCommentsContractSuite,
+  manyMigrationsContractSuite,
   migrationFenceContractSuite,
   permMod,
   inputParseContractSuite,
@@ -1107,10 +1109,11 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     await host.admin.assignRole(staff, { principalId: principalId.parse(ulid()), roleKey: 'mixed', node: { tenantId: t, scopeId: null } });
   });
 
-  /** The ScopeDO's role projection, called directly: it writes a role row and no receipt. */
+  /** A role row seeded straight into the scope's store: no receipt, and no host judgement. */
   function projector(scope: ScopeId) {
-    return env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
-      projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(scope));
+    return {
+      projectRole: (tenantId: string, role: { key: string; permissions: string[]; source: string }) => seedProjectedRole(stub, tenantId, role),
     };
   }
   /** The `granted:` relations a subject (`principal:<id>`, `connection:<id>`) holds in a scope, read off its tuples. */
@@ -2905,13 +2908,10 @@ describe('scope-local permissions — the projected local reader (Phase 1)', () 
       .allowed;
 
   interface ProjectionRpc {
-    projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
-    projectTenantTuple(tenantId: string, subject: string, relation: string, object: string, expiresAt: string | null, revokedAt?: string | null): Promise<void>;
-    revokeProjectedRole(tenantId: string, key: string, revokedAt: string): Promise<void>;
     setPermissionSource(source: 'local' | 'control-plane'): Promise<void>;
   }
-  const projection = (scope: string): ProjectionRpc =>
-    env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as ProjectionRpc;
+  const stubOf = (scope: string) => env.SCOPE.get(env.SCOPE.idFromName(scope));
+  const projection = (scope: string): ProjectionRpc => stubOf(scope) as unknown as ProjectionRpc;
 
   beforeAll(async () => {
     host = new CloudflareScopeHost({
@@ -2936,15 +2936,14 @@ describe('scope-local permissions — the projected local reader (Phase 1)', () 
   it('resolves via RPC by default, then identically via the local projection', async () => {
     expect(await probe(sProj)).toBe(true); // RPC baseline
 
-    const p = projection(sProj);
-    await p.projectRole(t, { key: 'admin', permissions: [PERM_ADMIN], source: 'vertical' });
-    await p.projectTenantTuple(t, `principal:${alice}`, 'role:admin', `tenant:${t}`, null);
-    await p.setPermissionSource('local');
+    await seedProjectedRole(stubOf(sProj), t, { key: 'admin', permissions: [PERM_ADMIN], source: 'vertical' });
+    await seedProjectedTenantTuple(stubOf(sProj), t, { subject: `principal:${alice}`, relation: 'role:admin', object: `tenant:${t}` });
+    await projection(sProj).setPermissionSource('local');
     expect(await probe(sProj)).toBe(true); // now resolved locally — parity
   });
 
   it('a tombstoned projected role stops granting (K-21)', async () => {
-    await projection(sProj).revokeProjectedRole(t, 'admin', new Date().toISOString());
+    await tombstoneProjectedRole(stubOf(sProj), t, 'admin', new Date().toISOString());
     expect(await probe(sProj)).toBe(false);
   });
 
@@ -6729,6 +6728,18 @@ subjectErasureContractSuite(
 // #2068 r5: commented migration DDL, then a DROP COLUMN of the last column — the case workerd's
 // SQLite refused while comments were executed. `commentedDdlMod` is in `contractTestModules`.
 migrationCommentsContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2553: the applied-migrations read answers with every row, past the 100 it once stopped at.
+// `manyMigrationsMod` is in `contractTestModules`.
+manyMigrationsContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
