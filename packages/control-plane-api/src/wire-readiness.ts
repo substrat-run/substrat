@@ -106,6 +106,8 @@ export interface WireReadinessReport {
 export const WIRE_READINESS_REASONS = {
   counters:
     'the cutover counters (no legacy acceptance, no dual-mismatch, no fault, no refusal outside client noise) are not read by this report yet, nor is a version whose default export has no fetch, which only the counters show',
+  nonceStore:
+    'replay protection (the nonce store) is not present on a vertical-host or adapter before this version, and no record says which versions carry it, so a version without it, which cannot accept a signed call that changes state in signed-only, is shown only by the counters',
   notSignedOnly: 'no environment is signed-only: every upload and every walk gives dual',
   upChannel: 'the up-channel removals (step 6) are not recorded per version, so no version is shown to make no up-call with the shared credential',
   perDeployment: 'no version carries per-deployment values for its legacy checks (Q10), so a version never rebuilt still needs the shared credential',
@@ -215,6 +217,10 @@ export async function wireReadinessReport(
   const signedOnly: WireBlocker[] = [
     ...WIRE_UNSIGNED_ROUTES.map((r) => ({ kind: 'standing' as const, reason: `${r.method} ${r.path}: ${r.reason}` })),
     { kind: 'standing', reason: R.counters },
+    // RFC wire-signing §4: in signed-only a version with no nonce store answers every signed call
+    // that changes state with the fault, and the counters see only versions that had such a call in
+    // the window. Standing until a record can say which versions carry the store.
+    { kind: 'standing', reason: R.nonceStore },
   ];
   const drop: WireBlocker[] | undefined = input.keyDrop ? [] : undefined;
   const settingsBlocker: WireBlocker | null = refused ? { kind: 'settings', reason: `the control plane’s wire settings are refused (${refused.withheld}): ${refused.reason}` } : null;
