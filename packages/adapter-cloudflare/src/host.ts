@@ -1331,6 +1331,8 @@ interface AdminEntry {
 
 
 interface ScopeStubRpc {
+  /** RFC wire-signing §4: spend a signed call's nonce here (`claimWireNonceLocal`). */
+  claimWireNonce(nonce: string, until: number): Promise<boolean>;
   /** The applied-migration count if this call applied any, else null (nothing changed). */
   migrate(): Promise<number | null>;
   /**
@@ -4471,6 +4473,19 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async redrainCountLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
     return heldOrRefused(scopeId, await this.scopeStub(scopeId).redrainCountIfHeld(drainedBefore));
+  }
+
+  /**
+   * RFC wire-signing §4: spend a signed call's nonce in this scope's own object, the one the
+   * call's handler reaches through the same stub. The platform's entry calls it, through the host
+   * the vertical registered, only after every other check of the envelope passed, and only for
+   * the scope the verified envelope names. `true` once per nonce, `false` for a nonce already spent
+   * or a claim after `until`, and a throw when the store is at its cap. The tenant is the one the
+   * envelope names beside the scope; the object is keyed by the scope alone, so it is not read here.
+   * No provisioned check: the call that provisions a scope spends its nonce there too.
+   */
+  async claimWireNonceLocal(_tenantId: TenantId, scopeId: ScopeId, nonce: string, until: number): Promise<boolean> {
+    return this.scopeStub(scopeId).claimWireNonce(nonce, until);
   }
 
   /**
