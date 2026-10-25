@@ -9,6 +9,7 @@ import { LogList } from '../components/LogList';
 import { EVENT_GROUPS, bucketRows, dimensionLabel, emptyGroupingText, predatesRule, withheldOf, type BucketRow, type EventGroup } from '../lib/log-stream';
 import { mockEventFacets } from '../lib/mock-events';
 import { mockPatternLines } from '../lib/mock-patterns';
+import { appLogsPanelOf, LOGS_EMPTY_INCOMPLETE, LOGS_INCOMPLETE_NOTICE } from '../lib/logs-panel';
 
 /**
  * The panels the team Observability page composes for ONE app (#1447) — its traffic per
@@ -88,16 +89,19 @@ export function TenantLogs({
   const invocationId = filters.invocationId;
   // #1747: one pattern's lines, opened from the Patterns mode.
   const template = filters.tpl;
-  const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
+  const [read, setRead] = useState<{ events: ObservabilityLogEvent[]; incomplete: boolean } | null>(null);
+  const logs = read?.events ?? null;
+  // #2521: what the answer says beyond its lines.
+  const panel = appLogsPanelOf(read);
   const [logsError, setLogsError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    setLogs(null);
+    setRead(null);
     setLogsError(null);
     void (async () => {
       try {
-        const events = DEV_MOCK
+        const mocked = DEV_MOCK
           ? template
             ? mockPatternLines(
                 template,
@@ -117,7 +121,10 @@ export function TenantLogs({
                     l.timestamp >= Date.parse(cursor.from) &&
                     l.timestamp <= Date.parse(cursor.to))),
             )
-          : await api.appTenantLogs(teamId, scopeId, {
+          : null;
+        const answer = mocked
+          ? { events: mocked, incomplete: false }
+          : await api.appTenantLogsRead(teamId, scopeId, {
               level,
               search,
               // The cursor's window REPLACES the range; sending both would let `hours`,
@@ -127,7 +134,7 @@ export function TenantLogs({
               invocationId,
               ...(template ? { template } : {}),
             });
-        if (live) setLogs(events);
+        if (live) setRead(answer);
       } catch (e) {
         if (!live) return;
         // Surface WHY, not a blanket "unavailable" — the plane's status is the whole
@@ -156,6 +163,7 @@ export function TenantLogs({
           <MonoTag>this app</MonoTag>
         </div>
       )}
+      {panel.notice && <div role="status" style={{ ...quiet, paddingBottom: 0 }}>{LOGS_INCOMPLETE_NOTICE}</div>}
       {logsError ? (
         <div style={quiet}>{logsError}</div>
       ) : logs === null ? (
@@ -170,7 +178,11 @@ export function TenantLogs({
               it under a custom window: attaching it to ten minutes would answer a
               question about minutes with evidence about days. (`window` is always set —
               it is the range's own bounds without a cursor — so it cannot tell here.) */}
-          {hadTraffic
+          {/* #2521: a page the plane said may be missing lines claims neither: an empty read
+              that stopped short does not prove the window held nothing, or that no stamp arrived. */}
+          {panel.emptyIncomplete
+            ? LOGS_EMPTY_INCOMPLETE
+            : hadTraffic
             ? // Two causes, and the reader needs to know which one a redeploy fixes. A worker
               // that does not mount `invocationLog` writes no tenant stamp at all, and pushing
               // it again changes nothing — boundary-lint R10 and `substrat push` say so.
