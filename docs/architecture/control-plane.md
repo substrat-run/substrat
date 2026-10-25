@@ -574,7 +574,7 @@ Thin, over the above. In build order:
 ([#2563](https://github.com/substrat-run/substrat/issues/2563)).** Like the other introspection
 reads (#2544), a table page or a console statement for a scope the deployment does not hold
 (reaped, never provisioned there, or a copy a carry wiped) is a `409` with the shared sentence,
-never an empty answer, and on Cloudflare it no longer addresses the scope's storage object. The
+never an empty answer, and on Cloudflare the one call into the scope's object is refused inside it, with nothing stored. The
 carry is the exception: it reads `_substrat_meta` of a wiped copy to find the `carried_away`
 tombstone, so that copy answers by design. The two forms are separate by name at every layer
 (`readScopeTable` guarded, `readTombstoneTable` not), and only the carry's `isCarriedAway` and the
