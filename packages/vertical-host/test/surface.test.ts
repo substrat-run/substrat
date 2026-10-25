@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { NO_APPLICATION_DETAIL, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { NO_APPLICATION_DETAIL, permissionKey, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import { ORPHAN_SWEEP_UNLICENSED, scopeNotHeldRefusal, verifiedStream, type ByteBody } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
@@ -208,7 +208,7 @@ describe('a restore judges the role set its repair defines before it imports any
 });
 
 describe('a restore hands its role repair to the load, which judges and projects it in its transaction (#2531)', () => {
-  const ROLES = [{ key: 'staff', permissions: ['doc:read'], source: 'vertical' as const }];
+  const ROLES = [{ key: 'staff', permissions: [permissionKey.parse('doc:read')], source: 'vertical' as const }];
   const post = (host: VerticalScopeHost, path: string, body: object) =>
     appWith(host, { roles: ROLES }).request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, ENV);
   const ROUTES = [
