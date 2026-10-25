@@ -157,6 +157,7 @@ export {
   scopeScriptCopyOf,
   type ScopeScriptCopyRow,
 } from './scope-copy-ledger.js';
+export { STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_DURATION_MS, deadlineFetch, type DeadlineOptions } from './deadline-fetch.js';
 export {
   connectorUploadBody,
   isSizedByteStream,
