@@ -155,11 +155,6 @@ Not covered yet:
   with no migrations of its own records none and can still hold a seat there. While it is the
   tenant's only scope, every role definition is refused until you unarchive or reap it (both work;
   a reap needs no hostname). No product path reaches this today;
-- a role defined on a Cloudflare coordinator for a tenant that has no scope yet: it is judged by
-  the coordinator's modules alone, since the scope class's reservations are read from one of the
-  tenant's scopes, and the first scope's projection of it is not judged again;
-- a grant a host seats or composes itself, such as the owner grants an install gives the owner
-  on a host that does not register the vertical's modules (push refuses a reserved key there);
 - on a shared control plane, the directory record of a connection grant for a scope your
   deployment serves, and of a tenant-wide one: the plane cannot see your deployment's
   reservations, so it records the grant. The grant confers nothing, since your deployment
@@ -178,6 +173,39 @@ the list leaves out:
 const host = new CloudflareScopeHost({ scope: env.SCOPE, permissions });
 export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 ```
+
+Decided, and left as is (#2531). These paths are deliberately not judged by the rule:
+
+- a copy the platform or staff make: a preview's snapshot inside your deployment, and a staff
+  restore or import on a host the control plane runs. They copy roles and seats that were judged
+  where they were written, and a copy revokes nothing. A staff restore takes a dump the staff
+  caller supplies, and that dump is trusted input: its provenance is the staff caller's. A restore
+  into your own deployment is not one of these: its role set is judged. The roles a staff restore
+  leaves in place until the next fan-out are #2555;
+- the fan-out of a tenant's stored roles into its scopes: the role was judged where it was
+  defined, and judging it again would drop it and revoke its seats;
+- the platform's own role assignment, which keeps the platform rule. Telling a person from a host
+  principal needs a record of what kind of principal each one is, kept on the principal when it is
+  created; that is decided with the host principal's lifecycle. Only staff and the platform's own
+  service reach this door;
+- a role defined on a Cloudflare coordinator for a tenant that has no scope yet: it is judged by
+  the coordinator's modules alone. No product path reaches it, since the dashboard defines its
+  roles after the tenant's first scope exists. Revisited when the dashboard, or any coordinator,
+  registers a module that reserves a key;
+- the owner grants an install gives: an install grants them on the app's scope, which judges them
+  against its own modules' reservations, and push refuses a reserved key in a manifest's owner
+  grants. A grant naming no scope, on a host that does not register your modules, is judged by
+  that host's modules alone;
+- a key reserved only through a schedule's `permissions`, on a host that registers no modules:
+  no product path defines a role there, and push holds the registry's marks to your modules;
+- on Cloudflare, the coordinator's read of a scope's seats before it defines a role: the scopes
+  and the directory are separate units, so a seat made in between is not seen. The dashboard is
+  the one caller, and its roles hold no reserved key. Revisited when the dashboard, or any
+  coordinator, registers a module that reserves a key.
+
+The owner hand-over needs a scope host that judges the new owner's seat as a person's. A
+`@substrat-run/vertical-host` paired with an adapter from before that check answers 501 at the
+hand-over and moves nothing; upgrade the adapter beside it to hand the owner seat over.
 
 ### Roles @ nodes
 

@@ -16,7 +16,8 @@
  *    `UPDATE _substrat_roles`;
  * 3. a call of the kernel's scope-role writers, `applyScopeRoleChange(` and `changeScopeRole(`;
  * 4. a call of a ScopeDO's role projection, `.applyProjection(`, `.applyProjectionReply(` and
- *    `.projectRole(`, each of which defines the roles it is handed in the scope.
+ *    `.projectRole(`, each of which defines the roles it is handed in the scope. The ScopeDO's
+ *    one-role `projectRole` RPC was removed (#2531); the name stays matched so a new one is caught.
  *
  * Each seat must be covered by a GUARD of its own kind — before it, in its function or one
  * enclosing it (`attachment-writers.mjs`'s `covers`) — or sit in a function listed in `ALLOWED`, keyed
@@ -96,9 +97,6 @@ export const ALLOWED = {
     "a fan-out of the directory's stored definitions, each judged when `defineRole` wrote it; re-judged here, a stored role would be dropped and its seats revoked (#2447)",
   'packages/adapter-cloudflare/src/host.ts#fanOut':
     "a fan-out of the directory's stored definitions, each judged when `defineRole` wrote it; re-judged here, a stored role would be dropped and its seats revoked (#2447)",
-  'packages/adapter-cloudflare/src/scope-do.ts#projectRole':
-    "the ScopeDO's one-role projection RPC: no shipped caller (tests seed a scope's role rows through it), so it writes what it is handed unjudged, a named residual of #2447",
-  'packages/adapter-cloudflare/src/scope-do.ts#revokeProjectedRole': 'a revoke: it tombstones a projected role definition, which then grants nothing',
   'packages/adapter-cloudflare/src/scope-do.ts#applyProjectionReply': '`applyProjection` with its refusal answered as data: the same write, judged where its caller defines the roles',
   'packages/adapter-cloudflare/src/scope-do.ts#applyProjection':
     "the ScopeDO's write of the role set and seats its coordinator sends, judged where the coordinator defines them (`provisionScopeLocal`, `projectRolesLocal`); a directory fan-out is not re-judged (#2447)",
