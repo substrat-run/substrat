@@ -2123,8 +2123,10 @@ export class ControlPlaneDO extends DurableObject {
     const slugOwner = this.sql
       .exec('SELECT tenant_id FROM tenants WHERE slug = ?', slug)
       .toArray()[0] as { tenant_id: string } | undefined;
+    // #2556: the refusal never names the owner. Another tenant holds it, and the text reaches
+    // whoever asked (a manager vertical's intent journal among them).
     if (slugOwner) {
-      throw substratError('conflict', `tenant slug '${slug}' already taken by ${slugOwner.tenant_id} (slugs are unique)`);
+      throw substratError('conflict', `tenant slug '${slug}' is already taken (slugs are unique)`);
     }
     this.writeAndAudit(() => this.sql.exec(
       `INSERT INTO tenants (tenant_id, slug, name, status, created_at, provisioned_by_tenant)

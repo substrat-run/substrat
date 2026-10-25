@@ -353,6 +353,8 @@ export const INDEX_VALUE_EXPORTS = [
   'domainEventOf',
   'driverDeclarationsOf',
   'dumpMetaValue',
+  // #2555: why a staff restore or import on a host the control plane runs may not load a dump.
+  'dumpRoleRefusal',
   // #2447: a dump's stored roles and seats, which a restore's role set is judged against.
   'dumpRoleState',
   'dumpRowsInsert',
@@ -781,6 +783,7 @@ export const INDEX_VALUE_EXPORTS = [
   'withheldNote',
   // #2554: a tenant-filed failure whose text only staff read, for every writer, the hosts' included.
   'withheldOpsFailure',
+  'withheldStaffFailure',
   // RFC wire-signing §7: the capability record's write, which the adapters' recordWireAuth runs.
   'writeDeploymentWireAuth',
   'writeExplicitTupleIn',

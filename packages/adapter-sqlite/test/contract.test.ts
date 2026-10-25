@@ -35,6 +35,7 @@ import {
   permissionContractSuite,
   reservedRoleContractSuite,
   roleStateContractSuite,
+  restoreRoleContractSuite,
   sizeReadsContractSuite,
   introspectionReadsContractSuite,
   introspectionReadsOf,
@@ -324,6 +325,22 @@ roleStateContractSuite('adapter-sqlite', async () => {
   return {
     host,
     roleState: (t, s) => host.roleStateLocal(t, s),
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2555: a restore judges the roles stored here now against the dump's seats. A pure-SQLite scope
+// file keeps no role rows (they are this host's), so its dump says nothing of a seat's definition.
+restoreRoleContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-restore-roles-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    roleState: (t, s) => host.roleStateLocal(t, s),
+    dumpCarriesRoles: false,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
