@@ -11836,6 +11836,9 @@ export class SqliteScopeHost implements ScopeHost {
         // reason: its shadow tables cannot be replayed (the DO host rejects the name
         // outright), and it is recomputable — `loadDump` rebuilds it from the content
         // tables it just loaded. A dump carries the rows, never the index over them.
+        //
+        // The wire nonce store is dropped as well (RFC wire-signing §4): it describes calls this
+        // store accepted, not the scope's data, so a load builds it empty.
         const defs = (
           db
             .prepare(
@@ -11844,8 +11847,6 @@ export class SqliteScopeHost implements ScopeHost {
                 ORDER BY name`,
             )
             .all() as { name: string; sql: string }[]
-          // RFC wire-signing §4: the nonce store describes calls this store accepted, not the
-          // scope's data, so a dump leaves its tables out altogether and a load builds them empty.
         ).filter(({ name }) => !isSearchIndexTable(name) && !isWireNonceTable(name));
         const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
           // `.raw(true)` gives positional rows; cells stay as-is (blobs are Buffers, not

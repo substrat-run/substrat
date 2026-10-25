@@ -1183,8 +1183,8 @@ class WriteRevision {
       const write = this.isWrite(query);
       if (write) this.written++;
       if (this.keeping && write) {
-        // Bookkeeping takes the copy-marker insert and the lifecycle delivery (#1713) and nothing
-        // else: any other write here would be one the revision never saw, which is the hole this
+        // Bookkeeping takes the copy-marker insert, the lifecycle delivery (#1713) and the wire
+        // nonce claim's own statements (RFC wire-signing §4) and nothing else: any other write here would be one the revision never saw, which is the hole this
         // class exists to close.
         if (!isCopyMarkInsert(query) && !isLifecycleWrite(query) && !isWireNonceWrite(query)) {
           throw substratError('internal', `the bookkeeping path takes only the copy-marker insert, the lifecycle delivery and the wire nonce claim (#1722, #1713), not: ${query.slice(0, 80)}`);
