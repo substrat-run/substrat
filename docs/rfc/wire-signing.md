@@ -15,8 +15,10 @@ proposed · **Primitives:**
 deployment is given key lists · **Signers:** the router (`apps/router/src/worker.ts`) and the
 control plane (`packages/control-plane-api/src/platform-wire.ts`), each off until its `WIRE_SIGN`
 flag is `on` · **Uploader:** `packages/control-plane-api/src/wire-upload.ts`, giving key lists only
-to the deployments `WIRE_KEYS_ROLLOUT` names, and recording every upload's capability ·
-**Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
+to the deployments `WIRE_KEYS_ROLLOUT` names, and recording every upload's capability · **Fleet
+walk:** `packages/control-plane-api/src/wire-walk.ts` and `wire-settings.ts`, `POST /wire-auth/walk`,
+bringing every script's lists to what the control plane gives now, a person's act and a dry run by
+default · **Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
 the scope-store envelope, whose scheme this reuses.
 
@@ -270,7 +272,11 @@ Binding it would mean holding it, so version 1 does not sign it: the control pla
 its legacy header alone, never reading its body, and counts it as `skipped`, which is a decision rather than a
 failure. Unsigned, it meets the entry's legacy path, and the entry never reads an unsigned call's body, so `dual`
 keeps the stream unbuffered. It would be refused in `signed-only`, so it is on the flip gate's list (§7, follow-on
-4) until it has an answer of its own (below, Q5). An
+4) until it has an answer of its own (below, Q5). The streamed read the other way,
+`GET /internal/connector-attachment/:id` (#2514), needs no such exception: it is a GET with an empty
+request body, so it is signed and bound whole like any call, and the bytes it streams are the response,
+which no version of the envelope binds. It is not on the flip gate's list, and stays off it only while
+the request stays a bodiless GET. An
 empty body is the empty string or zero bytes. A body that is absent or `null` (a body read that
 failed) is refused, never digested as empty. A `route` binds no body: the router does not buffer
 an end user's upload, and a route's authority is the identity the router resolved, not the
@@ -493,7 +499,10 @@ step 6, withdraws the credential.
   reader exists: `listWireAuth` is one page (`limit` required, at most `LIST_PAGE_MAX`) and names its
   reach, one tenant's verticals (`{ tenantId }`, the verticals it owns now) or the whole fleet
   (`{ fleet: true }`), with no default; anything else is `validation_failed`
-  (`assertWireAuthFilter`), judged before the call into the directory's object.
+  (`assertWireAuthFilter`), judged before the call into the directory's object. A record is written
+  only beside its vertical's registration: one for a slug the registry does not hold is refused
+  (`not_found`), so a slug's later registrant never reads a record of an upload made before it held
+  the slug.
 - **A readiness report per environment** lists every live version: the serving version of every
   install, every preview, and every version a scope is bound to. For each it shows whether it
   verifies, which key lists it carries (the standby keys included), which state it is in, and
@@ -716,6 +725,30 @@ never rebuilt keeps the up-calls it was built with.
    ready, by name, whatever its own counts say. Key lists are pasted from the key tool's own output
    only (`generate`, `rotate`); its `doctor` refuses values that look like private material, but it
    cannot recognise every encoding of one.
+   Lands as several pull requests. The first bounds and confines the record's read (#2559). The
+   second is the walk, and decided:
+   - **What it reaches.** Every script the registry names: each vertical's serving script, and every
+     version's own script, the one a preview of it is routed to. Never a script the registry does not
+     name, nor one whose name is the platform's.
+   - **What it changes.** Only the four `SUBSTRAT_WIRE_*` settings, through the runtime's
+     script-settings endpoint, without uploading the script again (`wire-settings.ts`). Every other
+     binding goes back as read; a secret is never read or sent, and rides `keep_bindings`. What the
+     settings give is `wireUploadFor`'s own rule (`wireUploadGiven`), so a walked script and an
+     uploaded one are given the same. A script with no record is read back once: one whose modules
+     hold no platform entry verifies nothing, and is skipped (`no-entry`), never recorded as verifying.
+   - **How it runs.** A person's act (a staff sign-in, never a service token), a dry run unless told
+     `apply`, a bounded pass that answers where the next one starts, one `walkWireAuth` admin row a
+     pass and a `recordWireAuth` row a script changed. A script whose record already says it carries
+     what is given is not read, so where the rollout was never set a pass makes no call at all; a
+     confirming pass (`confirm`) reads every recorded script instead, and ends every walk, before any
+     key is dropped. One script's failure is an operational failure when the pass applies, and the
+     pass goes on; a vertical gone since it was listed is passed over.
+   - **What it holds.** The walk re-reads before it writes and verifies after. A script's bindings
+     are also written by its uploads and by a store attached to one of its scopes, so it is not run
+     while a push or promote of the same vertical is in flight, and every walk ends with a mandatory
+     confirming pass. A script it wrote and could not confirm is held (`walkHold` on its record, by
+     binding name) until a person releases it or an upload of it writes a fresh record: the hold marks
+     the record as it stands, or for a script with no record one that claims no lists (`unverified`).
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step

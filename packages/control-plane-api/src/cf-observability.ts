@@ -11,6 +11,7 @@ import type {
   ObservabilityReader,
   ObservedEgressRow,
   RecentLogEvent,
+  RecentLogs,
   TenantMetricsBucket,
   ConnectorCallsBucket,
   TenantMetricsRow,
@@ -1572,7 +1573,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     since?: string;
     until?: string;
     limit: number;
-  }): Promise<RecentLogEvent[]> {
+  }): Promise<RecentLogs> {
     // ONE timeframe, computed once and handed to every query below — the phases are not
     // independent reads. Phase two expands an invocation the earlier phases found, and a
     // phase that recomputed `Date.now()` for itself would search a window shifted by the
@@ -1583,6 +1584,22 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const timeframe = {
       from: input.since ? Date.parse(input.since) : to - input.hours * 3_600_000,
       to,
+    };
+    // #2521: set when a page of this tenant's lines came back FULL from the backend and held fewer
+    // than the read wanted once a line was taken out (`telemetryPage` leaves the wire line out after
+    // the backend has spent a slot on it), so lines may lie behind the cut. It is the service
+    // grain's `incomplete`: a short page is then not "the window held no more". `wanted` is what the
+    // read keeps of a full page: all of it, except where it over-fetched a slot to give back (the
+    // per-request read, below), which a single filtered line leaves whole. Set by this tenant's own
+    // queries only: an account-wide query's filtered line is not necessarily this tenant's.
+    let incomplete = false;
+    const noteCut = (page: { events: unknown[]; fetched: number }, asked: number, wanted = asked) => {
+      if (page.fetched >= asked && page.events.length < wanted) incomplete = true;
+    };
+    const readTenant = async (filters: TelemetryFilter[], asked: number) => {
+      const page = await queryRawPage(filters, timeframe, asked);
+      noteCut(page, asked);
+      return page.events;
     };
     const base: TelemetryFilter[] = [
       { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
@@ -1654,32 +1671,24 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const moduleLines =
       input.vertical && !input.scopeId
         ? Promise.resolve([])
-        : queryRaw([...moduleLineFilters(input), ...serviceFilter(input.services)], timeframe, input.limit);
+        : readTenant([...moduleLineFilters(input), ...serviceFilter(input.services)], input.limit);
     // A template names `ctx.log` lines only: an invocation line has none.
     if (input.template !== undefined) {
-      return (await moduleLines)
+      const lines = (await moduleLines)
         .map((e) => describeModuleLine(projectEvent(e)))
         .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
         .slice(0, input.limit);
+      return { events: lines, incomplete };
     }
     const [stamped, errorLines] = isErrorRead
       ? await Promise.all([
           Promise.all([
-            queryRaw(
-              [...base, { key: 'status', operation: 'eq', type: 'number', value: 500 }],
-              timeframe,
-              phaseOneLimit,
-            ),
-            queryRaw(
+            readTenant([...base, { key: 'status', operation: 'eq', type: 'number', value: 500 }], phaseOneLimit),
+            readTenant(
               [...base, { key: 'status', operation: 'gte', type: 'number', value: CAPABILITY_ABSENT + 1 }],
-              timeframe,
               phaseOneLimit,
             ),
-            queryRaw(
-              [...base, { key: 'threw', operation: 'eq', type: 'boolean', value: true }],
-              timeframe,
-              phaseOneLimit,
-            ),
+            readTenant([...base, { key: 'threw', operation: 'eq', type: 'boolean', value: true }], phaseOneLimit),
             // Newest first across the pages, not page order: the correlation cap is spent
             // in this order, and a busy `= 500` page must not crowd out a newer 502 or
             // escape just because its query was listed first.
@@ -1692,7 +1701,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
             phaseOneLimit,
           ),
         ])
-      : [await queryRaw(base, timeframe, phaseOneLimit), []];
+      : [await readTenant(base, phaseOneLimit), []];
 
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);
@@ -1717,18 +1726,20 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         // One more than the budget, then cut to it: a request writes at most one wire line (RFC
         // wire-signing §8), which `telemetryPage` leaves out after the backend spent a slot on it.
         // So the page holds exactly the lines it would if that line did not exist.
-        const events = (
-          await queryRaw(
-            [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }, ...serviceFilter(input.services)],
-            timeframe,
-            linesPerInvocation + 1,
-          )
-        ).slice(0, linesPerInvocation);
+        const page = await queryRawPage(
+          [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }, ...serviceFilter(input.services)],
+          timeframe,
+          linesPerInvocation + 1,
+        );
+        const events = page.events.slice(0, linesPerInvocation);
         // An account-wide candidate earns its place only by producing this tenant's
         // stamped line. No stamped line, or somebody else's, and the whole invocation is
         // dropped — a line shown to the wrong tenant is exactly the leak the tenant grain
         // exists to prevent, so the conservative direction is the only allowed one.
         if (!trustedIds.has(id) && !events.some((e) => ownsInvocation(e, input))) return [];
+        // Only an invocation this tenant owns can be incomplete for it. The slot over-fetched above
+        // gives one filtered line back; a full page that lost more than that is short of its share.
+        noteCut(page, linesPerInvocation + 1, linesPerInvocation);
         return events;
       }),
     );
@@ -1752,7 +1763,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const runtimeOf = foldRuntimeRecords([...byId.values()]);
     const level = input.level?.toLowerCase();
     const search = input.search;
-    return runtimeOf.kept
+    const events = runtimeOf.kept
       .map((e) => withRuntimeTimings(projectEvent(e), runtimeOf.byRequest))
       .map((e) => describeModuleLine(describeInvocation(e)))
       // A plain comparison is enough only because `describeInvocation` ran first: a stamped
@@ -1765,6 +1776,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       .filter((e) => (search ? (e.message ?? '').includes(search) : true))
       .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
       .slice(0, input.limit);
+    return { events, incomplete };
   }
 
   /** The de-duplicated, order-preserving request ids of a page of events. */

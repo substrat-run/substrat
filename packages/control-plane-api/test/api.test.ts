@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { scopeNotHeldRefusal, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { PLATFORM_SWEEP_HOST_KEY, assetHash, deployManifest, migrationDigestOf, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import { PROBLEM_CONTENT_TYPE, problemForStatus } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
@@ -1600,6 +1600,36 @@ describe('control-plane API', () => {
     });
     const healthy = await (await healthyApp.request(`/tenants/${t1}/scopes/${sH}/health`, { headers: auth })).json();
     expect(healthy).toMatchObject({ roleCount: 4, roleProjectionEmpty: false });
+  });
+
+  it('reports an active scope the deployment does not hold as unhealthy through the existing fields, not as a refusal of the route (#2544)', async () => {
+    const sG = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sG, vertical: 'health-vert' });
+    await host.admin.activateScope(staff, t1, sG);
+    const answering = (listScopeTables: () => Promise<never>) =>
+      createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'health-vert': { listScopeTables } as unknown as VerticalClient },
+      });
+
+    // The deployment says it holds nothing for this scope: the same flag an empty projection raises.
+    const gone = answering(async () => {
+      throw new ControlPlaneError(409, scopeNotHeldRefusal(sG));
+    });
+    const res = await gone.request(`/tenants/${t1}/scopes/${sG}/health`, { headers: auth });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: 'active', roleCount: 0, roleProjectionEmpty: true });
+
+    // Any other conflict, or another scope's refusal sentence, is still the route's failure.
+    const other = answering(async () => {
+      throw new ControlPlaneError(409, 'something else conflicted');
+    });
+    expect((await other.request(`/tenants/${t1}/scopes/${sG}/health`, { headers: auth })).status).toBe(409);
+    const foreign = answering(async () => {
+      throw new ControlPlaneError(409, scopeNotHeldRefusal(scopeId.parse(ulid())));
+    });
+    expect((await foreign.request(`/tenants/${t1}/scopes/${sG}/health`, { headers: auth })).status).toBe(409);
   });
 
   it("serves a scope's intent journal with the provider's FULL error (#618)", async () => {
@@ -6587,6 +6617,8 @@ describe('control-plane API — observability proxy', () => {
   describe('tenant grain', () => {
     const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
     const tenantSeen: { metrics: unknown[]; logs: unknown[] } = { metrics: [], logs: [] };
+    /** What the faked tenant log read answers; a test sets it and puts it back. */
+    let tenantLogsAnswer: { events: RecentLogEvent[]; incomplete: boolean } = { events: [], incomplete: false };
     const tenantReader = {
       ...reader,
       tenantMetrics: async (input: unknown) => {
@@ -6605,7 +6637,7 @@ describe('control-plane API — observability proxy', () => {
       },
       tenantLogs: async (input: unknown) => {
         tenantSeen.logs.push(input);
-        return [];
+        return tenantLogsAnswer;
       },
     };
 
@@ -6711,6 +6743,25 @@ describe('control-plane API — observability proxy', () => {
       const res = await app.request(`/observability/tenant-metrics?tenantId=${someone}`, { headers: asStaff });
       expect(res.status).toBe(200);
       expect(tenantSeen.metrics.at(-1)).toMatchObject({ tenantId: someone });
+    });
+
+    // #2521: the tenant grain says what the service grain says, in the same words.
+    it('says beside the tenant list when the read behind it may be missing lines, and only then', async () => {
+      const app = appWith(tenantReader);
+      const event = { timestamp: 1, message: 'a line' } as RecentLogEvent;
+      try {
+        tenantLogsAnswer = { events: [event], incomplete: true };
+        const short = await app.request('/observability/tenant-logs', { headers: asBuilder });
+        expect(short.headers.get(LOGS_INCOMPLETE_HEADER)).toBe('1');
+        // The body is the same list either way: every caller that reads it reads it unchanged.
+        expect(await short.json()).toEqual([event]);
+        tenantLogsAnswer = { events: [event], incomplete: false };
+        const whole = await app.request('/observability/tenant-logs', { headers: asBuilder });
+        expect(whole.headers.has(LOGS_INCOMPLETE_HEADER)).toBe(false);
+        expect(await whole.json()).toEqual([event]);
+      } finally {
+        tenantLogsAnswer = { events: [], incomplete: false };
+      }
     });
 
     it('passes the within-tenant narrowing through and bounds the window', async () => {
@@ -6965,7 +7016,7 @@ describe('control-plane API — observability proxy', () => {
         },
         tenantLogs: async (input: unknown) => {
           seen.logs.push(input);
-          return [];
+          return { events: [], incomplete: false };
         },
       };
 

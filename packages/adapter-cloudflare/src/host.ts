@@ -302,7 +302,9 @@ import {
   type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
+  bytesStream,
   isSizedByteStream,
+  openAttachmentByteStream,
   putAttachmentBytes,
   entitlementDenial,
   requiredEntitlementFor,
@@ -341,6 +343,7 @@ import {
   type ScopeAttachments,
   type AttachmentUploadInput,
   type OpenedAttachment,
+  type OpenedAttachmentStream,
   type TenantBlobStore,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
@@ -964,7 +967,7 @@ interface ControlPlaneStub {
     audit: AdminEntry,
     expected?: { ref: string | null; versionId: string | null },
   ): Promise<boolean>;
-  recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<void>;
+  recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<boolean>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
@@ -2074,6 +2077,28 @@ interface ScopeStubRpc {
   databaseSizeIfHeld(): Promise<number | null>;
   /** #2541: the attachment bytes, or null when this deployment does not hold the scope — one call, as the size is. */
   attachmentBytesIfHeld(): Promise<number | null>;
+  /**
+   * #2544: the introspection reads that name only a scope id, each `null` when this deployment does
+   * not hold the scope: the held check and the read in ONE call, as the two size reads are.
+   */
+  facetEventsIfHeld(input: EventFacetInput): Promise<EventFacetResult | null>;
+  eventEffectsIfHeld(input: EventEffectsInput): Promise<EffectsTree | null>;
+  invocationEventsIfHeld(input: InvocationEventsInput): Promise<InvocationEvents | null>;
+  deadLettersIfHeld(input: DeadLettersInput): Promise<Page<DeadLetter> | null>;
+  lifecycleFlowIfHeld(input: LifecycleFlowInput): Promise<LifecycleFlowResult | null>;
+  operationSeriesIfHeld(input: OperationSeriesInput): Promise<OperationSeriesResult | null>;
+  eventCauseIfHeld(input: EventCauseInput): Promise<CauseChain | null>;
+  entityHistoryIfHeld(input: {
+    entityType: string;
+    entityId: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<Page<HistoryEntry> | null>;
+  appliedMigrationsIfHeld(): Promise<AppliedMigration[] | null>;
+  migrationBookmarksIfHeld(): Promise<{ bookmark: string; takenAt: string; pending: string[] }[] | null>;
+  introspectTablesIfHeld(): Promise<ScopeTable[] | null>;
+  undrainedEventsReadIfHeld(limit: number): Promise<UndrainedRead | null>;
+  redrainCountIfHeld(drainedBefore: string): Promise<number | null>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
   importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved>;
   redrainEvents(drainedBefore: string): Promise<number>;
@@ -2152,6 +2177,12 @@ export interface ConnectorDelegation {
      */
     eventId?: string;
   }): Promise<OpenedAttachment | null>;
+  /**
+   * `openAttachment`, with the bytes streamed across the seam and handed on as they arrive (#2514).
+   * Optional for older embedders: without it a streamed open falls back to `openAttachment` and hands
+   * the buffer on as a stream, which works and holds the file whole, as it always did.
+   */
+  openAttachmentStream?(args: Parameters<ConnectorDelegation['openAttachment']>[0]): Promise<OpenedAttachmentStream | null>;
   /** Write the scope-local `connection:<id>` grant tuple in the serving deployment. */
   grant(args: {
     connectionId: ConnectionId;
@@ -2963,10 +2994,10 @@ const DOOR_WORDS = {
 /** #2029: the rewind hold's key for one subject — a module's id, bare as #1819 stored it, or `vertical:<slug>`. */
 const holdKeyOf = (kind: SwitchKind, key: string): string => (kind === 'system' ? key : peerSubjectRef(key));
 
-/** #2541: a vertical-side size read's answer, or the refusal when the scope's own object said it holds nothing (`null`). */
-function heldOrRefused(scopeId: ScopeId, size: number | null): number {
-  if (size === null) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
-  return size;
+/** #2541, #2544: a vertical-side read's answer, or the refusal when the scope's own object said it holds nothing (`null`). */
+function heldOrRefused<T>(scopeId: ScopeId, answer: T | null): T {
+  if (answer === null) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+  return answer;
 }
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
@@ -3229,10 +3260,10 @@ export class CloudflareScopeHost implements ScopeHost {
             (await this.connectionGrantsInScope(tenantId, scopeId))
               .filter((g) => g.connectionId === open.id)
               .map((g) => g.permission),
-          openAttachment: (attachmentId: string) =>
-            this.getConnectorAttachments(open.id, scopeId, { eventId }).then((a) =>
-              a.open(attachmentId),
-            ),
+          openAttachment: async (attachmentId: string) =>
+            (await this.getConnectorAttachments(open.id, scopeId, { eventId })).open(attachmentId),
+          openAttachmentStream: async (attachmentId: string) =>
+            (await this.getConnectorAttachments(open.id, scopeId, { eventId })).openStream(attachmentId),
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
           // map goes in, never out — a connector receives the plaintext of one cell,
           // not a private key it could mislay. Retired keys are in the map too, so a
@@ -3745,7 +3776,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * gate (the caller is the control plane, which did the K-3 check + audit on its side).
    */
   async introspectScopeTables(scopeId: ScopeId): Promise<ScopeTable[]> {
-    return this.scopeStub(scopeId).introspectTables();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).introspectTablesIfHeld());
   }
 
   async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
@@ -4183,47 +4214,47 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */
   async facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
-    return this.scopeStub(scopeId).facetEvents(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).facetEventsIfHeld(input));
   }
 
   /** What one event set off (#1237) on this host's own scope — the vertical-host read. */
   async eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree> {
-    return this.scopeStub(scopeId).eventEffects(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).eventEffectsIfHeld(input));
   }
 
   /** Everything one call emitted (#1237) on this host's own scope — the vertical-host read. */
   async invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents> {
-    return this.scopeStub(scopeId).invocationEvents(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).invocationEventsIfHeld(input));
   }
 
   /** Every delivery that gave up (#1525) on this host's own scope — the vertical-host read. */
   async deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>> {
-    return this.scopeStub(scopeId).deadLetters(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).deadLettersIfHeld(input));
   }
 
   /** One entity's lifecycle replayed (#1744) on this host's own scope — the vertical-host read. */
   async lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
-    return this.scopeStub(scopeId).lifecycleFlow(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).lifecycleFlowIfHeld(input));
   }
 
   /** Business volumes per bucket (#1750) on this host's own scope — the vertical-host read. */
   async operationSeriesLocal(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult> {
-    return this.scopeStub(scopeId).operationSeries(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).operationSeriesIfHeld(input));
   }
 
   /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
   async eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain> {
-    return this.scopeStub(scopeId).eventCause(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).eventCauseIfHeld(input));
   }
 
   /** One record's event history (#1235) on this host's own scope — the vertical-host read. */
   async entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>> {
-    return this.scopeStub(scopeId).entityHistory(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).entityHistoryIfHeld(input));
   }
 
   /** When this host's own scope applied each migration (#1236) — the vertical-host read. */
   async appliedMigrationsLocal(scopeId: ScopeId): Promise<AppliedMigration[]> {
-    return this.scopeStub(scopeId).appliedMigrations();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).appliedMigrationsIfHeld());
   }
 
   /**
@@ -4301,7 +4332,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * so a caller cannot ask this side for more than the other would.
    */
   async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<UndrainedEvents> {
-    return undrainedEventsOf(await this.scopeStub(scopeId).undrainedEventsRead(Math.min(Math.max(limit, 1), 1000)));
+    const bounded = Math.min(Math.max(limit, 1), 1000);
+    return undrainedEventsOf(heldOrRefused(scopeId, await this.scopeStub(scopeId).undrainedEventsReadIfHeld(bounded)));
   }
 
   /**
@@ -4330,7 +4362,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * platform's `redrainEvents` is the door, and a count egresses nothing to record.
    */
   async redrainCountLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
-    return this.scopeStub(scopeId).redrainCount(drainedBefore);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).redrainCountIfHeld(drainedBefore));
   }
 
   /**
@@ -4341,7 +4373,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async migrationBookmarksLocal(
     scopeId: ScopeId,
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
-    return this.scopeStub(scopeId).migrationBookmarks();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).migrationBookmarksIfHeld());
   }
 
   /**
@@ -4955,21 +4987,28 @@ export class CloudflareScopeHost implements ScopeHost {
             `verbs that cross the /internal seam to the serving deployment`,
         );
       };
+      const openArgs = (attachmentId: string) => ({
+        connectionId,
+        tenantId: tenant,
+        scopeId,
+        vertical,
+        attachmentId,
+        // #726 remedy B: the delivery, resolved at the far end against the
+        // deployment's own outbox. Absent outside a dispatch, where the ordinary
+        // permission check still applies.
+        eventId: forEvent?.eventId,
+      });
       return {
         upload: (upload) =>
           delegation.uploadAttachment({ connectionId, tenantId: tenant, scopeId, vertical, upload }),
-        open: (attachmentId) =>
-          delegation.openAttachment({
-            connectionId,
-            tenantId: tenant,
-            scopeId,
-            vertical,
-            attachmentId,
-            // #726 remedy B: the delivery, resolved at the far end against the
-            // deployment's own outbox. Absent outside a dispatch, where the ordinary
-            // permission check still applies.
-            eventId: forEvent?.eventId,
-          }),
+        open: (attachmentId) => delegation.openAttachment(openArgs(attachmentId)),
+        // #2514: streamed over the seam when the embedder can. One that cannot reads the bytes whole,
+        // as `open` does, and hands them on as a stream, so the verb still works and holds what it did.
+        openStream: async (attachmentId) => {
+          if (delegation.openAttachmentStream) return delegation.openAttachmentStream(openArgs(attachmentId));
+          const opened = await delegation.openAttachment(openArgs(attachmentId));
+          return opened && { record: opened.record, body: bytesStream(opened.body), contentType: opened.contentType };
+        },
         list: notDelegated('list'),
         remove: notDelegated('remove'),
         // #1575: undelegated for `list`'s reason — a connector picks a document by id.
@@ -5040,6 +5079,12 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           return record ? this.openAttachmentBytes(store, scopeId, record) : null;
         },
+        openStream: async (attachmentId) => {
+          const record = unwrapReply(
+            await stub.capabilityAttachmentOpen(attachmentId, hash, tenantId, scopeId),
+          );
+          return record ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256) : null;
+        },
         remove: async (attachmentId) =>
           unwrapReply(
             await stub.capabilityAttachmentRefuseWrite(hash, tenantId, scopeId, 'attachments.remove', {
@@ -5064,6 +5109,11 @@ export class CloudflareScopeHost implements ScopeHost {
     const asPrincipalId = ('principal' in subject
       ? subject.principal
       : (subject.connectionId as unknown as PrincipalId)) as PrincipalId;
+    // The read gate, asked in the DO before the blob store is touched: a refused read never reaches it.
+    const authorizeRead = async (attachmentId: string) =>
+      unwrapReply(
+        await stub.attachmentAuthorizeReply(attachmentId, 'read', asPrincipalId, tenantId, scopeId, connectionId, forEvent?.eventId),
+      );
     return {
       upload: async (input) => {
         const id = ulid();
@@ -5093,10 +5143,13 @@ export class CloudflareScopeHost implements ScopeHost {
       list: async (entity) =>
         unwrapReply(await stub.attachmentListReply(entity, asPrincipalId, tenantId, scopeId, connectionId)),
       open: async (attachmentId) => {
-        const record = unwrapReply(
-          await stub.attachmentAuthorizeReply(attachmentId, 'read', asPrincipalId, tenantId, scopeId, connectionId, forEvent?.eventId),
-        );
+        const record = await authorizeRead(attachmentId);
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
+      },
+      // #2514: the same gate, then the bytes as R2 reads them, checked against the record as they pass.
+      openStream: async (attachmentId) => {
+        const record = await authorizeRead(attachmentId);
+        return record ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256) : null;
       },
       remove: async (attachmentId) => {
         const removed = unwrapReply(
@@ -8762,13 +8815,15 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       recordWireAuth: async (actor, input) => {
         const row = deploymentWireAuth.parse(input);
-        await this.cp.recordWireAuth(row, this.adminEntry(
+        const written = await this.cp.recordWireAuth(row, this.adminEntry(
           actor,
           'recordWireAuth',
           { tenantId: null, vertical: row.verticalSlug },
           null,
           { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
         ));
+        // Thrown here, not in the directory's object, so the code survives the RPC.
+        if (!written) throw substratError('not_found', `no capability record for '${row.deploymentRef}': vertical '${row.verticalSlug}' is not registered`);
       },
       listWireAuth: async (actor, input) => {
         // Judged here, before the call into the directory's object, so a refusal keeps its code; the
@@ -9122,6 +9177,9 @@ export class CloudflareScopeHost implements ScopeHost {
       advanceStoreDriverRebuild: async (_actor, input) => this.directory('advanceStoreDriverRebuild', { ...input, at: new Date().toISOString() }),
       recordStoreDriverRebuildRun: async (actor, entry) => {
         await this.recordAdmin(actor, 'rebuildStoreDriver', { tenantId: null }, null, entry);
+      },
+      recordWireWalk: async (actor, entry) => {
+        await this.recordAdmin(actor, 'walkWireAuth', { tenantId: null }, null, entry);
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair
@@ -12439,6 +12497,30 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachment | null> {
+    return (await this.connectorReadSurface(connectionId, tenantId, scopeId, eventId)).open(attachmentId);
+  }
+
+  /**
+   * `connectorAttachmentOpenLocal`, with the bytes as a stream read from R2 as the platform reads
+   * the response (#2514). The same gates, in the same order, before the bucket is touched.
+   */
+  async connectorAttachmentOpenStreamLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    attachmentId: string,
+    eventId?: string,
+  ): Promise<OpenedAttachmentStream | null> {
+    return (await this.connectorReadSurface(connectionId, tenantId, scopeId, eventId)).openStream(attachmentId);
+  }
+
+  /** The attachment surface the platform's reads as a connection go through, behind their gates. */
+  private async connectorReadSurface(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    eventId: string | undefined,
+  ): Promise<ScopeAttachments> {
     // Same gate as the upload leg: a held scope's bytes are not read out of its bucket.
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
@@ -12451,7 +12533,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // #726 remedy B: the platform named a delivery; this deployment decides what that
       // delivery reaches, from its own spine row. Absent ⇒ the ordinary grant check.
       eventId === undefined ? undefined : { eventId },
-    ).open(attachmentId);
+    );
   }
 
   /**

@@ -59,6 +59,20 @@ describe('observability team paths (#2170)', () => {
     expect(await api.observabilityLogs('team-a', { services: ['one'] })).toEqual(lines);
   });
 
+  it('reports the logs-incomplete header of an app’s tenant logs exactly when the worker passes it on (#2521)', async () => {
+    const lines = [{ timestamp: 1, level: 'info', message: 'a line' }];
+    const answer = (headers: Record<string, string>) => {
+      globalThis.fetch = vi.fn(async () => Response.json(lines, { headers })) as typeof fetch;
+    };
+    answer({ [LOGS_INCOMPLETE_HEADER]: '1' });
+    expect(await api.appTenantLogsRead('team-a', 'app-1', { hours: 24 })).toEqual({ events: lines, incomplete: true });
+    answer({});
+    expect(await api.appTenantLogsRead('team-a', 'app-1', { hours: 24 })).toEqual({ events: lines, incomplete: false });
+    // The bare-list read answers as it always has, header or not.
+    answer({ [LOGS_INCOMPLETE_HEADER]: '1' });
+    expect(await api.appTenantLogs('team-a', 'app-1', { hours: 24 })).toEqual(lines);
+  });
+
   it('uses each tab’s team for app logs, request reads and patterns, preserving repeated filters', async () => {
     const seen: string[] = [];
     globalThis.fetch = vi.fn(async (url: string | URL | Request) => {

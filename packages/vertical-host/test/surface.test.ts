@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { NO_APPLICATION_DETAIL, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
-import { ORPHAN_SWEEP_UNLICENSED, scopeNotHeldRefusal, type ByteBody } from '@substrat-run/kernel';
+import { ORPHAN_SWEEP_UNLICENSED, scopeNotHeldRefusal, verifiedStream, type ByteBody } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
 
@@ -1794,6 +1795,142 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     // `eventId` is absent here, which is the pre-#726 shape: no delivery named, so the
     // far end falls back to the ordinary grant check rather than admitting anything.
     expect(asked).toEqual([CONN, TENANT, SCOPE, 'att-1', undefined]);
+  });
+
+  /**
+   * #2514: a host that can open the bytes as a stream is asked for the stream, and the route sends it
+   * as it is read, on the same path and in the same shape, at the record's size. The stream here is the
+   * kernel's own `verifiedStream` over a producer that makes a 64 KiB chunk only when asked for and
+   * measures how far it has got ahead of the reader.
+   */
+  describe('connector-attachment GET, streamed (#2514)', () => {
+    const CHUNK = 64 * 1024;
+    const chunkOf = (i: number) => new Uint8Array(CHUNK).fill(i % 251);
+    const flow = { produced: 0, consumed: 0, maxLead: 0, cancelled: 0 };
+    const producer = (chunks: number) => {
+      let i = 0;
+      return new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            if (i === chunks) return controller.close();
+            const chunk = chunkOf(i++);
+            flow.produced += chunk.byteLength;
+            flow.maxLead = Math.max(flow.maxLead, flow.produced - flow.consumed);
+            controller.enqueue(chunk);
+          },
+          cancel() {
+            flow.cancelled++;
+          },
+        },
+        { highWaterMark: 0 },
+      );
+    };
+    const sha256Of = (chunks: number) => {
+      const hash = createHash('sha256');
+      for (let i = 0; i < chunks; i++) hash.update(chunkOf(i));
+      return hash.digest('hex');
+    };
+    const recordOf = (chunks: number, sha256 = sha256Of(chunks)) => ({
+      id: 'att-1',
+      entity: { entityType: 'protocol', entityId: 'p1' },
+      filename: 'avtal.pdf',
+      contentType: 'application/pdf',
+      size: chunks * CHUNK,
+      sha256,
+      visibility: 'customer',
+      createdBy: CONN,
+      createdAt: '2026-08-17T00:00:00.000Z',
+    });
+    const nodeSha256 = () => {
+      const hash = createHash('sha256');
+      return { update: (c: Uint8Array) => void hash.update(c), hex: async () => hash.digest('hex') };
+    };
+    /** A host whose streamed open serves `chunks` chunks against `record`, and whose buffered open must not be asked. */
+    const streamingHost = (chunks: number, record: ReturnType<typeof recordOf>) => {
+      const asked: unknown[][] = [];
+      const host = fakeHost({
+        connectorAttachmentOpenLocal: async () => {
+          throw new Error('the buffered open was asked');
+        },
+        connectorAttachmentOpenStreamLocal: async (...args: unknown[]) => {
+          asked.push(args);
+          return {
+            record,
+            body: verifiedStream({ stream: producer(chunks), length: chunks * CHUNK }, record, nodeSha256()),
+            contentType: 'application/pdf',
+          };
+        },
+      });
+      return { host, asked };
+    };
+    const get = (host: ReturnType<typeof fakeHost>, eventId?: string) =>
+      appWith(host).request(
+        `/internal/connector-attachment/att-1?connectionId=${CONN}&tenantId=${TENANT}&scopeId=${SCOPE}${eventId ? `&eventId=${eventId}` : ''}`,
+        { headers: authed() },
+        ENV,
+      );
+    /** Read a response body slowly (a macrotask per chunk); its size and digest, or the error. */
+    const readSlowly = async (res: Response) => {
+      const reader = res.body!.getReader();
+      const hash = createHash('sha256');
+      let size = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) return { ok: true, size, sha256: hash.digest('hex') };
+          size += value.byteLength;
+          hash.update(value);
+          flow.consumed = size;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      } catch (error) {
+        return { ok: false, size, error: (error as Error).message };
+      }
+    };
+    beforeEach(() => Object.assign(flow, { produced: 0, consumed: 0, maxLead: 0, cancelled: 0 }));
+
+    it('sends the bytes as they are read, at the record size, with the record in its header', async () => {
+      const record = recordOf(64);
+      const { host, asked } = streamingHost(64, record);
+      const res = await get(host, 'evt-1');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('application/pdf');
+      expect(res.headers.get('content-length')).toBe(String(64 * CHUNK));
+      expect(JSON.parse(res.headers.get('x-substrat-attachment')!)).toEqual(record);
+      expect(await readSlowly(res)).toEqual({ ok: true, size: 64 * CHUNK, sha256: record.sha256 });
+      // A chunk or two ahead of a slow reader, out of 4 MiB: the route holds nothing.
+      expect(flow.maxLead).toBeLessThanOrEqual(2 * CHUNK);
+      expect(asked).toEqual([[CONN, TENANT, SCOPE, 'att-1', 'evt-1']]);
+    });
+
+    it('a reader that buffers (the client before #2514) reads the streamed answer whole', async () => {
+      const record = recordOf(8);
+      const res = await get(streamingHost(8, record).host);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(record.sha256);
+    });
+
+    it('bytes that do not match the record error the body before its last chunk, after a 200', async () => {
+      const { host } = streamingHost(8, recordOf(8, 'b'.repeat(64)));
+      const res = await get(host);
+      // The headers went before the digest could be known; the body is what refuses.
+      expect(res.status).toBe(200);
+      const out = await readSlowly(res);
+      expect(out).toMatchObject({ ok: false, error: expect.stringMatching(/do not match the recorded sha256/) });
+      expect(out.size).toBeLessThan(8 * CHUNK);
+    });
+
+    it('an id the host does not know is a 404, as before', async () => {
+      const host = fakeHost({ connectorAttachmentOpenStreamLocal: async () => null });
+      expect((await get(host)).status).toBe(404);
+    });
+
+    it('a malformed stored record is a 500, and its stream is let go unread', async () => {
+      const { host } = streamingHost(4, { ...recordOf(4), visibility: 'nobody' });
+      expect((await get(host)).status).toBe(500);
+      expect(flow.produced).toBe(0);
+      expect(flow.cancelled).toBe(1);
+    });
   });
 
   /**

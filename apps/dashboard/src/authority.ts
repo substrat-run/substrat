@@ -1630,7 +1630,12 @@ export class TenantNarrowedControlPlane {
     return this.call<unknown>(`/observability/tenant-log-patterns?${q.toString()}`);
   }
 
-  /** MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above. */
+  /**
+   * MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above.
+   *
+   * `incomplete` is the plane's own `x-substrat-logs-incomplete` header (#2521), as for
+   * `observabilityLogs`: the page may be missing lines behind a cut; it never reaches the events.
+   */
   async tenantLogs(input: {
     scopeId?: string;
     vertical?: string;
@@ -1646,8 +1651,8 @@ export class TenantNarrowedControlPlane {
     since?: string;
     until?: string;
     limit: number;
-  }): Promise<
-    Array<{
+  }): Promise<{
+    events: Array<{
       timestamp: number | null;
       level: string | null;
       message: string | null;
@@ -1661,8 +1666,10 @@ export class TenantNarrowedControlPlane {
       cpuTimeMs: number | null;
       wallTimeMs: number | null;
       raw: unknown;
-    }>
-  > {
+    }>;
+    /** The plane said the page may be missing lines behind a cut (#2521). */
+    incomplete: boolean;
+  }> {
     const q = new URLSearchParams({
       tenantId: this.tenantId,
       hours: String(input.hours),
@@ -1678,28 +1685,33 @@ export class TenantNarrowedControlPlane {
     if (input.template !== undefined) q.set('template', input.template);
     if (input.since) q.set('since', input.since);
     if (input.until) q.set('until', input.until);
-    const events =
-      (await this.call<Array<Record<string, unknown>>>(`/observability/tenant-logs?${q.toString()}`)) ?? [];
+    const { body, headers } = await this.callWithHeaders<Array<Record<string, unknown>>>(
+      `/observability/tenant-logs?${q.toString()}`,
+    );
+    const events = body ?? [];
     const str = (v: unknown) => (typeof v === 'string' ? v : null);
     const num = (v: unknown) => (typeof v === 'number' ? v : null);
     // Passed through whole, `raw` included, for the reason the owned-service read above
     // gives: every event here was produced by a request to THIS tenant's own
     // installation, so no field of it belongs to somebody else.
-    return events.map((e) => ({
-      timestamp: num(e['timestamp']),
-      level: str(e['level']),
-      message: str(e['message']),
-      service: str(e['service']),
-      outcome: str(e['outcome']),
-      trigger: str(e['trigger']),
-      invocation: str(e['invocation']),
-      entrypoint: str(e['entrypoint']),
-      requestId: str(e['requestId']),
-      ...(e['invocationId'] === undefined ? {} : { invocationId: str(e['invocationId']) }),
-      cpuTimeMs: num(e['cpuTimeMs']),
-      wallTimeMs: num(e['wallTimeMs']),
-      raw: e['raw'],
-    }));
+    return {
+      events: events.map((e) => ({
+        timestamp: num(e['timestamp']),
+        level: str(e['level']),
+        message: str(e['message']),
+        service: str(e['service']),
+        outcome: str(e['outcome']),
+        trigger: str(e['trigger']),
+        invocation: str(e['invocation']),
+        entrypoint: str(e['entrypoint']),
+        requestId: str(e['requestId']),
+        ...(e['invocationId'] === undefined ? {} : { invocationId: str(e['invocationId']) }),
+        cpuTimeMs: num(e['cpuTimeMs']),
+        wallTimeMs: num(e['wallTimeMs']),
+        raw: e['raw'],
+      })),
+      incomplete: logsIncompleteOf(headers),
+    };
   }
 
   /**

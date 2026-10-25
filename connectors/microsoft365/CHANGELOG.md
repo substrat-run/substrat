@@ -1,5 +1,42 @@
 # @substrat-run/connector-microsoft365
 
+## 0.0.21
+
+### Patch Changes
+
+- a283098: Add the provider-neutral file-source vocabulary to `@substrat-run/contracts` (#2499): `fileSourceChange` (the change a sync lands through a vertical's operation), `fileSourceWriteRequest` (the payload of the event a vertical emits to write files, with its explicit `conflict`), `fileSourceConflict`, `fileSourceUpsertAnswer` and the three caps `FILE_SOURCE_MAX_FILES_PER_WRITE`, `FILE_SOURCE_MAX_FILE_BYTES` and `FILE_SOURCE_MAX_WRITE_BYTES`. A vertical codes against these names and a second file-bearing provider lands on the same words. The Microsoft 365 connector now takes its schemas from contracts and exports them under its existing names (`microsoft365ChannelChange`, `microsoft365FilesRequested`, `MAX_FILES_PER_EVENT`, `MAX_FILE_BYTES`, `MAX_EVENT_BYTES`) as the same schema objects, so nothing about its behaviour, its event type or its payloads changes.
+- 9112dd6: A streamed connector response body now times out on idleness, not on total transfer time (#2518). A connection's `fetch` used to hold one `timeoutMs` deadline (default 30 s) over the whole exchange, so a streamed provider file had to arrive in full within it however fast its bytes were flowing, and a large file on a slow link could never land. Now `timeoutMs` bounds the call up to the response headers and any buffered read (`text()`, `json()`, `arrayBuffer()`), as before. Once the body is read as a stream (looking at `body`, or taking it and never reading, releases nothing) that deadline hands over to two limits: the stream errors when the provider sends no byte for `STREAM_IDLE_TIMEOUT_MS` (30 s; an empty chunk is not a byte, and a source that makes no progress, a thousand empty chunks in a row, errors the stream too), and 10 minutes after its first read (`STREAM_MAX_DURATION_MS`) however steadily it flows. A transfer that keeps flowing can outlast `timeoutMs`, but only if it finishes within `STREAM_MAX_DURATION_MS` (10 minutes); a stalled one (idle window or empty-read bound) or one still running at the cap errors with the same `TimeoutError`, the connection is released, and an upload reading it lands no object and no row.
+
+  The kernel exports `deadlineFetch(fetch, timeoutMs, { idleMs, maxStreamMs })` and the two constants. Both hosts wrap the connection `fetch` in it, and take an optional `streamIdleTimeoutMs` so a test can use a short window. The Scrive, Fortnox, Planima and Microsoft 365 connectors use it for their own timed `fetch` in place of `AbortSignal.timeout`.
+
+- Updated dependencies [8e8af88]
+- Updated dependencies [f0b5904]
+- Updated dependencies [763957c]
+- Updated dependencies [361136b]
+- Updated dependencies [581a697]
+- Updated dependencies [dc3b911]
+- Updated dependencies [a283098]
+- Updated dependencies [95bdb79]
+- Updated dependencies [26db572]
+- Updated dependencies [5554dad]
+- Updated dependencies [279f8e8]
+- Updated dependencies [c304fbd]
+- Updated dependencies [69868f3]
+- Updated dependencies [5147141]
+- Updated dependencies [a06e284]
+- Updated dependencies [ee05879]
+- Updated dependencies [9112dd6]
+- Updated dependencies [78a0c96]
+- Updated dependencies [09c081a]
+- Updated dependencies [ecbed6e]
+- Updated dependencies [d5f2f9a]
+- Updated dependencies [bc36021]
+- Updated dependencies [286f3b4]
+- Updated dependencies [5f75359]
+- Updated dependencies [bc629db]
+  - @substrat-run/contracts@0.160.0
+  - @substrat-run/kernel@0.160.0
+
 ## 0.0.20
 
 ### Patch Changes
