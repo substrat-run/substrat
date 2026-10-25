@@ -2155,6 +2155,7 @@ export class ControlPlaneDO extends DurableObject {
   setTenantStatus(tenantId: string, status: TenantStatus, audit?: AdminEntryInput): string {
     const before = this.readTenant(tenantId);
     if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
+    if (before.status === 'reaped') throw substratError('conflict', `tenant ${tenantId} is reaped and cannot change status`);
     // `reaped` is terminal and destroys data — unreachable here, only ever set by
     // reapTenant, so a plain status flip cannot forge a tombstone over live data
     // (§4.8, the tenant analogue of reapScope's archived-only gate).

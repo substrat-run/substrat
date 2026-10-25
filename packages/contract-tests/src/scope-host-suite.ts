@@ -10425,6 +10425,11 @@ export function scopeHostContractSuite(
       // Terminal: `reaped` is unreachable via setTenantStatus and reapTenant refuses it.
       await expectRefusal(host.admin.setTenantStatus(staff, t, 'reaped'), 'validation_failed', /cannot be set to 'reaped'/);
       await expectRefusal(host.admin.reapTenant(staff, t), 'conflict', /not deleting/);
+      // …and nothing leaves it: a reaped tenant cannot be set back to a live status (#2574).
+      for (const back of ['active', 'suspended', 'deleting'] as const) {
+        await expectRefusal(host.admin.setTenantStatus(staff, t, back), 'conflict', /is reaped and cannot change status/);
+      }
+      expect((await host.admin.getTenant(staff, t))!.status).toBe('reaped');
     });
 
     it('rejects reapTenant on an unknown tenant', async () => {

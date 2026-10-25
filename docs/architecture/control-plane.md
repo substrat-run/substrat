@@ -1036,7 +1036,7 @@ active ──delete──▶ deleting ──(grace window / staff "reap now")─
   tenant's PII/config directory rows — identities and identity pools, membership tuples, roles,
   entitlements, orgs — are cleared. The `tenants` row is **kept as a tombstone** (burned slug +
   audit history) and the admin log is **kept whole** (§4.4's retention decision). Irreversible:
-  only a `deleting` tenant may be reaped, and `reaped` never returns to `active`. `reapTenant` is
+  only a `deleting` tenant may be reaped, and `reaped` never returns to `active` (`setTenantStatus` refuses any change from `reaped` with a conflict). `reapTenant` is
   the tenant-level analogue of `reapScope` and is directory-side only — the per-scope byte-wipe
   runs above the kernel (a hosted scope's DO is CP-less), so the caller reaps every scope first,
   then clears the directory.
