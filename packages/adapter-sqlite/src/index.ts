@@ -10879,12 +10879,13 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'operationSeries', { tenantId, scopeId }, delegatedReadParams.operationSeries(input), operationSeriesCount(series));
         return series;
       },
+      // Every row, newest first (#2553); `rowid DESC` orders migrations stamped in one millisecond.
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeReadDbFor(tenantId, scopeId);
         const rows = db
           .prepare(
             `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
-              ORDER BY applied_at DESC, module_id, version LIMIT 100`,
+              ORDER BY applied_at DESC, rowid DESC`,
           )
           .all() as Array<{
           module_id: string;
