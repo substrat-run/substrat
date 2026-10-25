@@ -28,39 +28,31 @@ export function wireNonceContractSuite(
     /** A fresh canonical nonce: 21 base64url characters and a last one with its trailing bits zero. */
     const nonce = () => `${(n++).toString(36).padStart(10, '0')}${ulid().slice(-11).toLowerCase()}A`;
 
+    /** One provisioned scope the suite shares: each test spends nonces of its own. */
+    const s = scopeIdSchema.parse(ulid());
+
     beforeAll(async () => {
       fixture = await makeFixture();
       await fixture.host.admin.createTenant(staff, { id: t, slug: `wire-nonce-${t.slice(-8).toLowerCase()}`, name: 'Wire nonces' });
+      await fixture.host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'wire-nonce' });
+      await fixture.host.admin.activateScope(staff, t, s);
     });
     afterAll(async () => fixture?.cleanup());
 
-    const newScope = async (): Promise<ScopeId> => {
-      const s = scopeIdSchema.parse(ulid());
-      await fixture.host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'wire-nonce' });
-      await fixture.host.admin.activateScope(staff, t, s);
-      return s;
-    };
     const claim = (s: ScopeId, value: string) => fixture.claimWireNonceLocal(t, s, value, until);
 
-    it('spends a nonce once per scope: true, then false, and unspent in another scope', async () => {
-      const [s1, s2] = [await newScope(), await newScope()];
-      const a = nonce();
-      expect(await claim(s1, a)).toBe(true);
-      expect(await claim(s2, a)).toBe(true);
-      expect(await claim(s1, a)).toBe(false);
-      expect(await claim(s2, a)).toBe(false);
-    });
-
-    it('claims in a scope nothing has provisioned yet: the call that provisions it spends its nonce there', async () => {
-      const s = scopeIdSchema.parse(ulid());
+    it('spends a nonce once per scope, a scope nothing has provisioned yet included', async () => {
+      // The call that provisions a scope spends its nonce there too, so no provisioned check.
+      const unprovisioned = scopeIdSchema.parse(ulid());
       const a = nonce();
       expect(await claim(s, a)).toBe(true);
+      expect(await claim(unprovisioned, a)).toBe(true);
       expect(await claim(s, a)).toBe(false);
+      expect(await claim(unprovisioned, a)).toBe(false);
     });
 
     // That the dump leaves the tables out is the shared host suite's export check.
     it('a copy and a restore start with no nonce spent', async () => {
-      const s = await newScope();
       const a = nonce();
       expect(await claim(s, a)).toBe(true);
       const dump = await fixture.host.admin.exportScope(staff, t, s);
