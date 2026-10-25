@@ -739,13 +739,12 @@ never rebuilt keeps the up-calls it was built with.
      confirming pass (`confirm`) reads every recorded script instead, and ends every walk, before any
      key is dropped. One script's failure is an operational failure when the pass applies, and the
      pass goes on; a vertical gone since it was listed is passed over.
-   - **What it holds.** The endpoint has no conditional write, so the walk reads, reads again right
-     before it writes, and reads once more after. A serving script must run the served version before
-     and after, or it is not written. A read after that differs, or a serve that moved, holds the
-     script (`walkHold` on its record, by binding name) until a person releases it or an upload of it
-     writes a fresh record. A hold states only what is so: the record as it stands when the hold is
-     written, an upload's newer one left alone, or for a script with no record one that claims no lists
-     (`unverified`). It is not to be run while a push or promote of the same vertical is in flight.
+   - **What it holds.** The walk re-reads before it writes and verifies after. A script's bindings
+     are also written by its uploads and by a store attached to one of its scopes, so it is not run
+     while a push or promote of the same vertical is in flight, and every walk ends with a mandatory
+     confirming pass. A script it wrote and could not confirm is held (`walkHold` on its record, by
+     binding name) until a person releases it or an upload of it writes a fresh record: the hold marks
+     the record as it stands, or for a script with no record one that claims no lists (`unverified`).
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step

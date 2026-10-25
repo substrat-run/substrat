@@ -19,9 +19,11 @@
  * - **No call it does not need.** A script whose record already says it was given what the settings give
  *   now is not read. A script with no record, which the settings give nothing, is not read either: in an
  *   environment where the rollout was never set, a pass makes no call to the runtime at all. A
- *   **confirming** pass (`confirm`) reads every recorded script instead, trusting no record.
- * - **Only a script that verifies is given lists by it.** A script with no record is read back first; one
- *   that runs without the platform's entry is skipped (`no-entry`), never recorded as verifying.
+ *   **confirming** pass (`confirm`) reads every recorded script instead, trusting no record; a held
+ *   script, and one with no record that nothing is given or that is skipped, it leaves unread as well.
+ * - **Only a script that verifies is given lists by it.** A script with no record is read back first, on
+ *   every pass that reaches it (no verdict is kept between passes: pushing it again gives it a record);
+ *   one that runs without the platform's entry is skipped (`no-entry`), never recorded as verifying.
  * - **One script's failure is that script's.** It is reported, recorded as an operational failure by
  *   reason, and the pass goes on.
  * - **A script it cannot vouch for is held.** When the read after an update differs, or the serve moved
@@ -221,8 +223,6 @@ export async function runWireWalk(
 ): Promise<WireWalkPass> {
   const { admin, actor, settings, api } = deps;
   const now = deps.now ?? (() => new Date());
-  // A record written after this, by anything but this pass, is an upload's: newer than what the pass read.
-  const startedAt = now().toISOString();
   const release = new Set(input.apply ? input.release : []);
   const recordsBy = async (vertical: string) => {
     const held = new Map<string, DeploymentWireAuth>();
@@ -243,8 +243,8 @@ export async function runWireWalk(
     records.set(vertical, held);
     return held;
   };
-  const record = (script: InventoryScript, rec: WireAuthRecord) =>
-    admin.recordWireAuth!(actor, { deploymentRef: script.deploymentRef, verticalSlug: script.vertical, versionId: script.versionId, record: rec, recordedAt: now().toISOString() });
+  const record = (script: InventoryScript, rec: WireAuthRecord, versionId: string | null = script.versionId) =>
+    admin.recordWireAuth!(actor, { deploymentRef: script.deploymentRef, verticalSlug: script.vertical, versionId, record: rec, recordedAt: now().toISOString() });
 
   /**
    * Whether the script carries the platform's entry, which holds the verifier, read back from the
@@ -265,13 +265,7 @@ export async function runWireWalk(
   const walkOne = async (script: InventoryScript): Promise<WireWalkScript> => {
     const stored = (await recordsOf(script.vertical)).get(script.deploymentRef);
     const wasHeld = stored?.record.walkHold !== undefined;
-    const base = {
-      deploymentRef: script.deploymentRef,
-      vertical: script.vertical,
-      versionId: script.versionId,
-      kind: script.kind,
-      ...(wasHeld && release.has(script.deploymentRef) ? { released: true as const } : {}),
-    };
+    const base = { deploymentRef: script.deploymentRef, vertical: script.vertical, versionId: script.versionId, kind: script.kind };
     if (wasHeld && !release.has(script.deploymentRef)) return { ...base, action: 'held' };
     /** A failure: reported, and recorded as an operational failure when the pass applies (a dry run attempts nothing). */
     const failed = (reason: string, message: string, extra: Partial<WireWalkScript> = {}): WireWalkScript => {
@@ -281,22 +275,22 @@ export async function runWireWalk(
       return { ...base, action: 'failed', reason, ...extra };
     };
     /**
-     * Mark the script held, stating only what is true: its record as it stands now (read again, so an
-     * upload's record written during the pass is never overwritten with what the pass read before),
-     * or, with none, a record that claims no lists (`unverified`). Answers whether the hold was written:
-     * `superseded` when an upload recorded the script during the pass, which is then the truth.
+     * Mark the script held: a script the walk wrote and could not confirm is never left without one.
+     * It holds the record as it stands now, read again (an upload's record written during the pass
+     * included, which the hold keeps and marks), or, with none, a record that claims no lists
+     * (`unverified`). Answers whether the hold was written.
      */
-    const hold = async (entry: WireEntry, reason: 'verify' | 'serve-in-flight', bindings: readonly string[]): Promise<'held' | 'superseded' | 'unwritten'> => {
+    const hold = async (entry: WireEntry, reason: 'verify' | 'serve-in-flight', bindings: readonly string[]): Promise<boolean> => {
       try {
         const latest = (await recordsBy(script.vertical)).get(script.deploymentRef);
-        if (latest && latest.recordedAt > startedAt) return 'superseded';
         const known: WireAuthRecord = latest
           ? (({ walkHold: _previous, ...rest }) => rest)(latest.record)
           : { ...entry, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'unverified' };
-        await record(script, { ...known, walkHold: { reason, bindings: [...bindings], at: instant.parse(now().toISOString()) } });
-        return 'held';
+        // Under the version the record it marks names: an upload's record keeps its upload's version.
+        await record(script, { ...known, walkHold: { reason, bindings: [...bindings], at: instant.parse(now().toISOString()) } }, latest ? latest.versionId : script.versionId);
+        return true;
       } catch {
-        return 'unwritten';
+        return false;
       }
     };
 
@@ -356,15 +350,18 @@ export async function runWireWalk(
         case 'serve-in-flight': {
           if (!outcome.written) return failed('serve-in-flight', 'it does not run the version the directory says it serves; nothing was written: promote again, then walk');
           const held = await hold(entry, 'serve-in-flight', []);
-          const what = held === 'held' ? ': held until a person looks; promote again, then release it' : held === 'superseded' ? ': the promote’s upload recorded it since' : '; promote again';
-          return failed('serve-in-flight', `the served version moved while it was updated${what}`, held === 'held' ? { held: true } : {});
+          return failed(
+            'serve-in-flight',
+            `the served version moved while it was updated${held ? ': held until a person looks; promote again, then release it' : '; promote again'}`,
+            held ? { held: true } : {},
+          );
         }
         case 'verify': {
           const held = await hold(entry, 'verify', outcome.bindings);
           return failed(
             'verify',
-            `${held === 'held' ? 'held until a person looks: ' : ''}after its update, these bindings read differently: ${outcome.bindings.join(', ')}`,
-            { bindings: outcome.bindings, ...(held === 'held' ? { held: true as const } : {}) },
+            `${held ? 'held until a person looks: ' : ''}after its update, these bindings read differently: ${outcome.bindings.join(', ')}`,
+            { bindings: outcome.bindings, ...(held ? { held: true as const } : {}) },
           );
         }
       }
@@ -375,6 +372,17 @@ export async function runWireWalk(
     }
   };
 
+  /**
+   * One script, and whether a person's release of it took: only a script that was held and came out
+   * current (its fresh record, with no hold, written) is `released`; one that failed again stays held.
+   */
+  const walkReleasing = async (script: InventoryScript): Promise<WireWalkScript> => {
+    const result = await walkOne(script);
+    const wasHeld = (await recordsOf(script.vertical)).get(script.deploymentRef)?.record.walkHold !== undefined;
+    const current = result.action === 'updated' || result.action === 'unchanged';
+    return wasHeld && release.has(script.deploymentRef) && current ? { ...result, released: true } : result;
+  };
+
   const scripts = input.sink ?? [];
   let next: string | null = null;
   const fleet = inventory(admin, actor, input.cursor);
@@ -382,16 +390,22 @@ export async function runWireWalk(
     let step = await fleet.next();
     while (!step.done) {
       const script = step.value;
-      scripts.push(await walkOne(script));
-      step = await fleet.next();
-      // Looked one ahead, so the pass that ends on the fleet's last script answers `null`.
-      if (!step.done && scripts.length >= input.limit) {
-        next = script.cursor;
+      scripts.push(await walkReleasing(script));
+      if (scripts.length >= input.limit) {
+        // Looked one ahead, so the pass that ends on the fleet's last script answers `null`. A look
+        // that fails does not undo a pass that is done: the next one starts after its last script.
+        try {
+          step = await fleet.next();
+          next = step.done ? null : script.cursor;
+        } catch {
+          next = script.cursor;
+        }
         break;
       }
+      step = await fleet.next();
     }
   } finally {
-    await fleet.return(undefined);
+    await fleet.return(undefined).catch(() => undefined);
   }
   return { apply: input.apply, from: input.cursor ? cursorText(input.cursor.vertical, input.cursor.after) : null, next, scripts };
 }

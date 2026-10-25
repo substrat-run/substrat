@@ -428,13 +428,14 @@ describe('the fleet walk', () => {
     expect(JSON.stringify(stopped?.after)).not.toContain('directory unavailable');
   });
 
-  it('a hold never states what is not so: a promote’s fresh record is kept, and a script with no record claims no lists', async () => {
+  it('a script the walk wrote and could not confirm is always held, on the record as it stands; one with no record claims no lists', async () => {
     const tenant = await tenantOf('walk-truth');
     const v = await vertical(appWith(off()), tenant);
     const serving = v.scripts[0]!;
     const preview = v.scripts[2]!.split('-').at(-1)!.toUpperCase();
-    // A promote lands during the write of the serving script: it uploads (writing its own fresh record)
-    // and moves the serve to another version.
+    // A promote lands before the walk's write of the serving script lands (its upload records, and the
+    // serve moves to another version): the walk's write may have replaced what the promote wrote, so
+    // the script is held, on the promote's record, under the promote's version.
     const fresh = { envelope: 1 as const, entrySkipped: null, state: 'legacy-only' as const, audience: null, routerKids: [], platformKids: [], withheld: 'not-in-rollout' as const };
     writeHook = async (script, next) => {
       if (script !== serving) return next;
@@ -445,10 +446,15 @@ describe('the fleet walk', () => {
       return next;
     };
     const walked = await walkAll(appWith(fleet()), { apply: true, limit: 10 });
-    expect(walked[0]).toMatchObject({ deploymentRef: serving, action: 'failed', reason: 'serve-in-flight' });
-    expect(walked[0]!.held).toBeUndefined();
-    expect((await recordsOf(v.slug))[serving]).toMatchObject({ versionId: preview, record: fresh });
-    expect((await recordsOf(v.slug))[serving]!.record.walkHold).toBeUndefined();
+    expect(walked[0]).toMatchObject({ deploymentRef: serving, action: 'failed', reason: 'serve-in-flight', held: true });
+    expect((await recordsOf(v.slug))[serving]).toMatchObject({
+      versionId: preview,
+      record: { ...fresh, walkHold: { reason: 'serve-in-flight', bindings: [], at: expect.any(String) } },
+    });
+    // Held: the next ordinary pass leaves it alone rather than calling it current.
+    calls.length = 0;
+    expect((await walkAll(appWith(fleet()), { apply: true, limit: 10 }))[0]).toMatchObject({ deploymentRef: serving, action: 'held' });
+    expect(calls.filter((c) => c.script === serving)).toEqual([]);
 
     // A script with no record whose update reads back differently: held, claiming no lists.
     const other = await tenantOf('walk-truth-unrecorded');
@@ -470,6 +476,69 @@ describe('the fleet walk', () => {
       withheld: 'unverified',
       walkHold: { reason: 'verify', bindings: ['SCOPE'], at: expect.any(String) },
     });
+  });
+
+  it('holds a script whose record is newer than the pass when its write cannot be confirmed', async () => {
+    const tenant = await tenantOf('walk-newer');
+    const v = await vertical(appWith(off()), tenant);
+    const odd = v.scripts[2]!;
+    // An upload recorded the script after the pass began (its record dated later than any the pass writes).
+    const records = await recordsOf(v.slug);
+    await host.admin.recordWireAuth!(person, {
+      deploymentRef: odd,
+      verticalSlug: v.slug,
+      versionId: records[odd]!.versionId,
+      record: records[odd]!.record,
+      recordedAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    writeHook = (script, next) => (script === odd ? next.filter((b) => b.name !== 'SCOPE') : next);
+    const walked = await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    expect(walked.find((s) => s.deploymentRef === odd)).toMatchObject({ action: 'failed', reason: 'verify', held: true });
+    expect((await recordsOf(v.slug))[odd]?.record.walkHold).toMatchObject({ reason: 'verify', bindings: ['SCOPE'] });
+    writeHook = null;
+    expect((await walkAll(appWith(fleet()), { apply: true, limit: 10 })).find((s) => s.deploymentRef === odd)?.action).toBe('held');
+  });
+
+  it('marks a release only when the released script came out current', async () => {
+    const tenant = await tenantOf('walk-release');
+    const v = await vertical(appWith(off()), tenant);
+    const odd = v.scripts[2]!;
+    writeHook = (script, next) => (script === odd ? next.filter((b) => b.name !== 'SCOPE') : next);
+    await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    // Released, under settings that change it again, and its write still cannot be confirmed: held
+    // again, and not marked released.
+    const scope = { type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' };
+    scripts.set(odd, [...(scripts.get(odd) ?? []), scope]);
+    const again = await walkAll(appWith(off()), { apply: true, limit: 10, release: [odd] });
+    const hit = again.find((s) => s.deploymentRef === odd)!;
+    expect(hit).toMatchObject({ action: 'failed', reason: 'verify', held: true });
+    expect(hit.released).toBeUndefined();
+    expect((await walkRows()).slice(-1)[0]?.after).toMatchObject({ released: [] });
+    // Its positive twin: the write confirmed, released.
+    writeHook = null;
+    scripts.set(odd, [...(scripts.get(odd) ?? []), scope]);
+    expect((await walkAll(appWith(fleet()), { apply: true, limit: 10, release: [odd] })).find((s) => s.deploymentRef === odd)).toMatchObject({
+      action: 'updated',
+      released: true,
+    });
+  });
+
+  it('a pass that is done answers it, even when the look past its last script fails', async () => {
+    const app = appWith(off());
+    const a = await vertical(app, await tenantOf('walk-peek-a'));
+    const b = await vertical(app, await tenantOf('walk-peek-b'));
+    const serving = host.admin.verticalServing.bind(host.admin);
+    vi.spyOn(host.admin, 'verticalServing').mockImplementation(async (actor, slug) => {
+      if (slug === b.slug) throw new Error('directory unavailable');
+      return serving(actor, slug);
+    });
+    // The pass walks a's three scripts, then looks one ahead into b, which fails: the pass still answers.
+    const done = await pass(appWith(fleet()), { limit: 3 });
+    expect(done.scripts.map((s) => s.deploymentRef)).toEqual(a.scripts);
+    expect(done.next).not.toBeNull();
+    vi.restoreAllMocks();
+    // And the next pass, from there, walks b.
+    expect((await pass(appWith(fleet()), { limit: 10, cursor: done.next })).scripts.map((s) => s.deploymentRef)).toEqual(b.scripts);
   });
 
   it('a confirming pass reads every script, whatever its record says, and finds one changed behind it', async () => {

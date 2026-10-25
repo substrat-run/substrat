@@ -9,21 +9,13 @@
  * here logs, stores or echoes a binding's value; a failure names the script, the status, and binding
  * NAMES only.
  *
- * The endpoint offers no conditional update (no version, etag or precondition this code can send),
- * so the write guards itself:
+ * It writes nothing when the four already match. Otherwise it re-reads before it writes (retrying at
+ * most `CONCURRENT_RETRIES` times, then `concurrent-change`) and verifies after (`verify`, by name);
+ * a serving script must run the version the directory serves (`serve-in-flight`).
  *
- * - it reads, and writes nothing when the four already match;
- * - it reads again right before the write and compares every binding; a change between the two reads
- *   retries from the newer read, at most `CONCURRENT_RETRIES` times, then gives up as
- *   `concurrent-change`;
- * - for a serving script it requires the `SUBSTRAT_VERSION_ID` it read to be the version the
- *   directory says is served, before and after, or it does not write (`serve-in-flight`);
- * - after the write it reads once more and checks the four and every other binding it read
- *   (`verify`, by name).
- *
- * Other writers of a script's bindings exist (an upload, a store attached to a scope), so the walk is
- * not run while a push or promote of the same vertical is in flight, and a pass that changed anything
- * is followed by a confirming pass, which reads every script again.
+ * A script's bindings are also written by its uploads and by a store attached to one of its scopes.
+ * The walk is not run while a push or promote of the same vertical is in flight, and every walk ends
+ * with a confirming pass, which is mandatory.
  */
 import { WIRE_AUDIENCE_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_ROUTER_KEYS_VAR, WIRE_STATE_VAR } from '@substrat-run/contracts/wire-signing';
 

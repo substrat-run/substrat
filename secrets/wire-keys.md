@@ -149,8 +149,9 @@ while a push or a promote of a vertical it will reach is in flight.** In this or
 5. **Only then widen.** Apply with a larger limit, following `next` until it is `null`.
 6. **End with a confirming pass.** Walk the whole fleet once more with `"confirm": true` (dry, or with
    `apply` to bring back what it finds). A confirming pass reads every recorded script again rather
-   than trusting its record, so every script should read `unchanged`. **It is mandatory before any key
-   is dropped from a list**, and after break-glass.
+   than trusting its record, so every script should read `unchanged`. It does not read a `held`
+   script, nor a `skipped` or `unrecorded` one: deal with each of those first (release or push again).
+   **It is mandatory before any key is dropped from a list**, and after break-glass.
 
 It takes a staff sign-in, never a service token, like the store driver release writes. Each pass
 writes a `walkWireAuth` row to the admin log. Each script it changes writes its `recordWireAuth` row
@@ -165,7 +166,7 @@ script and the reason, and the pass goes on to the next one. What each script's 
 | `would-change` | A dry run: these settings would change. |
 | `updated` | Changed, read back, and recorded. |
 | `held` | An earlier pass held it, below. Not read. |
-| `skipped` | Not given lists, with `reason`: `no-entry`, a script with no record that runs without the platform's entry, so nothing in it verifies. Push it again. |
+| `skipped` | Not given lists, with `reason`: `no-entry`, a script with no record that runs without the platform's entry, so nothing in it verifies. Push it again. Until then each pass that reaches it reads its modules back again. |
 | `failed` | Not done, with `reason`. |
 
 In an environment where `WIRE_KEYS_ROLLOUT` was never set, a pass makes no call to the runtime at all
