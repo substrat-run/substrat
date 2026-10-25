@@ -104,7 +104,8 @@ describe('VerticalClient ↔ mountPlatformSurface — connector write-back round
       filename,
       contentType,
       size: bytes.byteLength,
-      sha256: 'a'.repeat(64),
+      // The bytes' own digest: the client holds what it reads to the record (#2514).
+      sha256: 'e16fa5d9b51928755db85b917f0297babaf22c7a47e97d9212adab56e61ba04e',
       visibility: 'customer' as const,
       createdBy: conn,
       createdAt: '2026-08-17T00:00:00.000Z',

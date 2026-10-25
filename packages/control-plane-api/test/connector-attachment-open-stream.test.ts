@@ -11,7 +11,7 @@ import {
   tenantId as tenantIdOf,
 } from '@substrat-run/contracts';
 import { ulid, verifiedStream } from '@substrat-run/kernel';
-import { VerticalClient } from '../src/index.js';
+import { ControlPlaneError, VerticalClient } from '../src/index.js';
 
 /**
  * The streamed outbound read on the wire (#2514), over a real HTTP connection: the real
@@ -58,8 +58,11 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-/** The route on a real port, its host streaming `chunks` chunks against a record with `sha256`. */
-async function deployment(chunks: number, sha256 = sha256Of(chunks)) {
+/**
+ * The route on a real port, its host streaming `chunks` chunks against a record with `sha256`, or
+ * with `buffered` answering from the buffered open with those bytes instead (a host before #2514).
+ */
+async function deployment(chunks: number, sha256 = sha256Of(chunks), buffered?: Uint8Array) {
   const record = {
     id: 'att-1',
     entity: { entityType: 'protocol', entityId: 'p1' },
@@ -71,16 +74,20 @@ async function deployment(chunks: number, sha256 = sha256Of(chunks)) {
     createdBy: conn,
     createdAt: '2026-10-25T00:00:00.000Z',
   };
-  const host = {
-    connectorAttachmentOpenLocal: async () => {
-      throw new Error('the buffered open was asked');
-    },
-    connectorAttachmentOpenStreamLocal: async () => ({
-      record,
-      body: verifiedStream({ stream: producer(chunks), length: record.size }, record, nodeSha256()),
-      contentType: 'application/pdf',
-    }),
-  } as unknown as VerticalScopeHost;
+  const host = (
+    buffered
+      ? { connectorAttachmentOpenLocal: async () => ({ record, body: buffered, contentType: 'application/pdf' }) }
+      : {
+          connectorAttachmentOpenLocal: async () => {
+            throw new Error('the buffered open was asked');
+          },
+          connectorAttachmentOpenStreamLocal: async () => ({
+            record,
+            body: verifiedStream({ stream: producer(chunks), length: record.size }, record, nodeSha256()),
+            contentType: 'application/pdf',
+          }),
+        }
+  ) as unknown as VerticalScopeHost;
   const app = new Hono<{ Bindings: Env }>();
   mountPlatformSurface<Env>(app, {
     platformSecret: (env) => env.PLATFORM_SECRET,
@@ -112,11 +119,46 @@ describe('the streamed connector-attachment read on the wire (#2514)', () => {
     await head.body!.cancel();
   });
 
-  it('bytes that do not match the record reach the client as a broken body, never as a whole file', async () => {
+  const open = (client: VerticalClient) =>
+    client.connectorOpenAttachment({ connectionId: conn, tenantId: t, scopeId: s, attachmentId: 'att-1' });
+  const refusal = async (p: Promise<unknown>) => {
+    const err = await p.then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    return err as ControlPlaneError;
+  };
+
+  it('a body the deployment cuts on a mismatch is an integrity refusal, not a bare network error', async () => {
     const { client } = await deployment(16, 'b'.repeat(64));
-    await expect(
-      client.connectorOpenAttachment({ connectionId: conn, tenantId: t, scopeId: s, attachmentId: 'att-1' }),
-    ).rejects.toThrow();
+    const err = await refusal(open(client));
+    expect(err).toMatchObject({ status: 502, code: 'internal' });
+    expect(err.message).toMatch(/attachment att-1 failed its integrity check: its body broke off before the 4194304 bytes/);
+    // The transport's own error is kept as the cause, for whoever diagnoses it.
+    expect(err.cause).toBeInstanceOf(Error);
+  });
+
+  it('a whole body of another length than the record names is refused by the client itself', async () => {
+    const short = new Uint8Array(3 * CHUNK).fill(1);
+    const { client } = await deployment(4, sha256Of(4), short);
+    const err = await refusal(open(client));
+    expect(err).toMatchObject({ status: 502, code: 'internal' });
+    expect(err.message).toMatch(/the deployment sent 786432 bytes; its record names 1048576/);
+  });
+
+  it('a whole body of the right length whose digest is not the record’s is refused by the client itself', async () => {
+    const { client } = await deployment(4, sha256Of(4), new Uint8Array(4 * CHUNK).fill(9));
+    const err = await refusal(open(client));
+    expect(err).toMatchObject({ status: 502, code: 'internal' });
+    expect(err.message).toMatch(/the bytes do not match the recorded sha256/);
+  });
+
+  it('its positive twin: a buffered deployment’s matching bytes are read as before', async () => {
+    const whole = new Uint8Array(4 * CHUNK);
+    for (let i = 0; i < 4; i++) whole.set(chunkOf(i), i * CHUNK);
+    const { client } = await deployment(4, sha256Of(4), whole);
+    expect((await open(client))!.body).toEqual(whole);
   });
 
   it('a reader counting bytes off the wire never reaches the size of a file that did not verify', async () => {
