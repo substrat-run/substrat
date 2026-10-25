@@ -960,6 +960,35 @@ const UNSIGNED: readonly (readonly [name: string, kind: WireKind, valid: (value:
 /** The listed headers by name, each with the kind of request it rides on. */
 export const WIRE_UNSIGNED_HEADERS: Readonly<Record<string, WireKind>> = Object.freeze(Object.fromEntries(UNSIGNED.map(([name, kind]) => [name, kind])));
 
+/** A platform call a signer sends unsigned by design, and why. */
+export interface WireUnsignedRoute {
+  readonly method: string;
+  readonly path: string;
+  readonly reason: string;
+}
+
+/**
+ * The platform calls version 1 leaves unsigned by design (RFC §3.6, Q5): a call whose body is sent as
+ * it is read, which binding would mean holding whole. The control plane's signer skips a streamed call
+ * only to a route listed here (counted `skipped`), so each one is named, and the readiness report lists
+ * each as a standing blocker of the move to `signed-only` until it has its own answer. A streamed read's
+ * request has no body and is signed like any call; only its response streams, and v1 signs no response.
+ */
+// Pure, so a bundle that never reads it (the platform's entry) leaves it out.
+export const WIRE_UNSIGNED_ROUTES: readonly WireUnsignedRoute[] = /* @__PURE__ */ Object.freeze([
+  /* @__PURE__ */ Object.freeze({
+    method: 'POST',
+    path: '/internal/connector-attachment-stream',
+    reason:
+      'the streamed attachment upload is sent unsigned by design: its body is the file, sent as it is read, and version 1 binds no stream; it needs a new envelope version or a guard of its own before signed-only',
+  }),
+]);
+
+/** The listed route ({@link WIRE_UNSIGNED_ROUTES}) a call goes to, by method and path, or `undefined`. */
+export function wireUnsignedRouteOf(method: string, pathname: string): WireUnsignedRoute | undefined {
+  return WIRE_UNSIGNED_ROUTES.find((r) => r.method === method.toUpperCase() && r.path === pathname);
+}
+
 /**
  * The listed headers ({@link WIRE_UNSIGNED_HEADERS}) a request of `kind` hands on, as name and value:
  * only those listed for that kind, and only a value its reader's check accepts. A header sent twice

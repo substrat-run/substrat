@@ -150,16 +150,62 @@ export interface WireWalkDeps {
   readonly now?: () => Date;
 }
 
-interface InventoryScript {
+/** One script the registry names, as the walk and the readiness report reach it. */
+export interface InventoryScript {
   readonly vertical: string;
   readonly deploymentRef: string;
   readonly versionId: string | null;
   readonly kind: 'serving' | 'version';
+  /** Where a pass that ends on this script answers the next one starts. */
   readonly cursor: string;
 }
 
+/** Every capability record of one vertical's scripts, by script name, read a page at a time. */
+export async function wireAuthRecordsOf(admin: HostAdmin, actor: PlatformActorId, vertical: string): Promise<Map<string, DeploymentWireAuth>> {
+  const held = new Map<string, DeploymentWireAuth>();
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await admin.listWireAuth!(actor, { reach: { fleet: true }, verticalSlug: vertical, limit: LIST_PAGE_MAX, ...(cursor ? { cursor } : {}) });
+    for (const r of page) held.set(r.deploymentRef, r);
+    if (page.length < LIST_PAGE_MAX) return held;
+    cursor = page.at(-1)!.deploymentRef;
+  }
+}
+
+/**
+ * Hand each script from `fleet` to `each` in order, at most `limit` of them, answering where the next pass starts:
+ * `null` when the last one handled was the fleet's last. Looks one ahead, so the pass that ends on the
+ * fleet's last script already answers `null`; a look that fails does not undo a pass that is done.
+ */
+export async function wireInventoryPass<T>(
+  fleet: AsyncGenerator<InventoryScript>,
+  limit: number,
+  each: (script: InventoryScript) => Promise<T>,
+  out: T[],
+): Promise<string | null> {
+  try {
+    let step = await fleet.next();
+    while (!step.done) {
+      const script = step.value;
+      out.push(await each(script));
+      if (out.length >= limit) {
+        try {
+          step = await fleet.next();
+          return step.done ? null : script.cursor;
+        } catch {
+          return script.cursor;
+        }
+      }
+      step = await fleet.next();
+    }
+    return null;
+  } finally {
+    await fleet.return(undefined).catch(() => undefined);
+  }
+}
+
 /** The registry's scripts in walk order, from `from` on: each vertical's serving script, then its versions' scripts. */
-async function* inventory(admin: HostAdmin, actor: PlatformActorId, from: WireWalkCursor | null): AsyncGenerator<InventoryScript> {
+export async function* wireInventory(admin: HostAdmin, actor: PlatformActorId, from: WireWalkCursor | null): AsyncGenerator<InventoryScript> {
   /** A directory read of one vertical, or `gone` when the vertical no longer exists (deleted since it was listed, or named by a saved cursor). */
   const ofVertical = async <T>(read: () => Promise<T>): Promise<T | typeof GONE> => {
     try {
@@ -203,7 +249,7 @@ async function* inventory(admin: HostAdmin, actor: PlatformActorId, from: WireWa
 }
 
 /** Whether a record already holds what a given record says, in what a script carries: the state, the audience and the key ids. */
-function carriesAlready(stored: WireAuthRecord, given: WireAuthRecord): boolean {
+export function carriesAlready(stored: WireAuthRecord, given: WireAuthRecord): boolean {
   const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
   return (
     stored.state === given.state &&
@@ -233,16 +279,7 @@ export async function runWireWalk(
   const { admin, actor, settings, api } = deps;
   const now = deps.now ?? (() => new Date());
   const release = new Set(input.apply ? input.release : []);
-  const recordsBy = async (vertical: string) => {
-    const held = new Map<string, DeploymentWireAuth>();
-    let cursor: string | undefined;
-    for (;;) {
-      const page = await admin.listWireAuth!(actor, { reach: { fleet: true }, verticalSlug: vertical, limit: LIST_PAGE_MAX, ...(cursor ? { cursor } : {}) });
-      for (const r of page) held.set(r.deploymentRef, r);
-      if (page.length < LIST_PAGE_MAX) return held;
-      cursor = page.at(-1)!.deploymentRef;
-    }
-  };
+  const recordsBy = (vertical: string) => wireAuthRecordsOf(admin, actor, vertical);
   const records = new Map<string, Map<string, DeploymentWireAuth>>();
   const recordsOf = async (vertical: string) => {
     let held = records.get(vertical);
@@ -419,28 +456,6 @@ export async function runWireWalk(
   };
 
   const scripts = input.sink ?? [];
-  let next: string | null = null;
-  const fleet = inventory(admin, actor, input.cursor);
-  try {
-    let step = await fleet.next();
-    while (!step.done) {
-      const script = step.value;
-      scripts.push(await walkReleasing(script));
-      if (scripts.length >= input.limit) {
-        // Looked one ahead, so the pass that ends on the fleet's last script answers `null`. A look
-        // that fails does not undo a pass that is done: the next one starts after its last script.
-        try {
-          step = await fleet.next();
-          next = step.done ? null : script.cursor;
-        } catch {
-          next = script.cursor;
-        }
-        break;
-      }
-      step = await fleet.next();
-    }
-  } finally {
-    await fleet.return(undefined).catch(() => undefined);
-  }
+  const next = await wireInventoryPass(wireInventory(admin, actor, input.cursor), input.limit, walkReleasing, scripts);
   return { apply: input.apply, from: input.cursor ? cursorText(input.cursor.vertical, input.cursor.after) : null, next, scripts };
 }

@@ -752,6 +752,36 @@ never rebuilt keeps the up-calls it was built with.
      confirming pass. A script it wrote and could not confirm is held (`walkHold` on its record, by
      binding name) until a person releases it or an upload of it writes a fresh record: the hold marks
      the record as it stands, or for a script with no record one that claims no lists (`unverified`).
+   The third is the readiness report over the records (`POST /wire-auth/readiness`,
+   `wire-readiness.ts`) and its gate predicates, and decided:
+   - **What it is.** Advisory: it informs the person who flips the down-channel, drops a key or
+     withdraws the shared credential, and no tooling enforces it until follow-on 7. Read-only: it reads
+     the registry, the capability records and the walk's admin rows, and nothing else, and writes
+     nothing; its record reads leave their access-log rows. A staff sign-in, never a service token.
+     Paged like the walk, the same scripts in the same order.
+   - **Unknown is never fact.** A script with no record, a held record and an `unverified` one are
+     listed as unknown, and every gate blocks on unknown.
+   - **Confirmed.** A record is trusted as current only when it was written after the last applied
+     confirming walk began, which is why each walk row now records when its pass began (`startedAt`).
+     That walk is read from the walk's rows and fails closed: anything short of a whole chain of
+     applied confirming passes from the start of the fleet to its end, with no other applied pass after
+     it, is unknown, and blocks `signed-only` and every key drop.
+   - **The gates.** `signed-only` is blocked by every unknown script, a script without the entry, one
+     given no lists, one that does not carry what the control plane gives now, a list with no standby
+     beside the key in use, an unconfirmed record, a rollout that is not `fleet`, refused settings, and
+     two standing blockers: every route a signer leaves unsigned by design (`WIRE_UNSIGNED_ROUTES`,
+     today the streamed upload, by method, path and reason) and the cutover counters, which it does not
+     read yet. A key drop names the key, its issuer and when the control plane's list stopped naming
+     it, and is blocked while the list still names it or would be left empty, by any script that still
+     trusts it or lacks a key the list names now, by every unknown or unconfirmed script, and while the
+     last confirming walk began before that moment. The credential withdrawal is blocked by its
+     standing blockers until steps 5, 6 and Q10 are recorded, and by every unknown script or one
+     without the entry. Every reason is a fixed sentence, naming at most a setting or a vertical.
+   - **A streamed call is unsigned only to a listed route.** The control plane's signer counts a
+     streamed call to a route in `WIRE_UNSIGNED_ROUTES` as `skipped`, and one to any other route as
+     `failed` (`stream-unlisted`), still sent as given, so a new streamed route shows in the counts until
+     it is listed. A streamed read (#2514) is not one: its request has no body and is signed like any
+     call, and only its response streams, which version 1 does not sign.
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step
