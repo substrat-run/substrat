@@ -1579,6 +1579,16 @@ export const REPLIED_METHODS = [
   'writeTenantSystemGrant',
   'grantConnectionInDirectory',
   'insertOrg',
+  // #2526: the hostname and entitlement writes, each reading its row and judging its no-op in the
+  // unit that writes it and its admin row. A DO from before lists none of them, so the current
+  // coordinator fails closed against it; a coordinator from before calls them directly, without
+  // the trailing row, and gets the bare write it always did.
+  'bindHostnameInDirectory',
+  'setHostnameStatus',
+  'setHostnameIssuance',
+  'deleteHostname',
+  'grantEntitlement',
+  'revokeEntitlement',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -3394,11 +3404,56 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  setHostnameStatus(hostname: string, status: string, note: string | null): void {
-    this.sql.exec(
+  /**
+   * #2526: `bindHostname` as one unit — the scope (in the tenant), the name's current holder and
+   * whether it released the name (archived or reaped), the demotion of the surface's canonical,
+   * the bind and its admin row, whose vertical is the scope's as read here. A name another live
+   * scope holds is refused `conflict`, writing nothing; so is the demotion when the bind fails.
+   */
+  bindHostnameInDirectory(h: {
+    hostname: string; tenantId: string; scopeId: string;
+    surface: string; region: string | null; canonical: boolean; createdAt: string;
+  }, audit: AdminEntryInput): void {
+    this.ctx.storage.transactionSync(() => {
+      const scope = this.getScopeRecord(h.tenantId, h.scopeId);
+      if (!scope) throw substratError('not_found', `unknown scope ${h.scopeId} in tenant ${h.tenantId}`);
+      const existing = this.readHostname(h.hostname);
+      if (existing && existing.scope_id !== h.scopeId) {
+        // A hostname routes to exactly one place; silently rebinding would move another
+        // tenant's traffic. Exception: the holder is ARCHIVED or REAPED (a deleted app, storage
+        // since wiped) — it has released the name, so the rebind reclaims it.
+        const holder = this.getScopeRecord(existing.tenant_id, existing.scope_id);
+        if (holder?.status !== 'archived' && holder?.status !== 'reaped') {
+          throw substratError('conflict', `hostname '${h.hostname}' is already bound to another scope`);
+        }
+      }
+      if (h.canonical) this.demoteCanonical(h.scopeId, h.surface);
+      this.upsertHostname({ ...h, verticalSlug: scope.vertical });
+      this.recordAdmin({ ...audit, vertical: scope.vertical });
+    });
+  }
+
+  /**
+   * With `audit` (#2526, through `reply`): the row is read here — refused `not_found` when the
+   * name is not bound — and a status it already holds writes nothing and records nothing;
+   * otherwise the update and its admin row, its target and `before` from that read, commit as
+   * one unit. Answers whether it wrote. Without, as a coordinator from before #2526 calls it, the
+   * bare update.
+   */
+  setHostnameStatus(hostname: string, status: string, note: string | null, audit?: AdminEntryInput): boolean {
+    const write = () => this.sql.exec(
       'UPDATE hostnames SET status = ?, status_note = ? WHERE hostname = ?',
       status, note, hostname,
-    );
+    ).rowsWritten > 0;
+    if (!audit) return write();
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.readHostname(hostname);
+      if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
+      if (row.status === status) return false; // idempotent, and a no-op is not audited
+      write();
+      this.recordAdmin({ ...audit, tenantId: row.tenant_id, scopeId: row.scope_id, before: { status: row.status } });
+      return true;
+    });
   }
 
   /**
@@ -3408,6 +3463,12 @@ export class ControlPlaneDO extends DurableObject {
    * `undefined`); the DNS records and status are refreshed each pass. This is the only
    * writer that moves a hostname off `pending` into `verifying`/`active`/`failed` for a
    * custom domain.
+   *
+   * With `audit` (#2526, through `reply`): the row is read here — refused `not_found` when the
+   * name is not bound — and a poll that finds nothing changed (the same status, the same records,
+   * the id already set) writes nothing and records nothing; otherwise the update and its admin
+   * row, its target and `before` from that read, commit as one unit. Answers whether it wrote.
+   * Without, as a coordinator from before #2526 calls it, the bare update.
    */
   setHostnameIssuance(
     hostname: string,
@@ -3417,36 +3478,59 @@ export class ControlPlaneDO extends DurableObject {
       customHostnameId?: string | null;
       validationRecords: string | null;
     },
-  ): void {
-    if (fields.customHostnameId !== undefined) {
-      this.sql.exec(
+    audit?: AdminEntryInput,
+  ): boolean {
+    const write = () => (fields.customHostnameId !== undefined
+      ? this.sql.exec(
         `UPDATE hostnames
             SET status = ?, status_note = ?, custom_hostname_id = ?, validation_records = ?
           WHERE hostname = ?`,
         fields.status, fields.note, fields.customHostnameId, fields.validationRecords, hostname,
-      );
-    } else {
-      this.sql.exec(
+      )
+      : this.sql.exec(
         `UPDATE hostnames SET status = ?, status_note = ?, validation_records = ? WHERE hostname = ?`,
         fields.status, fields.note, fields.validationRecords, hostname,
-      );
-    }
+      )).rowsWritten > 0;
+    if (!audit) return write();
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.readHostname(hostname);
+      if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
+      const idUnchanged = fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id;
+      // A poll that changes nothing is not an event, so the reconcile sweep does not flood
+      // the admin log with no-op rows every interval. No records are stored as NULL.
+      if (row.status === fields.status && (row.validation_records ?? null) === fields.validationRecords && idUnchanged) {
+        return false;
+      }
+      write();
+      this.recordAdmin({ ...audit, tenantId: row.tenant_id, scopeId: row.scope_id, before: { status: row.status } });
+      return true;
+    });
   }
 
   /**
    * Delete a binding and answer the row it removed, or null. With `owner`, only while the row
    * still names that tenant and scope (#2285): the delete decides it, not an earlier read.
+   * With `audit` (#2526, through `reply`), the admin row, its target and `before` from the row
+   * removed, commits with the delete; a delete that removed nothing records nothing.
    */
   deleteHostname(
     hostname: string,
     owner?: { tenantId: string; scopeId: string },
+    audit?: AdminEntryInput,
   ): { tenant_id: string; scope_id: string; status: string } | null {
-    const rows = this.sql.exec(
-      `DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
-       RETURNING tenant_id, scope_id, status`,
-      hostname, ...(owner ? [owner.tenantId, owner.scopeId] : []),
-    ).toArray() as { tenant_id: string; scope_id: string; status: string }[];
-    return rows[0] ?? null;
+    let removed: { tenant_id: string; scope_id: string; status: string } | null = null;
+    this.writeAndAudit(() => {
+      const rows = this.sql.exec(
+        `DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
+         RETURNING tenant_id, scope_id, status`,
+        hostname, ...(owner ? [owner.tenantId, owner.scopeId] : []),
+      ).toArray() as { tenant_id: string; scope_id: string; status: string }[];
+      removed = rows[0] ?? null;
+      return removed !== null;
+    }, audit && (() => ({
+      ...audit, tenantId: removed!.tenant_id, scopeId: removed!.scope_id, before: { hostname, status: removed!.status },
+    })));
+    return removed;
   }
 
   listHostnames(
@@ -4413,8 +4497,31 @@ export class ControlPlaneDO extends DurableObject {
   /**
    * Upsert; returns before/after for the host's audit row, `changed: false` when
    * the merged result equals what the row already carried (not audited upstream).
+   * With `audit` (#2526, through `reply`), an effective change commits with its admin row,
+   * `before` and `after` the grant as read and written here; an unchanged grant records none.
    */
   grantEntitlement(
+    tenantId: string,
+    key: string,
+    input: { expiresAt?: string | null; quota?: number | null; plan?: string | null },
+    actor: string,
+    audit?: AdminEntryInput,
+  ): { changed: boolean; before: EntitlementRow | null; after: EntitlementRow } {
+    let result!: { changed: boolean; before: EntitlementRow | null; after: EntitlementRow };
+    this.writeAndAudit(() => {
+      result = this.grantEntitlementIn(tenantId, key, input, actor);
+      return result.changed;
+    }, audit && (() => ({
+      ...audit,
+      before: result.before
+        ? { entitlementKey: key, expiresAt: result.before.expires_at, quota: result.before.quota, plan: result.before.plan }
+        : null,
+      after: { entitlementKey: key, expiresAt: result.after.expires_at, quota: result.after.quota, plan: result.after.plan },
+    })));
+    return result;
+  }
+
+  private grantEntitlementIn(
     tenantId: string,
     key: string,
     input: { expiresAt?: string | null; quota?: number | null; plan?: string | null },
@@ -4469,15 +4576,26 @@ export class ControlPlaneDO extends DurableObject {
     };
   }
 
-  /** DELETE; returns the removed row (the host's audit `before`), null if none. */
-  revokeEntitlement(tenantId: string, key: string): EntitlementRow | null {
-    const existing = this.readEntitlement(tenantId, key);
-    if (!existing) return null;
-    this.sql.exec(
-      'DELETE FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
-      tenantId,
-      key,
-    );
+  /**
+   * DELETE; returns the removed row (the host's audit `before`), null if none. With `audit`
+   * (#2526, through `reply`), the admin row, `before` the row removed, commits with the delete;
+   * a revoke of nothing held records nothing.
+   */
+  revokeEntitlement(tenantId: string, key: string, audit?: AdminEntryInput): EntitlementRow | null {
+    let existing: EntitlementRow | null = null;
+    this.writeAndAudit(() => {
+      existing = this.readEntitlement(tenantId, key);
+      if (!existing) return false;
+      this.sql.exec(
+        'DELETE FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
+        tenantId,
+        key,
+      );
+      return true;
+    }, audit && (() => ({
+      ...audit,
+      before: { entitlementKey: key, expiresAt: existing!.expires_at, quota: existing!.quota, plan: existing!.plan },
+    })));
     return existing;
   }
 
