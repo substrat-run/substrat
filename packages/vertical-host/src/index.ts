@@ -305,8 +305,13 @@ export interface VerticalScopeHost {
       /** #1722: the copy move's lease (`CopyRestoreFence`); a load after `notAfter` is refused
        *  in the load's own transaction. A host built before it ignores it. */
       fence?: CopyRestoreFence;
+      /** #2531: the vertical's role definitions, the restore's role repair, judged on the seats the
+       *  load writes and projected in the load's own transaction. A host that did so answers
+       *  `rolesProjected: true`; one built before it ignores the field and answers without it, and
+       *  the route then repairs with `projectRolesLocal`, as before. */
+      roles?: RoleDefinition[];
     },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }>;
   /** #2005: mark one scope a copy in its own storage, given the directory's classification of it,
    *  which must be non-primary — the repair of a copy that predates the marker. */
   markCopyLocal(scopeId: ScopeId, lineage: ScopeLineage): Promise<{ marked: boolean }>;
@@ -342,7 +347,8 @@ export interface VerticalScopeHost {
    * #2447: why the vertical's role set may not be defined on `scopeId`, or null — the question
    * `projectRolesLocal` asks, asked by a restore BEFORE it imports the dump, so a refused set leaves
    * the scope as it was rather than restored without its role repair. Optional: a host without it is
-   * held only by `projectRolesLocal`'s own refusal, after the import.
+   * held by the load's own judgement (#2531, `restoreScopeLocal`'s `roles`), or by
+   * `projectRolesLocal`'s refusal after the import on a host from before that.
    */
   roleSetRefusalLocal?(
     scopeId: ScopeId,
@@ -369,7 +375,7 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     stageId: string,
     opts?: Parameters<VerticalScopeHost['restoreScopeLocal']>[2],
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }>;
   /** #2450: drop the stage, if it is still `stageId`'s. */
   discardStagedScopeLocal?(scopeId: ScopeId, stageId: string): Promise<{ discarded: boolean }>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
@@ -1418,10 +1424,27 @@ export function mountPlatformSurface<Env extends object>(
       markCopy: body.markCopy,
       tenantId: body.tenantId,
       fence: body.fence,
+      // #2531: the repair rides the load, judged on the seats it writes, in its transaction.
+      roles: deps.roles,
     });
-    await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
+    await repairRolesUnlessProjected(host, body.tenantId, body.scopeId, result);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
+
+  /**
+   * #2531: the restore's role repair, when the load did not say it ran it in its own transaction (a
+   * host built before that, or a retry answered as already applied): `projectRolesLocal`, which a
+   * host with the in-unit judgement also judges in its projection's unit.
+   */
+  async function repairRolesUnlessProjected(
+    host: VerticalScopeHost,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    result: { rolesProjected?: true },
+  ): Promise<void> {
+    if (result.rolesProjected === true) return;
+    await host.projectRolesLocal(tenantId, scopeId, deps.roles);
+  }
 
   // #2450: the same move in pages, for a scope too large to cross in one call. A page of the export,
   // a page staged into the destination, and the restore from the stage, which runs exactly what
@@ -1448,8 +1471,8 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.restoreStagedScopeLocal) return refuseStatus(c, 501, 'this deployment restores a scope only whole (#2450) — redeploy it');
     const body = restoreStagedBody.parse(await c.req.json());
     // #2447: the role set the repair below defines, judged before the dump is imported. The staged
-    // pages are already in the scope, not in hand, so the set is judged alone here; `projectRolesLocal`
-    // judges again after the import, against them.
+    // pages are already in the scope, not in hand, so the set is judged alone here. #2531: the load
+    // judges it again in its own transaction, on the seats the staged rows bring, and projects it.
     const roleRefusal = (await host.roleSetRefusalLocal?.(body.scopeId, deps.roles)) ?? null;
     if (roleRefusal) throw new HTTPException(409, { message: `scope ${body.scopeId}: the vertical's roles cannot be defined here: ${roleRefusal}. Nothing was restored.` });
     const result = await host.restoreStagedScopeLocal(body.scopeId, body.stageId, {
@@ -1465,8 +1488,9 @@ export function mountPlatformSurface<Env extends object>(
       markCopy: body.markCopy,
       tenantId: body.tenantId,
       fence: body.fence,
+      roles: deps.roles,
     });
-    await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
+    await repairRolesUnlessProjected(host, body.tenantId, body.scopeId, result);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
   });
 

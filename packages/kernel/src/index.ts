@@ -616,6 +616,8 @@ export {
   reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
   reservedRoleSetRefusal,
+  reservedRoleSetRefusedRole,
+  inUnitRoleRefusal,
   reservedShapeRefusal,
   SCOPE_SEATED_ROLES_SQL,
   SEAT_HOLDING_SCOPE_STATUSES,

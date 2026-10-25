@@ -82,6 +82,21 @@ test('the kernel scope-role writers and a ScopeDO projection are seats; their gu
   assert.deepEqual(run(`import { applyScopeRoleChange } from 'k';\nexport function applyScopeRoleChange(sql) { return sql; }`), []);
 });
 
+test('a new way into the ScopeDO projection’s writes is reported: projectionBody and projectInUnit callers (#2531)', () => {
+  const DO = 'packages/adapter-cloudflare/src/scope-do.ts';
+  // A synthetic caller handing the body no judge: reported, whatever the body itself is allowed.
+  const unjudged = `class D {
+  repairQuietly(tenantId, roles) { return this.projectionBody(undefined, tenantId, roles, []); }
+}`;
+  assert.ok(run(unjudged, {}, DO).some((line) => /a role definition \(projectionBody\) is written in repairQuietly/.test(line)));
+  assert.match(
+    run(`class D { reproject(t, roles) { return this.projectInUnit(undefined, t, roles, []); } }`, {}, DO)[0],
+    /a role definition \(projectInUnit\) is written in reproject/,
+  );
+  // Its twin: listed with its reason, it passes.
+  assert.deepEqual(run(unjudged, { [`${DO}#repairQuietly`]: 'a reason' }, DO), []);
+});
+
 test('an allowlisted function passes; an entry whose function seats nothing unguarded is stale and refused', () => {
   const revoke = `class H {
   async revokeScopeRole(s, who, roleKey) { return this.stub.revokeTuple(\`principal:\${who}\`, \`role:\${roleKey}\`, \`scope:\${s}\`); }

@@ -1,5 +1,5 @@
 import type { EntityGrantShape } from '@substrat-run/contracts';
-import type { TenantVerdict } from './scope-do.js';
+import type { LoadRoleRepair, RoleJudge, TenantVerdict } from './scope-do.js';
 import { env as ambientEnv } from 'cloudflare:workers';
 import { isRewindRefusal, REWIND_REFUSED } from './rewind-refusal.js';
 import { isSystemDoorMoved, SYSTEM_DOOR_MOVED, SYSTEM_DOOR_REGATES, type SystemDoorMoved } from './system-door.js';
@@ -264,6 +264,7 @@ import {
   outboundOfManifestJson,
   SCOPE_GATE_REASONS,
   substratError,
+  errorCodeOf,
   redrainEventsInput,
   coverage,
   peerCoverage,
@@ -1929,6 +1930,8 @@ interface ScopeStubRpc {
   ): Promise<SwitchedOff[]>;
   /** #113: `applyProjection`, its refusal answered as data. */
   applyProjectionReply(...args: Parameters<ScopeStubRpc['applyProjection']>): Promise<DoReply<SwitchedOff[]>>;
+  /** #2531: `applyProjectionReply` with the role set judged in the projection's unit. */
+  applyJudgedProjectionReply(judge: RoleJudge, ...args: Parameters<ScopeStubRpc['applyProjection']>): Promise<DoReply<SwitchedOff[]>>;
   /** Resolve an external identity from this scope's projected links (#406) — the CP-less auth read. */
   resolveProjectedIdentity(
     tenantId: string,
@@ -1991,8 +1994,24 @@ interface ScopeStubRpc {
       fence?: CopyRestoreFence;
     },
   ): Promise<
-    { refused: 'changed' | 'kept' | 'lapsed' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }
+    | { refused: 'changed' | 'kept' | 'lapsed' }
+    | { refused: 'tenant' | 'roles'; message: string }
+    | { refused: false; switchedOff: SwitchedOff[]; rolesProjected?: true }
   >;
+  /** #2531: `importDumpChecked` with the role repair judged and projected in the load's transaction. */
+  importDumpJudged(
+    tables: ScopeDumpTable[],
+    destScopeId: ScopeId,
+    opts: Parameters<ScopeStubRpc['importDumpChecked']>[2],
+    roleRepair: LoadRoleRepair,
+  ): ReturnType<ScopeStubRpc['importDumpChecked']>;
+  /** #2531: `commitStagedDumpChecked` with the role repair in the load's transaction. */
+  commitStagedDumpJudged(
+    stageId: string,
+    destScopeId: ScopeId,
+    opts: Parameters<ScopeStubRpc['importDumpChecked']>[2],
+    roleRepair: LoadRoleRepair,
+  ): Promise<Awaited<ReturnType<ScopeStubRpc['importDumpChecked']>> & { tables?: number }>;
   /** #1722: the kept-copy marker, or null. */
   keptCopy(): Promise<KeptCopy | null>;
   /** #1722: discard a kept copy at the revision the operator acted on. */
@@ -2674,6 +2693,11 @@ const connectionGrantsSkippedLine = (tenantId: string, scopeId: string, skipped:
  * classification is the platform directory's; the vertical applies the same `isPrimaryScope` to
  * it, so a primary can be marked only by a request that misstates its lineage, never by default.
  */
+/** A vertical's role definitions as a CP-less projection writes them (`applyProjection`'s rows). */
+function projectedRoleRows(roles: readonly RoleDefinition[]): LoadRoleRepair['roles'] {
+  return roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' }));
+}
+
 function assertCopyLineage(lineage: ScopeLineage): void {
   if (isPrimaryScope(lineage)) {
     throw substratError('conflict', 'mark-copy refused: the directory classifies this scope as primary, not as a copy');
@@ -3952,9 +3976,16 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId?: TenantId;
       /** #1722: the copy move's lease; the store refuses a load after `notAfter`. */
       fence?: CopyRestoreFence;
+      /** #2531: the vertical's role definitions, the restore's role repair. Given (with `tenantId`),
+       *  the repair is judged on the seats the load writes and projected in the load's own
+       *  transaction, and the answer says `rolesProjected: true`; the caller then has no
+       *  `projectRolesLocal` left to call. */
+      roles?: RoleDefinition[];
     },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
-    const out = await this.loadLocal(scopeId, opts, (load) => this.scopeStub(scopeId).importDumpChecked(tables, scopeId, load));
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }> {
+    const out = await this.loadLocal(scopeId, opts, (load, repair) =>
+      repair ? this.scopeStub(scopeId).importDumpJudged(tables, scopeId, load, repair) : this.scopeStub(scopeId).importDumpChecked(tables, scopeId, load),
+    );
     return { ...out, tables: tables.length };
   }
 
@@ -3986,18 +4017,13 @@ export class CloudflareScopeHost implements ScopeHost {
   async restoreStagedScopeLocal(
     scopeId: ScopeId,
     stageId: string,
-    opts?: SwitchCarryWire & {
-      sourceScopeId?: ScopeId;
-      exact?: boolean;
-      loadStamp?: string;
-      expect?: LoadMarker;
-      markCopy?: ScopeLineage;
-      tenantId?: TenantId;
-      /** #1722: the copy move's lease; the store refuses a load after `notAfter`. */
-      fence?: CopyRestoreFence;
-    },
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
-    return this.loadLocal(scopeId, opts, (load) => this.scopeStub(scopeId).commitStagedDumpChecked(stageId, scopeId, load));
+    opts?: Parameters<CloudflareScopeHost['restoreScopeLocal']>[2],
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }> {
+    return this.loadLocal(scopeId, opts, (load, repair) =>
+      repair
+        ? this.scopeStub(scopeId).commitStagedDumpJudged(stageId, scopeId, load, repair)
+        : this.scopeStub(scopeId).commitStagedDumpChecked(stageId, scopeId, load),
+    );
   }
 
   /** Drop the dump staged under `stageId` (#2450), if it is still there. */
@@ -4011,9 +4037,15 @@ export class CloudflareScopeHost implements ScopeHost {
     opts: Parameters<CloudflareScopeHost['restoreScopeLocal']>[2],
     run: (
       load: Parameters<ScopeStubRpc['importDumpChecked']>[2],
+      repair: LoadRoleRepair | undefined,
     ) => Promise<Awaited<ReturnType<ScopeStubRpc['importDumpChecked']>> & { tables?: number }>,
-  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[]; rolesProjected?: true }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
+    if (opts?.roles && !opts.tenantId) {
+      throw substratError('validation_failed', 'restore refused: a role repair needs the tenant it is projected for; nothing was loaded');
+    }
+    // #2531: the repair the load judges and projects in its own transaction.
+    const repair = opts?.roles && opts.tenantId ? { tenantId: opts.tenantId, roles: projectedRoleRows(opts.roles), judge: this.roleJudge() } : undefined;
     // #2314: a load replaces the scope's rows, so the orphan sweep is fenced first, as for a rewind.
     await this.fenceOrphanSweep(scopeId, opts?.tenantId);
     const carry = opts ? recordedOffFromWire(opts) : undefined;
@@ -4027,16 +4059,26 @@ export class CloudflareScopeHost implements ScopeHost {
     };
     // The refusals come back as values (a throw over the RPC carries only its message) and are
     // thrown here, in the vertical's own isolate, so its route answers 409 or 412, not a fault.
-    const out = await run({
-      ...load,
-      ...(opts?.expect ? { expect: opts.expect } : {}),
-      ...(opts?.fence ? { fence: opts.fence } : {}),
-    });
+    const out = await run(
+      {
+        ...load,
+        ...(opts?.expect ? { expect: opts.expect } : {}),
+        ...(opts?.fence ? { fence: opts.fence } : {}),
+      },
+      repair,
+    );
     if (out.refused === false) {
-      return { tables: out.tables ?? 0, ...(carry ? { switchedOff: out.switchedOff } : {}) };
+      return {
+        tables: out.tables ?? 0,
+        ...(carry ? { switchedOff: out.switchedOff } : {}),
+        // Only a load that ran the judged method can say the repair landed in it.
+        ...(repair && out.rolesProjected === true ? { rolesProjected: true as const } : {}),
+      };
     }
     if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
     if (out.refused === 'tenant') throw substratError('conflict', out.message);
+    // #2531: the repair's role set, refused on the seats the load wrote; the whole load rolled back.
+    if (out.refused === 'roles') throw substratError('conflict', `the vertical's roles cannot be defined here: ${out.message}`);
     if (out.refused === 'lapsed') throw substratError('precondition_failed', COPY_RESTORE_FENCE_LAPSED);
     // A retry of a load that already committed (its answer was lost on the way back) is
     // refused by the marker that load itself moved. The store holding THIS request's stamp
@@ -4208,13 +4250,38 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     roles: RoleDefinition[],
   ): Promise<void> {
-    // #2447: the role set is defined here, so it is judged here, before anything is projected.
+    // #2447: the role set is defined here, so it is judged here, before anything is projected, and
+    // (#2531) again inside the projection's unit, on the seats the scope holds as it writes.
     await this.refuseReservedRoleSet(roles, tenantId, scopeId);
-    unwrapReply(await this.scopeStub(scopeId).applyProjectionReply(
-      tenantId,
-      roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' })),
-      [],
-    ));
+    await this.projectJudged(tenantId, scopeId, projectedRoleRows(roles), []);
+  }
+
+  /**
+   * #2531: what this host's own modules reserve and declare, for a unit that judges a role set in the
+   * scope (`RoleJudge`); the scope class's are joined there.
+   */
+  private roleJudge(): RoleJudge {
+    return { reserved: [...this.reservedKeys], declared: [...this.declaredKeys] };
+  }
+
+  /**
+   * #2531: `applyProjectionReply` with the role set judged in its unit (`applyJudgedProjectionReply`).
+   * A refusal there answers with the staff-facing prefix `refuseReservedRoleSet` gives a pre-check's.
+   * A ScopeDO from before the judged method refuses the call itself, with nothing written.
+   */
+  private async projectJudged(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    ...rest: Parameters<ScopeStubRpc['applyProjection']> extends [unknown, ...infer R] ? R : never
+  ): Promise<SwitchedOff[]> {
+    try {
+      return unwrapReply(await this.scopeStub(scopeId).applyJudgedProjectionReply(this.roleJudge(), tenantId, ...rest));
+    } catch (e) {
+      if (errorCodeOf(e) === 'forbidden') {
+        throw substratError('forbidden', `tenant ${tenantId}, scope ${scopeId}: the vertical's roles cannot be defined here: ${(e as Error).message}`);
+      }
+      throw e;
+    }
   }
 
   /**
@@ -11968,11 +12035,14 @@ export class CloudflareScopeHost implements ScopeHost {
     if (ownerRefusal) throw substratError('forbidden', `the owner's seat: ${ownerRefusal}`);
     const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
-    const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
-    const switchedOff = unwrapReply(await stub.applyProjectionReply(
+    // #2531: judged again in the projection's own unit, on the roles and seats the scope holds as it
+    // writes, so a seat made since the pre-check above is seen. The module migrations above have
+    // already run when that refuses; they are this host's own setup, and the projection writes nothing.
+    const switchedOff = await this.projectJudged(
       input.tenantId,
-      input.roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' })),
+      input.scopeId,
+      projectedRoleRows(input.roles),
       [], // no tenant-level tuples — a CP-less vertical grants at scope level only
       // Only PROJECT (and thereby switch on strict enforcement) when the platform actually
       // supplies entitlements. Omitting them leaves the scope un-projected and trusting-
@@ -12035,7 +12105,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // same unit, on the scope this call provisions — the one the seat's tuples name.
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
       services?.map((id) => `principal:${id}`),
-    ));
+    );
     const shapes = input.entityGrants
       ? await this.topUpEntityGrantShapesLocal(input.tenantId, input.scopeId, input.entityGrants)
       : null;
@@ -12120,7 +12190,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * which replaces whatever the scope stores now, so what the set is judged against is the DUMP's
    * roles and seats for `dump.tenantId` (`dumpRoleState`), when the caller has the dump in hand. A
    * staged restore has not (its pages are already in the scope), so it is judged as a set alone
-   * here, and `projectRolesLocal` judges again after the import, against what the dump brought.
+   * here. The load given the vertical's `roles` judges again in its own transaction, against what
+   * the dump brought (#2531), and `projectRolesLocal` does in its unit where the load did not.
    */
   async roleSetRefusalLocal(
     scopeId: ScopeId,
@@ -12180,9 +12251,9 @@ export class CloudflareScopeHost implements ScopeHost {
    * and the roles the scope stores for the tenant now with their seats there. Answers the reserved
    * keys it judged with, for the seats the same call makes.
    *
-   * A stated residual: the scope state is read in one RPC (`roleStateHere`) and written in another
-   * (`applyProjectionReply`), so a seat made between the two is not seen. The window is one call
-   * wide, and a reconcile runs again every pass.
+   * The scope state is read in one RPC (`roleStateHere`) and written in another, so this is the
+   * first check, for its detailed wording; the write judges the set again inside its own unit
+   * (`projectJudged`, #2531), where a seat made between the two is seen.
    */
   private async refuseReservedRoleSet(roles: readonly RoleDefinition[], tenantId: TenantId, scopeId: ScopeId): Promise<ReadonlySet<string>> {
     const stub = this.scopeStub(scopeId);

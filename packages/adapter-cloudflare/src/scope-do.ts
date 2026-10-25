@@ -121,6 +121,9 @@ import {
   noteReservedKeys,
   SCOPE_SEATED_ROLES_SQL,
   type RoleState,
+  type RoleShape,
+  inUnitRoleRefusal,
+  reservedRoleSetRefusedRole,
   reservedGrantRefusal,
   reservedRoleRefusal,
   reservedShapeRefusal,
@@ -595,6 +598,32 @@ const tenantRefusals = new WeakSet<Error>();
 /** #1722: a load refused because its copy move's lease ran out (`CopyRestoreFence`), told apart
  *  from a store that moved, since the host must not read it as an applied retry. */
 const fenceRefusals = new WeakSet<Error>();
+/** #2531: a role set refused inside the unit writing it (`refuseRoleSetInUnit`), told apart by identity. */
+const roleRefusals = new WeakSet<Error>();
+
+/**
+ * #2531: what a unit that writes a role set judges it with, beyond what this scope holds: the
+ * reservations of the caller's host (its registered modules and its `permissions`). This class's own
+ * are joined in the unit. The set itself is the one the unit writes.
+ */
+export type RoleJudge = { reserved: string[]; declared: string[] };
+
+/** A role row as `applyProjection` writes it. */
+type ProjectedRoleRow = { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null };
+
+/**
+ * #2531: a load's role repair, judged and written in the load's own transaction after the dump's
+ * rows are in: the vertical's role set for `tenantId`, projected as `projectRolesLocal` projects it.
+ * #2555's second step can pass the directory's set through the same field.
+ */
+export type LoadRoleRepair = { tenantId: TenantId; roles: ProjectedRoleRow[]; judge: RoleJudge };
+
+/** `ProjectedRoleRow` as the reserved-key rule reads it. */
+const roleShapeOfRow = (r: ProjectedRoleRow): RoleShape => ({
+  key: r.role_key,
+  permissions: JSON.parse(r.permissions) as string[],
+  ...(r.holder === 'system' ? { holder: 'system' as const } : r.holder == null ? {} : { holder: 'person' as const }),
+});
 
 /**
  * The scope spine, as this adapter builds it — one of two hand-written copies (#969).
@@ -1002,13 +1031,19 @@ type ImportDumpOptions = {
    *  inside the load's transaction: past `notAfter`, the load is refused and nothing is
    *  written, since a sweep, reap or erasure may already have settled the move. */
   fence?: CopyRestoreFence;
+  /** #2531: the role repair, judged on the seats the load has just written and projected in the
+   *  load's transaction. Reached only through `importDumpJudged` / `commitStagedDumpJudged`. */
+  roleRepair?: LoadRoleRepair;
+  /** #2531: told when the repair was written in the load (it is not on a reaped store). Set by the
+   *  judged methods in this object, never sent over the wire. */
+  onRolesProjected?: () => void;
 };
 
-/** A load's answer, its refusals as values (#1722). */
+/** A load's answer, its refusals as values (#1722). `roles` (#2531): the repair's role set was refused in the unit. */
 type CheckedLoad =
   | { refused: 'changed' | 'kept' | 'lapsed' }
-  | { refused: 'tenant'; message: string }
-  | { refused: false; switchedOff: SwitchedOff[] };
+  | { refused: 'tenant' | 'roles'; message: string }
+  | { refused: false; switchedOff: SwitchedOff[]; rolesProjected?: true };
 
 /** #2450: a commit or a page naming a stage this store no longer holds. */
 const STAGE_GONE = 'the staged load is not here any more (another carry replaced it, or it was already loaded); nothing was loaded';
@@ -5240,6 +5275,11 @@ export function defineScopeDO(
      * set defined on this scope, or a role definition fanned out to it, is judged against.
      */
     async roleStateHere(tenantId: TenantId): Promise<RoleState> {
+      return this.roleStateSync(tenantId);
+    }
+
+    /** `roleStateHere`, read synchronously, so a unit that writes roles or seats can judge on what it holds (#2531). */
+    private roleStateSync(tenantId: string): RoleState {
       // Spine tables only (built in the constructor), so no module migration runs ahead of a provision's.
       const now = new Date().toISOString();
       const rows = this.hasTable('_substrat_roles')
@@ -5259,6 +5299,29 @@ export function defineScopeDO(
       // archived scope, and a CP-less projection carries none.
       const seated = new Set(this.sql.exec(SCOPE_SEATED_ROLES_SQL, now).toArray().map((r) => (r as { role_key: string }).role_key));
       return { roles, seated: [...seated], dropped };
+    }
+
+    /**
+     * #2531: the in-unit judgement. Throws when `roles`, the set the caller's unit is writing for
+     * `tenantId`, is refused by the reserved-key rule (`reservedRoleSetRefusal`, one call) against the
+     * roles, tombstones and seats this scope holds at that moment, with the caller's reservations
+     * joined with this class's. Synchronous, so the unit it runs in cannot interleave with a write
+     * between this read and its own writes; a refusal rolls the whole unit back.
+     *
+     * The answer is a fixed sentence naming the role key only, whoever reads it. The rule's own
+     * wording is the pre-check's, which a caller still asks first for the common case.
+     */
+    private refuseRoleSetInUnit(tenantId: string, roles: readonly RoleShape[], judge: RoleJudge): void {
+      const state = this.roleStateSync(tenantId);
+      const refused = reservedRoleSetRefusedRole(
+        roles,
+        { reserved: new Set([...judge.reserved, ...this.reservedKeys]), declared: new Set([...judge.declared, ...this.declaredKeys]) },
+        { roles: state.roles, seated: new Set(state.seated), ...(state.dropped ? { dropped: state.dropped } : {}) },
+      );
+      if (refused === null) return;
+      const error = substratError('forbidden', inUnitRoleRefusal(refused.key));
+      roleRefusals.add(error);
+      throw error;
     }
 
     /** #2447: what this class's modules reserve and declare — a coordinator judging a role definition joins its own. */
@@ -7471,6 +7534,8 @@ export function defineScopeDO(
         markCopy,
         provisionedFor,
         fence,
+        roleRepair,
+        onRolesProjected,
       }: ImportDumpOptions = {},
       stageId?: string,
     ): Promise<SwitchedOff[]> {
@@ -7510,6 +7575,10 @@ export function defineScopeDO(
       if (exact && !sourceScopeId) {
         throw substratError('validation_failed', 'restore refused: `exact` needs the scope the dump came from');
       }
+      // #2531: a reaped store takes no role repair, judged or not, as `projectInUnit` drops a
+      // projection there: the load comes back with no roles, no receipt and no enforcement flip,
+      // as it did before the repair rode the load. Read before the unit, as `projectInUnit` reads it.
+      const repair = roleRepair && !(await this.isReaped()) ? roleRepair : undefined;
       const switched = await this.revision.transaction(async () => {
         // #1722: first, before any read: a store a reap has since emptied must refuse the late load
         // too, and the check is against this store's clock, inside the load's own transaction.
@@ -7602,7 +7671,8 @@ export function defineScopeDO(
           // `_substrat_tenant_tuples` in its DIRECTORY database, so its per-scope dump omits
           // them, and without them the very next permission check would raise a bare `no such
           // table: _substrat_roles`. Roles land empty here and are re-projected by the
-          // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
+          // restore's repair leg (`roleRepair` below, or host.projectRolesLocal after the load,
+          // #2531) — the spine's job is only to exist so
           // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
           // leaves to it.
           for (const stmt of executableSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
@@ -7680,9 +7750,25 @@ export function defineScopeDO(
           // #1742: the recorded-off modules go back off INSIDE the replay's transaction, with
           // the spine and the re-point. A switch that throws rolls the whole restore back, so
           // the dump's grants never commit live without the switch that should cover them.
-          return destScopeId && switchOff
+          const switchedOff = destScopeId && switchOff
             ? switchRecordedOff(this.switchSql(), { scopeId: destScopeId, ...switchOff })
             : [];
+          // #2531: the role repair, last, in this same transaction: judged on the roles, tombstones and
+          // seats the dump has just brought (`refuseRoleSetInUnit`), then projected exactly as
+          // `projectRolesLocal` projects it. A refusal rolls the whole load back, so the scope keeps
+          // its rows and a staged load keeps its stage; an admitted load lands with its repair.
+          if (repair) {
+            try {
+              this.projectionBody(repair.judge, repair.tenantId, repair.roles, []);
+            } catch (e) {
+              // The projection's own tenant refusal (its receipt check) is a tenant refusal of the
+              // load, not the kept-copy `conflict` `checkedLoad` would otherwise read it as.
+              if (e instanceof Error && !roleRefusals.has(e) && errorCodeOf(e) === 'conflict') tenantRefusals.add(e);
+              throw e;
+            }
+          }
+          if (repair) onRolesProjected?.();
+          return switchedOff;
         } finally {
           this.revisionSuspended = false;
         }
@@ -7744,6 +7830,43 @@ export function defineScopeDO(
       opts: ImportDumpOptions,
     ): Promise<CheckedLoad> {
       return this.checkedLoad(() => this.importDump(tables, destScopeId, opts));
+    }
+
+    /**
+     * #2531: `importDumpChecked` with the role repair judged and projected in the load's own
+     * transaction (`roleRepair`), answered `rolesProjected: true` when it landed there. A reaped
+     * store takes no repair (`loadTables`), so its load answers without it. A method of its
+     * own, so a host meeting a ScopeDO from before it is refused by the runtime, nothing loaded,
+     * rather than loading with the repair silently dropped.
+     */
+    async importDumpJudged(
+      tables: ScopeDumpTable[],
+      destScopeId: ScopeId,
+      opts: Omit<ImportDumpOptions, 'roleRepair' | 'onRolesProjected'>,
+      roleRepair: LoadRoleRepair,
+    ): Promise<CheckedLoad> {
+      return this.judgedLoad((onRolesProjected) =>
+        this.checkedLoad(() => this.importDump(tables, destScopeId, { ...opts, roleRepair, onRolesProjected })),
+      );
+    }
+
+    /** #2531: `commitStagedDumpChecked` with the role repair in the load's transaction (`importDumpJudged`). */
+    async commitStagedDumpJudged(
+      stageId: string,
+      destScopeId: ScopeId,
+      opts: Omit<ImportDumpOptions, 'roleRepair' | 'onRolesProjected'>,
+      roleRepair: LoadRoleRepair,
+    ): Promise<CheckedLoad & { tables?: number }> {
+      return this.judgedLoad((onRolesProjected) => this.commitStagedDumpChecked(stageId, destScopeId, { ...opts, roleRepair, onRolesProjected }));
+    }
+
+    /** A judged load, answered `rolesProjected: true` only when its repair was written in it. */
+    private async judgedLoad<T extends CheckedLoad>(run: (onRolesProjected: () => void) => Promise<T>): Promise<T> {
+      let projected = false;
+      const out = await run(() => {
+        projected = true;
+      });
+      return out.refused === false && projected ? { ...out, rolesProjected: true } : out;
     }
 
     /**
@@ -7910,6 +8033,7 @@ export function defineScopeDO(
         return { refused: false, switchedOff: await run() };
       } catch (e) {
         if (e instanceof Error && fenceRefusals.has(e)) return { refused: 'lapsed' };
+        if (e instanceof Error && roleRefusals.has(e)) return { refused: 'roles', message: e.message };
         const code = errorCodeOf(e);
         if (code === 'precondition_failed') return { refused: 'changed' };
         if (e instanceof Error && tenantRefusals.has(e)) return { refused: 'tenant', message: e.message };
@@ -9120,6 +9244,18 @@ export function defineScopeDO(
     }
 
     /**
+     * #2531: `applyProjectionReply` with the role set judged INSIDE the projection's unit, against
+     * the roles, tombstones and seats this scope holds as it writes (`refuseRoleSetInUnit`). A
+     * refusal writes nothing: no role row, tombstone, receipt, seat, switch or enforcement flip.
+     * A method of its own, not an argument, so a host meeting a ScopeDO from before it is refused
+     * by the runtime (no such method) before anything is written, rather than projecting unjudged.
+     * The directory fan-out does not call it (K-55, #2531).
+     */
+    applyJudgedProjectionReply(judge: RoleJudge, ...args: Parameters<ScopeDO['applyProjection']>): Promise<DoReply<SwitchedOff[]>> {
+      return replyOf(() => this.projectInUnit(judge, ...args));
+    }
+
+    /**
      * Replace this scope's projected view of a tenant's roles + tenant-level tuples
      * with a fresh snapshot, and make it authoritative (source = 'local'). A full
      * replace so it converges regardless of prior state — the coordinator's fan-out
@@ -9173,6 +9309,11 @@ export function defineScopeDO(
       /** Declared service subjects excluded only from human lockout repair (#1896). */
       serviceSubjects?: readonly string[],
     ): Promise<SwitchedOff[]> {
+      return this.projectInUnit(undefined, tenantId, roles, tuples, entitlements, scopeTuples, identities, connectionKeys, switchOff, serviceSubjects);
+    }
+
+    /** `applyProjection`'s unit, its role set judged in it when `judge` is given (#2531). */
+    private async projectInUnit(judge: RoleJudge | undefined, ...args: Parameters<ScopeDO['applyProjection']>): Promise<SwitchedOff[]> {
       if (await this.isReaped()) return [];
       // A projection that arrives after this scope was reaped is dropped, not
       // applied: writing it would recreate storage the platform deliberately
@@ -9182,176 +9323,185 @@ export function defineScopeDO(
       // The whole body is synchronous storage work, so it is ONE transaction (#1738): the queue
       // serializes but does not roll back, and a role insert that throws part-way must not leave
       // the receipt (or a half-replaced role set) behind for `servesTenant` to trust.
-      return this.queue.enqueue(() =>
-        this.revision.transactionSync(() => {
-          // #1738: the receipt `servesTenant` reads. First writer wins: absent or equal is written,
-          // a receipt for ANOTHER tenant refuses the whole projection (K-3), before a single row
-          // moves, so a misdirected projection can never re-point a scope or leave its roles behind.
-          // A restore does not trip this: `importDump` keeps the destination's own receipt and
-          // never the dump's (#2016), so the repair projection that follows finds its own tenant.
-          // #2016: a scope with no receipt yet takes its first one only where its role rows agree
-          // (`tenantVerdict`, the same reading the lifecycle back-fill uses), so a projection for
-          // another tenant cannot pin a legacy scope to it.
-          const { verdict, held } = this.tenantVerdict(tenantId);
-          if (verdict === 'foreign') {
-            throw substratError(
-              'conflict',
-              held !== null
-                ? `applyProjection refused: this scope was provisioned for tenant ${held}, and a projection for tenant ${tenantId} would re-point it`
-                : `applyProjection ${foreignTenant(held, tenantId)}`,
-            );
-          }
-          // Written before any guard below can return early, so every projection leaves it.
-          this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
-          // #2531: a role the new set leaves out is TOMBSTONED, not deleted: it keeps the keys and the
-          // holder it had, and grants nothing (every reader skips a revoked row). Kept for good, as
-          // evidence (K-21): the reserved-key rule reads a system-held tombstone as the stored
-          // definition it was, so a release that drops a role and a later one that adds it back
-          // are judged as one that kept it. A row already tombstoned keeps its first `revoked_at`;
-          // a role the set names is written live again below, which clears it.
-          this.sql.exec(
-            `UPDATE _substrat_roles SET revoked_at = ? WHERE tenant_id = ? AND revoked_at IS NULL`,
-            new Date().toISOString(),
-            tenantId,
-          );
-          for (const r of roles) {
-            this.sql.exec(
-              `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder, revoked_at)
-               VALUES (?, ?, ?, ?, ?, NULL)`,
-              tenantId,
-              r.role_key,
-              r.permissions,
-              r.source,
-              r.holder === 'system' ? 'system' : r.holder == null ? null : 'person',
-            );
-          }
-          this.sql.exec(`DELETE FROM _substrat_tenant_tuples WHERE tenant_id = ?`, tenantId);
-          for (const t of tuples) {
-            this.sql.exec(
-              `INSERT OR REPLACE INTO _substrat_tenant_tuples
-                 (tenant_id, subject, relation, object, expires_at, revoked_at)
-               VALUES (?, ?, ?, ?, ?, ?)`,
-              tenantId,
-              t.subject,
-              t.relation,
-              t.object,
-              t.expires_at,
-              t.revoked_at,
-            );
-          }
-          if (entitlements !== undefined) {
-            this.sql.exec(`DELETE FROM _substrat_entitlements WHERE tenant_id = ?`, tenantId);
-            for (const e of entitlements) {
-              this.sql.exec(
-                `INSERT OR REPLACE INTO _substrat_entitlements
-                   (tenant_id, entitlement_key, expires_at, quota, plan)
-                 VALUES (?, ?, ?, ?, ?)`,
-                tenantId,
-                e.entitlement_key,
-                e.expires_at,
-                e.quota,
-                e.plan,
-              );
-            }
-            // #304: once a scope has been projected WITH entitlements even once, its gate
-            // switches from trust-upstream to strict fail-closed (a missing/expired key
-            // denies). Left unset, a scope provisioned before #304 keeps trusting upstream
-            // until a projection (fanOut / reconcile / re-provision) back-fills it — so the
-            // enforcement flip is per-scope and never strands an un-back-filled scope.
-            this.sql.exec(
-              `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('entitlements_enforced', '1')`,
-            );
-          }
-          // #406: identity links ride the same snapshot. Full replace, so an unlink is
-          // durable against every later projection — unlike the compiled-in map this
-          // replaces, where a version rollback silently resurrected a removed login.
-          if (identities !== undefined) {
-            this.sql.exec(`DELETE FROM _substrat_identity_links WHERE tenant_id = ?`, tenantId);
-            for (const i of identities) {
-              this.sql.exec(
-                `INSERT OR REPLACE INTO _substrat_identity_links
-                   (tenant_id, provider, external_id, principal_id, scope_id)
-                 VALUES (?, ?, ?, ?, ?)`,
-                tenantId,
-                i.provider,
-                i.external_id,
-                i.principal_id,
-                i.scope_id,
-              );
-            }
-          }
-          // #687: connection sealing keys ride the same snapshot. Full replace, so a
-          // revoked connection's key stops being projected and `sealToConnection` starts
-          // refusing — the same fail-closed direction an unlinked identity takes.
-          if (connectionKeys !== undefined) {
-            this.sql.exec(`DELETE FROM _substrat_connection_keys WHERE tenant_id = ?`, tenantId);
-            for (const k of connectionKeys) {
-              this.sql.exec(
-                `INSERT OR REPLACE INTO _substrat_connection_keys
-                   (tenant_id, connection_id, provider, key_id, public_key)
-                 VALUES (?, ?, ?, ?, ?)`,
-                tenantId,
-                k.connection_id,
-                k.provider,
-                k.key_id,
-                k.public_key,
-              );
-            }
-          }
-          // #332: scope-level grants (the owner's role tuple at provision) are written in the
-          // SAME enqueued unit as the projection and the enforcement flip below. Additive upsert
-          // — NOT a full replace — so existing scope tuples are preserved. This is what keeps a
-          // scope from ever being left "roles projected, permission_source=local, zero tuples" by
-          // a write that lands the projection but drops before a follow-up owner grant.
-          //
-          // #1659: SEATED, so a reconcile creates what is missing and leaves a revoke alone. It
-          // used to be `INSERT OR REPLACE … revoked_at = NULL`, which undid an operator's revoke
-          // of the owner seat or of a `system:` schedule grant on the next reconcile. And a
-          // module switched off (#1666) gets no `system:` grant seated, new or old.
-          for (const st of scopeTuples ?? []) {
-            const seat = seatScopeTuple(st.subject, st.relation, st.object, st.expires_at);
-            this.sql.exec(seat.sql, ...seat.params);
-          }
-          // #1659's one exception: the owner-of-record's seat comes back over a revoke when
-          // No HUMAN holder remains — declared service subjects cannot prevent lockout repair.
-          // That is the #332 lockout this path exists to repair. The flip guard below still
-          // counts service authority; only the repair excludes the declared service subjects.
-          // With any other effective holder, the revoke stands: a hand-over that seats a
-          // successor before unseating the owner is not undone by the next promote. A holder of
-          // a role the vertical no longer defines is NOT one — it passes no check, so it must
-          // not stand in for the holder this repair exists to restore.
-          if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId, serviceSubjects)) {
-            for (const st of scopeTuples ?? []) {
-              if (!st.lockout_reseat) continue;
-              this.sql.exec(
-                `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at)
-                 VALUES (?, ?, ?, ?, NULL)`,
-                st.subject,
-                st.relation,
-                st.object,
-                st.expires_at,
-              );
-            }
-          }
-          // #1742: the directory's recorded-off modules go back off HERE, after the seat and in
-          // its unit. A wiped scope's seat has just re-created their `system:` grants (#1659), and
-          // a re-assert arriving later from the control plane left a window in which this
-          // deployment's own sweeper could fire them. Nothing runs between these two lines.
-          const switched = switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
-          // #332: only switch on strict local enforcement when SOMEONE actually holds a role.
-          // A projection that leaves role definitions but no effective principal→role grant would
-          // make every check fail closed — a scope serving nothing but denials, unfixable from
-          // inside. Leave `permission_source` as-is instead; a reconcile that restores the owner
-          // grant re-runs this and flips safely. (A CP-less vertical uses the local reader
-          // regardless of this flag, so the owner grant is written above in the same unit — this
-          // guard is the belt to that suspenders, and it protects the CP-backed flip outright.)
-          if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) return switched;
-          this.sql.exec(
-            `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`,
-          );
-          return switched;
-        }),
+      return this.queue.enqueue(() => this.revision.transactionSync(() => this.projectionBody(judge, ...args)));
+    }
+
+    /**
+     * The projection's writes, synchronous, for a unit the caller holds: `projectInUnit`'s, or a
+     * load's (`loadTables`, #2531), so a restore's role repair lands in the load's transaction.
+     */
+    private projectionBody(
+      judge: RoleJudge | undefined,
+      ...[tenantId, roles, tuples, entitlements, scopeTuples, identities, connectionKeys, switchOff, serviceSubjects]: Parameters<ScopeDO['applyProjection']>
+    ): SwitchedOff[] {
+      // #1738: the receipt `servesTenant` reads. First writer wins: absent or equal is written,
+      // a receipt for ANOTHER tenant refuses the whole projection (K-3), before a single row
+      // moves, so a misdirected projection can never re-point a scope or leave its roles behind.
+      // A restore does not trip this: `importDump` keeps the destination's own receipt and
+      // never the dump's (#2016), so the repair projection that follows finds its own tenant.
+      // #2016: a scope with no receipt yet takes its first one only where its role rows agree
+      // (`tenantVerdict`, the same reading the lifecycle back-fill uses), so a projection for
+      // another tenant cannot pin a legacy scope to it.
+      const { verdict, held } = this.tenantVerdict(tenantId);
+      if (verdict === 'foreign') {
+        throw substratError(
+          'conflict',
+          held !== null
+            ? `applyProjection refused: this scope was provisioned for tenant ${held}, and a projection for tenant ${tenantId} would re-point it`
+            : `applyProjection ${foreignTenant(held, tenantId)}`,
+        );
+      }
+      // #2531: judged before the first write of the unit, on what the scope holds now.
+      if (judge) this.refuseRoleSetInUnit(tenantId, roles.map(roleShapeOfRow), judge);
+      // Written before any guard below can return early, so every projection leaves it.
+      this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
+      // #2531: a role the new set leaves out is TOMBSTONED, not deleted: it keeps the keys and the
+      // holder it had, and grants nothing (every reader skips a revoked row). Kept for good, as
+      // evidence (K-21): the reserved-key rule reads a system-held tombstone as the stored
+      // definition it was, so a release that drops a role and a later one that adds it back
+      // are judged as one that kept it. A row already tombstoned keeps its first `revoked_at`;
+      // a role the set names is written live again below, which clears it.
+      this.sql.exec(
+        `UPDATE _substrat_roles SET revoked_at = ? WHERE tenant_id = ? AND revoked_at IS NULL`,
+        new Date().toISOString(),
+        tenantId,
       );
+      for (const r of roles) {
+        this.sql.exec(
+          `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder, revoked_at)
+           VALUES (?, ?, ?, ?, ?, NULL)`,
+          tenantId,
+          r.role_key,
+          r.permissions,
+          r.source,
+          r.holder === 'system' ? 'system' : r.holder == null ? null : 'person',
+        );
+      }
+      this.sql.exec(`DELETE FROM _substrat_tenant_tuples WHERE tenant_id = ?`, tenantId);
+      for (const t of tuples) {
+        this.sql.exec(
+          `INSERT OR REPLACE INTO _substrat_tenant_tuples
+             (tenant_id, subject, relation, object, expires_at, revoked_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          tenantId,
+          t.subject,
+          t.relation,
+          t.object,
+          t.expires_at,
+          t.revoked_at,
+        );
+      }
+      if (entitlements !== undefined) {
+        this.sql.exec(`DELETE FROM _substrat_entitlements WHERE tenant_id = ?`, tenantId);
+        for (const e of entitlements) {
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_entitlements
+               (tenant_id, entitlement_key, expires_at, quota, plan)
+             VALUES (?, ?, ?, ?, ?)`,
+            tenantId,
+            e.entitlement_key,
+            e.expires_at,
+            e.quota,
+            e.plan,
+          );
+        }
+        // #304: once a scope has been projected WITH entitlements even once, its gate
+        // switches from trust-upstream to strict fail-closed (a missing/expired key
+        // denies). Left unset, a scope provisioned before #304 keeps trusting upstream
+        // until a projection (fanOut / reconcile / re-provision) back-fills it — so the
+        // enforcement flip is per-scope and never strands an un-back-filled scope.
+        this.sql.exec(
+          `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('entitlements_enforced', '1')`,
+        );
+      }
+      // #406: identity links ride the same snapshot. Full replace, so an unlink is
+      // durable against every later projection — unlike the compiled-in map this
+      // replaces, where a version rollback silently resurrected a removed login.
+      if (identities !== undefined) {
+        this.sql.exec(`DELETE FROM _substrat_identity_links WHERE tenant_id = ?`, tenantId);
+        for (const i of identities) {
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_identity_links
+               (tenant_id, provider, external_id, principal_id, scope_id)
+             VALUES (?, ?, ?, ?, ?)`,
+            tenantId,
+            i.provider,
+            i.external_id,
+            i.principal_id,
+            i.scope_id,
+          );
+        }
+      }
+      // #687: connection sealing keys ride the same snapshot. Full replace, so a
+      // revoked connection's key stops being projected and `sealToConnection` starts
+      // refusing — the same fail-closed direction an unlinked identity takes.
+      if (connectionKeys !== undefined) {
+        this.sql.exec(`DELETE FROM _substrat_connection_keys WHERE tenant_id = ?`, tenantId);
+        for (const k of connectionKeys) {
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_connection_keys
+               (tenant_id, connection_id, provider, key_id, public_key)
+             VALUES (?, ?, ?, ?, ?)`,
+            tenantId,
+            k.connection_id,
+            k.provider,
+            k.key_id,
+            k.public_key,
+          );
+        }
+      }
+      // #332: scope-level grants (the owner's role tuple at provision) are written in the
+      // SAME enqueued unit as the projection and the enforcement flip below. Additive upsert
+      // — NOT a full replace — so existing scope tuples are preserved. This is what keeps a
+      // scope from ever being left "roles projected, permission_source=local, zero tuples" by
+      // a write that lands the projection but drops before a follow-up owner grant.
+      //
+      // #1659: SEATED, so a reconcile creates what is missing and leaves a revoke alone. It
+      // used to be `INSERT OR REPLACE … revoked_at = NULL`, which undid an operator's revoke
+      // of the owner seat or of a `system:` schedule grant on the next reconcile. And a
+      // module switched off (#1666) gets no `system:` grant seated, new or old.
+      for (const st of scopeTuples ?? []) {
+        const seat = seatScopeTuple(st.subject, st.relation, st.object, st.expires_at);
+        this.sql.exec(seat.sql, ...seat.params);
+      }
+      // #1659's one exception: the owner-of-record's seat comes back over a revoke when
+      // No HUMAN holder remains — declared service subjects cannot prevent lockout repair.
+      // That is the #332 lockout this path exists to repair. The flip guard below still
+      // counts service authority; only the repair excludes the declared service subjects.
+      // With any other effective holder, the revoke stands: a hand-over that seats a
+      // successor before unseating the owner is not undone by the next promote. A holder of
+      // a role the vertical no longer defines is NOT one — it passes no check, so it must
+      // not stand in for the holder this repair exists to restore.
+      if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId, serviceSubjects)) {
+        for (const st of scopeTuples ?? []) {
+          if (!st.lockout_reseat) continue;
+          this.sql.exec(
+            `INSERT OR REPLACE INTO _substrat_tuples (subject, relation, object, expires_at, revoked_at)
+             VALUES (?, ?, ?, ?, NULL)`,
+            st.subject,
+            st.relation,
+            st.object,
+            st.expires_at,
+          );
+        }
+      }
+      // #1742: the directory's recorded-off modules go back off HERE, after the seat and in
+      // its unit. A wiped scope's seat has just re-created their `system:` grants (#1659), and
+      // a re-assert arriving later from the control plane left a window in which this
+      // deployment's own sweeper could fire them. Nothing runs between these two lines.
+      const switched = switchOff ? switchRecordedOff(this.switchSql(), switchOff) : [];
+      // #332: only switch on strict local enforcement when SOMEONE actually holds a role.
+      // A projection that leaves role definitions but no effective principal→role grant would
+      // make every check fail closed — a scope serving nothing but denials, unfixable from
+      // inside. Leave `permission_source` as-is instead; a reconcile that restores the owner
+      // grant re-runs this and flips safely. (A CP-less vertical uses the local reader
+      // regardless of this flag, so the owner grant is written above in the same unit — this
+      // guard is the belt to that suspenders, and it protects the CP-backed flip outright.)
+      if (roles.length > 0 && !this.hasEffectiveRoleGrant(tenantId)) return switched;
+      this.sql.exec(
+        `INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`,
+      );
+      return switched;
     }
 
     /**
