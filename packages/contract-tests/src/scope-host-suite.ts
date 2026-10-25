@@ -8626,7 +8626,8 @@ export function scopeHostContractSuite(
       await host.admin.setVerticalListed(staff, slug, true);
       await host.admin.promoteVersion(staff, slug, 'prod', first);
       expect((await host.admin.getScopeRecord(staff, t2, install))?.verticalVersionId).toBe(next);
-    });
+      // Seven scopes, a snapshot and three promotions: about 3 s alone, past the 5 s default under CI load (#2576).
+    }, 30_000);
 
     it('publish refuses an auto-admitted prod version until a staff admit vouches for it', async () => {
       // Listing is the moment OTHER tenants start trusting this code, so the version

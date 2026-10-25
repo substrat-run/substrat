@@ -158,7 +158,12 @@ describe('the streamed connector-attachment read on the wire (#2514)', () => {
     const whole = new Uint8Array(4 * CHUNK);
     for (let i = 0; i < 4; i++) whole.set(chunkOf(i), i * CHUNK);
     const { client } = await deployment(4, sha256Of(4), whole);
-    expect((await open(client))!.body).toEqual(whole);
+    const body = (await open(client))!.body;
+    // Byte for byte, but not through `toEqual`: its deep walk visits a 1 MiB typed array one
+    // element at a time, about 1.5 s on a quiet machine and past the 5 s default on a loaded CI
+    // runner, which is how this case failed main. `Buffer.equals` is the same comparison in C.
+    expect(body.byteLength).toBe(whole.byteLength);
+    expect(Buffer.from(body.buffer, body.byteOffset, body.byteLength).equals(whole)).toBe(true);
   });
 
   it('a reader counting bytes off the wire never reaches the size of a file that did not verify', async () => {

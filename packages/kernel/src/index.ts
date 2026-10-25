@@ -1003,6 +1003,7 @@ export {
   assertPromoteReviewCurrent,
   promoteReviewRefusalOf,
   promoteRaceRefusal,
+  servingRaceRefusal,
   rebindReviewDigest,
   assertRebindReviewCurrent,
   rebindReviewRefusalOf,

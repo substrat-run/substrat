@@ -695,6 +695,7 @@ export const INDEX_VALUE_EXPORTS = [
   'searchStateWhere',
   'seatScopeTuple',
   'servesNowParams',
+  'servingRaceRefusal',
   'setFindingStatus',
   'settleConnectionUse',
   'settleCopiedWork',

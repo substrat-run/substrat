@@ -786,6 +786,7 @@ import {
   exportBreakRefusal,
   assertPromoteReviewCurrent,
   promoteRaceRefusal,
+  servingRaceRefusal,
   rebindRaceRefusal,
   SERVES_NOW_CONDITION,
   SERVES_NOW_PREDICATE,
@@ -8661,6 +8662,22 @@ export class SqliteScopeHost implements ScopeHost {
         .get(slugValue) as VerticalRow | undefined;
       return r ? mapVertical(r) : undefined;
     };
+    /**
+     * #2528: one vertical row update whose admin row takes its `before` (and whose guard runs, by
+     * throwing) from the vertical as the write's own transaction reads it.
+     */
+    const updateVertical = (
+      actor: PlatformActorId, action: WrittenAdminAction, slugValue: string, set: string, args: (string | number)[],
+      judge: (existing: Vertical) => unknown, after: unknown,
+    ): void => {
+      let before: unknown = null;
+      this.directoryWriteAndAudit(() => {
+        const existing = readVertical(slugValue);
+        if (!existing) throw substratError('not_found', `unknown vertical '${slugValue}'`);
+        before = judge(existing);
+        return this.directory.prepare(`UPDATE verticals SET ${set} WHERE slug = ?`).run(...args, slugValue).changes > 0;
+      }, () => this.recordAdmin(actor, action, { tenantId: null }, before, after));
+    };
 
     const mapVersion = (r: VersionRow): VerticalVersion =>
       verticalVersion.parse({
@@ -8689,6 +8706,13 @@ export class SqliteScopeHost implements ScopeHost {
         r = read();
       }
       return r ? mapVersion(r) : undefined;
+    };
+    /** A version's admission, read synchronously so a transaction can judge it (#2528). */
+    const versionAdmission = (id: string): { admission: string; admission_note: string | null } => {
+      const v = this.directory.prepare('SELECT admission, admission_note FROM vertical_versions WHERE id = ?')
+        .get(id) as { admission: string; admission_note: string | null } | undefined;
+      if (!v) throw substratError('not_found', `unknown version ${id}`);
+      return v;
     };
 
     const mapOrg = (r: OrgRow): Org =>
@@ -10137,15 +10161,14 @@ export class SqliteScopeHost implements ScopeHost {
       },
       publishVersion: async (actor: PlatformActorId, input: PublishVersionInput) => {
         const parsed = publishVersionInput.parse(input);
-        const owning = readVertical(parsed.verticalSlug);
-        if (!owning) {
-          throw substratError('not_found', `unknown vertical '${parsed.verticalSlug}'`);
-        }
+        const unknownVertical = () => substratError('not_found', `unknown vertical '${parsed.verticalSlug}'`);
+        if (!readVertical(parsed.verticalSlug)) throw unknownVertical();
         // Lands PENDING — a push is not a deploy — except for a PRIVATE vertical
         // (tenant-owned, not listed), whose blast radius is its own tenant: there the
         // sandbox contract is the gate and the version self-admits, noted so the
-        // publish seam can tell a staff vouch from this shortcut.
-        const selfAdmits = owning.ownerTenant !== null && !owning.listed;
+        // publish seam can tell a staff vouch from this shortcut. Judged in the insert's
+        // transaction (#2528), on the vertical as it reads it there.
+        let selfAdmits = false;
         // The manifest is retained for the serving upload (#286), not audited — a whole
         // manifest per publish would drown the admin log in bundle metadata.
         const { manifestJson, origin, ...audited } = parsed;
@@ -10157,6 +10180,9 @@ export class SqliteScopeHost implements ScopeHost {
           id: audited.id, migrationDigest: audited.migrationDigest, manifestJson: manifestJson ?? null, migrations: split.migrations,
         });
         this.directoryWriteAndAudit(() => {
+          const owning = readVertical(parsed.verticalSlug);
+          if (!owning) throw unknownVertical();
+          selfAdmits = owning.ownerTenant !== null && !owning.listed;
           this.directory
             .prepare(
               `INSERT INTO vertical_versions
@@ -10220,95 +10246,81 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'getVersion', {}, { versionId, verticalSlug }, hit ? 1 : 0);
         return hit;
       },
+      // #2528: each vertical write below reads its row's `before`, and runs its guard, inside the
+      // transaction that writes (`updateVertical`).
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
-        const existing = readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        // Listing is the moment other tenants start trusting this code, so the
-        // version they would install must carry a real staff vouch — an auto-admitted
-        // prod version has never been read by anyone but its author.
-        if (listed) {
-          const prod = this.directory
-            .prepare("SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = 'prod'")
-            .get(slug) as { version_id: string } | undefined;
-          const prodVersion = prod ? await readVersion(prod.version_id) : undefined;
-          if (prodVersion?.admissionNote === AUTO_ADMISSION_NOTE) {
-            throw substratError(
-              'conflict',
-              `vertical '${slug}' prod version ${prodVersion.id} is auto-admitted (private self-serve) — ` +
-                `a staff admit must vouch for it before listing`,
-            );
-          }
-        }
         // Resolve any pending publish request either way, and set the flag.
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?')
-          .run(listed ? 1 : 0, slug).changes > 0,
-          () => this.recordAdmin(actor, 'setVerticalListed', { tenantId: null }, { listed: existing.listed }, { listed }));
+        updateVertical(actor, 'setVerticalListed', slug, 'listed = ?, publish_requested_at = NULL', [listed ? 1 : 0], (existing) => {
+          // Listing is the moment other tenants start trusting this code, so the
+          // version they would install must carry a real staff vouch — an auto-admitted
+          // prod version has never been read by anyone but its author.
+          if (listed) {
+            const prod = this.directory
+              .prepare(
+                `SELECT v.id, v.admission_note FROM vertical_channels c JOIN vertical_versions v ON v.id = c.version_id
+                  WHERE c.vertical_slug = ? AND c.channel = 'prod'`,
+              )
+              .get(slug) as { id: string; admission_note: string | null } | undefined;
+            if (prod?.admission_note === AUTO_ADMISSION_NOTE) {
+              throw substratError(
+                'conflict',
+                `vertical '${slug}' prod version ${prod.id} is auto-admitted (private self-serve) — ` +
+                  `a staff admit must vouch for it before listing`,
+              );
+            }
+          }
+          return { listed: existing.listed };
+        }, { listed });
       },
       requestPublish: async (actor, slug: string) => {
-        const existing = readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?')
-          .run(new Date().toISOString(), slug).changes > 0,
-          () => this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug }));
+        updateVertical(actor, 'requestPublish', slug, 'publish_requested_at = ?', [new Date().toISOString()], () => null, { slug });
       },
       setVerticalInstallsBlocked: async (actor, slug: string, blocked: boolean) => {
-        const existing = readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare('UPDATE verticals SET installs_blocked = ? WHERE slug = ?')
-          .run(blocked ? 1 : 0, slug).changes > 0,
-          () => this.recordAdmin(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: existing.installsBlocked }, { installsBlocked: blocked }));
+        updateVertical(actor, 'setVerticalInstallsBlocked', slug, 'installs_blocked = ?', [blocked ? 1 : 0],
+          (existing) => ({ installsBlocked: existing.installsBlocked }), { installsBlocked: blocked });
       },
       setVerticalTenantProvisioner: async (actor, slug: string, granted: boolean) => {
-        const existing = readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?')
-          .run(granted ? 1 : 0, slug).changes > 0,
-          () => this.recordAdmin(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: existing.tenantProvisioner }, { tenantProvisioner: granted }));
+        updateVertical(actor, 'setVerticalTenantProvisioner', slug, 'tenant_provisioner = ?', [granted ? 1 : 0],
+          (existing) => ({ tenantProvisioner: existing.tenantProvisioner }), { tenantProvisioner: granted });
       },
       setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
-        const existing = readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare('UPDATE verticals SET email_sender = ? WHERE slug = ?')
-          .run(granted ? 1 : 0, slug).changes > 0,
-          () => this.recordAdmin(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: existing.emailSender }, { emailSender: granted }));
+        updateVertical(actor, 'setVerticalEmailSender', slug, 'email_sender = ?', [granted ? 1 : 0],
+          (existing) => ({ emailSender: existing.emailSender }), { emailSender: granted });
       },
       deleteVertical: async (actor, slug: string) => {
-        const existing = readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        // Refuse while any restorable scope is bound: a deleted registry row would strand
-        // those scopes' version pins and routing. An `archived` scope (a deleted app) still
-        // blocks — unarchive can bring it back — but the refusal names reap/restore, not
-        // "delete", because the app itself is already gone. `reaped` is terminal history
-        // and never blocks. The count names the blast radius.
-        const bound = this.directory
-          .prepare(
-            'SELECT ' +
-              "COUNT(*) FILTER (WHERE status NOT IN ('archived', 'reaped')) AS live, " +
-              "COUNT(*) FILTER (WHERE status = 'archived') AS archived " +
-              'FROM scopes WHERE vertical = ?',
-          )
-          .get(slug) as { live: number; archived: number };
-        if (bound.live > 0) {
-          throw substratError(
-            'conflict',
-            `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`,
-          );
-        }
-        if (bound.archived > 0) {
-          throw substratError(
-            'conflict',
-            `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
-          );
-        }
         // Deployed dispatch scripts are NOT reaped here — they become orphans for the
         // cleanup script (#248), never destroyed alongside a registry row.
-        // #2501: one transaction, so the row and its ownership period close together.
+        // #2501: one transaction, so the row and its ownership period close together; #2528: its
+        // `before` and the bound-scope refusal are read in it too.
+        let existing: Vertical | undefined;
         this.directoryWriteAndAudit(() => {
+          existing = readVertical(slug);
+          if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
+          // Refuse while any restorable scope is bound: a deleted registry row would strand
+          // those scopes' version pins and routing. An `archived` scope (a deleted app) still
+          // blocks — unarchive can bring it back — but the refusal names reap/restore, not
+          // "delete", because the app itself is already gone. `reaped` is terminal history
+          // and never blocks. The count names the blast radius.
+          const bound = this.directory
+            .prepare(
+              'SELECT ' +
+                "COUNT(*) FILTER (WHERE status NOT IN ('archived', 'reaped')) AS live, " +
+                "COUNT(*) FILTER (WHERE status = 'archived') AS archived " +
+                'FROM scopes WHERE vertical = ?',
+            )
+            .get(slug) as { live: number; archived: number };
+          if (bound.live > 0) {
+            throw substratError(
+              'conflict',
+              `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`,
+            );
+          }
+          if (bound.archived > 0) {
+            throw substratError(
+              'conflict',
+              `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
+            );
+          }
           this.directory.prepare('DELETE FROM vertical_channels WHERE vertical_slug = ?').run(slug);
           this.directory.prepare('DELETE FROM vertical_channel_history WHERE vertical_slug = ?').run(slug);
           this.directory
@@ -10327,7 +10339,7 @@ export class SqliteScopeHost implements ScopeHost {
           actor,
           'deleteVertical',
           { tenantId: null },
-          { slug, source: existing.source, ownerTenant: existing.ownerTenant },
+          { slug, source: existing!.source, ownerTenant: existing!.ownerTenant },
           null,
         ));
       },
@@ -10336,46 +10348,38 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'listVerticalOwners', { tenantId: null }, { slug }, periods.length);
         return periods;
       },
+      // #2528: the admission is judged, and the row's `before` read, in the transaction that writes.
       admitVersion: async (actor, versionId: string) => {
-        const v = await readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        if (v.admission === 'admitted') {
-          // Idempotent — except an AUTO-admitted version, which this upgrades to a
-          // manual vouch by clearing the note (what the publish seam requires).
-          if (v.admissionNote !== AUTO_ADMISSION_NOTE) return;
-          this.directoryWriteAndAudit(() => this.directory
-            .prepare('UPDATE vertical_versions SET admission_note = NULL WHERE id = ?')
-            .run(versionId).changes > 0,
-            () => this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admissionNote }, {
-              admission: 'admitted',
-              note: null,
-            }));
-          return;
-        }
-        if (v.admission === 'rejected') {
-          throw substratError('conflict', `version ${versionId} was rejected — publish a new one`);
-        }
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare("UPDATE vertical_versions SET admission = 'admitted' WHERE id = ?")
-          .run(versionId).changes > 0,
-          () => this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, {
-            admission: 'admitted',
-          }));
+        let row: { before: unknown; after: unknown } = { before: null, after: null };
+        this.directoryWriteAndAudit(() => {
+          const v = versionAdmission(versionId);
+          if (v.admission === 'admitted') {
+            // Idempotent — except an AUTO-admitted version, which this upgrades to a
+            // manual vouch by clearing the note (what the publish seam requires).
+            if (v.admission_note !== AUTO_ADMISSION_NOTE) return false;
+            row = { before: { admission: v.admission, note: v.admission_note }, after: { admission: 'admitted', note: null } };
+            return this.directory.prepare('UPDATE vertical_versions SET admission_note = NULL WHERE id = ?').run(versionId).changes > 0;
+          }
+          if (v.admission === 'rejected') {
+            throw substratError('conflict', `version ${versionId} was rejected — publish a new one`);
+          }
+          row = { before: { admission: v.admission }, after: { admission: 'admitted' } };
+          return this.directory.prepare("UPDATE vertical_versions SET admission = 'admitted' WHERE id = ?").run(versionId).changes > 0;
+        }, () => this.recordAdmin(actor, 'admitVersion', { tenantId: null }, row.before, row.after));
       },
       rejectVersion: async (actor, versionId: string, note: string) => {
-        const v = await readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        if (v.admission === 'admitted') {
-          throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
-        }
-        if (v.admission === 'rejected') return; // idempotent
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare("UPDATE vertical_versions SET admission = 'rejected', admission_note = ? WHERE id = ?")
-          .run(note, versionId).changes > 0,
-          () => this.recordAdmin(actor, 'rejectVersion', { tenantId: null }, { admission: v.admission }, {
-            admission: 'rejected',
-            note,
-          }));
+        let before: unknown = null;
+        this.directoryWriteAndAudit(() => {
+          const v = versionAdmission(versionId);
+          if (v.admission === 'admitted') {
+            throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
+          }
+          if (v.admission === 'rejected') return false; // idempotent
+          before = { admission: v.admission };
+          return this.directory
+            .prepare("UPDATE vertical_versions SET admission = 'rejected', admission_note = ? WHERE id = ?")
+            .run(note, versionId).changes > 0;
+        }, () => this.recordAdmin(actor, 'rejectVersion', { tenantId: null }, before, { admission: 'rejected', note }));
       },
       promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
         const incoming = await readVersion(versionId);
@@ -10825,19 +10829,34 @@ export class SqliteScopeHost implements ScopeHost {
           parsed.versionId,
           r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_version_id ? { ref: r.serving_ref, versionId: r.serving_version_id } : null, null) : [],
         );
-        this.directoryWriteAndAudit(() => this.directory
-          .prepare(
-            `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
-                    serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
-          )
-          .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag, verticalSlug).changes > 0,
-          () => this.recordAdmin(
-            actor,
-            'setVerticalServing',
-            { tenantId: null },
-            r.serving_ref ? { ref: r.serving_ref, versionId: r.serving_version_id } : null,
-            { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
-          ));
+        // #2528: a compare-and-set on the serving ref and version the gate judged
+        // (`SERVES_NOW_CONDITION`), and the row's `before` read in the transaction that moves it,
+        // as the Cloudflare host does.
+        let before: unknown = null;
+        let raced = false;
+        this.directoryWriteAndAudit(() => {
+          const now = this.directory
+            .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
+            .get(verticalSlug) as Pick<VerticalRow, 'serving_ref' | 'serving_version_id'> | undefined;
+          if (!now) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
+          before = now.serving_ref ? { ref: now.serving_ref, versionId: now.serving_version_id } : null;
+          const moved = this.directory
+            .prepare(
+              `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
+                      serving_do_classes = ?, serving_migration_tag = ? WHERE ${SERVES_NOW_CONDITION}`,
+            )
+            .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag,
+              verticalSlug, r.serving_ref ?? null, r.serving_version_id ?? null).changes > 0;
+          raced = !moved;
+          return moved;
+        }, () => this.recordAdmin(
+          actor,
+          'setVerticalServing',
+          { tenantId: null },
+          before,
+          { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
+        ));
+        if (raced) throw servingRaceRefusal(verticalSlug);
       },
       versionManifest: async (actor, verticalSlug: string, versionId: string) => {
         const v = this.directory
@@ -11400,8 +11419,7 @@ export class SqliteScopeHost implements ScopeHost {
           () => this.recordAdmin(actor, 'createTenant', { tenantId: parsed.id }, null, readTenant(parsed.id)));
       },
       setTenantStatus: async (actor: PlatformActorId, tenantId: TenantId, status: TenantStatus) => {
-        const before = readTenant(tenantId);
-        if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
+        if (!readTenant(tenantId)) throw substratError('not_found', `unknown tenant: ${tenantId}`);
         // `reaped` is terminal and destroys data — it is unreachable here and only
         // ever set by reapTenant, so a plain status flip cannot forge a tombstone
         // over live data (§4.8, the tenant analogue of reapScope's archived-only gate).
@@ -11412,29 +11430,37 @@ export class SqliteScopeHost implements ScopeHost {
         }
         // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
         // entering `deleting` stamps, leaving it (an un-delete) clears — exactly the
-        // shape suspendScope/archiveScope use for archived_at.
-        this.directoryWriteAndAudit(() => (status === 'deleting'
-          ? this.directory
-            .prepare('UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?')
-            .run(status, new Date().toISOString(), tenantId)
-          : this.directory
-            .prepare('UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?')
-            .run(status, tenantId)).changes > 0,
-          () => this.recordAdmin(
-            actor,
-            'setTenantStatus',
-            { tenantId },
-            { status: before.status },
-            { status },
-          ));
+        // shape suspendScope/archiveScope use for archived_at. #2528: the row's `before` is the
+        // status the write's own transaction reads.
+        let before: Tenant | undefined;
+        this.directoryWriteAndAudit(() => {
+          before = readTenant(tenantId);
+          if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
+          return (status === 'deleting'
+            ? this.directory
+              .prepare('UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?')
+              .run(status, new Date().toISOString(), tenantId)
+            : this.directory
+              .prepare('UPDATE tenants SET status = ?, deleting_at = NULL WHERE tenant_id = ?')
+              .run(status, tenantId)).changes > 0;
+        }, () => this.recordAdmin(
+          actor,
+          'setTenantStatus',
+          { tenantId },
+          { status: before!.status },
+          { status },
+        ));
       },
       setTenantName: async (actor: PlatformActorId, tenantId: TenantId, name: string) => {
-        const before = readTenant(tenantId);
-        if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
-        if (before.name === name) return; // no-op is not audited — nothing changed
-        this.directoryWriteAndAudit(
-          () => this.directory.prepare('UPDATE tenants SET name = ? WHERE tenant_id = ?').run(name, tenantId).changes > 0,
-          () => this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before.name }, { name }));
+        // A no-op rename is not audited — nothing changed. #2528: judged, and `before` read, in the
+        // write's own transaction.
+        let before: Tenant | undefined;
+        this.directoryWriteAndAudit(() => {
+          before = readTenant(tenantId);
+          if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
+          return before.name !== name
+            && this.directory.prepare('UPDATE tenants SET name = ? WHERE tenant_id = ?').run(name, tenantId).changes > 0;
+        }, () => this.recordAdmin(actor, 'setTenantName', { tenantId }, { name: before!.name }, { name }));
       },
       listTenants: async (actor, page): Promise<Tenant[]> => {
         const where: string[] = [];
@@ -12217,14 +12243,9 @@ export class SqliteScopeHost implements ScopeHost {
         // caller (the reap route / grace-window sweep) has already reaped every scope's
         // storage above the kernel; this clears the tenant's directory-side PII/config
         // and flips the row to a `reaped` tombstone. Only a `deleting` tenant may be
-        // reaped — an illegal source fails closed, like reapScope's archived-only gate.
-        const before = readTenant(tenantId);
-        if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
-        if (before.status !== 'deleting') {
-          throw substratError('conflict',
-            `tenant ${tenantId} is ${before.status}, not deleting — only a deleting tenant may be reaped`,
-          );
-        }
+        // reaped — an illegal source fails closed, like reapScope's archived-only gate. #2528: that
+        // gate and the row's `before` are read in the transaction that reaps.
+        let before: Tenant | undefined;
         // Clear the tenant's directory-side rows. Idempotent (set-to-empty), so a crash
         // mid-reap converges on retry. KEPT as the tombstone: the `tenants` row itself
         // and `_substrat_admin_log` (the compliance witness — never swept). Scope rows
@@ -12249,6 +12270,13 @@ export class SqliteScopeHost implements ScopeHost {
           '_substrat_scope_attachment_storage', // #2501: attachment samples, gone with the tenant
         ];
         this.directoryWriteAndAudit(() => {
+          before = readTenant(tenantId);
+          if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
+          if (before.status !== 'deleting') {
+            throw substratError('conflict',
+              `tenant ${tenantId} is ${before.status}, not deleting — only a deleting tenant may be reaped`,
+            );
+          }
           for (const table of tables) {
             this.directory.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`).run(tenantId);
           }
@@ -12259,7 +12287,7 @@ export class SqliteScopeHost implements ScopeHost {
           actor,
           'reapTenant',
           { tenantId },
-          { status: before.status },
+          { status: before!.status },
           { status: 'reaped' },
         ));
         // Evict the in-memory role cache for this tenant (the one directory table
