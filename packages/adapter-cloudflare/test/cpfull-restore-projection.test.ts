@@ -23,7 +23,7 @@ import { warmControlPlane } from './do-warmup.js';
  */
 const USE = 'cpr:use' as PermissionKey;
 const RUN = 'cpr:run' as PermissionKey;
-const SENTENCE = /^restore refused: role 'staffer' is refused by the reserved-key rule, judged against the roles and seats this scope holds as the write lands \(K-55\); nothing was written$/;
+const SENTENCE = /^(restore|import) refused: role 'staffer' is refused by the reserved-key rule, judged against the roles and seats this scope holds as the write lands \(K-55\); nothing was written$/;
 
 const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as Error);
 const stubOf = (scope: ScopeId) => env.SCOPE.get(env.SCOPE.idFromName(scope));
@@ -223,26 +223,20 @@ describe('a control-plane-full restore projects the directory’s current permis
     // Handed to the ScopeDO directly: a person's role holding a key this scope class reserves, which
     // the whole set's walk refuses wherever it is asked (the directory's own door refuses it too, so
     // no restore can carry it). Nothing the dump seats or stores is it.
-    const load = (roles: { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null }[]) =>
-      (stubOf(s) as unknown as { importDumpProjected(...args: unknown[]): Promise<{ value?: unknown; failure?: { message: string } }> }).importDumpProjected(
-        dump.tables,
-        s,
-        { sourceScopeId: s },
-        { tenantId: t, roles, tuples: [], entitlements: [], identities: [], connectionKeys: [], judge: { reserved: [], declared: [] } },
-      );
     const odd = { role_key: 'odd', permissions: JSON.stringify(['rsv:run']), source: 'vertical', holder: 'person' as const };
     const member = { role_key: 'member', permissions: JSON.stringify([USE]), source: 'vertical', holder: 'person' as const };
-    expect((await load([member, odd])).failure).toBeUndefined();
+    const load = (tables: ScopeDump['tables']) =>
+      (stubOf(s) as unknown as { importDumpProjected(...args: unknown[]): Promise<{ value?: { refusedRoles?: string } }> }).importDumpProjected(
+        tables,
+        s,
+        { sourceScopeId: s },
+        { tenantId: t, roles: [member, odd], tuples: [], entitlements: [], identities: [], connectionKeys: [], judge: { reserved: [], declared: [] } },
+      );
+    expect((await load(dump.tables)).value).not.toHaveProperty('refusedRoles');
     expect((await permissionState(s)).roles.map((r) => r.role_key)).toContain('odd');
     // Twin: the same role, seated by the dump, is asked about and refused.
     const seated = withRows(dump, '_substrat_tuples', [{ subject: `principal:${ulid()}`, relation: 'role:odd', object: `scope:${s}`, expires_at: null, revoked_at: null }]);
-    const refused = await (stubOf(s) as unknown as { importDumpProjected(...args: unknown[]): Promise<{ failure?: { message: string } }> }).importDumpProjected(
-      seated.tables,
-      s,
-      { sourceScopeId: s },
-      { tenantId: t, roles: [member, odd], tuples: [], entitlements: [], identities: [], connectionKeys: [], judge: { reserved: [], declared: [] } },
-    );
-    expect(refused.failure?.message).toMatch(/role 'odd' is refused by the reserved-key rule/);
+    expect((await load(seated.tables)).value?.refusedRoles).toMatch(/role 'odd' is refused by the reserved-key rule/);
   });
 
   it('a directory write between the host’s read and the load is not left stale: the scope is projected once more', async () => {
@@ -263,23 +257,58 @@ describe('a control-plane-full restore projects the directory’s current permis
     expect(audit.at(-1)?.after).toMatchObject({ reprojected: true });
   });
 
-  it('a re-projection that fails after the load committed still records the restore, then is thrown', async () => {
+  it('a re-projection that fails: a restore is still recorded, then thrown; an import is taken down, never activated', async () => {
     const { t, s } = await setup();
     const dump = await host.admin.exportScope(staff, t, s);
     const target = host as unknown as Record<string, unknown>;
-    target.projectScope = () => Promise.reject(new Error('fan-out unavailable'));
+    target.projectJudged = () => Promise.reject(new Error('projection unavailable'));
+    const between = (n: number) => {
+      const restore = after(host, 'loadProjectionFor', async () => {
+        restore();
+        await host.admin.grantEntitlement(staff, t, `sku:between-${n}`);
+      });
+      return restore;
+    };
+    const fresh = scopeId.parse(ulid());
+    try {
+      const restored = between(1);
+      expect((await failure(host.restoreScope(staff, t, s, dump)))?.message).toBe('projection unavailable');
+      restored();
+      const imported = between(2);
+      expect((await failure(host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, dump)))?.message).toBe('projection unavailable');
+      imported();
+    } finally {
+      delete target.projectJudged;
+    }
+    const audit = await host.admin.auditLog(staff, { tenantId: t });
+    expect(audit.filter((r) => r.action === 'restoreScope').at(-1)?.after).toMatchObject({ reprojected: 'failed' });
+    expect(audit.filter((r) => r.scopeId === fresh).map((r) => r.action)).not.toContain('importScope');
+    expect((await host.admin.getScopeRecord(staff, t, fresh)) ?? null).toBeNull();
+  });
+
+  it('a role made system-held between the read and the load is judged against the dump’s seat when re-projected, and refused', async () => {
+    const { t, s, alice } = await setup();
+    await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [USE], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: alice, roleKey: 'staffer', node: { tenantId: t, scopeId: s } });
+    const dump = await host.admin.exportScope(staff, t, s);
+    await host.admin.unassignRole(staff, { principalId: alice, roleKey: 'staffer', node: { tenantId: t, scopeId: s } });
+    // The directory's door admits it: no seat is live anywhere yet. The load then judges the older set.
     const restore = after(host, 'loadProjectionFor', async () => {
       restore();
-      await host.admin.grantEntitlement(staff, t, 'sku:between');
+      await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [RUN], source: 'vertical', holder: 'system' });
     });
+    let refused: Error | undefined;
     try {
-      expect((await failure(host.restoreScope(staff, t, s, dump)))?.message).toBe('fan-out unavailable');
+      refused = await failure(host.restoreScope(staff, t, s, dump));
     } finally {
       restore();
-      delete target.projectScope;
     }
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(/role 'staffer' is refused by the reserved-key rule/);
+    // The scope stays on the set the load judged: the dump's seat under a person's role.
+    expect((await permissionState(s)).roles.find((r) => r.role_key === 'staffer')).toMatchObject({ holder: 'person' });
     const audit = (await host.admin.auditLog(staff, { tenantId: t })).filter((r) => r.action === 'restoreScope');
-    expect(audit.at(-1)?.after).toMatchObject({ reprojected: 'failed' });
+    expect(audit.at(-1)?.after).toMatchObject({ reprojected: 'refused' });
   });
 
   it('a directory write after the second read reaches the scope by its own fan-out; no re-projection is made', async () => {
@@ -316,19 +345,20 @@ describe('a control-plane-full restore projects the directory’s current permis
   });
 
   /** A dump seating alice in `staffer`, which the directory makes system-held after the host's pre-check. */
-  const refusedImport = async () => {
+  const refusedImport = async (onto?: 'the source') => {
     const { t, s, alice } = await setup();
     await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [USE], source: 'vertical' });
     const clean = await host.admin.exportScope(staff, t, s);
     await host.admin.assignRole(staff, { principalId: alice, roleKey: 'staffer', node: { tenantId: t, scopeId: s } });
     const dump = await host.admin.exportScope(staff, t, s);
     await host.admin.unassignRole(staff, { principalId: alice, roleKey: 'staffer', node: { tenantId: t, scopeId: s } });
-    const fresh = scopeId.parse(ulid());
+    const fresh = onto ? s : scopeId.parse(ulid());
     const restore = after(host, 'refuseDumpRoles', async () => {
       await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [RUN], source: 'vertical', holder: 'system' });
     });
+    const before = await host.admin.getScopeRecord(staff, t, fresh);
     try {
-      return { t, alice, fresh, clean, refused: await failure(host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, dump)) };
+      return { t, alice, fresh, clean, before, refused: await failure(host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, dump)) };
     } finally {
       restore();
     }
@@ -346,6 +376,13 @@ describe('a control-plane-full restore projects the directory’s current permis
     // The same id, with a dump the rule admits.
     await host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, clean);
     expect((await host.admin.getScopeRecord(staff, t, fresh))?.status).toBe('active');
+  });
+
+  it('an import refused in the load’s unit, pointed at an existing active scope, leaves its record as it was', async () => {
+    const { t, fresh, before, refused } = await refusedImport('the source');
+    expect(refused?.message).toMatch(/^import refused: /);
+    expect(before?.status).toBe('active');
+    expect(await host.admin.getScopeRecord(staff, t, fresh)).toEqual(before);
   });
 
   it('a teardown that fails leaves the refusal as the answer, files a staff-only ops row, and the scope in provisioning', async () => {

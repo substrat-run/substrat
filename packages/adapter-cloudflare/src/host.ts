@@ -2011,7 +2011,7 @@ interface ScopeStubRpc {
     destScopeId: ScopeId,
     opts: { switchOff?: RecordedOffCarry & { at: string }; sourceScopeId?: ScopeId; exact?: boolean },
     projection: LoadProjection | null,
-  ): Promise<DoReply<SwitchedOff[]>>;
+  ): Promise<DoReply<{ switchedOff: SwitchedOff[] } | { refusedRoles: string }>>;
   /** #2531: `commitStagedDumpChecked` with the role repair in the load's transaction. */
   commitStagedDumpJudged(
     stageId: string,
@@ -2704,6 +2704,9 @@ const connectionGrantsSkippedLine = (tenantId: string, scopeId: string, skipped:
 function projectedRoleRows(roles: readonly RoleDefinition[]): LoadRoleRepair['roles'] {
   return roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' }));
 }
+
+/** #2555: what a control-plane-full load's second read did: re-projected, or could not (`convergeLoadedProjection`). */
+type Reprojected = true | 'refused' | 'failed';
 
 /** #2555: a control-plane-full load whose role set was refused in its unit (`loadProjected`), told apart by identity. */
 const loadRoleRefusals = new WeakSet<Error>();
@@ -4751,6 +4754,11 @@ export class CloudflareScopeHost implements ScopeHost {
   // -- scope lifecycle ------------------------------------------------------
 
   async provisionScope(actor: PlatformActorId, input: ProvisionScopeInput): Promise<void> {
+    await this.provisionScopeCreating(actor, input);
+  }
+
+  /** `provisionScope`, answering whether this call created the directory row (#2555: an import's teardown). */
+  private async provisionScopeCreating(actor: PlatformActorId, input: ProvisionScopeInput): Promise<boolean> {
     // Shared with the pure adapter so the defaults cannot drift between them.
     const record = resolveScopeRecord(input);
     // Fail-closed tenant gate throws out of the awaited cp call BEFORE migrate
@@ -4822,6 +4830,7 @@ export class CloudflareScopeHost implements ScopeHost {
         record,
       );
     }
+    return created;
   }
 
   // Per-tenant relational stores (#301, PR-2 — the live D1 path). The coordinator holds
@@ -5342,7 +5351,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // replaces its provisioned schema with the dump wholesale (drop-then-replay), so
     // the end state is the dump, at the source's frontier. Provenance is stamped from
     // the dump unless the caller set it (§3: a fork always records its origin).
-    await this.provisionScope(actor, {
+    const created = await this.provisionScopeCreating(actor, {
       ...input,
       forkedFrom: input.forkedFrom ?? (dump.scopeId as ScopeId),
       forkedAt: input.forkedAt ?? dump.capturedAt,
@@ -5352,17 +5361,26 @@ export class CloudflareScopeHost implements ScopeHost {
     // #2555: an import lands with the directory's current permission state, as a restore does. A
     // snapshot is left as it was: a same-instant copy of a live scope the fan-out keeps current.
     const projection = judge ? await this.loadProjectionFor(input.tenantId, input.vertical) : undefined;
+    let reprojected: Reprojected | undefined;
     if (projection === undefined) await this.scopeStub(input.scopeId).importDump(dump.tables, input.scopeId, load);
     else {
       try {
-        await this.loadProjected(input.scopeId, dump.tables, load, projection);
+        await this.loadProjected(input.scopeId, dump.tables, load, projection, 'import');
       } catch (e) {
-        if (loadRoleRefusals.has(e as Error)) await this.dropRefusedImport(actor, input.scopeId);
+        if (loadRoleRefusals.has(e as Error)) await this.dropRefusedImport(actor, input.tenantId, input.scopeId, created);
         throw e;
       }
     }
     await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
-    const reprojected = projection ? await this.convergeLoadedProjection(input.tenantId, input.scopeId, input.vertical, projection) : false;
+    if (projection) {
+      // A re-projection refused or failed is not activated, and goes as a refused import does.
+      const converged = await this.convergeLoadedProjection(input.tenantId, input.scopeId, input.vertical, projection);
+      if ('error' in converged) {
+        await this.dropRefusedImport(actor, input.tenantId, input.scopeId, created);
+        throw converged.error;
+      }
+      reprojected = converged.reprojected;
+    }
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     await this.recordAdmin(
       actor,
@@ -5402,6 +5420,7 @@ export class CloudflareScopeHost implements ScopeHost {
       dump.tables,
       { switchOff: carry ? { at: replayAt, ...carry } : undefined, sourceScopeId: opts?.sourceScopeId ?? (dump.scopeId as ScopeId) },
       projection,
+      'restore',
     );
     await this.importScopeStores(tenantId, scopeId, dump.stores);
     const replay = await this.replayShreddedStoreErasures(
@@ -5410,13 +5429,10 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId,
       (opts?.sourceScopeId ?? dump.scopeId) as ScopeId,
     );
-    // The load has committed, so a failed re-projection is recorded with the restore and the
-    // switches still go back off below; it is rethrown last, loud.
-    let convergeFailure: unknown;
-    const reprojected = await this.convergeLoadedProjection(tenantId, scopeId, existing.vertical, projection).catch((e: unknown) => {
-      convergeFailure = e;
-      return 'failed' as const;
-    });
+    // The load has committed, so a re-projection refused or failed is recorded with the restore and
+    // the switches still go back off below; it is thrown last, loud.
+    const converged = projection ? await this.convergeLoadedProjection(tenantId, scopeId, existing.vertical, projection) : {};
+    const reprojected = converged.reprojected;
     await this.recordAdmin(
       actor,
       'restoreScope',
@@ -5433,7 +5449,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (carry) {
       await this.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: switchedOff });
     }
-    if (convergeFailure !== undefined) throw convergeFailure;
+    if ('error' in converged) throw converged.error;
     return replay;
   }
 
@@ -12287,36 +12303,41 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
-   * #2555: `importDumpProjected`, its refusal rethrown with its code. A role set refused in the
-   * load's unit is `forbidden`, worded as a restore refusal; the scope keeps its rows.
+   * #2555: `importDumpProjected`, a failure rethrown with its code. The role set refused in the
+   * load's unit is `forbidden`, worded for the verb (`restore refused: `, `import refused: `), and
+   * told apart by identity (`loadRoleRefusals`); the scope keeps its rows.
    */
   private async loadProjected(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
     opts: Parameters<ScopeStubRpc['importDumpProjected']>[2],
     projection: LoadProjection | null,
+    verb: 'restore' | 'import',
   ): Promise<SwitchedOff[]> {
-    try {
-      return unwrapReply(await this.scopeStub(scopeId).importDumpProjected(tables, scopeId, opts, projection));
-    } catch (e) {
-      if (errorCodeOf(e) !== 'forbidden') throw e;
-      const refused = substratError('forbidden', `restore refused: ${(e as Error).message}`);
-      loadRoleRefusals.add(refused);
-      throw refused;
-    }
+    const loaded = unwrapReply(await this.scopeStub(scopeId).importDumpProjected(tables, scopeId, opts, projection));
+    if ('switchedOff' in loaded) return loaded.switchedOff;
+    const refused = substratError('forbidden', `${verb} refused: ${loaded.refusedRoles}`);
+    loadRoleRefusals.add(refused);
+    throw refused;
   }
 
   /**
-   * #2555: an import whose load refused its role set has a scope it created for itself, never
-   * activated and holding none of the dump. Its directory row goes, as the pure host takes such a
-   * scope down, so a retry with the same id imports; the storage object is left, holding only what
-   * the provision wrote, which a retry's load replaces. Best effort: the refusal is the answer
+   * #2555: an import that cannot finish (its load refused its role set, or its re-projection
+   * refused or failed) takes down the scope it created for itself: only one this call created
+   * (`created`) and still `provisioning`, never activated, so an import pointed at an existing
+   * scope never touches it. Its directory row goes, as the pure host takes such a scope down, so a
+   * retry with the same id imports. The storage object is left for that retry's load to replace;
+   * until then it holds what the provision projected into it (the tenant's roles, tuples,
+   * entitlements, identity links and connection keys) and, after a load, the dump, and no
+   * directory row leads a later tenant deletion to it. Best effort: the refusal is the answer
    * whatever this does. A teardown that fails is a staff-only ops row (no tenant on it), with the
    * scope left in `provisioning` for staff to reap. No admin row: the import never happened, and
    * its `provisionScope` row stays as the record of the attempt.
    */
-  private async dropRefusedImport(actor: PlatformActorId, scopeId: ScopeId): Promise<void> {
+  private async dropRefusedImport(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, created: boolean): Promise<void> {
+    if (!created) return;
     try {
+      if ((await this.cp.getScopeRecord(tenantId, scopeId))?.status !== 'provisioning') return;
       await this.cp.deleteScopeDirectory(scopeId);
     } catch (teardown) {
       await this.admin
@@ -12336,22 +12357,28 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * #2555: the directory read again once the load has committed. A tenant-level write made between
    * the first read and the load fanned out before the load replaced it, so when the directory has
-   * moved, the scope is projected once more through the fan-out's own path (`projectScope`,
-   * unjudged as every fan-out is, K-55). Once at most: a write after this read fans out to the
-   * restored scope itself. Answers whether it re-projected. Ordering projections by a per-tenant
-   * revision (#2595) would make the second read unnecessary.
+   * moved, the scope is projected once more, judged in its own unit against the seats the load
+   * brought (`projectJudged`): a role the directory redefined in the window, which its own door
+   * judged without those seats, is judged with them here. Once at most: a write after this read
+   * fans out to the scope itself. Answers `reprojected` (`true` when it re-projected), and the
+   * error with `'refused'` or `'failed'` when the re-projection could not land, which leaves the
+   * scope on the set the load judged. Ordering projections by a per-tenant revision (#2595) would
+   * make the second read unnecessary.
    */
   private async convergeLoadedProjection(
     tenantId: TenantId,
     scopeId: ScopeId,
     vertical: string | null | undefined,
-    loaded: LoadProjection | null,
-  ): Promise<boolean> {
-    if (!loaded) return false;
-    const now = await this.loadProjectionFor(tenantId, vertical);
-    if (now && projectionDigest(now) === projectionDigest(loaded)) return false;
-    await this.projectScope(tenantId, scopeId);
-    return true;
+    loaded: LoadProjection,
+  ): Promise<{ reprojected?: Reprojected; error?: unknown }> {
+    try {
+      const now = await this.loadProjectionFor(tenantId, vertical);
+      if (!now || projectionDigest(now) === projectionDigest(loaded)) return {};
+      await this.projectJudged(tenantId, scopeId, now.roles, now.tuples, now.entitlements, undefined, now.identities, now.connectionKeys);
+      return { reprojected: true };
+    } catch (error) {
+      return { reprojected: errorCodeOf(error) === 'forbidden' ? 'refused' : 'failed', error };
+    }
   }
 
   /**

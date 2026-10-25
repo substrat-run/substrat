@@ -607,13 +607,14 @@ const roleRefusals = new WeakSet<Error>();
  * reservations of the caller's host (its registered modules and its `permissions`). This class's own
  * are joined in the unit. The set itself is the one the unit writes.
  */
-export type RoleJudge = {
-  reserved: string[];
-  declared: string[];
-  /** #2555: ask only about the roles the scope's state seats, stores or keeps a tombstone of
-   *  (`loadedRoleSetRefusedRole`), as a load of the directory's set is judged. Set by this class. */
-  loaded?: true;
-};
+export type RoleJudge = { reserved: string[]; declared: string[] };
+
+/**
+ * A unit's judgement, never on the wire: the caller's `judge`, and `loaded` (#2555) when only the
+ * roles the scope's state seats, stores or keeps a tombstone of are asked about
+ * (`loadedRoleSetRefusedRole`), as this class judges a control-plane-full load of the directory's set.
+ */
+type UnitJudgement = { judge: RoleJudge; loaded?: boolean };
 
 /** A role row as `applyProjection` writes it. */
 type ProjectedRoleRow = { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null };
@@ -5343,9 +5344,9 @@ export function defineScopeDO(
      * The answer is a fixed sentence naming the role key only, whoever reads it. The rule's own
      * wording is the pre-check's, which a caller still asks first for the common case.
      */
-    private refuseRoleSetInUnit(tenantId: string, roles: readonly RoleShape[], judge: RoleJudge): void {
+    private refuseRoleSetInUnit(tenantId: string, roles: readonly RoleShape[], { judge, loaded }: UnitJudgement): void {
       const state = this.roleStateSync(tenantId);
-      const refused = (judge.loaded ? loadedRoleSetRefusedRole : reservedRoleSetRefusedRole)(
+      const refused = (loaded ? loadedRoleSetRefusedRole : reservedRoleSetRefusedRole)(
         roles,
         { reserved: new Set([...judge.reserved, ...this.reservedKeys]), declared: new Set([...judge.declared, ...this.declaredKeys]) },
         { roles: state.roles, seated: new Set(state.seated), ...(state.dropped ? { dropped: state.dropped } : {}) },
@@ -7811,10 +7812,10 @@ export function defineScopeDO(
           // The roles are judged only where the loaded state has a part in them (`loaded`).
           if (repair || directory) {
             try {
-              if (repair) this.projectionBody(repair.judge, repair.tenantId, repair.roles, []);
+              if (repair) this.projectionBody({ judge: repair.judge }, repair.tenantId, repair.roles, []);
               else if (directory) {
                 const { judge, tenantId, roles, tuples, entitlements, identities, connectionKeys } = directory;
-                this.projectionBody({ ...judge, loaded: true }, tenantId, roles, tuples, entitlements, undefined, identities, connectionKeys);
+                this.projectionBody({ judge, loaded: true }, tenantId, roles, tuples, entitlements, undefined, identities, connectionKeys);
               }
             } catch (e) {
               // The projection's own tenant refusal (its receipt check) is a tenant refusal of the
@@ -7910,25 +7911,33 @@ export function defineScopeDO(
      * #2555: a control-plane-full restore or import. `importDump`, with this store's permission flags
      * kept through it and, when `projection` is given (a host that projects permissions into its
      * scopes), the directory's current state judged and projected last in the load's transaction. A
-     * refusal, the role judgement's included, rolls the whole load back, and is answered as data so
-     * its code survives the hop. A method of its own, so a host meeting a ScopeDO from before it is
-     * refused by the runtime, nothing loaded, rather than loading the dump's permission state as is.
+     * refusal rolls the whole load back. The role judgement's own is answered as `refusedRoles`, so
+     * the host can tell it from any other; every other is answered as data so its code survives the
+     * hop. A method of its own, so a host meeting a ScopeDO from before it is refused by the
+     * runtime, nothing loaded, rather than loading the dump's permission state as is.
      */
     importDumpProjected(
       tables: ScopeDumpTable[],
       destScopeId: ScopeId,
       opts: Pick<ImportDumpOptions, 'switchOff' | 'sourceScopeId' | 'exact'>,
       projection: LoadProjection | null,
-    ): Promise<DoReply<SwitchedOff[]>> {
-      return replyOf(() =>
-        this.importDump(tables, destScopeId, {
-          switchOff: opts.switchOff,
-          sourceScopeId: opts.sourceScopeId,
-          exact: opts.exact,
-          keepPermissionFlags: true,
-          ...(projection ? { projection } : {}),
-        }),
-      );
+    ): Promise<DoReply<{ switchedOff: SwitchedOff[] } | { refusedRoles: string }>> {
+      return replyOf(async () => {
+        try {
+          return {
+            switchedOff: await this.importDump(tables, destScopeId, {
+              switchOff: opts.switchOff,
+              sourceScopeId: opts.sourceScopeId,
+              exact: opts.exact,
+              keepPermissionFlags: true,
+              ...(projection ? { projection } : {}),
+            }),
+          };
+        } catch (e) {
+          if (e instanceof Error && roleRefusals.has(e)) return { refusedRoles: e.message };
+          throw e;
+        }
+      });
     }
 
     /** #2531: `commitStagedDumpChecked` with the role repair in the load's transaction (`importDumpJudged`). */
@@ -9404,7 +9413,7 @@ export function defineScopeDO(
       // The whole body is synchronous storage work, so it is ONE transaction (#1738): the queue
       // serializes but does not roll back, and a role insert that throws part-way must not leave
       // the receipt (or a half-replaced role set) behind for `servesTenant` to trust.
-      return this.queue.enqueue(() => this.revision.transactionSync(() => this.projectionBody(judge, ...args)));
+      return this.queue.enqueue(() => this.revision.transactionSync(() => this.projectionBody(judge && { judge }, ...args)));
     }
 
     /**
@@ -9412,7 +9421,7 @@ export function defineScopeDO(
      * load's (`loadTables`, #2531), so a restore's role repair lands in the load's transaction.
      */
     private projectionBody(
-      judge: RoleJudge | undefined,
+      judgement: UnitJudgement | undefined,
       ...[tenantId, roles, tuples, entitlements, scopeTuples, identities, connectionKeys, switchOff, serviceSubjects]: Parameters<ScopeDO['applyProjection']>
     ): SwitchedOff[] {
       // #1738: the receipt `servesTenant` reads. First writer wins: absent or equal is written,
@@ -9433,7 +9442,7 @@ export function defineScopeDO(
         );
       }
       // #2531: judged before the first write of the unit, on what the scope holds now.
-      if (judge) this.refuseRoleSetInUnit(tenantId, roles.map(roleShapeOfRow), judge);
+      if (judgement) this.refuseRoleSetInUnit(tenantId, roles.map(roleShapeOfRow), judgement);
       // Written before any guard below can return early, so every projection leaves it.
       this.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, tenantId);
       // #2531: a role the new set leaves out is TOMBSTONED, not deleted: it keeps the keys and the
