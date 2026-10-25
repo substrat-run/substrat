@@ -2155,7 +2155,6 @@ export class ControlPlaneDO extends DurableObject {
   setTenantStatus(tenantId: string, status: TenantStatus, audit?: AdminEntryInput): string {
     const before = this.readTenant(tenantId);
     if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
-    if (before.status === 'reaped') throw substratError('conflict', `tenant ${tenantId} is reaped and cannot change status`);
     // `reaped` is terminal and destroys data — unreachable here, only ever set by
     // reapTenant, so a plain status flip cannot forge a tombstone over live data
     // (§4.8, the tenant analogue of reapScope's archived-only gate).
@@ -2164,6 +2163,7 @@ export class ControlPlaneDO extends DurableObject {
         `tenant ${tenantId} cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`,
       );
     }
+    if (before.status === 'reaped') throw substratError('conflict', `tenant ${tenantId} is reaped and cannot change status`);
     // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
     // entering `deleting` stamps, leaving it (an un-delete) clears — the same shape
     // transitionScope uses for archived_at.
