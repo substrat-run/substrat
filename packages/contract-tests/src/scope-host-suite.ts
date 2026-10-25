@@ -54,6 +54,7 @@ import {
   isSearchIndexTable,
   platformIntentFailureMessage,
   withheldOpsFailure,
+  withheldStaffFailure,
   REDACTED_DELIVERY_NOTE,
   REDACTED_FAILURE_NOTE,
   REDACTED_INTENT_MARKER,
@@ -3761,6 +3762,39 @@ export function scopeHostContractSuite(
             expect(await rowsOf(ops.unlinked)).toEqual(before.unlinked);
             expect((await issueOf(ops.unlinked)).lastMessage).toBe(before.unlinked[1]![1]);
             expect(await rowsOf(ops.elsewhere)).toEqual(before.elsewhere);
+            await host.settlePlatformRequest(t1, s1, unlinked, { status: 'done' });
+          });
+
+          it("#2556: staff's row alone, for a withheld pass that left a tombstoned intent pending, is redacted too", async () => {
+            const kind = `connector:erasure-${ulid()}`;
+            const erased = dataSubjectId.parse(ulid());
+            const spared = dataSubjectId.parse(ulid());
+            const linked = await routeIntent(kind, erased, 'Anna Ek');
+            const unlinked = await routeIntent(kind, spared, 'Bo Lund');
+            // As the drain files it (`withheldStaffFailure`): no tenant, the drained scope, marker first.
+            const transient = (operation: string, id: string, error: string) =>
+              host.admin.recordOpsFailure({
+                actor: staff,
+                ...withheldStaffFailure(
+                  { operation, stage: 'transient', scopeId: s1 },
+                  `${error}; reference = up${ulid().toLowerCase()}`,
+                  ulid(),
+                  platformIntentFailureMessage(id, 'pending (the call did not complete at its deployment): '),
+                ),
+              });
+            const ops = { linked: op('transient-linked'), unlinked: op('transient-unlinked') };
+            await transient(ops.linked, linked, 'HTTP 500: Anna Ek is not on file');
+            await transient(ops.unlinked, unlinked, 'HTTP 500: Bo Lund is not on file');
+            const rowsOf = async (operation: string) =>
+              (await host.admin.listOpsFailures(staff, { operation })).map((r) => [r.tenantId, r.message]);
+            const before = await rowsOf(ops.unlinked);
+            expect((await rowsOf(ops.linked))[0]![1]).toMatch(/^\[upstream reference = up[0-9a-z]+\] platform intent .* pending \(the call did not complete at its deployment\): HTTP 500: /);
+
+            await host.admin.shredSubject(staff, t1, s1, erased);
+
+            expect(await rowsOf(ops.linked)).toEqual([[null, REDACTED_FAILURE_NOTE]]);
+            expect((await issueOf(ops.linked)).lastMessage).toBe(REDACTED_FAILURE_NOTE);
+            expect(await rowsOf(ops.unlinked)).toEqual(before);
             await host.settlePlatformRequest(t1, s1, unlinked, { status: 'done' });
           });
 
@@ -12438,6 +12472,17 @@ export function scopeHostContractSuite(
         'conflict',
         /already taken/,
       );
+    });
+
+    it('words the tenant slug refusal without the tenant that holds the slug (#2556)', async () => {
+      const holder = tenantId.parse(ulid());
+      const slug = `held-${holder.toLowerCase()}`;
+      await host.admin.createTenant(staff, { id: holder, slug, name: 'Holder Co' });
+      const taken = await host.admin
+        .createTenant(staff, { id: tenantId.parse(ulid()), slug, name: 'Impostor Co' })
+        .then(() => null, (e: unknown) => e as Error);
+      expect(taken?.message).toBe(`tenant slug '${slug}' is already taken (slugs are unique)`);
+      expect(taken?.message).not.toContain(holder);
     });
 
     it('enumerates the scopes under a tenant, and filters by status (§4.5)', async () => {

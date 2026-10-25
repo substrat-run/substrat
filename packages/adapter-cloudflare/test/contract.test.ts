@@ -71,6 +71,7 @@ import {
   permissionContractSuite,
   reservedRoleContractSuite,
   roleStateContractSuite,
+  restoreRoleContractSuite,
   sizeReadsContractSuite,
   introspectionReadsContractSuite,
   introspectionReadsOf,
@@ -442,6 +443,21 @@ roleStateContractSuite('adapter-cloudflare', async () => {
     cleanup: async () => host.close(),
   };
 });
+
+// #2555: a restore judges the directory's roles against the dump's seats, on a host whose scopes read
+// their roles locally (the dump stores the projected role rows) and on one whose scopes read them over
+// RPC (it stores none).
+for (const scopeLocalPermissions of [true, false]) {
+  restoreRoleContractSuite(`adapter-cloudflare (scopeLocalPermissions: ${scopeLocalPermissions})`, async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeLocalPermissions });
+    return {
+      host,
+      roleState: (t, s) => host.roleStateLocal(t, s),
+      dumpCarriesRoles: scopeLocalPermissions,
+      cleanup: async () => host.close(),
+    };
+  });
+}
 
 // Addressing a DO constructs it, so it is listed whatever a read decides; what a refusal must
 // leave is an object with no state in it, which `holdsScope` would read as held.
@@ -7136,7 +7152,7 @@ describe('#113 — a refusal raised inside a Durable Object keeps its code acros
     );
     expect(errorCodeOf(taken)).toBe('conflict');
     // Thrown across the hop, workerd would have written `Substrat.conflict: tenant slug …`.
-    expect(taken.message).toBe(`tenant slug 'hop-${t.toLowerCase()}' already taken by ${t} (slugs are unique)`);
+    expect(taken.message).toBe(`tenant slug 'hop-${t.toLowerCase()}' is already taken (slugs are unique)`);
     const ghost = tenantId.parse(ulid());
     const unknown = await refusal(host.admin.setTenantStatus(staff, ghost, 'suspended'));
     expect(errorCodeOf(unknown)).toBe('not_found');
