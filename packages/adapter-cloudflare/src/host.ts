@@ -3235,14 +3235,10 @@ export class CloudflareScopeHost implements ScopeHost {
             (await this.connectionGrantsInScope(tenantId, scopeId))
               .filter((g) => g.connectionId === open.id)
               .map((g) => g.permission),
-          openAttachment: (attachmentId: string) =>
-            this.getConnectorAttachments(open.id, scopeId, { eventId }).then((a) =>
-              a.open(attachmentId),
-            ),
-          openAttachmentStream: (attachmentId: string) =>
-            this.getConnectorAttachments(open.id, scopeId, { eventId }).then((a) =>
-              a.openStream(attachmentId),
-            ),
+          openAttachment: async (attachmentId: string) =>
+            (await this.getConnectorAttachments(open.id, scopeId, { eventId })).open(attachmentId),
+          openAttachmentStream: async (attachmentId: string) =>
+            (await this.getConnectorAttachments(open.id, scopeId, { eventId })).openStream(attachmentId),
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
           // map goes in, never out — a connector receives the plaintext of one cell,
           // not a private key it could mislay. Retired keys are in the map too, so a
@@ -12524,19 +12520,7 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachment | null> {
-    // Same gate as the upload leg: a held scope's bytes are not read out of its bucket.
-    await this.assertLive(tenantId, scopeId);
-    await this.migrateAndRecord(scopeId);
-    const store = await this.resolveAttachmentStore(tenantId);
-    return this.buildAttachmentSurface(
-      { connectionId },
-      tenantId,
-      scopeId,
-      store,
-      // #726 remedy B: the platform named a delivery; this deployment decides what that
-      // delivery reaches, from its own spine row. Absent ⇒ the ordinary grant check.
-      eventId === undefined ? undefined : { eventId },
-    ).open(attachmentId);
+    return (await this.connectorReadSurface(connectionId, tenantId, scopeId, eventId)).open(attachmentId);
   }
 
   /**
@@ -12550,6 +12534,17 @@ export class CloudflareScopeHost implements ScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<OpenedAttachmentStream | null> {
+    return (await this.connectorReadSurface(connectionId, tenantId, scopeId, eventId)).openStream(attachmentId);
+  }
+
+  /** The attachment surface the platform's reads as a connection go through, behind their gates. */
+  private async connectorReadSurface(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    eventId: string | undefined,
+  ): Promise<ScopeAttachments> {
+    // Same gate as the upload leg: a held scope's bytes are not read out of its bucket.
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const store = await this.resolveAttachmentStore(tenantId);
@@ -12558,8 +12553,10 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId,
       scopeId,
       store,
+      // #726 remedy B: the platform named a delivery; this deployment decides what that
+      // delivery reaches, from its own spine row. Absent ⇒ the ordinary grant check.
       eventId === undefined ? undefined : { eventId },
-    ).openStream(attachmentId);
+    );
   }
 
   /**

@@ -3140,6 +3140,13 @@ export class SqliteScopeHost implements ScopeHost {
             `no live '${provider}' connection for tenant ${rt.tenantId} / vertical '${vertical}'`,
           );
         }
+        const readSurface = () =>
+          this.buildAttachments(rt, { kind: 'connection', id: open.id }, this.attachmentStore(rt.tenantId, vertical), {
+            reentrant: holdsActor,
+            // #726 remedy (B): inside a dispatch the authority to read is the DELIVERY,
+            // not a standing grant. See `admitByEvent` on `buildAttachments`.
+            admitByEvent: eventId,
+          });
         return {
           ...open,
           // The outbound read (#711), on THIS connection — so it is authorized as
@@ -3160,23 +3167,9 @@ export class SqliteScopeHost implements ScopeHost {
             (await this.connectionGrantsInScope(rt.tenantId, rt.scopeId))
               .filter((g) => g.connectionId === open.id)
               .map((g) => g.permission),
-          openAttachment: async (attachmentId: string) => {
-            const store = this.attachmentStore(rt.tenantId, vertical);
-            return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
-              reentrant: holdsActor,
-              // #726 remedy (B): inside a dispatch the authority to read is the DELIVERY,
-              // not a standing grant. See `admitByEvent` on `buildAttachments`.
-              admitByEvent: eventId,
-            }).open(attachmentId);
-          },
+          openAttachment: async (attachmentId: string) => readSurface().open(attachmentId),
           // #2514: the same read, its bytes a stream.
-          openAttachmentStream: async (attachmentId: string) => {
-            const store = this.attachmentStore(rt.tenantId, vertical);
-            return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
-              reentrant: holdsActor,
-              admitByEvent: eventId,
-            }).openStream(attachmentId);
-          },
+          openAttachmentStream: async (attachmentId: string) => readSurface().openStream(attachmentId),
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
           // map goes in, never out — a connector is handed the plaintext of one cell,
           // not a private key it could mislay. Retired keys are in the map too, so a
