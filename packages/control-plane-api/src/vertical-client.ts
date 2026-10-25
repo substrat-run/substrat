@@ -129,8 +129,8 @@ import {
   mergeDumpPages,
   scopeDumpPage,
 } from '@substrat-run/contracts';
-import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { attachmentSha256, isSizedByteStream, knownLengthInit, scopeNotHeldRefusal, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
+import type { CopyRestoreFence, DeadlineOptions, FetchLike, IncrementalSha256, KeptCopy, LoadMarker, OpenedAttachment, OpenedAttachmentStream, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import { STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_DURATION_MS, attachmentSha256, deadlineFetch, isSizedByteStream, knownLengthInit, runtimeSha256, scopeNotHeldRefusal, ulid, undrainedEventsOf, verifiedStream, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -172,6 +172,118 @@ export function isScopeNotHeld(err: unknown, scopeId: ScopeId): boolean {
 export async function notHeldIsBenign(record: () => Promise<Pick<Scope, 'status'> | undefined>): Promise<boolean> {
   const found = await record();
   return found === undefined || found.status === 'reaped' || found.status === 'archived';
+}
+
+/**
+ * The record an attachment read's response carries in its header (#711), parsed, not cast: it holds
+ * the sha256 the bytes are checked against, and a shape this side invented would witness nothing.
+ */
+function attachmentRecordOf(res: Response): AttachmentRecord {
+  const raw = res.headers.get(CONNECTOR_ATTACHMENT_RECORD_HEADER);
+  if (!raw) {
+    throw new Error(
+      `connector-attachment-open: the vertical answered ${res.status} with no ` +
+        `${CONNECTOR_ATTACHMENT_RECORD_HEADER} header — the bytes cannot be trusted without ` +
+        `the record that witnesses them (#711)`,
+    );
+  }
+  return attachmentRecord.parse(JSON.parse(raw));
+}
+
+/** How a refusal of an attachment read ends: what the caller holds of the file when it is thrown (#2514). */
+const NOTHING_READ = 'Nothing was read.';
+/**
+ * A streamed read's refusal can land after most of the file has been handed on: every chunk but the
+ * held-back last one. So it says what those bytes are, and what to do with them, never "nothing".
+ */
+export const STREAMED_ATTACHMENT_UNVERIFIED =
+  'The bytes delivered before this error are a prefix of an unverified file: discard them, and undo anything written from them.';
+
+/** An attachment read whose bytes are not the ones its record names (#2514): the deployment's fault. */
+function attachmentIntegrity(record: AttachmentRecord, why: string, cause?: unknown, tail = NOTHING_READ): ControlPlaneError {
+  return new ControlPlaneError(
+    502,
+    `connector-attachment-open: attachment ${record.id} failed its integrity check: ${why} (#2514). ${tail}`,
+    undefined,
+    { code: 'internal', ...(cause !== undefined ? { cause } : {}) },
+  );
+}
+
+/** A `deadlineFetch` bound ran out (#2514): the deployment was slow, which is retryable, never an integrity fault. */
+const isTimeout = (err: unknown): boolean => (err as { name?: unknown } | null)?.name === 'TimeoutError';
+
+/** The deployment too slow to answer an attachment read (#2514): a 504, `unavailable`, retryable. */
+function attachmentTimeout(what: string, err: unknown, tail: string): ControlPlaneError {
+  const message = err instanceof Error ? err.message : String(err);
+  return new ControlPlaneError(
+    504,
+    `connector-attachment-open: ${what} timed out: ${message} (#2514). ${tail}`,
+    undefined,
+    { code: 'unavailable', cause: err },
+  );
+}
+
+/**
+ * What a streamed attachment read's error becomes (#2514). A bound running out is a 504; anything
+ * else, a body that broke off or bytes that did not match, is the integrity refusal the buffered read
+ * gives. Both end in {@link STREAMED_ATTACHMENT_UNVERIFIED}: by the time they land, the caller may hold
+ * all but the last chunk.
+ */
+function streamRefusal(record: AttachmentRecord, err: unknown): ControlPlaneError {
+  if (err instanceof ControlPlaneError) return err;
+  if (isTimeout(err)) return attachmentTimeout(`reading attachment ${record.id}`, err, STREAMED_ATTACHMENT_UNVERIFIED);
+  return attachmentIntegrity(record, err instanceof Error ? err.message : String(err), err, STREAMED_ATTACHMENT_UNVERIFIED);
+}
+
+/** The longest any one bound of a streamed attachment read may be set to (#2514): an hour. */
+const ATTACHMENT_STREAM_BOUND_MAX_MS = 60 * 60_000;
+
+/**
+ * `VerticalClientOptions.attachmentStream`'s bounds, with the defaults filled in and each held to a
+ * whole number of milliseconds in (0, an hour] (#2514). Zero, a negative, NaN or Infinity would end
+ * every read at once or never, so it is refused in words instead.
+ */
+function attachmentStreamBounds(
+  given: VerticalClientOptions['attachmentStream'],
+): { timeoutMs: number; idleMs: number; maxStreamMs: number; timers?: DeadlineOptions['timers'] } {
+  const bounds = {
+    timeoutMs: given?.timeoutMs ?? STREAM_IDLE_TIMEOUT_MS,
+    idleMs: given?.idleMs ?? STREAM_IDLE_TIMEOUT_MS,
+    maxStreamMs: given?.maxStreamMs ?? STREAM_MAX_DURATION_MS,
+  };
+  for (const [name, ms] of Object.entries(bounds)) {
+    if (!Number.isSafeInteger(ms) || ms <= 0 || ms > ATTACHMENT_STREAM_BOUND_MAX_MS) {
+      throw new ControlPlaneError(
+        500,
+        `VerticalClientOptions.attachmentStream.${name} must be a whole number of milliseconds from 1 to ` +
+          `${ATTACHMENT_STREAM_BOUND_MAX_MS}, not ${ms}`,
+      );
+    }
+  }
+  return { ...bounds, ...(given?.timers ? { timers: given.timers } : {}) };
+}
+
+/**
+ * `source`, passed through chunk by chunk with its errors made `classify(err)`. Pull-driven with no
+ * queue of its own, as every relay on this path is, so it holds at most the chunk in flight.
+ */
+function classifiedStream(source: ReadableStream<Uint8Array>, classify: (err: unknown) => Error): ReadableStream<Uint8Array> {
+  const reader = source.getReader();
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) controller.close();
+          else controller.enqueue(value);
+        } catch (err) {
+          controller.error(classify(err));
+        }
+      },
+      cancel: (reason) => reader.cancel(reason),
+    },
+    { highWaterMark: 0 },
+  );
 }
 
 /** The orphan-attachment report as it crosses the wire (#2314): `OrphanSweepReport`, checked. */
@@ -311,6 +423,14 @@ export interface VerticalClientOptions {
   baseUrl?: string;
   /** Shared secret the vertical verifies with `assertPlatformCall`. */
   platformSecret: string;
+  /**
+   * A streamed attachment read's bounds and digest (`connectorOpenAttachmentStream`, #2514). The
+   * bounds are `deadlineFetch`'s: `timeoutMs` up to the response headers (default
+   * `STREAM_IDLE_TIMEOUT_MS`), then the body's idle window and absolute cap. `sha256` is the running
+   * digest the bytes are checked with; the runtime's own (workerd's `crypto.DigestStream`) by default,
+   * and needed only where the runtime has none (Node).
+   */
+  attachmentStream?: DeadlineOptions & { timeoutMs?: number; sha256?: () => IncrementalSha256 };
 }
 
 export interface ProvisionInstanceInput {
@@ -673,12 +793,31 @@ export class VerticalClient {
     return this.getInternal<ScopeTable[]>(`/internal/tables?scopeId=${encodeURIComponent(scopeId)}`);
   }
 
-  /** A bounded page of one of the scope's tables. */
+  /**
+   * A bounded page of one of the scope's tables, for the Data view (#2563). Sends `held=1`: a
+   * deployment that does not hold the scope refuses it (409, `scopeNotHeldRefusal`) instead of
+   * answering an empty store. A vertical deployed before the flag ignores it and answers as it
+   * always did.
+   */
   async readScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    return this.tablePage(scopeId, input, true);
+  }
+
+  /**
+   * A table of a store the deployment may no longer hold, for the carry and its cleanup, which ask
+   * a wiped copy whether it carries the `carried_away` tombstone (#2563). Sends no `held` flag, so
+   * a wiped copy answers. Nothing that shows a person data calls this: `readScopeTable` does.
+   */
+  async readTombstoneTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    return this.tablePage(scopeId, input, false);
+  }
+
+  private async tablePage(scopeId: ScopeId, input: ReadScopeTableInput, held: boolean): Promise<ScopeTablePage> {
     const q = new URLSearchParams({
       scopeId,
       limit: String(input.limit),
       offset: String(input.offset),
+      ...(held ? { held: '1' } : {}),
     });
     return this.getInternal<ScopeTablePage>(
       `/internal/tables/${encodeURIComponent(input.table)}?${q}`,
@@ -1027,54 +1166,29 @@ export class VerticalClient {
      */
     eventId?: string;
   }): Promise<OpenedAttachment | null> {
-    const q = new URLSearchParams({
-      connectionId: input.connectionId,
-      tenantId: input.tenantId,
-      scopeId: input.scopeId,
-      ...(input.eventId ? { eventId: input.eventId } : {}),
-    });
-    const base = this.options.baseUrl ?? 'https://vertical.invalid';
-    const path = `/internal/connector-attachment/${encodeURIComponent(input.attachmentId)}`;
     const res = await this.reach('connector-attachment-open', () =>
-      this.options.fetch(`${base}${path}?${q}`, {
+      this.options.fetch(this.attachmentReadUrl(input), {
         headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       }),
     );
     if (res.status === 404) return null;
     if (!res.ok) throw await this.refusal('connector-attachment-open', res);
-    const raw = res.headers.get(CONNECTOR_ATTACHMENT_RECORD_HEADER);
-    if (!raw) {
-      throw new Error(
-        `connector-attachment-open: the vertical answered ${res.status} with no ` +
-          `${CONNECTOR_ATTACHMENT_RECORD_HEADER} header — the bytes cannot be trusted without ` +
-          `the record that witnesses them (#711)`,
-      );
-    }
-    // Parsed, not cast: the record carries the sha256 the bytes are checked against at
-    // the far end, and a shape this side invented would witness nothing.
-    const record = attachmentRecord.parse(JSON.parse(raw));
+    const record = attachmentRecordOf(res);
     // Held to that record here too (#2514). A deployment that streams the read sends its 200 before
     // the digest is known and cuts the body when the bytes do not match, so a broken body is the
     // integrity refusal, not a network fault, and is classified as one. The length and the digest are
     // checked again on the whole body, so no transport's handling of a short body is the only guard.
-    const integrity = (why: string, cause?: unknown) =>
-      new ControlPlaneError(
-        502,
-        `connector-attachment-open: attachment ${record.id} failed its integrity check: ${why} (#2514). Nothing was read.`,
-        undefined,
-        { code: 'internal', ...(cause !== undefined ? { cause } : {}) },
-      );
     let body: Uint8Array;
     try {
       body = new Uint8Array(await res.arrayBuffer());
     } catch (e) {
-      throw integrity(`its body broke off before the ${record.size} bytes its record names arrived`, e);
+      throw attachmentIntegrity(record, `its body broke off before the ${record.size} bytes its record names arrived`, e);
     }
     if (body.byteLength !== record.size) {
-      throw integrity(`the deployment sent ${body.byteLength} bytes; its record names ${record.size}`);
+      throw attachmentIntegrity(record, `the deployment sent ${body.byteLength} bytes; its record names ${record.size}`);
     }
     if ((await attachmentSha256(body)) !== record.sha256) {
-      throw integrity('the bytes do not match the recorded sha256');
+      throw attachmentIntegrity(record, 'the bytes do not match the recorded sha256');
     }
     return {
       record,
@@ -1083,6 +1197,102 @@ export class VerticalClient {
       // stored one is header-safe (#2519), and the record is the exact stored value.
       contentType: record.contentType,
     };
+  }
+
+  /**
+   * `connectorOpenAttachment`, with the bytes as a stream read off the response as the caller reads
+   * it, never held here (#2514). The same route, the same `null` for an unknown id, the same refusals
+   * before the first byte. A deployment that predates streamed reads answers the same route in full;
+   * the bytes are still handed on as they arrive.
+   *
+   * - **Integrity.** The stream is held to the record in the response header: its `size`, and its
+   *   sha256, checked as the bytes pass, with the chunk that completes the file held back until the
+   *   digest matches. A body that breaks off (how a streaming deployment refuses bytes that do not
+   *   match), runs short or long, or does not match, errors the stream with a `ControlPlaneError` 502,
+   *   code `internal`, as the buffered read refuses it. A consumer that has received all `size` bytes
+   *   has received the bytes the record names.
+   * - **Time.** `deadlineFetch`'s bounds, as on a connection's own `fetch`. The call's `timeoutMs`
+   *   runs from the request until the caller's FIRST read of the stream, so read promptly once it is
+   *   open: work awaited in between spends it. From that read, the body errors when the deployment
+   *   sends no byte for `STREAM_IDLE_TIMEOUT_MS`, or after `STREAM_MAX_DURATION_MS` in all. Each of
+   *   these, a deployment too slow to answer at all included, is a `ControlPlaneError` 504, code
+   *   `unavailable`, and the call is released. The bounds are `VerticalClientOptions.attachmentStream`,
+   *   each a whole number of milliseconds up to an hour.
+   * - **What an error means.** One thrown before the stream is handed back means nothing was read.
+   *   One the stream errors with ends in {@link STREAMED_ATTACHMENT_UNVERIFIED}: the caller may hold
+   *   all but the last chunk by then, and must discard it.
+   * - **Cancel.** Cancelling the stream cancels the response body, which the deployment reads as its
+   *   reader going away.
+   */
+  async connectorOpenAttachmentStream(
+    input: Parameters<VerticalClient['connectorOpenAttachment']>[0],
+  ): Promise<OpenedAttachmentStream | null> {
+    const verb = 'connector-attachment-open';
+    const bounds = attachmentStreamBounds(this.options.attachmentStream);
+    // Asked for here, so a runtime that cannot check the bytes sends nothing; made only once there is a
+    // body to check, so a refusal or an unknown id leaves no digest open.
+    const makeDigest = this.options.attachmentStream?.sha256 ?? runtimeSha256();
+    if (!makeDigest) {
+      throw new ControlPlaneError(
+        500,
+        `${verb}: this runtime has no running sha256 to check a streamed attachment with; ` +
+          `pass VerticalClientOptions.attachmentStream.sha256`,
+      );
+    }
+    const timed = deadlineFetch(this.options.fetch as unknown as FetchLike, bounds.timeoutMs, bounds);
+    const res = (await this.reach(verb, async () => {
+      try {
+        return (await timed(this.attachmentReadUrl(input), {
+          headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        })) as unknown as Response;
+      } catch (err) {
+        // The same slowness as a stall in the body, so the same answer, not `reach`'s "unreachable".
+        if (isTimeout(err)) {
+          throw attachmentTimeout(`attachment ${input.attachmentId}: the deployment's answer`, err, NOTHING_READ);
+        }
+        throw err;
+      }
+    })) as Response;
+    if (res.status === 404) {
+      await res.text().catch(() => {});
+      return null;
+    }
+    if (!res.ok) throw await this.refusal(verb, res);
+    let record: AttachmentRecord;
+    try {
+      record = attachmentRecordOf(res);
+    } catch (err) {
+      await res.text().catch(() => {});
+      throw err;
+    }
+    const source = res.body ?? new Response(new Uint8Array(0)).body!;
+    let verified: SizedByteStream;
+    try {
+      verified = verifiedStream({ stream: source, length: record.size }, record, makeDigest());
+    } catch (err) {
+      await source.cancel().catch(() => {});
+      throw attachmentIntegrity(record, (err as Error).message, err);
+    }
+    return {
+      record,
+      body: {
+        stream: classifiedStream(verified.stream as ReadableStream<Uint8Array>, (err) => streamRefusal(record, err)),
+        length: record.size,
+      },
+      contentType: record.contentType,
+    };
+  }
+
+  /** Where one attachment is read from (#711): the id in the path, the rest in the query. */
+  private attachmentReadUrl(input: Parameters<VerticalClient['connectorOpenAttachment']>[0]): string {
+    const q = new URLSearchParams({
+      connectionId: input.connectionId,
+      tenantId: input.tenantId,
+      scopeId: input.scopeId,
+      ...(input.eventId ? { eventId: input.eventId } : {}),
+    });
+    const base = this.options.baseUrl ?? 'https://vertical.invalid';
+    return `${base}/internal/connector-attachment/${encodeURIComponent(input.attachmentId)}?${q}`;
   }
 
   /**
@@ -2113,6 +2323,8 @@ export class VerticalClient {
     try {
       return await request();
     } catch (e) {
+      // Already classified by the call itself (a streamed read's timeout, #2514): kept as it is.
+      if (e instanceof ControlPlaneError) throw e;
       const detail = e instanceof Error ? e.message : String(e);
       throw new ControlPlaneError(502, `vertical unreachable during ${verb}: ${detail}`);
     }

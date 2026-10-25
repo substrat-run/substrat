@@ -166,6 +166,7 @@ export {
   isSizedByteStream,
   knownLengthInit,
   knownLengthStream,
+  runtimeSha256,
   verifiedStream,
   type ByteBody,
   type ByteStream,

@@ -11635,10 +11635,19 @@ export function scopeHostContractSuite(
           { ...hold, bindings: [''] },
           { ...hold, bindings: Array.from({ length: 65 }, (_, i) => `B${i}`) },
           { ...hold, value: 'not a field' },
+          // The count of names past the cap is a positive whole number when given.
+          { ...hold, more: 0 },
+          { ...hold, more: 1.5 },
         ]) {
           await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: { ...record(), walkHold } } as never), 'validation_failed');
         }
         expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record.walkHold).toBeUndefined();
+
+        // A hold of more names than it keeps: the first ones, and how many more.
+        const many = { ...hold, bindings: Array.from({ length: 64 }, (_, i) => `B${i}`), more: 6 };
+        await put(a, 'archive', 'v1', { ...record(), walkHold: many } as WireAuthRecord, '22:00:02');
+        expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record.walkHold).toEqual(many);
+        await put(a, 'archive', 'v1', record(), '22:00:02');
 
         // `unverified`, the walk's record of a script it could not confirm: lists claimed by none, and
         // only beside a hold. Without the hold, or beside lists, it is refused.

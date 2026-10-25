@@ -2067,6 +2067,9 @@ export const requestRollupReading = z.object({
 });
 export type RequestRollupReading = z.infer<typeof requestRollupReading>;
 
+/** The most binding names a fleet walk's hold keeps; any more are counted (`walkHold.more`). */
+export const WALK_HOLD_BINDINGS_MAX = 64;
+
 /**
  * The capability record (RFC wire-signing §7, Q8): what the uploader gave one deployment, written
  * from what it built and injected, never declared by the vertical. The readiness report (follow-on
@@ -2110,7 +2113,10 @@ export const wireAuthRecord = z
     walkHold: z
       .object({
         reason: z.enum(['verify', 'serve-in-flight']),
-        bindings: z.array(z.string().min(1).max(256)).max(64),
+        /** The first `WALK_HOLD_BINDINGS_MAX` binding names that differed. */
+        bindings: z.array(z.string().min(1).max(256)).max(WALK_HOLD_BINDINGS_MAX),
+        /** How many more differed than `bindings` names, when more did. */
+        more: z.number().int().positive().optional(),
         at: instant,
       })
       .strict()

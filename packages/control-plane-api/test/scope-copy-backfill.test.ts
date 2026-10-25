@@ -52,7 +52,7 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
   const unreachable = new Set<string>();
   const deployment = (ref: string): VerticalClient =>
     ({
-      readScopeTable: async (sid: string) => {
+      readTombstoneTable: async (sid: string) => {
         reads.push(`${ref} ${sid}`);
         const meta = storesOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };

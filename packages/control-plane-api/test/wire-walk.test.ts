@@ -606,13 +606,118 @@ describe('the fleet walk', () => {
     expect((await app.request('/wire-auth/walk', { method: 'POST', headers: { [DEV_ACTOR_HEADER]: person, 'content-type': 'text/plain' }, body: '{}' })).status).toBe(415);
     expect((await walk(app, {}, { origin: 'https://elsewhere.example' })).status).toBe(403);
     expect((await walk(app, { cursor: 'not-a-cursor' })).status).toBe(422);
-    expect((await walk(app, { cursor: 'acme|not-an-id' })).status).toBe(422);
+    expect((await walk(app, { cursor: 'Not A Slug|x' })).status).toBe(422);
+    expect((await walk(app, { cursor: '|x' })).status).toBe(422);
     for (const body of [{ apply: 'yes' }, { limit: 0 }, { limit: 51 }, { extra: 1 }, { release: Array.from({ length: 51 }, (_, i) => `s${i}`) }]) {
       expect((await walk(app, body)).status, JSON.stringify(body)).toBeGreaterThanOrEqual(400);
     }
     // None of those reached the runtime, and none wrote a pass.
     expect(calls).toEqual([]);
     expect(await walkRows()).toEqual([]);
+  });
+
+  it('refuses a pass, dry or applied, before it walks anything, while the rollout or the lists are refused', async () => {
+    const tenant = await tenantOf('walk-refused');
+    const v = await vertical(appWith(fleet()), tenant);
+    const before = new Map([...scripts].map(([k, b]) => [k, JSON.stringify(b)]));
+    const records = await recordsOf(v.slug);
+    calls.length = 0;
+    moduleFetches.length = 0;
+    for (const [settings, withheld] of [
+      [{ rollout: 'canary:a/crm,b/crm', routerKeys, platformKeys }, 'rollout-refused'],
+      [{ rollout: 'fleet', routerKeys: `${routerKeys},not-a-key`, platformKeys }, 'lists-refused'],
+      [{ rollout: 'fleet', routerKeys }, 'lists-refused'],
+    ] as const) {
+      for (const apply of [false, true]) {
+        const res = await walk(appWith(settings), { apply, limit: 10 });
+        expect(res.status, `${withheld} ${apply}`).toBe(409);
+        expect(await res.text()).toContain(withheld);
+        const [row] = (await walkRows()).slice(-1);
+        expect(row?.after).toMatchObject({ apply, walked: 0, updated: [], refused: expect.stringContaining(withheld) });
+        expect(JSON.stringify(row?.after)).not.toContain(routerKeys.split(',')[0]!);
+      }
+    }
+    // Nothing read, nothing written, nothing recorded.
+    expect(calls).toEqual([]);
+    expect(moduleFetches).toEqual([]);
+    expect(new Map([...scripts].map(([k, b]) => [k, JSON.stringify(b)]))).toEqual(before);
+    expect(await recordsOf(v.slug)).toEqual(records);
+    // Its positive twin: `off` is a withdrawal, not a refusal.
+    expect((await walk(appWith(off()), { limit: 10 })).status).toBe(200);
+  });
+
+  it('a valid canary is not refused: the canary’s vertical is walked current, one outside it is withdrawn', async () => {
+    const inside = await vertical(appWith(fleet()), await tenantOf('walk-canary-in'));
+    const outside = await vertical(appWith(fleet()), await tenantOf('walk-canary-out'));
+    const canary = { rollout: `canary:${inside.slug}`, routerKeys, platformKeys };
+    const res = await walk(appWith(canary), { apply: true, limit: 10 });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const walked = ((await res.json()) as WireWalkPass).scripts;
+    expect(walked.filter((s) => inside.scripts.includes(s.deploymentRef)).map((s) => s.action)).toEqual(['current', 'current', 'current']);
+    expect(walked.filter((s) => outside.scripts.includes(s.deploymentRef)).map((s) => s.action)).toEqual(['updated', 'updated', 'updated']);
+    expect(walked.some((s) => s.reason === 'settings-refused')).toBe(false);
+    for (const s of inside.scripts) expect(wireOf(s)[WIRE_STATE_VAR], s).toBe('dual');
+    for (const s of outside.scripts) expect(wireOf(s), s).toEqual({});
+    expect(Object.values(await recordsOf(outside.slug)).map((r) => r.record.withheld)).toEqual(['not-in-rollout', 'not-in-rollout', 'not-in-rollout']);
+  });
+
+  it('a pass can end on a version whose id is not a ULID, and the next pass resumes from it', async () => {
+    const app = appWith(off());
+    const v = await vertical(app, await tenantOf('walk-ids'));
+    // A version published by the publish route, under an id of its own spelling, with its own script.
+    const ref = `${v.slug.replace('/', '-')}-custom`;
+    scripts.set(ref, [{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID', text: 'zz-custom-id' }]);
+    await host.admin.publishVersion(person, {
+      id: 'zz-custom-id', verticalSlug: v.slug, version: '9.9.9', manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
+    });
+    // A second vertical sorts after it, so a pass that ends on the custom version answers a `next` naming it.
+    const after = await vertical(app, await tenantOf('walk-idt'));
+    const onIt = await pass(app, { limit: 4 });
+    expect(onIt.scripts.at(-1)?.deploymentRef).toBe(ref);
+    expect(onIt.next).toBe(`${v.slug}|zz-custom-id`);
+    // And the next pass takes that cursor, and walks on from it.
+    const rest = await pass(app, { limit: 10, cursor: onIt.next });
+    expect(rest.scripts.map((s) => s.deploymentRef)).toEqual(after.scripts);
+    expect(rest.next).toBeNull();
+  });
+
+  it('a hold keeps 64 binding names and counts the rest; a hold that cannot be written is retried, then said', async () => {
+    const tenant = await tenantOf('walk-many');
+    const v = await vertical(appWith(off()), tenant);
+    const odd = v.scripts[2]!;
+    const extra = Array.from({ length: 70 }, (_, i) => ({ type: 'plain_text', name: `EXTRA_${String(i).padStart(2, '0')}`, text: 'x' }));
+    scripts.set(odd, [...(scripts.get(odd) ?? []), ...extra]);
+    writeHook = (script, next) => (script === odd ? next.filter((b) => !b.name.startsWith('EXTRA_')) : next);
+    const walked = await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    const hit = walked.find((s) => s.deploymentRef === odd)!;
+    expect(hit).toMatchObject({ action: 'failed', reason: 'verify', held: true });
+    expect(hit.bindings).toHaveLength(64);
+    expect(hit.more).toBe(6);
+    const hold = (await recordsOf(v.slug))[odd]?.record.walkHold;
+    expect(hold?.bindings).toHaveLength(64);
+    expect(hold?.more).toBe(6);
+    expect((await failuresOf(v.slug)).find((f) => f.message.includes(`'${odd}'`))?.message).toMatch(/and 6 more; held until a person looks/);
+
+    // A hold write that fails is tried once more, and the failure says it could not be written.
+    writeHook = null;
+    const other = v.scripts[1]!;
+    writeHook = (script, next) => (script === other ? next.filter((b) => b.name !== 'SCOPE') : next);
+    const record = host.admin.recordWireAuth!.bind(host.admin);
+    let refusedHolds = 0;
+    vi.spyOn(host.admin, 'recordWireAuth').mockImplementation(async (actor, input) => {
+      if (input.deploymentRef === other && input.record.walkHold) {
+        refusedHolds += 1;
+        throw new Error('directory unavailable');
+      }
+      return record(actor, input);
+    });
+    const second = await walkAll(appWith(off()), { apply: true, limit: 10 });
+    vi.restoreAllMocks();
+    expect(refusedHolds).toBe(2);
+    const failedHold = second.find((s) => s.deploymentRef === other)!;
+    expect(failedHold).toMatchObject({ action: 'failed', reason: 'verify' });
+    expect(failedHold.held).toBeUndefined();
+    expect((await failuresOf(v.slug)).find((f) => f.message.includes(`'${other}'`))?.message).toMatch(/the hold itself could not be written/);
   });
 
   it('answers 501 where no settings endpoint is configured', async () => {

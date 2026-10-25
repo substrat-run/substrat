@@ -250,8 +250,8 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
         relay(() => host.releaseKeptCopyLocal(input.scopeId, input.revision, input.markCopy, input.loadStamp)),
       deleteScope: (input: { scopeId: ScopeId }) => relay(() => host.deleteScopeLocal(input.scopeId)),
       // #1722: what a carry's cleanup calls once the bind lands.
-      readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
-        relay(() => host.introspectScopeTable(sid, input)),
+      readTombstoneTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
+        relay(() => host.readTombstoneTable(sid, input)),
       wipeCarriedCopy: (input: {
         scopeId: ScopeId;
         expectLoadStamp: string | null;

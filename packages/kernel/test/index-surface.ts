@@ -677,6 +677,8 @@ export const INDEX_VALUE_EXPORTS = [
   'runPlatformSweep',
   'runPurgePass',
   'runningVersionOf',
+  // #2514: the runtime's running digest where it has one; the platform's client reads streams with it.
+  'runtimeSha256',
   'samePeerVertical',
   'scheduleStateHasKind',
   'scopeMoveOf',

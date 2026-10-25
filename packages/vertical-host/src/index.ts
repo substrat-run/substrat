@@ -492,6 +492,8 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
     input: z.infer<typeof readScopeTableInput>,
   ): Promise<unknown>;
+  /** #2563: a table of a store the deployment may no longer hold; the carry's tombstone read, by name. */
+  readTombstoneTable(scopeId: ScopeId, input: z.infer<typeof readScopeTableInput>): Promise<unknown>;
   introspectScopeQuery(scopeId: ScopeId, input: { sql: string }): Promise<ScopeQueryResult>;
   listDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]>;
   summarizeDenialsLocal(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary>;
@@ -1928,7 +1930,15 @@ export function mountPlatformSurface<Env extends object>(
       limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
       offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
     });
-    return c.json(await deps.hostFor(c.env).introspectScopeTable(scope, input));
+    // #2563: the Data view sends `held=1` and is refused for a scope this deployment does not hold.
+    // Without it the read is the carry's, of a wiped copy's tombstone, which is not held by design.
+    // Strict: only the literal '1' guards, so a control plane that predates the flag keeps working
+    // against this vertical, and the default flips once none can call. The SQL console below has no
+    // tombstone reader and is guarded outright.
+    const host = deps.hostFor(c.env);
+    return c.json(
+      c.req.query('held') === '1' ? await host.introspectScopeTable(scope, input) : await host.readTombstoneTable(scope, input),
+    );
   });
 
   // The SQL console (#219): one read-only statement, enforced in the DO (textual gate + a

@@ -101,6 +101,34 @@ export interface IncrementalSha256 {
   hex(): Promise<string>;
 }
 
+/** workerd's `crypto.DigestStream`, structurally: a writable that resolves `digest` once closed. */
+type DigestStreamCtor = new (algorithm: string) => {
+  getWriter(): { write(chunk: Uint8Array): Promise<void>; close(): Promise<void> };
+  readonly digest: Promise<ArrayBuffer>;
+};
+
+/**
+ * What makes the runtime's own running SHA-256, where it has one (workerd's `crypto.DigestStream`), or
+ * `undefined` where it has none (Node, a browser): the kernel finds the runtime's, it never holds one.
+ * A maker rather than a digest, so a caller can learn whether it can check bytes before it asks for
+ * any, and opens a digest only for bytes it has.
+ */
+export function runtimeSha256(): (() => IncrementalSha256) | undefined {
+  const DigestStream = (globalThis as { crypto?: { DigestStream?: DigestStreamCtor } }).crypto?.DigestStream;
+  if (!DigestStream) return undefined;
+  return () => {
+    const digest = new DigestStream('SHA-256');
+    const writer = digest.getWriter();
+    return {
+      update: (chunk) => writer.write(chunk),
+      hex: async () => {
+        await writer.close();
+        return [...new Uint8Array(await digest.digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+      },
+    };
+  };
+}
+
 /** What a witnessed stream's bytes were, once they have all passed. */
 export interface StreamWitness {
   readonly sha256: string;

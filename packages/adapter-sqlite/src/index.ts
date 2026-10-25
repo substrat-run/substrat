@@ -6242,6 +6242,24 @@ export class SqliteScopeHost implements ScopeHost {
     return scopeTablesOf(this.heldReadDb(scopeId));
   }
 
+  /** The Data view's table page (#2563): refused `conflict` with the shared sentence for a scope this host does not hold. */
+  async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    return scopeTablePageOf(this.heldReadDb(scopeId), input);
+  }
+
+  /**
+   * The carry's read of a wiped copy's tombstone (#2563). Plain SQLite has no carry and no wipe, so
+   * a store it does not hold is one it does not have: this reads what `introspectScopeTable` reads.
+   */
+  async readTombstoneTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    return scopeTablePageOf(this.heldReadDb(scopeId), input);
+  }
+
+  /** The SQL console's CP-less path (#219), guarded as the table page is (#2563). */
+  async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
+    return scopeQueryOf(this.heldReadDb(scopeId), input).result;
+  }
+
   async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<UndrainedEvents> {
     return undrainedEventsFrom(this.heldReadDb(scopeId), Math.max(limit, 1));
   }

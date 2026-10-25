@@ -306,7 +306,7 @@ import type {
 } from './backups.js';
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
-import { wireUploadFor, type WireUpload, type WireUploadSettings } from './wire-upload.js';
+import { wireSettingsRefusal, wireUploadFor, type WireUpload, type WireUploadSettings } from './wire-upload.js';
 import type { WireSettingsApi } from './wire-settings.js';
 import {
   parseWireWalkCursor,
@@ -4571,7 +4571,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   /** Whether the scope's store in `holder` is a wiped copy: it holds the `carried_away` tombstone. */
   const isCarriedAway = async (holder: VerticalClient, scope: Scope): Promise<boolean> => {
-    const page = await holder.readScopeTable(scope.id, { table: '_substrat_meta', limit: 100, offset: 0 });
+    const page = await holder.readTombstoneTable(scope.id, { table: '_substrat_meta', limit: 100, offset: 0 });
     return metaValueIn(page.rows, page.columns, CARRIED_AWAY_KEY) !== null;
   };
 
@@ -12277,6 +12277,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (body.cursor !== undefined && cursor === null) throw new ControlPlaneError(422, 'the cursor is not one a pass answered');
     const apply = body.apply === true;
     const confirm = body.confirm === true;
+    // Refused settings give every script nothing, which an applied pass would write as a fleet-wide
+    // withdrawal: the pass is refused before it walks anything, dry or applied, and audited as such.
+    const refused = await wireSettingsRefusal(options.wireUpload);
+    if (refused) {
+      await c.var.admin.recordWireWalk(actor, {
+        apply, confirm, from: body.cursor ?? null, next: null, walked: 0,
+        updated: [], held: [], released: [], skipped: [], failed: [],
+        refused: `${refused.withheld}: ${refused.reason}`,
+      });
+      throw new ControlPlaneError(409, `the wire walk is refused: ${refused.withheld}: ${refused.reason}; fix the control plane's setting, then walk`);
+    }
     // The pass puts each script's result here as it goes, so a pass that ends in an error is still
     // audited with what it did.
     const walked: WireWalkPass['scripts'][number][] = [];
