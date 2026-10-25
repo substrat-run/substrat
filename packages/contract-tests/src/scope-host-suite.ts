@@ -11594,7 +11594,7 @@ export function scopeHostContractSuite(
         const unverified = withheld('unverified');
         await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: unverified }), 'validation_failed');
         await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: { ...record(), withheld: 'unverified', walkHold: hold } } as never), 'validation_failed');
-        await put(a, 'archive', 'v1', { ...unverified, walkHold: hold }, '22:00:03');
+        await put(a, 'archive', 'v1', { ...unverified, walkHold: hold } as WireAuthRecord, '22:00:03');
         expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record).toMatchObject({ withheld: 'unverified', state: 'legacy-only', routerKids: [], walkHold: hold });
       });
 
