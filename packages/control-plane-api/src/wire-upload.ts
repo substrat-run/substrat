@@ -133,6 +133,27 @@ export async function wireUploadGiven(
 }
 
 /**
+ * Whether the settings themselves are refused: the rollout setting does not parse, or, where it gives
+ * lists to anything, the lists do not load. `null` when they are usable, `off` included. An upload under
+ * refused settings gives nothing and says why; the fleet walk refuses the whole pass instead, since
+ * giving nothing to every script would withdraw the lists fleet-wide. The reason is the uploader's
+ * own, naming the setting, never a key.
+ */
+export async function wireSettingsRefusal(
+  settings: WireUploadSettings | undefined,
+): Promise<{ readonly withheld: 'rollout-refused' | 'lists-refused'; readonly reason: string } | null> {
+  const rollout = wireKeysRolloutOf(settings?.rollout);
+  if ('refused' in rollout) return { withheld: 'rollout-refused', reason: rollout.refused };
+  if (rollout.kind === 'off') return null;
+  try {
+    await wireUploadSettings({ routerKeys: settings?.routerKeys ?? '', platformKeys: settings?.platformKeys ?? '', audience: 'wire-settings-check' });
+    return null;
+  } catch (error) {
+    return { withheld: 'lists-refused', reason: await refusedList(settings, error) };
+  }
+}
+
+/**
  * Why the lists were refused, naming the setting to fix: each list is loaded alone, and the first
  * that fails is named with its problem. When each loads alone (a key in both, or an audience the
  * encoder would not carry), the refusal is the one given. The parser's messages are fixed text
