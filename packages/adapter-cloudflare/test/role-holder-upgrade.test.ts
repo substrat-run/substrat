@@ -99,15 +99,16 @@ it('normalizes unknown projection holders to person while preserving legacy abse
 it('defaults omitted code-defined holders to person on CP-less provision and role repair', async () => {
   const host = new CloudflareScopeHost({ scope: env.SCOPE });
   const wireHolders: (string | null | undefined)[] = [];
-  const hostStub = host as unknown as { scopeStub(scopeId: string): { applyProjectionReply(...args: unknown[]): Promise<unknown> } };
+  const hostStub = host as unknown as { scopeStub(scopeId: string): { applyJudgedProjectionReply(...args: unknown[]): Promise<unknown> } };
   const originalStub = hostStub.scopeStub.bind(host);
   hostStub.scopeStub = (id) => {
     const stub = originalStub(id);
     return new Proxy(stub, {
       get(target, key) {
-        if (key === 'applyProjectionReply') return (...args: unknown[]) => {
-          wireHolders.push(...(args[1] as { holder?: string | null }[]).map((r) => r.holder));
-          return stub.applyProjectionReply(...args);
+        // #2531: the CP-less paths project through the judged method; its rows follow the judge.
+        if (key === 'applyJudgedProjectionReply') return (...args: unknown[]) => {
+          wireHolders.push(...(args[2] as { holder?: string | null }[]).map((r) => r.holder));
+          return stub.applyJudgedProjectionReply(...args);
         };
         return Reflect.get(target, key) as unknown;
       },
