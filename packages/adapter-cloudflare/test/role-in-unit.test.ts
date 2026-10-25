@@ -250,11 +250,13 @@ describe('a CP-less restore judges and projects its role repair in the load’s 
 
   it('twin: the same restore with the role still a person’s lands with its repair in the same unit', async () => {
     const { tenant, source, dest } = await world();
-    const out = await local.restoreScopeLocal(dest, await local.exportScopeLocal(source), opts(tenant, source, [member, staffer]));
+    // `viewer` is in neither scope: only the repair the load ran can have written it.
+    const viewer: RoleDefinition = { key: 'viewer', permissions: [MIXED[0]!], source: 'vertical' };
+    const out = await local.restoreScopeLocal(dest, await local.exportScopeLocal(source), opts(tenant, source, [member, staffer, viewer]));
     expect(out.rolesProjected).toBe(true);
     const after = await snapshot(dest);
     expect(after.notes).toEqual([{ id: 'from-source' }]);
-    expect(after.roles.filter((r) => r.revoked_at === null).map((r) => r.role_key)).toEqual(['member', 'staffer']);
+    expect(after.roles.filter((r) => r.revoked_at === null).map((r) => r.role_key)).toEqual(['member', 'staffer', 'viewer']);
   });
 
   it('a staged restore is judged on the seats its staged rows bring, not on what the scope held before: refused, stage kept', async () => {
