@@ -980,9 +980,6 @@ async function admitManager(
   return { declared };
 }
 
-/** The ownership refusal's one sentence (#2564). */
-const NOT_A_MANAGED_TENANT = "the payload's tenant was not provisioned by this vertical's tenant";
-
 /**
  * The manager's ownership bound (#2564): the refusal when `tenantId` is not a tenant the drained
  * scope's tenant provisioned, or `undefined` when it is. One sentence whether the tenant exists or
@@ -997,7 +994,7 @@ async function refuseUnmanagedTenant(
   if (tenant?.provisionedByTenant === ctx.tenantId) return undefined;
   return {
     status: 'failed',
-    error: NOT_A_MANAGED_TENANT,
+    error: "the payload's tenant was not provisioned by this vertical's tenant",
     failure: { origin: 'platform', code: 'permission_denied', permission: null },
   };
 }
