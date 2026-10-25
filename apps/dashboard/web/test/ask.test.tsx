@@ -17,9 +17,11 @@ const turnEvents = (over: Array<Record<string, unknown>> = []) =>
     { t: 'turn-start', v: 1 },
     { t: 'step-start', step: 'look-1' },
     { t: 'tool-input', callId: 'c1', tool: 'list_findings', input: {} },
-    { t: 'tool-output', callId: 'c1', tool: 'list_findings', output: { findings: [{}, {}, {}] } },
+    { t: 'tool-output', callId: 'c1', tool: 'list_findings', output: { available: true, entries: [{}, {}, {}], nextCursor: null, cut: false } },
     { t: 'tool-input', callId: 'c2', tool: 'finding_evidence', input: { id: 'F1' } },
     { t: 'tool-output', callId: 'c2', tool: 'finding_evidence', output: { finding: {} } },
+    { t: 'tool-input', callId: 'c3', tool: 'list_team_audit', input: {} },
+    { t: 'tool-output', callId: 'c3', tool: 'list_team_audit', output: { entries: [{}, {}], nextCursor: 'x', truncated: true } },
     { t: 'step-end', step: 'look-1' },
     { t: 'text-start', pid: 'answer' },
     { t: 'text-delta', pid: 'answer', delta: 'A supplier refuses ' },
@@ -35,8 +37,9 @@ describe('foldTurn', () => {
     expect(foldTurn(turnEvents())).toEqual({
       question: 'Why do uploads fail?',
       looks: [
-        { tool: 'list_findings', label: 'Looked at 3 findings' },
-        { tool: 'finding_evidence', label: 'Read one finding’s evidence' },
+        { tool: 'list_findings', label: 'Read findings (3)' },
+        { tool: 'finding_evidence', label: 'Read finding evidence' },
+        { tool: 'list_team_audit', label: 'Read team audit (2+)' },
       ],
       answer: 'A supplier refuses them.',
       provenance: { producedAt: at, model: 'cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast', sources: 2 },
@@ -53,6 +56,9 @@ describe('foldTurn', () => {
       { t: 'turn-finish', reason: 'done', id: 4 },
     ]);
     expect(turn.looks).toEqual([{ tool: 'list_findings', label: 'Could not read findings: not part of your role' }]);
+    expect(foldTurn([{ t: 'tool-output', callId: 'c', tool: 'app_requests', output: { error: 'app not found' }, id: 1 }]).looks).toEqual([
+      { tool: 'app_requests', label: 'Could not read app requests: app not found' },
+    ]);
   });
 
   it('reads a spent budget and a failed model as words for the person', () => {
@@ -125,7 +131,7 @@ describe('⌘K Ask', () => {
     await type('Why do uploads fail?');
     await key('Enter');
     expect(ask).toHaveBeenCalledWith({ messages: [{ role: 'user', text: 'Why do uploads fail?' }] });
-    expect(container.textContent).toContain('Looked at 3 findings · Read one finding’s evidence');
+    expect(container.textContent).toContain('Read findings (3) · Read finding evidence · Read team audit (2+)');
     expect(container.textContent).toContain('AI');
     expect(container.textContent).toContain('A supplier refuses them.');
     expect(container.textContent).toContain('from 2 reads');

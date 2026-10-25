@@ -285,8 +285,8 @@ describe('run with tools (#2283)', () => {
     expect(seen).toEqual([{ id: 'F1' }]);
     expect(run.text).toBe('F1 failed 3 times.');
     expect(run.steps).toEqual([
-      { text: '', toolCalls: [{ callId: 'c1', tool: 'lookup', input: { id: 'F1' } }], toolResults: [{ callId: 'c1', tool: 'lookup', output: { id: 'F1', count: 3 } }] },
-      { text: 'F1 failed 3 times.', toolCalls: [], toolResults: [] },
+      { text: '', toolCalls: [{ callId: 'c1', tool: 'lookup', input: { id: 'F1' } }], toolResults: [{ callId: 'c1', tool: 'lookup', output: { id: 'F1', count: 3 } }], toolErrors: [] },
+      { text: 'F1 failed 3 times.', toolCalls: [], toolResults: [], toolErrors: [] },
     ]);
     // The second model call saw the tool's output.
     expect(JSON.stringify(prompts[1])).toContain('"count":3');

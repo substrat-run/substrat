@@ -328,17 +328,21 @@ shown. The privacy policy describes what is sent ([AI features in the dashboard]
 ### Ask {#ask}
 
 Where AI explanations are offered, the **⌘K** overlay has a third mode, **Ask**, next to
-Jump and Support (Tab moves between them). Ask a question about your apps, their findings
-and failures, and the assistant answers in a few sentences. It reads through the dashboard's
-own reads, as you: it lists the team's apps and findings and reads one finding's evidence,
-and a part of the dashboard your role cannot read is refused to it as well. It only reads;
-it changes nothing.
+Jump and Support (Tab moves between them). Ask a question about your team, and the
+assistant answers in a few sentences. It reads the dashboard **as you**: every read the
+dashboard makes is a tool it can call (your team's apps and their activity, members and
+invites, the audit log, domains, observability metrics, traffic, logs and requests,
+deployments and their releases, failures and previews, findings and suppress rules, and
+each app's process map), and each one checks your role exactly as the page does. A part of
+the dashboard your role cannot read is refused to it as well. It only reads; it changes
+nothing.
 
-Each answer carries the **AI** marker, the reads it made (*Looked at 12 findings · Read one
-finding's evidence*) and when it was written. A follow-up question is asked with the
+Each answer carries the **AI** marker, the reads it made (*Read apps (3) · Read app requests
+(20+)*) and when it was written. A follow-up question is asked with the
 conversation so far. The conversation lasts as long as the overlay is open: nothing records
 it yet. Each question uses one of the same daily AI answers as explanations do, however many
-reads it takes, and what is sent to the model is the same field list, redacted the same way.
+reads it takes. Free text from your apps (log lines, error messages) is redacted before the
+model sees it; the team's own roster, including members' addresses, is not.
 
 ## Status
 
