@@ -1637,6 +1637,20 @@ interface ObservabilityLogsQuery {
   limit?: number;
 }
 
+export type AppTenantLogsQuery = Parameters<typeof tenantLogsQuery>[0];
+
+async function appTenantLogsRead(
+  teamId: string,
+  scopeId: string,
+  q: AppTenantLogsQuery,
+): Promise<{ events: ObservabilityLogEvent[]; incomplete: boolean }> {
+  const p = tenantLogsQuery(q);
+  const { body, headers } = await callWithHeaders<ObservabilityLogEvent[]>(
+    `/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
+  );
+  return { events: body, incomplete: logsIncompleteOf(headers) };
+}
+
 async function observabilityLogsRead(
   teamId: string,
   q: ObservabilityLogsQuery,
@@ -1961,27 +1975,14 @@ export const api = {
       : teamApi(teamId).businessVolumes({ hours: q.hours === undefined ? undefined : String(q.hours), since: q.since, until: q.until }),
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
-  appTenantLogs: (
-    teamId: string,
-    scopeId: string,
-    q: {
-      level?: string;
-      search?: string;
-      /** One call's lines (#1525) — narrows within this app, never past it. */
-      invocationId?: string;
-      /** #1747: one pattern's lines. */
-      template?: string;
-      hours?: number;
-      limit?: number;
-      since?: string;
-      until?: string;
-    },
-  ) => {
-    const p = tenantLogsQuery(q);
-    return call<ObservabilityLogEvent[]>(
-      `/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
-    );
-  },
+  appTenantLogs: async (teamId: string, scopeId: string, q: AppTenantLogsQuery): Promise<ObservabilityLogEvent[]> =>
+    (await appTenantLogsRead(teamId, scopeId, q)).events,
+  /**
+   * The same read, with what its body cannot carry (#2521): `incomplete` is set when the worker
+   * passed on the plane's `x-substrat-logs-incomplete` header — the page may be missing lines
+   * behind a cut — and only then.
+   */
+  appTenantLogsRead,
   /** #1746: one app's request histogram, facet counts and request list. `query` is built
    *  by `requestReadQuery`, so the three reads always carry the same window and filters. */
   appRequestVolume: (teamId: string, scopeId: string, query: URLSearchParams) =>

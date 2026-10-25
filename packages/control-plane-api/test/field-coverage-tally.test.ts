@@ -380,7 +380,7 @@ describe('per-event reads never carry outputFields (#1923)', () => {
   });
 
   it("a tenant log line — the stamped line's raw event included", async () => {
-    const events = await readerAnswering([line()]).tenantLogs!({ tenantId: TENANT, hours: 24, limit: 10 });
+    const { events } = await readerAnswering([line()]).tenantLogs!({ tenantId: TENANT, hours: 24, limit: 10 });
     expect(events).toHaveLength(1);
     // The rest of the line is still there: only the report is withheld.
     expect((events[0]!.raw as { source: Record<string, unknown> }).source).toMatchObject({ operation: 'acme/get-card', tenantId: TENANT });

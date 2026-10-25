@@ -72,7 +72,10 @@ omit the tenant ID; handle `undefined` if the hook must support them.
   bytes in (multipart: a `meta` JSON field beside the `body` file; or, for a file too large
   to hold, `connector-attachment-stream`, whose body is the file itself, read into the
   bucket as it arrives, with the metadata and declared size in a header, #2498) or out (the
-  raw bytes, with the record in a header), and the `connection:<id>` grant tuple the first
+  raw bytes, with the record in a header; read from the bucket as the platform reads the
+  response when your host has `connectorAttachmentOpenStreamLocal`, sent at the record's size,
+  with the sha256 checked as the bytes pass so a mismatch breaks the body before its last chunk,
+  #2514), and the `connection:<id>` grant tuple the first
   three are checked against. Both upload routes hold the metadata to
   `CONNECTOR_ATTACHMENT_META_MAX_BYTES` (8 KiB once URI-encoded) and answer one `400` for
   more. Both also hold the file to a size bound and answer one `413` for more, with a different

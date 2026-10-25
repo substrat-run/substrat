@@ -188,6 +188,7 @@ export const INDEX_VALUE_EXPORTS = [
   'SYSTEM_DOOR_WAIT',
   'SYSTEM_SWITCHES_DDL',
   'SYSTEM_SWITCH_OFF_QUERY',
+  'ScopeNotHeld',
   'SealedKeyUnavailableError',
   'SearchTermTooShort',
   'SecretBoxUnconfiguredError',
@@ -211,6 +212,7 @@ export const INDEX_VALUE_EXPORTS = [
   'UPLOAD_LINK_TYPE_REFUSED',
   'UPLOAD_LINK_WRONG_TARGET',
   'UncheckedOperation',
+  'VERIFIED_STREAM_CHUNK_MAX_BYTES',
   'VERSION_MIGRATIONS_DDL',
   'VERTICAL_EVENTS_DDL',
   // #2501: the history of who owned each vertical slug, shared by both directories.
@@ -287,6 +289,7 @@ export const INDEX_VALUE_EXPORTS = [
   'boundShapesOfColumn',
   // #2263: a peer holds only what the running declaration names; both adapters wrap their checker.
   'boundToPeerDeclarations',
+  'bytesStream',
   'callReservedStoreOperation',
   'callScopeStore',
   'capabilitiesForLoad',
@@ -517,6 +520,8 @@ export const INDEX_VALUE_EXPORTS = [
   'noteUncheckedCompletion',
   'observeFinding',
   'observeStoreCall',
+  // #2514: both adapters open an attachment's bytes as a stream through it.
+  'openAttachmentByteStream',
   'openSealed',
   'openVerticalOwnerRow',
   'operationKeyOf',
@@ -756,6 +761,7 @@ export const INDEX_VALUE_EXPORTS = [
   'unknownRoleError',
   'unsettledCopyRefusal',
   'uploadContentTypeAllowed',
+  'verifiedStream',
   'versionMigrationsOf',
   'versionsAwaitDigest',
   'versionsAwaitSplit',

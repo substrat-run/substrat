@@ -88,7 +88,7 @@ export interface RecentLogs {
   incomplete: boolean;
 }
 
-/** On `GET /observability/logs`, present (`1`) when the read behind its body was `incomplete`. */
+/** On `GET /observability/logs` and `GET /observability/tenant-logs`, present (`1`) when the read behind its body was `incomplete`. */
 export const LOGS_INCOMPLETE_HEADER = 'x-substrat-logs-incomplete';
 
 /**
@@ -613,6 +613,10 @@ export interface ObservabilityReader {
    * a caller that passes neither gets exactly the trailing window it always did; both
    * given, `hours` is ignored rather than intersected, since two spellings of the same
    * bound cannot both be honoured and the explicit one is the one the caller meant.
+   *
+   * `incomplete` (#2521) is the service grain's own signal: a page the backend filled to its limit
+   * and then had a line taken out of (the platform's wire line, which the tenant's lines share a
+   * request id with) may have lines behind the cut, so a short page is not "the window held no more".
    */
   tenantLogs?(input: {
     tenantId: string;
@@ -634,7 +638,7 @@ export interface ObservabilityReader {
     since?: string;
     until?: string;
     limit: number;
-  }): Promise<RecentLogEvent[]>;
+  }): Promise<RecentLogs>;
 
   /**
    * The tenant's `ctx.log` lines grouped by the template they were written from (#1747).

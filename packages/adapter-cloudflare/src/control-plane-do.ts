@@ -3562,12 +3562,13 @@ export class ControlPlaneDO extends DurableObject {
     ).rowsWritten > 0, audit);
   }
 
-  /** One upload's capability record (RFC wire-signing §7, Q8), replacing the script's earlier one. */
-  recordWireAuth(row: DeploymentWireAuth, audit?: AdminEntryInput): void {
-    this.writeAndAudit(() => {
-      writeDeploymentWireAuth(this.kernelSql, row);
-      return true;
-    }, audit);
+  /**
+   * One upload's capability record (RFC wire-signing §7, Q8), replacing the script's earlier one. False,
+   * with nothing written and no admin row, for a vertical the registry does not hold: the host answers
+   * that `not_found` on its side of the RPC, so the code survives.
+   */
+  recordWireAuth(row: DeploymentWireAuth, audit?: AdminEntryInput): boolean {
+    return this.writeAndAudit(() => writeDeploymentWireAuth(this.kernelSql, row), audit);
   }
 
   /**

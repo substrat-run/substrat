@@ -197,7 +197,8 @@ describe('VerticalClient — transport rejections become diagnosable 502s (#391)
       filename: 'avtal.pdf',
       contentType: 'application/pdf',
       size: bytes.byteLength,
-      sha256: 'a'.repeat(64),
+      // The bytes' own digest: the client holds what it reads to the record (#2514).
+      sha256: 'e93ca6edec47d58fa91647e897e621d621b29a918e2979134cc895a40eae5559',
       visibility: 'customer',
       createdBy: '01JCONN0000000000000000000',
       createdAt: '2026-08-17T00:00:00.000Z',

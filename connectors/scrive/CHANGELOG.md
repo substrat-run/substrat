@@ -1,5 +1,59 @@
 # @substrat-run/connector-scrive
 
+## 0.14.66
+
+### Patch Changes
+
+- 763957c: The buffered connector upload is held to a size bound before it is buffered (#2538):
+
+  - **A buffered bound.** `CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES` (16 MiB) is the most a buffered connector upload may carry. It is lower than the stream route's 95 MiB on purpose: that one is a request-size limit, this one a memory limit, since a buffered file is resident several times over at once. The 95 MiB bound stays for streamed uploads.
+  - **The multipart route.** `POST /internal/connector-attachment` refuses a `Content-Length` over 16 MiB plus a 16 KiB multipart envelope (`CONNECTOR_ATTACHMENT_MULTIPART_ENVELOPE_BYTES`) with a `413` before it buffers anything. A body with no `Content-Length`, or one that understates it, is cut off at the same count while it is read, and a file part over 16 MiB is refused once parsed. Until now the route read a body of any size into the worker's memory.
+  - **The client.** `VerticalClient.connectorUploadAttachment` refuses a buffer over 16 MiB with a `413` and sends nothing.
+  - **The sentences.** Each `413` says to use the streaming upload above 16 MiB. The body-level refusals name the request body, not the attachment (`connectorAttachmentBodyRefusal`); the file part and the client use `connectorAttachmentBufferedRefusal`; the stream route's sentence is unchanged.
+  - **Connectors.** `connectorUploadBody` (kernel) hands a connector's bytes to an upload as the buffer up to the bound and as a sized stream above it. The Microsoft 365 file sync (files up to 50 MiB) and the Scrive sealed PDF use it, so a file over 16 MiB keeps landing by the streamed route.
+
+  Rollout: on a deployment that predates the streamed route (#2498), a 16–95 MiB upload has no working path until the vertical is re-pushed: the client refuses a buffer that large, and the stream route answers 501 "redeploy". Until then the Microsoft 365 sync holds such a file without its bytes, reports it (`skipped` on the sync result, naming the item, and in its held state), carries on with the rest of the pass, and tries the file again when the drive next presents it. Any other upload failure still stops the pass and retries the page, as before.
+
+  A multipart upload over 16 MiB, which the route accepted until now, is refused. Use a streamed body for a file that large.
+
+- 53e9071: A sealed document too large to hold is no longer downloaded, and a reconcile no longer re-downloads it on every pass (#2552). The connector reads the response's `Content-Length` before the body and skips a file over `SCRIVE_MAX_DOWNLOAD_BYTES` (32 MiB, the most it holds in memory: one resident copy plus the upload path's own, about 64 MiB of a 128 MB isolate) without reading it. A response that declares no length is counted and cut off at that bound, and its body released (through the connection's `deadlineFetch` wrapper, #2518, the cut-off cancels the guarded stream and aborts the call, so the connection is freed whether or not a byte was read); a declared length within the bound sizes the one buffer the body is read into. The reconcile reports the file as skipped ("larger than this connector downloads") and remembers the decision on the dispatch row (`sealedHeld`), and the activity view shows the sealed copy as not stored.
+
+  When a held file is looked at again: a callback or an explicit `reconcileScriveDispatch` clears the hold and tries again, as does a caller passing `honourHeld` once the provider's `mtime` differs. The passive sweep never looks at a held row, because every party is recorded and it skips such rows. A response without `mtime` stays held until a callback or an explicit reconcile. The marker goes when the file lands. Any other failure, including a download that times out, is not held and is retried on the next pass.
+
+  Streaming the provider's download straight through to the upload, which would lift the bound toward the platform's 95 MiB streamed-upload ceiling, is a later step. `ScriveApi.getMainFile` takes an optional byte bound and throws `ScriveFileTooLargeError` above it; `ScriveMock` gains `mtime`, `touch`, `setSealedFile`, `sealedBytesServed` and `sealedCancelled` for tests.
+
+- 9112dd6: A streamed connector response body now times out on idleness, not on total transfer time (#2518). A connection's `fetch` used to hold one `timeoutMs` deadline (default 30 s) over the whole exchange, so a streamed provider file had to arrive in full within it however fast its bytes were flowing, and a large file on a slow link could never land. Now `timeoutMs` bounds the call up to the response headers and any buffered read (`text()`, `json()`, `arrayBuffer()`), as before. Once the body is read as a stream (looking at `body`, or taking it and never reading, releases nothing) that deadline hands over to two limits: the stream errors when the provider sends no byte for `STREAM_IDLE_TIMEOUT_MS` (30 s; an empty chunk is not a byte, and a source that makes no progress, a thousand empty chunks in a row, errors the stream too), and 10 minutes after its first read (`STREAM_MAX_DURATION_MS`) however steadily it flows. A transfer that keeps flowing can outlast `timeoutMs`, but only if it finishes within `STREAM_MAX_DURATION_MS` (10 minutes); a stalled one (idle window or empty-read bound) or one still running at the cap errors with the same `TimeoutError`, the connection is released, and an upload reading it lands no object and no row.
+
+  The kernel exports `deadlineFetch(fetch, timeoutMs, { idleMs, maxStreamMs })` and the two constants. Both hosts wrap the connection `fetch` in it, and take an optional `streamIdleTimeoutMs` so a test can use a short window. The Scrive, Fortnox, Planima and Microsoft 365 connectors use it for their own timed `fetch` in place of `AbortSignal.timeout`.
+
+- Updated dependencies [8e8af88]
+- Updated dependencies [f0b5904]
+- Updated dependencies [763957c]
+- Updated dependencies [361136b]
+- Updated dependencies [581a697]
+- Updated dependencies [dc3b911]
+- Updated dependencies [a283098]
+- Updated dependencies [95bdb79]
+- Updated dependencies [26db572]
+- Updated dependencies [5554dad]
+- Updated dependencies [279f8e8]
+- Updated dependencies [c304fbd]
+- Updated dependencies [69868f3]
+- Updated dependencies [5147141]
+- Updated dependencies [a06e284]
+- Updated dependencies [ee05879]
+- Updated dependencies [9112dd6]
+- Updated dependencies [78a0c96]
+- Updated dependencies [09c081a]
+- Updated dependencies [ecbed6e]
+- Updated dependencies [d5f2f9a]
+- Updated dependencies [bc36021]
+- Updated dependencies [286f3b4]
+- Updated dependencies [5f75359]
+- Updated dependencies [bc629db]
+  - @substrat-run/contracts@0.160.0
+  - @substrat-run/kernel@0.160.0
+
 ## 0.14.65
 
 ### Patch Changes

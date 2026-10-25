@@ -130,7 +130,7 @@ import {
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { isSizedByteStream, knownLengthInit, scopeNotHeldRefusal, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
+import { attachmentSha256, isSizedByteStream, knownLengthInit, scopeNotHeldRefusal, ulid, undrainedEventsOf, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -1053,7 +1053,29 @@ export class VerticalClient {
     // Parsed, not cast: the record carries the sha256 the bytes are checked against at
     // the far end, and a shape this side invented would witness nothing.
     const record = attachmentRecord.parse(JSON.parse(raw));
-    const body = new Uint8Array(await res.arrayBuffer());
+    // Held to that record here too (#2514). A deployment that streams the read sends its 200 before
+    // the digest is known and cuts the body when the bytes do not match, so a broken body is the
+    // integrity refusal, not a network fault, and is classified as one. The length and the digest are
+    // checked again on the whole body, so no transport's handling of a short body is the only guard.
+    const integrity = (why: string, cause?: unknown) =>
+      new ControlPlaneError(
+        502,
+        `connector-attachment-open: attachment ${record.id} failed its integrity check: ${why} (#2514). Nothing was read.`,
+        undefined,
+        { code: 'internal', ...(cause !== undefined ? { cause } : {}) },
+      );
+    let body: Uint8Array;
+    try {
+      body = new Uint8Array(await res.arrayBuffer());
+    } catch (e) {
+      throw integrity(`its body broke off before the ${record.size} bytes its record names arrived`, e);
+    }
+    if (body.byteLength !== record.size) {
+      throw integrity(`the deployment sent ${body.byteLength} bytes; its record names ${record.size}`);
+    }
+    if ((await attachmentSha256(body)) !== record.sha256) {
+      throw integrity('the bytes do not match the recorded sha256');
+    }
     return {
       record,
       body,

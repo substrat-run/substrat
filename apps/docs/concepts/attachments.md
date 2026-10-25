@@ -70,6 +70,29 @@ over to two limits:
 Both fail with a `TimeoutError`, the same error `timeoutMs` ends in. The connection is released,
 and the upload lands no object and no row.
 
+### Reading a file as a stream
+
+`openStream(id)` is `open` with the bytes as a sized stream, read from the blob store as you read
+it. A connector reads the same way through `conn.openAttachmentStream(id)`. The permission check
+runs first, before the store is touched, and an id the scope does not know is `null`, as for `open`.
+
+The integrity check moves to the stream. `open` holds the whole file and compares its sha256 before
+it answers. A stream cannot know its digest until the last byte, so it checks as the bytes pass:
+
+- The stream's length is the record's `size`. A stored object of any other size is refused before
+  a byte is read.
+- The chunk that completes the file is held back until the store has ended and the digest matches.
+  Bytes that do not match, or a store that ends short or carries more, error the stream instead,
+  and that last chunk is never handed on. So if you have received all `size` bytes, they are the
+  bytes the record names. If the stream errors, treat what you received as nothing: a prefix of a
+  file that did not verify.
+- The held-back chunk is at most 1 MiB (`VERIFIED_STREAM_CHUNK_MAX_BYTES`): a larger chunk from the
+  store is handed on in pieces of that size.
+
+Every attachment row carries a sha256, because both spines declare it `NOT NULL` and the record
+requires it. A record without a valid one is refused before a byte is read, never handed on as
+verified.
+
 ## Bytes that no row points at
 
 The bytes go to the store before the row is written, so a few paths leave an object that no row

@@ -5,6 +5,7 @@ import { shortId } from '../lib/format';
 import { LogList } from '../components/LogList';
 import { DEV_MOCK } from '../lib/mock';
 import { mockCallLogs } from '../lib/mock-timeline';
+import { LOGS_INCOMPLETE_NOTICE } from '../lib/logs-panel';
 
 /**
  * The log lines of the call behind one event (#1525) — the other half of `InvocationStrip`.
@@ -36,11 +37,13 @@ export function InvocationLogsStrip({
   anchorNoun?: string;
 }) {
   const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
+  const [incomplete, setIncomplete] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     setLogs(null);
+    setIncomplete(false);
     setErr(null);
     const window = callLogsWindow(occurredAt);
     if (window === null) {
@@ -52,8 +55,12 @@ export function InvocationLogsStrip({
       return;
     }
     api
-      .appTenantLogs(teamId, scopeId, { invocationId, since: window.since, until: window.until, limit: 100 })
-      .then((r) => live && setLogs(r))
+      .appTenantLogsRead(teamId, scopeId, { invocationId, since: window.since, until: window.until, limit: 100 })
+      .then((r) => {
+        if (!live) return;
+        setLogs(r.events);
+        setIncomplete(r.incomplete);
+      })
       .catch((e) => {
         if (!live) return;
         // The plane's own words for a refusal are safe to show and say why; a 501 is the
@@ -79,6 +86,7 @@ export function InvocationLogsStrip({
       <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }} title={invocationId}>
         log lines of call {shortId(invocationId)}
       </div>
+      {incomplete && <div role="status" style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>{LOGS_INCOMPLETE_NOTICE}</div>}
       {logs.length === 0 ? (
         <div style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>
           No log lines found for this call within {CALL_LOGS_MARGIN_MINUTES} minutes of the {anchorNoun}. They may be
