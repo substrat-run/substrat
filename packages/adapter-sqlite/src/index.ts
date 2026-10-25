@@ -9797,151 +9797,158 @@ export class SqliteScopeHost implements ScopeHost {
 
       bindHostname: async (actor: PlatformActorId, input: BindHostnameInput) => {
         const parsed = bindHostnameInput.parse(input);
-        const scope = this.directory
-          .prepare('SELECT tenant_id, vertical FROM scopes WHERE scope_id = ?')
-          .get(parsed.scopeId) as { tenant_id: string; vertical: string | null } | undefined;
-        if (!scope || scope.tenant_id !== parsed.tenantId) {
-          throw substratError('not_found', `unknown scope ${parsed.scopeId} in tenant ${parsed.tenantId}`);
-        }
-        const existing = this.directory
-          .prepare(
-            `SELECT h.scope_id AS scope_id, s.status AS scope_status
-               FROM hostnames h LEFT JOIN scopes s ON s.scope_id = h.scope_id
-              WHERE h.hostname = ?`,
-          )
-          .get(parsed.hostname) as { scope_id: string; scope_status: string | null } | undefined;
-        const holderReleased =
-          existing?.scope_status === 'archived' || existing?.scope_status === 'reaped';
-        if (existing && existing.scope_id !== parsed.scopeId && !holderReleased) {
-          // A hostname is globally unique and routes to exactly one place. Silently
-          // rebinding it would move another tenant's traffic. Exception: the holder is
-          // ARCHIVED or REAPED (a deleted app, storage since wiped) — it released the
-          // name, so the rebind reclaims it.
-          throw substratError('conflict', `hostname '${parsed.hostname}' is already bound to another scope`);
-        }
-        // Exactly one canonical per (scope, surface): "which one do certs and
-        // redirects use" has to have one answer, so a new canonical demotes the old.
-        if (parsed.canonical) {
+        // #2526: the scope, the holder it judges, the demotion, the bind and the row are one
+        // directory unit, so a name bound elsewhere meanwhile is refused rather than moved.
+        let vertical: string | null = null;
+        this.directoryWriteAndAudit(() => {
+          const scope = this.directory
+            .prepare('SELECT tenant_id, vertical FROM scopes WHERE scope_id = ?')
+            .get(parsed.scopeId) as { tenant_id: string; vertical: string | null } | undefined;
+          if (!scope || scope.tenant_id !== parsed.tenantId) {
+            throw substratError('not_found', `unknown scope ${parsed.scopeId} in tenant ${parsed.tenantId}`);
+          }
+          vertical = scope.vertical;
+          const existing = this.directory
+            .prepare(
+              `SELECT h.scope_id AS scope_id, s.status AS scope_status
+                 FROM hostnames h LEFT JOIN scopes s ON s.scope_id = h.scope_id
+                WHERE h.hostname = ?`,
+            )
+            .get(parsed.hostname) as { scope_id: string; scope_status: string | null } | undefined;
+          const holderReleased =
+            existing?.scope_status === 'archived' || existing?.scope_status === 'reaped';
+          if (existing && existing.scope_id !== parsed.scopeId && !holderReleased) {
+            // A hostname is globally unique and routes to exactly one place. Silently
+            // rebinding it would move another tenant's traffic. Exception: the holder is
+            // ARCHIVED or REAPED (a deleted app, storage since wiped) — it released the
+            // name, so the rebind reclaims it.
+            throw substratError('conflict', `hostname '${parsed.hostname}' is already bound to another scope`);
+          }
+          // Exactly one canonical per (scope, surface): "which one do certs and
+          // redirects use" has to have one answer, so a new canonical demotes the old.
+          if (parsed.canonical) {
+            this.directory
+              .prepare('UPDATE hostnames SET canonical = 0 WHERE scope_id = ? AND surface = ?')
+              .run(parsed.scopeId, parsed.surface);
+          }
           this.directory
-            .prepare('UPDATE hostnames SET canonical = 0 WHERE scope_id = ? AND surface = ?')
-            .run(parsed.scopeId, parsed.surface);
-        }
-        this.directory
-          .prepare(
-            // INSERT OR REPLACE resets issuance columns — a (re)bind starts a fresh
-            // lifecycle, so any prior CF hostname id / DNS records must not linger.
-            `INSERT OR REPLACE INTO hostnames
-               (hostname, tenant_id, scope_id, vertical_slug, surface, region,
-                status, status_note, canonical, created_at, custom_hostname_id, validation_records)
-             VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL, NULL)`,
-          )
-          .run(
-            parsed.hostname,
-            parsed.tenantId,
-            parsed.scopeId,
-            scope.vertical,
-            parsed.surface,
-            parsed.region,
-            parsed.canonical ? 1 : 0,
-            new Date().toISOString(),
-          );
-        this.recordAdmin(
+            .prepare(
+              // INSERT OR REPLACE resets issuance columns — a (re)bind starts a fresh
+              // lifecycle, so any prior CF hostname id / DNS records must not linger.
+              `INSERT OR REPLACE INTO hostnames
+                 (hostname, tenant_id, scope_id, vertical_slug, surface, region,
+                  status, status_note, canonical, created_at, custom_hostname_id, validation_records)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL, NULL)`,
+            )
+            .run(
+              parsed.hostname,
+              parsed.tenantId,
+              parsed.scopeId,
+              scope.vertical,
+              parsed.surface,
+              parsed.region,
+              parsed.canonical ? 1 : 0,
+              new Date().toISOString(),
+            );
+          return true;
+        }, () => this.recordAdmin(
           actor,
           'bindHostname',
-          { tenantId: parsed.tenantId, scopeId: parsed.scopeId, vertical: scope.vertical },
+          { tenantId: parsed.tenantId, scopeId: parsed.scopeId, vertical },
           null,
           parsed,
-        );
+        ));
       },
       setHostnameStatus: async (actor, raw: string, status, note?: string) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = this.directory
-          .prepare('SELECT tenant_id, scope_id, status FROM hostnames WHERE hostname = ?')
-          .get(hostname) as
-          | { tenant_id: string; scope_id: string; status: string }
-          | undefined;
-        if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
-        if (row.status === status) return; // idempotent, and a no-op is not audited
-        this.directory
-          .prepare('UPDATE hostnames SET status = ?, status_note = ? WHERE hostname = ?')
-          .run(status, note ?? null, hostname);
-        this.recordAdmin(
+        // #2526: the row's read (its `before`, and the no-op judgement), the write and the
+        // admin row are one directory unit.
+        let row: { tenant_id: string; scope_id: string; status: string } | undefined;
+        this.directoryWriteAndAudit(() => {
+          row = this.directory
+            .prepare('SELECT tenant_id, scope_id, status FROM hostnames WHERE hostname = ?')
+            .get(hostname) as typeof row;
+          if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
+          if (row.status === status) return false; // idempotent, and a no-op is not audited
+          this.directory
+            .prepare('UPDATE hostnames SET status = ?, status_note = ? WHERE hostname = ?')
+            .run(status, note ?? null, hostname);
+          return true;
+        }, () => this.recordAdmin(
           actor,
           'setHostnameStatus',
-          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
-          { status: row.status },
+          { tenantId: row!.tenant_id as TenantId, scopeId: row!.scope_id as ScopeId },
+          { status: row!.status },
           { status, note: note ?? null },
-        );
+        ));
       },
       setHostnameIssuance: async (actor, raw, fields) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = this.directory
-          .prepare(
-            'SELECT tenant_id, scope_id, status, custom_hostname_id, validation_records FROM hostnames WHERE hostname = ?',
-          )
-          .get(hostname) as
-          | {
-              tenant_id: string;
-              scope_id: string;
-              status: string;
-              custom_hostname_id: string | null;
-              validation_records: string | null;
-            }
-          | undefined;
-        if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
         const recordsJson = fields.validationRecords.length
           ? JSON.stringify(fields.validationRecords)
           : null;
-        const idUnchanged =
-          fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id;
-        // A poll that changes nothing is not an event — skip it, so the reconcile sweep
-        // does not append a no-op admin-log row every interval.
-        if (
-          row.status === fields.status &&
-          (row.validation_records ?? null) === recordsJson &&
-          idUnchanged
-        ) {
-          return;
-        }
-        if (fields.customHostnameId !== undefined) {
-          this.directory
+        // #2526: the row's read (its `before`, and the no-op judgement), the write and the
+        // admin row are one directory unit.
+        let row: { tenant_id: string; scope_id: string; status: string; custom_hostname_id: string | null; validation_records: string | null } | undefined;
+        this.directoryWriteAndAudit(() => {
+          row = this.directory
             .prepare(
-              'UPDATE hostnames SET status = ?, status_note = ?, custom_hostname_id = ?, validation_records = ? WHERE hostname = ?',
+              'SELECT tenant_id, scope_id, status, custom_hostname_id, validation_records FROM hostnames WHERE hostname = ?',
             )
-            .run(fields.status, fields.note ?? null, fields.customHostnameId, recordsJson, hostname);
-        } else {
-          this.directory
-            .prepare(
-              'UPDATE hostnames SET status = ?, status_note = ?, validation_records = ? WHERE hostname = ?',
-            )
-            .run(fields.status, fields.note ?? null, recordsJson, hostname);
-        }
-        this.recordAdmin(
+            .get(hostname) as typeof row;
+          if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
+          const idUnchanged =
+            fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id;
+          // A poll that changes nothing is not an event — skip it, so the reconcile sweep
+          // does not append a no-op admin-log row every interval.
+          if (
+            row.status === fields.status &&
+            (row.validation_records ?? null) === recordsJson &&
+            idUnchanged
+          ) {
+            return false;
+          }
+          if (fields.customHostnameId !== undefined) {
+            this.directory
+              .prepare(
+                'UPDATE hostnames SET status = ?, status_note = ?, custom_hostname_id = ?, validation_records = ? WHERE hostname = ?',
+              )
+              .run(fields.status, fields.note ?? null, fields.customHostnameId, recordsJson, hostname);
+          } else {
+            this.directory
+              .prepare(
+                'UPDATE hostnames SET status = ?, status_note = ?, validation_records = ? WHERE hostname = ?',
+              )
+              .run(fields.status, fields.note ?? null, recordsJson, hostname);
+          }
+          return true;
+        }, () => this.recordAdmin(
           actor,
           'setHostnameIssuance',
-          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
-          { status: row.status },
+          { tenantId: row!.tenant_id as TenantId, scopeId: row!.scope_id as ScopeId },
+          { status: row!.status },
           { status: fields.status, note: fields.note ?? null },
-        );
+        ));
       },
       unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
         // One statement: the row it removes is the row it audits, and an owner is judged by the
         // delete itself, so a name rebound to another scope in between is left alone (#2285).
-        const row = this.directory
-          .prepare(`DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
-            RETURNING tenant_id, scope_id, status`)
-          .get(hostname, ...(owner ? [owner.tenantId, owner.scopeId] : [])) as
-          | { tenant_id: string; scope_id: string; status: string }
-          | undefined;
-        if (!row) return; // idempotent, and a no-op is not audited
-        this.recordAdmin(
+        // #2526: the delete and its admin row are one directory unit.
+        let row: { tenant_id: string; scope_id: string; status: string } | undefined;
+        this.directoryWriteAndAudit(() => {
+          row = this.directory
+            .prepare(`DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
+              RETURNING tenant_id, scope_id, status`)
+            .get(hostname, ...(owner ? [owner.tenantId, owner.scopeId] : [])) as typeof row;
+          return row !== undefined; // idempotent, and a no-op is not audited
+        }, () => this.recordAdmin(
           actor,
           'unbindHostname',
-          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
-          { hostname, status: row.status },
+          { tenantId: row!.tenant_id as TenantId, scopeId: row!.scope_id as ScopeId },
+          { hostname, status: row!.status },
           null,
-        );
+        ));
       },
       listHostnames: async (actor, filter) => {
         const where: string[] = [];
@@ -12333,47 +12340,52 @@ export class SqliteScopeHost implements ScopeHost {
         plan?: EntitlementGrantInput,
       ) => {
         const input = entitlementGrantInput.parse(plan ?? {});
-        const existing = this.directory
-          .prepare(
-            'SELECT expires_at, quota, plan FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
-          )
-          .get(tenantId, entitlementKey) as
-          | { expires_at: string | null; quota: number | null; plan: string | null }
-          | undefined;
-        // PATCH semantics (entitlementGrantInput): omitted preserves, null clears —
-        // a bare re-grant on an idempotent provisioning path must not erase a
-        // trial's expiry and quietly turn it perpetual.
-        const next = {
-          expiresAt: input.expiresAt !== undefined ? input.expiresAt : (existing?.expires_at ?? null),
-          quota: input.quota !== undefined ? input.quota : (existing?.quota ?? null),
-          plan: input.plan !== undefined ? input.plan : (existing?.plan ?? null),
-        };
-        // Idempotent: a grant that changes nothing is not audited.
-        if (
-          existing &&
-          existing.expires_at === next.expiresAt &&
-          existing.quota === next.quota &&
-          existing.plan === next.plan
-        ) {
-          return;
-        }
-        const now = new Date().toISOString();
-        // granted_at/granted_by restamp on every effective change: a renewal is a
-        // new grant act, and the full history is the admin log below.
-        this.directory
-          .prepare(
-            `INSERT INTO _substrat_entitlements
-               (tenant_id, entitlement_key, expires_at, quota, plan, granted_at, granted_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (tenant_id, entitlement_key) DO UPDATE SET
-               expires_at = excluded.expires_at,
-               quota = excluded.quota,
-               plan = excluded.plan,
-               granted_at = excluded.granted_at,
-               granted_by = excluded.granted_by`,
-          )
-          .run(tenantId, entitlementKey, next.expiresAt, next.quota, next.plan, now, actor);
-        this.recordAdmin(
+        type Held = { expires_at: string | null; quota: number | null; plan: string | null };
+        // #2526: the held grant (its `before`, and the no-op judgement), the write and the admin
+        // row are one directory unit.
+        let existing: Held | undefined;
+        let next = { expiresAt: null as string | null, quota: null as number | null, plan: null as string | null };
+        this.directoryWriteAndAudit(() => {
+          existing = this.directory
+            .prepare(
+              'SELECT expires_at, quota, plan FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
+            )
+            .get(tenantId, entitlementKey) as Held | undefined;
+          // PATCH semantics (entitlementGrantInput): omitted preserves, null clears —
+          // a bare re-grant on an idempotent provisioning path must not erase a
+          // trial's expiry and quietly turn it perpetual.
+          next = {
+            expiresAt: input.expiresAt !== undefined ? input.expiresAt : (existing?.expires_at ?? null),
+            quota: input.quota !== undefined ? input.quota : (existing?.quota ?? null),
+            plan: input.plan !== undefined ? input.plan : (existing?.plan ?? null),
+          };
+          // Idempotent: a grant that changes nothing is not audited.
+          if (
+            existing &&
+            existing.expires_at === next.expiresAt &&
+            existing.quota === next.quota &&
+            existing.plan === next.plan
+          ) {
+            return false;
+          }
+          const now = new Date().toISOString();
+          // granted_at/granted_by restamp on every effective change: a renewal is a
+          // new grant act, and the full history is the admin log.
+          this.directory
+            .prepare(
+              `INSERT INTO _substrat_entitlements
+                 (tenant_id, entitlement_key, expires_at, quota, plan, granted_at, granted_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (tenant_id, entitlement_key) DO UPDATE SET
+                 expires_at = excluded.expires_at,
+                 quota = excluded.quota,
+                 plan = excluded.plan,
+                 granted_at = excluded.granted_at,
+                 granted_by = excluded.granted_by`,
+            )
+            .run(tenantId, entitlementKey, next.expiresAt, next.quota, next.plan, now, actor);
+          return true;
+        }, () => this.recordAdmin(
           actor,
           'grantEntitlement',
           { tenantId },
@@ -12381,27 +12393,25 @@ export class SqliteScopeHost implements ScopeHost {
             ? { entitlementKey, expiresAt: existing.expires_at, quota: existing.quota, plan: existing.plan }
             : null,
           { entitlementKey, ...next },
-        );
+        ));
       },
       revokeEntitlement: async (actor: PlatformActorId, tenantId: TenantId, entitlementKey: string) => {
-        const existing = this.directory
-          .prepare(
-            'SELECT expires_at, quota, plan FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?',
-          )
-          .get(tenantId, entitlementKey) as
-          | { expires_at: string | null; quota: number | null; plan: string | null }
-          | undefined;
-        if (!existing) return; // nothing held, nothing changed
-        this.directory
-          .prepare('DELETE FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?')
-          .run(tenantId, entitlementKey);
-        this.recordAdmin(
+        // #2526: one statement removes the grant and answers what it held, which is the admin
+        // row's `before`; the row commits with it.
+        let removed: { expires_at: string | null; quota: number | null; plan: string | null } | undefined;
+        this.directoryWriteAndAudit(() => {
+          removed = this.directory
+            .prepare(`DELETE FROM _substrat_entitlements WHERE tenant_id = ? AND entitlement_key = ?
+              RETURNING expires_at, quota, plan`)
+            .get(tenantId, entitlementKey) as typeof removed;
+          return removed !== undefined; // nothing held, nothing changed
+        }, () => this.recordAdmin(
           actor,
           'revokeEntitlement',
           { tenantId },
-          { entitlementKey, expiresAt: existing.expires_at, quota: existing.quota, plan: existing.plan },
+          { entitlementKey, expiresAt: removed!.expires_at, quota: removed!.quota, plan: removed!.plan },
           null,
-        );
+        ));
       },
       listEntitlements: async (actor, tenantId: TenantId): Promise<EntitlementGrant[]> => {
         const grants = (
