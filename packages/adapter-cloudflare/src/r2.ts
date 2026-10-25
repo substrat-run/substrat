@@ -166,6 +166,9 @@ interface R2BucketLike {
   ): Promise<unknown>;
   get(key: string): Promise<{
     arrayBuffer(): Promise<ArrayBuffer>;
+    /** The object's bytes, read from R2 as the stream is read. */
+    body: ReadableStream<Uint8Array>;
+    size: number;
     httpMetadata?: { contentType?: string };
   } | null>;
   delete(key: string): Promise<void>;
@@ -196,6 +199,13 @@ export function r2TenantBlobStore(bucket: unknown): TenantBlobStore {
       const body = new Uint8Array(await obj.arrayBuffer());
       const contentType = obj.httpMetadata?.contentType;
       return contentType !== undefined ? { body, contentType } : { body };
+    },
+    // #2514: the object's own body stream, with the size R2 holds for it, so an open reads it as it goes.
+    getStream: async (key) => {
+      const obj = await r2.get(key);
+      if (!obj) return null;
+      const contentType = obj.httpMetadata?.contentType;
+      return { stream: obj.body, size: obj.size, ...(contentType !== undefined ? { contentType } : {}) };
     },
     delete: async (key) => {
       await r2.delete(key);
