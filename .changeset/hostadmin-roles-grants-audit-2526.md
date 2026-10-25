@@ -1,0 +1,11 @@
+---
+'@substrat-run/adapter-sqlite': patch
+'@substrat-run/adapter-cloudflare': patch
+'@substrat-run/contract-tests': patch
+---
+
+HostAdmin's role, grant and org writes at a tenant node now commit with their audit row, on both adapters: `defineRole`, and `assignRole`, `grant`, `grantToOrg`, `grantToSystem` and `grantToConnection` with no scope, plus `createOrg` and `addMember`. A refused audit insert leaves the state as it was, and a refused state write leaves no row. The guards these writes judge are read in the same transaction: the role's reservation, the org a grant or a membership names (one deleted meanwhile is refused `not_found`), the connection a grant names, and the role a definition replaces, which is its row's `before`. An audit row's fields are unchanged, and a write that sets the value already held still records a row.
+
+At a scope node the tuple lives in the scope's own store, so `assignRole`, `grant`, `grantToOrg` and `grantToSystem` there still write the tuple and then the row. `grantToConnection` at a scope node now commits its directory record and its row first, then delivers the tuple. If the delivery fails, the call throws and the record and its row stand without the tuple. On adapter-cloudflare a reconcile re-seats the tuple from the record. adapter-sqlite has no re-seat from the record, so a re-grant delivers it.
+
+On adapter-cloudflare these writes now go through the ControlPlaneDO's `reply`, with new DO methods `assignTenantRole`, `writeOrgTenantTuple`, `grantConnectionInDirectory` and `insertOrg`, and an optional trailing audit entry on `defineRoleOrRefusal`, `writeTenantTuple` and `writeTenantSystemGrant`. A coordinator from before this change keeps working against the new ControlPlaneDO. A coordinator from after it, paired with an older ControlPlaneDO, refuses these writes with `not a replied directory method: <name>` and writes nothing. The workers that make these writes export the ControlPlaneDO class their own host calls, so the two ship together.

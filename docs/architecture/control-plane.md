@@ -420,8 +420,30 @@ serving script by then and passes the refusal up, so the script runs that serve'
 row names the other serve's until a serve lands again; before the compare-and-set the last writer
 won instead. The compare-and-set holds only the host method's own read, not the serving state the
 caller read before its upload, which is where its DO classes and migration tag come from. The scope-level writes follow the
-same rule (preview-and-snapshots.md); the remaining HostAdmin writes still record their row as a
-separate step.
+same rule (preview-and-snapshots.md).
+
+The role, grant and org writes at a **tenant node** do too (#2526): `defineRole`, and `assignRole`,
+`grant`, `grantToOrg`, `grantToSystem` and `grantToConnection` with no scope, plus `createOrg` and
+`addMember`. Each writes its directory state and its row in one directory transaction, and reads the
+guards it judges in that transaction: the role's reservation, the org a grant or a membership names
+(one deleted meanwhile is refused `not_found`), the connection a grant names (revoked, or in another
+tenant, refused), the switch record a system grant is refused by, and the role a definition replaces,
+which is its row's `before`. `unassignRole`, `removeMember` and `applyMembership` already committed
+that way. The rule for "changed nothing" is the one above: every one of these is an upsert, so a
+write that sets the value a row already holds (a re-grant, a re-assignment, the same definition
+again) still records a row. Only a write that matches no row, a same-name rename or a re-create
+(`createOrg` of an org that exists, `createTenant` of a tenant that exists) records nothing.
+
+At a **scope node** the tuple lives in the scope's own store, which no directory transaction
+reaches, so `assignRole`, `grant`, `grantToOrg` and `grantToSystem` there still write the tuple and
+then the row as separate steps: the window #1292 describes below. `grantToConnection` at a scope
+node commits its directory record and its row as one unit first, and delivers the tuple after it.
+If the delivery fails, the call throws and the record and its row stand without the tuple, which
+fails safe (less access, never access with no row). On the Cloudflare adapter the reconcile
+re-seats the tuple from the record. **The SQLite adapter has no re-seat from the record**: nothing
+there reads it but `listConnectionGrants`, so only a re-grant delivers the tuple.
+
+The remaining HostAdmin writes still record their row as a separate step.
 
 Same argument as K-4, and the reason the kernel is trusted at all: a surface that can act
 without a durable record of who acted is worse than no surface. (If §3's record-keeping
@@ -517,8 +539,9 @@ adapter swallows a failed log write: `recordAdmin` throws and the verb fails, bu
 mutation has already committed, so the caller sees an error for a change that stands. If the
 process dies between the two writes, the mutation has no row at all. Retrying the verb then
 reads the already-mutated state as its `before`, so the retry's row lands and the original
-transition's diff is lost. A verb that skips no-ops (for example `setTenantName`,
-`createTenant` or `createOrg`) records nothing on that retry. What the log promises is that **every verb that returns having changed
+transition's diff is lost. A verb that writes nothing on its retry (a rename to the current name,
+or a re-create such as `createTenant` or `createOrg`) records nothing on that retry; one that
+writes the value already held records a row. What the log promises is that **every verb that returns having changed
 something has written its row**. A verb that found nothing to change returns without one. It
 does not promise that no mutation stands without one, and the gap matters most
 for the grant writes above, where the row is the only provenance. Two verbs place the row on
