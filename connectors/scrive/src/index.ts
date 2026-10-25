@@ -22,7 +22,7 @@ import type {
   ScopeHost,
 } from '@substrat-run/kernel';
 import { connectorUploadBody, deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
-import { ScriveApi, ScriveApiError, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
+import { ScriveApi, ScriveApiError, ScriveFileTooLargeError, SCRIVE_MAX_DOWNLOAD_BYTES, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
 import { renderPdf, representableInWinAnsi } from './pdf.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
@@ -34,7 +34,7 @@ declare const crypto: {
 };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 
-export { ScriveApi, ScriveApiError, SCRIVE_TESTBED, SCRIVE_PRODUCTION } from './api.js';
+export { ScriveApi, ScriveApiError, ScriveFileTooLargeError, SCRIVE_MAX_DOWNLOAD_BYTES, SCRIVE_TESTBED, SCRIVE_PRODUCTION } from './api.js';
 export { ScriveMock, type ScriveMockOptions } from './mock.js';
 export { renderPdf } from './pdf.js';
 
@@ -292,6 +292,20 @@ export interface ScriveDispatchState {
    * the only idempotency handle.
    */
   sealedAttachmentId?: string;
+  /**
+   * Set when the sealed PDF is larger than this connector downloads (#2552), found before its body
+   * was downloaded. A reconcile run with `honourHeld` finds the document as it was and fetches
+   * nothing; it tries again when the provider's `mtime` differs from the one held here. A callback
+   * or an explicit reconcile (the default) clears the hold and tries again. The passive sweep never
+   * looks at a held row: every party is recorded, so it skips the row. A document whose response
+   * carries no `mtime` stays held until a callback or explicit reconcile. The marker goes when the
+   * file lands, and shows on the activity view meanwhile. One small marker on the dispatch row.
+   */
+  sealedHeld?: {
+    reason: string;
+    /** The document's `mtime` when the file was refused; absent when the provider gave none. */
+    mtime?: string;
+  };
   dispatchedAt: string;
 }
 
@@ -871,7 +885,17 @@ export async function reconcileScriveDispatch(
   host: ScopeHost,
   connectionId: ConnectionId,
   instanceId: string,
-  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number },
+  options: {
+    fetch: FetchLike;
+    baseUrl: string;
+    timeoutMs?: number;
+    /**
+     * Keep a sealed file held as too large held while the document's `mtime` is unchanged, instead of
+     * fetching again. Off by default: an explicit reconcile or a callback is somebody asking, and
+     * retries. A passive caller turns it on; the sweep does not need to, since it only reconciles rows still short of a signature, which attempt no sealed file.
+     */
+    honourHeld?: boolean;
+  },
 ): Promise<ScriveReconcileResult> {
   const admin = host.admin;
   const key = dispatchKey(instanceId);
@@ -1030,7 +1054,14 @@ export async function reconcileScriveDispatch(
   // egress) is reported and retried next poll, not thrown.
   let sealedDocument: ScriveReconcileResult['sealedDocument'];
   let sealedAttachmentId = state.sealedAttachmentId;
-  if (doc.status === 'closed' && complete && !sealedAttachmentId) {
+  let sealedHeld = state.sealedHeld;
+  // A file held as too large is not fetched again by a passive pass until the provider says the document
+  // changed; an explicit reconcile or a callback retries it.
+  const heldStill = options.honourHeld === true && sealedHeld !== undefined && sealedHeld.mtime === doc.mtime;
+  if (doc.status === 'closed' && complete && !sealedAttachmentId && heldStill) {
+    sealedDocument = { skipped: sealedHeld!.reason };
+  } else if (doc.status === 'closed' && complete && !sealedAttachmentId) {
+    sealedHeld = undefined;
     try {
       const bytes = await api.getMainFile(state.documentId);
       const attachments = await host.getConnectorAttachments(
@@ -1050,8 +1081,13 @@ export async function reconcileScriveDispatch(
       sealedDocument = { attachmentId: record.id };
     } catch (err) {
       sealedDocument = { skipped: err instanceof Error ? err.message : String(err) };
+      // Too large is a fact about the file, so it is remembered; any other failure is retried next poll.
+      if (err instanceof ScriveFileTooLargeError) {
+        sealedHeld = { reason: err.message, ...(doc.mtime !== undefined ? { mtime: doc.mtime } : {}) };
+      }
     }
   } else if (sealedAttachmentId) {
+    sealedHeld = undefined;
     sealedDocument = { skipped: 'already landed' };
   } else if (doc.status === 'closed' && !complete) {
     sealedDocument = { skipped: 'document closed but not every party is recorded yet' };
@@ -1070,15 +1106,17 @@ export async function reconcileScriveDispatch(
     pinned ||
     attentionChanged ||
     done.size !== (state.recordedRequestIds?.length ?? 0) ||
-    sealedAttachmentId !== state.sealedAttachmentId
+    sealedAttachmentId !== state.sealedAttachmentId ||
+    JSON.stringify(sealedHeld) !== JSON.stringify(state.sealedHeld)
   ) {
-    const { needsAttention: _previous, ...rest } = state;
+    const { needsAttention: _previous, sealedHeld: _held, ...rest } = state;
     await admin.putConnectorState(connectionId, key, {
       ...rest,
       parties,
       recordedRequestIds: [...done],
       ...(needsAttention.length ? { needsAttention } : {}),
       ...(sealedAttachmentId ? { sealedAttachmentId } : {}),
+      ...(sealedHeld ? { sealedHeld } : {}),
     } satisfies ScriveDispatchState);
   }
 
@@ -1388,6 +1426,7 @@ export async function scriveConnectionActivity(
             : 'attestation sheet (no document was bound)',
         },
         ...(state.sealedAttachmentId ? [{ label: 'Sealed copy', value: 'stored on the instance' }] : []),
+        ...(state.sealedHeld && !state.sealedAttachmentId ? [{ label: 'Sealed copy', value: `not stored: ${state.sealedHeld.reason}` }] : []),
         ...(live?.mtime ? [{ label: 'Provider last change', value: live.mtime }] : []),
       ],
     };

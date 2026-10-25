@@ -18,6 +18,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PROTOCOL_PERM as PERM, protocolModule, getProtocol } from '@substrat-run/engine-protocol';
 import {
   ScriveApi,
+  SCRIVE_MAX_DOWNLOAD_BYTES,
   ScriveMock,
   registerScriveConnector,
   reconcileScriveDispatch,
@@ -127,6 +128,7 @@ describe('scrive connector — return path (record signatures back)', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -285,6 +287,150 @@ describe('scrive connector — return path (record signatures back)', () => {
     const opened = await att.open((result.sealedDocument as { attachmentId: string }).attachmentId);
     expect((opened!.body as Uint8Array).byteLength).toBe(big.byteLength);
     expect((opened!.body as Uint8Array)[big.byteLength - 1]).toBe(9);
+  });
+
+  describe('a sealed PDF over the download bound (#2552)', () => {
+    const MAX = SCRIVE_MAX_DOWNLOAD_BYTES;
+    /** A passive pass: the hold is honoured while the document is unchanged. */
+    const passive = (instanceId: string) =>
+      reconcileScriveDispatch(host, connId, instanceId, { fetch: scrive.fetch, baseUrl: BASE, honourHeld: true });
+    const ledgerOf = async (instanceId: string) =>
+      (await host.admin.getConnectorState(connId, `scrive:dispatch:${instanceId}`)) as ScriveDispatchState;
+
+    /** A closed document whose sealed file the mock declares as `declared` bytes. */
+    async function closedWith(declared: number | null, actual: number) {
+      await grantRecordSignature();
+      await grantAttach();
+      await host.provisionBlobStore(staff, { tenantId: t, vertical: 'meridian', binding: 'ATTACHMENTS' });
+      const { instanceId, docId } = await issue();
+      scrive.sign(docId, 1, '2026-07-21T09:00:00.000Z');
+      scrive.sign(docId, 2, '2026-07-21T10:30:00.000Z');
+      scrive.setSealedFile(docId, { declared, actual });
+      return { instanceId, docId };
+    }
+    const fetches = () => vi.spyOn(ScriveApi.prototype, 'getMainFile');
+    const upload = () => {
+      const real = host.getConnectorAttachments.bind(host);
+      const calls: number[] = [];
+      vi.spyOn(host, 'getConnectorAttachments').mockImplementation(async (...args) => {
+        const inner = await real(...args);
+        return { ...inner, upload: (input) => (calls.push(1), inner.upload(input)) };
+      });
+      return calls;
+    };
+
+    it('skips it without reading the body, reports why, and holds the decision across polls', async () => {
+      const { instanceId, docId } = await closedWith(MAX + 1, 8);
+      const spy = fetches();
+      const uploads = upload();
+
+      const first = await reconcile(instanceId);
+      expect(first.complete).toBe(true);
+      expect(first.sealedDocument).toEqual({ skipped: expect.stringMatching(/larger than this connector downloads/) });
+      expect(scrive.sealedBytesServed.get(docId) ?? 0).toBe(0);
+      expect(uploads).toHaveLength(0);
+      expect((await ledgerOf(instanceId)).sealedHeld).toMatchObject({ reason: expect.stringContaining(String(MAX + 1)) });
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // The document is as it was: the next polls report the same reason and fetch nothing.
+      const again = await passive(instanceId);
+      const third = await passive(instanceId);
+      expect(again.sealedDocument).toEqual(first.sealedDocument);
+      expect(third.sealedDocument).toEqual(first.sealedDocument);
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('an explicit reconcile, or a callback, clears the hold and tries again on an unchanged document', async () => {
+      const { instanceId, docId } = await closedWith(MAX + 1, 8);
+      const spy = fetches();
+      await reconcile(instanceId);
+      await passive(instanceId);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // Nothing changed at the provider; an operator asks again, and the file is now takeable.
+      scrive.setSealedFile(docId, { declared: 8, actual: 8 });
+      const forced = await reconcile(instanceId);
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(forced.sealedDocument).toMatchObject({ attachmentId: expect.any(String) });
+      expect((await ledgerOf(instanceId)).sealedHeld).toBeUndefined();
+    });
+
+    it('tries again when the provider reports the document changed, and clears the hold once it lands', async () => {
+      const { instanceId, docId } = await closedWith(MAX + 1, 8);
+      const spy = fetches();
+      await reconcile(instanceId);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      // Re-presented: the document changed at the provider and the file is now one the connector can take.
+      scrive.touch(docId);
+      scrive.setSealedFile(docId, { declared: 8, actual: 8 });
+      const retried = await passive(instanceId);
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(retried.sealedDocument).toMatchObject({ attachmentId: expect.any(String) });
+      const row = await ledgerOf(instanceId);
+      expect(row.sealedHeld).toBeUndefined();
+      expect(row.sealedAttachmentId).toBe((retried.sealedDocument as { attachmentId: string }).attachmentId);
+    });
+
+    it('holds again, under the new mtime, when a changed document is still too large', async () => {
+      const { instanceId, docId } = await closedWith(MAX + 1, 8);
+      const spy = fetches();
+      await reconcile(instanceId);
+      const before = (await ledgerOf(instanceId)).sealedHeld;
+      scrive.touch(docId);
+      await passive(instanceId);
+      expect(spy).toHaveBeenCalledTimes(2);
+      const after = (await ledgerOf(instanceId)).sealedHeld;
+      expect(after?.mtime).toBeDefined();
+      expect(after?.mtime).not.toBe(before?.mtime);
+      await passive(instanceId);
+      expect(spy).toHaveBeenCalledTimes(2);
+    });
+
+    it('takes a file declared at the ceiling and refuses one declared a byte over', async () => {
+      const at = await closedWith(MAX, 8);
+      const landed = await reconcile(at.instanceId);
+      expect(landed.sealedDocument).toMatchObject({ attachmentId: expect.any(String) });
+      expect((await ledgerOf(at.instanceId)).sealedHeld).toBeUndefined();
+
+      const over = await closedWith(MAX + 1, 8);
+      const refused = await reconcile(over.instanceId);
+      expect(refused.sealedDocument).toEqual({ skipped: expect.any(String) });
+      expect((await ledgerOf(over.instanceId)).sealedHeld).toBeDefined();
+    });
+
+    it('cuts off a body that declares no length at the ceiling and holds it', async () => {
+      const CHUNK = 1024 * 1024; // the mock serves in 1 MiB reads
+      const total = 2 * MAX;
+      const { instanceId, docId } = await closedWith(null, total);
+      const first = await reconcile(instanceId);
+      expect(first.sealedDocument).toEqual({ skipped: expect.stringMatching(/larger than this connector downloads/) });
+      expect(scrive.sealedBytesServed.get(docId)).toBeLessThanOrEqual(MAX + CHUNK);
+      expect(scrive.sealedBytesServed.get(docId)).toBeLessThan(total);
+      expect(scrive.sealedCancelled.has(docId)).toBe(true);
+      const spy = fetches();
+      await passive(instanceId);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('does not hold a transient failure: the next poll fetches again', async () => {
+      const { instanceId } = await closedWith(8, 8);
+      const spy = vi.spyOn(ScriveApi.prototype, 'getMainFile').mockRejectedValueOnce(new Error('egress hiccup'));
+      const failed = await reconcile(instanceId);
+      expect(failed.sealedDocument).toEqual({ skipped: 'egress hiccup' });
+      expect((await ledgerOf(instanceId)).sealedHeld).toBeUndefined();
+      const next = await reconcile(instanceId);
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(next.sealedDocument).toMatchObject({ attachmentId: expect.any(String) });
+    });
+
+    it('shows a held file on the activity view', async () => {
+      const { instanceId } = await closedWith(MAX + 1, 8);
+      await reconcile(instanceId);
+      const view = await scriveConnectionActivity(host, { id: connId, tenantId: t, vertical: 'meridian' }, { fetch: scrive.fetch, baseUrl: BASE });
+      const rows = JSON.stringify(view.entries);
+      expect(rows).toContain('not stored');
+    });
   });
 
   it('records incrementally and is idempotent across polls', async () => {
