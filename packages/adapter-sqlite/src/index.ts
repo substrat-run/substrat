@@ -4637,7 +4637,9 @@ export class SqliteScopeHost implements ScopeHost {
       // A dump written before indexes were excluded may still carry them; skip those
       // too rather than failing a restore over data that is about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
-      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
+      // The wire nonce store is this store's own (RFC wire-signing §4): a dump that carries it is not
+      // replayed, so a load starts it empty, as it starts a vertical's search index.
+      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()) && !isWireNonceTable(t.name));
       // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
       // not keep at all; they are skipped by name, and any other unknown spine table is refused.
       const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));

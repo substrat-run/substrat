@@ -59,6 +59,8 @@ describe('claimWireNonceIn', () => {
     const cap = 3;
     for (let i = 1; i <= cap; i++) expect(claimWireNonceIn(sql, nonce(i), 200, 100, cap)).toBe(true);
     expect(claimWireNonceIn(sql, nonce(9), 500, 150, cap)).toBe('full');
+    // A nonce the full store already holds is still a replay, never the store's failure.
+    expect(claimWireNonceIn(sql, nonce(1), 200, 150, cap)).toBe(false);
     // Once the window has passed, the purge runs before the cap is judged.
     expect(claimWireNonceIn(sql, nonce(9), 500, 201, cap)).toBe(true);
   });

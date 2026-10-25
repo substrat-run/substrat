@@ -344,11 +344,13 @@ payload (Q7).
   A claim that is recorded when the call's effect then fails leaves the nonce spent and nothing
   done; the signer's retry carries a new nonce and is accepted.
 - **The store is store-local, and its window is short.** Its tables describe calls a store accepted,
-  not the scope's data: no dump, export, fork or snapshot carries them, and writing them advances no
-  write revision a carry fences on (a carried copy is another deployment, whose audience check
-  already refuses an envelope meant for this one). So nonces recorded before a delete, wipe,
-  restore, rewind or load of the scope are gone for the rest of their window, which is why the
-  window is short: an envelope lives at most 120 seconds.
+  not the scope's data: no dump, export, fork or snapshot carries them, no load takes them from a
+  dump, and writing them advances no write revision a carry fences on (a carried copy is another
+  deployment, whose audience check already refuses an envelope meant for this one). So nonces
+  recorded before a delete, wipe, restore or load of the scope, or after the bookmark a rewind
+  returns it to, are gone for the rest of their window, which is why the window is short: an
+  envelope lives at most 120 seconds. A claim the store's own clock places after `until`, in the
+  last second the verifier still allows, answers `false` and is counted as `replay`.
 
 The entry's seam (step 1) is filled by the store (follow-on 5): a call that keeps nonces and names
 a scope claims its nonce in that scope, bounded at a second. The seam is reached only when the
@@ -846,7 +848,7 @@ never rebuilt keeps the up-calls it was built with.
      it answers every scoped call that changes state with the fault, the counters see only versions
      that had such a call in their window, and no record says yet which versions carry it.
    - **Store-local and short** (§4): no dump carries it, a claim advances no write revision, and a
-     load, restore, rewind, wipe or delete empties it.
+     load, restore, wipe or delete empties it, and a rewind returns it to the bookmark.
    Left open, for this item's next PR: calls that keep nonces and name no scope (a call naming a
    scope alone, the configure call naming a preview or its parent), counted `unscoped`, and the
    streamed upload §3.6 leaves unsigned.

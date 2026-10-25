@@ -10,11 +10,11 @@ import type { SwitchSql } from './system-switch.js';
  * through `claimWireNonceIn`, so the self-hosted store and the hosted one answer alike.
  *
  * Kernel-written spine, never a module migration. **Store-local**: the tables describe calls this
- * store accepted, not the scope's data, so a dump never carries them (`isWireNonceTable`) and a
- * write to them advances no write revision a carry fences on (`isWireNonceWrite`). A load,
- * restore, rewind, wipe or delete replaces the store, and the nonces recorded before it go with
- * it, for the rest of their window. That window is short by design: an envelope lives at most two
- * minutes.
+ * store accepted, not the scope's data, so a dump never carries them and no load takes them from
+ * one (`isWireNonceTable`), and a write to them advances no write revision a carry fences on
+ * (`isWireNonceWrite`). A load, restore, wipe or delete replaces the store, and the nonces recorded
+ * before it go with it, as a rewind drops those recorded after its bookmark, for the rest of their
+ * window. That window is short by design: an envelope lives at most two minutes.
  */
 
 /**
@@ -100,8 +100,9 @@ export type WireNonceClaim = true | false | 'full';
  * Claim `nonce` until `until` (Unix seconds) in one scope's store, at `nowSeconds` by the store's
  * own clock. Run it inside one transaction: it purges up to `WIRE_NONCE_PURGE_BATCH` expired rows,
  * then answers `false` for a claim after `until` (the nonce may already be forgotten) or a nonce
- * already held, `'full'` when the store holds `cap` live rows, and `true` once it has recorded the
- * nonce. `'full'` is answered rather than thrown so that the purge before it still commits: the
+ * already held (at the cap too), `'full'` when the store holds `cap` live rows, and `true` once it
+ * has recorded the nonce. A claim the store's own clock places after `until` answers `false` like a
+ * replay; the verifier counts it as one, which only its last second can see. `'full'` is answered rather than thrown so that the purge before it still commits: the
  * caller throws after the transaction, and a store that filled up drains as its rows expire.
  *
  * A nonce that is not 22 characters of base64url, or an `until` or a clock that is not a
@@ -118,13 +119,15 @@ export function claimWireNonceIn(
   for (const [name, value] of [['until', until], ['nowSeconds', nowSeconds]] as const) {
     if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} is a non-negative whole number of seconds`);
   }
-  // No count row yet means no nonce yet: the row is written with the first one.
-  let live = Number(sql.all(`SELECT live FROM _substrat_wire_nonce_count WHERE slot = 'live'`)[0]?.live ?? 0);
+  // No count row yet means no nonce yet: the row is written with the first one. Never below zero,
+  // so a count that ever fell behind its rows cannot lift the cap.
+  let live = Math.max(0, Number(sql.all(`SELECT live FROM _substrat_wire_nonce_count WHERE slot = 'live'`)[0]?.live ?? 0));
   const before = live;
-  live -= sql.all(PURGE_SQL, nowSeconds).length;
+  live = Math.max(0, live - sql.all(PURGE_SQL, nowSeconds).length);
   let answer: WireNonceClaim;
   if (nowSeconds > until) answer = false;
-  else if (live >= cap) answer = 'full';
+  // At the cap a nonce already held is still a replay: the one extra read is paid only there.
+  else if (live >= cap) answer = sql.all('SELECT 1 FROM _substrat_wire_nonces WHERE nonce = ?', nonce).length ? false : 'full';
   else if (sql.all(INSERT_SQL, nonce, until).length === 1) {
     live += 1;
     answer = true;

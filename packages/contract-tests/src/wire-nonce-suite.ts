@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { platformActorId, scopeId as scopeIdSchema, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { WIRE_NONCE_CAP, ulid } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
@@ -64,6 +64,27 @@ export function wireNonceContractSuite(
       expect(await claim(s, a)).toBe(false);
       await fixture.host.restoreScope(staff, t, s, dump);
       expect(await claim(s, a)).toBe(true);
+    });
+
+    it('a dump that does carry the nonce tables (a full count, spent nonces) loads without them', async () => {
+      const spent = nonce();
+      const dump = await fixture.host.admin.exportScope(staff, t, s);
+      dump.tables.push(
+        {
+          name: '_substrat_wire_nonce_count',
+          ddl: 'CREATE TABLE _substrat_wire_nonce_count (slot TEXT PRIMARY KEY, live INTEGER NOT NULL) WITHOUT ROWID',
+          columns: ['slot', 'live'],
+          rows: [['live', WIRE_NONCE_CAP]],
+        },
+        {
+          name: '_substrat_wire_nonces',
+          ddl: 'CREATE TABLE _substrat_wire_nonces (nonce TEXT PRIMARY KEY, until_s INTEGER NOT NULL) WITHOUT ROWID',
+          columns: ['nonce', 'until_s'],
+          rows: [[spent, until]],
+        },
+      );
+      await fixture.host.restoreScope(staff, t, s, dump);
+      expect(await claim(s, spent)).toBe(true);
     });
   });
 }

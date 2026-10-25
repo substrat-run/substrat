@@ -7593,8 +7593,10 @@ export function defineScopeDO(
       // rather than failing a restore over data about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
       // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
+      // The wire nonce store is this store's own (RFC wire-signing §4): never replayed, so a load
+      // starts it empty.
       const replayable = tables
-        .filter((t) => !isSearchIndexTable(t.name.toLowerCase()))
+        .filter((t) => !isSearchIndexTable(t.name.toLowerCase()) && !isWireNonceTable(t.name))
         .map((t) => (loadDropsRowsOf(t.name, destScopeId, sourceScopeId) ? { ...t, rows: () => [] } : t));
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE
