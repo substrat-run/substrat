@@ -191,7 +191,7 @@ function UrlPage({ apps = [{ app_scope_id: 'app-a', name: 'App A' } as AppRow] }
 
 it('Logs reads the URL window and filters; refresh and URL replay preserve them, and it reads no traffic', async () => {
   const traffic = vi.spyOn(api, 'appTraffic');
-  const logs = vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
+  const logs = vi.spyOn(api, 'appTenantLogsRead').mockResolvedValue({ events: [], incomplete: false });
   const next = { since: '2026-09-01T10:15:00.000Z', until: '2026-09-01T10:45:00.000Z' };
   const initial = obsPath({ app: 'app-a', view: 'logs', from: windowRange.since, to: windowRange.until, level: 'error', search: 'failure' });
   window.history.replaceState(null, '', initial);
@@ -220,7 +220,7 @@ it('Logs reads the URL window and filters; refresh and URL replay preserve them,
 });
 
 it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear removes them all', async () => {
-  const logs = vi.spyOn(api, 'appTenantLogs').mockResolvedValue([]);
+  const logs = vi.spyOn(api, 'appTenantLogsRead').mockResolvedValue({ events: [], incomplete: false });
   vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
   window.history.replaceState(null, '', obsPath({ app: 'app-a', view: 'logs', hours: '1' }));
   await act(async () => root.render(<UrlPage />));

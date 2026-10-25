@@ -2068,6 +2068,72 @@ export function defineScopeDO(
     }
 
     /**
+     * #2544: the introspection reads that name only a scope id, each as the held check and the read
+     * in ONE call (as the size reads above are): `null` says the deployment does not hold this scope,
+     * never an empty answer. The read itself is the one the unguarded method makes.
+     */
+    private async ifHeld<T>(read: () => T | Promise<T>): Promise<T | null> {
+      return (await this.holdsScope()) ? read() : null;
+    }
+
+    facetEventsIfHeld(input: EventFacetInput): Promise<EventFacetResult | null> {
+      return this.ifHeld(() => this.facetEvents(input));
+    }
+
+    eventEffectsIfHeld(input: { eventId: EventId; maxNodes?: number }): Promise<EffectsTree | null> {
+      return this.ifHeld(() => this.eventEffects(input));
+    }
+
+    invocationEventsIfHeld(input: { invocationId: string; limit?: number }): Promise<InvocationEvents | null> {
+      return this.ifHeld(() => this.invocationEvents(input));
+    }
+
+    deadLettersIfHeld(input: { limit?: number; cursor?: string }): Promise<Page<DeadLetter> | null> {
+      return this.ifHeld(() => this.deadLetters(input));
+    }
+
+    lifecycleFlowIfHeld(input: LifecycleFlowInput): Promise<LifecycleFlowResult | null> {
+      return this.ifHeld(() => this.lifecycleFlow(input));
+    }
+
+    operationSeriesIfHeld(input: OperationSeriesInput): Promise<OperationSeriesResult | null> {
+      return this.ifHeld(() => this.operationSeries(input));
+    }
+
+    eventCauseIfHeld(input: { eventId: EventId; maxDepth?: number }): Promise<CauseChain | null> {
+      return this.ifHeld(() => this.eventCause(input));
+    }
+
+    entityHistoryIfHeld(input: {
+      entityType: string;
+      entityId: string;
+      limit?: number;
+      cursor?: string;
+    }): Promise<Page<HistoryEntry> | null> {
+      return this.ifHeld(() => this.entityHistory(input));
+    }
+
+    appliedMigrationsIfHeld() {
+      return this.ifHeld(() => this.appliedMigrations());
+    }
+
+    migrationBookmarksIfHeld() {
+      return this.ifHeld(() => this.migrationBookmarks());
+    }
+
+    introspectTablesIfHeld(): Promise<ScopeTable[] | null> {
+      return this.ifHeld(() => this.introspectTables());
+    }
+
+    undrainedEventsReadIfHeld(limit: number): Promise<UndrainedRead | null> {
+      return this.ifHeld(() => this.undrainedEventsRead(limit));
+    }
+
+    redrainCountIfHeld(drainedBefore: string): Promise<number | null> {
+      return this.ifHeld(() => this.redrainCount(drainedBefore));
+    }
+
+    /**
      * #2541: whether this object is a scope the deployment holds, asked by a read that names only a
      * scope id. False for a DO nothing provisioned or loaded here (never provisioned), for a reaped
      * scope's name addressed again (its tombstone), and for a copy a carry wiped, whose rows went

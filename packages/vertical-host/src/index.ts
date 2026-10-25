@@ -44,6 +44,9 @@ import {
   type OrphanSweepReport,
   type OrphanSweepRequest,
   type ByteBody,
+  type SizedByteStream,
+  isSizedByteStream,
+  knownLengthInit,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
@@ -544,6 +547,18 @@ export interface VerticalScopeHost {
     attachmentId: string,
     eventId?: string,
   ): Promise<{ record: unknown; body: Uint8Array; contentType: string } | null>;
+  /**
+   * `connectorAttachmentOpenLocal`, with the bytes as a stream held to the record as it is read
+   * (#2514). OPTIONAL, so a host built before it satisfies this interface: the route then answers
+   * from the buffered read, on the same path and in the same shape.
+   */
+  connectorAttachmentOpenStreamLocal?(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    attachmentId: string,
+    eventId?: string,
+  ): Promise<{ record: unknown; body: SizedByteStream; contentType: string } | null>;
   connectorGrantLocal(
     connectionId: ConnectionId,
     scopeId: ScopeId,
@@ -2106,19 +2121,22 @@ export function mountPlatformSurface<Env extends object>(
   // whose code survives the ScopeDO hop (#113), so it answers 403. Read-gated at the
   // far end like any other caller: the target's `readPermission`, checked against
   // this connection's delivered tuple.
+  //
+  // Streamed (#2514) where the host can: the body is read from the blob store as the platform reads
+  // the response, never held here, and sent at the record's size, so a body cut short is an error at
+  // the reader rather than a shorter file. The sha256 is checked as the bytes pass, and a mismatch
+  // errors the body before its last chunk. The path and the shape are the buffered ones, so a reader
+  // of either kind reads either answer. The request is a GET with no body, so the wire signer binds it
+  // whole and the response, as every response, is unbound: nothing here is left unsigned.
   app.get('/internal/connector-attachment/:attachmentId', async (c) => {
     const connection = connectionIdOf.parse(c.req.query('connectionId'));
     const t = tenantIdOf.parse(c.req.query('tenantId'));
     const s = scopeIdOf.parse(c.req.query('scopeId'));
-    const opened = await deps
-      .hostFor(c.env)
-      .connectorAttachmentOpenLocal(
-        connection,
-        t,
-        s,
-        c.req.param('attachmentId'),
-        c.req.query('eventId'),
-      );
+    const host = deps.hostFor(c.env);
+    const args = [connection, t, s, c.req.param('attachmentId'), c.req.query('eventId')] as const;
+    const opened = host.connectorAttachmentOpenStreamLocal
+      ? await host.connectorAttachmentOpenStreamLocal(...args)
+      : await host.connectorAttachmentOpenLocal(...args);
     if (!opened) return c.body(null, 404);
     // Both values are caller-supplied strings (#2519): a filename or content type outside
     // Latin-1 would make `Headers` throw and leave a stored file unreadable. The record stays
@@ -2127,12 +2145,16 @@ export function mountPlatformSurface<Env extends object>(
     // 400 a parse failure on the request would be.
     const record = attachmentRecord.safeParse(opened.record);
     if (!record.success) {
+      if (isSizedByteStream(opened.body)) await opened.body.stream.getReader().cancel().catch(() => {});
       throw new HTTPException(500, { message: 'connector-attachment: the stored attachment record is malformed' });
     }
-    return c.body(opened.body as unknown as ArrayBuffer, 200, {
+    const headers = {
       'content-type': headerSafeContentType(opened.contentType),
       [CONNECTOR_ATTACHMENT_RECORD_HEADER]: recordHeader(record.data),
-    });
+    };
+    if (!isSizedByteStream(opened.body)) return c.body(opened.body as unknown as ArrayBuffer, 200, headers);
+    const sent = knownLengthInit({ headers, body: opened.body });
+    return c.body(sent.body as unknown as ReadableStream, 200, sent.headers);
   });
 
   // Grant delivery (#574): the scope-level `connection:<id>` tuple the two verbs above

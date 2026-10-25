@@ -99,8 +99,8 @@ describe('no reader returns the platform’s wire line', () => {
     ['the fleet view', async (r) => (await r.recentLogs({ hours: 24, limit: 50 })).events],
     ['the service-grain view of one service', async (r) => (await r.recentLogs({ services: ['acme-widgets'], hours: 24, limit: 50 })).events],
     ['the service-grain view of several', async (r) => (await r.recentLogs({ services: ['acme-widgets', 'acme-widgets-v2'], hours: 24, limit: 50 })).events],
-    ['the tenant view', (r) => r.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 50 })],
-    ['the tenant view of one invocation', (r) => r.tenantLogs!({ tenantId: '01TENANT', invocationId: '01JZ0000000000000000INV001', hours: 24, limit: 50 })],
+    ['the tenant view', async (r) => (await r.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 50 })).events],
+    ['the tenant view of one invocation', async (r) => (await r.tenantLogs!({ tenantId: '01TENANT', invocationId: '01JZ0000000000000000INV001', hours: 24, limit: 50 })).events],
     ['the tenant request list', (r) => r.tenantRequests!({ tenantId: '01TENANT', services: ['acme-widgets'], from: 0, to: 2000, limit: 50 })],
   ];
 
@@ -114,7 +114,7 @@ describe('no reader returns the platform’s wire line', () => {
   // The level filter alone would drop the wire line here (it has no level), so this holds what the
   // line would cost before it: the slot it takes in the request's share of the page.
   it('the tenant view’s error read: every error line the page holds, and none of the wire line', async () => {
-    const answer = await fakedCloudflare().tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 50 });
+    const { events: answer } = await fakedCloudflare().tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 50 });
     // The line phase one found, then the request's own errors that fit beside its stamped line in
     // its 20-line share: 19 of them, as if the wire line had never been written.
     expect(answer.map((e) => e.message)).toEqual(['the vertical’s own line', ...chatter.slice(0, 19).map((l) => l.$metadata.message)]);
@@ -185,19 +185,20 @@ describe('a page is as full as it would be without the wire line', () => {
   describe('the tenant view, one query per request id', () => {
     /** A chatty request: its stamped line first, then 30 lines of its own, then the wire line, newest. */
     const now = Date.now();
-    const chatty = (withWire: boolean): Line[] => [
+    const chatty = (wires: number): Line[] => [
       stamped(now - 100_000, 'req-chatty'),
       ...Array.from({ length: 30 }, (_, i) => line(now - 50_000 + i * 100, 'req-chatty', i)),
-      ...(withWire ? [wire(now - 1_000, 'req-chatty')] : []),
+      ...Array.from({ length: wires }, (_, w) => wire(now - 1_000 - w, 'req-chatty')),
     ];
-    const read = (withWire: boolean) => {
+    const readAll = (wires: number) => {
       const { reader } = backend((query) =>
-        asks(query, '$metadata.requestId') === 'req-chatty' ? chatty(withWire)
+        asks(query, '$metadata.requestId') === 'req-chatty' ? chatty(wires)
         : asks(query, 'substrat') === 'invocation' ? [stamped(now - 100_000, 'req-chatty')]
         : [],
       );
       return reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 100 });
     };
+    const read = async (withWire: boolean) => (await readAll(withWire ? 1 : 0)).events;
 
     it('shows a request its whole line budget, the wire line’s slot given back', async () => {
       const answer = await read(true);
@@ -210,6 +211,59 @@ describe('a page is as full as it would be without the wire line', () => {
 
     it('its twin: a request with no wire line shows exactly the same page, and not a line more', async () => {
       expect(await read(false)).toEqual(await read(true));
+    });
+
+    // #2521: the slot over-fetched gives ONE filtered line back. A full page that lost more than
+    // that is short of its share, and says so, as the service grain's does.
+    it('a request page the filter took more than the over-fetched slot from says it may be incomplete', async () => {
+      const short = await readAll(2);
+      expect(short.incomplete).toBe(true);
+      // 19 of its own lines fit, one fewer than the budget: the page is short, not the window.
+      expect(short.events.filter((e) => (e.message ?? '').startsWith('the vertical’s line'))).toHaveLength(19);
+      expect(JSON.stringify(short.events)).not.toContain(LEAKED);
+    });
+
+    it('its twins: one wire line, or none, is a complete page', async () => {
+      expect((await readAll(1)).incomplete).toBe(false);
+      expect((await readAll(0)).incomplete).toBe(false);
+    });
+
+    it('another tenant’s request earns nothing: its filtered line is not this tenant’s to report', async () => {
+      const { reader } = backend((query) =>
+        asks(query, '$metadata.requestId') === 'req-theirs'
+          // Theirs: no stamped line of this tenant on it, and a page the filter took two lines from.
+          ? [...Array.from({ length: 19 }, (_, i) => line(now - 50_000 + i * 100, 'req-theirs', i)), wire(now - 1, 'req-theirs'), wire(now - 2, 'req-theirs')]
+          : asks(query, '$metadata.level') === 'error' ? [line(now - 50_000, 'req-theirs', 0)]
+          : [],
+      );
+      const answer = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 100 });
+      expect(answer).toEqual({ events: [], incomplete: false });
+    });
+  });
+
+  // The pages of the tenant's own lines: a backend whose filter kept a wire line in one (the page is
+  // full when it returns, and the line is taken out after).
+  describe('the tenant view, its first page', () => {
+    const now = Date.now();
+    const readFirst = (page: Line[], limit: number) => {
+      const { reader } = backend((query) =>
+        asks(query, 'substrat') === 'invocation' || asks(query, 'substrat') === 'log' ? page : [],
+      );
+      return reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit });
+    };
+
+    it('says so when a full page lost a line to the filter, and not when nothing was taken', async () => {
+      // `limit: 1` reads 2 lines of the stamped query and of the `ctx.log` query: a full page.
+      const full = await readFirst([stamped(now - 2_000, 'req-a'), wire(now - 1_000, 'req-a')], 1);
+      expect(full.incomplete).toBe(true);
+      expect(JSON.stringify(full.events)).not.toContain(LEAKED);
+      const whole = await readFirst([stamped(now - 2_000, 'req-a'), stamped(now - 1_000, 'req-b')], 1);
+      expect(whole.incomplete).toBe(false);
+    });
+
+    it('a page the backend did not fill is complete, whatever the filter took', async () => {
+      const room = await readFirst([stamped(now - 2_000, 'req-a'), wire(now - 1_000, 'req-a')], 50);
+      expect(room.incomplete).toBe(false);
     });
   });
 

@@ -103,6 +103,7 @@ import {
   type StoreCanaryTarget,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
+  createWfpWireSettingsApi,
   createCfObservabilityReader,
   createRouterRequestDayReader,
   createCfDoNamespaceReader,
@@ -191,6 +192,7 @@ import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@subst
 import { transportFor, senderFor } from './email.js';
 import { sendEmailDepsOf } from './email-intent.js';
 import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
+import { fileNotHeld, undrainedOrNotHeld } from './event-drain-not-held.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
@@ -1532,6 +1534,12 @@ export function capabilityDelegationOver(
   };
 }
 
+/** Where a scope routes, as the drain tells a carry's bind from a scope its deployment lost (#2544). */
+const drainRouteKey = (s: Scope): string => `${s.servingRef ?? ''}|${s.verticalVersionId ?? ''}`;
+
+/** #2544: the active scopes the ledger was found to hold a not-held row for; see `fileNotHeld`. */
+const eventDrainNotHeldRecorded = new Set<string>();
+
 /**
  * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
  * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
@@ -1549,17 +1557,29 @@ export function capabilityDelegationOver(
  */
 function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
   if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
-  const clientFor = async (tenantId: TenantId, scopeId: ScopeId, vertical: string): Promise<VerticalClient> => {
-    const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const resolved = async (tenantId: TenantId, scopeId: ScopeId, vertical: string): Promise<{ client: VerticalClient; rec: Scope }> => {
     const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
     const client = rec ? await resolveVerticalForScopeFor(env)(rec) : undefined;
-    if (!client) {
+    if (!rec || !client) {
       throw new Error(`no deployment serving scope ${scopeId} (vertical '${vertical}') — cannot drain its events`);
     }
-    return client;
+    return { client, rec };
   };
+  const clientFor = async (tenantId: TenantId, scopeId: ScopeId, vertical: string): Promise<VerticalClient> =>
+    (await resolved(tenantId, scopeId, vertical)).client;
   return {
-    readUndrained: async (a) => (await clientFor(a.tenantId, a.scopeId, a.vertical)).undrainedEvents(a.scopeId, a.limit),
+    readUndrained: async (a) => {
+      const { client, rec } = await resolved(a.tenantId, a.scopeId, a.vertical);
+      // #2544: a deployment that does not hold an active scope is a standing condition, judged here.
+      return undrainedOrNotHeld({
+        scopeId: a.scopeId,
+        read: () => client.undrainedEvents(a.scopeId, a.limit),
+        record: () => directory.admin.getScopeRecord(SWEEP_ACTOR, a.tenantId, a.scopeId),
+        routeAtRead: drainRouteKey(rec),
+        routeOf: drainRouteKey,
+      });
+    },
     markDrained: async (a) =>
       (await clientFor(a.tenantId, a.scopeId, a.vertical)).markEventsDrained(a.scopeId, a.eventIds, a.drainedAt),
     // `countOnly` carried through (#1545): a delegated scope asked for a count must not be
@@ -1687,6 +1707,16 @@ function hostFor(env: Env): CloudflareScopeHost {
 function patchScriptBindingsFor(env: Env) {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
   return createWfpBindingsPatcher({
+    accountId: env.CF_ACCOUNT_ID,
+    namespace: dispatchNamespaceOf(env),
+    apiToken: env.CF_API_TOKEN,
+  });
+}
+
+/** The script-settings endpoint the wire walk writes through (RFC wire-signing follow-on 4). */
+function wireSettingsFor(env: Env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return createWfpWireSettingsApi({
     accountId: env.CF_ACCOUNT_ID,
     namespace: dispatchNamespaceOf(env),
     apiToken: env.CF_API_TOKEN,
@@ -2571,6 +2601,10 @@ export default {
     // never reach the lake while they stay that way, so a pass that met any says so here —
     // they are not `errors` (nothing about the pass failed), and would otherwise be silent.
     const skipped = report.eventDrain?.skipped;
+    // #2544: active scopes whose deployment does not hold them. Standing, so said here on every pass
+    // while it lasts and filed as an ops-failure once, when it appears; never an `errors` entry.
+    const notHeld = report.eventDrain?.notHeld;
+    await fileNotHeld({ admin: host.admin, actor: SWEEP_ACTOR, recorded: eventDrainNotHeldRecorded, notHeld });
     // #1637: pending intents nothing can settle, and where — the sweep row counts them, this says
     // which scope's journal to open. Standing, like `skipped`, so said on every pass while it lasts.
     const unsettleable = report.platformRequestUnsettleable;
@@ -2599,6 +2633,7 @@ export default {
       (rc !== null && rc.behind > 0) ||
       (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
       skipped !== undefined ||
+      notHeld !== undefined ||
       unsettleable !== undefined ||
       cvActive ||
       orphansActive ||
@@ -2615,6 +2650,7 @@ export default {
         // object the rows landed in, so a question about a pruned row has an address.
         ...(al ? { accessLog: al } : {}),
         ...(skipped ? { eventDrainSkipped: skipped } : {}),
+        ...(notHeld ? { eventDrainNotHeld: { count: notHeld.length, scopeIds: notHeld.slice(0, 20).map((n) => n.scopeId) } } : {}),
         ...(unsettleable ? { platformRequestUnsettleable: unsettleable } : {}),
         ...(cvActive
           ? {
@@ -3220,6 +3256,8 @@ export default {
     // The audited control-plane API under /api (the console's baseUrl). One host for the API and
     // the reach its edge-health read uses (#1705 PR 3), not one each.
     const apiHost = hostFor(env);
+    // Follow-on 4: the fleet walk's one write, a deployed script's four wire settings.
+    const wireSettings = wireSettingsFor(env);
     app.route(
       '/api',
       createControlPlaneApi({
@@ -3274,6 +3312,7 @@ export default {
         deployVertical: deployVerticalFor(env),
         // RFC wire-signing step 2 (follow-on 3): what both uploads give a deployment's verifier.
         wireUpload: { rollout: env.WIRE_KEYS_ROLLOUT, routerKeys: env.WIRE_ROUTER_PUBLIC_KEYS, platformKeys: env.WIRE_PLATFORM_PUBLIC_KEYS },
+        ...(wireSettings ? { wireSettings } : {}),
         ensureScopeStores: ensureScopeStoresFor(env),
         storeReleases: storeReleasesFor(env),
         humanStaffActor: humanStaffActorFor(env),

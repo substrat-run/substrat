@@ -4660,7 +4660,7 @@ async function appObservabilityLogsIn(ctx: TeamContext, app: string) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const hours = Number(c.req.query('hours') ?? '24');
   const limit = Number(c.req.query('limit') ?? '100');
-  return cpObservability(() =>
+  const { events, incomplete } = await cpObservability(() =>
     cp.tenantLogs({
       scopeId: appRow.app_scope_id,
       level: c.req.query('level') || undefined,
@@ -4679,6 +4679,10 @@ async function appObservabilityLogsIn(ctx: TeamContext, app: string) {
       limit: Number.isFinite(limit) ? limit : 100,
     }),
   );
+  // The body stays the list the web client has always read; a page the plane said may be
+  // missing lines says so beside it, as the team read above does (#2521).
+  if (incomplete) c.header(LOGS_INCOMPLETE_HEADER, '1');
+  return events;
 }
 
 /**

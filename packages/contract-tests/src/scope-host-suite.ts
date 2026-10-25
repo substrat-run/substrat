@@ -11288,9 +11288,21 @@ export function scopeHostContractSuite(
       const at = (time: string) => `2026-10-24T${time}.000Z`;
       /** The whole fleet, one full page: every read names its reach and its limit. */
       const fleet = { reach: { fleet: true }, limit: LIST_PAGE_MAX } as const;
-      /** Record `rec` for the script `<vertical>-<script>`. */
-      const put = (vertical: string, script: string, versionId: string | null, rec: WireAuthRecord, time: string) =>
-        host.admin.recordWireAuth!(staff, { deploymentRef: `${vertical}-${script}`, verticalSlug: vertical, versionId, record: rec, recordedAt: at(time) });
+      /** The verticals this block registered: a record is written only beside its vertical's registration. */
+      const registered = new Set<string>();
+      const register = async (slug: string, ownerTenant?: TenantId) => {
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ...(ownerTenant ? { ownerTenant } : {}) });
+        registered.add(slug);
+      };
+      const forget = async (slug: string) => {
+        await host.admin.deleteVertical(staff, slug);
+        registered.delete(slug);
+      };
+      /** Record `rec` for the script `<vertical>-<script>`, registering the vertical (platform-owned) first when no test did. */
+      const put = async (vertical: string, script: string, versionId: string | null, rec: WireAuthRecord, time: string) => {
+        if (!registered.has(vertical)) await register(vertical);
+        await host.admin.recordWireAuth!(staff, { deploymentRef: `${vertical}-${script}`, verticalSlug: vertical, versionId, record: rec, recordedAt: at(time) });
+      };
 
       it('keeps one record per deployment, the last upload’s, and lists one vertical’s by deployment', async () => {
         const [a, b] = [slugOf('wire-a'), slugOf('wire-b')];
@@ -11412,28 +11424,27 @@ export function scopeHostContractSuite(
         const [owner, other] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
         await host.admin.createTenant(staff, { id: owner, slug: `wire-own-${owner.slice(-6).toLowerCase()}`, name: 'Wire Owner' });
         await host.admin.createTenant(staff, { id: other, slug: `wire-oth-${other.slice(-6).toLowerCase()}`, name: 'Wire Other' });
-        const [mine, theirs, platform, unregistered] = [slugOf('wire-mine'), slugOf('wire-theirs'), slugOf('wire-plat'), slugOf('wire-unreg')];
-        await host.admin.registerVertical(staff, { slug: mine, name: 'Mine', source: 'cli', ownerTenant: owner });
-        await host.admin.registerVertical(staff, { slug: theirs, name: 'Theirs', source: 'cli', ownerTenant: other });
-        await host.admin.registerVertical(staff, { slug: platform, name: 'Platform', source: 'cli' });
-        for (const [i, slug] of [mine, theirs, platform, unregistered].entries()) {
+        const [mine, theirs, platform] = [slugOf('wire-mine'), slugOf('wire-theirs'), slugOf('wire-plat')];
+        await register(mine, owner);
+        await register(theirs, other);
+        await register(platform);
+        for (const [i, slug] of [mine, theirs, platform].entries()) {
           await put(slug, 'serving', null, record(), `16:00:0${i}`);
           await put(slug, 'archive', 'v1', record(), `16:00:1${i}`);
         }
         const refs = async (reach: { tenantId: TenantId } | { fleet: true }, verticalSlug?: string) =>
           (await host.admin.listWireAuth!(staff, { reach, limit: LIST_PAGE_MAX, ...(verticalSlug ? { verticalSlug } : {}) }))
             .map((r) => r.deploymentRef)
-            .filter((ref) => [mine, theirs, platform, unregistered].some((slug) => ref.startsWith(`${slug}-`)));
+            .filter((ref) => [mine, theirs, platform].some((slug) => ref.startsWith(`${slug}-`)));
 
         expect(await refs({ tenantId: owner })).toEqual([`${mine}-archive`, `${mine}-serving`]);
         expect(await refs({ tenantId: other })).toEqual([`${theirs}-archive`, `${theirs}-serving`]);
         // Naming another tenant's vertical inside one tenant's reach reaches nothing, not that vertical.
         expect(await refs({ tenantId: owner }, theirs)).toEqual([]);
         expect(await refs({ tenantId: owner }, mine)).toEqual([`${mine}-archive`, `${mine}-serving`]);
-        // A tenant that owns nothing reaches nothing; a vertical no tenant owns, or the registry does not
-        // know, is reached by the fleet alone.
+        // A tenant that owns nothing reaches nothing; a vertical no tenant owns is reached by the fleet alone.
         expect(await refs({ tenantId: tenantId.parse(ulid()) })).toEqual([]);
-        for (const slug of [mine, theirs, platform, unregistered]) {
+        for (const slug of [mine, theirs, platform]) {
           expect(await refs({ fleet: true }, slug)).toEqual([`${slug}-archive`, `${slug}-serving`]);
         }
         // A page inside the reach pages over the tenant's records only.
@@ -11488,7 +11499,7 @@ export function scopeHostContractSuite(
         const owner = tenantId.parse(ulid());
         await host.admin.createTenant(staff, { id: owner, slug: `wire-log-${owner.slice(-6).toLowerCase()}`, name: 'Wire Log' });
         const mine = slugOf('wire-logged');
-        await host.admin.registerVertical(staff, { slug: mine, name: 'Logged', source: 'cli', ownerTenant: owner });
+        await register(mine, owner);
         await put(mine, 'serving', null, record(), '17:00:00');
 
         // The reach given last, as a caller may spell it: the log still names it first.
@@ -11521,18 +11532,17 @@ export function scopeHostContractSuite(
         const refsOf = async (owner: TenantId) =>
           (await host.admin.listWireAuth!(staff, { reach: { tenantId: owner }, limit: LIST_PAGE_MAX, verticalSlug: slug })).map((r) => r.deploymentRef);
 
-        // A record written while no tenant owned the slug is read by whoever owns it when the read runs.
+        // The owner reads what was recorded while it held the slug.
+        await register(slug, first);
         await put(slug, 'archive', 'v0', record(), '18:00:00');
-        expect(await refsOf(first)).toEqual([]);
-        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: first });
         expect(await refsOf(first)).toEqual([`${slug}-archive`]);
         await put(slug, 'serving', 'v1', record(), '18:00:01');
         expect(await refsOf(first)).toEqual([`${slug}-archive`, `${slug}-serving`]);
 
         // An owner changes by deleting the vertical, which takes its records, and registering it again:
         // the tenant that held it reads nothing after, the new owner reads only what was recorded since.
-        await host.admin.deleteVertical(staff, slug);
-        await host.admin.registerVertical(staff, { slug, name: 'Owned', source: 'cli', ownerTenant: second });
+        await forget(slug);
+        await register(slug, second);
         expect(await refsOf(first)).toEqual([]);
         expect(await refsOf(second)).toEqual([]);
         await put(slug, 'serving', 'v2', record(), '18:00:02');
@@ -11540,13 +11550,106 @@ export function scopeHostContractSuite(
         expect(await refsOf(second)).toEqual([`${slug}-serving`]);
       });
 
+      it('writes no record, and no admin row, for a vertical the registry does not hold', async () => {
+        const never = slugOf('wire-unreg');
+        const gone = slugOf('wire-gone');
+        await put(gone, 'serving', 'v1', record(), '20:00:00');
+        await forget(gone);
+        for (const slug of [never, gone]) {
+          await expectRefusal(
+            host.admin.recordWireAuth!(staff, { deploymentRef: `${slug}-serving`, verticalSlug: slug, versionId: 'v2', record: record(), recordedAt: at('20:00:01') }),
+            'not_found',
+          );
+          expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: slug })).toEqual([]);
+        }
+        const rows = (await host.admin.auditLog(staff, { action: 'recordWireAuth' })).filter((r) => r.vertical === never || r.vertical === gone);
+        // Only the one write made while `gone` was registered.
+        expect(rows.map((r) => (r.after as { versionId: string }).versionId)).toEqual(['v1']);
+        // Registered again, the slug's records start empty: nothing written while unregistered survives.
+        await register(gone);
+        expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: gone })).toEqual([]);
+      });
+
+      it('keeps a walk’s hold on a record, by binding name, and refuses a hold it cannot read', async () => {
+        const a = slugOf('wire-hold');
+        const hold = { reason: 'verify' as const, bindings: ['SCOPE', 'SUBSTRAT_WIRE_STATE'], at: at('22:00:00') };
+        await put(a, 'archive', 'v1', { ...record(), walkHold: hold } as WireAuthRecord, '22:00:00');
+        expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record.walkHold).toEqual(hold);
+        // The next upload of the script writes a record without it.
+        await put(a, 'archive', 'v1', record(), '22:00:01');
+        expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record.walkHold).toBeUndefined();
+        const good = { deploymentRef: `${a}-archive`, verticalSlug: a, versionId: 'v1', recordedAt: at('22:00:02') };
+        for (const walkHold of [
+          { ...hold, reason: 'because' },
+          { ...hold, at: 'yesterday' },
+          { ...hold, bindings: [''] },
+          { ...hold, bindings: Array.from({ length: 65 }, (_, i) => `B${i}`) },
+          { ...hold, value: 'not a field' },
+        ]) {
+          await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: { ...record(), walkHold } } as never), 'validation_failed');
+        }
+        expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record.walkHold).toBeUndefined();
+
+        // `unverified`, the walk's record of a script it could not confirm: lists claimed by none, and
+        // only beside a hold. Without the hold, or beside lists, it is refused.
+        const unverified = withheld('unverified');
+        await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: unverified }), 'validation_failed');
+        await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: { ...record(), withheld: 'unverified', walkHold: hold } } as never), 'validation_failed');
+        await put(a, 'archive', 'v1', { ...unverified, walkHold: hold } as WireAuthRecord, '22:00:03');
+        expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record).toMatchObject({ withheld: 'unverified', state: 'legacy-only', routerKids: [], walkHold: hold });
+      });
+
+      it('audits a pass of the fleet walk as walkWireAuth, naming scripts and reasons, never a value', async () => {
+        const entry = {
+          apply: true,
+          confirm: false,
+          from: null,
+          next: 'acme/crm|01HZZZZZZZZZZZZZZZZZZZZZZZ',
+          walked: 3,
+          updated: ['acme-crm'],
+          held: ['acme-crm-01hzzzzzzzzzzzzzzzzzzzzzzz'],
+          released: [],
+          skipped: [{ deploymentRef: 'acme-crm-01hyyyyyyyyyyyyyyyyyyyyyyy', reason: 'no-entry' }],
+          failed: [{ deploymentRef: 'acme-crm-01hzzzzzzzzzzzzzzzzzzzzzzz', reason: 'verify' }],
+        };
+        await host.admin.recordWireWalk!(staff, entry);
+        const rows = (await host.admin.auditLog(staff, { action: 'walkWireAuth' })).filter((r) => (r.after as { next?: string }).next === entry.next);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.actor).toBe(staff);
+        expect(rows[0]!.after).toEqual(entry);
+      });
+
+      it('restores the owners and the records together, from one dump', async () => {
+        const [first, second] = [tenantId.parse(ulid()), tenantId.parse(ulid())];
+        await host.admin.createTenant(staff, { id: first, slug: `wire-rst-${first.slice(-6).toLowerCase()}`, name: 'Wire Restore' });
+        const slug = slugOf('wire-restore');
+        await register(slug, first);
+        await put(slug, 'serving', 'v1', record(), '21:00:00');
+        const backup = await host.admin.exportDirectory(staff);
+
+        // Diverge past the copy: the vertical deleted (its records with it) and taken by another tenant.
+        await host.admin.createTenant(staff, { id: second, slug: `wire-rs2-${second.slice(-6).toLowerCase()}`, name: 'Wire Restore 2' });
+        await forget(slug);
+        await register(slug, second);
+        await put(slug, 'archive', 'v2', record(), '21:00:01');
+
+        await host.admin.restoreDirectory(staff, backup);
+        registered.add(slug);
+        // The copy's owner reads the copy's records, and nothing of the divergence came back with it.
+        const reads = async (reach: { tenantId: TenantId } | { fleet: true }) =>
+          (await host.admin.listWireAuth!(staff, { reach, limit: LIST_PAGE_MAX, verticalSlug: slug })).map((r) => [r.deploymentRef, r.versionId]);
+        expect(await reads({ tenantId: first })).toEqual([[`${slug}-serving`, 'v1']]);
+        expect(await reads({ tenantId: second })).toEqual([]);
+        expect(await reads({ fleet: true })).toEqual([[`${slug}-serving`, 'v1']]);
+      });
+
       it('forgets a vertical’s records with the vertical', async () => {
         const a = slugOf('wire-del');
-        await host.admin.registerVertical(staff, { slug: a, name: 'Wire record', source: 'cli' });
+        await register(a);
         await put(a, 'serving', null, record(), '13:00:00');
         const kept = slugOf('wire-kept');
         await put(kept, 'serving', null, record(), '13:00:01');
-        await host.admin.deleteVertical(staff, a);
+        await forget(a);
         expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a })).toEqual([]);
         // Another vertical's record is not touched.
         expect(await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: kept })).toHaveLength(1);

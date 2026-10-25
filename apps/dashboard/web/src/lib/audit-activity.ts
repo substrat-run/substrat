@@ -25,6 +25,7 @@ const PAST: Record<string, string> = {
   request: 'requested', reset: 'reset', resolve: 'resolved', restore: 'restored', revoke: 'revoked', rewind: 'rewound',
   set: 'set', shred: 'shredded', suspend: 'suspended', sweep: 'swept', transfer: 'transferred', unarchive: 'unarchived',
   unassign: 'unassigned', unbind: 'unbound', unlink: 'unlinked', unsuspend: 'unsuspended', update: 'updated', upload: 'uploaded',
+  walk: 'walked',
 };
 
 /** An action key split into lower-case words: `bindScopeVersion` → `['bind', 'scope', 'version']`. */

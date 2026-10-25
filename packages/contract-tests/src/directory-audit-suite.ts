@@ -266,7 +266,8 @@ const CASES: DirectoryCase[] = [
     action: 'recordWireAuth',
     write: { table: 'vertical_wire_auth', verb: 'INSERT' },
     arrange: async (host, staff) => {
-      const slug = slugOf();
+      // A record is written only beside its vertical's registration.
+      const slug = await newVertical(host, staff);
       const deploymentRef = `${slug}-serving`;
       const record = {
         envelope: 1 as const, entrySkipped: null, state: 'dual' as const, audience: deploymentRef,

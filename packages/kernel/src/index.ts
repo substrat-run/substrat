@@ -39,6 +39,7 @@ export type {
   TypedConsumerHandler,
   TypedConsumers,
   OpenedAttachment,
+  OpenedAttachmentStream,
   OperationContext,
   PageParams,
   OperationHandler,
@@ -159,10 +160,13 @@ export {
 } from './scope-copy-ledger.js';
 export { STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_DURATION_MS, deadlineFetch, type DeadlineOptions } from './deadline-fetch.js';
 export {
+  VERIFIED_STREAM_CHUNK_MAX_BYTES,
+  bytesStream,
   connectorUploadBody,
   isSizedByteStream,
   knownLengthInit,
   knownLengthStream,
+  verifiedStream,
   type ByteBody,
   type ByteStream,
   type ByteStreamRead,
@@ -175,6 +179,7 @@ export {
   assertRedrainWindow,
   attachmentBlobKey,
   attachmentSha256,
+  openAttachmentByteStream,
   putAttachmentBytes,
   consumersFor,
   entitlementDenial,
@@ -762,6 +767,7 @@ export {
   writeDeploymentWireAuth,
   type DeploymentWireAuthFilter,
   type DeploymentWireAuthReach,
+  type WireWalkAudit,
   type DeploymentWireAuthInput,
 } from './deployment-wire-auth.js';
 export {
@@ -930,6 +936,7 @@ export {
   UNREADABLE_SCOPE_ROWS_NAMED,
   startPlatformSweeper,
   StorageReadUnsupported,
+  ScopeNotHeld,
   PROVISION_RECONCILE_BATCH,
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
   ORPHAN_ATTACHMENT_SWEEP_BATCH,

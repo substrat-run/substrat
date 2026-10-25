@@ -19,6 +19,13 @@ import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 /**
+ * A script's tables for a scope, read from its storage object directly: `introspectScopeTables` refuses
+ * a scope the script holds nothing for (#2544), and a staged destination or a wiped copy is one.
+ */
+const tablesOrNone = (host: CloudflareScopeHost, sid: ScopeId) =>
+  (host as unknown as { scopeStub(id: ScopeId): { introspectTables(): Promise<{ name: string }[]> } }).scopeStub(sid).introspectTables();
+
+/**
  * #1710 on workerd. A hosted vertical's versions are separate scripts, and a Durable Object
  * namespace belongs to its script. So when a push re-points a preview at a new version,
  * the preview's data stays behind unless something moves it. That is a Cloudflare fact,
@@ -2200,7 +2207,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(pagedUrl)).toEqual({ ref: refOf.get(version.v2), bodies: review });
       // No stage is left in either script.
       for (const v of ['v1', 'v2'] as const) {
-        const names = (await hostFor(v).introspectScopeTables(pagedPreview)).map((tb) => tb.name);
+        const names = (await tablesOrNone(hostFor(v), pagedPreview)).map((tb) => tb.name);
         expect(names.filter((n) => n.startsWith('_substrat_stage'))).toEqual([]);
       }
     });
@@ -2284,7 +2291,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     const ledger = async (sid: ScopeId) =>
       (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid })).map((e) => `${e.moveId}:${e.role}:${e.state}`);
     const noStage = async (v: keyof typeof version, sid: ScopeId) =>
-      (await hostFor(v).introspectScopeTables(sid)).map((tb) => tb.name).filter((n) => n.startsWith('_substrat_stage'));
+      (await tablesOrNone(hostFor(v), sid)).map((tb) => tb.name).filter((n) => n.startsWith('_substrat_stage'));
     /** The ledger with each entry's lease: a call that renews a move's lease moves it. */
     const leases = async (sid: ScopeId) =>
       (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid })).map((e) => `${e.moveId}:${e.role}:${e.state}:${e.leaseUntil}`);

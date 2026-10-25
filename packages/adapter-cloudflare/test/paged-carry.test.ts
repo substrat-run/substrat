@@ -90,7 +90,10 @@ describe('a scope carried in pages lands as the whole dump would (#2450)', () =>
     expect(out.tables).toBe(mergeDumpPages(pages.map((p) => p.tables)).length);
     expect(vertical(await host.exportScopeLocal(dest))).toEqual(vertical(await host.exportScopeLocal(source)));
     // The stage went with the load; no dump ever carries it.
-    const names = (await host.introspectScopeTables(dest)).map((t) => t.name);
+    // Read from the storage object: a loaded scope with no receipt, roles or state is not "held" (#2544).
+    const names = (
+      await (host as unknown as { scopeStub(id: ScopeId): { introspectTables(): Promise<{ name: string }[]> } }).scopeStub(dest).introspectTables()
+    ).map((t) => t.name);
     expect(names.filter((n) => n.startsWith('_substrat_stage'))).toEqual([]);
   });
 

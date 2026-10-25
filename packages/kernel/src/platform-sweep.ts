@@ -696,6 +696,18 @@ export class StorageReadUnsupported extends Error {
   readonly unsupported = true as const;
 }
 
+/**
+ * What a delegated event read throws when the scope's deployment says it does not hold the scope
+ * (#2544). Standing, like `StorageReadUnsupported`: the drain counts it in `EventDrainReport.notHeld`
+ * and keeps it out of `report.errors`. Recognised by its flag, not `instanceof`, for the same reason.
+ */
+export class ScopeNotHeld extends Error {
+  readonly notHeld = true as const;
+}
+
+const isNotHeld = (err: unknown): boolean =>
+  typeof err === 'object' && err !== null && (err as { notHeld?: unknown }).notHeld === true;
+
 const isUnsupported = (err: unknown): boolean =>
   typeof err === 'object' && err !== null && (err as { unsupported?: unknown }).unsupported === true;
 
@@ -1011,6 +1023,12 @@ export interface EventDrainReport {
    * every error — a standing condition would be re-sent on every tick.
    */
   skipped?: EventDrainSkipped[];
+  /**
+   * Active scopes whose deployment answered that it does not hold them (#2544): nothing to read, and
+   * nothing a retry changes. ABSENT when none did. A standing condition, so not an `errors` entry
+   * (the digest would mail it on every tick); said in the log line on every pass it lasts.
+   */
+  notHeld?: { tenantId: TenantId; scopeId: ScopeId }[];
 }
 
 /** One scope's share of `EventDrainReport.skipped`. */
@@ -2025,6 +2043,10 @@ export async function runPlatformSweep(
         // one busy scope must not starve every other scope in the pass.
         if (shipped === budget) report.eventDrain!.incomplete += 1;
       } catch (err) {
+        if (isNotHeld(err)) {
+          (report.eventDrain!.notHeld ??= []).push({ tenantId: s.tenantId, scopeId: s.id });
+          return;
+        }
         // One scope's failure never sinks the sweep, and never stamps: a throw
         // anywhere in read→ship→mark leaves its events exactly where they were,
         // to be taken again next tick.
