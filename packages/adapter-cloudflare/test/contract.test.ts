@@ -776,6 +776,7 @@ for (const scopeLocalPermissions of [true, false]) {
       host,
       roleState: (t, s) => host.roleStateLocal(t, s),
       dumpCarriesRoles: scopeLocalPermissions,
+      readsRolesRemotely: !scopeLocalPermissions,
       cleanup: async () => host.close(),
     };
   });

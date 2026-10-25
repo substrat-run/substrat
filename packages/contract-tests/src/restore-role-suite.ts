@@ -18,6 +18,9 @@ export function restoreRoleContractSuite(
       roleState(tenantId: TenantId, scopeId: ScopeId): Promise<RoleState>;
       /** Whether this host's dump stores the tenant's role rows (a scope that reads its roles locally). */
       dumpCarriesRoles: boolean;
+      /** #2555 PR 2: the scope keeps no role rows of its own and reads the directory's over RPC, so its
+       *  stored role state is empty whatever the directory holds. */
+      readsRolesRemotely?: boolean;
     }
   >,
 ): void {
@@ -104,6 +107,23 @@ export function restoreRoleContractSuite(
       await fixture.host.admin.defineRole(staff, t, { key: 'editor', permissions: [USE, 'rrs:edit' as PermissionKey], source: 'vertical' });
       await fixture.host.restoreScope(staff, t, s, dump);
       expect((await fixture.roleState(t, s)).seated).toEqual(['editor']);
+    });
+
+    it('a restore after the directory’s roles changed reads the directory’s roles, not the dump’s; the seat is kept (PR 2)', async () => {
+      const s = await scope();
+      await fixture.host.admin.defineRole(staff, t, { key: 'reader', permissions: [USE], source: 'vertical' });
+      await fixture.host.admin.assignRole(staff, seat('reader', s));
+      const dump = await fixture.host.admin.exportScope(staff, t, s);
+      await fixture.host.admin.defineRole(staff, t, { key: 'reader', permissions: [USE, 'rrs:read' as PermissionKey], source: 'vertical' });
+      await fixture.host.admin.defineRole(staff, t, { key: 'late', permissions: [USE], source: 'vertical' });
+      await fixture.host.restoreScope(staff, t, s, dump);
+      const state = await fixture.roleState(t, s);
+      const shape = (roles: readonly { key: string; permissions: readonly string[] }[]) =>
+        roles.map((r) => ({ key: r.key, permissions: [...r.permissions].sort() })).sort((a, b) => a.key.localeCompare(b.key));
+      const directory = await fixture.host.admin.listRoles(staff, { tenantId: t });
+      if (fixture.readsRolesRemotely) expect(state.roles).toEqual([]);
+      else expect(shape(state.roles)).toEqual(shape(directory.map((r) => ({ key: r.key, permissions: r.permissions }))));
+      expect(state.seated).toEqual(['reader']);
     });
 
     // Where the dump carries no role rows, this is a scope that cannot be restored from its own export (K-55).
