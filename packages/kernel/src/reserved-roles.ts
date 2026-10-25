@@ -194,17 +194,37 @@ export interface StoredRoles {
   roles: readonly RoleShape[];
   /** Role keys anyone but a system principal holds a live seat in, defined or not. */
   seated: ReadonlySet<string>;
+  /**
+   * #2531: the tenant's roles a projection dropped, each kept as a tombstone with the keys and the
+   * holder it had when dropped. A tombstone grants nothing; it is evidence of what the row was.
+   * Absent where nothing is ever dropped (a host with no release projection) or from an older host.
+   */
+  dropped?: readonly RoleShape[];
+}
+
+/**
+ * The definition a key's stored row is judged as (#2531): its live row, or else a tombstone the
+ * projection left when it dropped a SYSTEM-held role. Such a tombstone counts as the stored
+ * system-held definition it was, in both branches: a re-add as system-held is not refused for a
+ * seat, and a re-add as a person's counts its keys as reserved. That is parity with keeping the
+ * role defined across releases, not proof the seat is a host principal's: the platform's door can
+ * seat a person in a system-held role whether its row is live or dropped. A tombstone of a person's
+ * role, or of a row with no holder, is no evidence of anything a system principal holds, so the key
+ * is judged as having no definition stored, as before.
+ */
+function storedDefinitionOf(stored: StoredRoles | undefined, key: string): RoleShape | undefined {
+  return stored?.roles.find((r) => r.key === key) ?? stored?.dropped?.find((r) => r.key === key && r.holder === 'system');
 }
 
 /**
  * `reservedRoleDefinitionRefusal` over a whole role set defined at once (a provision's or a
  * restore's projection, which replaces the tenant's roles in a scope): each role judged against the
- * rest of the set and the definition of its own key stored there now (`stored`), with its seats.
- * The first refusal, or null.
+ * rest of the set and the definition of its own key stored there now (`stored`; a system-held
+ * tombstone counts, `storedDefinitionOf`), with its seats. The first refusal, or null.
  */
 export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostReservations, stored?: StoredRoles): string | null {
   for (const role of roles) {
-    const own = stored?.roles.find((r) => r.key === role.key);
+    const own = storedDefinitionOf(stored, role.key);
     const tenantRoles = [...roles.filter((r) => r.key !== role.key), ...(own ? [own] : [])];
     const refusal = reservedRoleDefinitionRefusal(role, host, tenantRoles, stored?.seated.has(role.key) ?? false);
     if (refusal) return refusal;
@@ -215,11 +235,14 @@ export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostRe
 /**
  * #2446: a scope's stored roles and seated role keys as they cross the wire (`roleStateLocal`, the
  * vertical's `/internal/role-state`): what `StoredRoles` holds, with the set as a list. Role keys,
- * permissions and holders only; no principal is named.
+ * permissions and holders only; no principal is named. `dropped` (#2531) is optional on the wire: a
+ * host from before tombstones sends none, and a reader from before them strips it and judges as if
+ * no tombstone were kept, which refuses at least as much.
  */
 export interface RoleState {
   roles: RoleShape[];
   seated: string[];
+  dropped?: RoleShape[];
 }
 
 /**
@@ -245,7 +268,11 @@ export function releaseRoleSetRefusal(
   registry: { permissions: readonly { key: string; holder?: 'system' }[]; roles: readonly RoleShape[] },
   state: RoleState,
 ): string | null {
-  return reservedRoleSetRefusal(registry.roles, registryReservations(registry), { roles: state.roles, seated: new Set(state.seated) });
+  return reservedRoleSetRefusal(registry.roles, registryReservations(registry), {
+    roles: state.roles,
+    seated: new Set(state.seated),
+    ...(state.dropped ? { dropped: state.dropped } : {}),
+  });
 }
 
 /**
@@ -287,20 +314,22 @@ export function dumpRoleState(tables: readonly DumpTable[], tenantId: string, no
     return t ? t.rows.map((r) => Object.fromEntries(t.columns.map((c, i) => [c, r[i]])) as Record<string, unknown>) : [];
   };
   const live = (r: Record<string, unknown>) => r.revoked_at == null && (r.expires_at == null || String(r.expires_at) > now);
-  const roles = read('_substrat_roles')
-    .filter((r) => r.tenant_id === tenantId && r.revoked_at == null)
-    .map((r): RoleShape => ({
-      key: String(r.role_key),
-      permissions: JSON.parse(String(r.permissions)) as string[],
-      ...(r.holder === 'person' || r.holder === 'system' ? { holder: r.holder as 'person' | 'system' } : {}),
-    }));
+  const shapeOf = (r: Record<string, unknown>): RoleShape => ({
+    key: String(r.role_key),
+    permissions: JSON.parse(String(r.permissions)) as string[],
+    ...(r.holder === 'person' || r.holder === 'system' ? { holder: r.holder as 'person' | 'system' } : {}),
+  });
+  const tenantRows = read('_substrat_roles').filter((r) => r.tenant_id === tenantId);
+  const roles = tenantRows.filter((r) => r.revoked_at == null).map(shapeOf);
+  // #2531: a dropped role's tombstone travels with the dump, as the evidence it is in the scope.
+  const dropped = tenantRows.filter((r) => r.revoked_at != null).map(shapeOf);
   const seats = read('_substrat_tuples');
   const seated = new Set(
     seats
       .filter((r) => String(r.relation).startsWith('role:') && !String(r.subject).startsWith('system:') && live(r))
       .map((r) => String(r.relation).slice('role:'.length)),
   );
-  return { roles, seated };
+  return { roles, seated, dropped };
 }
 
 /**
