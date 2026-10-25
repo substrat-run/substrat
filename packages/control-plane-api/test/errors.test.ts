@@ -243,7 +243,7 @@ const REMAINING: readonly [sentence: string, status: number, code: string][] = [
   ['cannot provision scope under non-active tenant (status: suspended): 01T', 409, 'conflict'],
   ['cannot provision tenant store under non-active tenant (status: suspended): 01T', 409, 'conflict'],
   ['cannot provision blob store under non-active tenant (status: deleting): 01T', 409, 'conflict'],
-  [`tenant slug 'acme' already taken by 01T (slugs are unique)`, 409, 'conflict'],
+  [`tenant slug 'acme' is already taken (slugs are unique)`, 409, 'conflict'],
   [`scope slug 'main' already taken under tenant 01T by 01S (slugs are unique within a tenant)`, 409, 'conflict'],
   [`org slug 'ops' already taken by 01O (slugs are unique per tenant)`, 409, 'conflict'],
   ['illegal scope transition for archive: reaped → archived (allowed from: active|suspended)', 409, 'conflict'],

@@ -81,6 +81,7 @@ export type { ScopeDeployment, ScopeDeploymentLadder, ScopeDeploymentVia } from 
 export {
   drainScopePlatformRequests,
   MAX_PLATFORM_REQUEST_ATTEMPTS,
+  WITHHELD_REFILE_MS,
   provisionSiblingScope,
   provisionSiblingHandler,
   archiveScopeHandler,

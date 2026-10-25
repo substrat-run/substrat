@@ -7049,7 +7049,7 @@ describe('#113 — a refusal raised inside a Durable Object keeps its code acros
     );
     expect(errorCodeOf(taken)).toBe('conflict');
     // Thrown across the hop, workerd would have written `Substrat.conflict: tenant slug …`.
-    expect(taken.message).toBe(`tenant slug 'hop-${t.toLowerCase()}' already taken by ${t} (slugs are unique)`);
+    expect(taken.message).toBe(`tenant slug 'hop-${t.toLowerCase()}' is already taken (slugs are unique)`);
     const ghost = tenantId.parse(ulid());
     const unknown = await refusal(host.admin.setTenantStatus(staff, ghost, 'suspended'));
     expect(errorCodeOf(unknown)).toBe('not_found');
