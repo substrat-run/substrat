@@ -409,7 +409,13 @@ leaves the prior state for a retry and a refused change leaves no row. A write r
 whenever its statement writes a row, a same-value write included (blocking installs twice records
 two rows); only a write that matches no row, a re-create of an existing tenant or a rename to the
 current name records nothing. A promote's own row commits with the channel move, so it precedes the
-rows of the scope rebinds a private promote makes after it. The scope-level writes follow the
+rows of the scope rebinds a private promote makes after it. The same transaction reads what the
+row's `before` records and what the write's guards judge (an unknown vertical or version, a rejected
+or already admitted version, the bound scopes that block a delete, an auto-admitted prod version
+that blocks listing, whether a publish self-admits), so the row and the guard see the state the
+write saw. A serving write is a compare-and-set on the serving version its #2178 gate judged: one
+that lost the race is refused `precondition_failed` with nothing written, and is retried after
+reading the serving state again. The scope-level writes follow the
 same rule (preview-and-snapshots.md); the remaining HostAdmin writes still record their row as a
 separate step.
 
