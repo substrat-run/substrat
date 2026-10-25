@@ -223,6 +223,12 @@ export interface WireWalkAudit {
   readonly failed: readonly { readonly deploymentRef: string; readonly reason: string }[];
   /** Set when the pass ended in an error: the fixed text a person reads, never an upstream message. */
   readonly error?: string;
+  /**
+   * Set when the pass was refused before it walked anything, because the settings it would give are
+   * refused (the rollout setting does not parse, or the lists do not load): the setting and the
+   * problem, never a key.
+   */
+  readonly refused?: string;
 }
 
 /** Forget a vertical's records, with the vertical. */

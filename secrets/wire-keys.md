@@ -181,7 +181,11 @@ again (the upload writes a fresh record) or name it in a pass: `"release": ["<sc
 
 **Other writers.** A script's bindings are also written by its uploads and by a store attached to one
 of its scopes. **Do not run the walk while a push or a promote of the same vertical is in flight**,
-and always finish with a confirming pass, which re-reads every script.
+and always finish with a confirming pass, which re-reads every recorded script that is not held (step 6).
+
+**Refused settings.** While `WIRE_KEYS_ROLLOUT` does not parse, or a list does not load, every pass is
+refused (409) before it walks anything, dry or applied, and its `walkWireAuth` row says why (the
+setting and the problem, never a key). Fix the setting, push and deploy the control plane, then walk.
 
 When a key must stop being trusted, take the break-glass path below. A script the walk has not
 reached yet still trusts the key. The admin log's `recordWireAuth` rows name each script given lists
@@ -234,7 +238,8 @@ unless `--without-standby` is passed.
 
 The wait is the one difference. A list reaches a deployment when the control plane uploads it again,
 or when [the fleet walk](#the-fleet-walk) reaches it: run the walk after pushing a changed list, then
-a confirming pass (`"confirm": true`) until every script reads `unchanged`. Only then drop the old key. Nothing yet reports from the deployments themselves which
+a confirming pass (`"confirm": true`) until every script it reads is `unchanged`, with no `held`,
+`skipped` or `failed` left. Only then drop the old key. Nothing yet reports from the deployments themselves which
 lists they verify with: that is the readiness report (follow-on 4). Until it exists, a script is known
 to carry a new list once an upload or an applied walk has recorded it since the list was pushed.
 
@@ -251,7 +256,8 @@ The break-glass path (RFC §6), taken only by platform staff on call:
    the new standby first is what lets `--drop` print it without `--without-standby`).
    Push and deploy the control plane.
 4. Run [the fleet walk](#the-fleet-walk) at once, applied, until `next` is `null`, then a confirming
-   pass (`"confirm": true, "apply": true`) over the whole fleet, until every script reads `unchanged`.
+   pass (`"confirm": true, "apply": true`) over the whole fleet, until every script it reads is
+   `unchanged`, with no `held`, `skipped` or `failed` left.
    It reaches the version scripts no upload does. Release or re-push anything it holds. A script it
    has not yet reached still accepts the compromised key.
 

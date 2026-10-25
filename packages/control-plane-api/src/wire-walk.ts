@@ -42,6 +42,7 @@ import {
   PLATFORM_SCRIPT_NAMES,
   storedDeployManifest,
   verticalSlug as verticalSlugSchema,
+  WALK_HOLD_BINDINGS_MAX,
   type DeploymentWireAuth,
   type PlatformActorId,
   type WireAuthRecord,
@@ -60,26 +61,29 @@ export const WIRE_WALK_LIMIT_MAX = 50;
 export const WIRE_WALK_RELEASE_MAX = 50;
 
 const PAGE = 50;
-const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const GONE: unique symbol = Symbol('gone');
-/** The cursor's position inside a vertical: just after its serving script. */
-const AFTER_SERVING = '-';
+/** The cursor's position inside a vertical just after its serving script: nothing after the `|`. */
+const AFTER_SERVING = '';
 
-/** Where a pass starts: inside a vertical, after its serving script or after one of its versions. */
+/**
+ * Where a pass starts: inside a vertical, after its serving script (`after` empty) or after one of its
+ * versions (`after` that version's id, whatever its spelling: the publish route takes any id).
+ */
 export interface WireWalkCursor {
   readonly vertical: string;
   readonly after: string;
 }
 
-/** A cursor as a pass answers it, or `null` for one that is not one. Opaque to a caller. */
+/**
+ * A cursor as a pass answers it, or `null` for one that is not one. Opaque to a caller. A slug never
+ * holds a `|`, so the first one ends it, and everything after it is the position.
+ */
 export function parseWireWalkCursor(text: string): WireWalkCursor | null {
-  const at = text.lastIndexOf('|');
+  const at = text.indexOf('|');
   if (at <= 0) return null;
   const vertical = text.slice(0, at);
-  const after = text.slice(at + 1);
   if (!verticalSlugSchema.safeParse(vertical).success) return null;
-  if (after !== AFTER_SERVING && !ULID.test(after)) return null;
-  return { vertical, after };
+  return { vertical, after: text.slice(at + 1) };
 }
 const cursorText = (vertical: string, after: string) => `${vertical}|${after}`;
 
@@ -110,10 +114,15 @@ export interface WireWalkScript {
   readonly action: WireWalkAction;
   /** The settings that differ (`would-change`, `updated`), by name. */
   readonly changes?: readonly string[];
-  /** Why it failed (`concurrent-change`, `serve-in-flight`, `verify`, `entry-unknown`, `settings` or `record`), or was skipped (`no-entry`). */
+  /**
+   * Why it failed (`concurrent-change`, `serve-in-flight`, `verify`, `entry-unknown`, `settings`,
+   * `settings-refused` or `record`), or was skipped (`no-entry`).
+   */
   readonly reason?: string;
   /** For `verify`: the binding names that differed. Never a value. */
   readonly bindings?: readonly string[];
+  /** For `verify`: how many more bindings differed than `bindings` names (it keeps the first `WALK_HOLD_BINDINGS_MAX`). */
+  readonly more?: number;
   /** Whether the pass left the script held. */
   readonly held?: true;
   /** Whether it was held and a person released it for this pass. */
@@ -278,21 +287,38 @@ export async function runWireWalk(
      * Mark the script held: a script the walk wrote and could not confirm is never left without one.
      * It holds the record as it stands now, read again (an upload's record written during the pass
      * included, which the hold keeps and marks), or, with none, a record that claims no lists
-     * (`unverified`). Answers whether the hold was written.
+     * (`unverified`). It keeps the first `WALK_HOLD_BINDINGS_MAX` binding names and counts the rest.
+     * A write that fails is tried once more; answers whether the hold was written, and the failure the
+     * walk reports says so when it was not.
      */
     const hold = async (entry: WireEntry, reason: 'verify' | 'serve-in-flight', bindings: readonly string[]): Promise<boolean> => {
-      try {
+      const once = async () => {
         const latest = (await recordsBy(script.vertical)).get(script.deploymentRef);
         const known: WireAuthRecord = latest
           ? (({ walkHold: _previous, ...rest }) => rest)(latest.record)
           : { ...entry, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'unverified' };
+        const kept = bindings.slice(0, WALK_HOLD_BINDINGS_MAX);
+        const more = bindings.length - kept.length;
+        const walkHold = { reason, bindings: [...kept], ...(more > 0 ? { more } : {}), at: instant.parse(now().toISOString()) };
         // Under the version the record it marks names: an upload's record keeps its upload's version.
-        await record(script, { ...known, walkHold: { reason, bindings: [...bindings], at: instant.parse(now().toISOString()) } }, latest ? latest.versionId : script.versionId);
-        return true;
-      } catch {
-        return false;
+        await record(script, { ...known, walkHold }, latest ? latest.versionId : script.versionId);
+      };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await once();
+          return true;
+        } catch {
+          // Tried once more, then reported.
+        }
       }
+      return false;
     };
+    /** Binding names for a person to read: the first `WALK_HOLD_BINDINGS_MAX`, and how many more. */
+    const named = (bindings: readonly string[]) =>
+      bindings.length > WALK_HOLD_BINDINGS_MAX
+        ? `${bindings.slice(0, WALK_HOLD_BINDINGS_MAX).join(', ')} and ${bindings.length - WALK_HOLD_BINDINGS_MAX} more`
+        : bindings.join(', ');
+    const holdNote = (held: boolean) => (held ? 'held until a person looks' : 'and the hold itself could not be written: look at it now');
 
     try {
       let entry: WireEntry | null = stored ? { envelope: stored.record.envelope, entrySkipped: stored.record.entrySkipped } : null;
@@ -309,6 +335,11 @@ export async function runWireWalk(
         entry = read;
       }
       const given = await wireUploadGiven(settings, { vertical: script.vertical, deploymentRef: script.deploymentRef, entry });
+      // Refused settings give nothing, and nothing is not a withdrawal to write: the route refuses such a
+      // pass before it starts, and a script never acts on one here either.
+      // The route refuses a pass under refused settings before it starts, so what is refused here is
+      // this script alone (its name is not one the lists can be given as an audience).
+      if (given.refusal !== null) return failed('settings-refused', `the lists are refused for this script (${given.refusal}): nothing was written`);
       if (!input.confirm && stored && !stored.record.walkHold && carriesAlready(stored.record, given.record)) return { ...base, action: 'current' };
 
       let outcome: WireSettingsOutcome;
@@ -352,7 +383,7 @@ export async function runWireWalk(
           const held = await hold(entry, 'serve-in-flight', []);
           return failed(
             'serve-in-flight',
-            `the served version moved while it was updated${held ? ': held until a person looks; promote again, then release it' : '; promote again'}`,
+            `the served version moved while it was updated, ${holdNote(held)}; ${held ? 'promote again, then release it' : 'promote again'}`,
             held ? { held: true } : {},
           );
         }
@@ -360,8 +391,12 @@ export async function runWireWalk(
           const held = await hold(entry, 'verify', outcome.bindings);
           return failed(
             'verify',
-            `${held ? 'held until a person looks: ' : ''}after its update, these bindings read differently: ${outcome.bindings.join(', ')}`,
-            { bindings: outcome.bindings, ...(held ? { held: true as const } : {}) },
+            `after its update, these bindings read differently: ${named(outcome.bindings)}; ${holdNote(held)}`,
+            {
+              bindings: outcome.bindings.slice(0, WALK_HOLD_BINDINGS_MAX),
+              ...(outcome.bindings.length > WALK_HOLD_BINDINGS_MAX ? { more: outcome.bindings.length - WALK_HOLD_BINDINGS_MAX } : {}),
+              ...(held ? { held: true as const } : {}),
+            },
           );
         }
       }

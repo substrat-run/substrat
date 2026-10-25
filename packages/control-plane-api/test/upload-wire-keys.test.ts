@@ -21,7 +21,7 @@ import {
   stableDeploymentRefFor,
   UNSAFE_devPlatformActorAuth,
 } from '../src/index.js';
-import { wireKeysRolloutOf, wireUploadFor, type WireUploadSettings } from '../src/wire-upload.js';
+import { wireKeysRolloutOf, wireSettingsRefusal, wireUploadFor, type WireUploadSettings } from '../src/wire-upload.js';
 import { heldManifest } from './held-manifest.js';
 
 /**
@@ -395,6 +395,24 @@ describe('the uploader gives the deployments the rollout names their lists, audi
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining('"substrat":"wire-upload-record-failed"'));
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringMatching(/"error":"[^"]*not_found"/));
     expect((await failuresOf(verticalSlug)).filter((f) => f.operation === 'deploy.wire-record').map((f) => f.version)).toEqual([expect.stringMatching(/^[0-9A-Z]{26}$/)]);
+  });
+});
+
+describe('wireSettingsRefusal: the walk refuses exactly the settings the uploader refuses', () => {
+  it('across rollouts and lists, it refuses when an upload inside the rollout is refused, with the uploader’s reason', async () => {
+    const [r, p] = await Promise.all([generateScopeStoreKeyPair(), generateScopeStoreKeyPair()]);
+    const bundle = { entry: 'worker.js', modules: [{ name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' }] };
+    for (const rollout of [undefined, '', 'off', 'fleet', 'canary:todo', 'canary:a,b', 'signed-only']) {
+      for (const lists of [{}, { routerKeys: r.publicKey }, { routerKeys: r.publicKey, platformKeys: p.publicKey }, { routerKeys: `${r.publicKey},nope`, platformKeys: p.publicKey }]) {
+        const settings = { rollout, ...lists };
+        const refusal = await wireSettingsRefusal(settings);
+        // An upload of a deployment inside the rollout: the canary's own vertical, or any under the fleet.
+        const upload = await wireUploadFor(settings, { vertical: 'todo', deploymentRef: 'todo-serving', bundle });
+        const uploaderRefuses = upload.refusal !== null;
+        expect(refusal !== null, `${rollout} ${JSON.stringify(lists)}`).toBe(uploaderRefuses);
+        if (refusal) expect(refusal).toEqual({ withheld: upload.record.withheld, reason: upload.refusal });
+      }
+    }
   });
 });
 
