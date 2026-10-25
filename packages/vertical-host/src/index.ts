@@ -347,7 +347,8 @@ export interface VerticalScopeHost {
    * #2447: why the vertical's role set may not be defined on `scopeId`, or null — the question
    * `projectRolesLocal` asks, asked by a restore BEFORE it imports the dump, so a refused set leaves
    * the scope as it was rather than restored without its role repair. Optional: a host without it is
-   * held only by `projectRolesLocal`'s own refusal, after the import.
+   * held by the load's own judgement (#2531, `restoreScopeLocal`'s `roles`), or by
+   * `projectRolesLocal`'s refusal after the import on a host from before that.
    */
   roleSetRefusalLocal?(
     scopeId: ScopeId,

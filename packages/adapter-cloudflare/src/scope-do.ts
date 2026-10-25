@@ -7649,7 +7649,8 @@ export function defineScopeDO(
           // `_substrat_tenant_tuples` in its DIRECTORY database, so its per-scope dump omits
           // them, and without them the very next permission check would raise a bare `no such
           // table: _substrat_roles`. Roles land empty here and are re-projected by the
-          // restore's repair leg (host.projectRolesLocal) — the spine's job is only to exist so
+          // restore's repair leg (`roleRepair` below, or host.projectRolesLocal after the load,
+          // #2531) — the spine's job is only to exist so
           // the checker can read it. The column pass follows, for the one outbox index KERNEL_DDL
           // leaves to it.
           for (const stmt of executableSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);

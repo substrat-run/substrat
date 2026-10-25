@@ -12028,7 +12028,6 @@ export class CloudflareScopeHost implements ScopeHost {
     if (ownerRefusal) throw substratError('forbidden', `the owner's seat: ${ownerRefusal}`);
     const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
-    const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
     // #2531: judged again in the projection's own unit, on the roles and seats the scope holds as it
     // writes, so a seat made since the pre-check above is seen. The module migrations above have
@@ -12184,7 +12183,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * which replaces whatever the scope stores now, so what the set is judged against is the DUMP's
    * roles and seats for `dump.tenantId` (`dumpRoleState`), when the caller has the dump in hand. A
    * staged restore has not (its pages are already in the scope), so it is judged as a set alone
-   * here, and `projectRolesLocal` judges again after the import, against what the dump brought.
+   * here. The load given the vertical's `roles` judges again in its own transaction, against what
+   * the dump brought (#2531), and `projectRolesLocal` does in its unit where the load did not.
    */
   async roleSetRefusalLocal(
     scopeId: ScopeId,
@@ -12244,9 +12244,9 @@ export class CloudflareScopeHost implements ScopeHost {
    * and the roles the scope stores for the tenant now with their seats there. Answers the reserved
    * keys it judged with, for the seats the same call makes.
    *
-   * A stated residual: the scope state is read in one RPC (`roleStateHere`) and written in another
-   * (`applyProjectionReply`), so a seat made between the two is not seen. The window is one call
-   * wide, and a reconcile runs again every pass.
+   * The scope state is read in one RPC (`roleStateHere`) and written in another, so this is the
+   * first check, for its detailed wording; the write judges the set again inside its own unit
+   * (`projectJudged`, #2531), where a seat made between the two is seen.
    */
   private async refuseReservedRoleSet(roles: readonly RoleDefinition[], tenantId: TenantId, scopeId: ScopeId): Promise<ReadonlySet<string>> {
     const stub = this.scopeStub(scopeId);
