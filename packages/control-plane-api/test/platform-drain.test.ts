@@ -1382,15 +1382,17 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
     ['a tenant created another way', async () => {
       const other = tenantId.parse(ulid());
       await host.admin.createTenant(staff, { id: other, slug: `other-${other.slice(-8).toLowerCase()}`, name: 'Other' });
+      const scope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: other, scopeId: scope, vertical: 'managed-product' });
       await host.admin.grantEntitlement(staff, other, 'flows', { plan: 'pro' });
-      return { other, held: ['flows'] };
+      return { other, scope, held: ['flows'] };
     }],
-    ['a tenant id that does not exist', async () => ({ other: tenantId.parse(ulid()), held: [] })],
+    ['a tenant id that does not exist', async () => ({ other: tenantId.parse(ulid()), scope: ulid(), held: [] })],
   ])('refuses %s with the ownership sentence, touching nothing', async (_case, target) => {
-    const { other, held } = await target();
+    const { other, scope, held } = await target();
     const outcome = await setEntitlementsHandler(deps())(
       ctx,
-      intent('set-entitlements', { payload: { tenantId: other, authScopeId: ulid(), plan: 'x', entitlements: [] } }),
+      intent('set-entitlements', { payload: { tenantId: other, authScopeId: scope, plan: 'x', entitlements: [] } }),
     );
     expect(outcome).toEqual({
       status: 'failed',
