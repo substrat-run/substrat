@@ -633,6 +633,18 @@ export {
 } from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, loadDropsRowsOf, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
+// RFC wire-signing §4: the nonce store a signed call that changes state spends its nonce in.
+export {
+  WIRE_NONCE_CAP,
+  WIRE_NONCE_DDL,
+  WIRE_NONCE_FULL,
+  WIRE_NONCE_PURGE_BATCH,
+  WIRE_NONCE_TABLE_NAMES,
+  claimWireNonceIn,
+  isWireNonceTable,
+  isWireNonceWrite,
+  type WireNonceClaim,
+} from './wire-nonce.js';
 export { isLifecycleWrite, lifecycleReceipt, lifecycleRefusal, readLifecycle, scopeNotHeldRefusal, settleLifecycleAfterLoad, writeLifecycle } from './scope-lifecycle.js';
 export { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, type KeptCopy, carriedAwayDump, dumpMetaValue, isCopyMarkInsert, isWriteStatement, metaValueIn, type CarriedAway, type LoadMarker } from './carried-copy.js';
 export { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, dumpRowsInsert, isSpineTable, loadDirectoryDump, spineColumnAdditions, type KernelColumnsOf } from './spine-restore.js';
