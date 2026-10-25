@@ -827,9 +827,7 @@ never rebuilt keeps the up-calls it was built with.
      live nonces (`_substrat_wire_nonces`: the nonce, primary key, and `until_s`, the Unix second
      after which it may be forgotten, indexed) and their count (`_substrat_wire_nonce_count`, one
      row). `until_s` is an integer, not ISO text, because the envelope states its times in Unix
-     seconds and every comparison is numeric. This amends Q4, which proposed key-value storage: every
-     write in the scope object goes through one SQL handle, the self-hosted adapter needs the same
-     store, and the purge and the cap need an index.
+     seconds and every comparison is numeric (Q4, amended).
    - **One claim, both adapters** (`claimWireNonceIn`, through each host's `claimWireNonceLocal`):
      in one transaction it purges up to 64 rows whose window has passed, answers `false` for a claim
      after `until` or a nonce already held, refuses at the cap, and records the nonce. Its cost is one
@@ -923,7 +921,8 @@ nonce, with expiry at `exp + skew` and pruning on write. A spine table would nee
 both adapters, a migration-diff checkpoint and a spine-ddl change. Calls that change state are
 few, so the store stays small. **Amended in follow-on 5:** a spine table after all, in the scope's
 own SQLite on both adapters, created on every wake like the rest of the spine (no versioned
-migration), with its time in integer seconds and a hard cap (§10, follow-on 5).
+migration): every write in the scope object goes through one SQL handle, the self-hosted adapter
+needs the same store, and the purge and the cap need an index (§10, follow-on 5).
 
 **Q5. Large bodies.** **Decided:** buffer them. Version 1 has no streaming endpoint. If one is
 ever needed, it gets a new field in a new version rather than a special case in this one.
@@ -1022,24 +1021,18 @@ path is Q2's wrapper or retirement (§7).
   but `dual`. The record's contract suite runs on both adapters, with its faults in the directory
   audit suite: a refused admin row rolls the record back, and a refused write records no row.
 - **Shown, follow-on 5, the nonce store.** `packages/kernel/test/wire-nonce.test.ts`, against a
-  real SQLite: a nonce spent once, a claim after its window refused and recording nothing, a purge
-  that forgets only rows whose window has passed and at most a batch at a time, the count kept in
-  step, the cap at cap − 1, cap and cap + 1 and freed once rows expire, and nothing that is not a
-  nonce or a time written. `wireNonceContractSuite` (contract-tests) on both adapters: scopes kept
-  apart, a scope nothing provisioned yet, no dump carrying the store, a copy and a restore starting
-  with none spent. `packages/adapter-cloudflare/test/wire-nonce.test.ts` on workerd: a claim
-  advances no write revision while the restore beside it does, a dump leaves the revision where it
-  was, a spent nonce stays spent across an eviction, and a store at its cap throws through the RPC
-  and admits a claim once a row expires. `wire-gate.test.ts`, through the seam the entry passes
-  over the self-hosted adapter's own host: accepted once, the same envelope then a replay
-  (`legacy-accepted` with `replay` in `dual`, the 401 in `signed-only`), a re-signed retry
-  accepted, a call with no envelope never reaching the store, a bundle with no host or a host from
-  before the store counted `no-nonce-store`, a call naming no scope counted `unscoped`, a store or a
-  host builder that throws the 503 in every state, and a host built once per worker env.
-  `platform-entry.workerd.test.ts`: the entry as uploaded, over the adapter's own `defineScopeDO`,
-  accepting a signed call once, refusing the same envelope and accepting a re-signed retry. Each
-  guard (the conflict clause, the window, the purge, the cap, the scope the seam claims in, the
-  seam itself, the bookkeeping path and the dump filter) was broken in turn and a test failed every
-  time.
+  real SQLite: a nonce spent once and held through its last second, a claim after its window
+  recording nothing, a purge of at most a batch with the count in step, the cap and its release on
+  expiry, and only the claim's own statements written. `wireNonceContractSuite` on both adapters:
+  scopes kept apart, a scope nothing provisioned yet, a copy and a restore starting with none spent;
+  the host suite's export check holds that no dump carries the store. On workerd
+  (`packages/adapter-cloudflare/test/wire-nonce.test.ts`): no write revision advanced, a spent nonce
+  kept across an eviction, the cap failing the claim through the RPC. `wire-gate.test.ts`, over the
+  self-hosted adapter's own host: the same envelope a replay in both states, a re-signed retry
+  accepted, a bundle with no host or an older one counted `no-nonce-store`, a call naming no scope
+  `unscoped`, a host builder that throws the store's failure. `platform-entry.workerd.test.ts`: the
+  entry as uploaded over the adapter's own `defineScopeDO`, the replay refused. Each guard (the
+  conflict clause, the window, the purge, the cap, the seam's scope, the seam itself, the
+  bookkeeping path, the dump filter) was broken in turn and a test failed every time.
 - **Not shown.** No envelope has yet met a deployed entry given key lists by a real upload: that is
   the canary, in an environment. A nonce store for calls that name no scope.
