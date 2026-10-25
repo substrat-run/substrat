@@ -413,9 +413,13 @@ rows of the scope rebinds a private promote makes after it. The same transaction
 row's `before` records and what the write's guards judge (an unknown vertical or version, a rejected
 or already admitted version, the bound scopes that block a delete, an auto-admitted prod version
 that blocks listing, whether a publish self-admits), so the row and the guard see the state the
-write saw. A serving write is a compare-and-set on the serving version its #2178 gate judged: one
-that lost the race is refused `precondition_failed` with nothing written, and is retried after
-reading the serving state again. The scope-level writes follow the
+write saw. A serving write is a compare-and-set on the serving ref and version its #2178 gate
+judged: one that lost the race is refused `precondition_failed` and writes nothing to the
+directory. Nothing retries it. Its caller (the control-plane serve) has already uploaded the
+serving script by then and passes the refusal up, so the script runs that serve's code while the
+row names the other serve's until a serve lands again; before the compare-and-set the last writer
+won instead. The compare-and-set holds only the host method's own read, not the serving state the
+caller read before its upload, which is where its DO classes and migration tag come from. The scope-level writes follow the
 same rule (preview-and-snapshots.md); the remaining HostAdmin writes still record their row as a
 separate step.
 
