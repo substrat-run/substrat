@@ -449,7 +449,8 @@ describe('#2526: a refused connection-grant delivery is repaired from the record
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       connectorDelegation: {
         invoke: async () => { throw new Error('not used'); },
-        grant: async (a) => deployment.connectorGrantLocal(a.connectionId, a.scopeId, a.permission, a.expiresAt),
+        grant: async (a: Parameters<ConnectorDelegation['grant']>[0]) =>
+          deployment.connectorGrantLocal(a.connectionId, a.scopeId, a.permission, a.expiresAt),
       } as unknown as ConnectorDelegation });
     try {
       const t = tenantId.parse(ulid());
