@@ -9548,12 +9548,11 @@ export class SqliteScopeHost implements ScopeHost {
             grant.expiresAt,
           );
         await onNode(grant.node, () => {
-          // #2526: the check, the directory record (#592: what provision/reconcile gather FROM, so
-          // the grant reaches scopes provisioned after it) and the admin row are one directory unit,
+          // #2526: the check, the directory record (#592) and the admin row are one directory unit,
           // with the tuple too at the tenant node, where it is a directory row. A scope tuple lives
           // in the scope's own store and is written after the unit: if it fails, the call throws and
-          // the record and its row stand without it. This host re-seats nothing from the record, so
-          // a re-grant is what delivers it then.
+          // the record and its row stand without it. The Cloudflare host's reconcile re-seats a
+          // tuple from the record; this host does not (#2586), so a re-grant is what delivers it.
           this.directory.transaction(() => {
             const conn = check();
             if (!grant.node.scopeId) tuple();
