@@ -3652,6 +3652,24 @@ describe('scope-local permissions — automatic fan-out on write (Phase 2)', () 
     expect(await probe(carol, s1, READ)).toBe(true);
   });
 
+  // #2526 review: the tenant-level connection grant fanned out nothing, unlike `grant`, `grantToOrg`
+  // and `grantToSystem`, so a projected scope lacked it until a reconcile. Its twin: one at a scope
+  // node projects no tenant tuple.
+  it.each([
+    ['the tenant node', null, [{ relation: 'granted:perm:read' }]],
+    ['a scope node', 's1', []],
+  ] as const)('a connection grant at %s projects its tenant tuple into the scopes as it should', async (_where, at, projected) => {
+    const conn = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, { id: conn, tenantId: t, vertical: 'perm-vertical', provider: `fan-${conn.toLowerCase()}`,
+      label: 'Fan-out provider', secret: { accessToken: 'tok' }, scopes: [] });
+    await host.admin.grantToConnection(staff, { connectionId: conn, permission: READ, node: { tenantId: t, scopeId: at ? s1 : null }, grantedBy: staff });
+    for (const s of [s1, s2]) {
+      expect(await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_, state) => state.storage.sql.exec(
+        'SELECT relation FROM _substrat_tenant_tuples WHERE subject = ? AND revoked_at IS NULL', `connection:${conn}`,
+      ).toArray())).toEqual(projected);
+    }
+  });
+
   it('revoking a membership fans the tombstone out — access stops', async () => {
     await host.admin.removeMember(staff, t, carol, acme);
     expect(await probe(carol, s1, READ)).toBe(false);

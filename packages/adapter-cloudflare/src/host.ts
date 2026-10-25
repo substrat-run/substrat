@@ -7977,7 +7977,11 @@ export class CloudflareScopeHost implements ScopeHost {
             node: grant.node,
           },
         ));
-        if (!grant.node.scopeId) return;
+        if (!grant.node.scopeId) {
+          // A tenant tuple changes the projected set, as its siblings' do: it fans out.
+          await this.fanOut(grant.node.tenantId);
+          return;
+        }
         // #574: a scope-level grant is a SCOPE tuple, and the scope's DO lives in the
         // deployment serving it — for the shared control plane that is the vertical's
         // dispatch script, so the tuple write rides the delegation seam.
