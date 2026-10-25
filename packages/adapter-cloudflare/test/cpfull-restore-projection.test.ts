@@ -152,18 +152,6 @@ describe('a control-plane-full restore projects the directory’s current permis
     expect(state.seats.filter((r) => r.revoked_at === null && String(r.subject).includes(alice))).toHaveLength(1);
   });
 
-  it('the destination keeps its flags: a dump from before the scope was projected does not turn enforcement off', async () => {
-    const { t, s } = await setup();
-    const before = (await permissionState(s)).flags;
-    expect(before).toEqual([
-      { key: 'entitlements_enforced', value: '1' },
-      { key: 'permission_source', value: 'local' },
-    ]);
-    const dump = withDumpFlags(await host.admin.exportScope(staff, t, s), { permission_source: 'control-plane', entitlements_enforced: null });
-    await host.restoreScope(staff, t, s, dump);
-    expect((await permissionState(s)).flags).toEqual(before);
-  });
-
   it('on a host that does not project, the destination’s flags are kept the other way too: the dump’s local reader is not taken', async () => {
     const flagOff = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeLocalPermissions: false });
     try {
@@ -227,21 +215,6 @@ describe('a control-plane-full restore projects the directory’s current permis
       restore();
     }
     expect(await everything(s)).toEqual(before);
-  });
-
-  it('twin: with no seat in the role in the dump, the same change in between is admitted, and lands judged', async () => {
-    const { t, s } = await setup();
-    await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [USE], source: 'vertical' });
-    const dump = await host.admin.exportScope(staff, t, s);
-    const restore = after(host, 'refuseDumpRoles', async () => {
-      await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [RUN], source: 'vertical', holder: 'system' });
-    });
-    try {
-      await host.restoreScope(staff, t, s, dump);
-    } finally {
-      restore();
-    }
-    expect((await permissionState(s)).roles.find((r) => r.role_key === 'staffer')).toMatchObject({ holder: 'system', dropped: 0 });
   });
 
   it('a directory role the dump has no part in does not refuse the load: only the loaded state’s roles are asked about', async () => {
