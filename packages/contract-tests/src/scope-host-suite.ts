@@ -8635,7 +8635,9 @@ export function scopeHostContractSuite(
         expect(await host.admin.readScopeTable(staff, t2, clean, { table: 'marker', limit: 200, offset: 0 })).toEqual(dataBefore);
         expect(await host.admin.readScopeTable(staff, t2, fork, { table: 'marker', limit: 200, offset: 0 })).toEqual(dataBefore);
       }
-      // Listing retains the existing opt-in update behavior for ordinary installs too.
+      // Listing retains the existing opt-in update behavior for ordinary installs too. Both versions
+      // vouched for by staff: a listed vertical's prod takes no auto-admitted one (#2565).
+      await host.admin.admitVersion(staff, first);
       await host.admin.admitVersion(staff, next);
       await host.admin.setVerticalListed(staff, slug, true);
       await host.admin.promoteVersion(staff, slug, 'prod', first);
