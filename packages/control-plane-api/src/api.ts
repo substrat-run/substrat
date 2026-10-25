@@ -4995,7 +4995,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return [];
     });
     const roles = tables.find((t) => t.name === '_substrat_roles');
-    const roleCount = notHeld ? 0 : roles ? roles.rowCount : null;
+    // #2531: the roles in force. A dropped role is kept as a tombstone, so the table's own row count
+    // would read a projection that defines nothing as populated. A host from before tombstones
+    // answers no `liveRowCount`, and kept none, so its `rowCount` is that count.
+    const roleCount = notHeld ? 0 : roles ? (roles.liveRowCount ?? roles.rowCount) : null;
     const roleProjectionEmpty = scope.status === 'active' && roleCount === 0;
     const missingStores = scope.vertical
       ? await missingStoresForTenant({

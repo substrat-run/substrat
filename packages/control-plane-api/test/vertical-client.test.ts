@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PLATFORM_SECRET_HEADER, platformActorId, tenantId, scopeId } from '@substrat-run/contracts';
-import { runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
+import { PLATFORM_SECRET_HEADER, platformActorId, tenantId, scopeId, z } from '@substrat-run/contracts';
+import { releaseRoleSetRefusal, runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { VerticalClient, ControlPlaneError } from '../src/index.js';
 import { PAGE_CALL_DEADLINE_MS } from '../src/vertical-client.js';
 
@@ -1808,6 +1808,36 @@ describe('VerticalClient.roleState (#2446)', () => {
     const seen: { path: string; search: string; secret: string | null }[] = [];
     await expect(answering(() => new Response(JSON.stringify(state), { status: 200 }), seen).roleState(input)).resolves.toEqual(state);
     expect(seen).toEqual([{ path: '/internal/role-state', search: `?tenantId=${t}&scopeId=${s}`, secret: 'secret' }]);
+  });
+
+  it('reads the tombstones a deployment sends (#2531), and none from one that predates them', async () => {
+    const withDropped = { ...state, dropped: [{ key: 'runner', permissions: ['a:run'], holder: 'system' }] };
+    await expect(answering(() => new Response(JSON.stringify(withDropped), { status: 200 })).roleState(input)).resolves.toEqual(withDropped);
+    const read = await answering(() => new Response(JSON.stringify(state), { status: 200 })).roleState(input);
+    expect(read).not.toHaveProperty('dropped');
+    // Skew, both ways (#2531). New reader, old writer: an answer with no `dropped` reads as no
+    // tombstones, and the promote judges it as it did before them (the kernel's twin, below).
+    // Old reader, new writer: a reader from before #2531 parsed with this schema minus `dropped`,
+    // and zod strips the unknown field, so it judges the new answer as if no tombstone were kept.
+    const oldWire = z.object({
+      roles: z.array(z.object({ key: z.string().min(1), permissions: z.array(z.string()), holder: z.enum(['person', 'system']).optional() })),
+      seated: z.array(z.string()),
+    });
+    const registry = {
+      permissions: [{ key: 'a:run', description: 'run', holder: 'system' as const }],
+      roles: [{ key: 'runner', permissions: ['a:run'], holder: 'system' as const }],
+    };
+    const seatedAnswer = { roles: [], seated: ['runner'], dropped: [{ key: 'runner', permissions: ['a:run'], holder: 'system' as const }] };
+    const asOldReaderSees = oldWire.parse(seatedAnswer);
+    expect(asOldReaderSees).not.toHaveProperty('dropped');
+    expect(releaseRoleSetRefusal(registry, asOldReaderSees)).toMatch(/with no definition stored/);
+    const asNewReaderSees = await answering(() => new Response(JSON.stringify(seatedAnswer), { status: 200 })).roleState(input);
+    expect(asNewReaderSees === 'predates' ? 'predates' : releaseRoleSetRefusal(registry, asNewReaderSees)).toBeNull();
+    const fromOldWriter = await answering(() => new Response(JSON.stringify({ roles: [], seated: ['runner'] }), { status: 200 })).roleState(input);
+    expect(fromOldWriter === 'predates' ? 'predates' : releaseRoleSetRefusal(registry, fromOldWriter)).toMatch(/with no definition stored/);
+    // A malformed tombstone is a wrong-shaped answer, as a malformed role is.
+    const bad = { ...state, dropped: [{ key: '', permissions: ['a:run'] }] };
+    await expect(answering(() => new Response(JSON.stringify(bad), { status: 200 })).roleState(input)).rejects.toThrow(/unexpected shape/);
   });
 
   it.each([

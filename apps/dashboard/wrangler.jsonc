@@ -65,7 +65,8 @@
 	"vars": {
 		"CP_PUBLIC_URL": "https://console.substrat.net/api",
 		"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net",
-		"PLATFORM_BASE_DOMAINS": "substrat.run"
+		"PLATFORM_BASE_DOMAINS": "substrat.run",
+		"AI_EXPLANATIONS": "1"
 	},
 	// Cloudflare Email Service — transactional mail (team invites). The `send_email`
 	// binding needs no API key; onboard a dedicated SENDING SUBDOMAIN once with
@@ -77,9 +78,10 @@
 	// still succeeds and only the email is dropped. Override the sender with
 	//   wrangler secret put EMAIL_FROM      # default no-reply@send.substrat.net
 	"send_email": [{ "name": "EMAIL" }],
-	// Workers AI for AI-written text (#1749): the account that owns this script is billed and no
-	// credential sits on it. Bound everywhere; whether anything calls it is AI_EXPLANATIONS, which
-	// is off in production until the sub-processor position (RFC assistant §16 Q13) is confirmed.
+	// Workers AI for AI-written text (#1749) and Ask (#2283): the account that owns this script is
+	// billed and no credential sits on it. AI_EXPLANATIONS turns it on; it is on in production since
+	// the sub-processor position (RFC assistant §16 Q13) was confirmed, and listed in the privacy
+	// policy (apps/docs/privacy.md, "AI features in the dashboard").
 	"ai": { "binding": "AI" },
 	// Workers Logs: persisted, queryable console.* + uncaught exceptions. The floor
 	// of prod debuggability — `wrangler tail` and the dashboard's Logs view. Without
@@ -142,7 +144,7 @@
 				// Off in prod (absent above) — flipping it changes how a live app
 				// answers ctx.check, so it is a config decision, not a deploy.
 				"SCOPE_LOCAL_PERMISSIONS": "1", // differs
-				"AI_EXPLANATIONS": "1" // differs: TEST writes AI explanations; production waits on Q13
+				"AI_EXPLANATIONS": "1" // same as prod
 			},
 			"send_email": [{ "name": "EMAIL" }],
 			"ai": { "binding": "AI" },

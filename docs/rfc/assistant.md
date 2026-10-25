@@ -1110,8 +1110,8 @@ is the real critical path.
 13. **The model provider as a sub-processor, and data residency.** Every read result in
     context goes to the model provider, including, on the dashboard, tenants' log lines. The
     platform's jurisdiction setting (`global`, `eu`, `us`; K-32) says where a tenant's data
-    lives and nothing yet says where its inference runs. **Proposed, maintainer to confirm,
-    and a P1 prerequisite:** the provider and its region are listed as a sub-processor before
+    lives and nothing yet says where its inference runs. **Confirmed by the maintainer
+    (2026-10-25), and a P1 prerequisite:** the provider and its region are listed as a sub-processor before
     any tenant text reaches it; a tenant in `eu` or `us` gets an assistant only where a
     provider route in that region exists, and otherwise none, rather than a silent `global`
     one; the context sent is the fields a tool returns, bounded (§9), never whole log
@@ -1123,6 +1123,13 @@ is the real critical path.
     rule. The provider's **operational retention** (abuse monitoring, logs) is stated per
     provider with its deletion period, and a provider whose operational retention cannot be
     stated or turned off for this traffic is not used for tenant text.
+    *As applied for the dashboard (#1749, #2283):* the provider is Cloudflare Workers AI, listed
+    in the privacy policy's "AI features in the dashboard". Cloudflare's Workers AI data-usage
+    terms state no training on customer content and no retention of inputs or outputs for
+    standard inference, which is what the dashboard calls (the binding, no AI Gateway logging).
+    The field allowlists and the redaction are `apps/dashboard/src/explain.ts` and `ask.ts`.
+    Every team is `global` today, so the per-region refusal has nothing to refuse yet; it lands
+    with K-32's `eu`/`us`.
 14. **Thread visibility.** **Proposed, maintainer to confirm:** a thread is visible to its
     subject alone by default; a tenant admin may read threads only where the product declares
     it (an internal staff tool may, a coach may not), and the user is told so. Tool references

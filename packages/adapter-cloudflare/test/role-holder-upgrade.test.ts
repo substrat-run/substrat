@@ -131,8 +131,12 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
     ],
     ownerRoleKey: 'owner',
   });
-  const holders = () => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
-    state.storage.sql.exec('SELECT role_key, holder FROM _substrat_roles WHERE tenant_id = ? ORDER BY role_key', tenant).toArray());
+  // Live rows: a role a projection drops stays as a tombstone (#2531), asserted below.
+  const holders = (live = true) => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+    state.storage.sql.exec(
+      `SELECT role_key, holder FROM _substrat_roles WHERE tenant_id = ? AND revoked_at IS ${live ? '' : 'NOT '}NULL ORDER BY role_key`,
+      tenant,
+    ).toArray());
   const roleDoor = async (key: string) => {
     const role = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
       createLocalControlPlaneReader(state.storage.sql).getRole(tenant, key));
@@ -156,6 +160,8 @@ it('defaults omitted code-defined holders to person on CP-less provision and rol
     { role_key: 'runner', holder: 'person' }, { role_key: 'system', holder: 'system' },
     { role_key: 'unknown', holder: 'person' },
   ]);
+  // The repair left `owner` out: tombstoned with the holder it had.
+  expect(await holders(false)).toEqual([{ role_key: 'owner', holder: 'person' }]);
   expect(wireHolders.slice(-3)).toEqual(['person', 'person', 'system']);
   expect(await roleDoor('runner')).toMatch(/must declare holder: 'system'/);
   expect(await roleDoor('unknown')).toMatch(/must declare holder: 'system'/);
