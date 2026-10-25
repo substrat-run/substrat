@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DomainEvent } from '@substrat-run/contracts';
-import type { ConnectorContext } from '@substrat-run/kernel';
+import { bytesStream, type ConnectorContext } from '@substrat-run/kernel';
 import { MAX_EVENT_BYTES, MAX_FILE_BYTES, microsoft365FilesConnector, type Microsoft365FilesRequested } from '../src/index.js';
 import { APP_ID, DRIVE, FakeDrive, GRAPH, LOGIN } from './fake-drive.js';
 
@@ -37,12 +37,12 @@ function harness(sizes: Record<string, number>, opts: { actual?: Record<string, 
       provider: 'microsoft365',
       secret: { tenantId: 't', clientId: APP_ID, senders: 'office@acme.example', siteUrl: 'https://acme.sharepoint.com/sites/Team', clientSecret: 's' },
       fetch,
-      openAttachment: async (id: string) => {
+      openAttachmentStream: async (id: string) => {
         log.push(`open:${id}`);
         const size = opts.actual?.[id] ?? sizes[id]!;
         return {
           record: { id, filename: `${id}.bin`, size, contentType: 'application/octet-stream' },
-          body: new Uint8Array(size).fill(1),
+          body: bytesStream(new Uint8Array(size).fill(1)),
           contentType: 'application/octet-stream',
         };
       },

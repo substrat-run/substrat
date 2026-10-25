@@ -10,7 +10,7 @@
  *   moving the folder inside the library keeps the binding; deleting it, or moving it out of the
  *   library, makes the binding refuse ("folder missing") rather than fall back to the library root.
  * - **Writes** are the Scrive pattern: a vertical emits `MICROSOFT365_FILES_EVENT` naming
- *   attachments and a target, the dispatch reads them with `conn.openAttachment` and uploads them,
+ *   attachments and a target, the dispatch streams them with `conn.openAttachmentStream` and uploads them,
  *   and a ledger row keyed on the event id makes a redelivery skip what landed.
  * - **Reads** are a sync, the Planima pattern: module code cannot fetch, so the sweep follows the
  *   drive's `/delta` feed, keeps only what is in the folder, and lands each change through the
@@ -38,7 +38,14 @@ import {
   type FileSourceChange,
   type FileSourceWriteRequest,
 } from '@substrat-run/contracts';
-import { connectorUploadBody, type ConnectorHandler, type ConnectorOptions, type ScopeHost } from '@substrat-run/kernel';
+import {
+  connectorUploadBody,
+  type ConnectorHandler,
+  type ConnectorOptions,
+  type OpenedAttachmentStream,
+  type ScopeHost,
+  type SizedByteStream,
+} from '@substrat-run/kernel';
 import {
   MICROSOFT365_PROVIDER,
   nowOf,
@@ -49,7 +56,7 @@ import {
 } from './connection.js';
 import { microsoft365Secret } from './credential.js';
 import { fencedPath, fencedSegment } from './fence.js';
-import { quickXorHash } from './quickxor.js';
+import { QuickXorHash } from './quickxor.js';
 import {
   GraphError,
   childrenPage,
@@ -351,30 +358,60 @@ export function microsoft365FilesConnector(options: Microsoft365Options): Connec
     const secret = microsoft365Secret.parse(conn.secret);
     const client = await signedInGraphWith(conn.fetch, secret, options);
     // One file at a time: opened, uploaded, recorded, and let go before the next is read, so a
-    // delivery holds at most one file's bytes. The caps were checked on the declared sizes above;
-    // a file refused here leaves the ones before it written, and the ledger says which.
+    // delivery holds at most one file's bytes, and of a file over the simple-upload size only one
+    // session chunk (#2514). The caps were checked on the declared sizes above; a file refused here
+    // leaves the ones before it written, and the ledger says which.
     for (const f of payload.files) {
       if (ledger.files.some((done) => done.attachmentId === f.attachmentId)) continue;
-      const opened = await conn.openAttachment(f.attachmentId);
-      if (!opened) throw new Error(`attachment ${f.attachmentId} is not one this event's entity holds`);
-      if (opened.record.size !== f.size || opened.body.byteLength !== f.size) {
-        throw new Error(`attachment ${f.attachmentId} is not the ${f.size} bytes the event declared`);
+      // Each read is a fresh stream, held to the record (its size here, its sha256 as it flows). A
+      // stream error means the bytes so far are unverified: `writeUnder` never commits them, and
+      // cancels a session they went into. The first read is the one the upload uses; a conflict that
+      // needs the bytes again (the adopt check, rename's second name) opens another.
+      const read = async (): Promise<OpenedAttachmentStream> => {
+        const opened = await conn.openAttachmentStream(f.attachmentId);
+        if (!opened) throw new Error(`attachment ${f.attachmentId} is not one this event's entity holds`);
+        if (opened.record.size !== f.size || opened.body.length !== f.size) {
+          await opened.body.stream.getReader().cancel().catch(() => {});
+          throw new Error(`attachment ${f.attachmentId} is not the ${f.size} bytes the event declared`);
+        }
+        return opened;
+      };
+      let first: OpenedAttachmentStream | undefined = await read();
+      const take = async () => {
+        const opened = first ?? (await read());
+        first = undefined;
+        return opened.body;
+      };
+      try {
+        const name = f.name ?? first.record.filename;
+        fencedSegment(name);
+        const written = await writeOne(client, binding, {
+          directory,
+          file: { name, body: take, contentType: first.contentType },
+          conflict: payload.conflict,
+          adopt: redelivery ? { clientId: secret.clientId, size: f.size, quickXorHash: async () => quickXorOf(await take()) } : null,
+          suffix: await suffixOf(event.id, f.attachmentId),
+        });
+        ledger.files.push({ attachmentId: f.attachmentId, itemId: written.id, name: written.name ?? name });
+      } finally {
+        // A first read nothing took (a refusal before any upload) is let go, not left holding the object.
+        if (first) await first.body.stream.getReader().cancel().catch(() => {});
       }
-      const name = f.name ?? opened.record.filename;
-      fencedSegment(name);
-      const file = { name, body: opened.body, contentType: opened.contentType };
-      const written = await writeOne(client, binding, {
-        directory,
-        file,
-        conflict: payload.conflict,
-        adopt: redelivery ? { clientId: secret.clientId, size: f.size, quickXorHash: quickXorHash(opened.body) } : null,
-        suffix: await suffixOf(event.id, f.attachmentId),
-      });
-      ledger.files.push({ attachmentId: f.attachmentId, itemId: written.id, name: written.name ?? name });
       await ctx.admin.putConnectorState(conn.id, key, ledger);
     }
     await ctx.admin.putConnectorState(conn.id, key, { ...ledger, status: 'done' });
   };
+}
+
+/** A stream's QuickXorHash, folded as it passes; only the 160-byte state is held. */
+async function quickXorOf(body: SizedByteStream): Promise<string> {
+  const hash = new QuickXorHash();
+  const reader = body.stream.getReader();
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) return hash.digest();
+    if (next.value) hash.update(next.value);
+  }
 }
 
 async function writeOne(
@@ -382,9 +419,11 @@ async function writeOne(
   binding: Microsoft365Binding,
   w: {
     directory: string[];
-    file: { name: string; body: Uint8Array; contentType: string };
+    /** `body` opens the file's bytes afresh: every upload attempt reads them once. */
+    file: { name: string; body: () => Promise<SizedByteStream>; contentType: string };
     conflict: 'replace' | 'rename' | 'fail';
-    adopt: { clientId: string; size: number; quickXorHash: string } | null;
+    /** `quickXorHash` reads the bytes again, so it is asked only once the cheap checks have passed. */
+    adopt: { clientId: string; size: number; quickXorHash: () => Promise<string> } | null;
     suffix: string;
   },
 ): Promise<DriveItem> {
@@ -395,7 +434,7 @@ async function writeOne(
         driveId: binding.driveId,
         parentId: binding.folderItemId,
         segments,
-        body: w.file.body,
+        body: await w.file.body(),
         contentType: w.file.contentType,
         conflict,
       });
@@ -405,12 +444,12 @@ async function writeOne(
       }
       if (!(e instanceof GraphError && e.status === 409) || !w.adopt) throw e;
       // A redelivery meeting a conflict: adopt the file only if it is these bytes, written by this app.
+      // The app and the size first: only a file that passes both is worth reading the bytes again for.
+      // A refusal while they are read (#2514) is thrown as it came, and nothing is adopted.
       const existing = await itemUnder(client, binding.driveId, binding.folderItemId, segments);
-      const ours =
-        existing.createdBy?.application?.id === w.adopt.clientId &&
-        existing.size === w.adopt.size &&
-        existing.file?.hashes?.quickXorHash === w.adopt.quickXorHash;
-      if (ours) return existing;
+      const stated = existing.file?.hashes?.quickXorHash;
+      const candidate = existing.createdBy?.application?.id === w.adopt.clientId && existing.size === w.adopt.size && stated !== undefined;
+      if (candidate && stated === (await w.adopt.quickXorHash())) return existing;
       throw e;
     }
   };

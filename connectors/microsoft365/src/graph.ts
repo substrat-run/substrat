@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { MailSendResult, OutboundMail } from '@substrat-run/kernel';
+import { isSizedByteStream, type MailSendResult, type OutboundMail, type SizedByteStream } from '@substrat-run/kernel';
 import { GRAPH_BASE } from './credential.js';
 import { encodedPath } from './fence.js';
 import { toBase64 } from './x509.js';
@@ -276,6 +276,13 @@ export const UPLOAD_CHUNK_BYTES = 320 * 1024 * 10;
  * Write `body` at `segments` under the folder `parentId` — simple PUT up to 4 MB, an upload session
  * above. A session that fails part-way is cancelled, so no half-written upload is left behind; it is
  * never resumed across deliveries (its URL is a capability, and is not stored).
+ *
+ * `body` may be a stream at its declared length (#2514), read once and never held whole: up to 4 MB
+ * it is read to its end into one buffer before the PUT, and above that it is cut into session
+ * chunks, one held at a time. The last range, which is what makes Graph commit the item, is sent only
+ * once the stream has ended at exactly its length. So a stream that errors (an attachment stream
+ * refusing bytes that do not match their record) or runs short or long never commits a file: the
+ * session is cancelled and the error is thrown as it came.
  */
 export async function writeUnder(
   client: GraphClient,
@@ -283,47 +290,130 @@ export async function writeUnder(
     driveId: string;
     parentId: string;
     segments: readonly string[];
-    body: Uint8Array;
+    body: Uint8Array | SizedByteStream;
     contentType: string;
     conflict: ConflictBehavior;
   },
 ): Promise<DriveItem> {
   const target = `drives/${enc(input.driveId)}/items/${enc(input.parentId)}:/${encodedPath(input.segments)}:`;
-  if (input.body.byteLength <= SIMPLE_UPLOAD_MAX_BYTES) {
-    const res = await send(
-      client,
-      'PUT',
-      `${graphRoot(client)}/${target}/content?@microsoft.graph.conflictBehavior=${input.conflict}`,
-      { body: input.body, contentType: input.contentType },
-    );
-    return driveItem.parse(await res.json());
-  }
-  const session = z
-    .object({ uploadUrl: z.string().min(1) })
-    .parse(
-      await (
-        await call(client, 'POST', `${target}/createUploadSession`, {
-          item: { '@microsoft.graph.conflictBehavior': input.conflict },
-        })
-      ).json(),
-    );
-  const total = input.body.byteLength;
+  const source = isSizedByteStream(input.body) ? exactReader(input.body) : bufferReader(input.body);
+  const total = source.length;
   try {
-    for (let start = 0; start < total; start += UPLOAD_CHUNK_BYTES) {
-      const end = Math.min(start + UPLOAD_CHUNK_BYTES, total);
-      // The upload URL is pre-authorized; Graph refuses a request to it that carries the token.
-      const res = await send(client, 'PUT', session.uploadUrl, {
-        auth: false,
-        body: input.body.subarray(start, end),
-        headers: { 'content-range': `bytes ${start}-${end - 1}/${total}` },
-      });
-      if (end === total) return driveItem.parse(await res.json());
+    if (total <= SIMPLE_UPLOAD_MAX_BYTES) {
+      const whole = new Uint8Array(total);
+      await source.fill(whole);
+      await source.end();
+      const res = await send(
+        client,
+        'PUT',
+        `${graphRoot(client)}/${target}/content?@microsoft.graph.conflictBehavior=${input.conflict}`,
+        { body: whole, contentType: input.contentType },
+      );
+      return driveItem.parse(await res.json());
     }
-    throw new GraphError(500, undefined, 'the upload session ended without an item');
+    const session = z
+      .object({ uploadUrl: z.string().min(1) })
+      .parse(
+        await (
+          await call(client, 'POST', `${target}/createUploadSession`, {
+            item: { '@microsoft.graph.conflictBehavior': input.conflict },
+          })
+        ).json(),
+      );
+    // One chunk's buffer, reused: each PUT is answered before the next fill writes into it.
+    const chunk = new Uint8Array(UPLOAD_CHUNK_BYTES);
+    try {
+      for (let start = 0; start < total; start += UPLOAD_CHUNK_BYTES) {
+        const end = Math.min(start + UPLOAD_CHUNK_BYTES, total);
+        const piece = chunk.subarray(0, end - start);
+        await source.fill(piece);
+        // The committing range waits for the stream's own end, so an error at the end lands first.
+        if (end === total) await source.end();
+        // The upload URL is pre-authorized; Graph refuses a request to it that carries the token.
+        const res = await send(client, 'PUT', session.uploadUrl, {
+          auth: false,
+          body: piece,
+          headers: { 'content-range': `bytes ${start}-${end - 1}/${total}` },
+        });
+        if (end === total) return driveItem.parse(await res.json());
+      }
+      throw new GraphError(500, undefined, 'the upload session ended without an item');
+    } catch (e) {
+      await send(client, 'DELETE', session.uploadUrl, { auth: false }).catch(() => undefined);
+      throw e;
+    }
   } catch (e) {
-    await send(client, 'DELETE', session.uploadUrl, { auth: false }).catch(() => undefined);
+    await source.release(e);
     throw e;
   }
+}
+
+/** What `writeUnder` reads a body through: `fill` takes exactly the bytes asked for, `end` that none follow. */
+interface BodyReader {
+  length: number;
+  fill(into: Uint8Array): Promise<void>;
+  end(): Promise<void>;
+  /** Let go of a stream not read to its end. */
+  release(reason: unknown): Promise<void>;
+}
+
+function bufferReader(body: Uint8Array): BodyReader {
+  let at = 0;
+  return {
+    length: body.byteLength,
+    fill: async (into) => {
+      into.set(body.subarray(at, at + into.byteLength));
+      at += into.byteLength;
+    },
+    end: async () => {},
+    release: async () => {},
+  };
+}
+
+/**
+ * A sized stream read to exactly its declared length. A piece larger than the space left is split,
+ * and the rest kept for the next `fill`. Short or long is an error, never a shorter or longer file.
+ */
+function exactReader(body: SizedByteStream): BodyReader {
+  const reader = body.stream.getReader();
+  let rest: Uint8Array | undefined;
+  let read = 0;
+  let ended = false;
+  const wrongLength = (got: string) => new Error(`the body is not the ${body.length} bytes it declared (${got})`);
+  return {
+    length: body.length,
+    fill: async (into) => {
+      let at = 0;
+      while (at < into.byteLength) {
+        if (!rest?.byteLength) {
+          const next = await reader.read();
+          if (next.done) {
+            ended = true;
+            throw wrongLength(`it ended after ${read} bytes`);
+          }
+          rest = next.value;
+          continue;
+        }
+        const n = Math.min(rest.byteLength, into.byteLength - at);
+        into.set(rest.subarray(0, n), at);
+        rest = rest.subarray(n);
+        at += n;
+        read += n;
+      }
+    },
+    end: async () => {
+      if (rest?.byteLength) throw wrongLength('more followed');
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        if (next.value?.byteLength) throw wrongLength('more followed');
+      }
+      ended = true;
+    },
+    release: async (reason) => {
+      if (!ended) await reader.cancel(reason).catch(() => {});
+    },
+  };
 }
 
 const enc = encodeURIComponent;
