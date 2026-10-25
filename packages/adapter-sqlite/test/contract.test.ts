@@ -119,10 +119,11 @@ scopeAdminAuditTransactionSuite('adapter-sqlite', async () => {
 
 directoryAdminAuditTransactionSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-directory-audit-'));
-  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  // A box, so a case can create the connection a grant names (#2526).
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
   type Tx = (...args: unknown[]) => unknown;
   const directory = (host as unknown as {
-    directory: { exec(sql: string): void; transaction(fn: Tx): Tx };
+    directory: { exec(sql: string): void; prepare(sql: string): { all(): unknown[] }; transaction(fn: Tx): Tx };
   }).directory;
   // #2528: the armed statement commits on its own just before the next directory transaction
   // begins, which is where every audited write's unit starts on this adapter.
@@ -143,6 +144,7 @@ directoryAdminAuditTransactionSuite('adapter-sqlite', async () => {
     host,
     interleave: (sql: string) => { armed = sql; },
     directorySql: async (sql: string) => directory.exec(sql),
+    directoryRows: async (sql: string) => directory.prepare(sql).all(),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

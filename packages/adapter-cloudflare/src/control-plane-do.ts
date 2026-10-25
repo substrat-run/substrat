@@ -1568,6 +1568,17 @@ export const REPLIED_METHODS = [
   'admitVersion',
   'rejectVersion',
   'setVerticalServing',
+  // #2526: the role, grant and org writes at a tenant node, each with its admin row in its unit. A
+  // DO from before lists none of them, so the current coordinator fails closed against it. That is
+  // why the org write is `insertOrg` and not `createOrg` with a trailing row: an older DO lists
+  // `createOrg` and would drop the row and create the org.
+  'defineRoleOrRefusal',
+  'assignTenantRole',
+  'writeTenantTuple',
+  'writeOrgTenantTuple',
+  'writeTenantSystemGrant',
+  'grantConnectionInDirectory',
+  'insertOrg',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -2911,13 +2922,29 @@ export class ControlPlaneDO extends DurableObject {
    * system-held definition of a key with no system-held definition stored (none at all included): its tenant-level seats are read here, in the unit, and
    * `seatedInScopes` carries what the coordinator read off the tenant's scopes. A refusal is answered
    * as data, so its text survives the hop, and writes nothing. The current coordinator calls this one
-   * (the same split as `transitionScope` and `transitionScopeOrRefusal`).
+   * (the same split as `transitionScope` and `transitionScopeOrRefusal`), through `reply` (#2526),
+   * with `audit`: the row, its `before` the role read here, commits with the definition. A
+   * coordinator from before #2526 passes none and records its own.
    */
   defineRoleOrRefusal(
     tenantId: string,
     role: RoleDefinition,
     reservation: { reserved: readonly string[]; declared: readonly string[] } = { reserved: [], declared: [] },
     seatedInScopes = false,
+    audit?: AdminEntryInput,
+  ): { before: RoleDefinition | null } | { refused: string } {
+    return this.ctx.storage.transactionSync(() => {
+      const outcome = this.defineRoleIn(tenantId, role, reservation, seatedInScopes);
+      if (audit && 'before' in outcome) this.recordAdmin({ ...audit, before: outcome.before });
+      return outcome;
+    });
+  }
+
+  private defineRoleIn(
+    tenantId: string,
+    role: RoleDefinition,
+    reservation: { reserved: readonly string[]; declared: readonly string[] },
+    seatedInScopes: boolean,
   ): { before: RoleDefinition | null } | { refused: string } {
     const tenantRoles = this.listRoles({ tenantId }).map((r) => ({
       key: r.role_key,
@@ -3002,40 +3029,93 @@ export class ControlPlaneDO extends DurableObject {
 
   // -- tenant-level tuples (checker rules 1, 2, 4) ----------------------------
 
+  /**
+   * A tenant tuple, upserted. With `audit` (#2526, `grant` at the tenant node, called through
+   * `reply`), its admin row commits in the same transaction; without, as a coordinator from before
+   * #2526 calls it, and as this object's own units do, it is the bare write.
+   */
   writeTenantTuple(
     tenantId: string,
     subject: string,
     relation: string,
     object: string,
     expiresAt: string | null,
+    audit?: AdminEntryInput,
   ): void {
-    this.sql.exec(
-      `INSERT OR REPLACE INTO _substrat_tenant_tuples
-         (tenant_id, subject, relation, object, expires_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      tenantId,
-      subject,
-      relation,
-      object,
-      expiresAt,
-    );
+    const write = () => {
+      this.sql.exec(
+        `INSERT OR REPLACE INTO _substrat_tenant_tuples
+           (tenant_id, subject, relation, object, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        tenantId,
+        subject,
+        relation,
+        object,
+        expiresAt,
+      );
+      return true;
+    };
+    if (audit) this.writeAndAudit(write, audit);
+    else write();
+  }
+
+  /**
+   * #2526: `assignRole` at the tenant node — the role's reservation judged (`reserved`, what the
+   * coordinator's modules reserve to a system principal: a role mixing them with other keys is
+   * refused, #2430), the tuple and its admin row, in one unit. A refusal is answered as data and
+   * writes nothing. A role not defined here is not judged, as before.
+   */
+  assignTenantRole(tenantId: string, principal: string, roleKey: string, reserved: readonly string[], audit: AdminEntryInput): { refused?: string } {
+    return this.ctx.storage.transactionSync(() => {
+      const role = reserved.length > 0 ? this.getRole(tenantId, roleKey) : undefined;
+      const refused = role ? reservedRoleRefusal(role, new Set(reserved), 'platform') : null;
+      if (refused) return { refused };
+      this.writeTenantTuple(tenantId, `principal:${principal}`, `role:${roleKey}`, `tenant:${tenantId}`, null);
+      this.recordAdmin(audit);
+      return {};
+    });
+  }
+
+  /**
+   * #2526: a tenant tuple that names an org — `grantToOrg` at the tenant node, and `addMember` —
+   * with its admin row, in one unit, refused `not_found` when the org is not in the tenant.
+   */
+  writeOrgTenantTuple(
+    tenantId: string,
+    orgId: string,
+    subject: string,
+    relation: string,
+    object: string,
+    expiresAt: string | null,
+    audit: AdminEntryInput,
+  ): void {
+    this.writeAndAudit(() => {
+      if (!this.readOrg(tenantId, orgId)) throw substratError('not_found', `unknown org ${orgId} in tenant ${tenantId}`);
+      this.writeTenantTuple(tenantId, subject, relation, object, expiresAt);
+      return true;
+    }, audit);
   }
 
   /**
    * #1743: a tenant-level `system:<module>` grant, refused while the record holds the module
    * off on any scope (`scopesSwitchedOffFor`). Synchronous, so the read and the write are one
-   * DO unit. Answers the switched-off scopes; non-empty means nothing was written.
+   * DO unit. Answers the switched-off scopes; non-empty means nothing was written. With `audit`
+   * (#2526, through `reply`), the row commits with the tuple, and a refusal records none.
    */
   writeTenantSystemGrant(
     tenantId: string,
     moduleId: string,
     relation: string,
     expiresAt: string | null,
+    audit?: AdminEntryInput,
   ): string[] {
-    const off = scopesSwitchedOffFor(this.kernelSql, tenantId, moduleId);
-    if (off.length === 0) {
+    let off: string[] = [];
+    this.writeAndAudit(() => {
+      off = scopesSwitchedOffFor(this.kernelSql, tenantId, moduleId);
+      if (off.length > 0) return false;
       this.writeTenantTuple(tenantId, `system:${moduleId}`, relation, `tenant:${tenantId}`, expiresAt);
-    }
+      return true;
+    }, audit);
     return off;
   }
 
@@ -4116,6 +4196,16 @@ export class ControlPlaneDO extends DurableObject {
     return true;
   }
 
+  /**
+   * #2526: `createOrg` with its admin row, in one unit; an org that already exists writes nothing,
+   * the row included. A new name rather than a trailing argument on `createOrg`, which an older
+   * ControlPlaneDO already lists in `REPLIED_METHODS`: there the argument would be dropped and the
+   * org created with no row, where an unknown method fails closed.
+   */
+  insertOrg(orgId: string, tenantId: string, slug: string, name: string, createdAt: string, audit: AdminEntryInput): boolean {
+    return this.writeAndAudit(() => this.createOrg(orgId, tenantId, slug, name, createdAt), audit);
+  }
+
   listOrgs(tenantId: string): OrgRow[] {
     return this.sql
       .exec('SELECT * FROM orgs WHERE tenant_id = ? ORDER BY slug', tenantId)
@@ -4970,6 +5060,47 @@ export class ControlPlaneDO extends DurableObject {
       row.grantedBy,
       row.grantedAt,
     );
+  }
+
+  /**
+   * #2526: `grantToConnection`'s directory half as one unit — the connection (live, in the grant's
+   * tenant) and, at a scope node, the scope (in that tenant, running the connection's vertical)
+   * judged as they stand now, the record (`recordConnectionGrant`), the tenant tuple at the tenant
+   * node, and the admin row, whose vertical and provider are the connection's as read here. A
+   * scope node's tuple is delivered by the coordinator after this commits; the record is what a
+   * reconcile re-seats it from when that delivery fails. Answers the connection's vertical.
+   */
+  grantConnectionInDirectory(
+    row: { connectionId: string; tenantId: string; permission: string; scopeId: string | null; expiresAt: string | null; grantedBy: string; grantedAt: string },
+    audit: AdminEntryInput,
+  ): { vertical: string } {
+    return this.ctx.storage.transactionSync(() => {
+      const conn = this.readConnection(row.connectionId);
+      if (!conn) throw new Error(`connection not found: ${row.connectionId}`);
+      if (conn.revoked_at) throw new Error(`connection ${row.connectionId} is revoked — grant nothing to it`);
+      if (conn.tenant_id !== row.tenantId) {
+        throw new Error(
+          `connection ${row.connectionId} belongs to tenant ${conn.tenant_id} and cannot be granted anything in ${row.tenantId}`,
+        );
+      }
+      if (row.scopeId) {
+        const scope = this.getScopeRecord(row.tenantId, row.scopeId);
+        if (!scope) throw substratError('not_found', `unknown scope ${row.scopeId} in tenant ${row.tenantId}`);
+        if (scope.vertical !== conn.vertical) {
+          throw new Error(
+            `connection ${row.connectionId} is for vertical '${conn.vertical}' and scope ` +
+              `${row.scopeId} runs '${scope.vertical ?? 'none'}'`,
+          );
+        }
+      }
+      this.recordConnectionGrant({ ...row, vertical: conn.vertical });
+      if (!row.scopeId) {
+        this.writeTenantTuple(row.tenantId, `connection:${row.connectionId}`, `granted:${row.permission}`, `tenant:${row.tenantId}`, row.expiresAt);
+      }
+      const after = (audit.after ?? {}) as Record<string, unknown>;
+      this.recordAdmin({ ...audit, vertical: conn.vertical, after: { ...after, provider: conn.provider } });
+      return { vertical: conn.vertical };
+    });
   }
 
   // -- the kill switches' record (#1674, #2029) — `system-switch-record.ts` is the whole rule ---

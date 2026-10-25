@@ -861,24 +861,40 @@ interface ControlPlaneStub {
   defineRoleOrRefusal(
     tenantId: string,
     role: RoleDefinition,
-    reservation?: { reserved: string[]; declared: string[] },
-    seatedInScopes?: boolean,
+    reservation: { reserved: string[]; declared: string[] },
+    seatedInScopes: boolean,
+    audit: AdminEntry,
   ): Promise<{ before: RoleDefinition | null } | { refused: string }>;
   listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
   getRole(tenantId: string, key: string): Promise<RoleDefinition | undefined>;
+  /** #2526: a tenant tuple and its admin row, in one unit. */
   writeTenantTuple(
     tenantId: string,
     subject: string,
     relation: string,
     object: string,
     expiresAt: string | null,
+    audit: AdminEntry,
   ): Promise<void>;
-  /** #1743: a tenant-level `system:` grant — answers the switched-off scopes; empty = written. */
+  /** #2526: `assignRole` at the tenant node — the reservation judged, the tuple and its row. */
+  assignTenantRole(tenantId: string, principal: string, roleKey: string, reserved: string[], audit: AdminEntry): Promise<{ refused?: string }>;
+  /** #2526: a tenant tuple naming an org and its row, refused `not_found` without the org. */
+  writeOrgTenantTuple(
+    tenantId: string,
+    orgId: string,
+    subject: string,
+    relation: string,
+    object: string,
+    expiresAt: string | null,
+    audit: AdminEntry,
+  ): Promise<void>;
+  /** #1743: a tenant-level `system:` grant — answers the switched-off scopes; empty = written, with its row (#2526). */
   writeTenantSystemGrant(
     tenantId: string,
     moduleId: string,
     relation: string,
     expiresAt: string | null,
+    audit: AdminEntry,
   ): Promise<string[]>;
   /** All of a tenant's identity links — for identity-link projection (#406). */
   dumpTenantIdentities(
@@ -992,6 +1008,8 @@ interface ControlPlaneStub {
     name: string,
     createdAt: string,
   ): Promise<boolean>;
+  /** #2526: `createOrg` with its admin row, in one unit. */
+  insertOrg(orgId: string, tenantId: string, slug: string, name: string, createdAt: string, audit: AdminEntry): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
   /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
   applyMembership(change: MembershipChange, row: AdminEntry, orgRow?: AdminEntry, reserved?: readonly string[]): Promise<MembershipChangeResult>;
@@ -1122,16 +1140,16 @@ interface ControlPlaneStub {
     audit: AdminEntry,
   ): Promise<ConnectLinkConsume>;
   restoreConnectLink(key: ConnectLinkKeyRow, now: string, audit: AdminEntry): Promise<ConnectLink | undefined>;
-  recordConnectionGrant(row: {
+  /** #2526: `grantToConnection`'s directory half — the checks, the record, the tenant tuple, the row. */
+  grantConnectionInDirectory(row: {
     connectionId: string;
     tenantId: string;
-    vertical: string;
     permission: string;
     scopeId: string | null;
     expiresAt: string | null;
     grantedBy: string;
     grantedAt: string;
-  }): Promise<void>;
+  }, audit: AdminEntry): Promise<{ vertical: string }>;
   listConnectionGrants(tenantId: string): Promise<ConnectionGrantDoRow[]>;
   // #1674, #2029: the kill switches' directory record — `system-switch-record.ts`. #2045 (Codex
   // r3): each write is also the call's write-ahead intent — the subject's owed mark and the scope's
@@ -7226,13 +7244,9 @@ export class CloudflareScopeHost implements ScopeHost {
           expiresAt ?? null,
         );
       } else {
-        await this.cp.writeTenantTuple(
-          node.tenantId,
-          subject,
-          `granted:${permission}`,
-          `tenant:${node.tenantId}`,
-          expiresAt ?? null,
-        );
+        // #2526: a tenant-level grant is a directory tuple, written by the ControlPlaneDO in the
+        // unit that writes its admin row — never through here.
+        throw new Error('writeGrant: a tenant-level grant is written with its row in the ControlPlaneDO');
       }
     };
 
@@ -7815,10 +7829,11 @@ export class CloudflareScopeHost implements ScopeHost {
         // `defineRoleOrRefusal`, not the legacy `defineRole` an older coordinator reads. A ControlPlaneDO from
         // before #2447, met in a deploy's restart window, has no such method, so the call fails loudly rather
         // than being misread.
-        const defined = await this.cp.defineRoleOrRefusal(tenantId, parsed, context.reservation, context.seatedInScopes);
+        // #2526: through `reply`, with the row, which the DO writes in the definition's unit, its
+        // `before` the role it read there. A DO from before #2526 does not list the method, and refuses.
+        const defined = await this.directory('defineRoleOrRefusal', tenantId, parsed, context.reservation, context.seatedInScopes,
+          this.adminEntry(actor, 'defineRole', { tenantId }, null, parsed));
         if ('refused' in defined) throw substratError('forbidden', defined.refused);
-        const before = defined.before;
-        await this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
         await this.fanOut(tenantId); // role definitions are projected into the tenant's scopes
       },
       listRoles: async (actor, filter?: RoleFilter): Promise<TenantRole[]> => {
@@ -7845,44 +7860,21 @@ export class CloudflareScopeHost implements ScopeHost {
       assignRole: async (actor, assignment: RoleAssignment) => {
         // #2430: the platform's door — a role mixing reserved and other keys is refused (K-55).
         // At a scope node, read where the checker reads the role, against the scope class's own
-        // reservations (it answers null when it has none). At the tenant node, against this host's.
-        {
-          const { tenantId, scopeId } = assignment.node;
-          const refusal = scopeId
-            ? await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform')
-            : this.reservedKeys.size > 0
-              ? await this.cp.getRole(tenantId, assignment.roleKey).then((role) => role && reservedRoleRefusal(role, this.reservedKeys, 'platform'))
-              : null;
-          if (refusal) throw substratError('forbidden', refusal);
+        // reservations (it answers null when it has none). At the tenant node, against this host's,
+        // in the ControlPlaneDO's unit that writes the tuple and its row (#2526).
+        const { tenantId, scopeId } = assignment.node;
+        if (!scopeId) {
+          const assigned = await this.directory('assignTenantRole', tenantId, assignment.principalId, assignment.roleKey,
+            [...this.reservedKeys], this.adminEntry(actor, 'assignRole', { tenantId, scopeId }, null, assignment));
+          if (assigned.refused) throw substratError('forbidden', assigned.refused);
+          // A tenant-level assignment changes the projected set and must fan out.
+          await this.fanOut(tenantId);
+          return;
         }
-        const subject = `principal:${assignment.principalId}`;
-        if (assignment.node.scopeId) {
-          await this.writeScopeTuple(
-            assignment.node.scopeId,
-            subject,
-            `role:${assignment.roleKey}`,
-            `scope:${assignment.node.scopeId}`,
-            null,
-          );
-        } else {
-          await this.cp.writeTenantTuple(
-            assignment.node.tenantId,
-            subject,
-            `role:${assignment.roleKey}`,
-            `tenant:${assignment.node.tenantId}`,
-            null,
-          );
-        }
-        await this.recordAdmin(
-          actor,
-          'assignRole',
-          { tenantId: assignment.node.tenantId, scopeId: assignment.node.scopeId },
-          null,
-          assignment,
-        );
-        // A scope-level assignment writes a scope tuple (already local); only a
-        // tenant-level one changes the projected set and must fan out.
-        if (!assignment.node.scopeId) await this.fanOut(assignment.node.tenantId);
+        const refusal = await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform');
+        if (refusal) throw substratError('forbidden', refusal);
+        await this.writeScopeTuple(scopeId, `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeId}`, null);
+        await this.recordAdmin(actor, 'assignRole', { tenantId, scopeId }, null, assignment);
       },
       unassignRole: async (actor, assignment: RoleAssignment) => {
         // Tombstone (K-21) — the checker skips revoked rows. A no-op returns false so
@@ -7918,23 +7910,19 @@ export class CloudflareScopeHost implements ScopeHost {
         // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
         const grant = capabilityGrant.parse(raw);
         await this.refuseReservedGrant([grant.permission], grant.node.scopeId); // #2430
-        await writeGrant(
-          `principal:${grant.principalId}`,
-          grant.permission,
-          grant.node,
-          grant.entity,
-          grant.expiresAt,
-        );
-        await this.recordAdmin(
-          actor,
-          'grant',
-          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId },
-          null,
-          grant,
-        );
-        // Tenant-level grant → changes the projected set. Scope-level + entity
-        // grants write scope tuples (already local), so they need no fan-out.
-        if (!grant.node.scopeId) await this.fanOut(grant.node.tenantId);
+        const subject = `principal:${grant.principalId}`;
+        const target = { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId };
+        if (!grant.node.scopeId && !grant.entity) {
+          // #2526: a directory tuple, written with its row in one ControlPlaneDO unit. Tenant-level
+          // → it changes the projected set, so it fans out.
+          await this.directory('writeTenantTuple', grant.node.tenantId, subject, `granted:${grant.permission}`,
+            `tenant:${grant.node.tenantId}`, grant.expiresAt ?? null, this.adminEntry(actor, 'grant', target, null, grant));
+          await this.fanOut(grant.node.tenantId);
+          return;
+        }
+        // Scope-level and entity grants write scope tuples (already local): no fan-out.
+        await writeGrant(subject, grant.permission, grant.node, grant.entity, grant.expiresAt);
+        await this.recordAdmin(actor, 'grant', target, null, grant);
       },
       grantEntityShape: async (actor, grant) => {
         await this.grantEntityShapeLocal(grant.node.scopeId, grant.principalId, grant.entity, grant.permissions);
@@ -7987,27 +7975,43 @@ export class CloudflareScopeHost implements ScopeHost {
         // fails below is still gathered by the next provision/reconcile — the
         // repair channel — instead of vanishing. The tuple stays the only thing
         // the permission checker reads; this row is what the platform gathers
-        // from so scopes provisioned AFTER the grant receive it too.
-        await this.cp.recordConnectionGrant({
+        // from so scopes provisioned AFTER the grant receive it too. #2526: the
+        // record, the checks above made again, the admin row and — at the tenant
+        // node — the tuple are one ControlPlaneDO unit.
+        const { vertical } = await this.directory('grantConnectionInDirectory', {
           connectionId: grant.connectionId,
           tenantId: grant.node.tenantId,
-          vertical: conn.vertical,
           permission: grant.permission,
           scopeId: grant.node.scopeId ?? null,
           expiresAt: grant.expiresAt ?? null,
           grantedBy: grant.grantedBy,
           grantedAt: new Date().toISOString(),
-        });
+        }, this.adminEntry(
+          actor,
+          'grantToConnection',
+          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId, vertical: conn.vertical },
+          null,
+          {
+            connectionId: grant.connectionId,
+            provider: conn.provider,
+            permission: grant.permission,
+            node: grant.node,
+          },
+        ));
+        if (!grant.node.scopeId) {
+          // A tenant tuple changes the projected set, as its siblings' do: it fans out.
+          await this.fanOut(grant.node.tenantId);
+          return;
+        }
         // #574: a scope-level grant is a SCOPE tuple, and the scope's DO lives in the
         // deployment serving it — for the shared control plane that is the vertical's
-        // dispatch script, so the tuple write rides the delegation seam. Tenant-level
-        // grants stay directory-side either way.
-        if (this.connectorDelegation && grant.node.scopeId) {
+        // dispatch script, so the tuple write rides the delegation seam.
+        if (this.connectorDelegation) {
           await this.connectorDelegation.grant({
             connectionId: grant.connectionId as ConnectionId,
             tenantId: grant.node.tenantId,
             scopeId: grant.node.scopeId,
-            vertical: conn.vertical,
+            vertical,
             permission: grant.permission,
             expiresAt: grant.expiresAt,
           });
@@ -8020,24 +8024,14 @@ export class CloudflareScopeHost implements ScopeHost {
             grant.expiresAt,
           );
         }
-        await this.recordAdmin(
-          actor,
-          'grantToConnection',
-          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId, vertical: conn.vertical },
-          null,
-          {
-            connectionId: grant.connectionId,
-            provider: conn.provider,
-            permission: grant.permission,
-            node: grant.node,
-          },
-        );
       },
 
       grantToSystem: async (actor: PlatformActorId, raw: SystemGrant) => {
         // The scheduler's grant (#383) — mirror of grantToConnection. Narrow: one
         // module, one permission; tombstones on revoke; shows in the permission diff.
         const grant = systemGrant.parse(raw);
+        const target = { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId };
+        const after = { moduleId: grant.moduleId, permission: grant.permission, node: grant.node };
         if (grant.node.scopeId) {
           // #1666: refused while the module is switched off on this scope — checked and
           // written in one DO unit. Restore is the lever; a grant is not.
@@ -8050,27 +8044,23 @@ export class CloudflareScopeHost implements ScopeHost {
           if (!written) {
             throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
           }
-        } else {
-          // #1743: refused while the record holds the module off on any scope — checked and
-          // written in one control-plane call, where the record and the tenant tuple both live.
-          const off = await this.cp.writeTenantSystemGrant(
-            grant.node.tenantId,
-            grant.moduleId,
-            `granted:${grant.permission}`,
-            grant.expiresAt ?? null,
-          );
-          if (off.length > 0) {
-            throw substratError('conflict', tenantSystemSwitchedOffMessage(grant.moduleId, off));
-          }
+          await this.recordAdmin(actor, 'grantToSystem', target, null, after);
+          return;
         }
-        await this.recordAdmin(
-          actor,
-          'grantToSystem',
-          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId },
-          null,
-          { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
+        // #1743: refused while the record holds the module off on any scope — checked and
+        // written in one control-plane call, where the record and the tenant tuple both live,
+        // and (#2526) the admin row with them.
+        const off = await this.directory('writeTenantSystemGrant',
+          grant.node.tenantId,
+          grant.moduleId,
+          `granted:${grant.permission}`,
+          grant.expiresAt ?? null,
+          this.adminEntry(actor, 'grantToSystem', target, null, after),
         );
-        if (!grant.node.scopeId) await this.fanOut(grant.node.tenantId);
+        if (off.length > 0) {
+          throw substratError('conflict', tenantSystemSwitchedOffMessage(grant.moduleId, off));
+        }
+        await this.fanOut(grant.node.tenantId);
       },
 
       // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
@@ -8180,15 +8170,17 @@ export class CloudflareScopeHost implements ScopeHost {
         // applied, resolves for nobody, and still shows up in the permission diff.
         await requireOrg(node.tenantId, orgId);
         await this.refuseReservedGrant([permission], node.scopeId); // #2430: an org's members are people
+        const target = { tenantId: node.tenantId, scopeId: node.scopeId };
+        const after = { orgId, permission, node, entity };
+        if (!node.scopeId && !entity) {
+          // #2526: the org checked again, the tuple and its row, in one ControlPlaneDO unit.
+          await this.directory('writeOrgTenantTuple', node.tenantId, orgId, `org:${orgId}`, `granted:${permission}`,
+            `tenant:${node.tenantId}`, null, this.adminEntry(actor, 'grantToOrg', target, null, after));
+          await this.fanOut(node.tenantId);
+          return;
+        }
         await writeGrant(`org:${orgId}`, permission, node, entity);
-        await this.recordAdmin(
-          actor,
-          'grantToOrg',
-          { tenantId: node.tenantId, scopeId: node.scopeId },
-          null,
-          { orgId, permission, node, entity },
-        );
-        if (!node.scopeId) await this.fanOut(node.tenantId);
+        await this.recordAdmin(actor, 'grantToOrg', target, null, after);
       },
       // -- vertical + version registry (#31) ---------------------------------
 
@@ -8972,15 +8964,15 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);
-        const created = await this.directory('createOrg',
+        // #2526: the org and its row in one unit; an org that exists already writes neither.
+        await this.directory('insertOrg',
           parsed.id,
           parsed.tenantId,
           parsed.slug,
           parsed.name,
           new Date().toISOString(),
+          this.adminEntry(actor, 'createOrg', { tenantId: parsed.tenantId }, null, parsed),
         );
-        if (!created) return; // idempotent, and a no-op is not audited
-        await this.recordAdmin(actor, 'createOrg', { tenantId: parsed.tenantId }, null, parsed);
       },
       listOrgs: async (actor, tenantId: TenantId) => {
         const orgs = (await this.cp.listOrgs(tenantId)).map(mapOrg);
@@ -8993,16 +8985,10 @@ export class CloudflareScopeHost implements ScopeHost {
         return r ? mapOrg(r) : undefined;
       },
       addMember: async (actor, tenantId, principal, orgId, opts) => {
-        await requireOrg(tenantId, orgId);
         const expiresAt = opts?.expiresAt ?? null;
-        await this.cp.writeTenantTuple(
-          tenantId,
-          `principal:${principal}`,
-          'member',
-          `org:${orgId}`,
-          expiresAt,
-        );
-        await this.recordAdmin(actor, 'addMember', { tenantId }, null, memberAddedAudit(principal, orgId, expiresAt));
+        // #2526: the org's check, the tuple and its row, in one ControlPlaneDO unit.
+        await this.directory('writeOrgTenantTuple', tenantId, orgId, `principal:${principal}`, 'member', `org:${orgId}`, expiresAt,
+          this.adminEntry(actor, 'addMember', { tenantId }, null, memberAddedAudit(principal, orgId, expiresAt)));
         await this.fanOut(tenantId); // membership is a tenant-level tuple
       },
       applyMembership: async (actor, change) => {
