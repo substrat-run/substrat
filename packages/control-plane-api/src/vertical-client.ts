@@ -188,11 +188,12 @@ const orphanSweepReportWire = z.object({
 });
 
 /** #2446: a scope's role state as it crosses the wire (`RoleState`), checked. */
+const roleShapeWire = z.object({ key: z.string().min(1), permissions: z.array(z.string()), holder: z.enum(['person', 'system']).optional() });
 const roleStateWire = z.object({
-  roles: z.array(
-    z.object({ key: z.string().min(1), permissions: z.array(z.string()), holder: z.enum(['person', 'system']).optional() }),
-  ),
+  roles: z.array(roleShapeWire),
   seated: z.array(z.string()),
+  /** #2531: the tombstones of the roles a projection dropped. Absent from a deployment that predates them. */
+  dropped: z.array(roleShapeWire).optional(),
 });
 
 /** `routeAnswer`'s word for a deployment that predates the route it was asked (#1722, #2010). */

@@ -278,6 +278,67 @@ describe('reservedRoleSetRefusal against what the scope stores (#2447 round 1)',
   });
 });
 
+describe('reservedRoleSetRefusal against a dropped role’s tombstone (#2531)', () => {
+  const host = { reserved: new Set(['a:run']), declared: new Set(['a:run', 'a:use']) };
+  const none = { reserved: new Set<string>(), declared: new Set<string>() };
+  const runner = { key: 'runner', permissions: ['a:run'], holder: 'system' as const };
+  const seated = new Set(['runner']);
+
+  it('admits a system-held role added back while seated, when its tombstone is system-held', () => {
+    expect(reservedRoleSetRefusal([runner], host, { roles: [], seated, dropped: [runner] })).toBeNull();
+  });
+
+  it('twin: the same re-add with no tombstone kept is refused, as it was before tombstones', () => {
+    expect(reservedRoleSetRefusal([runner], host, { roles: [], seated })).toMatch(/role 'runner' is held by a principal \(with no definition stored\)/);
+    expect(reservedRoleSetRefusal([runner], host, { roles: [], seated, dropped: [] })).toMatch(/with no definition stored/);
+  });
+
+  it('keeps refusing it when the tombstone is a person’s role, or a row with no holder', () => {
+    for (const tomb of [{ ...runner, holder: 'person' as const }, { key: 'runner', permissions: ['a:run'] }]) {
+      expect(reservedRoleSetRefusal([runner], host, { roles: [], seated, dropped: [tomb] })).toMatch(/with no definition stored/);
+    }
+  });
+
+  it('counts a system-held tombstone’s keys as reserved for a person’s role re-added under its key, even on a module-less host', () => {
+    // Named as what it is: a tombstone appears in no role listing, so "stored" would send a reader looking for a row.
+    expect(reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:run'] }], none, { roles: [], seated: new Set(), dropped: [runner] })).toBe(
+      "role 'runner' is a person's role and would hold a:run (held by its definition as a system-held role, since dropped), " +
+        "reserved to a system principal: take the key out, or declare a role made only of reserved keys holder: 'system' (K-55)",
+    );
+    // Twin: the same keys held by a live stored row are named as the stored definition, as before.
+    expect(reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:run'] }], none, { roles: [runner], seated: new Set() })).toMatch(
+      /would hold a:run \(held by its stored system-held definition\)/,
+    );
+    // Twin: the person's role without that key is defined; and a person tombstone is no such evidence.
+    expect(reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:use'] }], none, { roles: [], seated: new Set(), dropped: [runner] })).toBeNull();
+    expect(
+      reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:run'] }], none, { roles: [], seated: new Set(), dropped: [{ ...runner, holder: 'person' }] }),
+    ).toBeNull();
+  });
+
+  it('a live row decides over a tombstone of the same key', () => {
+    const personLive = { key: 'runner', permissions: ['a:use'], holder: 'person' as const };
+    expect(reservedRoleSetRefusal([runner], host, { roles: [personLive], seated, dropped: [runner] })).toMatch(/stored as a person's role/);
+  });
+
+  it('a tombstone of one key is no evidence for another', () => {
+    expect(reservedRoleSetRefusal([runner], host, { roles: [], seated, dropped: [{ ...runner, key: 'other' }] })).toMatch(/with no definition stored/);
+  });
+
+  it('a promote reads the tombstones the wire carries, as the reconcile does', () => {
+    const registry = {
+      permissions: [
+        { key: 'a:use', description: 'use' },
+        { key: 'a:run', description: 'run', holder: 'system' as const },
+      ],
+      roles: [runner],
+    };
+    expect(releaseRoleSetRefusal(registry, { roles: [], seated: ['runner'], dropped: [runner] })).toBeNull();
+    // An older deployment answers no `dropped`: the promote stays as strict as before.
+    expect(releaseRoleSetRefusal(registry, { roles: [], seated: ['runner'] })).toMatch(/with no definition stored/);
+  });
+});
+
 describe('dumpRoleState (#2447 round 2)', () => {
   const now = '2026-10-24T00:00:00.000Z';
   const tables = [
@@ -317,10 +378,12 @@ describe('dumpRoleState (#2447 round 2)', () => {
     expect(state.roles).toEqual([{ key: 'staffer', permissions: ['a:use'], holder: 'person' }]);
     // Scope-level seats only: a dump's projected tenant tuples do not survive the repair (round 3).
     expect([...state.seated].sort()).toEqual(['ghost', 'staffer']);
+    // #2531: the tenant's tombstones travel as `dropped`, never as live roles; another tenant's do not.
+    expect(state.dropped).toEqual([{ key: 'gone', permissions: ['a:use'] }]);
   });
 
   it('reads a dump with none of those tables as storing nothing', () => {
-    expect(dumpRoleState([], 't1', now)).toEqual({ roles: [], seated: new Set() });
+    expect(dumpRoleState([], 't1', now)).toEqual({ roles: [], seated: new Set(), dropped: [] });
   });
 });
 
@@ -380,6 +443,31 @@ describe('dumpRoleRefusal (#2555)', () => {
     expect(dumpRoleRefusal([wide], declared, { tenantId: 't1', tables: [seats('role:other')] }, now)).toBeNull();
     expect(dumpRoleRefusal([wide], declared, { tenantId: 't1', tables: [roleRow('wide', 'person'), seats('role:other')] }, now)).toBe(changed('wide'));
   });
+
+  // #2531: a dump carries the scope's tombstones, and the judgement reads them as the scope's own rule does.
+  const tombstone = (key: string, holder: 'person' | 'system' | null) => ({
+    name: '_substrat_roles',
+    columns: ['tenant_id', 'role_key', 'permissions', 'source', 'holder', 'revoked_at'],
+    rows: [['t1', key, '["a:run"]', 'vertical', holder, '2026-10-01T00:00:00.000Z']],
+  });
+
+  it('admits a seat in a role the dump keeps as a system-held tombstone, as it does a live system-held row (#2531)', () => {
+    expect(dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [tombstone('member', 'system'), seats('role:member')] }, now)).toBeNull();
+  });
+
+  it('twin: a person-held or holder-less tombstone is no such evidence, and the dump is answered as defining the role (#2531)', () => {
+    for (const holder of ['person', null] as const) {
+      expect(dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [tombstone('member', holder), seats('role:member')] }, now)).toBe(changed('member'));
+    }
+  });
+
+  it('counts a system-held tombstone’s keys as reserved for a person’s role the tenant now defines under its key (#2531)', () => {
+    const personRole = { key: 'member', permissions: ['a:run'], holder: 'person' as const };
+    // The dump only keeps the tombstone, and seats nobody: the role is judged because the dump defines it.
+    expect(dumpRoleRefusal([personRole], host, { tenantId: 't1', tables: [tombstone('member', 'system'), seats('role:other')] }, now)).toBe(changed('member'));
+    // Twin: a person-held tombstone reserves nothing.
+    expect(dumpRoleRefusal([personRole], host, { tenantId: 't1', tables: [tombstone('member', 'person'), seats('role:other')] }, now)).toBeNull();
+  });
 });
 
 
@@ -432,6 +520,8 @@ describe('a release’s role set against a scope it moves (#2446)', () => {
       { roles: [{ key: 'member', permissions: ['a:run'], holder: 'system' as const }], seated: ['member'] },
       { roles: [{ key: 'other', permissions: ['a:use'], holder: 'system' as const }], seated: [] },
       { roles: [{ key: 'member', permissions: ['a:use'] }], seated: ['member'] },
+      // #2531: a tombstone changes nothing for such a release either.
+      { roles: [], seated: ['member'], dropped: [{ key: 'member', permissions: ['a:run'], holder: 'system' as const }] },
     ];
     for (const s of states) expect(releaseRoleSetRefusal(quiet, s)).toBeNull();
     // Its positive twin: an undeclared key is judged against a stored system-held row.
