@@ -7566,7 +7566,9 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
         expect(scripts.get(stable)?.has(other.id) ?? false).toBe(false);
       }
     }
-    // The public/listed promotion path still leaves installs opted into their version.
+    // The public/listed promotion path still leaves installs opted into their version. Both
+    // versions vouched for by staff: a listed vertical's prod takes no auto-admitted one (#2565).
+    await host.admin.admitVersion(staff, v1);
     await host.admin.admitVersion(staff, v2);
     await host.admin.setVerticalListed(staff, slug, true);
     expect((await promote(slug, v1)).status).toBe(200);
