@@ -30,7 +30,7 @@
 import { WIRE_AUDIENCE_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_ROUTER_KEYS_VAR, WIRE_STATE_VAR } from '@substrat-run/contracts/wire-signing';
 
 /** The four settings the walk owns, and no other. */
-export const WIRE_SETTING_NAMES: readonly string[] = Object.freeze([WIRE_ROUTER_KEYS_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_AUDIENCE_VAR, WIRE_STATE_VAR]);
+const WIRE_SETTING_NAMES: readonly string[] = Object.freeze([WIRE_ROUTER_KEYS_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_AUDIENCE_VAR, WIRE_STATE_VAR]);
 const OWNED = new Set(WIRE_SETTING_NAMES);
 
 /** Binding types whose values the endpoint never returns: carried by `keep_bindings`, never sent. */
