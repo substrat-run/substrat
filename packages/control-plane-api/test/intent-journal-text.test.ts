@@ -163,6 +163,44 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     const payload = { vertical: 'acme/crm', operation: 'customer/list' };
     const sentence = "the call to 'acme/crm' (operation 'customer/list') did not complete at its deployment";
 
+    it("the caller's operation in the sentence makes no marker: staff's row answers to the upstream's handle alone", async () => {
+      const raw = foreign();
+      const id = platformRequestId.parse(ulid());
+      // The operation is the caller's free text; both marker grammars are planted in it.
+      const [a, b] = [`a${ulid().toLowerCase()}`, `b${ulid().toLowerCase()}`];
+      const operation = `x reference = ${a} [upstream reference = ${b}]`;
+      const neutral = `x reference = ${a} (upstream reference = ${b}]`;
+      const planted = { vertical: 'acme/crm', operation };
+      const said = `the call to 'acme/crm' (operation '${operation}') did not complete at its deployment`;
+      const first = await drain(mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, planted, 0, id), throwing(raw.text));
+      const reference = referenceOf(first.lastError)!;
+      expect(first.lastError).toBe(`${said} (reference ${reference})`);
+      const rows = await host.admin.listOpsFailures(staff, { reference });
+      expect(rows.map((r) => [r.tenantId, r.stage])).toEqual([[null, 'transient']]);
+      expect(rows[0]!.message).toBe(
+        `[upstream reference = ${raw.upstream}] platform intent ${id} pending (the call to 'acme/crm' (operation '${neutral}') did not complete at its deployment): ${raw.text}`,
+      );
+      const search = async (handle: string) =>
+        (await host.admin.listOpsFailures(staff, { reference: handle, referenceInText: true })).map((r) => r.id);
+      expect(await search(raw.upstream)).toEqual([rows[0]!.id]);
+      expect(await search(a)).toEqual([]);
+      expect(await search(b)).toEqual([]);
+
+      // The next pass compares the opening as the row stored it, so it reuses the reference.
+      const again = await drain(
+        mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, planted, 1, id, first.lastError), throwing(foreign().text),
+      );
+      expect(again.lastError).toBe(`${said} (reference ${reference})`);
+
+      // Upstream text with no handle of its own: no marker at all, whatever the operation spells.
+      const bare = platformRequestId.parse(ulid());
+      const quiet = await drain(mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, planted, 0, bare), throwing('upstream timed out'));
+      const [row] = await host.admin.listOpsFailures(staff, { reference: referenceOf(quiet.lastError)! });
+      expect(row!.message).toBe(
+        `platform intent ${bare} pending (the call to 'acme/crm' (operation '${neutral}') did not complete at its deployment): upstream timed out`,
+      );
+    });
+
     it('journals the sentence and a reference; one staff row per intent and sentence, the tenant none', async () => {
       const raw = foreign();
       const id = platformRequestId.parse(ulid());

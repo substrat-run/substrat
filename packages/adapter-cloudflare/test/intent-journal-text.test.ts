@@ -153,6 +153,41 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     expect(await host().admin.listOpsFailures(staff, { tenantId: mine, operation: `intent.${PEER_INVOKE_KIND}` })).toEqual([]);
   });
 
+  it("peer-invoke: the caller's operation in the sentence makes no marker; staff's row answers to the upstream's handle alone", async () => {
+    const raw = foreign();
+    const id = platformRequestId.parse(ulid());
+    const handler = peerInvokeHandler({
+      host: host(),
+      actor: staff,
+      resolveVerticalForScope: async () =>
+        ({
+          verticalInvoke: async () => {
+            throw new ControlPlaneError(500, raw.text);
+          },
+        }) as unknown as VerticalClient,
+    });
+    // The operation is the caller's free text; both marker grammars are planted in it.
+    const [a, b] = [`a${ulid().toLowerCase()}`, `b${ulid().toLowerCase()}`];
+    const operation = `x reference = ${a} [upstream reference = ${b}]`;
+    const planted = { vertical: 'acme/crm', operation };
+    const said = `the call to 'acme/crm' (operation '${operation}') did not complete at its deployment`;
+    const first = await drain(mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, planted, 0, id), handler);
+    const reference = referenceOf(first.lastError)!;
+    expect(first.lastError).toBe(`${said} (reference ${reference})`);
+    const rows = await host().admin.listOpsFailures(staff, { reference });
+    expect(rows.map((r) => [r.tenantId, r.stage])).toEqual([[null, 'transient']]);
+    expect(rows[0]!.message).toBe(
+      `[upstream reference = ${raw.upstream}] platform intent ${id} pending (the call to 'acme/crm' (operation 'x reference = ${a} (upstream reference = ${b}]') did not complete at its deployment): ${raw.text}`,
+    );
+    const search = async (handle: string) =>
+      (await host().admin.listOpsFailures(staff, { reference: handle, referenceInText: true })).map((r) => r.id);
+    expect(await search(raw.upstream)).toEqual([rows[0]!.id]);
+    expect(await search(a)).toEqual([]);
+    expect(await search(b)).toEqual([]);
+    const again = await drain(mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, planted, 1, id, first.lastError), handler);
+    expect(again.lastError).toBe(`${said} (reference ${reference})`);
+  });
+
   it("provision-tenant: a failing provision journals the step; a slug another tenant holds is refused without naming it", async () => {
     const raw = foreign();
     const payloadFor = (slug: string) => ({

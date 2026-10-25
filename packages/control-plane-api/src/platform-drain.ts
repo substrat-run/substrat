@@ -45,6 +45,7 @@ import {
   type ScopeLifecycle,
   type TenantId,
   sweepRunsPayload,
+  neutralUpstreamMarkers,
   withoutUpstreamReference,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -267,9 +268,14 @@ const WITHHELD_LOOKUP_STAGE = 'transient-lookup';
 /** How a journaled withheld sentence ends: the platform's reference staff's row is filed under. */
 const JOURNALED_REFERENCE = /^(.*) \(reference ([0-9A-HJKMNP-TV-Z]{26})\)$/s;
 
-/** How staff's row for a withheld transient failure opens: the intent, and the sentence its scope was told. */
+/**
+ * How staff's row for a withheld transient failure opens: the intent, and the sentence its scope was
+ * told. A sentence may quote the payload (a peer call's operation, a tenant slug), so the opening is
+ * stored after any upstream marker, which is read from the raw text alone, and neutralised as the
+ * row stores it (`withUpstreamReference`), which is also the form the next pass compares.
+ */
 const withheldTransientOpening = (id: string, withheld: string): string =>
-  platformIntentFailureMessage(id, `pending (${withheld}): `);
+  neutralUpstreamMarkers(platformIntentFailureMessage(id, `pending (${withheld}): `));
 
 /**
  * The reference a withheld failure on a pass that left the intent pending is journaled under
@@ -331,8 +337,9 @@ async function withheldTransientReference(
   opts?.recordFailure?.(
     withheldStaffFailure(
       { ...entry, stage: WITHHELD_TRANSIENT_STAGE },
-      `${opening}${outcome.error ?? 'unknown'}`,
+      outcome.error ?? 'unknown',
       reference,
+      opening,
     ),
   );
   return reference;

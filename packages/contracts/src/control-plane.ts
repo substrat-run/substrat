@@ -1117,15 +1117,23 @@ export function upstreamHandleIn(text: string): string | null {
   return /(?<!upstream\s+)\breference\s*=\s*([a-z0-9]{1,64})(?![a-z0-9])/i.exec(text)?.[1] ?? null;
 }
 
+/** `text` with anything spelling the marker's opening neutralised, so no text can pose as a marker. */
+export function neutralUpstreamMarkers(text: string): string {
+  return text.replace(/\[(\s*upstream\s+reference\s*=)/gi, '($1');
+}
+
 /**
  * A failure's text as a staff row keeps it: anything spelling the marker's opening neutralised
  * first, then, when the text carries an upstream handle (`upstreamHandleIn`), the marker for it
- * first, so only a genuine handle makes one and a bounded row keeps it.
+ * first, so only a genuine handle makes one and a bounded row keeps it. #2556: `opening`, the
+ * platform's own words about the failure, goes after the marker and before the text, neutralised
+ * the same way; the handle is read from `raw` alone, since an opening may quote a caller's input.
  */
-export function withUpstreamReference(raw: string): string {
-  const neutral = raw.replace(/\[(\s*upstream\s+reference\s*=)/gi, '($1');
+export function withUpstreamReference(raw: string, opening = ''): string {
+  const neutral = neutralUpstreamMarkers(raw);
   const handle = upstreamHandleIn(neutral);
-  return handle ? `${upstreamReferenceMarker(handle)} ${neutral}` : neutral;
+  const text = `${neutralUpstreamMarkers(opening)}${neutral}`;
+  return handle ? `${upstreamReferenceMarker(handle)} ${text}` : text;
 }
 
 /**

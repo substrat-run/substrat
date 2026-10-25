@@ -3761,8 +3761,9 @@ export function scopeHostContractSuite(
                 actor: staff,
                 ...withheldStaffFailure(
                   { operation, stage: 'transient', scopeId: s1 },
-                  platformIntentFailureMessage(id, `pending: ${error}; reference = up${ulid().toLowerCase()}`),
+                  `${error}; reference = up${ulid().toLowerCase()}`,
                   ulid(),
+                  platformIntentFailureMessage(id, 'pending (the call did not complete at its deployment): '),
                 ),
               });
             const ops = { linked: op('transient-linked'), unlinked: op('transient-unlinked') };
@@ -3771,7 +3772,7 @@ export function scopeHostContractSuite(
             const rowsOf = async (operation: string) =>
               (await host.admin.listOpsFailures(staff, { operation })).map((r) => [r.tenantId, r.message]);
             const before = await rowsOf(ops.unlinked);
-            expect((await rowsOf(ops.linked))[0]![1]).toMatch(/^\[upstream reference = up[0-9a-z]+\] platform intent .* pending: /);
+            expect((await rowsOf(ops.linked))[0]![1]).toMatch(/^\[upstream reference = up[0-9a-z]+\] platform intent .* pending \(the call did not complete at its deployment\): HTTP 500: /);
 
             await host.admin.shredSubject(staff, t1, s1, erased);
 
