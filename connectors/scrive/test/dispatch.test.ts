@@ -880,7 +880,8 @@ describe('scrive connector — outbound dispatch', () => {
         const [copy] = storedCopies(dir, LARGE);
         expect(copy).toBeDefined();
         const tampered = new Uint8Array(LARGE);
-        tampered[tampered.length - 10] ^= 0xff;
+        const at = tampered.length - 10;
+        tampered[at] = tampered[at]! ^ 0xff;
         writeFileSync(copy!, tampered);
 
         await send();
