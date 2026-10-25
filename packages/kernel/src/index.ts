@@ -763,6 +763,7 @@ export {
   writeDeploymentWireAuth,
   type DeploymentWireAuthFilter,
   type DeploymentWireAuthReach,
+  type WireWalkAudit,
   type DeploymentWireAuthInput,
 } from './deployment-wire-auth.js';
 export {
@@ -931,6 +932,7 @@ export {
   UNREADABLE_SCOPE_ROWS_NAMED,
   startPlatformSweeper,
   StorageReadUnsupported,
+  ScopeNotHeld,
   PROVISION_RECONCILE_BATCH,
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
   ORPHAN_ATTACHMENT_SWEEP_BATCH,

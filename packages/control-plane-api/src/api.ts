@@ -155,6 +155,7 @@ import type {
   ScopeDump,
   ScopeId,
   ScopeLineage,
+  ScopeTable,
   ServiceDimensions,
   SwitchedOffInUnit,
   TenantExport,
@@ -306,6 +307,15 @@ import type {
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
 import { wireUploadFor, type WireUpload, type WireUploadSettings } from './wire-upload.js';
+import type { WireSettingsApi } from './wire-settings.js';
+import {
+  parseWireWalkCursor,
+  runWireWalk,
+  WIRE_WALK_LIMIT_DEFAULT,
+  WIRE_WALK_LIMIT_MAX,
+  WIRE_WALK_RELEASE_MAX,
+  type WireWalkPass,
+} from './wire-walk.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
 import { queryLakeEvents, type LakeQueryEngine } from './lake-gateway.js';
 import { LakeQueryError } from './r2-sql-engine.js';
@@ -468,6 +478,13 @@ export interface ControlPlaneApiOptions {
    * unset, no upload gives anything, and each still records that it gave nothing.
    */
   wireUpload?: WireUploadSettings;
+  /**
+   * RFC wire-signing follow-on 4: the namespace's script-settings endpoint, through which the fleet
+   * walk (`POST /wire-auth/walk`) brings a deployed script's four `SUBSTRAT_WIRE_*` settings to what
+   * `wireUpload` gives now, without uploading it again (`createWfpWireSettingsApi`). Absent, the walk
+   * answers 501.
+   */
+  wireSettings?: WireSettingsApi;
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
    *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
   copyLeaseMs?: number;
@@ -4961,6 +4978,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     // Health reads the scope the same way the Data view does, so it leaves the same
     // row: an auditor should not be able to tell which route reached the tables.
+    // #2544: a deployment that does not hold the scope refuses the table read. Health is the one
+    // reader that wants the answer "nothing stored" for it: the scope has no role rows, which is
+    // what `roleProjectionEmpty` reports for an active one, rather than a refusal of the whole route.
+    let notHeld = false;
     const tables = await delegatedRead(
       c, tenantId, scopeId, scope, 'listScopeTables', null,
       {
@@ -4968,9 +4989,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         colocated: () => c.var.admin.listScopeTables(c.get('actor'), tenantId, scopeId),
       },
       (r) => r.length,
-    );
+    ).catch((err: unknown): ScopeTable[] => {
+      if (!isScopeNotHeld(err, scopeId)) throw err;
+      notHeld = true;
+      return [];
+    });
     const roles = tables.find((t) => t.name === '_substrat_roles');
-    const roleCount = roles ? roles.rowCount : null;
+    const roleCount = notHeld ? 0 : roles ? roles.rowCount : null;
     const roleProjectionEmpty = scope.status === 'active' && roleCount === 0;
     const missingStores = scope.vertical
       ? await missingStoresForTenant({
@@ -12039,19 +12064,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * `text/plain` beacon cannot set it without a CORS preflight, 415) and refuse a request a
    * browser marks as from another origin (403). A request with neither header is the CLI's.
    */
-  const byAPerson = async (c: Context<{ Variables: Vars }>): Promise<PlatformActorId> => {
+  const byAPerson = async (
+    c: Context<{ Variables: Vars }>,
+    words: { readonly write: string; readonly person: string } = { write: 'a store driver release write', person: 'a store driver release is published by a person' },
+  ): Promise<PlatformActorId> => {
     if (!/^application\/json\s*(;|$)/i.test(c.req.header('content-type') ?? '')) {
-      throw new ControlPlaneError(415, 'a store driver release write takes application/json');
+      throw new ControlPlaneError(415, `${words.write} takes application/json`);
     }
     const origin = c.req.header('origin');
     const site = c.req.header('sec-fetch-site');
     if ((origin && origin !== new URL(c.req.url).origin) || (site && site !== 'same-origin' && site !== 'none')) {
-      throw new ControlPlaneError(403, 'a store driver release write is not taken from another origin');
+      throw new ControlPlaneError(403, `${words.write} is not taken from another origin`);
     }
     const actor = c.get('actor');
     const person = options.humanStaffActor ? await options.humanStaffActor(c.req.raw) : null;
     if (!person || person !== actor) {
-      throw new ControlPlaneError(403, 'a store driver release is published by a person: this takes a staff sign-in, not a service token');
+      throw new ControlPlaneError(403, `${words.person}: this takes a staff sign-in, not a service token`);
     }
     return actor;
   };
@@ -12217,8 +12245,78 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ pass: ran, rebuild }, again ? 202 : 200);
   });
 
+  // RFC wire-signing follow-on 4: one pass of the fleet walk, which brings every script's key lists,
+  // audience and state to what this control plane gives now (`runWireWalk`). A person's act; a dry run
+  // unless the body says `apply: true`; at most `limit` scripts, from `cursor`, answering where the next
+  // pass starts. `release` names held scripts a person has looked at. Audited as `walkWireAuth`
+  // however the pass ends. Not to be run while a push or promote of a walked vertical is in flight.
+  app.post('/wire-auth/walk', async (c) => {
+    const actor = await byAPerson(c, { write: 'a wire walk', person: 'the wire walk is run by a person' });
+    const api = options.wireSettings;
+    if (!api || !c.var.admin.listWireAuth || !c.var.admin.recordWireAuth || !c.var.admin.recordWireWalk) {
+      throw new ControlPlaneError(501, 'this control plane does not walk the fleet’s wire settings');
+    }
+    const body = z
+      .object({
+        apply: z.boolean().optional(),
+        confirm: z.boolean().optional(),
+        cursor: z.string().min(1).max(512).optional(),
+        limit: z.number().int().min(1).max(WIRE_WALK_LIMIT_MAX).optional(),
+        release: z.array(z.string().min(1).max(255)).max(WIRE_WALK_RELEASE_MAX).optional(),
+      })
+      .strict()
+      .parse(await readCappedJson(c.req.raw, WIRE_WALK_REQUEST_MAX_BYTES));
+    const cursor = body.cursor === undefined ? null : parseWireWalkCursor(body.cursor);
+    if (body.cursor !== undefined && cursor === null) throw new ControlPlaneError(422, 'the cursor is not one a pass answered');
+    const apply = body.apply === true;
+    const confirm = body.confirm === true;
+    // The pass puts each script's result here as it goes, so a pass that ends in an error is still
+    // audited with what it did.
+    const walked: WireWalkPass['scripts'][number][] = [];
+    let pass: WireWalkPass | null = null;
+    let failedWith: string | undefined;
+    try {
+      pass = await runWireWalk(
+        {
+          admin: c.var.admin,
+          actor,
+          settings: options.wireUpload,
+          api,
+          ...(options.fetchVerticalModules ? { fetchModules: options.fetchVerticalModules } : {}),
+          fail: ({ vertical, version, stage, message }) =>
+            recordFailure({ actor, operation: 'wire-walk', stage, vertical, ...(version ? { version } : {}), message }),
+        },
+        { apply, confirm, cursor, limit: body.limit ?? WIRE_WALK_LIMIT_DEFAULT, release: body.release ?? [], sink: walked },
+      );
+    } catch (error) {
+      failedWith = 'the pass stopped on a directory read it could not make; the scripts it walked before are listed';
+      throw error;
+    } finally {
+      // Written however the pass ended: a person reached the fleet, or tried to.
+      const named = (pick: (s: WireWalkPass['scripts'][number]) => boolean) => walked.filter(pick).map((s) => s.deploymentRef);
+      const why = (action: string) => walked.filter((s) => s.action === action).map((s) => ({ deploymentRef: s.deploymentRef, reason: s.reason ?? action }));
+      await c.var.admin.recordWireWalk(actor, {
+        apply,
+        confirm,
+        from: body.cursor ?? null,
+        next: pass?.next ?? null,
+        walked: walked.length,
+        updated: named((s) => s.action === 'updated'),
+        held: named((s) => s.held === true),
+        released: named((s) => s.released === true),
+        skipped: why('skipped'),
+        failed: why('failed'),
+        ...(failedWith ? { error: failedWith } : {}),
+      });
+    }
+    return c.json(pass);
+  });
+
   return app;
 }
+
+/** The most a wire walk's request body may be: a cursor and up to `WIRE_WALK_RELEASE_MAX` script names. */
+const WIRE_WALK_REQUEST_MAX_BYTES = 64 * 1024;
 
 /**
  * The most a release upload's body may be: the decoded cap, as base64 (4 bytes per 3), plus room

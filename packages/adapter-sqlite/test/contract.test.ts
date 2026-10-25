@@ -37,6 +37,8 @@ import {
   roleStateContractSuite,
   restoreRoleContractSuite,
   sizeReadsContractSuite,
+  introspectionReadsContractSuite,
+  introspectionReadsOf,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -334,6 +336,21 @@ sizeReadsContractSuite('adapter-sqlite', async () => {
     host,
     databaseSizeLocal: (s) => host.databaseSizeLocal(s),
     attachmentSizeLocal: (s) => host.attachmentSizeLocal(s),
+    storeHoldsNothing: async (t, s) => !existsSync(join(dir, `${t}__${s}.sqlite`)),
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2544: the introspection reads hold the scope before they open its store, and a refusal creates no file.
+introspectionReadsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-introspection-reads-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    ...introspectionReadsOf(host),
     storeHoldsNothing: async (t, s) => !existsSync(join(dir, `${t}__${s}.sqlite`)),
     cleanup: async () => {
       await host.close();
