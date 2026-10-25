@@ -109,11 +109,12 @@ export interface HostReservations {
  *   does not erase it.
  * - **A system-held definition of a key anyone but a system principal holds a seat in** is refused
  *   unless a system-held definition is stored for it. What kind of principal holds a seat is not
- *   recorded, so a seat made before any definition, under a person's definition, or under one a
- *   projection since dropped may be a person's, and relabelling the role would make it a system
- *   principal's. A K-55 host principal's seat in a system-held role a release dropped and a later
- *   one adds back cannot be told apart from that, so it is refused too. Taking the seats back first, or defining a new key, is the
- *   way. The seats decide for a role stored before the holder was recorded (#2480: no holder) too:
+ *   recorded, so a seat made before any definition, under a person's definition, or under a
+ *   person's definition a projection since dropped may be a person's, and relabelling the role
+ *   would make it a system principal's. Taking the seats back first, or defining a new key, is the
+ *   way. A system-held role a release dropped is the exception: its tombstone (#2531) is passed in
+ *   `tenantRoles` as the stored system-held definition (`reservedRoleSetRefusal`), so adding it back
+ *   is judged as if it had stayed defined. The seats decide for a role stored before the holder was recorded (#2480: no holder) too:
  *   it may be declared `holder: 'system'` only while nobody but a system principal holds a seat in
  *   it, since an upgrade admitted beside such a seat would let a later system-held definition add
  *   keys to it.
@@ -142,7 +143,9 @@ export function reservedRoleDefinitionRefusal(
   for (const r of others) if (r.holder === 'system') for (const p of r.permissions) if (!bySystemRole.has(p)) bySystemRole.set(p, `the system-held role '${r.key}'`);
   if (role.holder === 'system') {
     // Judged against the seats of the key, whether or not a definition is stored: a projection can
-    // drop a role's row and leave its seats live, and a later definition must not relabel them.
+    // drop a role's row and leave its seats live, and a later definition must not relabel a seat
+    // made under a person's definition. A dropped SYSTEM-held row is no relabelling: its tombstone
+    // arrives here as `stored` (#2531, `storedDefinitionOf`), so its re-add passes this check.
     // A row stored before the holder was recorded (#2480) is no exception: an upgrade admitted beside
     // a person's seat would leave a system-held row a later definition widens unjudged by its seats.
     if (stored?.holder !== 'system' && seated) {

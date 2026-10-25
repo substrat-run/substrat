@@ -6911,12 +6911,16 @@ export function defineScopeDO(
           .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB '_cf_*' ORDER BY name`)
           .toArray() as unknown as { name: string }[]
       ).map((r) => r.name);
+      const count = (sql: string) => Number((this.sql.exec(sql).toArray()[0] as { c: number }).c);
       return names.map((name) => ({
         name,
-        rowCount: Number(
-          (this.sql.exec(`SELECT COUNT(*) AS c FROM "${name}"`).toArray()[0] as { c: number }).c,
-        ),
+        rowCount: count(`SELECT COUNT(*) AS c FROM "${name}"`),
         system: isSystemTable(name),
+        // #2531: a table that tombstones rows (a dropped role is kept, revoked) answers what is in
+        // force too, so a reader asking "is anything defined" (scope health) does not count tombstones.
+        ...(doBuiltColumnsOf(this.sql, name)?.includes('revoked_at')
+          ? { liveRowCount: count(`SELECT COUNT(*) AS c FROM "${name}" WHERE revoked_at IS NULL`) }
+          : {}),
       }));
     }
 

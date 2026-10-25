@@ -983,6 +983,22 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       expect((await local.roleStateLocal(tenant, scope)).roles.find((r) => r.key === 'runner')?.holder).toBe('person');
     });
 
+    it('the table listing counts the roles in force apart from the tombstones, so health still sees an empty projection (#2531)', async () => {
+      const scope = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const owner = principalId.parse(ulid());
+      const staffer = { key: 'staffer', permissions: [MIXED[0]!], source: 'vertical' as const };
+      await local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles: [member, staffer], ownerRoleKey: 'member' });
+      await local.provisionScopeLocal({ tenantId: tenant, scopeId: scope, owner, roles: [member], ownerRoleKey: 'member' });
+      const rolesTable = async () => (await local.introspectScopeTables(scope)).find((t) => t.name === '_substrat_roles');
+      expect(await rolesTable()).toMatchObject({ rowCount: 2, liveRowCount: 1 });
+      // Every role tombstoned: rows kept, nothing in force, which is what scope health flags (#321).
+      await tombstoneProjectedRole(env.SCOPE.get(env.SCOPE.idFromName(scope)), tenant, 'member', new Date().toISOString());
+      expect(await rolesTable()).toMatchObject({ rowCount: 2, liveRowCount: 0 });
+      // A table that does not tombstone answers no live count.
+      expect((await local.introspectScopeTables(scope)).find((t) => t.name === '_substrat_outbox')).not.toHaveProperty('liveRowCount');
+    });
+
     it('a tombstone grants nothing: a seat in a dropped role authorizes as it did when the row was deleted, and again once it is added back (#2531)', async () => {
       const scope = scopeId.parse(ulid());
       const tenant = tenantId.parse(ulid());

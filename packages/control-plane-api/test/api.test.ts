@@ -1600,6 +1600,27 @@ describe('control-plane API', () => {
     });
     const healthy = await (await healthyApp.request(`/tenants/${t1}/scopes/${sH}/health`, { headers: auth })).json();
     expect(healthy).toMatchObject({ roleCount: 4, roleProjectionEmpty: false });
+
+    // #2531: a dropped role is kept as a tombstone, so the table can hold rows while nothing is
+    // defined. The count is what is in force (`liveRowCount`), and the flag still fires.
+    const withTombstones = (liveRowCount: number, rowCount: number) =>
+      createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: {
+          'health-vert': {
+            listScopeTables: async () => [
+              { name: '_substrat_roles', rowCount, liveRowCount, system: true },
+              { name: 'customers', rowCount: 3, system: false },
+            ],
+          } as unknown as VerticalClient,
+        },
+      });
+    const onlyTombstones = await (await withTombstones(0, 3).request(`/tenants/${t1}/scopes/${sH}/health`, { headers: auth })).json();
+    expect(onlyTombstones).toMatchObject({ roleCount: 0, roleProjectionEmpty: true });
+    // Twin: live roles beside tombstones count only the live ones, and the scope is healthy.
+    const someLive = await (await withTombstones(2, 5).request(`/tenants/${t1}/scopes/${sH}/health`, { headers: auth })).json();
+    expect(someLive).toMatchObject({ roleCount: 2, roleProjectionEmpty: false });
   });
 
   it("serves a scope's intent journal with the provider's FULL error (#618)", async () => {

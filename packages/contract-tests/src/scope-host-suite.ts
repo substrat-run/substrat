@@ -2868,6 +2868,22 @@ export function scopeHostContractSuite(
         expect(byName.get('_substrat_outbox')?.system).toBe(true);
       });
 
+      it('counts what is in force apart from what a table keeps as tombstones (#2531)', async () => {
+        const key = `introspect-${ulid().toLowerCase()}`;
+        await host.admin.defineRole(staff, t1, { key, permissions: [permissionKey.parse('thing:read')], source: 'vertical' });
+        const seat = { principalId: principalId.parse(ulid()), roleKey: key, node: { tenantId: t1, scopeId: s1 } };
+        const tuples = async () => (await host.admin.listScopeTables(staff, t1, s1)).find((t) => t.name === '_substrat_tuples')!;
+        const before = await tuples();
+        expect(before.liveRowCount).toBeDefined();
+        await host.admin.assignRole(staff, seat);
+        expect(await tuples()).toMatchObject({ rowCount: before.rowCount + 1, liveRowCount: before.liveRowCount! + 1 });
+        // A revoke tombstones the seat: the row is kept, and it is no longer in force.
+        await host.admin.unassignRole(staff, seat);
+        expect(await tuples()).toMatchObject({ rowCount: before.rowCount + 1, liveRowCount: before.liveRowCount });
+        // A table that keeps no tombstones answers no live count.
+        expect((await host.admin.listScopeTables(staff, t1, s1)).find((t) => t.name === '_substrat_outbox')).not.toHaveProperty('liveRowCount');
+      });
+
       it('reads a bounded page of a table', async () => {
         const stub = await host.getScope(alice, t1, s1);
         await stub.invoke('test/write-marker', { v: 'page-row' });

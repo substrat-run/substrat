@@ -24,6 +24,13 @@ export const scopeTable = z.object({
   name: z.string().min(1),
   rowCount: z.number().int().nonnegative(),
   system: z.boolean(),
+  /**
+   * For a table that tombstones rows rather than deleting them (it has a `revoked_at` column, as
+   * `_substrat_roles` and the tuple tables do), the rows whose `revoked_at` is null: what is in
+   * force, beside `rowCount`, everything kept. Absent for any other table, and from a host that
+   * predates it (#2531), which kept no role tombstones, so its `rowCount` is the live count there.
+   */
+  liveRowCount: z.number().int().nonnegative().optional(),
 });
 export type ScopeTable = z.infer<typeof scopeTable>;
 

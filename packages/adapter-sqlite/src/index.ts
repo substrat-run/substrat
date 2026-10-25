@@ -11337,10 +11337,15 @@ export class SqliteScopeHost implements ScopeHost {
             .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
             .all() as { name: string }[]
         ).map((r) => r.name);
+        const count = (sql: string) => (db.prepare(sql).get() as { c: number }).c;
+        const tombstones = (name: string) =>
+          (db.prepare(`SELECT name FROM pragma_table_info(?)`).all(name) as { name: string }[]).some((c) => c.name === 'revoked_at');
         const tables: ScopeTable[] = names.map((name) => ({
           name,
-          rowCount: (db.prepare(`SELECT COUNT(*) AS c FROM "${name}"`).get() as { c: number }).c,
+          rowCount: count(`SELECT COUNT(*) AS c FROM "${name}"`),
           system: isSystemTable(name),
+          // #2531: what is in force, for a table that tombstones rows (the Cloudflare adapter's twin).
+          ...(tombstones(name) ? { liveRowCount: count(`SELECT COUNT(*) AS c FROM "${name}" WHERE revoked_at IS NULL`) } : {}),
         }));
         this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
