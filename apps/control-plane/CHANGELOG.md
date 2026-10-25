@@ -1,5 +1,45 @@
 # @substrat-run/control-plane
 
+## 0.17.0
+
+### Minor Changes
+
+- 14ce171: The fleet walk (RFC wire-signing, follow-on 4): a key listed, rotated, dropped or withdrawn now reaches every deployed script, not only the ones an upload happens to reach. A version's own script, the one a preview is routed to, is uploaded once at its push, and until now nothing rewrote its key lists.
+
+  `@substrat-run/control-plane-api` adds `POST /wire-auth/walk`. It brings each script the registry names (each vertical's serving script and every version's own script) to what the control plane's settings give now: both public key lists, the script's own name and `dual`, or none of them. It changes only those four settings, through the runtime's script-settings endpoint (`createWfpWireSettingsApi`, passed as the new `wireSettings` option), without uploading the script again. Every other binding goes back as it was read, and a secret is never read or sent. The walk is run by a person: it takes a staff sign-in, never a service token, and does a dry run unless the body says `apply: true`. Each pass walks at most `limit` scripts and answers the cursor the next one starts from. A script whose record already says it carries what is given is not read, so where the rollout was never set a pass makes no call to the runtime; a confirming pass (`confirm: true`) reads every recorded script instead, and ends every walk before a key is dropped. A script with no record is read back first: one that runs without the platform's entry is skipped (`no-entry`), never given lists or recorded as verifying. One script's failure is recorded as an operational failure (`wire-walk`) when the pass applies, and the pass goes on; a dry run files nothing and releases nothing, and a vertical deleted since it was listed is passed over. When the read after an update differs, or the served version moved under it, the script is held. Its record carries `walkHold`, naming the bindings that differed, never a value, and stating only what is so: the record as it stands when the hold is written, or for a script with no record a new `withheld: 'unverified'` that claims no lists. A script the walk wrote and could not confirm is never left without a hold. Later passes leave it alone until a person names it in `release` or an upload of it writes a fresh record. The walk is not to be run while a push or promote of the same vertical is in flight. `wireUploadGiven` and `wireEntryOf` split `wireUploadFor`, so a walked script and an uploaded one are given the same.
+
+  `@substrat-run/contracts` adds the record's optional `walkHold`, the `unverified` reason (only beside a hold), and the `walkWireAuth` admin action. `@substrat-run/kernel` adds the optional `HostAdmin.recordWireWalk`, which writes one `walkWireAuth` row per pass, and its `WireWalkAudit` entry. A capability record is now written only for a vertical the registry holds: `recordWireAuth` refuses any other slug as `not_found`, in the same directory transaction as the write, so a later registrant of a slug never reads a record of an upload made before it held the slug. Every upload records after its vertical is registered, so this refuses only a write that raced the vertical's delete, and the uploader reports that as its operational failure. Both adapters implement it, and `@substrat-run/contract-tests` holds them to it, a directory restore included. The dashboard's admin log reads the new action as "walked wire auth".
+
+### Patch Changes
+
+- 7d34c2c: A platform intent's journal no longer carries text from beyond the scope that raised it (#2556, after #2554). The scope's vertical reads that journal (`lastError`). Three intents can fail with text that belongs to another deployment or another tenant: a peer call answered by the target vertical's deployment, and `provision-tenant` and `set-entitlements` once they act on the managed tenant and its deployment. For those, the journal now says what failed and at which step, under the platform's own reference, for example `the call to 'crm' (operation 'customer/list') did not complete at its deployment (reference <ulid>)`. The failure's text goes to a staff-only ops-failure row under the same reference. The journaled attribution keeps its origin and code, but no longer a permission key read from that text.
+
+  - **A pass that leaves the intent pending** files staff's row once per intent and sentence (`stage` `transient`). The row opens with the sentence the scope was told (`platform intent <id> pending (<sentence>): <text>`), after the upstream marker. The marker is read from the failure's own text alone, because a sentence can quote the caller's input (a peer call's operation). Marker spellings in the opening are neutralised. A later pass whose sentence is the one its previous settle journaled reuses that reference for 24 hours, after one ledger read by the reference confirms the row, and files nothing. So a stuck intent reaches the staff digest once a day, not on every pass. A pass that fails at a different step journals a different sentence, so it files its own row under a new reference. If the ledger cannot be read, the pass files anew and leaves staff a `transient-lookup` note naming the reference it could not confirm.
+  - **A terminal settle or the attempt ceiling** files the pair it already filed (#2554), and the journal names that pair's reference.
+  - **Every other refusal** the platform writes about the scope's own tenant (an undeclared peer, a target that is not installed, a refused payload) is journaled as before. The one exception is `set-entitlements` finding no deployment for the managed scope. It now names the payload's own ids (`no deployment is bound for scope <id> of tenant <id>`), not the vertical that scope runs.
+
+  The tenant slug refusal no longer names the tenant that holds the slug, on either adapter: `tenant slug '<slug>' is already taken (slugs are unique)`. Subject erasure reaches the new staff row as it reaches a pair. In the kernel, `withheldStaffFailure` builds that row. It takes an optional `opening`. In contracts, `withUpstreamReference(raw, opening?)` puts that opening after the marker, `neutralUpstreamMarkers` neutralises marker spellings, and `withoutUpstreamReference` reads a staff row's text past its marker.
+
+- Updated dependencies [d52ad61]
+- Updated dependencies [7d34c2c]
+- Updated dependencies [1e7e16e]
+- Updated dependencies [8bb7be5]
+- Updated dependencies [2dfc19b]
+- Updated dependencies [5279112]
+- Updated dependencies [91a5ea1]
+- Updated dependencies [5d2db6c]
+- Updated dependencies [9f67833]
+- Updated dependencies [81a07aa]
+- Updated dependencies [14ce171]
+  - @substrat-run/adapter-cloudflare@0.161.0
+  - @substrat-run/kernel@0.161.0
+  - @substrat-run/contracts@0.161.0
+  - @substrat-run/control-plane-api@0.161.0
+  - @substrat-run/connector-fortnox@0.4.63
+  - @substrat-run/connector-microsoft365@0.0.22
+  - @substrat-run/connector-planima@0.2.58
+  - @substrat-run/connector-scrive@0.14.67
+
 ## 0.16.0
 
 ### Minor Changes

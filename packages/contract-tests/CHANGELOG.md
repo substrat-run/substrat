@@ -1,5 +1,71 @@
 # @substrat-run/contract-tests
 
+## 0.161.0
+
+### Minor Changes
+
+- 1e7e16e: The introspection reads a vertical makes by scope id alone refuse a scope the deployment does not hold (#2544), as the size reads do (#2541). Reaped, never provisioned here, or carried away: `conflict` with the shared sentence, not an empty answer.
+
+  - adapter-cloudflare: the scope object answers each read as `…IfHeld`, the held check and the read in one call. Covers the event reads (`facetEventsLocal`, `eventEffectsLocal`, `invocationEventsLocal`, `deadLettersLocal`, `eventCauseLocal`, `entityHistoryLocal`, `lifecycleFlowLocal`, `operationSeriesLocal`), `appliedMigrationsLocal`, `migrationBookmarksLocal`, `introspectScopeTables`, `undrainedEventsLocal` and `redrainCountLocal`.
+  - adapter-sqlite: the same `*Local` verbs, refused from the directory before any store file is opened, so a gone scope never gets one. `queryScope` and `readScopeTable` share their bodies with these verbs and record exactly what they did.
+  - contract-tests: `introspectionReadsContractSuite` (a case per read: held, reaped, never provisioned), and `TEST_LIFECYCLE`.
+  - kernel: `ScopeNotHeld`, and `EventDrainReport.notHeld`. An active scope its deployment does not hold is counted by the Tier-2 event drain and said in the sweep's log line; it is no longer an `errors` entry, so the failure digest does not mail it on every tick. It is filed as one staff ops-failure (no tenant), and again only after a week without one. A scope reaped or archived since the listing, or re-pointed by a carry under the read, is nothing to ship rather than a fault (`notHeldIsBenign`). This differs from the storage gauge (#2549), which records an active scope its deployment does not hold as that scope's error: a failed size read is that day's reading, while a drain that cannot read is a standing condition with nothing to retry.
+  - control-plane-api: a scope's health answers 200 for an active scope its deployment does not hold, with `roleCount: 0` and `roleProjectionEmpty: true`, rather than refusing the route.
+
+- 2dfc19b: A staff restore or import on a host the control plane runs judges the tenant's roles against the dump before loading it (#2555).
+
+  - **`restoreScope` and `importScope` can now refuse.** The load brings the dump's scope-level seats under the tenant's roles as the directory stores them now, so the roles the dump seats or stores are judged first, against the dump's own role rows and seats, by the rule a CP-less restore already uses. A dump holding a seat in a role the directory has since made `holder: 'system'` is refused unless the dump stores that role system-held itself. A dump with no role rows (a pure-SQLite scope file, or a Cloudflare scope that reads its roles over RPC) cannot say which definition its seats were made under, so such a seat is judged as a person's: on such a host, a scope holding a seat in a system-held role cannot be restored from its own export. No role is system-held on such a host today.
+  - **What the caller sees.** The verb throws `forbidden` with one of two fixed sentences naming the role key only; the second says the dump carries no definition of the role. The control plane's restore route answers it as any dump it cannot load: 422, with the sentence in `detail`.
+  - **Nothing moves on a refusal.** A restore is refused before the orphan-sweep fence and the load; an import before its scope is created. The pure host judges again inside the load's transaction, and an import refused there takes the scope it created down again, best effort: a teardown that fails files a staff-only ops-failure row and the refusal is still the answer.
+  - **A preview's snapshot is not judged**: it copies a live scope of the same host at once. It still runs the store check.
+  - **kernel:** `dumpRoleRefusal(roles, reservations, dump, now)` is the one helper both adapters call, built on `reservedRoleSetRefusal`'s own walk.
+  - **contract-tests:** `restoreRoleContractSuite`, run on both adapters (on Cloudflare with and without scope-local permissions).
+
+- 5d2db6c: The table page and the SQL console refuse a scope the deployment does not hold (#2563), as the other introspection reads do (#2544): `conflict` with the shared sentence, not an empty answer, and on Cloudflare the one call into the scope's object is refused inside it, with nothing stored for a scope that is gone.
+
+  - adapter-cloudflare, adapter-sqlite: `introspectScopeTable` and `introspectScopeQuery` are guarded (Cloudflare: the single-call `introspectTableIfHeld` / `introspectQueryIfHeld`; SQLite gains both, refused from the directory). The carry's read of a wiped copy's tombstone is `readTombstoneTable`, which is not guarded.
+  - vertical-host: `GET /internal/tables/:table` guards when `held=1` (strictly that value) and reads as before without it; `POST /internal/query` is guarded. A control plane that predates the flag keeps working against this vertical.
+  - control-plane-api: `VerticalClient.readScopeTable` sends `held=1`; the new `readTombstoneTable` sends nothing and is what the carry and the copy cleanup call. A vertical that predates the flag ignores it.
+  - contract-tests: `introspectionReadsContractSuite` covers the table page and the console.
+
+- 14ce171: The fleet walk (RFC wire-signing, follow-on 4): a key listed, rotated, dropped or withdrawn now reaches every deployed script, not only the ones an upload happens to reach. A version's own script, the one a preview is routed to, is uploaded once at its push, and until now nothing rewrote its key lists.
+
+  `@substrat-run/control-plane-api` adds `POST /wire-auth/walk`. It brings each script the registry names (each vertical's serving script and every version's own script) to what the control plane's settings give now: both public key lists, the script's own name and `dual`, or none of them. It changes only those four settings, through the runtime's script-settings endpoint (`createWfpWireSettingsApi`, passed as the new `wireSettings` option), without uploading the script again. Every other binding goes back as it was read, and a secret is never read or sent. The walk is run by a person: it takes a staff sign-in, never a service token, and does a dry run unless the body says `apply: true`. Each pass walks at most `limit` scripts and answers the cursor the next one starts from. A script whose record already says it carries what is given is not read, so where the rollout was never set a pass makes no call to the runtime; a confirming pass (`confirm: true`) reads every recorded script instead, and ends every walk before a key is dropped. A script with no record is read back first: one that runs without the platform's entry is skipped (`no-entry`), never given lists or recorded as verifying. One script's failure is recorded as an operational failure (`wire-walk`) when the pass applies, and the pass goes on; a dry run files nothing and releases nothing, and a vertical deleted since it was listed is passed over. When the read after an update differs, or the served version moved under it, the script is held. Its record carries `walkHold`, naming the bindings that differed, never a value, and stating only what is so: the record as it stands when the hold is written, or for a script with no record a new `withheld: 'unverified'` that claims no lists. A script the walk wrote and could not confirm is never left without a hold. Later passes leave it alone until a person names it in `release` or an upload of it writes a fresh record. The walk is not to be run while a push or promote of the same vertical is in flight. `wireUploadGiven` and `wireEntryOf` split `wireUploadFor`, so a walked script and an uploaded one are given the same.
+
+  `@substrat-run/contracts` adds the record's optional `walkHold`, the `unverified` reason (only beside a hold), and the `walkWireAuth` admin action. `@substrat-run/kernel` adds the optional `HostAdmin.recordWireWalk`, which writes one `walkWireAuth` row per pass, and its `WireWalkAudit` entry. A capability record is now written only for a vertical the registry holds: `recordWireAuth` refuses any other slug as `not_found`, in the same directory transaction as the write, so a later registrant of a slug never reads a record of an upload made before it held the slug. Every upload records after its vertical is registered, so this refuses only a write that raced the vertical's delete, and the uploader reports that as its operational failure. Both adapters implement it, and `@substrat-run/contract-tests` holds them to it, a directory restore included. The dashboard's admin log reads the new action as "walked wire auth".
+
+### Patch Changes
+
+- d52ad61: HostAdmin's tenant and vertical directory writes now read their audit row's `before` and judge their guards in the same transaction that writes, on both adapters. That covers the listing, install-block, tenant-provisioner and email-sender flags, the publish request, delete (and its bound-scope refusal), admit and reject, the "prod is not auto-admitted" listing guard, whether a published version self-admits on a private vertical, and the serving state. The tenant status, name and reap writes on adapter-sqlite are covered as well (adapter-cloudflare already read them in the write's unit). An audit row's fields are unchanged.
+
+  One behaviour change: `setVerticalServing` is now a compare-and-set on the serving ref and version its gate judged. A serve that loses that race is refused with `precondition_failed` (kernel `servingRaceRefusal`) and writes nothing to the directory. Nothing retries it. The control-plane serve that calls it has already uploaded the serving script, and it passes the refusal up. Until a serve lands again, the script runs that serve's code while the directory names the other serve's; before this change the last writer won instead. The compare-and-set holds the host method's own read, not the serving state the caller read before its upload.
+
+  On adapter-cloudflare these writes now go through the ControlPlaneDO's `reply`, with new `admitVersion` and `rejectVersion` DO methods. A coordinator from before this change keeps working against the new ControlPlaneDO. A coordinator from after it, paired with an older ControlPlaneDO, refuses these writes with `not a replied directory method: <name>` and writes nothing. The workers that make these writes export the ControlPlaneDO class their own host calls, so the two ship together.
+
+- 7d34c2c: A platform intent's journal no longer carries text from beyond the scope that raised it (#2556, after #2554). The scope's vertical reads that journal (`lastError`). Three intents can fail with text that belongs to another deployment or another tenant: a peer call answered by the target vertical's deployment, and `provision-tenant` and `set-entitlements` once they act on the managed tenant and its deployment. For those, the journal now says what failed and at which step, under the platform's own reference, for example `the call to 'crm' (operation 'customer/list') did not complete at its deployment (reference <ulid>)`. The failure's text goes to a staff-only ops-failure row under the same reference. The journaled attribution keeps its origin and code, but no longer a permission key read from that text.
+
+  - **A pass that leaves the intent pending** files staff's row once per intent and sentence (`stage` `transient`). The row opens with the sentence the scope was told (`platform intent <id> pending (<sentence>): <text>`), after the upstream marker. The marker is read from the failure's own text alone, because a sentence can quote the caller's input (a peer call's operation). Marker spellings in the opening are neutralised. A later pass whose sentence is the one its previous settle journaled reuses that reference for 24 hours, after one ledger read by the reference confirms the row, and files nothing. So a stuck intent reaches the staff digest once a day, not on every pass. A pass that fails at a different step journals a different sentence, so it files its own row under a new reference. If the ledger cannot be read, the pass files anew and leaves staff a `transient-lookup` note naming the reference it could not confirm.
+  - **A terminal settle or the attempt ceiling** files the pair it already filed (#2554), and the journal names that pair's reference.
+  - **Every other refusal** the platform writes about the scope's own tenant (an undeclared peer, a target that is not installed, a refused payload) is journaled as before. The one exception is `set-entitlements` finding no deployment for the managed scope. It now names the payload's own ids (`no deployment is bound for scope <id> of tenant <id>`), not the vertical that scope runs.
+
+  The tenant slug refusal no longer names the tenant that holds the slug, on either adapter: `tenant slug '<slug>' is already taken (slugs are unique)`. Subject erasure reaches the new staff row as it reaches a pair. In the kernel, `withheldStaffFailure` builds that row. It takes an optional `opening`. In contracts, `withUpstreamReference(raw, opening?)` puts that opening after the marker, `neutralUpstreamMarkers` neutralises marker spellings, and `withoutUpstreamReference` reads a staff row's text past its marker.
+
+- 81a07aa: The fleet walk (RFC wire-signing, follow-on 4) is refused while the control plane's settings are. When `WIRE_KEYS_ROLLOUT` does not parse, or a public key list does not load, every pass of `POST /wire-auth/walk` answers 409 before it walks anything, dry or applied. Its `walkWireAuth` row carries the new `refused` field (the setting and the problem, never a key). Refused settings give every script nothing, and an applied pass would otherwise have written that as a fleet-wide withdrawal. A script never acts on refused settings during a pass either.
+
+  A hold keeps the first `WALK_HOLD_BINDINGS_MAX` (64) binding names that differed and counts the rest in the new `walkHold.more`. A hold write that fails is tried once more; when it still fails, the script's failure says the hold could not be written. A pass's cursor now takes any version id after the vertical (the publish route takes any id), so a pass that ends on such a version answers a cursor the next pass accepts. The serving script's position is `<slug>|`.
+
+- Updated dependencies [d52ad61]
+- Updated dependencies [7d34c2c]
+- Updated dependencies [1e7e16e]
+- Updated dependencies [8bb7be5]
+- Updated dependencies [2dfc19b]
+- Updated dependencies [5279112]
+- Updated dependencies [91a5ea1]
+- Updated dependencies [81a07aa]
+- Updated dependencies [14ce171]
+  - @substrat-run/kernel@0.161.0
+  - @substrat-run/contracts@0.161.0
+
 ## 0.160.0
 
 ### Minor Changes
@@ -6511,7 +6577,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
