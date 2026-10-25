@@ -10515,12 +10515,13 @@ export class SqliteScopeHost implements ScopeHost {
             .get(verticalSlug, channel) as { version_id: string } | undefined;
           if ((now?.version_id ?? null) !== (outgoing?.id ?? null)) return false;
           // #2565: the listing's rule and the builder's door, read where the listing could land.
-          const listed = (this.directory.prepare('SELECT listed FROM verticals WHERE slug = ?').get(verticalSlug) as
-            | { listed: number }
-            | undefined)?.listed;
+          const listed = readVertical(verticalSlug)?.listed;
           if (listed && options?.unlistedOnly) throw listedPromoteRefusal();
           // A re-promote of what prod already names moves nothing, so it is not judged again.
-          if (listed && channel === 'prod' && outgoing?.id !== versionId && versionAdmission(versionId).admission_note === AUTO_ADMISSION_NOTE) {
+          if (
+            listed && channel === 'prod' && outgoing?.id !== versionId &&
+            versionAdmission(versionId).admission_note === AUTO_ADMISSION_NOTE
+          ) {
             throw autoAdmittedProdRefusal(verticalSlug, versionId);
           }
           this.directory
