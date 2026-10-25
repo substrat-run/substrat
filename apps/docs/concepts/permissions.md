@@ -147,8 +147,20 @@ Roles a host defines and seats itself are held to the same rule:
   revoke its seats. `lint:role-seat-paths` refuses a host path that seats or defines a role
   without asking.
 
+A staff restore or import on a host the control plane runs is judged too (#2555). It loads the
+dump's seats under the tenant's roles as the directory stores them now, so before anything is
+replaced, those roles are judged against the dump's own roles and seats. A dump holding a seat in
+a role since made system-held is refused, with nothing loaded, unless the dump itself stores that
+role system-held. A dump that carries no roles (a SQLite scope file, or a scope that read its
+roles from the control plane) cannot say which definition its seats were made under, so such a
+seat is judged as a person's. The refusal names the role key and nothing else. A staff restore
+takes a dump the staff caller supplies, and that dump is trusted input: its provenance is the
+staff caller's. What is judged is how the tenant's roles apply to it now.
+
 Not covered yet:
 
+- on Cloudflare, a staff restore or import reads the directory's roles before the scope loads the
+  dump, so a role defined in between is not judged against the dump;
 - on Cloudflare, a scope archived straight from provisioning whose record shows no migration
   applied is not read (reading would create its storage), so a definition that scope could decide
   is refused, naming it. The migration count is not proof the scope was never used: a vertical
@@ -176,12 +188,9 @@ export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 
 Decided, and left as is (#2531). These paths are deliberately not judged by the rule:
 
-- a copy the platform or staff make: a preview's snapshot inside your deployment, and a staff
-  restore or import on a host the control plane runs. They copy roles and seats that were judged
-  where they were written, and a copy revokes nothing. A staff restore takes a dump the staff
-  caller supplies, and that dump is trusted input: its provenance is the staff caller's. A restore
-  into your own deployment is not one of these: its role set is judged. The roles a staff restore
-  leaves in place until the next fan-out are #2555;
+- a copy the platform makes: a preview's snapshot inside your deployment. It copies, at once, the
+  roles and seats a live scope holds, which were judged where they were written, and a copy
+  revokes nothing;
 - the fan-out of a tenant's stored roles into its scopes: the role was judged where it was
   defined, and judging it again would drop it and revoke its seats;
 - the platform's own role assignment, which keeps the platform rule. Telling a person from a host

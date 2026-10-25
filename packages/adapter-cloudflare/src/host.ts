@@ -533,6 +533,7 @@ import {
   reservedRoleSetRefusal,
   reservedShapeRefusal,
   SEAT_HOLDING_SCOPE_STATUSES,
+  dumpRoleRefusal,
   dumpRoleState,
   type DumpTable,
   type RoleState,
@@ -5144,6 +5145,20 @@ export class CloudflareScopeHost implements ScopeHost {
     dump: ScopeDumpInput,
   ): Promise<void> {
     this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
+    // #2555: judged before the scope is created, so a refused import leaves nothing behind.
+    await this.refuseDumpRoles(input.tenantId, null, dump);
+    await this.importScopeFrom(actor, input, dump);
+  }
+
+  /**
+   * `importScope` past its role judgement. A snapshot calls it directly: it is the platform's copy
+   * of a live scope of this host, made at once, so its seats are the ones that scope holds now (K-55).
+   */
+  private async importScopeFrom(
+    actor: PlatformActorId,
+    input: ProvisionScopeInput,
+    dump: ScopeDumpInput,
+  ): Promise<void> {
     // Create the destination scope (directory row + DO + lazy migrate); the DO then
     // replaces its provisioned schema with the dump wholesale (drop-then-replay), so
     // the end state is the dump, at the source's frontier. Provenance is stamped from
@@ -5180,6 +5195,8 @@ export class CloudflareScopeHost implements ScopeHost {
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     this.refuseUnusableScopeStores(dump.stores, existing.vertical);
+    // #2555: judged before the fence, so a refused restore moves nothing.
+    await this.refuseDumpRoles(tenantId, scopeId, dump);
     // #2314: the load replaces the scope's rows, so the orphan sweep is fenced first.
     await this.fenceOrphanSweep(scopeId, tenantId);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
@@ -5269,7 +5286,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!source) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     const dump = await this.admin.exportScope(actor, tenantId, scopeId);
     const snapshotId = ulid() as ScopeId;
-    await this.importScope(
+    await this.importScopeFrom(
       actor,
       {
         tenantId,
@@ -12099,6 +12116,32 @@ export class CloudflareScopeHost implements ScopeHost {
       { reserved: new Set([...this.reservedKeys, ...here.reserved]), declared: new Set([...this.declaredKeys, ...here.declared]) },
       dump ? dumpRoleState(dump.tables, dump.tenantId, new Date().toISOString()) : undefined,
     );
+  }
+
+  /**
+   * #2555: refuse loading `dump` into a scope of `tenantId` (`dumpRoleRefusal`): the tenant's roles as
+   * the directory stores them now, against the dump's role rows and seats, with this host's
+   * reservations joined with the scope class's. The class is read at `scopeId` when the scope exists
+   * (a restore), else at a live scope of the tenant (an import, whose scope is not created yet: asking
+   * its object would create storage for a scope a refusal leaves unmade).
+   *
+   * A stated residual: the directory is read here and the dump is loaded in the scope's own call, so a
+   * role defined between the two is not judged against the dump's seats.
+   */
+  private async refuseDumpRoles(tenantId: TenantId, scopeId: ScopeId | null, dump: ScopeDumpInput): Promise<void> {
+    const classScope = scopeId ?? ((await this.cp.listScopes({ tenantId, status: ['active', 'suspended'] }))[0]?.scope_id as ScopeId | undefined);
+    const [rows, here] = await Promise.all([
+      this.cp.listRoles({ tenantId }),
+      classScope ? this.scopeStub(classScope).reservationHere() : { reserved: [], declared: [] },
+    ]);
+    const roles = rows.map((r) => ({ key: r.role_key, permissions: JSON.parse(r.permissions) as string[], ...(r.holder ? { holder: r.holder } : {}) }));
+    const refusal = dumpRoleRefusal(
+      roles,
+      { reserved: new Set([...this.reservedKeys, ...here.reserved]), declared: new Set([...this.declaredKeys, ...here.declared]) },
+      dump,
+      new Date().toISOString(),
+    );
+    if (refusal) throw substratError('forbidden', refusal);
   }
 
   /**

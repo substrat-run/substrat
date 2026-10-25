@@ -350,6 +350,8 @@ export const INDEX_VALUE_EXPORTS = [
   'domainEventOf',
   'driverDeclarationsOf',
   'dumpMetaValue',
+  // #2555: why a staff restore or import on a host the control plane runs may not load a dump.
+  'dumpRoleRefusal',
   // #2447: a dump's stored roles and seats, which a restore's role set is judged against.
   'dumpRoleState',
   'dumpRowsInsert',

@@ -69,6 +69,7 @@ import {
   permissionContractSuite,
   reservedRoleContractSuite,
   roleStateContractSuite,
+  restoreRoleContractSuite,
   sizeReadsContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
@@ -436,6 +437,21 @@ roleStateContractSuite('adapter-cloudflare', async () => {
     cleanup: async () => host.close(),
   };
 });
+
+// #2555: a restore judges the directory's roles against the dump's seats, on a host whose scopes read
+// their roles locally (the dump stores the projected role rows) and on one whose scopes read them over
+// RPC (it stores none).
+for (const scopeLocalPermissions of [true, false]) {
+  restoreRoleContractSuite(`adapter-cloudflare (scopeLocalPermissions: ${scopeLocalPermissions})`, async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeLocalPermissions });
+    return {
+      host,
+      roleState: (t, s) => host.roleStateLocal(t, s),
+      dumpCarriesRoles: scopeLocalPermissions,
+      cleanup: async () => host.close(),
+    };
+  });
+}
 
 // #2541: the vertical-side size reads hold the scope before they open its store. Here the host has
 // a directory, which these reads do not consult: the scope's own storage is what says it is held.

@@ -484,6 +484,7 @@ import {
   assertModuleDeclared,
   noteDeclaredKeys,
   noteReservedKeys,
+  dumpRoleRefusal,
   reservedGrantRefusal,
   reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
@@ -4304,6 +4305,23 @@ export class SqliteScopeHost implements ScopeHost {
     dump: ScopeDumpInput,
   ): Promise<void> {
     this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
+    // #2555: judged before the scope is created, so a refused import leaves nothing behind.
+    this.refuseDumpRoles(input.tenantId, dump);
+    await this.importScopeFrom(actor, input, dump, true);
+  }
+
+  /**
+   * `importScope` after its first role judgement. `judge` repeats it inside the load's transaction,
+   * so a role defined since that read is judged too. A snapshot passes false: it is the platform's
+   * copy of a live scope of this host, made at once, so its seats are the ones that scope holds now
+   * (K-55).
+   */
+  private async importScopeFrom(
+    actor: PlatformActorId,
+    input: ProvisionScopeInput,
+    dump: ScopeDumpInput,
+    judge: boolean,
+  ): Promise<void> {
     // Create the destination scope (directory row + storage). Its migration step
     // creates some tables; the dump then replaces them wholesale, so the end state
     // is the dump, not whatever the local module set would have built. Provenance is
@@ -4315,7 +4333,7 @@ export class SqliteScopeHost implements ScopeHost {
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
     // A fork: its callers (snapshotScope) hand it a dump the platform exported.
-    await this.loadDump(input.tenantId, input.scopeId, { ...dump, exact: true });
+    await this.loadDump(input.tenantId, input.scopeId, { ...dump, exact: true }, undefined, judge ? () => this.refuseDumpRoles(input.tenantId, dump) : undefined);
     await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     this.recordAdmin(
@@ -4337,10 +4355,14 @@ export class SqliteScopeHost implements ScopeHost {
     /** Run inside the load's own transaction, after the replay (#1742) — the restore's re-assert
      *  of the switch. It throws to roll the load back. */
     afterLoad?: (rt: ScopeRuntime) => void,
+    /** Run first inside the load's own transaction, before any drop (#2555): the role judgement,
+     *  against the roles stored at the moment of the load. It throws to refuse with nothing moved. */
+    beforeLoad?: () => void,
   ): Promise<void> {
     const rt = this.runtime(tenantId, scopeId);
     const db = rt.db;
     const load = db.transaction((dumped: ScopeDumpTable[]) => {
+      beforeLoad?.();
       // Deferred foreign keys cover the WHOLE drop-then-replay, drops included.
       //
       // Two distinct FK hazards, and the second is why this cannot wrap the inserts alone:
@@ -4485,6 +4507,8 @@ export class SqliteScopeHost implements ScopeHost {
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     this.refuseUnusableScopeStores(dump.stores, existing.vertical);
+    // #2555: judged before the fence, so a refused restore moves nothing; again inside the load.
+    this.refuseDumpRoles(tenantId, dump);
     // #2314: the load replaces the scope's rows, so the orphan sweep is fenced first.
     await this.fenceOrphanSweep(tenantId, scopeId, existing.vertical ?? null);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
@@ -4494,8 +4518,12 @@ export class SqliteScopeHost implements ScopeHost {
     const rows: [WrittenAdminAction, Record<string, unknown>][] = [];
     // #1869: the re-point's source is the separate hint when given; the dump is otherwise as sent.
     const source = { tables: dump.tables, scopeId: opts?.sourceScopeId ?? dump.scopeId };
-    await this.loadDump(tenantId, scopeId, source, (rt) =>
-      this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (action, after) => rows.push([action, after])),
+    await this.loadDump(
+      tenantId,
+      scopeId,
+      source,
+      (rt) => this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (action, after) => rows.push([action, after])),
+      () => this.refuseDumpRoles(tenantId, dump),
     );
     await this.importScopeStores(tenantId, scopeId, dump.stores);
     const replay = await this.replayShreddedStoreErasures(
@@ -4530,7 +4558,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (!source) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     const dump = await this.admin.exportScope(actor, tenantId, scopeId);
     const snapshotId = ulid() as ScopeId;
-    await this.importScope(
+    await this.importScopeFrom(
       actor,
       {
         tenantId,
@@ -4543,6 +4571,7 @@ export class SqliteScopeHost implements ScopeHost {
         // forkedFrom/forkedAt are stamped from the dump by importScope.
       },
       dump,
+      false,
     );
     // Bind the snapshot to the source's current version so it is a runnable copy at the
     // same frontier (a fresh bind, so it never re-triggers the snapshot path).
@@ -5832,6 +5861,19 @@ export class SqliteScopeHost implements ScopeHost {
     // system-held definition stored (none at all included: a seat can outlive its role's row).
     const seated = stored?.holder !== 'system' && role.holder === 'system' && this.roleSeated(tenantId, role.key);
     const refusal = reservedRoleDefinitionRefusal(role, { reserved: this.reservedKeys, declared: this.declaredKeys }, tenantRoles, seated);
+    if (refusal) throw substratError('forbidden', refusal);
+  }
+
+  /**
+   * #2555: refuse loading `dump` into a scope of `tenantId` (`dumpRoleRefusal`): the tenant's roles
+   * as this host stores them now, against the dump's role rows and seats, with the keys the modules
+   * registered or listed here reserve and declare. Synchronous, so a caller inside the load's
+   * transaction judges the roles stored at that moment.
+   */
+  private refuseDumpRoles(tenantId: TenantId, dump: Pick<ScopeDumpInput, 'tenantId' | 'tables'>): void {
+    const prefix = `${tenantId}/`;
+    const roles = [...this.roles].filter(([k]) => k.startsWith(prefix)).map(([, r]) => r);
+    const refusal = dumpRoleRefusal(roles, { reserved: this.reservedKeys, declared: this.declaredKeys }, dump, this.clock());
     if (refusal) throw substratError('forbidden', refusal);
   }
 
