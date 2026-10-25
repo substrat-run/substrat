@@ -300,8 +300,14 @@ describe('reservedRoleSetRefusal against a dropped role’s tombstone (#2531)', 
   });
 
   it('counts a system-held tombstone’s keys as reserved for a person’s role re-added under its key, even on a module-less host', () => {
-    expect(reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:run'] }], none, { roles: [], seated: new Set(), dropped: [runner] })).toMatch(
-      /^role 'runner' is a person's role and would hold a:run \(held by its stored system-held definition\)/,
+    // Named as what it is: a tombstone appears in no role listing, so "stored" would send a reader looking for a row.
+    expect(reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:run'] }], none, { roles: [], seated: new Set(), dropped: [runner] })).toBe(
+      "role 'runner' is a person's role and would hold a:run (held by its definition as a system-held role, since dropped), " +
+        "reserved to a system principal: take the key out, or declare a role made only of reserved keys holder: 'system' (K-55)",
+    );
+    // Twin: the same keys held by a live stored row are named as the stored definition, as before.
+    expect(reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:run'] }], none, { roles: [runner], seated: new Set() })).toMatch(
+      /would hold a:run \(held by its stored system-held definition\)/,
     );
     // Twin: the person's role without that key is defined; and a person tombstone is no such evidence.
     expect(reservedRoleSetRefusal([{ key: 'runner', permissions: ['a:use'] }], none, { roles: [], seated: new Set(), dropped: [runner] })).toBeNull();

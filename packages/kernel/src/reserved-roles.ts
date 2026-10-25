@@ -188,7 +188,10 @@ function definitionRefusal(
     };
   }
   // The stored system-held definition this one replaces is evidence too: its keys are reserved.
-  if (stored?.holder === 'system') for (const p of stored.permissions) if (!bySystemRole.has(p)) bySystemRole.set(p, `its stored system-held definition`);
+  // A tombstone is no row a role listing shows (#2531), so the refusal says what it is: the role was
+  // defined system-held, and has since been dropped.
+  const evidence = stored && DROPPED.has(stored) ? 'its definition as a system-held role, since dropped' : 'its stored system-held definition';
+  if (stored?.holder === 'system') for (const p of stored.permissions) if (!bySystemRole.has(p)) bySystemRole.set(p, evidence);
   const held = role.permissions.flatMap((p) => {
     if (host.reserved.has(p)) return [`${p} (${RESERVED_BY})`];
     if (personKey(p)) return [];
@@ -235,8 +238,19 @@ export interface StoredRoles {
  * is judged as having no definition stored, as before.
  */
 function storedDefinitionOf(stored: StoredRoles | undefined, key: string): RoleShape | undefined {
-  return stored?.roles.find((r) => r.key === key) ?? stored?.dropped?.find((r) => r.key === key && r.holder === 'system');
+  const live = stored?.roles.find((r) => r.key === key);
+  if (live) return live;
+  const found = stored?.dropped?.find((r) => r.key === key && r.holder === 'system');
+  if (!found) return undefined;
+  // A copy, so the mark is this one judgement's and never the caller's object, which it may pass
+  // again as a live role.
+  const tomb: RoleShape = { ...found };
+  DROPPED.add(tomb);
+  return tomb;
 }
+
+/** The copies of tombstones `storedDefinitionOf` handed on as a stored definition, so a refusal can name them as dropped. */
+const DROPPED = new WeakSet<RoleShape>();
 
 /**
  * `reservedRoleDefinitionRefusal` over a whole role set defined at once (a provision's or a

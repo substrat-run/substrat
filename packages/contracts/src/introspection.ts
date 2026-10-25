@@ -25,10 +25,14 @@ export const scopeTable = z.object({
   rowCount: z.number().int().nonnegative(),
   system: z.boolean(),
   /**
-   * For a table that tombstones rows rather than deleting them (it has a `revoked_at` column, as
-   * `_substrat_roles` and the tuple tables do), the rows whose `revoked_at` is null: what is in
-   * force, beside `rowCount`, everything kept. Absent for any other table, and from a host that
-   * predates it (#2531), which kept no role tombstones, so its `rowCount` is the live count there.
+   * For a table with a `revoked_at` column, the number of its rows whose `revoked_at` is null;
+   * `rowCount` beside it counts every row. Nothing more is read into it here: it is a count by that
+   * column, for any table that has one, a vertical's own included. For the platform's tables that
+   * tombstone rather than delete (`_substrat_roles`, where a dropped role is kept revoked, #2531,
+   * and the tuple tables) it is what is in force; for a vertical's table it is whatever that column
+   * means there. Scope health reads it for `_substrat_roles` alone. Absent for a table without the
+   * column, and from a host that predates it, which kept no role tombstones, so its `rowCount` is the
+   * live role count there.
    */
   liveRowCount: z.number().int().nonnegative().optional(),
 });

@@ -2082,7 +2082,7 @@ function scopeTablesOf(db: Database.Database): ScopeTable[] {
     name,
     rowCount: count(`SELECT COUNT(*) AS c FROM "${name}"`),
     system: isSystemTable(name),
-    // #2531: what is in force, for a table that tombstones rows (the Cloudflare adapter's twin).
+    // #2531: rows whose `revoked_at` is null, for any table with that column (`ScopeTable.liveRowCount`; the Cloudflare adapter's twin).
     ...(tombstones(name) ? { liveRowCount: count(`SELECT COUNT(*) AS c FROM "${name}" WHERE revoked_at IS NULL`) } : {}),
   }));
 }

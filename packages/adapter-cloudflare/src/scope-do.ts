@@ -6982,8 +6982,8 @@ export function defineScopeDO(
         name,
         rowCount: count(`SELECT COUNT(*) AS c FROM "${name}"`),
         system: isSystemTable(name),
-        // #2531: a table that tombstones rows (a dropped role is kept, revoked) answers what is in
-        // force too, so a reader asking "is anything defined" (scope health) does not count tombstones.
+        // #2531: rows whose `revoked_at` is null, for any table with that column (`ScopeTable.liveRowCount`).
+        // Scope health reads it for `_substrat_roles`, where a dropped role is kept revoked.
         ...(doBuiltColumnsOf(this.sql, name)?.includes('revoked_at')
           ? { liveRowCount: count(`SELECT COUNT(*) AS c FROM "${name}" WHERE revoked_at IS NULL`) }
           : {}),
