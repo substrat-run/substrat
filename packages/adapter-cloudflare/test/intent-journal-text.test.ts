@@ -223,17 +223,17 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
 
   it("both kinds act only on a tenant the manager provisioned (#2564): one sentence for any other, existing or not", async () => {
     const unbound = { host: host(), actor: staff, resolveVerticalForScope: async () => undefined };
-    const provision = (id: string) =>
+    const provision = (id: string, scope = ulid()) =>
       drain(mine, manager, managerVertical, intent('provision-tenant', {
         tenant: { id, slug: `own-${id.toLowerCase()}`, name: 'Own' },
-        instance: { vertical: 'managed-product', scopeId: ulid(), slug: 'main', name: 'Main', owner },
+        instance: { vertical: 'managed-product', scopeId: scope, slug: 'main', name: 'Main', owner },
         entitlements: [],
       }), provisionTenantHandler(unbound));
     // The manager's own tenant, created by the first pass, passes the check on the retry and
     // reaches the next refusal: no deployment is bound in this file.
-    const own = ulid();
+    const [own, ownScope] = [ulid(), ulid()];
     for (let pass = 0; pass < 2; pass++) {
-      expect((await provision(own)).lastError).toBe("no deployment is bound for vertical 'managed-product'");
+      expect((await provision(own, ownScope)).lastError).toBe("no deployment is bound for vertical 'managed-product'");
     }
     const refused = {
       status: 'failed',
