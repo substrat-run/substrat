@@ -3445,15 +3445,26 @@ export class ControlPlaneDO extends DurableObject {
    * bare update.
    */
   setHostnameStatus(hostname: string, status: string, note: string | null, audit?: AdminEntryInput): boolean {
-    const write = () => this.sql.exec(
+    return this.auditedHostnameUpdate(hostname, (row) => row.status === status, () => this.sql.exec(
       'UPDATE hostnames SET status = ?, status_note = ? WHERE hostname = ?',
       status, note, hostname,
-    ).rowsWritten > 0;
+    ).rowsWritten > 0, audit);
+  }
+
+  /**
+   * #2526: a hostname update with its admin row. Without `audit`, the bare `write`. With it, one
+   * unit: the row read (refused `not_found` when the name is not bound), nothing written and
+   * nothing recorded when `unchanged` judges it so, else the write and the row, whose target and
+   * `before` status are the row as read.
+   */
+  private auditedHostnameUpdate(
+    hostname: string, unchanged: (row: HostnameRow) => boolean, write: () => boolean, audit?: AdminEntryInput,
+  ): boolean {
     if (!audit) return write();
     return this.ctx.storage.transactionSync(() => {
       const row = this.readHostname(hostname);
       if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
-      if (row.status === status) return false; // idempotent, and a no-op is not audited
+      if (unchanged(row)) return false; // idempotent, and a no-op is not audited
       write();
       this.recordAdmin({ ...audit, tenantId: row.tenant_id, scopeId: row.scope_id, before: { status: row.status } });
       return true;
@@ -3484,7 +3495,12 @@ export class ControlPlaneDO extends DurableObject {
     },
     audit?: AdminEntryInput,
   ): boolean {
-    const write = () => (fields.customHostnameId !== undefined
+    // A poll that changes nothing is not an event, so the reconcile sweep does not flood the
+    // admin log with no-op rows every interval. No records are stored as NULL.
+    const unchanged = (row: HostnameRow) => row.status === fields.status &&
+      (row.validation_records ?? null) === fields.validationRecords &&
+      (fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id);
+    return this.auditedHostnameUpdate(hostname, unchanged, () => (fields.customHostnameId !== undefined
       ? this.sql.exec(
         `UPDATE hostnames
             SET status = ?, status_note = ?, custom_hostname_id = ?, validation_records = ?
@@ -3494,21 +3510,7 @@ export class ControlPlaneDO extends DurableObject {
       : this.sql.exec(
         `UPDATE hostnames SET status = ?, status_note = ?, validation_records = ? WHERE hostname = ?`,
         fields.status, fields.note, fields.validationRecords, hostname,
-      )).rowsWritten > 0;
-    if (!audit) return write();
-    return this.ctx.storage.transactionSync(() => {
-      const row = this.readHostname(hostname);
-      if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
-      const idUnchanged = fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id;
-      // A poll that changes nothing is not an event, so the reconcile sweep does not flood
-      // the admin log with no-op rows every interval. No records are stored as NULL.
-      if (row.status === fields.status && (row.validation_records ?? null) === fields.validationRecords && idUnchanged) {
-        return false;
-      }
-      write();
-      this.recordAdmin({ ...audit, tenantId: row.tenant_id, scopeId: row.scope_id, before: { status: row.status } });
-      return true;
-    });
+      )).rowsWritten > 0, audit);
   }
 
   /**
