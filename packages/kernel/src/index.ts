@@ -543,7 +543,6 @@ export {
   issueExemplarOwner,
   redactSubjectDirectoryText,
   platformIntentFailureMessage,
-  intentIdOfFailureMessage,
 } from './subject-redaction.js';
 export type {
   LegacySubjectRedactionCounts,

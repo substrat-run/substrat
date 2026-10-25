@@ -414,8 +414,6 @@ export const INDEX_VALUE_EXPORTS = [
   'installReconciled',
   'installsReconciledNote',
   'installsReconciledOf',
-  // #2556: the drain finds its own transient row about an intent by the grammar erasure reads.
-  'intentIdOfFailureMessage',
   'intentPayloadCarriesSubject',
   'invocationLine',
   'isActiveContentType',

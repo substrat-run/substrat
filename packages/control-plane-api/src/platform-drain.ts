@@ -1,6 +1,5 @@
 import {
   INERT_SCOPE_REASON,
-  intentIdOfFailureMessage,
   isPrimaryScope,
   lifecycleRefusal,
   platformIntentFailureMessage,
@@ -46,6 +45,7 @@ import {
   type ScopeLifecycle,
   type TenantId,
   sweepRunsPayload,
+  withoutUpstreamReference,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
@@ -197,9 +197,10 @@ export interface PlatformDrainOptions {
    */
   recordFailure?: (entry: Omit<OpsFailureInput, 'actor'>) => void;
   /**
-   * #2556: the failure ledger, read to find staff's row for a withheld transient failure filed on
-   * an earlier pass (`WITHHELD_REFILE_MS`), so that pass's reference is journaled again and no
-   * second row is filed. Without it, every such pass files its own row.
+   * #2556: the failure ledger, read once by the reference the intent's previous settle journaled, to
+   * confirm staff's row for the same withheld sentence stands (`WITHHELD_REFILE_MS`), so that
+   * reference is journaled again and no second row is filed. Without it, every such pass files its
+   * own row.
    */
   listFailures?: (filter: OpsFailureFilter) => Promise<OpsFailureEntry[]>;
   /** The clock `listFailures`' window is read against; injectable for a test. */
@@ -260,64 +261,77 @@ const WITHHELD_TRANSIENT_STAGE = 'transient';
  */
 export const WITHHELD_REFILE_MS = 24 * 60 * 60_000;
 
-/** The ledger pages `withheldTransientReference` reads at most before it files anew. */
-const WITHHELD_LOOKUP_PAGES = 10;
-const WITHHELD_LOOKUP_PAGE = 100;
+/** The stage of staff's note that a withheld transient reference could not be looked up (#2556). */
+const WITHHELD_LOOKUP_STAGE = 'transient-lookup';
+
+/** How a journaled withheld sentence ends: the platform's reference staff's row is filed under. */
+const JOURNALED_REFERENCE = /^(.*) \(reference ([0-9A-HJKMNP-TV-Z]{26})\)$/s;
+
+/** How staff's row for a withheld transient failure opens: the intent, and the sentence its scope was told. */
+const withheldTransientOpening = (id: string, withheld: string): string =>
+  platformIntentFailureMessage(id, `pending (${withheld}): `);
 
 /**
  * The reference a withheld failure on a pass that left the intent pending is journaled under
- * (#2556). The ledger is the memory, not this isolate: staff's row for the same intent and stage
- * filed within `WITHHELD_REFILE_MS` is found by the grammar the erasure link reads
- * (`intentIdOfFailureMessage`), and its reference is reused with nothing filed. Otherwise a new
- * reference is minted and staff's row filed under it, with no tenant, in the drained scope, so a
- * subject erasure of the intent reaches it. A ledger that cannot be read files anew: a second row
- * is the safer error than a reference nothing resolves.
+ * (#2556), keyed on the intent AND the sentence: a handler that gets one step further on a later
+ * pass is a different failure, with its own row. The previous settle journaled `<sentence>
+ * (reference R)` in the intent's `lastError`; when that sentence is this pass's, R is reused with
+ * nothing filed, once one ledger read by R confirms staff's row for this intent and sentence stands
+ * in the drained scope within `WITHHELD_REFILE_MS`. Otherwise a new reference is minted and staff's
+ * row filed under it, with no tenant, in the drained scope, so a subject erasure of the intent
+ * reaches it; the row opens with the sentence (`withheldTransientOpening`), which is what the next
+ * pass matches, never the raw text, whose upstream handles vary per call. A ledger that cannot be
+ * read files anew, since a second row is the safer error than a reference nothing resolves, and
+ * leaves staff a note saying the earlier reference went unconfirmed.
  */
 async function withheldTransientReference(
   ctx: PlatformRequestContext,
   kind: string,
   id: string,
+  previousError: string | null,
+  withheld: string,
   outcome: PlatformRequestOutcome,
   opts: PlatformDrainOptions | undefined,
 ): Promise<string> {
   const operation = `intent.${kind}`;
-  if (opts?.listFailures) {
+  const opening = withheldTransientOpening(id, withheld);
+  const entry = {
+    operation,
+    scopeId: ctx.scopeId,
+    vertical: ctx.vertical,
+    version: ctx.versionId ?? null,
+    origin: outcome.failure?.origin ?? null,
+    code: outcome.failure?.code ?? null,
+  };
+  const journaled = JOURNALED_REFERENCE.exec(previousError ?? '');
+  const previous = journaled?.[1] === withheld ? journaled[2]! : null;
+  if (previous !== null && opts?.listFailures) {
     const since = new Date((opts.now?.() ?? new Date()).getTime() - WITHHELD_REFILE_MS).toISOString();
     try {
-      let cursor: string | undefined;
-      for (let page = 0; page < WITHHELD_LOOKUP_PAGES; page++) {
-        const rows = await opts.listFailures({
-          scopeId: ctx.scopeId,
-          operation,
-          since,
-          limit: WITHHELD_LOOKUP_PAGE,
-          ...(cursor === undefined ? {} : { cursor }),
-        });
-        const filed = rows.find(
-          (r) => r.tenantId === null && r.stage === WITHHELD_TRANSIENT_STAGE && r.reference !== null &&
-            intentIdOfFailureMessage(r.message) === id,
-        );
-        if (filed?.reference) return filed.reference;
-        if (rows.length < WITHHELD_LOOKUP_PAGE) break;
-        cursor = rows[rows.length - 1]!.id;
-      }
-    } catch {
-      // deliberately swallowed: filed anew below
+      const rows = await opts.listFailures({ scopeId: ctx.scopeId, operation, reference: previous, since, limit: 10 });
+      const filed = rows.some(
+        (r) => r.tenantId === null && r.stage === WITHHELD_TRANSIENT_STAGE && withoutUpstreamReference(r.message).startsWith(opening),
+      );
+      if (filed) return previous;
+    } catch (e) {
+      // Filed anew below; the note is staff's, and names only the reference and the ledger's own error.
+      opts.recordFailure?.(
+        withheldStaffFailure(
+          { ...entry, stage: WITHHELD_LOOKUP_STAGE },
+          platformIntentFailureMessage(
+            id,
+            `pending: reference ${previous} could not be confirmed in the failure ledger, so this pass files anew: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+          ulid(),
+        ),
+      );
     }
   }
   const reference = ulid();
   opts?.recordFailure?.(
     withheldStaffFailure(
-      {
-        operation,
-        stage: WITHHELD_TRANSIENT_STAGE,
-        scopeId: ctx.scopeId,
-        vertical: ctx.vertical,
-        version: ctx.versionId ?? null,
-        origin: outcome.failure?.origin ?? null,
-        code: outcome.failure?.code ?? null,
-      },
-      platformIntentFailureMessage(id, `pending: ${outcome.error ?? 'unknown'}`),
+      { ...entry, stage: WITHHELD_TRANSIENT_STAGE },
+      `${opening}${outcome.error ?? 'unknown'}`,
       reference,
     ),
   );
@@ -466,7 +480,8 @@ export async function drainScopePlatformRequests(
         ),
       );
     } else if (outcome.status === 'pending' && withheld !== undefined) {
-      journaled = `${withheld} (reference ${await withheldTransientReference(ctx, kind, id, outcome, opts)})`;
+      const previousError = isUndecodablePlatformRequest(request) ? null : request.lastError;
+      journaled = `${withheld} (reference ${await withheldTransientReference(ctx, kind, id, previousError, withheld, outcome, opts)})`;
     }
     // No special case for a refused row: every row that reaches here has an id the settle
     // route accepts (#1637 left the rest out above), so its settle is refused for the same

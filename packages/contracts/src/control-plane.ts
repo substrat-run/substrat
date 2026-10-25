@@ -1102,6 +1102,12 @@ export function upstreamReferenceOf(message: string): string | null {
   return /^\[upstream reference = ([a-z0-9]{1,64})\]/i.exec(message)?.[1] ?? null;
 }
 
+/** A staff row's text past the upstream reference marker it may begin with (`withUpstreamReference`, #2556). */
+export function withoutUpstreamReference(message: string): string {
+  const handle = upstreamReferenceOf(message);
+  return handle === null ? message : message.slice(upstreamReferenceMarker(handle).length + 1);
+}
+
 /**
  * The upstream's own trace handle a failure text carries: Cloudflare's `internal error; reference
  * = <id>` shape (#559). At most 64 characters, so a marker made from it always fits a bounded row,

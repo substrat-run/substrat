@@ -65,7 +65,14 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     }
   });
 
-  const intent = (kind: string, payload: unknown, attempts = 0, id = platformRequestId.parse(ulid())): PlatformRequest => ({
+  /** `lastError` is what the intent's previous settle journaled, as the vertical lists it back. */
+  const intent = (
+    kind: string,
+    payload: unknown,
+    attempts = 0,
+    id = platformRequestId.parse(ulid()),
+    lastError: string | null = null,
+  ): PlatformRequest => ({
     id,
     kind,
     payload,
@@ -74,7 +81,7 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     failure: null,
     status: 'pending',
     attempts,
-    lastError: null,
+    lastError,
     result: null,
     requestedAt: new Date().toISOString() as PlatformRequest['requestedAt'],
     settledAt: null,
@@ -108,14 +115,14 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
   };
   const referenceOf = (sentence: string | null) => /\(reference ([0-9A-HJKMNP-TV-Z]{26})\)$/.exec(sentence ?? '')?.[1];
 
-  const expectWithheld = async (settled: Settled, sentence: string, raw: { upstream: string; text: string }, id: string) => {
+  const expectWithheld = async (settled: Settled, sentence: string, raw: { upstream: string; text: string }, id: string): Promise<string> => {
     const reference = referenceOf(settled.lastError);
     expect(reference).toBeDefined();
     expect(settled.lastError).toBe(`${sentence} (reference ${reference})`);
     for (const text of [stranger, 'something private', raw.upstream, 'crm:read']) expect(JSON.stringify(settled)).not.toContain(text);
     const rows = await host().admin.listOpsFailures(staff, { reference: reference! });
     expect(rows.map((r) => [r.tenantId, r.stage])).toEqual([[null, 'transient']]);
-    expect(rows[0]!.message).toBe(`[upstream reference = ${raw.upstream}] platform intent ${id} pending: ${raw.text}`);
+    expect(rows[0]!.message).toBe(`[upstream reference = ${raw.upstream}] platform intent ${id} pending (${sentence}): ${raw.text}`);
     expect(await host().admin.listOpsFailures(staff, { tenantId: stranger })).toEqual([]);
     return reference!;
   };
@@ -137,7 +144,7 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     const sentence = "the call to 'acme/crm' (operation 'customer/list') did not complete at its deployment";
     const first = await drain(mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, payload, 0, id), handler);
     const reference = await expectWithheld(first, sentence, raw, id);
-    const again = await drain(mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, payload, 1, id), handler);
+    const again = await drain(mine, caller, 'acme/board-room', intent(PEER_INVOKE_KIND, payload, 1, id, first.lastError), handler);
     expect(again.lastError).toBe(`${sentence} (reference ${reference})`);
     const filed = (await host().admin.listOpsFailures(staff, { scopeId: caller, operation: `intent.${PEER_INVOKE_KIND}` })).filter((r) =>
       r.message.includes(id),
@@ -197,5 +204,49 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     );
     expect(settled.status).toBe('pending');
     await expectWithheld(settled, `setting the entitlements of tenant ${customer} did not complete while reconciling its instance`, raw, request.id);
+  });
+
+  it('set-entitlements: a pass that fails one step further is its own staff row and reference; the same step again reuses it', async () => {
+    const id = platformRequestId.parse(ulid());
+    const payload = { tenantId: customer, authScopeId: authScope, plan: 'pro', entitlements: [{ key: 'flows', plan: 'pro' }] };
+    const atResolve = (text: string) =>
+      setEntitlementsHandler({
+        host: host(),
+        actor: staff,
+        resolveVerticalForScope: async () => {
+          throw new ControlPlaneError(503, text);
+        },
+      });
+    const atReconcile = (text: string) =>
+      setEntitlementsHandler({
+        host: host(),
+        actor: staff,
+        resolveVerticalForScope: async () =>
+          ({
+            reconcileInstance: async () => {
+              throw new ControlPlaneError(502, text);
+            },
+          }) as unknown as VerticalClient,
+      });
+    const sentence = (step: string) => `setting the entitlements of tenant ${customer} did not complete while ${step}`;
+
+    const one = foreign();
+    const first = await drain(mine, manager, managerVertical, intent('set-entitlements', payload, 0, id), atResolve(one.text));
+    const firstReference = await expectWithheld(first, sentence('reconciling its entitlements'), one, id);
+
+    const two = foreign();
+    const second = await drain(mine, manager, managerVertical, intent('set-entitlements', payload, 1, id, first.lastError), atReconcile(two.text));
+    const secondReference = await expectWithheld(second, sentence('reconciling its instance'), two, id);
+    expect(secondReference).not.toBe(firstReference);
+    expect((await host().admin.listOpsFailures(staff, { reference: firstReference }))[0]!.message).toContain(one.text);
+
+    const third = await drain(
+      mine, manager, managerVertical, intent('set-entitlements', payload, 2, id, second.lastError), atReconcile(foreign().text),
+    );
+    expect(third.lastError).toBe(`${sentence('reconciling its instance')} (reference ${secondReference})`);
+    const filed = (await host().admin.listOpsFailures(staff, { scopeId: manager, operation: 'intent.set-entitlements' })).filter((r) =>
+      r.message.includes(id),
+    );
+    expect(filed.map((r) => r.reference).sort()).toEqual([firstReference, secondReference].sort());
   });
 });
