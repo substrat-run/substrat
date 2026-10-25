@@ -1,5 +1,5 @@
 import type { AdminAction, AdminLogEntry, ChannelHistoryEntry, PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
-import { BACKFILL_MOVE_ID, type HostAdmin } from '@substrat-run/kernel';
+import { BACKFILL_MOVE_ID, withheldOpsFailure, type HostAdmin } from '@substrat-run/kernel';
 import { hasCarriedAwayTombstone, listAllScopeScriptCopies, routeOfScope, type ScopeCopyCleanup } from './scope-copy-cleanup.js';
 
 /**
@@ -328,11 +328,19 @@ export async function backfillScopeScriptCopies(
   const entries: CopyBackfillEntry[] = [];
   const seen = new Map<string, Timeline>();
   const unborn = new Set<string>();
+  // #2554: a failure whose reason quotes what a store read threw, beside the reason without it. The
+  // page (staff's) carries the throw; the scope's tenant's row says only the reason, and staff's
+  // row the throw, under one reference (`withheldOpsFailure`).
+  const answeredReasons = new WeakMap<CopyBackfillEntry, string>();
   for (const row of rows) {
     const tenantId = row.tenantId as TenantId | null;
     const scopeId = row.scopeId as ScopeId | null;
     const base = { fromLogId: row.id, tenantId, scopeId };
-    const failure = (scriptRef: string | null, reason: string) => entries.push({ ...base, scriptRef, outcome: 'failure', reason });
+    const failure = (scriptRef: string | null, reason: string, thrown?: string) => {
+      const entry: CopyBackfillEntry = { ...base, scriptRef, outcome: 'failure', reason: thrown === undefined ? reason : `${reason} (${thrown})` };
+      entries.push(entry);
+      if (thrown !== undefined) answeredReasons.set(entry, reason);
+    };
     if (!tenantId || !scopeId) { failure(null, 'the row names no tenant or scope'); continue; }
     const tl = await derive.timeline(tenantId, scopeId);
     seen.set(`${tenantId}/${scopeId}`, tl);
@@ -358,7 +366,7 @@ export async function backfillScopeScriptCopies(
           continue;
         }
       } catch (e) {
-        failure(scriptRef, `the store could not be read (${e instanceof Error ? e.message : String(e)})`);
+        failure(scriptRef, 'the store could not be read', e instanceof Error ? e.message : String(e));
         continue;
       }
       const result = await admin.backfillScopeScriptCopy(actor, tenantId, scopeId, scriptRef, { fromLogId: row.id });
@@ -374,12 +382,19 @@ export async function backfillScopeScriptCopies(
     .filter((s) => s.subjects.length > 0);
   if (!opts.dryRun) {
     await Promise.all([
-      ...entries.filter((e) => e.outcome === 'failure').map((e) => admin.recordOpsFailure({
-        actor, operation: 'scope.copy-backfill', stage: 'unresolved',
-        tenantId: e.tenantId as TenantId | null, scopeId: e.scopeId as ScopeId | null,
-        message: `admin-log row ${e.fromLogId}${e.scriptRef ? ` (script '${e.scriptRef}')` : ''}: ${e.reason} — ` +
-          'a copy this may name is not in the copy ledger, so reap and erasure do not reach it (#1722)',
-      })),
+      ...entries.filter((e) => e.outcome === 'failure').map((e) => {
+        const tenantId = e.tenantId as TenantId | null;
+        const message = (reason: string | undefined) =>
+          `admin-log row ${e.fromLogId}${e.scriptRef ? ` (script '${e.scriptRef}')` : ''}: ${reason} — ` +
+          'a copy this may name is not in the copy ledger, so reap and erasure do not reach it (#1722)';
+        const at = { actor, operation: 'scope.copy-backfill', stage: 'unresolved', scopeId: e.scopeId as ScopeId | null };
+        const answered = answeredReasons.get(e);
+        return admin.recordOpsFailure(
+          tenantId && answered !== undefined
+            ? withheldOpsFailure({ ...at, tenantId }, message(e.reason), (reference) => `${message(answered)} (reference ${reference})`)
+            : { ...at, tenantId, message: message(e.reason) },
+        );
+      }),
       ...erasedBefore.map((s) => admin.recordOpsFailure({
         actor, operation: 'scope.copy-backfill', stage: 'erased-before',
         tenantId: s.tenantId as TenantId, scopeId: s.scopeId as ScopeId,

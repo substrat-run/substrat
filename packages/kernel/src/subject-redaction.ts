@@ -37,7 +37,7 @@
  * from this table, and a privacy guarantee that holds on one adapter is not a guarantee.
  */
 
-import { SWEEP_RUNS_KIND } from '@substrat-run/contracts';
+import { SWEEP_RUNS_KIND, upstreamReferenceMarker, upstreamReferenceOf } from '@substrat-run/contracts';
 import type { ModuleErasureCounts } from './module-erasure.js';
 
 /**
@@ -611,6 +611,8 @@ export function redactSubjectSweepRunIntents(sql: RedactionSql, subjectId: strin
 }
 
 const PLATFORM_INTENT_FAILURE_PREFIX = 'platform intent ';
+/** How a staff row's upstream reference marker opens (`upstreamReferenceMarker`, #2540). */
+const UPSTREAM_MARKER_OPENING = upstreamReferenceMarker('').slice(0, -1);
 
 /**
  * How the drain words an ops failure about one intent. The reader below parses the same
@@ -620,10 +622,16 @@ export function platformIntentFailureMessage(intentId: string, text: string): st
   return `${PLATFORM_INTENT_FAILURE_PREFIX}${intentId} ${text}`;
 }
 
-/** The intent an ops-failure message is about, or null — `platformIntentFailureMessage` read back. */
+/**
+ * The intent an ops-failure message is about, or null — `platformIntentFailureMessage` read back.
+ * A staff row's text may begin with an upstream reference marker ahead of it (#2554,
+ * `withUpstreamReference`), which is read past.
+ */
 export function intentIdOfFailureMessage(message: string): string | null {
-  if (!message.startsWith(PLATFORM_INTENT_FAILURE_PREFIX)) return null;
-  const rest = message.slice(PLATFORM_INTENT_FAILURE_PREFIX.length);
+  const handle = upstreamReferenceOf(message);
+  const text = handle === null ? message : message.slice(upstreamReferenceMarker(handle).length + 1);
+  if (!text.startsWith(PLATFORM_INTENT_FAILURE_PREFIX)) return null;
+  const rest = text.slice(PLATFORM_INTENT_FAILURE_PREFIX.length);
   const end = rest.indexOf(' ');
   return end > 0 ? rest.slice(0, end) : null;
 }
@@ -679,14 +687,16 @@ export const ISSUE_EXEMPLAR_OWNER_BACKFILL_SQL = `UPDATE _substrat_issues
  *
  * - `_substrat_ops_failures.message` — the drain's record of an intent it gave up on, or
  *   settled `failed`, quotes that intent's `last_error`. When the intent is one the erasure
- *   tombstoned (`intentIds`, in this tenant and scope), the message is a copy of text the
+ *   tombstoned (`intentIds`, in this scope, on this tenant's row or on staff's row of the pair
+ *   the drain files, #2554), the message is a copy of text the
  *   scope half already redacted, and goes with it. A row in this tenant, or the platform's
  *   own row with no tenant, that names the subject's id goes too.
  * - `_substrat_issues.last_message` — the newest exemplar of an ops-failure group. Its
  *   writer records whose failure it copied (`last_owner_kind`, `last_tenant_id`, in the same
  *   statement), and erasure reads that rather than the ops-failure rows, which issues outlive.
  *   A tenant's exemplar is rewritten only for that tenant, by the same two links; the
- *   platform's own on a direct id match, as its ops-failure row is. An exemplar of unknown
+ *   platform's own on a direct id match, as its ops-failure row is, or on the intent link (a
+ *   drain pair's sample is staff's text, #2554). An exemplar of unknown
  *   owner (a legacy row nothing attributed) is skipped: the matched text can come from
  *   anyone's request, so an unattributed row is never read as this tenant's.
  * - `_substrat_sweep_runs.error` — a scheduled operation's throw, matched on the subject's
@@ -717,11 +727,12 @@ export function redactSubjectDirectoryText(sql: RedactionSql, target: SubjectTex
   if (target.intentIds.length === 0) return;
   const intents = new Set(target.intentIds);
   // Rows whose text the drain wrote about one of those intents — read back by the grammar it
-  // wrote them in, so the SQL only narrows to the prefix and the id decides.
+  // wrote them in, so the SQL only narrows to the prefix (or a staff row's upstream marker ahead
+  // of it) and the id decides.
   const redactLinked = (table: string, key: string, text: string, where: string, params: string[]) => {
     const rows = sql(
-      `SELECT ${key} AS key, ${text} AS text FROM ${table} WHERE ${where}instr(${text}, ?) = 1`,
-      [...params, PLATFORM_INTENT_FAILURE_PREFIX],
+      `SELECT ${key} AS key, ${text} AS text FROM ${table} WHERE ${where}(instr(${text}, ?) = 1 OR instr(${text}, ?) = 1)`,
+      [...params, PLATFORM_INTENT_FAILURE_PREFIX, UPSTREAM_MARKER_OPENING],
     ) as { key: string; text: string }[];
     for (const row of rows) {
       const id = intentIdOfFailureMessage(row.text);
@@ -730,11 +741,18 @@ export function redactSubjectDirectoryText(sql: RedactionSql, target: SubjectTex
       }
     }
   };
-  redactLinked('_substrat_ops_failures', 'id', 'message', 'tenant_id = ? AND scope_id = ? AND ', [
+  // #2554: the drain files an intent's failure as a pair, and staff's row (no tenant, the same
+  // scope) carries the error, as does the issue sample it becomes (the platform's). An intent id is
+  // a ulid this scope's own erasure tombstoned, so the link reaches those as well.
+  redactLinked('_substrat_ops_failures', 'id', 'message', '(tenant_id = ? OR tenant_id IS NULL) AND scope_id = ? AND ', [
     target.tenantId,
     target.scopeId,
   ]);
-  redactLinked('_substrat_issues', 'fingerprint', 'last_message', "last_owner_kind = 'tenant' AND last_tenant_id = ? AND ", [
-    target.tenantId,
-  ]);
+  redactLinked(
+    '_substrat_issues',
+    'fingerprint',
+    'last_message',
+    "((last_owner_kind = 'tenant' AND last_tenant_id = ?) OR last_owner_kind = 'platform') AND ",
+    [target.tenantId],
+  );
 }

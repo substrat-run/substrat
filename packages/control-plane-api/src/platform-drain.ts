@@ -5,6 +5,7 @@ import {
   platformIntentFailureMessage,
   resolveScopeRecord,
   ulid,
+  withheldOpsFailure,
   type ConnectorHandler,
   type OpsFailureInput,
   type ProvisionScopeInput,
@@ -196,6 +197,37 @@ export interface PlatformDrainOptions {
 }
 
 /**
+ * The ops-failure row of an intent the drain gave up on or settled `failed` (#570, #618). #2554:
+ * an intent's error is whatever its handler met, a provider's answer or another vertical's
+ * deployment among them, so the scope's tenant's row says only what became of the intent, under
+ * the platform's reference, and the error is staff's row under the same one (`withheldOpsFailure`).
+ */
+function intentFailure(
+  ctx: PlatformRequestContext,
+  kind: string,
+  stage: 'attempt-ceiling' | 'terminal',
+  outcome: PlatformRequestOutcome,
+  raw: string,
+  answered: (reference: string) => string,
+): Omit<OpsFailureInput, 'actor'> {
+  return withheldOpsFailure(
+    {
+      operation: `intent.${kind}`,
+      stage,
+      tenantId: ctx.tenantId,
+      scopeId: ctx.scopeId,
+      vertical: ctx.vertical,
+      version: ctx.versionId ?? null,
+      // The attribution the settle journals (#841) rides onto the fleet row too (#1233).
+      origin: outcome.failure?.origin ?? null,
+      code: outcome.failure?.code ?? null,
+    },
+    raw,
+    answered,
+  );
+}
+
+/**
  * Drain one scope's pending platform intents: list them from the vertical, dispatch each to the
  * handler for its `kind`, and settle the outcome back in the vertical. An unknown kind settles
  * `failed` (never silently dropped); a thrown handler settles `pending` (retried on the next drain);
@@ -290,19 +322,16 @@ export async function drainScopePlatformRequests(
         // refused a hundred times is what refused on the last attempt.
         failure: outcome.failure,
       };
-      opts?.recordFailure?.({
-        operation: `intent.${kind}`,
-        stage: 'attempt-ceiling',
-        tenantId: ctx.tenantId,
-        scopeId: ctx.scopeId,
-        vertical: ctx.vertical,
-        version: ctx.versionId ?? null,
-        // The attribution the settle journals (#841) rides onto the fleet row too —
-        // until now the drain had {origin, code} in hand and dropped it here (#1233).
-        origin: outcome.failure?.origin ?? null,
-        code: outcome.failure?.code ?? null,
-        message: platformIntentFailureMessage(id, outcome.error ?? 'unknown'),
-      });
+      opts?.recordFailure?.(
+        intentFailure(
+          ctx,
+          kind,
+          'attempt-ceiling',
+          outcome,
+          platformIntentFailureMessage(id, outcome.error ?? 'unknown'),
+          (reference) => platformIntentFailureMessage(id, `gave up after ${attempts + 1} drain attempts (reference ${reference})`),
+        ),
+      );
     } else if (outcome.status === 'failed' && !inert) {
       // An inert settle (#2005) is expected, not an operator's headline; the settle below
       // still journals its reason and attribution.
@@ -311,17 +340,16 @@ export async function drainScopePlatformRequests(
       // over, nobody is coming back to it, and until now its only trace was a `last_error`
       // column in the vertical's own DO. An unknown kind, a refused payload, a provider's 4xx:
       // each is an operator's headline for the same reason a give-up is.
-      opts?.recordFailure?.({
-        operation: `intent.${kind}`,
-        stage: 'terminal',
-        tenantId: ctx.tenantId,
-        scopeId: ctx.scopeId,
-        vertical: ctx.vertical,
-        version: ctx.versionId ?? null,
-        origin: outcome.failure?.origin ?? null,
-        code: outcome.failure?.code ?? null,
-        message: platformIntentFailureMessage(id, `failed: ${outcome.error ?? 'unknown'}`),
-      });
+      opts?.recordFailure?.(
+        intentFailure(
+          ctx,
+          kind,
+          'terminal',
+          outcome,
+          platformIntentFailureMessage(id, `failed: ${outcome.error ?? 'unknown'}`),
+          (reference) => platformIntentFailureMessage(id, `failed (reference ${reference})`),
+        ),
+      );
     }
     // No special case for a refused row: every row that reaches here has an id the settle
     // route accepts (#1637 left the rest out above), so its settle is refused for the same

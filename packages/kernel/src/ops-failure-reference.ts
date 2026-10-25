@@ -1,4 +1,25 @@
-import { upstreamReferenceMarker } from '@substrat-run/contracts';
+import { upstreamReferenceMarker, withUpstreamReference, type TenantId } from '@substrat-run/contracts';
+import type { OpsFailureInput } from './scope-host.js';
+import { ulid } from './ulid.js';
+
+/**
+ * #2540, #2554: one failure filed under a tenant whose text is not the tenant's to read, as the
+ * input every writer hands `recordOpsFailure`: the API's routes, and the host-level writers below
+ * it (a lifecycle delivery, the platform drain). The tenant's row says only `answered(reference)`;
+ * the text goes to `detail`, which the host writes on a row with no tenant under the same
+ * reference, the form staff's row always takes (`withUpstreamReference`). The reference is the
+ * platform's own ulid unless the caller already minted one (a log line written under it first).
+ * `raw` is the text as the failure gave it: never one already passed through
+ * `withUpstreamReference`, which is not idempotent.
+ */
+export function withheldOpsFailure<E extends Omit<OpsFailureInput, 'actor' | 'message' | 'detail' | 'reference'> & { tenantId: TenantId }>(
+  entry: E,
+  raw: string,
+  answered: (reference: string) => string,
+  reference: string = ulid(),
+): E & { message: string; detail: string; reference: string } {
+  return { ...entry, reference, message: answered(reference), detail: withUpstreamReference(raw) };
+}
 
 /**
  * #2540: the `reference` narrowing of an ops-failure list, as SQL over `_substrat_ops_failures`,
