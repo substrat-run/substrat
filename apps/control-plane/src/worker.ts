@@ -1255,6 +1255,15 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
         // its own outbox, so this is a name to check, never a claim to trust.
         eventId: a.eventId,
       }),
+    // #2514: the same read, its bytes handed to the connector as they come off the response.
+    openAttachmentStream: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId)).connectorOpenAttachmentStream({
+        connectionId: a.connectionId,
+        tenantId: a.tenantId,
+        scopeId: a.scopeId,
+        attachmentId: a.attachmentId,
+        eventId: a.eventId,
+      }),
     grant: async (a) =>
       (await clientFor(a.tenantId, a.scopeId)).connectorGrant({
         connectionId: a.connectionId,

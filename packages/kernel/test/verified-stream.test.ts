@@ -5,6 +5,7 @@ import {
   VERIFIED_STREAM_CHUNK_MAX_BYTES,
   bytesStream,
   openAttachmentByteStream,
+  runtimeSha256,
   verifiedStream,
   type ByteStream,
   type ByteStreamRead,
@@ -219,6 +220,45 @@ describe('verifiedStream (#2514)', () => {
     };
     const out = await read(verifiedStream({ stream: source, length: 1 }, { size: 1, sha256: 'a'.repeat(64) }, nodeSha256()).stream);
     expect(out).toMatchObject({ ok: false, error: expect.stringMatching(/neither a chunk nor its end/) });
+  });
+});
+
+describe('runtimeSha256 (#2514)', () => {
+  it('is undefined where the runtime has no running digest (Node)', () => {
+    expect((globalThis.crypto as unknown as { DigestStream?: unknown }).DigestStream).toBeUndefined();
+    expect(runtimeSha256()).toBeUndefined();
+  });
+
+  it("uses the runtime's DigestStream where it has one, and gives the digest a buffer gets", async () => {
+    // A stand-in for workerd's `crypto.DigestStream`, over Node's hash: what is tested is the wiring.
+    class DigestStream {
+      private readonly hash = createHash('sha256');
+      readonly digest: Promise<ArrayBuffer>;
+      private resolve!: (b: ArrayBuffer) => void;
+      constructor(algorithm: string) {
+        expect(algorithm).toBe('SHA-256');
+        this.digest = new Promise((r) => (this.resolve = r));
+      }
+      getWriter() {
+        return {
+          write: async (c: Uint8Array) => void this.hash.update(c),
+          close: async () => {
+            const d = this.hash.digest();
+            this.resolve(d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength) as ArrayBuffer);
+          },
+        };
+      }
+    }
+    const crypto = globalThis.crypto as unknown as { DigestStream?: unknown };
+    crypto.DigestStream = DigestStream;
+    try {
+      const digest = runtimeSha256()!;
+      await digest.update(new TextEncoder().encode('%PDF'));
+      await digest.update(new TextEncoder().encode('-1.4'));
+      expect(await digest.hex()).toBe(createHash('sha256').update('%PDF-1.4').digest('hex'));
+    } finally {
+      delete crypto.DigestStream;
+    }
   });
 });
 

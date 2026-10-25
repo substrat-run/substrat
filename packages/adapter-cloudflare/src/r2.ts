@@ -2,6 +2,7 @@ import {
   globalFetch,
   isSizedByteStream,
   knownLengthStream,
+  runtimeSha256,
   type ConnectorResponse,
   type FetchLike,
   type IncrementalSha256,
@@ -145,15 +146,9 @@ export function createR2BlobStores(opts: R2BlobStoresOptions): R2BlobStores {
  * held. The kernel's `putAttachmentBytes` takes it.
  */
 export function workerdSha256(): IncrementalSha256 {
-  const digest = new crypto.DigestStream('SHA-256');
-  const writer = digest.getWriter();
-  return {
-    update: (chunk) => writer.write(chunk),
-    hex: async () => {
-      await writer.close();
-      return [...new Uint8Array(await digest.digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    },
-  };
+  const digest = runtimeSha256();
+  if (!digest) throw new Error('this runtime has no crypto.DigestStream; the Cloudflare adapter runs on workerd');
+  return digest;
 }
 
 /** The minimal slice of a worker `R2Bucket` binding this adapter relies on. */
