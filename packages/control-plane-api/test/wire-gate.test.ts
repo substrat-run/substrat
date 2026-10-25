@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono } from 'hono';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { problemForStatus, PROBLEM_CONTENT_TYPE } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import { assertPlatformCall } from '@substrat-run/contracts/wire-auth';
@@ -30,6 +34,7 @@ import {
   type GatedWorker,
   type WireGateOptions,
 } from '../platform-entry/wire-gate.js';
+import { nonceStoreOf } from '../platform-entry/nonce-store.js';
 
 /**
  * The wire-signing verifier the platform's entry wraps around every vertical (RFC wire-signing
@@ -388,18 +393,23 @@ describe('dual, a call to the internal surface', () => {
   });
 
   it.each([
-    ['a scope named', PROVISION, { tenantId: TENANT, scopeId: SCOPE }],
-    ['no scope named', PROVISION, {}],
-    ['an endpoint the table has never heard of', 'https://vertical/internal/brand-new-verb', {}],
-    ['another spelling of a replay-free endpoint', 'https://vertical/internal/%71uery', {}],
-  ])('a call that changes state keeps nonces with %s: fail closed, the counted fault', async (_, url, scope) => {
+    ['a scope named', PROVISION, { tenantId: TENANT, scopeId: SCOPE }, 'no-nonce-store'],
+    ['no scope named', PROVISION, {}, 'unscoped'],
+    ['an endpoint the table has never heard of', 'https://vertical/internal/brand-new-verb', {}, 'unscoped'],
+    ['another spelling of a replay-free endpoint', 'https://vertical/internal/%71uery', {}, 'unscoped'],
+  ])('a call that changes state keeps nonces with %s: fail closed, the counted fault', async (_, url, scope, fault) => {
     const body = '{"ping":true}';
     const headers = { ...callHeaders(true), ...(await callEnvelope(url, body, scope)) };
-    const dual = gated();
+    // A store is there to be had: a call that names no scope still has none to spend its nonce in.
+    const claim = vi.fn(() => true);
+    const nonceCache = () => ({ claim });
+    const dual = gated(scope.scopeId ? {} : { nonceCache });
     const served = await dual.fetch(new Request(url, { method: 'POST', headers, body }), envOf('dual'));
     expect(await bodyOf(served)).toBe(body);
-    // The envelope passed every check before the claim, so the fault is filed under what it named.
-    expect(dual.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid', issuer: 'platform', tenantId: scope.tenantId ?? null, scopeId: scope.scopeId ?? null });
+    // The envelope passed every check before the claim, so the fault is filed under what it named:
+    // `unscoped` when it named no scope (RFC §4, a kind of its own), the version's own otherwise.
+    expect(dual.wire()[0]).toMatchObject({ outcome: 'fault', fault, legacy: 'valid', issuer: 'platform', tenantId: scope.tenantId ?? null, scopeId: scope.scopeId ?? null });
+    expect(claim).not.toHaveBeenCalled();
     const signedOnly = gated();
     expect((await signedOnly.fetch(new Request(url, { method: 'POST', headers, body }), envOf('signed-only'))).status).toBe(503);
     expect(signedOnly.seen).toEqual([]);
@@ -438,12 +448,12 @@ describe('dual, a call to the internal surface', () => {
     const body = '{"operation":"x"}';
     const routerCall = (url: string) => sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url });
     // A peer invocation runs an operation, so it keeps nonces: an envelope that passes every check
-    // reaches the nonce store, which this version lacks, and is counted as that fault.
+    // and names no scope has no store to spend one in, and is counted as that fault.
     // The line names the issuer it verified; a refused envelope's own claim is not taken.
     const expired = { iat: NOW - 200, exp: NOW - 100 };
     const cases: Array<[string, Record<string, string>, Record<string, unknown>]> = [
-      [INVOKE, await routerCall(INVOKE), { outcome: 'fault', fault: 'no-nonce-store', issuer: 'router' }],
-      [INVOKE, await callEnvelope(INVOKE, body), { outcome: 'fault', fault: 'no-nonce-store', issuer: 'platform' }],
+      [INVOKE, await routerCall(INVOKE), { outcome: 'fault', fault: 'unscoped', issuer: 'router' }],
+      [INVOKE, await callEnvelope(INVOKE, body), { outcome: 'fault', fault: 'unscoped', issuer: 'platform' }],
       [PROVISION, await routerCall(PROVISION), { outcome: 'refused', reason: 'issuer', issuer: 'platform' }],
       [INVOKE, await sign(router, { iss: 'router', kind: 'call', aud: AUD, method: 'POST', body, url: INVOKE, ...expired }), { outcome: 'refused', reason: 'expired', issuer: null }],
       [INVOKE, await callEnvelope(INVOKE, body, expired), { outcome: 'refused', reason: 'expired', issuer: null }],
@@ -475,13 +485,13 @@ describe('dual, a call to the internal surface', () => {
       return { res, g };
     };
 
-    it('claims the nonce in the scope the envelope pins, until exp plus skew, and accepts on exactly true', async () => {
+    it('claims the nonce in the tenant and scope the envelope pins, until exp plus skew, and accepts on exactly true', async () => {
       const claim = vi.fn<WireNonceCache['claim']>(() => true);
-      const nonceCache = vi.fn((_env: Env, _scope: string) => ({ claim }));
+      const nonceCache = vi.fn((_env: Env, _scope: string, _tenant: string | null) => ({ claim }));
       const { res, g } = await scopedCall(envOf('dual'), { nonceCache });
       expect(res.status).toBe(200);
       expect(nonceCache).toHaveBeenCalledTimes(1);
-      expect(nonceCache).toHaveBeenCalledWith(expect.anything(), SCOPE);
+      expect(nonceCache).toHaveBeenCalledWith(expect.anything(), SCOPE, TENANT);
       expect(claim).toHaveBeenCalledWith(expect.any(String), NOW + 60 + 30);
       expect(g.wire()[0]).toMatchObject({ outcome: 'signed-accepted' });
     });
@@ -601,7 +611,7 @@ describe('dual, a call to the internal surface', () => {
       expect(await bodyOf(dual.res)).toBe('{"x":1}');
       // Asked once, for the scope the envelope named, and counted as the version's own static fault.
       expect(nonceCache).toHaveBeenCalledTimes(1);
-      expect(nonceCache).toHaveBeenCalledWith(expect.anything(), SCOPE);
+      expect(nonceCache).toHaveBeenCalledWith(expect.anything(), SCOPE, TENANT);
       expect(dual.g.wire()).toEqual([
         expect.objectContaining({ outcome: 'fault', fault: 'no-nonce-store', reason: null, legacy: 'valid', issuer: 'platform', tenantId: TENANT, scopeId: SCOPE }),
       ]);
@@ -1184,5 +1194,116 @@ describe('what the gate answers and writes', () => {
       ['substrat', 'state', 'issuer', 'kind', 'outcome', 'reason', 'fault', 'legacy', 'tenantId', 'scopeId', 'versionId'].sort(),
     );
     expect(line).not.toContain(ROUTER_VALUE);
+  });
+});
+
+/**
+ * RFC wire-signing §4: the seam the emitted entry passes (`nonceStoreOf` over the host the
+ * vertical registered), filled by the self-hosted adapter's own `claimWireNonceLocal`, the store
+ * whose behaviour both adapters share. `platform-entry.workerd.test.ts` runs the emitted entry over a
+ * real scope object.
+ */
+describe('the nonce store the entry claims in (RFC wire-signing §4)', () => {
+  const callHeaders = (legacy: boolean) => (legacy ? { [PLATFORM_SECRET_HEADER]: CALL_VALUE } : {});
+  const body = '{"x":1}';
+  const signed = async () => callEnvelope(PROVISION, body, { tenantId: TENANT, scopeId: SCOPE });
+  const call = (headers: Record<string, string>) => new Request(PROVISION, { method: 'POST', headers, body });
+
+  let dir: string;
+  let host: SqliteScopeHost;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-wire-gate-nonce-'));
+    host = new SqliteScopeHost({ dir });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A registry holding `hostFor`, as `mountPlatformSurface` fills it. */
+  const registry = (hostFor: ((env: never) => unknown) | undefined) => nonceStoreOf(() => hostFor);
+  const withHost = () => {
+    const spy = vi.spyOn(host, 'claimWireNonceLocal');
+    return { nonceCache: registry(() => host), spy };
+  };
+
+  it('spends the nonce once: the call is accepted, and the same envelope sent again is a replay', async () => {
+    const { nonceCache, spy } = withHost();
+    const headers = await signed();
+    // dual, beside a valid legacy credential: accepted, then counted as a replay and served as today.
+    const dual = gated({ nonceCache });
+    expect((await dual.fetch(call({ ...callHeaders(true), ...headers }), envOf('dual'))).status).toBe(200);
+    expect(dual.wire()[0]).toMatchObject({ outcome: 'signed-accepted', fault: null, reason: null });
+    expect(spy).toHaveBeenCalledWith(TENANT, SCOPE, expect.any(String), NOW + 60 + 30);
+    expect((await dual.fetch(call({ ...callHeaders(true), ...headers }), envOf('dual'))).status).toBe(200);
+    expect(dual.wire()[1]).toMatchObject({ outcome: 'legacy-accepted', reason: 'replay' });
+    // signed-only: the replay is the one refusal, and the vertical never sees it.
+    const signedOnly = gated({ nonceCache });
+    const refused = await signedOnly.fetch(call(headers), envOf('signed-only'));
+    expect(refused.status).toBe(401);
+    expect(await refused.text()).toBe(WIRE_REFUSAL_BODY);
+    expect(signedOnly.seen).toEqual([]);
+    expect(signedOnly.wire()[0]).toMatchObject({ outcome: 'refused', reason: 'replay' });
+  });
+
+  it('a retry the signer re-signs carries a fresh nonce and is accepted; only a resent envelope is a replay', async () => {
+    const { nonceCache } = withHost();
+    const g = gated({ nonceCache });
+    const first = await signed();
+    expect((await g.fetch(call(first), envOf('signed-only'))).status).toBe(200);
+    const retry = await signed();
+    expect(retry[WIRE_ENVELOPE_HEADER]).not.toBe(first[WIRE_ENVELOPE_HEADER]);
+    expect((await g.fetch(call(retry), envOf('signed-only'))).status).toBe(200);
+    expect((await g.fetch(call(first), envOf('signed-only'))).status).toBe(401);
+    expect(g.wire().map((l) => l.reason)).toEqual([null, null, 'replay']);
+  });
+
+  it('a call with no envelope never reaches the store, in dual or in signed-only', async () => {
+    const { nonceCache, spy } = withHost();
+    const g = gated({ nonceCache });
+    expect((await g.fetch(call(callHeaders(true)), envOf('dual'))).status).toBe(200);
+    expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'missing' });
+    expect((await g.fetch(call(callHeaders(true)), envOf('signed-only'))).status).toBe(401);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('a bundle that registered no host, or a host from before the store, is the static no-nonce-store fault', async () => {
+    for (const nonceCache of [registry(undefined), registry(() => ({})), registry(() => null)]) {
+      const dual = gated({ nonceCache });
+      expect((await dual.fetch(call({ ...callHeaders(true), ...(await signed()) }), envOf('dual'))).status).toBe(200);
+      expect(dual.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid' });
+      const signedOnly = gated({ nonceCache });
+      expect((await signedOnly.fetch(call(await signed()), envOf('signed-only'))).status).toBe(503);
+    }
+  });
+
+  it('a store that throws, a builder that throws, or a store at its cap is the store’s failure in every state', async () => {
+    const failing = [
+      registry(() => ({ claimWireNonceLocal: () => Promise.reject(new Error('the wire nonce store holds as many live nonces as it may')) })),
+      registry(() => {
+        throw new Error('no host here');
+      }),
+    ];
+    for (const nonceCache of failing) {
+      for (const state of ['dual', 'signed-only']) {
+        const g = gated({ nonceCache });
+        const res = await g.fetch(call({ ...callHeaders(true), ...(await signed()) }), envOf(state));
+        expect(res.status).toBe(503);
+        expect(await res.text()).toBe(WIRE_FAULT_BODY);
+        expect(g.seen).toEqual([]);
+        expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
+      }
+    }
+  });
+
+  it('builds the vertical’s host once per worker env, as the sweeper does', async () => {
+    const hostFor = vi.fn(() => host);
+    const nonceCache = registry(hostFor);
+    const g = gated({ nonceCache });
+    const env = envOf('signed-only');
+    for (let i = 0; i < 3; i++) expect((await g.fetch(call(await signed()), env)).status).toBe(200);
+    expect(hostFor).toHaveBeenCalledTimes(1);
+    await g.fetch(call(await signed()), envOf('signed-only'));
+    expect(hostFor).toHaveBeenCalledTimes(2);
   });
 });

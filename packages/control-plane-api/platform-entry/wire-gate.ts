@@ -71,15 +71,16 @@ export interface WireGateOptions<Env> {
   /** The platform's legacy call credential as this deployment holds it. */
   readonly platformSecret: (env: Env) => string | undefined;
   /**
-   * Where a call that changes state spends its nonce: the scope object's store (RFC §4, Q4), a
-   * follow-on. Until one is given, such a call cannot be verified, and is counted as the
-   * `no-nonce-store` fault. It is reached only when the nonce is claimed, after every other check
-   * has passed, and for the scope the verified envelope names. An answer of `undefined` says this
-   * version has no store for it: the same static fault as no seam at all (RFC §3.4), except that a
-   * claim that would come too late is refused as `claim-after-until` first (RFC §4), since the
-   * verifier reads its claim clock before the seam is asked. A throw is the store's failure.
+   * Where a call that changes state spends its nonce: the scope object's store (RFC §4, Q4). The
+   * entry passes `nonceStoreOf` over the host the vertical registered (`nonce-store.ts`). Without
+   * one, such a call cannot be verified, and is counted as the `no-nonce-store` fault. It is
+   * reached only when the nonce is claimed, after every other check has passed, and for the tenant
+   * and scope the verified envelope names. An answer of `undefined` says this version has no store
+   * for it: the same static fault as no seam at all (RFC §3.4), except that a claim that would come
+   * too late is refused as `claim-after-until` first (RFC §4), since the verifier reads its claim
+   * clock before the seam is asked. A throw is the store's failure.
    */
-  readonly nonceCache?: (env: Env, scopeId: string) => WireNonceCache | undefined;
+  readonly nonceCache?: (env: Env, scopeId: string, tenantId: string | null) => WireNonceCache | undefined;
   /** Milliseconds since the epoch. The wall clock unless a test injects one. */
   readonly clock?: () => number;
   /** How long a nonce claim may take before it counts as the store's failure. */
@@ -316,7 +317,10 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
     const keepsNonces = call && wireReplayOf(method, pathname) === 'nonce';
     const pinned = keepsNonces ? (claimed?.scopeId ?? undefined) : undefined;
     const reach = options.nonceCache;
-    const store = pinned !== undefined && reach ? claimedThrough(() => reach(env, pinned), timeoutMs) : undefined;
+    // The tenant beside the pinned scope: the envelope names both or neither, and the seam is asked
+    // only once the verifier has held the signed bytes to the decoded ones.
+    const store =
+      pinned !== undefined && reach ? claimedThrough(() => reach(env, pinned, claimed?.tenantId ?? null), timeoutMs) : undefined;
     const expected: WireExpectation = call
       ? {
           iss: issuer,
@@ -358,9 +362,10 @@ export function withWireGate<Env>(worker: GatedWorker<Env>, options: WireGateOpt
       }
     }
     // An envelope that passed everything else, on a call that keeps nonces with no store to keep
-    // them in: a static fault, reached only now, as a claim is always the last check.
+    // them in: a static fault, reached only now, as a claim is always the last check. One that
+    // names no scope has no store in any version (RFC §4), so it is counted apart, as `unscoped`.
     if (claims && keepsNonces && noStore) {
-      return staticFault('no-nonce-store', servedAs(legacy.identity ?? claims));
+      return staticFault(claims.scopeId == null ? 'unscoped' : 'no-nonce-store', servedAs(legacy.identity ?? claims));
     }
 
     // Two valid credentials naming different requests: a router defect to count in every state (Q9),
