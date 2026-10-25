@@ -6,7 +6,7 @@
  * existed.
  */
 import { ULID_PATTERN } from '@substrat-run/contracts';
-import { wireSignerOf, type WireSignResult } from '@substrat-run/contracts/wire-signing';
+import { wireSignerOf, wireUnsignedRouteOf, type WireSignResult } from '@substrat-run/contracts/wire-signing';
 
 /** The control plane's own signing settings, as its env holds them. */
 export interface PlatformWireSettings {
@@ -138,13 +138,30 @@ function streamed(input: RequestInfo | URL, init: RequestInit | undefined): bool
 }
 
 /**
+ * Whether a streamed call goes to a route listed as unsigned by design (`WIRE_UNSIGNED_ROUTES`), by
+ * the method and path it would send. Only such a call is a deliberate skip; a streamed call to any
+ * other route still goes as given, since it cannot be bound without being read, but is counted a
+ * failure (`stream-unlisted`), so a new streamed route shows in the counts until it is listed.
+ */
+function listedStream(input: RequestInfo | URL, init: RequestInit | undefined): boolean {
+  try {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
+    return wireUnsignedRouteOf(method, url.pathname) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The `fetch` a client for the deployment the dispatch namespace knows as `aud` is given: `send`
  * itself while the flag is off; on, `send` behind the signer, so every call, a retry included, is
  * signed afresh for that deployment (RFC §4). The caller builds it for the same name it makes the
  * dispatch stub from, so the envelope always names the script the call reaches. A signer that cannot
  * sign never fails the call: it goes with its legacy header and its whole body, and the line says
  * why, never a key. A streamed call is not signed and its body is not read: it goes exactly as
- * given, counted `skipped`, which is a decision, not a failure.
+ * given, counted `skipped` when its route is listed as unsigned by design, which is a decision, not a
+ * failure, and `failed` (`stream-unlisted`) when it is not.
  */
 export function platformSignedFetch(settings: PlatformWireSettings, aud: string, send: typeof fetch): typeof fetch {
   const signer = wireSignerOf(settings);
@@ -154,7 +171,8 @@ export function platformSignedFetch(settings: PlatformWireSettings, aud: string,
     log(JSON.stringify({ substrat: 'wire-sign', issuer: 'platform', aud, outcome, ...(reason ? { reason } : {}) }));
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (streamed(input, init)) {
-      count('skipped', 'stream');
+      if (listedStream(input, init)) count('skipped', 'stream');
+      else count('failed', 'stream-unlisted');
       return send(input, init);
     }
     const result = await signer(new Request(input, init), { iss: 'platform', kind: 'call', aud }, platformCallScope);

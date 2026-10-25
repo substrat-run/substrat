@@ -10,6 +10,7 @@ import {
   WIRE_ROUTER_KEYS_VAR,
   WIRE_SIGNATURE_HEADER,
   WIRE_STATE_VAR,
+  WIRE_UNSIGNED_ROUTES,
   wireDigest,
   type WireClaims,
   type WireVerificationLine,
@@ -355,7 +356,33 @@ describe('a streamed call (#2498): never signed, and its body never read by the 
     expect(lines).toEqual([]);
   });
 
-  it('a Request handed whole with a body is not read either, whatever it was built from: skipped, as given', async () => {
+  it('only a route listed as unsigned by design is a deliberate skip; a streamed call to any other is sent as given and counted a failure', async () => {
+    const lines: string[] = [];
+    const calls: string[] = [];
+    const send = (async (input: RequestInfo | URL) => (calls.push(String(input)), Response.json({}))) as typeof globalThis.fetch;
+    const fetch = signed(send, active.privateKey, (l) => lines.push(l));
+    const streamOf = () => new ReadableStream<Uint8Array>({ start: (c) => (c.enqueue(new Uint8Array([1])), c.close()) });
+    for (const route of WIRE_UNSIGNED_ROUTES) {
+      await fetch(`https://vertical.invalid${route.path}`, { method: route.method, body: streamOf(), duplex: 'half' } as RequestInit);
+    }
+    // The same path under another method, and another path, are not listed.
+    await fetch('https://vertical.invalid/internal/connector-attachment-stream', { method: 'PUT', body: streamOf(), duplex: 'half' } as RequestInit);
+    await fetch('https://vertical.invalid/internal/another-stream', { method: 'POST', body: streamOf(), duplex: 'half' } as RequestInit);
+    expect(calls).toHaveLength(WIRE_UNSIGNED_ROUTES.length + 2);
+    expect(lines.map((l) => JSON.parse(l) as unknown)).toEqual([
+      ...WIRE_UNSIGNED_ROUTES.map(() => ({ substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'skipped', reason: 'stream' })),
+      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'failed', reason: 'stream-unlisted' },
+      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'failed', reason: 'stream-unlisted' },
+    ]);
+    // Every route listed carries its method, its path and a fixed reason.
+    for (const route of WIRE_UNSIGNED_ROUTES) {
+      expect(route.method).toMatch(/^[A-Z]+$/);
+      expect(route.path).toMatch(/^\/internal\//);
+      expect(route.reason.length).toBeGreaterThan(20);
+    }
+  });
+
+  it('a Request handed whole with a body is not read either, whatever it was built from: sent as given, an unlisted route counted a failure', async () => {
     const lines: string[] = [];
     const calls: { input: RequestInfo | URL; init: RequestInit | undefined }[] = [];
     const send = (async (input: RequestInfo | URL, init?: RequestInit) => (calls.push({ input, init }), Response.json({}))) as typeof globalThis.fetch;
@@ -371,9 +398,12 @@ describe('a streamed call (#2498): never signed, and its body never read by the 
     await fetch(kept, { body: null });
     expect(kept.bodyUsed).toBe(false);
     expect(lines.map((l) => JSON.parse(l) as unknown)).toEqual([
-      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'skipped', reason: 'stream' },
-      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'skipped', reason: 'stream' },
+      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'failed', reason: 'stream-unlisted' },
+      { substrat: 'wire-sign', issuer: 'platform', aud: AUD, outcome: 'failed', reason: 'stream-unlisted' },
     ]);
+    // Handed whole to the listed route, it is the deliberate skip.
+    await fetch(new Request('https://vertical.invalid/internal/connector-attachment-stream', { method: 'POST', body: 'x' }));
+    expect(JSON.parse(lines.at(-1)!)).toMatchObject({ outcome: 'skipped', reason: 'stream' });
   });
 
   it('its twins by call style: a Request with no body, and a Request given a held body in `init`, are signed', async () => {

@@ -316,6 +316,7 @@ import {
   WIRE_WALK_RELEASE_MAX,
   type WireWalkPass,
 } from './wire-walk.js';
+import { wireKeyDropSince, wireReadinessReport, WIRE_READINESS_LIMIT_DEFAULT, WIRE_READINESS_LIMIT_MAX } from './wire-readiness.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
 import { queryLakeEvents, type LakeQueryEngine } from './lake-gateway.js';
 import { LakeQueryError } from './r2-sql-engine.js';
@@ -12277,12 +12278,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (body.cursor !== undefined && cursor === null) throw new ControlPlaneError(422, 'the cursor is not one a pass answered');
     const apply = body.apply === true;
     const confirm = body.confirm === true;
+    // Before anything is read: the readiness report trusts a record as confirmed only when it was
+    // written after the confirming walk began.
+    const startedAt = new Date().toISOString();
     // Refused settings give every script nothing, which an applied pass would write as a fleet-wide
     // withdrawal: the pass is refused before it walks anything, dry or applied, and audited as such.
     const refused = await wireSettingsRefusal(options.wireUpload);
     if (refused) {
       await c.var.admin.recordWireWalk(actor, {
-        apply, confirm, from: body.cursor ?? null, next: null, walked: 0,
+        apply, confirm, startedAt, from: body.cursor ?? null, next: null, walked: 0,
         updated: [], held: [], released: [], skipped: [], failed: [],
         refused: `${refused.withheld}: ${refused.reason}`,
       });
@@ -12316,6 +12320,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.recordWireWalk(actor, {
         apply,
         confirm,
+        startedAt,
         from: body.cursor ?? null,
         next: pass?.next ?? null,
         walked: walked.length,
@@ -12328,6 +12333,41 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
     }
     return c.json(pass);
+  });
+
+  // RFC wire-signing follow-on 4: one page of the readiness report (`wireReadinessReport`): what blocks
+  // `signed-only`, a key drop (when the body names one) and the withdrawal of the shared credential.
+  // Advisory and read-only: it reads the registry, the capability records and the walk's rows, and
+  // nothing else; its record reads leave their access-log rows. A staff sign-in, never a service token.
+  // Bounded and resumable like the walk: at most `limit` scripts, from `cursor`, answering `next`.
+  app.post('/wire-auth/readiness', async (c) => {
+    const actor = await byAPerson(c, { write: 'a wire readiness report', person: 'the wire readiness report is read by a person' });
+    if (!c.var.admin.listWireAuth) throw new ControlPlaneError(501, 'this control plane does not keep capability records');
+    const body = z
+      .object({
+        cursor: z.string().min(1).max(512).optional(),
+        limit: z.number().int().min(1).max(WIRE_READINESS_LIMIT_MAX).optional(),
+        keyDrop: z
+          .object({ issuer: z.enum(['router', 'platform']), kid: z.string().min(1).max(256), since: z.unknown().optional() })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .parse(await readCappedJson(c.req.raw, WIRE_WALK_REQUEST_MAX_BYTES));
+    const cursor = body.cursor === undefined ? null : parseWireWalkCursor(body.cursor);
+    if (body.cursor !== undefined && cursor === null) throw new ControlPlaneError(422, 'the cursor is not one a page answered');
+    let keyDrop: { issuer: 'router' | 'platform'; kid: string; since: string } | undefined;
+    if (body.keyDrop) {
+      const since = wireKeyDropSince(body.keyDrop.since, new Date());
+      if (typeof since !== 'string') throw new ControlPlaneError(422, since.refused);
+      keyDrop = { issuer: body.keyDrop.issuer, kid: body.keyDrop.kid, since };
+    }
+    return c.json(
+      await wireReadinessReport(
+        { admin: c.var.admin, actor, settings: options.wireUpload },
+        { cursor, from: body.cursor ?? null, limit: body.limit ?? WIRE_READINESS_LIMIT_DEFAULT, ...(keyDrop ? { keyDrop } : {}) },
+      ),
+    );
   });
 
   return app;

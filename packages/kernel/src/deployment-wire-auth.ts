@@ -211,6 +211,12 @@ export interface WireWalkAudit {
   readonly apply: boolean;
   /** A confirming pass, which read every recorded script rather than trusting its record. */
   readonly confirm: boolean;
+  /**
+   * When the pass began (ISO 8601), before it read or wrote anything; the row's own `at` is when it
+   * ended. The readiness report trusts a record as confirmed only when it was written after the
+   * confirming walk began, so a row without it (one written before this field) confirms nothing.
+   */
+  readonly startedAt?: string;
   readonly from: string | null;
   /** Where the next pass starts; `null` at the end of the fleet, or when the pass ended in an error. */
   readonly next: string | null;

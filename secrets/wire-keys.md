@@ -151,7 +151,9 @@ while a push or a promote of a vertical it will reach is in flight.** In this or
    `apply` to bring back what it finds). A confirming pass reads every recorded script again rather
    than trusting its record, so every script should read `unchanged`. It does not read a `held`
    script, nor a `skipped` or `unrecorded` one: deal with each of those first (release or push again).
-   **It is mandatory before any key is dropped from a list**, and after break-glass.
+   **It is mandatory before any key is dropped from a list**, and after break-glass. The readiness
+   report (below) counts only an applied confirming walk (`"confirm": true, "apply": true`), whole
+   from the start of the fleet to `next: null`, with no other applied pass after it.
 
 It takes a staff sign-in, never a service token, like the store driver release writes. Each pass
 writes a `walkWireAuth` row to the admin log. Each script it changes writes its `recordWireAuth` row
@@ -189,8 +191,7 @@ setting and the problem, never a key). Fix the setting, push and deploy the cont
 
 When a key must stop being trusted, take the break-glass path below. A script the walk has not
 reached yet still trusts the key. The admin log's `recordWireAuth` rows name each script given lists
-and the key ids of each list (the records themselves are reachable only through the host API today,
-until the readiness report).
+and the key ids of each list; the readiness report (below) reads the records themselves.
 
 A read of the records (`listWireAuth`) is always one page and names its reach: one tenant's
 verticals or the whole fleet. A tenant reach follows the vertical's current owner, resolved when the
@@ -200,6 +201,56 @@ registry does not hold is refused, `not_found`), so a new registrant of a slug r
 recorded since it registered. Apart from a whole-directory restore, which replaces the owners and the
 records together from one dump, an owner changes only by deleting the vertical, which removes its
 records, and registering the slug again.
+
+## The readiness report
+
+**Run it before any flip to `signed-only`, any key drop and any withdrawal of the shared credential,
+and read every page.** It is **advisory**: it tells the person doing the step what still blocks it,
+and no tooling enforces it yet (RFC follow-on 7). It is read-only: it reads the registry, the
+capability records and the walk's `walkWireAuth` rows, and nothing else. It reads no script, makes no
+call to the runtime, walks nothing and writes nothing; its record reads leave their access-log rows.
+It takes a staff sign-in, never a service token, and is paged like the walk (`limit` 1 to 50, a value
+outside that is refused rather than clamped; follow `next` until it is `null`):
+
+```sh
+curl -sS -X POST "$CONTROL_PLANE/wire-auth/readiness" -H 'content-type: application/json' \
+  <your staff sign-in> -d '{"limit": 25}'
+# before a key drop, name the key's issuer and id, and when the control plane's list stopped naming it:
+#   -d '{"limit": 25, "keyDrop": {"issuer": "router", "kid": "<key id>", "since": "<ISO 8601 instant>"}}'
+# then the same body with "cursor": "<next from the previous answer>" until next is null
+```
+
+`since` is required for a key drop, and refused when it is missing, not an instant, or in the future;
+the report echoes it back. Each page lists its scripts and three lists of blockers: `signedOnly`,
+`keyDrop` (only when one is asked about) and `credentialWithdrawal`. A gate is clear only when no
+page, from the start of the fleet, lists a blocker for it. Every reason is a fixed sentence, naming at
+most a setting or a vertical, never a key, a key id or a tenant.
+
+- **Unknown blocks.** A script with no record, one the walk holds, and one it could not verify are
+  `unknown`, and block every gate. Release or push them again, then walk and confirm.
+- **Confirmed.** A record is trusted as current only when it was written after the last applied
+  confirming walk began (step 6 of the walk). When that walk cannot be found whole in the admin log
+  (no such walk, a gap between its passes, a refused or failed pass, an applied pass that was not a
+  confirming one after it, a row the report cannot read, or a walk longer than the rows it reads), the
+  confirmation is unknown, and `signed-only` and every key drop are blocked until a confirming walk
+  runs again. For a key drop, that walk must also have begun after `since`.
+- **Standing blockers of `signed-only`.** Listed on every page until a later step answers them: each
+  route a signer leaves unsigned by design, by method, path and reason (today the streamed attachment
+  upload, `POST /internal/connector-attachment-stream`, RFC §3.6, Q5), and the cutover counters (§8),
+  which this report does not read yet. A streamed attachment read (`GET
+  /internal/connector-attachment/:id`) is not among them: its request has no body and is signed like
+  any call, and only its response streams.
+- **Standing blockers of the credential withdrawal.** No environment is `signed-only`, the up-channel
+  removals (step 6) are not recorded per version, and no version carries per-deployment values (Q10).
+  So the withdrawal is blocked today, by design and by name. Everything else that blocks
+  `signed-only` blocks the withdrawal too: a script that does not carry and verify signed calls (one
+  given no lists under a canary or with the rollout off, one without a standby, one unconfirmed)
+  still needs the shared credential.
+- **Refused settings are reported alone.** While `WIRE_KEYS_ROLLOUT` does not parse or a list does
+  not load, the report names that refusal and not the rollout state it hides: fix it first.
+- **As of the records, not live.** The answer is as of each record's recorded time: run the
+  confirming pass immediately before any flip or drop, and run the report after it. Every page says
+  so (`asOf`).
 
 ## Turning signing off
 
