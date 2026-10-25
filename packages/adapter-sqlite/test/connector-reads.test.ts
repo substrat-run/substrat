@@ -19,6 +19,7 @@ import {
   webCryptoSecretBox,
   type ConnectorContext,
   type OpenedAttachment,
+  type OpenedAttachmentStream,
   type OperationHandler,
 } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
@@ -320,6 +321,52 @@ describe('connector attachment reads during dispatch (#711)', () => {
     expect(new TextDecoder().decode(read!.body)).toBe('%PDF-1.4 the real avtal');
     await host.close();
   }, 20_000);
+
+  /**
+   * The streamed read (#2514) on the same seam: reentrant inside the dispatch, admitted by the
+   * delivery, and its bytes read after the gate, so the stream outlives no actor turn it needs.
+   */
+  it('streams the vertical’s own document during dispatch through conn.openAttachmentStream', async () => {
+    let text: string | undefined;
+    let opened: OpenedAttachmentStream | null | undefined;
+    const { host, record, stub } = await world(
+      async (ctx) => {
+        opened = await (await ctx.connection('provider')).openAttachmentStream(record.id);
+        text = await new Response(opened!.body.stream as ReadableStream<Uint8Array>).text();
+      },
+      { grantRead: false },
+    );
+    await stub.invoke('doc/send', { docId: 'd1' });
+    expect(text).toBe('%PDF-1.4 the real avtal');
+    expect(opened!.body.length).toBe(record.size);
+    expect(opened!.contentType).toBe('application/pdf');
+    await host.close();
+  });
+
+  it('the streamed read is held to the delivery too: another entity’s document is refused', async () => {
+    let error: string | undefined;
+    let other: string | undefined;
+    const { host, author, t, s, stub } = await world(async (ctx) => {
+      try {
+        await (await ctx.connection('provider')).openAttachmentStream(other!);
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+      }
+    });
+    other = (
+      await (await host.attachments(author, t, s)).upload({
+        entity: { entityType: 'doc', entityId: 'd2' },
+        filename: 'someone-elses.pdf',
+        contentType: 'application/pdf',
+        visibility: 'customer',
+        body: new TextEncoder().encode('%PDF-1.4 not yours'),
+      })
+    ).id;
+    await stub.invoke('doc/send', { docId: 'd1' });
+    expect(error).toMatch(/doc\/d2/);
+    expect(error).toMatch(/doc\/d1/);
+    await host.close();
+  });
 
   /** An id this scope does not know is `null`, not a throw — the caller falls back. */
   it('answers null for an unknown attachment id', async () => {

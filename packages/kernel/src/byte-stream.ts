@@ -51,6 +51,14 @@ export type ByteBody = Uint8Array | SizedByteStream;
  */
 export function connectorUploadBody(bytes: Uint8Array): ByteBody {
   if (bytes.byteLength <= CONNECTOR_ATTACHMENT_BUFFERED_MAX_BYTES) return bytes;
+  return bytesStream(bytes);
+}
+
+/**
+ * Bytes already held, as a one-shot {@link SizedByteStream} handed out 1 MiB at a time. It saves no
+ * memory, since the buffer is held; it lets a buffer go where a seam takes a stream.
+ */
+export function bytesStream(bytes: Uint8Array): SizedByteStream {
   const CHUNK = 1024 * 1024;
   let at = 0;
   const stream = new ReadableStream(
@@ -196,6 +204,102 @@ export function witnessedStream(body: SizedByteStream, digest: IncrementalSha256
       return witnessed;
     },
   };
+}
+
+/**
+ * The largest chunk a {@link verifiedStream} hands on, and so the most it holds back at its end. A
+ * source chunk larger than this is handed on in pieces of this size.
+ */
+export const VERIFIED_STREAM_CHUNK_MAX_BYTES = 1024 * 1024;
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * Stored bytes on their way out, held to the record that witnesses them (#2514): its `size` and its
+ * `sha256`, both checked as the bytes pass rather than before the first one, so nothing is held whole.
+ *
+ * **What a consumer sees when the bytes are wrong.** The digest is known only after the last byte, so
+ * the chunk that completes the declared size is held back until the source has ended and the digest
+ * matches. A mismatch, a source that ends short, or one that carries more errors the stream instead,
+ * and that last chunk is never handed on. So a consumer can never have received all `size` bytes of a
+ * file that did not verify. One that counts to `size` and stops reading is as safe as one that reads to
+ * the end. What it may have received before the error is a prefix, and it is told so by the error.
+ *
+ * The held-back chunk is at most {@link VERIFIED_STREAM_CHUNK_MAX_BYTES}: a source chunk larger than
+ * that is handed on in copies of that size, so the wait never holds more than one such piece beside the
+ * source chunk it came from.
+ *
+ * Throws before reading anything when the stream's length is not the record's `size`, or the record
+ * carries no sha256 to verify against, so a file is never handed on as verified when it could not be.
+ */
+export function verifiedStream(
+  body: SizedByteStream,
+  expected: { readonly size: number; readonly sha256: string },
+  digest: IncrementalSha256,
+): SizedByteStream {
+  assertDeclaredLength(body.length);
+  if (body.length !== expected.size) {
+    throw new Error(`the stored object is ${body.length} bytes; its record says ${expected.size}`);
+  }
+  if (!SHA256_HEX.test(expected.sha256)) {
+    throw new Error('the record carries no sha256 to verify the bytes against');
+  }
+  const length = body.length;
+  const reader = body.stream.getReader();
+  let rest: Uint8Array | undefined;
+  let delivered = 0;
+
+  /** The next non-empty piece of the source, at most the cap, or `null` at its end. */
+  const nextPiece = async (): Promise<Uint8Array | null> => {
+    while (!rest || rest.byteLength === 0) {
+      const { done, value } = await reader.read();
+      if (done) return null;
+      if (!value) throw new Error('the byte stream yielded a read with neither a chunk nor its end');
+      rest = value;
+    }
+    if (rest.byteLength <= VERIFIED_STREAM_CHUNK_MAX_BYTES) {
+      const piece = rest;
+      rest = undefined;
+      return piece;
+    }
+    // A copy, not a view: a consumer may take the piece's buffer, which would take the rest with it.
+    const piece = rest.slice(0, VERIFIED_STREAM_CHUNK_MAX_BYTES);
+    rest = rest.subarray(VERIFIED_STREAM_CHUNK_MAX_BYTES);
+    return piece;
+  };
+
+  const stream = new ReadableStream(
+    {
+      async pull(controller) {
+        try {
+          const piece = delivered < length ? await nextPiece() : null;
+          if (delivered < length) {
+            if (!piece) throw new Error(`the stored object ended after ${delivered} bytes; its record says ${length}`);
+            if (delivered + piece.byteLength > length) {
+              throw new Error(`the stored object carried more than the ${length} bytes its record says`);
+            }
+            await digest.update(piece);
+            delivered += piece.byteLength;
+            if (delivered < length) {
+              controller.enqueue(piece);
+              return;
+            }
+          }
+          // The last bytes: handed on only once the source has ended and the digest matches.
+          if (await nextPiece()) throw new Error(`the stored object carried more than the ${length} bytes its record says`);
+          if ((await digest.hex()) !== expected.sha256) throw new Error('the bytes do not match the recorded sha256');
+          if (piece) controller.enqueue(piece);
+          controller.close();
+        } catch (err) {
+          controller.error(err);
+          await reader.cancel(err).catch(() => {});
+        }
+      },
+      cancel: (reason) => reader.cancel(reason),
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, length };
 }
 
 /** The runtime's fixed-length stream, where it has one (workerd). */

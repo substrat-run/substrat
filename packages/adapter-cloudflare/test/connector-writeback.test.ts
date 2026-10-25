@@ -224,12 +224,19 @@ describe('connector write-back (#574)', () => {
       put: async (key: string, value: Uint8Array) => void objs.set(key, new Uint8Array(value)),
       get: async (key: string) => {
         const o = objs.get(key);
-        return o ? { arrayBuffer: async () => o.buffer.slice(o.byteOffset, o.byteOffset + o.byteLength) } : null;
+        return o
+          ? {
+              arrayBuffer: async () => o.buffer.slice(o.byteOffset, o.byteOffset + o.byteLength),
+              body: new Blob([o]).stream(),
+              size: o.byteLength,
+            }
+          : null;
       },
       delete: async (key: string) => void objs.delete(key),
       list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
     };
     const hostFor = () => new CloudflareScopeHost({ scope: env.SCOPE, secretBox: box(), attachmentBuckets: () => bucket });
+    const openStream = () => hostFor().connectorAttachmentOpenStreamLocal(conn, t, s, landed);
     const upload = (filename: string) =>
       hostFor().connectorAttachmentUploadLocal(conn, t, s, {
         entity: { entityType: 'item', entityId: 'i1' },
@@ -269,6 +276,9 @@ describe('connector write-back (#574)', () => {
       expect(opened).not.toBeNull();
       // #2519: the client reads the type from the record, so the object must carry the same one.
       expect(opened!.contentType).toBe(opened!.record.contentType);
+      // #2514: the streamed door serves the same bytes.
+      const streamed = await openStream();
+      expect(await new Response(streamed!.body.stream as ReadableStream).text()).toBe('live.pdf');
     });
 
     it('held: invoke, land and open each refuse in the directory\'s words, and nothing lands', async () => {
@@ -278,6 +288,7 @@ describe('connector write-back (#574)', () => {
       await expect(invoke()).rejects.toThrow(refused);
       await expect(upload('held.pdf')).rejects.toThrow(refused);
       await expect(hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).rejects.toThrow(refused);
+      await expect(openStream()).rejects.toThrow(refused);
       expect(objs.size).toBe(before);
     });
 
@@ -286,6 +297,7 @@ describe('connector write-back (#574)', () => {
       await invoke();
       expect((await upload('after.pdf')).createdBy).toBe(conn);
       expect(await hostFor().connectorAttachmentOpenLocal(conn, t, s, landed)).not.toBeNull();
+      expect(await openStream()).not.toBeNull();
     });
   });
 
@@ -471,6 +483,45 @@ describe('connector write-back (#574)', () => {
       // the ambiguity the id design removes (#711).
       await expect(att.list({ entityType: 'item', entityId: 'i1' })).rejects.toThrow(/not delegated/);
       await expect(att.remove('x')).rejects.toThrow(/not delegated/);
+    });
+
+    it('#2514: an embedder without openAttachmentStream still serves a streamed open, from the buffered read', async () => {
+      const opensBefore = recorded.open.length;
+      const att = await hostFor().getConnectorAttachments(connId as never, s, { eventId: 'evt-1' });
+      const opened = await att.openStream('att-2');
+      expect(await new Response(opened!.body.stream as ReadableStream).text()).toBe('%PDF-1.4 the avtal');
+      expect(opened!.body.length).toBe('%PDF-1.4 the avtal'.length);
+      expect(recorded.open.slice(opensBefore)).toEqual([
+        { connectionId: connId, tenantId: t, scopeId: s, vertical: 'docs', attachmentId: 'att-2', eventId: 'evt-1' },
+      ]);
+      await expect(att.openStream('missing')).resolves.toBeNull();
+    });
+
+    it('#2514: an embedder with openAttachmentStream is asked for the stream, and never for the buffer', async () => {
+      const streamed: unknown[] = [];
+      const opensBefore = recorded.open.length;
+      const host = new CloudflareScopeHost({
+        scope: env.SCOPE,
+        controlPlane: env.CONTROL_PLANE,
+        secretBox: box(),
+        connectorDelegation: {
+          ...delegation,
+          openAttachmentStream: async (a) => {
+            streamed.push(a);
+            const body = new TextEncoder().encode('%PDF-1.4 streamed');
+            return {
+              record: { id: a.attachmentId, size: body.byteLength } as never,
+              body: { stream: new Blob([body]).stream(), length: body.byteLength },
+              contentType: 'application/pdf',
+            };
+          },
+        },
+      });
+      const att = await host.getConnectorAttachments(connId as never, s);
+      const opened = await att.openStream('att-3');
+      expect(await new Response(opened!.body.stream as ReadableStream).text()).toBe('%PDF-1.4 streamed');
+      expect(streamed).toEqual([{ connectionId: connId, tenantId: t, scopeId: s, vertical: 'docs', attachmentId: 'att-3' }]);
+      expect(recorded.open.length).toBe(opensBefore);
     });
   });
 });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
@@ -335,6 +335,7 @@ import {
   attachmentSha256,
   isSizedByteStream,
   knownLengthStream,
+  openAttachmentByteStream,
   putAttachmentBytes,
   type IncrementalSha256,
   type SizedByteStream,
@@ -957,6 +958,44 @@ async function writeStreamToFile(path: string, body: SizedByteStream): Promise<v
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * The file at `path` as a stream read 64 KiB at a time as it is pulled (#2514), with its size. The
+ * file is opened here, so a key removed after the open is still read whole from the open handle, and
+ * closed once the stream ends, errors or is cancelled.
+ */
+function fileStream(path: string): { stream: ReadableStream<Uint8Array>; size: number } {
+  const CHUNK = 64 * 1024;
+  const fd = openSync(path, 'r');
+  const size = fstatSync(fd).size;
+  let closed = false;
+  const close = () => {
+    if (!closed) closeSync(fd);
+    closed = true;
+  };
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        try {
+          const chunk = new Uint8Array(CHUNK);
+          const read = readSync(fd, chunk, 0, CHUNK, null);
+          if (read === 0) {
+            close();
+            controller.close();
+            return;
+          }
+          controller.enqueue(chunk.subarray(0, read));
+        } catch (err) {
+          close();
+          controller.error(err);
+        }
+      },
+      cancel: close,
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, size };
 }
 
 function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
@@ -3130,6 +3169,14 @@ export class SqliteScopeHost implements ScopeHost {
               admitByEvent: eventId,
             }).open(attachmentId);
           },
+          // #2514: the same read, its bytes a stream.
+          openAttachmentStream: async (attachmentId: string) => {
+            const store = this.attachmentStore(rt.tenantId, vertical);
+            return this.buildAttachments(rt, { kind: 'connection', id: open.id }, store, {
+              reentrant: holdsActor,
+              admitByEvent: eventId,
+            }).openStream(attachmentId);
+          },
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
           // map goes in, never out — a connector is handed the plaintext of one cell,
           // not a private key it could mislay. Retired keys are in the map too, so a
@@ -3754,6 +3801,15 @@ export class SqliteScopeHost implements ScopeHost {
         else if (!e.name.endsWith('.meta')) out.push(r);
       }
     };
+    const contentTypeOf = (p: string): { contentType?: string } => {
+      try {
+        const meta = JSON.parse(readFileSync(`${p}.meta`, 'utf8')) as { contentType?: string | null };
+        return meta.contentType != null ? { contentType: meta.contentType } : {};
+      } catch {
+        // No sidecar (or unreadable): the caller falls back to the metadata row.
+        return {};
+      }
+    };
     return this.wrapBlobStore({
       put: async (key, body, opts) => {
         const p = resolveKey(key);
@@ -3765,15 +3821,13 @@ export class SqliteScopeHost implements ScopeHost {
       get: async (key) => {
         const p = resolveKey(key);
         if (!existsSync(p)) return null;
-        const body = new Uint8Array(readFileSync(p));
-        let contentType: string | undefined;
-        try {
-          const meta = JSON.parse(readFileSync(`${p}.meta`, 'utf8')) as { contentType?: string | null };
-          contentType = meta.contentType ?? undefined;
-        } catch {
-          // No sidecar (or unreadable): the caller falls back to the metadata row.
-        }
-        return contentType !== undefined ? { body, contentType } : { body };
+        return { body: new Uint8Array(readFileSync(p)), ...contentTypeOf(p) };
+      },
+      // #2514: the file read as the stream is read, never whole.
+      getStream: async (key) => {
+        const p = resolveKey(key);
+        if (!existsSync(p)) return null;
+        return { ...fileStream(p), ...contentTypeOf(p) };
       },
       delete: async (key) => {
         const p = resolveKey(key);
@@ -4100,6 +4154,24 @@ export class SqliteScopeHost implements ScopeHost {
 
     const guarded = opts.reentrant ? reentrant : serialized;
 
+    // The read gate, decided before the blob store is touched: a refused read never reaches it.
+    const authorizeRead = (attachmentId: string): Promise<AttachmentRecord | null> =>
+      guarded('attachments.open', async (ctx) => {
+        const row = rt.db
+          .prepare('SELECT * FROM _substrat_attachments WHERE id = ?')
+          .get(attachmentId) as AttachmentRow | undefined;
+        if (!row) return null;
+        if (opts.admitByEvent !== undefined) {
+          admitByDelivery(rt, opts.admitByEvent, row);
+          return attachmentRecordOfRow(row);
+        }
+        const gate = targetGate(row.entity_type);
+        assertAllowed(
+          await ctx.check(gate.read, { entityType: row.entity_type, entityId: row.entity_id }),
+        );
+        return attachmentRecordOfRow(row);
+      });
+
     return {
       upload: async (input) => {
         if (capabilitySession !== undefined) {
@@ -4212,21 +4284,7 @@ export class SqliteScopeHost implements ScopeHost {
           return rows.map(attachmentRecordOfRow);
         }),
       open: async (attachmentId) => {
-        const record = await guarded('attachments.open', async (ctx) => {
-          const row = rt.db
-            .prepare('SELECT * FROM _substrat_attachments WHERE id = ?')
-            .get(attachmentId) as AttachmentRow | undefined;
-          if (!row) return null;
-          if (opts.admitByEvent !== undefined) {
-            admitByDelivery(rt, opts.admitByEvent, row);
-            return attachmentRecordOfRow(row);
-          }
-          const gate = targetGate(row.entity_type);
-          assertAllowed(
-            await ctx.check(gate.read, { entityType: row.entity_type, entityId: row.entity_id }),
-          );
-          return attachmentRecordOfRow(row);
-        });
+        const record = await authorizeRead(attachmentId);
         if (!record) return null;
         const obj = await store.get(attachmentBlobKey(rt.scopeId, record.id));
         if (!obj) {
@@ -4239,6 +4297,13 @@ export class SqliteScopeHost implements ScopeHost {
           throw new Error(`attachment ${record.id}: bytes do not match the recorded sha256`);
         }
         return { record, body: obj.body, contentType: obj.contentType ?? record.contentType };
+      },
+      // #2514: the same gate, then the file as it is read, checked against the record as it passes.
+      // The bytes are read after the gate's turn has ended, so a long read holds no actor turn.
+      openStream: async (attachmentId) => {
+        const record = await authorizeRead(attachmentId);
+        if (!record) return null;
+        return openAttachmentByteStream(store, attachmentBlobKey(rt.scopeId, record.id), record, nodeSha256);
       },
       remove: async (attachmentId) => {
         const removed = await guarded('attachments.remove', async (ctx, subject) => {

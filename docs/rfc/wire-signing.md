@@ -270,7 +270,11 @@ Binding it would mean holding it, so version 1 does not sign it: the control pla
 its legacy header alone, never reading its body, and counts it as `skipped`, which is a decision rather than a
 failure. Unsigned, it meets the entry's legacy path, and the entry never reads an unsigned call's body, so `dual`
 keeps the stream unbuffered. It would be refused in `signed-only`, so it is on the flip gate's list (§7, follow-on
-4) until it has an answer of its own (below, Q5). An
+4) until it has an answer of its own (below, Q5). The streamed read the other way,
+`GET /internal/connector-attachment/:id` (#2514), needs no such exception: it is a GET with an empty
+request body, so it is signed and bound whole like any call, and the bytes it streams are the response,
+which no version of the envelope binds. It is not on the flip gate's list, and stays off it only while
+the request stays a bodiless GET. An
 empty body is the empty string or zero bytes. A body that is absent or `null` (a body read that
 failed) is refused, never digested as empty. A `route` binds no body: the router does not buffer
 an end user's upload, and a route's authority is the identity the router resolved, not the

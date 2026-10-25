@@ -302,7 +302,9 @@ import {
   type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
+  bytesStream,
   isSizedByteStream,
+  openAttachmentByteStream,
   putAttachmentBytes,
   entitlementDenial,
   requiredEntitlementFor,
@@ -341,6 +343,7 @@ import {
   type ScopeAttachments,
   type AttachmentUploadInput,
   type OpenedAttachment,
+  type OpenedAttachmentStream,
   type TenantBlobStore,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
@@ -2149,6 +2152,12 @@ export interface ConnectorDelegation {
      */
     eventId?: string;
   }): Promise<OpenedAttachment | null>;
+  /**
+   * `openAttachment`, with the bytes streamed across the seam and handed on as they arrive (#2514).
+   * Optional for older embedders: without it a streamed open falls back to `openAttachment` and hands
+   * the buffer on as a stream, which works and holds the file whole, as it always did.
+   */
+  openAttachmentStream?(args: Parameters<ConnectorDelegation['openAttachment']>[0]): Promise<OpenedAttachmentStream | null>;
   /** Write the scope-local `connection:<id>` grant tuple in the serving deployment. */
   grant(args: {
     connectionId: ConnectionId;
@@ -3229,6 +3238,10 @@ export class CloudflareScopeHost implements ScopeHost {
           openAttachment: (attachmentId: string) =>
             this.getConnectorAttachments(open.id, scopeId, { eventId }).then((a) =>
               a.open(attachmentId),
+            ),
+          openAttachmentStream: (attachmentId: string) =>
+            this.getConnectorAttachments(open.id, scopeId, { eventId }).then((a) =>
+              a.openStream(attachmentId),
             ),
           // #687: open a cell the scope sealed TO this connection. The keyId-indexed
           // map goes in, never out — a connector receives the plaintext of one cell,
@@ -4952,21 +4965,28 @@ export class CloudflareScopeHost implements ScopeHost {
             `verbs that cross the /internal seam to the serving deployment`,
         );
       };
+      const openArgs = (attachmentId: string) => ({
+        connectionId,
+        tenantId: tenant,
+        scopeId,
+        vertical,
+        attachmentId,
+        // #726 remedy B: the delivery, resolved at the far end against the
+        // deployment's own outbox. Absent outside a dispatch, where the ordinary
+        // permission check still applies.
+        eventId: forEvent?.eventId,
+      });
       return {
         upload: (upload) =>
           delegation.uploadAttachment({ connectionId, tenantId: tenant, scopeId, vertical, upload }),
-        open: (attachmentId) =>
-          delegation.openAttachment({
-            connectionId,
-            tenantId: tenant,
-            scopeId,
-            vertical,
-            attachmentId,
-            // #726 remedy B: the delivery, resolved at the far end against the
-            // deployment's own outbox. Absent outside a dispatch, where the ordinary
-            // permission check still applies.
-            eventId: forEvent?.eventId,
-          }),
+        open: (attachmentId) => delegation.openAttachment(openArgs(attachmentId)),
+        // #2514: streamed over the seam when the embedder can. One that cannot reads the bytes whole,
+        // as `open` does, and hands them on as a stream, so the verb still works and holds what it did.
+        openStream: async (attachmentId) => {
+          if (delegation.openAttachmentStream) return delegation.openAttachmentStream(openArgs(attachmentId));
+          const opened = await delegation.openAttachment(openArgs(attachmentId));
+          return opened && { record: opened.record, body: bytesStream(opened.body), contentType: opened.contentType };
+        },
         list: notDelegated('list'),
         remove: notDelegated('remove'),
         // #1575: undelegated for `list`'s reason — a connector picks a document by id.
@@ -5037,6 +5057,12 @@ export class CloudflareScopeHost implements ScopeHost {
           );
           return record ? this.openAttachmentBytes(store, scopeId, record) : null;
         },
+        openStream: async (attachmentId) => {
+          const record = unwrapReply(
+            await stub.capabilityAttachmentOpen(attachmentId, hash, tenantId, scopeId),
+          );
+          return record ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256) : null;
+        },
         remove: async (attachmentId) =>
           unwrapReply(
             await stub.capabilityAttachmentRefuseWrite(hash, tenantId, scopeId, 'attachments.remove', {
@@ -5061,6 +5087,11 @@ export class CloudflareScopeHost implements ScopeHost {
     const asPrincipalId = ('principal' in subject
       ? subject.principal
       : (subject.connectionId as unknown as PrincipalId)) as PrincipalId;
+    // The read gate, asked in the DO before the blob store is touched: a refused read never reaches it.
+    const authorizeRead = async (attachmentId: string) =>
+      unwrapReply(
+        await stub.attachmentAuthorizeReply(attachmentId, 'read', asPrincipalId, tenantId, scopeId, connectionId, forEvent?.eventId),
+      );
     return {
       upload: async (input) => {
         const id = ulid();
@@ -5090,10 +5121,13 @@ export class CloudflareScopeHost implements ScopeHost {
       list: async (entity) =>
         unwrapReply(await stub.attachmentListReply(entity, asPrincipalId, tenantId, scopeId, connectionId)),
       open: async (attachmentId) => {
-        const record = unwrapReply(
-          await stub.attachmentAuthorizeReply(attachmentId, 'read', asPrincipalId, tenantId, scopeId, connectionId, forEvent?.eventId),
-        );
+        const record = await authorizeRead(attachmentId);
         return record ? this.openAttachmentBytes(store, scopeId, record) : null;
+      },
+      // #2514: the same gate, then the bytes as R2 reads them, checked against the record as they pass.
+      openStream: async (attachmentId) => {
+        const record = await authorizeRead(attachmentId);
+        return record ? openAttachmentByteStream(store, attachmentBlobKey(scopeId, record.id), record, workerdSha256) : null;
       },
       remove: async (attachmentId) => {
         const removed = unwrapReply(
@@ -12503,6 +12537,29 @@ export class CloudflareScopeHost implements ScopeHost {
       // delivery reaches, from its own spine row. Absent ⇒ the ordinary grant check.
       eventId === undefined ? undefined : { eventId },
     ).open(attachmentId);
+  }
+
+  /**
+   * `connectorAttachmentOpenLocal`, with the bytes as a stream read from R2 as the platform reads
+   * the response (#2514). The same gates, in the same order, before the bucket is touched.
+   */
+  async connectorAttachmentOpenStreamLocal(
+    connectionId: ConnectionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    attachmentId: string,
+    eventId?: string,
+  ): Promise<OpenedAttachmentStream | null> {
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const store = await this.resolveAttachmentStore(tenantId);
+    return this.buildAttachmentSurface(
+      { connectionId },
+      tenantId,
+      scopeId,
+      store,
+      eventId === undefined ? undefined : { eventId },
+    ).openStream(attachmentId);
   }
 
   /**
