@@ -3617,32 +3617,33 @@ export class ControlPlaneDO extends DurableObject {
 
   /**
    * Record what the serving script now runs — written only after a successful in-place upload, so
-   * a failed serve leaves the trailing state visible. #2528: `expectedVersionId` is the serving
-   * version the caller judged the move from (null: none); the write lands only if the row still
-   * names it, and `audit`'s `before` is the serving state this unit read. False when it moved.
-   * Optional and trailing, so a caller from before it still writes unconditionally.
+   * a failed serve leaves the trailing state visible. #2528: `expected` is the serving ref and
+   * version the caller's #2178 gate judged the move from (nulls: nothing served); the write lands
+   * only if the row still names both (`SERVES_NOW_CONDITION`), and `audit`'s `before` is the
+   * serving state this unit read. False when either moved. Optional and trailing, so a caller from
+   * before it still writes unconditionally.
    */
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit?: AdminEntryInput,
-    expectedVersionId?: string | null,
+    expected?: { ref: string | null; versionId: string | null },
   ): boolean {
     let before: unknown = null;
     let raced = false;
     this.writeAndAudit(() => {
       const r = this.readVertical(slug);
       if (!r) throw substratError('not_found', `unknown vertical '${slug}'`);
-      if (expectedVersionId !== undefined && (r.serving_version_id ?? null) !== expectedVersionId) {
-        raced = true;
-        return false;
-      }
       before = r.serving_ref ? { ref: r.serving_ref, versionId: r.serving_version_id } : null;
-      return this.sql.exec(
+      const moved = this.sql.exec(
         `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
-                serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
-        s.ref, s.versionId, s.doClassesJson, s.migrationTag, slug,
+                serving_do_classes = ?, serving_migration_tag = ?
+          WHERE ${expected === undefined ? 'slug = ?' : SERVES_NOW_CONDITION}`,
+        s.ref, s.versionId, s.doClassesJson, s.migrationTag,
+        ...(expected === undefined ? [slug] : [slug, expected.ref, expected.versionId]),
       ).rowsWritten > 0;
+      raced = !moved;
+      return moved;
     }, audit && (() => ({ ...audit, before })));
     return !raced;
   }

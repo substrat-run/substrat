@@ -573,6 +573,22 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
+      it('setVerticalServing refuses a serve whose serving ref moved while its version stayed', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const slug = await newVertical(host, staff);
+          const [first, second] = [await publish(host, staff, slug), await publish(host, staff, slug)];
+          const serve = (versionId: string, ref: string) =>
+            host.admin.setVerticalServing(staff, slug, { ref, versionId, doClasses: [], migrationTag: 'g' });
+          await serve(first, 'serving-a');
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE verticals SET serving_ref = 'serving-b' WHERE slug = '${slug}'`);
+          const lost = await refusalOf(serve(second, 'serving-c'));
+          expect(errorCodeOf(lost)).toBe('precondition_failed');
+          expect(await host.admin.verticalServing(staff, slug)).toMatchObject({ ref: 'serving-b', versionId: first });
+          expect(await rowsSince(host, staff, 'setVerticalServing', since)).toEqual([]);
+        });
+      });
+
       it('setTenantStatus records the status its own unit read', async () => {
         await withFixture(async (fixture, host, staff) => {
           const t = await newTenant(host, staff);

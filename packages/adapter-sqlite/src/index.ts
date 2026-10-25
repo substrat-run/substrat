@@ -10474,8 +10474,9 @@ export class SqliteScopeHost implements ScopeHost {
           parsed.versionId,
           r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_version_id ? { ref: r.serving_ref, versionId: r.serving_version_id } : null, null) : [],
         );
-        // #2528: a compare-and-set on the serving version the gate judged, and the row's `before`
-        // read in the transaction that moves it, as the Cloudflare host does.
+        // #2528: a compare-and-set on the serving ref and version the gate judged
+        // (`SERVES_NOW_CONDITION`), and the row's `before` read in the transaction that moves it,
+        // as the Cloudflare host does.
         let before: unknown = null;
         let raced = false;
         this.directoryWriteAndAudit(() => {
@@ -10483,17 +10484,16 @@ export class SqliteScopeHost implements ScopeHost {
             .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
             .get(verticalSlug) as Pick<VerticalRow, 'serving_ref' | 'serving_version_id'> | undefined;
           if (!now) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
-          if ((now.serving_version_id ?? null) !== (r.serving_version_id ?? null)) {
-            raced = true;
-            return false;
-          }
           before = now.serving_ref ? { ref: now.serving_ref, versionId: now.serving_version_id } : null;
-          return this.directory
+          const moved = this.directory
             .prepare(
               `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
-                      serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
+                      serving_do_classes = ?, serving_migration_tag = ? WHERE ${SERVES_NOW_CONDITION}`,
             )
-            .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag, verticalSlug).changes > 0;
+            .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag,
+              verticalSlug, r.serving_ref ?? null, r.serving_version_id ?? null).changes > 0;
+          raced = !moved;
+          return moved;
         }, () => this.recordAdmin(
           actor,
           'setVerticalServing',

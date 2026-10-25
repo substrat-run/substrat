@@ -962,7 +962,7 @@ interface ControlPlaneStub {
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit: AdminEntry,
-    expectedVersionId?: string | null,
+    expected?: { ref: string | null; versionId: string | null },
   ): Promise<boolean>;
   recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<void>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
@@ -8728,8 +8728,8 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
-        // #2528: a compare-and-set on the serving version the gate above judged, across awaits
-        // another serve can run in. The DO fills the row's `before` from the state it moves.
+        // #2528: a compare-and-set on the serving ref and version the gate above judged, across
+        // awaits another serve can run in. The DO fills the row's `before` from the state it moves.
         const moved = await this.directory('setVerticalServing', verticalSlug, {
           ref: parsed.ref,
           versionId: parsed.versionId,
@@ -8741,7 +8741,7 @@ export class CloudflareScopeHost implements ScopeHost {
           { tenantId: null },
           null,
           { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
-        ), r.serving_version_id ?? null);
+        ), { ref: r.serving_ref ?? null, versionId: r.serving_version_id ?? null });
         if (!moved) throw servingRaceRefusal(verticalSlug);
       },
       versionManifest: async (actor, verticalSlug: string, versionId: string) => {
