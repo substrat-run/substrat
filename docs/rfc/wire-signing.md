@@ -18,7 +18,9 @@ flag is `on` · **Uploader:** `packages/control-plane-api/src/wire-upload.ts`, g
 to the deployments `WIRE_KEYS_ROLLOUT` names, and recording every upload's capability · **Fleet
 walk:** `packages/control-plane-api/src/wire-walk.ts` and `wire-settings.ts`, `POST /wire-auth/walk`,
 bringing every script's lists to what the control plane gives now, a person's act and a dry run by
-default · **Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
+default · **Nonce store:** `packages/kernel/src/wire-nonce.ts`, in each scope's own storage on both
+adapters, reached by the entry through the host the vertical registered
+(`packages/control-plane-api/platform-entry/nonce-store.ts`) · **Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
 the scope-store envelope, whose scheme this reuses.
 
@@ -250,9 +252,10 @@ of every deployment with the 5xx. In `dual` either is counted, as `no-nonce-stor
 request is handed on as it came, so `dual` still refuses nothing new: a valid legacy credential is
 served as today, and anything else meets the vertical's own checks. The count blocks the flip. In
 `signed-only` either is the fixed 5xx. A store that exists and throws, or does not answer within a
-second, is the 5xx in every state, as above. Until the store lands (§10, follow-on 5) no version has
-one, so every call that keeps nonces (§4) counts that fault, and no environment can pass §7's gate to
-`signed-only`.
+second, is the 5xx in every state, as above. The store (§10, follow-on 5) reaches a version only when it is
+rebuilt on a vertical-host and adapter that carry it, so a version built before counts that fault on
+every call that keeps nonces (§4), and §7's gate on `signed-only` names the store as a standing
+blocker until a record can say which versions carry it.
 
 ### 3.5 Time
 
@@ -314,7 +317,10 @@ payload (Q7).
   that serializes the scope's writes, so a claim there is atomic with no further machinery. The
   entry module (Q2) verifies everything else in the worker, then makes the claim through the same
   scope stub the request is about to use, as one call on the object before the operation runs.
-  The cache interface is the seam, so the verifier never holds a binding.
+  The cache interface is the seam, so the verifier never holds a binding. The scope object is the
+  vertical's own class under a binding of its choosing, so the entry reaches it through the scope
+  host the vertical registers with `mountPlatformSurface` (the one the supplied sweeper runs, #1902):
+  that host's `claimWireNonceLocal`, which both adapters implement over the same kernel claim.
 - **A signer mints a fresh envelope for every attempt.** A retry that resends the same headers
   carries a spent nonce and is refused as `replay`, which would read as noise in `dual` and fail
   outright in `signed-only`. So the router's bounded retry and every platform retry re-sign.
@@ -330,17 +336,28 @@ payload (Q7).
   nonces, a new endpoint included, whatever its envelope names: one that names no scope has no store
   to spend a nonce in, and is its deployment's fault (§3.4), never `'none'`. So a signer that leaves
   the scope off a call that changes state fails closed rather than losing its replay protection.
-  Until the store exists, an unscoped call and a version with no store are both counted as
-  `no-nonce-store`; follow-on 5 counts the first under a kind of its own, so the two can be told
-  apart once stores exist.
+  An unscoped call that keeps nonces is counted as `unscoped`, and a version with no store as
+  `no-nonce-store`, so the two are told apart.
+- **A retry is a new envelope, never the same request.** The verifier does not treat a resent
+  request as a retry of an accepted one: the request id is not signed, so it could not tell a retry
+  from a replay. Each attempt a signer makes is signed afresh, with a fresh nonce (§10, follow-on 2).
+  A claim that is recorded when the call's effect then fails leaves the nonce spent and nothing
+  done; the signer's retry carries a new nonce and is accepted.
+- **The store is store-local, and its window is short.** Its tables describe calls a store accepted,
+  not the scope's data: no dump, export, fork or snapshot carries them, and writing them advances no
+  write revision a carry fences on (a carried copy is another deployment, whose audience check
+  already refuses an envelope meant for this one). So nonces recorded before a delete, wipe,
+  restore, rewind or load of the scope are gone for the rest of their window, which is why the
+  window is short: an envelope lives at most 120 seconds.
 
-The primitives define the cache interface only. Its storage is a follow-on. The entry (step 1)
-already holds a call to it: a call that keeps nonces and names a scope claims its nonce in that
-scope, through a seam the store will fill, bounded at a second. The seam is reached only when the
+The entry's seam (step 1) is filled by the store (follow-on 5): a call that keeps nonces and names
+a scope claims its nonce in that scope, bounded at a second. The seam is reached only when the
 nonce is claimed, which is the verifier's last check: after the signature, the body and the scope
 pin, so only for the scope the verified envelope names, and never for an envelope refused for
-anything else. With the seam empty, no scope named, or a seam that answers it has no store for that
-scope, such a call meets §3.4's statically absent store: counted, and in `dual` handed on as it came.
+anything else. With the seam empty, or a seam that answers it has no store for that scope (a bundle
+that registers no host, or a host from before the store), such a call meets §3.4's statically
+absent store: counted, and in `dual` handed on as it came. One that names no scope is the same,
+counted as `unscoped`.
 Except a claim that would come too late: with the seam set, the verifier is handed a store, so it
 reads its claim clock before the seam is asked, and a call whose body finishes after `until` is
 refused as `claim-after-until` (a `reason`: served by a valid legacy credential in `dual`, the 401
@@ -552,7 +569,8 @@ step 6, withdraws the credential.
 - **Every verification is counted** by environment, issuer, kind and outcome: `signed-accepted`,
   `legacy-accepted`, `refused:<reason>` (one per reason in `WIRE_REFUSAL_REASONS`),
   `dual-mismatch`, and `fault` (a verifier throw, §3.4, named by kind: `keys`, `no-nonce-store`,
-  `nonce-store`, `verifier`). On the line, `outcome` says how the request was served and `reason`
+  `nonce-store`, `verifier`, `unscoped`; the list only grows, and a reader counts a kind it does not
+  know as a fault all the same). On the line, `outcome` says how the request was served and `reason`
   why its envelope was refused, and a counter reads each on its own: `refused:<reason>` counts every
   line whose `reason` is set, whatever its `outcome`. In `dual` an envelope refused beside a valid
   legacy credential is served by that credential and written `legacy-accepted` with its `reason`
@@ -630,8 +648,9 @@ time. It holds when, over the window:
   `reason`, zero `legacy-accepted`, zero `refused` and zero `dual-mismatch`;
 - the untouched vertical's script counts `legacy-accepted`, every one with `reason` `missing`, and
   zero lines with any other `reason`, zero `refused` and zero `dual-mismatch`;
-- every script counts zero `fault`, except `no-nonce-store` on a call that keeps nonces, which is
-  expected until follow-on 5.
+- every script counts zero `fault`, except `no-nonce-store` on a call that keeps nonces from a
+  version built before the store (follow-on 5), and `unscoped` on a call that keeps nonces and
+  names no scope, which follow-on 5 leaves open.
 
 The person who checks records the query and its counts on the step's pull request.
 Follow-on 4 replaces this reading with the report's own query, over the same lines; from step 3 on,
@@ -769,9 +788,9 @@ never rebuilt keeps the up-calls it was built with.
    - **The gates.** `signed-only` is blocked by every unknown script, a script without the entry, one
      given no lists, one that does not carry what the control plane gives now, a list with no standby
      beside the key in use, an unconfirmed record, a rollout that is not `fleet`, refused settings, and
-     two standing blockers: every route a signer leaves unsigned by design (`WIRE_UNSIGNED_ROUTES`,
-     today the streamed upload, by method, path and reason) and the cutover counters, which it does not
-     read yet. A key drop names the key, its issuer and when the control plane's list stopped naming
+     standing blockers: every route a signer leaves unsigned by design (`WIRE_UNSIGNED_ROUTES`,
+     today the streamed upload, by method, path and reason), the cutover counters, which it does not
+     read yet, and, since follow-on 5, the nonce store no record can show yet. A key drop names the key, its issuer and when the control plane's list stopped naming
      it, and is blocked while the list still names it or would be left empty, by any script that still
      trusts it or lacks a key the list names now, by every unknown or unconfirmed script, and while the
      last confirming walk began before that moment. The credential withdrawal is blocked by its
@@ -802,6 +821,37 @@ never rebuilt keeps the up-calls it was built with.
      so does a call that names a scope alone, which its signer cannot name in the envelope
      (follow-on 2's note).
    It also counts an unscoped call that keeps nonces under a fault kind of its own (§4).
+   The store for calls pinned to a scope lands first, and decided:
+   - **Where it lives.** Two spine tables in every scope's own storage, built on both adapters from
+     one kernel definition (`WIRE_NONCE_DDL`, in each `KERNEL_DDL`, held by `lint:spine-ddl`): the
+     live nonces (`_substrat_wire_nonces`: the nonce, primary key, and `until_s`, the Unix second
+     after which it may be forgotten, indexed) and their count (`_substrat_wire_nonce_count`, one
+     row). `until_s` is an integer, not ISO text, because the envelope states its times in Unix
+     seconds and every comparison is numeric. This amends Q4, which proposed key-value storage: every
+     write in the scope object goes through one SQL handle, the self-hosted adapter needs the same
+     store, and the purge and the cap need an index.
+   - **One claim, both adapters** (`claimWireNonceIn`, through each host's `claimWireNonceLocal`):
+     in one transaction it purges up to 64 rows whose window has passed, answers `false` for a claim
+     after `until` or a nonce already held, refuses at the cap, and records the nonce. Its cost is one
+     indexed insert and one count-row write; the purge is usually empty. No provisioned check: the
+     call that provisions a scope spends its nonce there too.
+   - **The cap.** At most 180 000 live nonces per scope (`WIRE_NONCE_CAP`): a row lives at most 180 s
+     (an envelope's 120 s and 30 s of skew each side), the control plane makes its scoped calls one
+     at a time per scope (at most 100 a second, so 18 000 rows, and ten times that), and a scope's
+     object serves about 1 000 requests a second (180 000 rows). A claim at the cap throws, after its
+     purge committed, and the entry answers it as the store's failure (fail closed, counted as
+     `nonce-store`); the store drains as rows expire.
+   - **How the entry reaches it.** Through the host the vertical registered (§4), so a version carries
+     the store once it is rebuilt on a current vertical-host and adapter. A bundle that registers no
+     host, or a host from before the store, is the static `no-nonce-store`. The readiness report
+     names the store as a standing blocker on `signed-only` (§7): in `signed-only` a version without
+     it answers every scoped call that changes state with the fault, the counters see only versions
+     that had such a call in their window, and no record says yet which versions carry it.
+   - **Store-local and short** (§4): no dump carries it, a claim advances no write revision, and a
+     load, restore, rewind, wipe or delete empties it.
+   Left open, for this item's next PR: calls that keep nonces and name no scope (a call naming a
+   scope alone, the configure call naming a preview or its parent), counted `unscoped`, and the
+   streamed upload §3.6 leaves unsigned.
 6. **The up-channel removals**, one PR each (§9, step 6). On the critical path: they can start
    now, in parallel with 1 to 5, and the credential cannot be withdrawn until all are merged and
    live.
@@ -871,7 +921,9 @@ stays injected through `signed-only` for the up-channel, and is withdrawn only a
 **Q4. Where do nonces live?** **Decided:** in the scope object's own key-value storage, keyed by
 nonce, with expiry at `exp + skew` and pruning on write. A spine table would need a migration on
 both adapters, a migration-diff checkpoint and a spine-ddl change. Calls that change state are
-few, so the store stays small.
+few, so the store stays small. **Amended in follow-on 5:** a spine table after all, in the scope's
+own SQLite on both adapters, created on every wake like the rest of the spine (no versioned
+migration), with its time in integer seconds and a hard cap (§10, follow-on 5).
 
 **Q5. Large bodies.** **Decided:** buffer them. Version 1 has no streaming endpoint. If one is
 ever needed, it gets a new field in a new version rather than a special case in this one.
@@ -969,5 +1021,25 @@ path is Q2's wrapper or retirement (§7).
   uploaded; a record that cannot be written leaves the upload as it was; and no upload gives a state
   but `dual`. The record's contract suite runs on both adapters, with its faults in the directory
   audit suite: a refused admin row rolls the record back, and a refused write records no row.
+- **Shown, follow-on 5, the nonce store.** `packages/kernel/test/wire-nonce.test.ts`, against a
+  real SQLite: a nonce spent once, a claim after its window refused and recording nothing, a purge
+  that forgets only rows whose window has passed and at most a batch at a time, the count kept in
+  step, the cap at cap − 1, cap and cap + 1 and freed once rows expire, and nothing that is not a
+  nonce or a time written. `wireNonceContractSuite` (contract-tests) on both adapters: scopes kept
+  apart, a scope nothing provisioned yet, no dump carrying the store, a copy and a restore starting
+  with none spent. `packages/adapter-cloudflare/test/wire-nonce.test.ts` on workerd: a claim
+  advances no write revision while the restore beside it does, a dump leaves the revision where it
+  was, a spent nonce stays spent across an eviction, and a store at its cap throws through the RPC
+  and admits a claim once a row expires. `wire-gate.test.ts`, through the seam the entry passes
+  over the self-hosted adapter's own host: accepted once, the same envelope then a replay
+  (`legacy-accepted` with `replay` in `dual`, the 401 in `signed-only`), a re-signed retry
+  accepted, a call with no envelope never reaching the store, a bundle with no host or a host from
+  before the store counted `no-nonce-store`, a call naming no scope counted `unscoped`, a store or a
+  host builder that throws the 503 in every state, and a host built once per worker env.
+  `platform-entry.workerd.test.ts`: the entry as uploaded, over the adapter's own `defineScopeDO`,
+  accepting a signed call once, refusing the same envelope and accepting a re-signed retry. Each
+  guard (the conflict clause, the window, the purge, the cap, the scope the seam claims in, the
+  seam itself, the bookkeeping path and the dump filter) was broken in turn and a test failed every
+  time.
 - **Not shown.** No envelope has yet met a deployed entry given key lists by a real upload: that is
-  the canary, in an environment. The nonce store.
+  the canary, in an environment. A nonce store for calls that name no scope.
