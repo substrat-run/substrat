@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { r2TenantBlobStore } from '../src/r2.js';
 import { REWIND_REFUSED } from '../src/rewind-refusal.js';
-import { LOAD_STAMP_KEY, ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey, dumpMetaValue, effectiveRoleGrantQuery } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, LOAD_STAMP_KEY, ORPHAN_SWEEP_GRACE_MS, attachmentBlobKey, attachmentSweepFenceKey, dumpMetaValue, effectiveRoleGrantQuery } from '@substrat-run/kernel';
 import { createLocalControlPlaneReader } from '../src/checker.js';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
@@ -721,6 +721,21 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
     }
   });
 
+  // #2563: the guarded table page refuses that wiped copy, and the carry's tombstone read still answers
+  // from it. A held scope answers the same on both.
+  it('the tombstone read answers from a wiped carried copy that the guarded table page refuses', async () => {
+    const { host, s } = await heldScope();
+    onTestFinished(async () => host.close());
+    const meta = { table: '_substrat_meta', limit: 100, offset: 0 };
+    const keys = (page: { columns: string[]; rows: unknown[][] }) => page.rows.map((r) => r[page.columns.indexOf('key')]);
+    expect(keys(await host.readTombstoneTable(s, meta))).not.toContain(CARRIED_AWAY_KEY);
+    expect((await host.introspectScopeTable(s, meta)).table).toBe('_substrat_meta');
+    const stamp = dumpMetaValue(await host.exportScopeLocal(s), LOAD_STAMP_KEY);
+    expect(await host.wipeCarriedLocal(s, stamp, { to: 'elsewhere', at: '2026-10-10T00:00:00.000Z' })).toBe(true);
+    expect(await host.introspectScopeTable(s, meta).then(() => undefined, (e: unknown) => errorCodeOf(e))).toBe('conflict');
+    expect(keys(await host.readTombstoneTable(s, meta))).toContain(CARRIED_AWAY_KEY);
+  });
+
   // #2544: the introspection reads follow the same shape. Every one of them reaches the object once,
   // by an `IfHeld` method, never by a check followed by a read (two RPCs a reap could land between).
   it('each introspection read makes exactly one RPC to the scope, an IfHeld one', async () => {
@@ -744,6 +759,8 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
     await host.appliedMigrationsLocal(s);
     await host.migrationBookmarksLocal(s);
     await host.introspectScopeTables(s);
+    await host.introspectScopeTable(s, { table: '_substrat_outbox', limit: 10, offset: 0 });
+    await host.introspectScopeQuery(s, { sql: 'SELECT 1 AS one' });
     await host.undrainedEventsLocal(s, 10);
     await host.redrainCountLocal(s, new Date().toISOString());
     expect(calls).toEqual([
@@ -758,6 +775,8 @@ describe('vertical-side size reads are one call into the scope object (#2541)', 
       'appliedMigrationsIfHeld',
       'migrationBookmarksIfHeld',
       'introspectTablesIfHeld',
+      'introspectTableIfHeld',
+      'introspectQueryIfHeld',
       'undrainedEventsReadIfHeld',
       'redrainCountIfHeld',
     ]);

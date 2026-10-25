@@ -206,8 +206,8 @@ the list grows with the routes above: beside the lifecycle halves (`provisionSco
 `restoreScopeLocal`, `projectRolesLocal`, `exportScopeLocal`, `snapshotScopeLocal`,
 `deleteScopeLocal`, `migrationBookmarksLocal`, `rewindScopeLocal`) it now needs
 `appliedMigrationsLocal` (#1320) and the six event reads — `entityHistoryLocal`,
-`facetEventsLocal`, `eventCauseLocal`, `eventEffectsLocal`, `invocationEventsLocal`, `deadLettersLocal` — plus the introspection trio
-(`introspectScopeTables`, `introspectScopeTable`, `introspectScopeQuery`), the denial reads
+`facetEventsLocal`, `eventCauseLocal`, `eventEffectsLocal`, `invocationEventsLocal`, `deadLettersLocal` — plus the introspection reads
+(`introspectScopeTables`, `introspectScopeTable`, `introspectScopeQuery`, and `readTombstoneTable`, #2563), the denial reads
 (`listDenialsLocal`, `summarizeDenialsLocal`), the platform-request reads and settle
 (`listPlatformRequests`, `listPlatformRequestHistory`, `settlePlatformRequest`), and the
 connector write-back's far end (`connectorInvokeLocal`, `connectorAttachmentUploadLocal`,
@@ -215,6 +215,16 @@ connector write-back's far end (`connectorInvokeLocal`, `connectorAttachmentUplo
 list fails to compile, which is the point of the interface being structural. The package therefore depends on neither
 `@substrat-run/adapter-cloudflare` nor any concrete host, and a future adapter fits the
 same shape.
+
+### The table page, the console and the held flag (#2563)
+
+`introspectScopeTable` and `introspectScopeQuery` refuse a scope the deployment does not hold
+(`409`, the shared sentence). `readTombstoneTable` does not: the carry reads a wiped copy's
+`_substrat_meta` tombstone through it, and only the carry and its cleanup call it. On the wire,
+`GET /internal/tables/:table` runs the guarded read only when the query carries `held=1`
+(strictly that value; `0`, `true`, an empty value or none read as `readTombstoneTable`, so a
+control plane that predates the flag keeps working). `POST /internal/query` is guarded outright
+and takes no flag. The default flips to guarded in a later release.
 
 ### Self-enforcing
 

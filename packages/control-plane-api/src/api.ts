@@ -4572,7 +4572,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   /** Whether the scope's store in `holder` is a wiped copy: it holds the `carried_away` tombstone. */
   const isCarriedAway = async (holder: VerticalClient, scope: Scope): Promise<boolean> => {
-    const page = await holder.readScopeTable(scope.id, { table: '_substrat_meta', limit: 100, offset: 0 });
+    const page = await holder.readTombstoneTable(scope.id, { table: '_substrat_meta', limit: 100, offset: 0 });
     return metaValueIn(page.rows, page.columns, CARRIED_AWAY_KEY) !== null;
   };
 

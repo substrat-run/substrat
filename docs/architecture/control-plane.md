@@ -570,6 +570,25 @@ Thin, over the above. In build order:
 6. Fleet view: per-vertical deployment versions, migration status, scopes-behind counts —
    the §5.4 "fleet questions never fan out" surface, answered from the directory index.
 
+**The Data view and the SQL console refuse a scope the deployment does not hold
+([#2563](https://github.com/substrat-run/substrat/issues/2563)).** Like the other introspection
+reads (#2544), a table page or a console statement for a scope the deployment does not hold
+(reaped, never provisioned there, or a copy a carry wiped) is a `409` with the shared sentence,
+never an empty answer, and on Cloudflare the one call into the scope's object is refused inside it, with nothing stored. The
+carry is the exception: it reads `_substrat_meta` of a wiped copy to find the `carried_away`
+tombstone, so that copy answers by design. The two forms are separate by name at every layer
+(`readScopeTable` guarded, `readTombstoneTable` not), and only the carry's `isCarriedAway` and the
+copy cleanup's `hasCarriedAwayTombstone` call the second (a test holds the list).
+
+On the wire, the guard is opt-in for now. Verticals deploy independently of the control plane, so
+flipping the default in one step would break an older control plane's carry reads against a newer
+vertical. `GET /internal/tables/:table` guards when the query carries `held=1` (strictly that
+value) and reads as before without it; the control plane's Data view sends it, its tombstone read
+does not. The SQL console has no tombstone reader, so `POST /internal/query` is guarded outright,
+with no flag: an older control plane's console against a newer vertical gets the `409` for a gone
+scope, which is the intended behaviour. A vertical that predates the flag ignores it and answers as it did. The default flips to guarded in
+a later release, once no control plane that omits `held=1` for a screen can call.
+
 **Links into the substrate, not just identifiers.** The console has always rendered the refs
 that identify a scope's runtime — `servingRef`, a version's `deploymentRef`, the scope id its
 Durable Object is named after — but never said *where* they resolve, which left staff pasting

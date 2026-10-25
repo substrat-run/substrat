@@ -83,7 +83,7 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
         storesOf(ref).set(input.scopeId, { tables: carriedAwayDump({ to: input.carriedTo, at: input.at }), loadStamp: ulid(), revision: null });
         return { wiped: true };
       },
-      readScopeTable: async (sid: string) => {
+      readTombstoneTable: async (sid: string) => {
         await hooks.read?.(ref, sid);
         const meta = storeOf(ref, sid).tables.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
