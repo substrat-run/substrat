@@ -107,8 +107,7 @@ async function deployment(chunks: number, sha256 = sha256Of(chunks), buffered?: 
   return { client, record, url };
 }
 
-// Each case streams 1-8 MiB through a real Node server and hashes it: past the 5 s default under CI load (#2576).
-describe('the streamed connector-attachment read on the wire (#2514)', { timeout: 30_000 }, () => {
+describe('the streamed connector-attachment read on the wire (#2514)', () => {
   it("today's buffered client reads the streamed answer whole, sent with the record's size", async () => {
     const { client, record, url } = await deployment(32); // 8 MiB
     const opened = await client.connectorOpenAttachment({ connectionId: conn, tenantId: t, scopeId: s, attachmentId: 'att-1' });
