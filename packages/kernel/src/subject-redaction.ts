@@ -37,7 +37,7 @@
  * from this table, and a privacy guarantee that holds on one adapter is not a guarantee.
  */
 
-import { SWEEP_RUNS_KIND, upstreamReferenceMarker, upstreamReferenceOf } from '@substrat-run/contracts';
+import { SWEEP_RUNS_KIND, upstreamReferenceMarker, withoutUpstreamReference } from '@substrat-run/contracts';
 import type { ModuleErasureCounts } from './module-erasure.js';
 
 /**
@@ -628,8 +628,7 @@ export function platformIntentFailureMessage(intentId: string, text: string): st
  * `withUpstreamReference`), which is read past.
  */
 export function intentIdOfFailureMessage(message: string): string | null {
-  const handle = upstreamReferenceOf(message);
-  const text = handle === null ? message : message.slice(upstreamReferenceMarker(handle).length + 1);
+  const text = withoutUpstreamReference(message);
   if (!text.startsWith(PLATFORM_INTENT_FAILURE_PREFIX)) return null;
   const rest = text.slice(PLATFORM_INTENT_FAILURE_PREFIX.length);
   const end = rest.indexOf(' ');
