@@ -116,6 +116,19 @@ export function promoteRaceRefusal(channel: string): Error {
   );
 }
 
+/**
+ * The refusal for a serve that lost a race (#2528): what the vertical's serving script runs moved
+ * after this serve's gate was judged against it. Nothing was written; read the serving state again
+ * and retry. `precondition_failed`, as a lost promote is.
+ */
+export function servingRaceRefusal(vertical: string): Error {
+  return substratError(
+    'precondition_failed',
+    `the serving version of ${reviewLine(vertical)} moved while this serve was being judged. ` +
+      'Read the serving state again and retry',
+  );
+}
+
 /** Whether a throw is one of the refusals below, and which. */
 export function promoteReviewRefusalOf(err: unknown): 'stale' | 'unbound' | null {
   if (errorCodeOf(err) !== 'precondition_failed') return null;
