@@ -7809,24 +7809,13 @@ export function defineScopeDO(
           // connection keys, each a full replace as a fan-out writes it, so nothing the directory has
           // since revoked comes back with the dump. Scope-level tuples (the seats) are not touched.
           // The roles are judged only where the loaded state has a part in them (`loaded`).
-          const projected = repair
-            ? (): SwitchedOff[] => this.projectionBody(repair.judge, repair.tenantId, repair.roles, [])
-            : directory
-              ? (): SwitchedOff[] =>
-                  this.projectionBody(
-                    { ...directory.judge, loaded: true },
-                    directory.tenantId,
-                    directory.roles,
-                    directory.tuples,
-                    directory.entitlements,
-                    undefined,
-                    directory.identities,
-                    directory.connectionKeys,
-                  )
-              : undefined;
-          if (projected) {
+          if (repair || directory) {
             try {
-              projected();
+              if (repair) this.projectionBody(repair.judge, repair.tenantId, repair.roles, []);
+              else if (directory) {
+                const { judge, tenantId, roles, tuples, entitlements, identities, connectionKeys } = directory;
+                this.projectionBody({ ...judge, loaded: true }, tenantId, roles, tuples, entitlements, undefined, identities, connectionKeys);
+              }
             } catch (e) {
               // The projection's own tenant refusal (its receipt check) is a tenant refusal of the
               // load, not the kept-copy `conflict` `checkedLoad` would otherwise read it as.

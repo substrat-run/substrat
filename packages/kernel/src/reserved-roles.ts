@@ -338,10 +338,9 @@ export function dumpRoleRefusal(
   // the stored definition it was (`storedDefinitionOf`), and a role the dump keeps only as a tombstone
   // is one it defines: judged, and answered as defined rather than as having no definition.
   const stored = dumpRoleState(dump.tables, dump.tenantId, now);
-  const inDump = (key: string) => storesRole(stored, key);
   const refused = firstRefusedRole(roles, host, stored, touchedBy(stored));
   if (!refused) return null;
-  if (refused.reason === 'seated' && !inDump(refused.key)) {
+  if (refused.reason === 'seated' && !storesRole(stored, refused.key)) {
     return (
       `restore refused: the dump seats role '${refused.key}' but carries no definition of it, so its seats cannot be told ` +
       `from a person's, and the tenant now defines the role for a system principal (K-55); nothing was loaded`
