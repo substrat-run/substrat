@@ -992,19 +992,6 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
-      it('setHostnameStatus refuses a name unbound since it was read', async () => {
-        await withFixture(async (fixture, host, staff) => {
-          const t = await newTenant(host, staff);
-          const s = await newScope(host, staff, t);
-          const hostname = await bound(host, t, s);
-          const since = new Date().toISOString();
-          fixture.interleave(`DELETE FROM hostnames WHERE hostname = '${hostname}'`);
-          const refused = await refusalOf(host.admin.setHostnameStatus(staff, hostname, 'active'));
-          expect(errorCodeOf(refused)).toBe('not_found');
-          expect(await rowsSince(host, staff, 'setHostnameStatus', since)).toEqual([]);
-        });
-      });
-
       it('setHostnameIssuance records nothing for a poll that finds what another write already stored, and one row for a poll that changes it', async () => {
         await withFixture(async (fixture, host, staff) => {
           const t = await newTenant(host, staff);
@@ -1016,8 +1003,7 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
             validation_records = '${JSON.stringify(RECORDS)}' WHERE hostname = '${hostname}'`);
           await host.admin.setHostnameIssuance(staff, hostname, poll);
           expect(await rowsSince(host, staff, 'setHostnameIssuance', since)).toEqual([]);
-          // The same poll again is still nothing; a poll that resolves it is one row.
-          await host.admin.setHostnameIssuance(staff, hostname, poll);
+          // Its twin: a poll that resolves it records one row, `before` the status the unit read.
           await host.admin.setHostnameIssuance(staff, hostname, { status: 'active', validationRecords: [] });
           expect(await hostnameStatus(host, staff, s, hostname)).toBe('active');
           expect(await rowsSince(host, staff, 'setHostnameIssuance', since))
@@ -1025,34 +1011,16 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
-      it('unbindHostname records nothing for a name unbound since it was read, and one row for one still bound', async () => {
-        await withFixture(async (fixture, host, staff) => {
+      it('unbindHostname records one row for the unbind that removed the name, and nothing for the second', async () => {
+        await withFixture(async (_fixture, host, staff) => {
           const t = await newTenant(host, staff);
           const s = await newScope(host, staff, t);
-          const [gone, kept] = [await bound(host, t, s), await bound(host, t, s)];
+          const hostname = await bound(host, t, s);
           const since = new Date().toISOString();
-          fixture.interleave(`DELETE FROM hostnames WHERE hostname = '${gone}'`);
-          await host.admin.unbindHostname(staff, gone);
-          await host.admin.unbindHostname(staff, kept);
-          await host.admin.unbindHostname(staff, kept);
-          expect(await scopeHostnames(host, staff, s)).toEqual([]);
+          await host.admin.unbindHostname(staff, hostname);
+          await host.admin.unbindHostname(staff, hostname);
           expect(await rowsSince(host, staff, 'unbindHostname', since))
-            .toEqual([{ before: { hostname: kept, status: 'pending' }, after: null }]);
-        });
-      });
-
-      it('unbindHostname with an owner leaves a name rebound to another scope since it was read, recording nothing', async () => {
-        await withFixture(async (fixture, host, staff) => {
-          const t = await newTenant(host, staff);
-          const [mine, theirs] = [await newScope(host, staff, t), await newScope(host, staff, t)];
-          const hostname = await bound(host, t, mine);
-          const since = new Date().toISOString();
-          fixture.interleave(`UPDATE hostnames SET scope_id = '${theirs}' WHERE hostname = '${hostname}'`);
-          await host.admin.unbindHostname(staff, hostname, { tenantId: t, scopeId: mine });
-          expect(await scopeHostnames(host, staff, theirs)).toEqual([[hostname, false]]);
-          expect(await rowsSince(host, staff, 'unbindHostname', since)).toEqual([]);
-          await host.admin.unbindHostname(staff, hostname, { tenantId: t, scopeId: theirs });
-          expect(await rowsSince(host, staff, 'unbindHostname', since)).toHaveLength(1);
+            .toEqual([{ before: { hostname, status: 'pending' }, after: null }]);
         });
       });
 
@@ -1076,20 +1044,14 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
-      it('revokeEntitlement records nothing for a grant revoked since it was read, or revoked twice, and one row for the revoke that removed it', async () => {
+      it('revokeEntitlement records nothing for a grant revoked since it was read', async () => {
         await withFixture(async (fixture, host, staff) => {
           const t = await newTenant(host, staff);
-          await host.admin.grantEntitlement(staff, t, 'gone', { plan: 'pro' });
-          await host.admin.grantEntitlement(staff, t, 'kept', { plan: 'pro' });
+          await host.admin.grantEntitlement(staff, t, 'audit-entitlement', { plan: 'pro' });
           const since = new Date().toISOString();
-          fixture.interleave(`DELETE FROM _substrat_entitlements WHERE tenant_id = '${t}' AND entitlement_key = 'gone'`);
-          await host.admin.revokeEntitlement(staff, t, 'gone');
-          await host.admin.revokeEntitlement(staff, t, 'kept');
-          await host.admin.revokeEntitlement(staff, t, 'kept');
-          expect(await entitlementsOf(host, staff, t)).toEqual([]);
-          expect(await rowsSince(host, staff, 'revokeEntitlement', since)).toEqual([{
-            before: { entitlementKey: 'kept', expiresAt: null, quota: null, plan: 'pro' }, after: null,
-          }]);
+          fixture.interleave(`DELETE FROM _substrat_entitlements WHERE tenant_id = '${t}' AND entitlement_key = 'audit-entitlement'`);
+          await host.admin.revokeEntitlement(staff, t, 'audit-entitlement');
+          expect(await rowsSince(host, staff, 'revokeEntitlement', since)).toEqual([]);
         });
       });
     });

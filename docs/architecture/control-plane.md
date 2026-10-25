@@ -454,23 +454,21 @@ row, judges its guard and its no-op, writes, and records its admin row in one di
 transaction, and the row's target and `before` come from that read. `bindHostname`'s unit holds the
 scope check, the name's current holder (a name another live scope holds is refused `conflict`; one
 whose holder was archived or reaped is reclaimed), the demotion of the surface's old canonical,
-and the bind, so a refused bind leaves the old canonical where it was. `unbindHostname` with an
-owner is still judged by the delete itself, so a name rebound to another scope is left alone.
+and the bind, so a refused bind leaves the old canonical where it was.
 
 These six do not follow the upsert rule above. Each one **judges** whether it changes anything,
 and when it does not, it writes nothing and records no row: a status the name already holds, an
 issuance poll that finds the same status, records and id (the reconcile sweep polls on an
 interval and must not add a row each time), an entitlement grant whose merged expiry, quota and
-plan equal the held ones, a revoke of an entitlement not held, and an unbind of a name not bound
-(or bound elsewhere). The judgement is made in the unit, so a write another caller made in
+plan equal the held ones, a revoke of an entitlement not held, and an unbind of a name not bound.
+The judgement is made in the unit, so a write another caller made in
 between is what it compares against. `bindHostname` makes no such judgement: a re-bind resets the
 name's issuance state, so it always records a row.
 
-On the Cloudflare adapter a changed entitlement then fans the tenant's state out to its scopes,
-as before. That still runs after the commit. When a scope refuses the projection, the call is
-rejected with `conflict` while the grant or revoke and its row stand, `reconcileTenantProjection`
-brings the refusing scope up to date. A retry of the same grant or revoke changes nothing, so it
-records no row and does not fan out again: the reconcile is what converges that scope.
+On the Cloudflare adapter a changed entitlement still fans out to the tenant's scopes after the
+commit. A scope that refuses it rejects the call with `conflict` while the change and its row
+stand. A retry changes nothing, so it does not fan out again: `reconcileTenantProjection`
+converges that scope.
 
 The remaining HostAdmin writes still record their row as a separate step.
 
@@ -576,12 +574,8 @@ The writes still recording their row as a separate step, after the mutation, are
   (`uploadStoreDriverRelease`), and the rollout's begin and finish (`rollOutStoreDriver`,
   `rollBackStoreDriver`). The issue lists the rest: impersonation, identity links, connections
   and the access-log drain.
-- **`deleteSnapshot`**, which removes a preview's directory presence, its hostname bindings
-  included, and then records its row. Both adapters wipe the scope's storage first. On the
-  Cloudflare adapter the bindings, the peer bindings and the scope row then go in one
-  `ControlPlaneDO` unit (`deleteScopeDirectory`), and the row is a later call. On the SQLite
-  adapter the bindings are deleted as a statement of their own, the scope's file is removed, the
-  rest of its directory rows go in one transaction, and the row follows.
+- **`deleteSnapshot`**, which removes a preview's directory rows, its hostname bindings included,
+  and records its row after.
 - **Rows written by a call of their own.** `recordStoreDriverRebuildRun` (`rebuildStoreDriver`)
   and `recordWireWalk` (`walkWireAuth`) write only the row; the state the row describes was
   written by the caller's earlier calls (a rebuild's claim and advance, a walk's
