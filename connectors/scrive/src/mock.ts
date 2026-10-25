@@ -1,4 +1,4 @@
-import type { FetchLike } from '@substrat-run/kernel';
+import { isSizedByteStream, type ByteStream, type FetchLike } from '@substrat-run/kernel';
 
 /**
  * Scrive, in memory.
@@ -164,6 +164,12 @@ export class ScriveMock {
 
   /** Documents whose sealed body a reader cancelled before its end. */
   readonly sealedCancelled = new Set<string>();
+
+  /**
+   * `setfile` requests whose streamed body errored before it ended (#2514): the bytes that arrived,
+   * and whether the closing boundary was among them. No file is set for any of them.
+   */
+  readonly setfileAborted: { documentId: string; bytes: number; closed: boolean }[] = [];
 
   /**
    * Reorder the party list: `order[i]` is the old index now at position i. Each party
@@ -369,8 +375,34 @@ export class ScriveMock {
         // The real body is multipart/form-data bytes (a Uint8Array), not a string.
         // Unwrap the envelope rather than measuring it: the filename and the
         // payload's own length are what a caller can assert something about.
-        doc.file = parseMultipartFile(init?.body);
-        return respond(200, this.wire(doc));
+        const body: unknown = init?.body;
+        // A sized stream as the connector hands it, or the runtime stream a host converts it to.
+        const stream = isSizedByteStream(body)
+          ? body.stream
+          : typeof (body as ByteStream | undefined)?.getReader === 'function'
+            ? (body as ByteStream)
+            : undefined;
+        if (!stream) {
+          doc.file = parseMultipartFile(body);
+          return respond(200, this.wire(doc));
+        }
+        // A streamed body (#2514) is read as a server reads it. One that errors part-way
+        // is an aborted request: no file is set, and what arrived is recorded.
+        const boundary = /boundary=(\S+)/.exec(init?.headers?.['content-type'] ?? '')?.[1] ?? '';
+        return readAll(stream).then(
+          (bytes) => {
+            doc.file = parseMultipartFile(bytes);
+            return respond(200, this.wire(doc));
+          },
+          (failure: BodyFailed) => {
+            this.setfileAborted.push({
+              documentId: doc.id,
+              bytes: failure.received.byteLength,
+              closed: latin1(failure.received).includes(`--${boundary}--`),
+            });
+            throw new TypeError('mock: the request body failed before it ended', { cause: failure.error });
+          },
+        );
       }
       if (action === 'update') {
         // The real API takes `document=<url-encoded JSON>` as a form field, not a
@@ -490,6 +522,45 @@ export class ScriveMock {
       return respond(200, this.wire(doc));
     };
   }
+}
+
+/** A request body that errored: why, and the bytes that had arrived. */
+class BodyFailed {
+  constructor(
+    readonly error: unknown,
+    readonly received: Uint8Array,
+  ) {}
+}
+
+/** A stream's bytes, whole; on an error, a {@link BodyFailed}. */
+async function readAll(stream: ByteStream): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const parts: Uint8Array[] = [];
+  const joined = () => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.byteLength;
+    }
+    return out;
+  };
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) return joined();
+      if (next.value) parts.push(next.value);
+    }
+  } catch (error) {
+    throw new BodyFailed(error, joined());
+  }
+}
+
+/** Latin-1, so every byte is one code unit and offsets stay byte-accurate. */
+function latin1(bytes: Uint8Array): string {
+  let text = '';
+  for (const b of bytes) text += String.fromCharCode(b);
+  return text;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -810,6 +810,95 @@ describe('scrive connector — outbound dispatch', () => {
       const [dead] = await host.executorDeadLetters(t, s);
       expect(dead!.eventType).toBe('protocol.signatures-requested');
       expect(dead!.error).toMatch(/no longer holds|refusing to send an attestation/i);
+    });
+
+    describe('the document is streamed to setfile, never held (#2514)', () => {
+      const MiB = 1024 * 1024;
+      /** A 3 MiB "PDF": the kernel's attachment stream hands it on in pieces of at most 1 MiB. */
+      const LARGE = (() => {
+        const out = new Uint8Array(3 * MiB);
+        for (let i = 0; i < out.length; i++) out[i] = (i * 31 + 7) % 251;
+        out.set(new TextEncoder().encode('%PDF-1.4'), 0);
+        return out;
+      })();
+
+      /** Every stored file under `root` holding exactly `bytes`. */
+      const storedCopies = (root: string, bytes: Uint8Array): string[] =>
+        readdirSync(root, { recursive: true, encoding: 'utf8' })
+          .map((rel) => join(root, rel))
+          .filter((p) => statSync(p).isFile() && statSync(p).size === bytes.byteLength && Buffer.from(bytes).equals(readFileSync(p)));
+
+      const sendLarge = async () => {
+        const discarded = dir;
+        await host.close();
+        await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } });
+        rmSync(discarded, { recursive: true, force: true });
+        const inst = await stub.invoke<{ id: string }>('protocol/instantiate', {
+          templateKey: 'anstallningsavtal',
+          entityType: EMPLOYEE.entityType,
+          entityId: EMPLOYEE.entityId,
+        });
+        const record = await (await host.attachments(principal, t, s)).upload({
+          entity: { entityType: 'protocol', entityId: inst.id },
+          filename: 'anstallningsavtal-stor.pdf',
+          contentType: 'application/pdf',
+          visibility: 'customer',
+          body: LARGE,
+        });
+        await stub.invoke('protocol/bind-document', {
+          instanceId: inst.id,
+          contentRef: { entityType: 'employment-terms', entityId: '01JTERMS0000000000000010ST' },
+          contentHash: 'cd'.repeat(32),
+          documentAttachmentId: record.id,
+        });
+        const send = () =>
+          stub.invoke('protocol/request-signatures', {
+            instanceId: inst.id,
+            method: 'scrive',
+            parties: [
+              { label: 'Arbetsgivare', kind: 'principal', signatureKind: 'primary', contact: { email: 'arbetsgivare@example.se' } },
+              { label: 'Anställd', kind: 'external', contact: { email: 'anstalld@example.se' } },
+            ],
+          });
+        return { instanceId: inst.id, send };
+      };
+
+      it('a document over a stream lands whole', async () => {
+        const { instanceId, send } = await sendLarge();
+        await send();
+        const [doc] = [...scrive.documents.values()];
+        expect(doc!.file!.bytes).toBe(LARGE.byteLength);
+        expect(doc!.status).toBe('pending');
+        expect(scrive.setfileAborted).toEqual([]);
+        expect(await dispatchState(instanceId)).toBeDefined();
+      });
+
+      it('stored bytes that no longer match their record abort setfile before its closing boundary; no start, no ledger row', async () => {
+        const { instanceId, send } = await sendLarge();
+        // The same length, one byte changed near the end: the size check passes, and the stream is
+        // refused only once the digest is done, after most of the file has gone into the request.
+        const [copy] = storedCopies(dir, LARGE);
+        expect(copy).toBeDefined();
+        const tampered = new Uint8Array(LARGE);
+        tampered[tampered.length - 10] ^= 0xff;
+        writeFileSync(copy!, tampered);
+
+        await send();
+
+        // The request was aborted: most of the file went, the closing boundary never did.
+        expect(scrive.setfileAborted).toEqual([expect.objectContaining({ closed: false })]);
+        expect(scrive.setfileAborted[0]!.bytes).toBeGreaterThan(MiB);
+        expect(scrive.setfileAborted[0]!.bytes).toBeLessThan(LARGE.byteLength);
+        // Scrive holds no file and was never told to start; the draft is left behind (#2514, (A)).
+        const [doc] = [...scrive.documents.values()];
+        expect(scrive.documents.size).toBe(1);
+        expect(doc!.file).toBeNull();
+        expect(doc!.status).toBe('preparation');
+        expect(await dispatchState(instanceId)).toBeUndefined();
+        const [dead] = await host.executorDeadLetters(t, s);
+        expect(dead!.eventType).toBe('protocol.signatures-requested');
+        expect(dead!.error).toMatch(/sha256|integrity|digest/i);
+      });
     });
   });
 
