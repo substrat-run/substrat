@@ -22,6 +22,7 @@ import {
   stableDeploymentRefFor,
   UNSAFE_devPlatformActorAuth,
 } from '../src/index.js';
+import { PLATFORM_ENTRY_MODULE } from '../src/platform-entry.js';
 import type { ScriptBinding, WireSettingsApi } from '../src/wire-settings.js';
 import type { WireUploadSettings } from '../src/wire-upload.js';
 import type { WireWalkPass } from '../src/wire-walk.js';
@@ -43,8 +44,10 @@ describe('the fleet walk', () => {
   let kids: { router: string[]; platform: string[] };
   /** Hooks a test sets to make one script misbehave. */
   let readHook: ((script: string, state: ScriptBinding[]) => ScriptBinding[]) | null;
-  let writeHook: ((script: string, next: ScriptBinding[]) => ScriptBinding[]) | null;
+  let writeHook: ((script: string, next: ScriptBinding[]) => ScriptBinding[] | Promise<ScriptBinding[]>) | null;
   let readFails: Set<string>;
+  /** Scripts whose modules, read back, lack the platform's entry: uploaded before it existed. */
+  let unwrapped: Set<string>;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-wire-walk-'));
@@ -55,6 +58,7 @@ describe('the fleet walk', () => {
     readHook = null;
     writeHook = null;
     readFails = new Set();
+    unwrapped = new Set();
     const [r1, r2, p1, p2] = await Promise.all([1, 2, 3, 4].map(() => generateScopeStoreKeyPair()));
     routerKeys = `${r1!.publicKey},${r2!.publicKey}`;
     platformKeys = `${p1!.publicKey},${p2!.publicKey}`;
@@ -96,7 +100,7 @@ describe('the fleet walk', () => {
       calls.push({ kind: 'write', script });
       const kept = (scripts.get(script) ?? []).filter((b) => body.keep_bindings.includes(b.type));
       const next = [...body.bindings.map((b) => ({ ...b })), ...kept];
-      scripts.set(script, writeHook ? writeHook(script, next) : next);
+      scripts.set(script, writeHook ? await writeHook(script, next) : next);
     },
   };
 
@@ -106,9 +110,13 @@ describe('the fleet walk', () => {
       authenticate: UNSAFE_devPlatformActorAuth(),
       humanStaffActor: async (r) => (r.headers.get(DEV_ACTOR_HEADER) === person ? person : null),
       deployVertical: createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' }),
+      // A script's modules as the runtime holds them: the platform's entry beside the vertical's own,
+      // unless the script was uploaded before the entry existed.
       fetchVerticalModules: async (ref) => {
         moduleFetches.push(ref);
-        return [{ name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' }];
+        const kind = 'application/javascript+module';
+        const own = { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: kind };
+        return unwrapped.has(ref) ? [own] : [{ name: PLATFORM_ENTRY_MODULE, content: new TextEncoder().encode('export default {}'), contentType: kind }, own];
       },
       wireSettings: settingsApi,
       ...(wireUpload ? { wireUpload } : {}),
@@ -237,8 +245,12 @@ describe('the fleet walk', () => {
       [v.scripts[2], 'version'],
     ]);
     expect(walked).toEqual(expected);
-    // The last pass may walk nothing: it is the one that finds the end.
+    // One script a pass, and the pass that walks the fleet's last script already answers `null`.
+    expect(passes.map((p) => p.scripts.length)).toEqual(expected.map(() => 1));
     expect(passes.at(-1)!.next).toBeNull();
+    // A pass whose limit is the fleet's size is the whole walk.
+    const whole = await pass(app, { limit: expected.length });
+    expect([whole.scripts.length, whole.next]).toEqual([expected.length, null]);
   });
 
   it('a dry run reports what would change and only reads; applied, it brings each script current and records it', async () => {
@@ -367,6 +379,144 @@ describe('the fleet walk', () => {
     expect((await walkAll(appWith(fleet()), { apply: true, limit: 10 })).map((s) => s.action)).toEqual(['updated']);
     expect(moduleFetches).toEqual([script]);
     expect((await recordsOf(verticalSlug))[script]?.record).toMatchObject({ envelope: 1, entrySkipped: null, state: 'dual', audience: script });
+  });
+
+  it('a script with no record that runs without the platform’s entry is skipped by name: no lists, no record saying it verifies', async () => {
+    const tenant = await tenantOf('walk-noentry');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const spy = vi.spyOn(host.admin, 'recordWireAuth').mockRejectedValue(new Error('directory unavailable'));
+    const { id, verticalSlug } = await push(appWith(off()), tenant);
+    spy.mockRestore();
+    const script = deploymentRefFor(verticalSlug, id);
+    // Uploaded before the platform's entry existed: its modules, read back, hold none.
+    unwrapped.add(script);
+    calls.length = 0;
+    const walked = await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    expect(walked).toEqual([expect.objectContaining({ deploymentRef: script, action: 'skipped', reason: 'no-entry' })]);
+    expect(calls).toEqual([]);
+    expect(wireOf(script)).toEqual({});
+    expect(await recordsOf(verticalSlug)).toEqual({});
+    const [latest] = (await walkRows()).slice(-1);
+    expect(latest?.after).toMatchObject({ walked: 1, updated: [], skipped: [{ deploymentRef: script, reason: 'no-entry' }] });
+  });
+
+  it('passes over a vertical that is gone, a saved cursor naming one included, and audits a pass that stops with what it did', async () => {
+    const app = appWith(off());
+    const a = await vertical(app, await tenantOf('walk-gone-a'));
+    const b = await vertical(app, await tenantOf('walk-gone-b'));
+    // A dry pass stops after a's scripts; a is then deleted, and its cursor saved.
+    const first = await pass(appWith(fleet()), { limit: 3 });
+    expect(first.scripts.map((s) => s.deploymentRef)).toEqual(a.scripts);
+    expect(first.next).not.toBeNull();
+    await host.admin.deleteVertical(person, a.slug);
+    const resumed = await pass(appWith(fleet()), { limit: 10, cursor: first.next });
+    expect(resumed.scripts.map((s) => s.deploymentRef)).toEqual(b.scripts);
+    expect(resumed.next).toBeNull();
+
+    // A pass that stops on a directory read it cannot make is audited with the scripts it did walk.
+    const c = await vertical(app, await tenantOf('walk-gone-c'));
+    const list = host.admin.listWireAuth!.bind(host.admin);
+    vi.spyOn(host.admin, 'listWireAuth').mockImplementation(async (actor, filter) => {
+      if (filter?.verticalSlug === c.slug) throw new Error('directory unavailable');
+      return list(actor, filter);
+    });
+    const res = await walk(appWith(fleet()), { apply: true, limit: 10 });
+    expect(res.status).toBe(500);
+    vi.restoreAllMocks();
+    const [stopped] = (await walkRows()).slice(-1);
+    expect(stopped?.after).toMatchObject({ apply: true, walked: 3, updated: b.scripts, next: null, error: expect.stringMatching(/stopped/) });
+    expect(JSON.stringify(stopped?.after)).not.toContain('directory unavailable');
+  });
+
+  it('a hold never states what is not so: a promote’s fresh record is kept, and a script with no record claims no lists', async () => {
+    const tenant = await tenantOf('walk-truth');
+    const v = await vertical(appWith(off()), tenant);
+    const serving = v.scripts[0]!;
+    const preview = v.scripts[2]!.split('-').at(-1)!.toUpperCase();
+    // A promote lands during the write of the serving script: it uploads (writing its own fresh record)
+    // and moves the serve to another version.
+    const fresh = { envelope: 1 as const, entrySkipped: null, state: 'legacy-only' as const, audience: null, routerKids: [], platformKids: [], withheld: 'not-in-rollout' as const };
+    writeHook = async (script, next) => {
+      if (script !== serving) return next;
+      writeHook = null;
+      const now = await host.admin.verticalServing(person, v.slug);
+      await host.admin.recordWireAuth!(person, { deploymentRef: serving, verticalSlug: v.slug, versionId: preview, record: fresh, recordedAt: new Date(Date.now() + 1000).toISOString() });
+      await host.admin.setVerticalServing(person, v.slug, { ref: serving, versionId: preview, doClasses: now!.doClasses, migrationTag: now!.migrationTag });
+      return next;
+    };
+    const walked = await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    expect(walked[0]).toMatchObject({ deploymentRef: serving, action: 'failed', reason: 'serve-in-flight' });
+    expect(walked[0]!.held).toBeUndefined();
+    expect((await recordsOf(v.slug))[serving]).toMatchObject({ versionId: preview, record: fresh });
+    expect((await recordsOf(v.slug))[serving]!.record.walkHold).toBeUndefined();
+
+    // A script with no record whose update reads back differently: held, claiming no lists.
+    const other = await tenantOf('walk-truth-unrecorded');
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const spy = vi.spyOn(host.admin, 'recordWireAuth').mockRejectedValue(new Error('directory unavailable'));
+    const { id, verticalSlug } = await push(appWith(off()), other);
+    spy.mockRestore();
+    const script = deploymentRefFor(verticalSlug, id);
+    writeHook = (s, next) => (s === script ? next.filter((b) => b.name !== 'SCOPE') : next);
+    const second = await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    expect(second.find((s) => s.deploymentRef === script)).toMatchObject({ action: 'failed', reason: 'verify', held: true });
+    expect((await recordsOf(verticalSlug))[script]?.record).toEqual({
+      envelope: 1,
+      entrySkipped: null,
+      state: 'legacy-only',
+      audience: null,
+      routerKids: [],
+      platformKids: [],
+      withheld: 'unverified',
+      walkHold: { reason: 'verify', bindings: ['SCOPE'], at: expect.any(String) },
+    });
+  });
+
+  it('a confirming pass reads every script, whatever its record says, and finds one changed behind it', async () => {
+    const tenant = await tenantOf('walk-confirm');
+    const v = await vertical(appWith(off()), tenant);
+    await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    // Something rewrote one script's bindings behind the walk: its record still says it carries the lists.
+    const behind = v.scripts[1]!;
+    scripts.set(behind, (scripts.get(behind) ?? []).filter((b) => !WIRE.test(b.name)));
+    calls.length = 0;
+    expect((await walkAll(appWith(fleet()), { apply: true, limit: 10 })).map((s) => s.action)).toEqual(['current', 'current', 'current']);
+    expect(calls).toEqual([]);
+    // Confirming, dry: every script read, the one behind found.
+    const dry = await walkAll(appWith(fleet()), { confirm: true, limit: 10 });
+    expect(dry.map((s) => [s.deploymentRef, s.action])).toEqual([
+      [v.scripts[0], 'unchanged'],
+      [behind, 'would-change'],
+      [v.scripts[2], 'unchanged'],
+    ]);
+    expect(new Set(calls.map((c) => c.script))).toEqual(new Set(v.scripts));
+    expect(calls.every((c) => c.kind === 'read')).toBe(true);
+    // Confirming, applied: brought back.
+    expect((await walkAll(appWith(fleet()), { confirm: true, apply: true, limit: 10 })).map((s) => s.action)).toEqual(['unchanged', 'updated', 'unchanged']);
+    expect(wireOf(behind)[WIRE_STATE_VAR]).toBe('dual');
+    const [latest] = (await walkRows()).slice(-1);
+    expect(latest?.after).toMatchObject({ confirm: true, apply: true, updated: [behind] });
+  });
+
+  it('a dry run files no failure and releases nothing; it only reports', async () => {
+    const tenant = await tenantOf('walk-dry');
+    const v = await vertical(appWith(off()), tenant);
+    const odd = v.scripts[2]!;
+    writeHook = (script, next) => (script === odd ? next.filter((b) => b.name !== 'SCOPE') : next);
+    await walkAll(appWith(fleet()), { apply: true, limit: 10 });
+    writeHook = null;
+    const filed = (await failuresOf(v.slug)).length;
+    // Dry and confirming (so every script is read), naming the held script, with another failing to
+    // read: reported, nothing filed or released.
+    readFails.add(v.scripts[1]!);
+    const dry = await walkAll(appWith(fleet()), { limit: 10, confirm: true, release: [odd] });
+    expect(dry.find((s) => s.deploymentRef === odd)).toEqual(expect.objectContaining({ action: 'held' }));
+    expect(dry.find((s) => s.deploymentRef === odd)!.released).toBeUndefined();
+    expect(dry.find((s) => s.deploymentRef === v.scripts[1])).toMatchObject({ action: 'failed', reason: 'settings' });
+    expect((await failuresOf(v.slug)).length).toBe(filed);
+    const [latest] = (await walkRows()).slice(-1);
+    expect(latest?.after).toMatchObject({ apply: false, released: [] });
+    expect((await recordsOf(v.slug))[odd]?.record.walkHold).toBeDefined();
   });
 
   it('never touches a script the registry does not name', async () => {

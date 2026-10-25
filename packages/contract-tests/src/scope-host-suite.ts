@@ -11588,17 +11588,27 @@ export function scopeHostContractSuite(
           await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: { ...record(), walkHold } } as never), 'validation_failed');
         }
         expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record.walkHold).toBeUndefined();
+
+        // `unverified`, the walk's record of a script it could not confirm: lists claimed by none, and
+        // only beside a hold. Without the hold, or beside lists, it is refused.
+        const unverified = withheld('unverified');
+        await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: unverified }), 'validation_failed');
+        await expectRefusal(host.admin.recordWireAuth!(staff, { ...good, record: { ...record(), withheld: 'unverified', walkHold: hold } } as never), 'validation_failed');
+        await put(a, 'archive', 'v1', { ...unverified, walkHold: hold }, '22:00:03');
+        expect((await host.admin.listWireAuth!(staff, { ...fleet, verticalSlug: a }))[0]!.record).toMatchObject({ withheld: 'unverified', state: 'legacy-only', routerKids: [], walkHold: hold });
       });
 
       it('audits a pass of the fleet walk as walkWireAuth, naming scripts and reasons, never a value', async () => {
         const entry = {
           apply: true,
+          confirm: false,
           from: null,
           next: 'acme/crm|01HZZZZZZZZZZZZZZZZZZZZZZZ',
           walked: 3,
           updated: ['acme-crm'],
           held: ['acme-crm-01hzzzzzzzzzzzzzzzzzzzzzzz'],
           released: [],
+          skipped: [{ deploymentRef: 'acme-crm-01hyyyyyyyyyyyyyyyyyyyyyyy', reason: 'no-entry' }],
           failed: [{ deploymentRef: 'acme-crm-01hzzzzzzzzzzzzzzzzzzzzzzz', reason: 'verify' }],
         };
         await host.admin.recordWireWalk!(staff, entry);
