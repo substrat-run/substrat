@@ -1,5 +1,42 @@
 # @substrat-run/vertical-host
 
+## 0.161.0
+
+### Minor Changes
+
+- 5279112: An attachment can be read back as a stream, so a file is never held whole on its way out (#2514, the deployment side):
+
+  - **`ScopeAttachments.openStream(id)`** and **`ScopedConnectorConnection.openAttachmentStream(id)`**, on both adapters: `open` and `openAttachment` with the bytes as a `SizedByteStream` read from the blob store as the consumer reads it. The read permission is checked first, before the store is touched, and an unknown id is `null`, as before. The buffered methods are unchanged.
+  - **The integrity check moves to the stream.** The length is the record's `size`; a stored object of another size is refused before a byte is read. The sha256 is checked as the bytes pass, and the chunk that completes the file is held back until the digest matches: a mismatch, a short object or a long one errors the stream instead, so a consumer that has received all `size` bytes has received bytes that matched the record. The held-back chunk is at most 1 MiB (`VERIFIED_STREAM_CHUNK_MAX_BYTES`). New kernel exports: `verifiedStream`, `openAttachmentByteStream`, `bytesStream`, `OpenedAttachmentStream`.
+  - **`TenantBlobStore.getStream?`**, optional: R2 hands back the object's own body, the pure adapter reads the file 64 KiB at a time. A store without it is read with `get` and handed on as a stream.
+  - **`GET /internal/connector-attachment/:id` streams** when the host has `connectorAttachmentOpenStreamLocal` (the Cloudflare host does): same path, same shape, sent at the record's size, so a body cut short by a mismatch is an error at the reader, never a shorter file. A reader that buffers, the platform's client as it stands, reads it unchanged, and a host without the method is answered from the buffered read.
+  - **`VerticalClient.connectorOpenAttachment` holds what it reads to the record.** A body that breaks off, which is how a streaming deployment refuses bytes that do not match, is a `ControlPlaneError` 502 with code `internal` ("failed its integrity check"), never a bare network error. So is a whole body whose length or sha256 is not the record's.
+  - **`ConnectorDelegation.openAttachmentStream?`**, optional for older embedders: without it a streamed open falls back to `openAttachment` and hands the buffer on as a stream.
+
+  No new route, so a deployment built before this keeps answering the read in full; nothing has to be re-pushed for it to keep working. The request is a GET with no body, so the wire signer binds it whole and it is not on the `signed-only` flip gate's list.
+
+- 5d2db6c: The table page and the SQL console refuse a scope the deployment does not hold (#2563), as the other introspection reads do (#2544): `conflict` with the shared sentence, not an empty answer, and on Cloudflare the one call into the scope's object is refused inside it, with nothing stored for a scope that is gone.
+
+  - adapter-cloudflare, adapter-sqlite: `introspectScopeTable` and `introspectScopeQuery` are guarded (Cloudflare: the single-call `introspectTableIfHeld` / `introspectQueryIfHeld`; SQLite gains both, refused from the directory). The carry's read of a wiped copy's tombstone is `readTombstoneTable`, which is not guarded.
+  - vertical-host: `GET /internal/tables/:table` guards when `held=1` (strictly that value) and reads as before without it; `POST /internal/query` is guarded. A control plane that predates the flag keeps working against this vertical.
+  - control-plane-api: `VerticalClient.readScopeTable` sends `held=1`; the new `readTombstoneTable` sends nothing and is what the carry and the copy cleanup call. A vertical that predates the flag ignores it.
+  - contract-tests: `introspectionReadsContractSuite` covers the table page and the console.
+
+### Patch Changes
+
+- Updated dependencies [d52ad61]
+- Updated dependencies [7d34c2c]
+- Updated dependencies [1e7e16e]
+- Updated dependencies [8bb7be5]
+- Updated dependencies [2dfc19b]
+- Updated dependencies [5279112]
+- Updated dependencies [91a5ea1]
+- Updated dependencies [81a07aa]
+- Updated dependencies [14ce171]
+  - @substrat-run/kernel@0.161.0
+  - @substrat-run/contracts@0.161.0
+  - @substrat-run/model-providers@0.5.51
+
 ## 0.160.0
 
 ### Minor Changes

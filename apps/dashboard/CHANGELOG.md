@@ -1,5 +1,31 @@
 # @substrat-run/dashboard
 
+## 0.45.1
+
+### Patch Changes
+
+- 7e1462f: AI explanations, process-map notes and ⌘K Ask are on in production (`AI_EXPLANATIONS=1`), now that the model provider is confirmed and listed (RFC assistant §16 Q13). The privacy policy's new "AI features in the dashboard" section says what is sent, how it is redacted, where the model runs and how long the written text is kept.
+- Updated dependencies [d52ad61]
+- Updated dependencies [7d34c2c]
+- Updated dependencies [1e7e16e]
+- Updated dependencies [8bb7be5]
+- Updated dependencies [2dfc19b]
+- Updated dependencies [5279112]
+- Updated dependencies [91a5ea1]
+- Updated dependencies [5d2db6c]
+- Updated dependencies [9f67833]
+- Updated dependencies [81a07aa]
+- Updated dependencies [14ce171]
+  - @substrat-run/adapter-cloudflare@0.161.0
+  - @substrat-run/kernel@0.161.0
+  - @substrat-run/contracts@0.161.0
+  - @substrat-run/control-plane-api@0.161.0
+  - @substrat-run/vertical-host@0.161.0
+  - @substrat-run/connector-fortnox@0.4.63
+  - @substrat-run/engine-protocol@0.13.46
+  - @substrat-run/engine-invites@0.9.38
+  - @substrat-run/control-plane-client@0.3.12
+
 ## 0.45.0
 
 ### Minor Changes
