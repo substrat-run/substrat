@@ -730,20 +730,22 @@ never rebuilt keeps the up-calls it was built with.
      script-settings endpoint, without uploading the script again (`wire-settings.ts`). Every other
      binding goes back as read; a secret is never read or sent, and rides `keep_bindings`. What the
      settings give is `wireUploadFor`'s own rule (`wireUploadGiven`), so a walked script and an
-     uploaded one are given the same; a script with no record is read back once to learn whether it
-     carries the entry.
+     uploaded one are given the same. A script with no record is read back once: one whose modules
+     hold no platform entry verifies nothing, and is skipped (`no-entry`), never recorded as verifying.
    - **How it runs.** A person's act (a staff sign-in, never a service token), a dry run unless told
      `apply`, a bounded pass that answers where the next one starts, one `walkWireAuth` admin row a
      pass and a `recordWireAuth` row a script changed. A script whose record already says it carries
-     what is given is not read, so where the rollout was never set a pass makes no call at all. One
-     script's failure is an operational failure, and the pass goes on.
-   - **What it cannot rule out.** The endpoint has no conditional write, so the walk reads, reads again
-     right before it writes and retries a change, and reads once more after: a change landing between
-     its last read and its write is lost. A serving script must run the served version before and
-     after, or it is not written. A read after that differs, or a serve that moved, holds the script
-     (`walkHold` on its record, by binding name) until a person releases it or an upload of it
-     writes a fresh record. It is not to be run while a push or promote of the same vertical is in
-     flight.
+     what is given is not read, so where the rollout was never set a pass makes no call at all; a
+     confirming pass (`confirm`) reads every recorded script instead, and ends every walk, before any
+     key is dropped. One script's failure is an operational failure when the pass applies, and the
+     pass goes on; a vertical gone since it was listed is passed over.
+   - **What it holds.** The endpoint has no conditional write, so the walk reads, reads again right
+     before it writes, and reads once more after. A serving script must run the served version before
+     and after, or it is not written. A read after that differs, or a serve that moved, holds the
+     script (`walkHold` on its record, by binding name) until a person releases it or an upload of it
+     writes a fresh record. A hold states only what is so: the record as it stands when the hold is
+     written, an upload's newer one left alone, or for a script with no record one that claims no lists
+     (`unverified`). It is not to be run while a push or promote of the same vertical is in flight.
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step

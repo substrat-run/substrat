@@ -146,8 +146,11 @@ while a push or a promote of a vertical it will reach is in flight.** In this or
 3. **Apply with a small limit.** One short pass: `-d '{"apply": true, "limit": 3}'`. Check that
    each script is `updated` and that its `recordWireAuth` row in the admin log says what you expect.
 4. **Run that pass again to confirm.** The same scripts should now read `current`, with no call made.
-5. **Only then widen.** Apply with a larger limit, following `next` until it is `null`, and walk once
-   more dry to see the whole fleet `current`.
+5. **Only then widen.** Apply with a larger limit, following `next` until it is `null`.
+6. **End with a confirming pass.** Walk the whole fleet once more with `"confirm": true` (dry, or with
+   `apply` to bring back what it finds). A confirming pass reads every recorded script again rather
+   than trusting its record, so every script should read `unchanged`. **It is mandatory before any key
+   is dropped from a list**, and after break-glass.
 
 It takes a staff sign-in, never a service token, like the store driver release writes. Each pass
 writes a `walkWireAuth` row to the admin log. Each script it changes writes its `recordWireAuth` row
@@ -162,9 +165,12 @@ script and the reason, and the pass goes on to the next one. What each script's 
 | `would-change` | A dry run: these settings would change. |
 | `updated` | Changed, read back, and recorded. |
 | `held` | An earlier pass held it, below. Not read. |
+| `skipped` | Not given lists, with `reason`: `no-entry`, a script with no record that runs without the platform's entry, so nothing in it verifies. Push it again. |
 | `failed` | Not done, with `reason`. |
 
-In an environment where `WIRE_KEYS_ROLLOUT` was never set, a pass makes no call to the runtime at all.
+In an environment where `WIRE_KEYS_ROLLOUT` was never set, a pass makes no call to the runtime at all
+(unless it is a confirming pass). A dry run only reads: it files no operational failure and releases
+nothing.
 
 **A held script.** When the read after an update differs from what was written (`verify`, naming the
 binding names that differ, never a value), or the served version moved under the update
@@ -172,13 +178,9 @@ binding names that differ, never a value), or the served version moved under the
 person has looked. Read the operational failure, check the script, then either push or promote it
 again (the upload writes a fresh record) or name it in a pass: `"release": ["<script>"]`.
 
-**What the walk cannot rule out.** The settings endpoint has no conditional write. The walk reads,
-reads again right before it writes, compares, and reads once more after. A change that lands between
-that last read and the write is lost. A version's own script is uploaded once, so only a store
-attachment can race the walk there. A serving script is uploaded by every promote, so for one the
-walk also requires it to run the version the directory serves, before and after, or it does not write
-(`serve-in-flight`: promote again, then walk). **Do not run the walk while a push or a promote of the
-same vertical is in flight.**
+**Other writers.** A script's bindings are also written by its uploads and by a store attached to one
+of its scopes. **Do not run the walk while a push or a promote of the same vertical is in flight**,
+and always finish with a confirming pass, which re-reads every script.
 
 When a key must stop being trusted, take the break-glass path below. A script the walk has not
 reached yet still trusts the key. The admin log's `recordWireAuth` rows name each script given lists
@@ -230,8 +232,8 @@ already listed, wait, switch the signer, drop the old key. The standby stays lis
 unless `--without-standby` is passed.
 
 The wait is the one difference. A list reaches a deployment when the control plane uploads it again,
-or when [the fleet walk](#the-fleet-walk) reaches it: run the walk after pushing a changed list, until
-a dry run reads every script `current`. Nothing yet reports from the deployments themselves which
+or when [the fleet walk](#the-fleet-walk) reaches it: run the walk after pushing a changed list, then
+a confirming pass (`"confirm": true`) until every script reads `unchanged`. Only then drop the old key. Nothing yet reports from the deployments themselves which
 lists they verify with: that is the readiness report (follow-on 4). Until it exists, a script is known
 to carry a new list once an upload or an applied walk has recorded it since the list was pushed.
 
@@ -247,9 +249,10 @@ The break-glass path (RFC §6), taken only by platform staff on call:
    (`pnpm wire-keys rotate --issuer <issuer> --drop <old kid>` prints the list without it; listing
    the new standby first is what lets `--drop` print it without `--without-standby`).
    Push and deploy the control plane.
-4. Run [the fleet walk](#the-fleet-walk) at once, applied, until `next` is `null`, then once more dry
-   to see every script `current`. It reaches the version scripts no upload does. Release or re-push
-   anything it holds. A script it has not yet reached still accepts the compromised key.
+4. Run [the fleet walk](#the-fleet-walk) at once, applied, until `next` is `null`, then a confirming
+   pass (`"confirm": true, "apply": true`) over the whole fleet, until every script reads `unchanged`.
+   It reaches the version scripts no upload does. Release or re-push anything it holds. A script it
+   has not yet reached still accepts the compromised key.
 
 ## What the tool does not do
 
