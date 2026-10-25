@@ -70,6 +70,7 @@ import {
   permissionContractSuite,
   reservedRoleContractSuite,
   roleStateContractSuite,
+  restoreRoleContractSuite,
   sizeReadsContractSuite,
   introspectionReadsContractSuite,
   introspectionReadsOf,
@@ -441,6 +442,21 @@ roleStateContractSuite('adapter-cloudflare', async () => {
     cleanup: async () => host.close(),
   };
 });
+
+// #2555: a restore judges the directory's roles against the dump's seats, on a host whose scopes read
+// their roles locally (the dump stores the projected role rows) and on one whose scopes read them over
+// RPC (it stores none).
+for (const scopeLocalPermissions of [true, false]) {
+  restoreRoleContractSuite(`adapter-cloudflare (scopeLocalPermissions: ${scopeLocalPermissions})`, async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeLocalPermissions });
+    return {
+      host,
+      roleState: (t, s) => host.roleStateLocal(t, s),
+      dumpCarriesRoles: scopeLocalPermissions,
+      cleanup: async () => host.close(),
+    };
+  });
+}
 
 // Addressing a DO constructs it, so it is listed whatever a read decides; what a refusal must
 // leave is an object with no state in it, which `holdsScope` would read as held.

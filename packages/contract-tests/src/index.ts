@@ -61,6 +61,8 @@ export { membershipExecutorContractSuite } from './membership-executor-suite.js'
 // #2430: a key reserved to a system principal at the role doors, and the declared module list.
 export { reservedRoleContractSuite } from './reserved-role-suite.js';
 export { roleStateContractSuite } from './role-state-suite.js';
+// #2555: a staff restore or import judges the directory's roles against the dump's seats first.
+export { restoreRoleContractSuite } from './restore-role-suite.js';
 export { sizeReadsContractSuite } from './size-reads-suite.js';
 export { introspectionReadsContractSuite, introspectionReadsOf, introspectionReadCalls, type IntrospectionReads } from './introspection-reads-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
