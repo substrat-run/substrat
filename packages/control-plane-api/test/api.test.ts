@@ -6159,11 +6159,9 @@ describe('control-plane API — builder authz', () => {
     // every tenant and prod promotion is staff-only again — even for the owner. (A
     // PRIVATE vertical's owner self-serves prod; the deploy-path test below covers it.)
     expect((await acmeReq('/verticals/helpdesk/channels/prod/promote', 'POST', { versionId: v1 })).status).toBe(403);
-    // Answered ahead of every other gate (#2565): a pending version, which the host would refuse
-    // 409 first, still meets the 403.
-    const pending = ulid();
-    expect((await acmeReq('/verticals/helpdesk/versions', 'POST', version(pending, 'helpdesk'))).status).toBe(201);
-    expect((await acmeReq('/verticals/helpdesk/channels/prod/promote', 'POST', { versionId: pending })).status).toBe(403);
+    // Answered ahead of every other gate (#2565): a version nobody published, which the host
+    // would refuse 404 first, still meets the 403.
+    expect((await acmeReq('/verticals/helpdesk/channels/prod/promote', 'POST', { versionId: ulid() })).status).toBe(403);
     // Staff promote to prod — but by the FULL id, since staff address a vertical by its
     // real registry id, not a bare name (they have no tenant prefix to apply).
     expect((await staffReq(`/verticals/${encodeURIComponent(`${acmeSlug}/helpdesk`)}/channels/prod/promote`, 'POST', { versionId: v1 })).status).toBe(200);
