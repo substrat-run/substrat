@@ -696,6 +696,47 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
+      // #2565: a promote reads the listing in the unit that moves prod, as listing reads prod.
+      it('promoteVersion refuses an auto-admitted version as prod of a vertical listed since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { slug, release } = await privateVertical(host, staff);
+          const auto = await release();
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE verticals SET listed = 1 WHERE slug = '${slug}'`);
+          const refused = await refusalOf(host.admin.promoteVersion(staff, slug, 'prod', auto));
+          expect(errorCodeOf(refused)).toBe('conflict');
+          expect(refused.message).toContain(`prod version ${auto} is auto-admitted`);
+          expect(await host.admin.listChannels(staff, slug)).toEqual([]);
+          expect(await rowsSince(host, staff, 'promoteVersion', since)).toEqual([]);
+        });
+      });
+
+      it('and, unlistedOnly, refuses any version of a vertical listed since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { slug, release } = await privateVertical(host, staff);
+          const vouched = await release();
+          await host.admin.admitVersion(staff, vouched);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE verticals SET listed = 1 WHERE slug = '${slug}'`);
+          const refused = await refusalOf(host.admin.promoteVersion(staff, slug, 'prod', vouched, undefined, { unlistedOnly: true }));
+          expect(errorCodeOf(refused)).toBe('forbidden');
+          expect(await host.admin.listChannels(staff, slug)).toEqual([]);
+          expect(await rowsSince(host, staff, 'promoteVersion', since)).toEqual([]);
+        });
+      });
+
+      it('but re-promoting the auto-admitted version a listed vertical already names as prod is not refused', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { slug, release } = await privateVertical(host, staff);
+          const auto = await release();
+          await host.admin.promoteVersion(staff, slug, 'prod', auto);
+          // Listed before listing refused an auto-admitted prod: the state is kept, not judged again.
+          await fixture.directorySql(`UPDATE verticals SET listed = 1 WHERE slug = '${slug}'`);
+          await host.admin.promoteVersion(staff, slug, 'prod', auto);
+          expect((await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId).toBe(auto);
+        });
+      });
+
       it('setVerticalServing refuses a serve whose serving version moved, and a retry after reading it again lands', async () => {
         await withFixture(async (fixture, host, staff) => {
           const slug = await newVertical(host, staff);

@@ -1007,6 +1007,8 @@ export {
   promoteReviewRefusalOf,
   promoteRaceRefusal,
   servingRaceRefusal,
+  autoAdmittedProdRefusal,
+  listedPromoteRefusal,
   rebindReviewDigest,
   assertRebindReviewCurrent,
   rebindReviewRefusalOf,

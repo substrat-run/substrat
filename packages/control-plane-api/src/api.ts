@@ -9194,10 +9194,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // service token, and this issue narrows WHOSE data a credential reaches, not what
       // a tenant may do inside its own. Taking the gate away from them here would be a
       // capability change hidden in a security fix.
-      if (p.kind === 'builder' && channel === 'prod' && v.listed) {
-        return refuse(c, 'forbidden', 'promotion to prod is staff-only for a listed vertical');
-      }
+      //
+      // #2565: judged by the host (`unlistedOnly`), in the unit that moves the channel, so a
+      // listing that lands while this promote is judged is seen.
     }
+    const unlistedOnly = p.kind === 'builder';
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
     // #1705 PR 3: the installed consumers a promotion breaks (an export they import, dropped or
     // re-versioned). The host refuses it without `exportBreak` whoever calls, in counts only,
@@ -9237,7 +9238,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
     try {
-      await c.var.admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
+      await c.var.admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge, { unlistedOnly });
     } catch (err) {
       if (!isExportBreakRefusal(err)) throw err;
       // The refusal stands whether or not the listing can be read. A listing that fails turns

@@ -129,6 +129,23 @@ export function servingRaceRefusal(vertical: string): Error {
   );
 }
 
+/**
+ * The refusal for a listed vertical's prod taking an auto-admitted version: listing refuses it, and
+ * so does a promote once the vertical is listed (#2565). Only its author has read that version.
+ */
+export function autoAdmittedProdRefusal(vertical: string, versionId: string): Error {
+  return substratError(
+    'conflict',
+    `vertical '${vertical}' prod version ${versionId} is auto-admitted (private self-serve) — ` +
+      'a staff admit must vouch for it before listing',
+  );
+}
+
+/** The refusal for a promote that may move only an unlisted vertical's prod (`unlistedOnly`, #2565). */
+export function listedPromoteRefusal(): Error {
+  return substratError('forbidden', 'promotion to prod is staff-only for a listed vertical');
+}
+
 /** Whether a throw is one of the refusals below, and which. */
 export function promoteReviewRefusalOf(err: unknown): 'stale' | 'unbound' | null {
   if (errorCodeOf(err) !== 'precondition_failed') return null;

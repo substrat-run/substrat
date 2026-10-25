@@ -278,6 +278,7 @@ export const INDEX_VALUE_EXPORTS = [
   'auditWarningOf',
   'auditedCapabilityRevoke',
   'auditedOperationsSql',
+  'autoAdmittedProdRefusal',
   'backoffAt',
   'becomeMintCheck',
   'beginStoreDriverRolloutIn',
@@ -477,6 +478,7 @@ export const INDEX_VALUE_EXPORTS = [
   'listScopeStoreStorageRows',
   'listSystemSwitchRecords',
   'listVerticalOwnerRows',
+  'listedPromoteRefusal',
   'loadDirectoryDump',
   // #2450: a staged load drops a copy's capability rows by table name, never holding them as an array.
   'loadDropsRowsOf',

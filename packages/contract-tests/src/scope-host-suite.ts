@@ -8563,6 +8563,20 @@ export function scopeHostContractSuite(
       expect(new Date(timeline[0]!.at).getTime()).toBeGreaterThan(0);
     });
 
+    it("a listed vertical's prod takes no auto-admitted version until staff vouch for it (#2565)", async () => {
+      const slug = 'tenant-a/listed-prod';
+      await host.admin.registerVertical(staff, { slug, name: 'Listed prod', source: 'cli', ownerTenant: t2 });
+      const [auto, later, vouched] = [await publishPrivate(slug, '1.0.0'), await publishPrivate(slug, '1.0.1'), await publishPrivate(slug, '1.0.2')];
+      await host.admin.promoteVersion(staff, slug, 'prod', auto);
+      await host.admin.admitVersion(staff, vouched);
+      await host.admin.promoteVersion(staff, slug, 'prod', vouched);
+      await host.admin.setVerticalListed(staff, slug, true);
+      await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', auto), 'conflict', new RegExp(`prod version ${auto} is auto-admitted`));
+      await host.admin.admitVersion(staff, later);
+      await host.admin.promoteVersion(staff, slug, 'prod', later);
+      expect((await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId).toBe(later);
+    });
+
     it("prod promote of a private vertical re-points the owner's live scopes (merge IS the deploy)", async () => {
       // A fresh app scope in the owning tenant, bound to the current prod version.
       // Promoting a new one re-points it without a separate update step — that is

@@ -292,10 +292,26 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
     }
   });
 
+  it('#2565: an old coordinator\'s channel move finds no method on the new DO, and moves nothing', async () => {
+    const host = newHost();
+    try {
+      const slug = await registered(host);
+      const version = await published(host, slug);
+      await host.admin.admitVersion(staff, version);
+      const cp = cpStub() as unknown as { moveChannel(from: null, history: Record<string, unknown>, audit: unknown): Promise<boolean> };
+      await expect(() => cp.moveChannel(null, { id: ulid(), vertical_slug: slug, channel: 'prod', version_id: version,
+        from_version_id: null, actor: staff, at: new Date().toISOString() }, entry('promoteVersion', null, { versionId: version })))
+        .rejects.toThrow(/moveChannel/);
+      expect(await host.admin.listChannels(staff, slug)).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
+
   // What a DO from before this change answers for a method it does not list (`reply`).
   const NEW_REPLIED = ['updateVerticalListed', 'updateVerticalPublishRequest', 'updateVerticalInstallsBlocked',
     'updateVerticalTenantProvisioner', 'updateVerticalEmailSender', 'deleteVertical', 'admitVersion', 'rejectVersion',
-    'setVerticalServing'];
+    'setVerticalServing', 'promoteChannel'];
   const oldDo = () => interceptedControlPlane(async (args, method) => {
     if (method !== 'reply' || !NEW_REPLIED.includes(args[0] as string)) return;
     return { answer: { failure: toWireFailure(new Error(`not a replied directory method: ${String(args[0])}`)) } };
@@ -307,7 +323,12 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
     try {
       const slug = await registered(reader);
       const version = await published(reader, slug);
+      const admitted = await published(reader, slug);
+      await reader.admin.admitVersion(staff, admitted);
       const since = new Date().toISOString();
+      // #2565: the promote's channel move, which judges the vertical's listing in its unit.
+      await expect(host.admin.promoteVersion(staff, slug, 'prod', admitted)).rejects.toThrow('not a replied directory method: promoteChannel');
+      expect(await reader.admin.listChannels(staff, slug)).toEqual([]);
       await expect(host.admin.setVerticalInstallsBlocked(staff, slug, true))
         .rejects.toThrow('not a replied directory method: updateVerticalInstallsBlocked');
       await expect(host.admin.setVerticalListed(staff, slug, true))

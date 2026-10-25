@@ -993,7 +993,7 @@ interface ControlPlaneStub {
     expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
-  moveChannel(from: string | null, history: ChannelHistoryRow, audit: AdminEntry): Promise<boolean>;
+  promoteChannel(from: string | null, history: ChannelHistoryRow, unlistedOnly: boolean, audit: AdminEntry): Promise<boolean>;
   listChannels(verticalSlug: string, page?: ListPage): Promise<ChannelRow[]>;
   insertChannelHistory(h: ChannelHistoryRow): Promise<void>;
   listChannelHistory(
@@ -8577,6 +8577,7 @@ export class CloudflareScopeHost implements ScopeHost {
         channel,
         versionId: string,
         acknowledge?: PromotionAcknowledgement,
+        options?: { unlistedOnly?: boolean },
       ) => {
         const incoming = await this.cp.readVersion(versionId);
         if (!incoming) throw substratError('not_found', `unknown version ${versionId}`);
@@ -8665,7 +8666,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // only if the pointer still names `outgoing`; the promote that lost the race is refused as
         // stale and writes nothing. Its admin row commits with the move, ahead of the rebinds below,
         // which record their own — and the acknowledgement is recorded, not just enforced.
-        const moved = await this.cp.moveChannel(outgoing?.id ?? null, {
+        // #2565: the listing's rule and the `unlistedOnly` door are judged in that unit too.
+        const moved = await this.directory('promoteChannel', outgoing?.id ?? null, {
           id: ulid(),
           vertical_slug: verticalSlug,
           channel,
@@ -8673,7 +8675,7 @@ export class CloudflareScopeHost implements ScopeHost {
           from_version_id: outgoing?.id ?? null,
           actor,
           at: promotedAt,
-        }, this.adminEntry(
+        }, options?.unlistedOnly === true, this.adminEntry(
           actor,
           'promoteVersion',
           { tenantId: null, vertical: verticalSlug },

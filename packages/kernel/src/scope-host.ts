@@ -2709,7 +2709,10 @@ export interface HostAdmin {
    * "someone reviewed it" becomes evidence rather than a claim.
    *
    * Only admitted versions may be promoted, for the same reason they are the only
-   * ones bindable.
+   * ones bindable. **#2565: prod of a listed vertical takes no auto-admitted version**
+   * (`AUTO_ADMISSION_NOTE`), the rule `setVerticalListed` holds prod to, and `unlistedOnly` refuses
+   * (`forbidden`) a vertical that is listed. Both are read in the unit that moves the channel, so a
+   * listing that lands while the promote is judged is seen.
    *
    * **#1705 PR 3: refuses a promotion that breaks an installed consumer** unless it is
    * acknowledged (`exportBreak`). A break is an exported (type, schemaVersion) the outgoing
@@ -2723,6 +2726,7 @@ export interface HostAdmin {
     channel: ChannelName,
     versionId: string,
     acknowledge?: PromotionAcknowledgement,
+    options?: { unlistedOnly?: boolean },
   ): Promise<void>;
   /**
    * Which installed consumers promoting `versionId` to `channel` would break (#1705 PR 3): the
