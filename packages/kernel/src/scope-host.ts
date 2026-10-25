@@ -2908,12 +2908,16 @@ export interface HostAdmin {
    */
   recordWireAuth?(actor: PlatformActorId, input: DeploymentWireAuthInput): Promise<void>;
   /**
-   * The stored capability records, every one or one vertical's, by script name. A page at a time when
-   * the filter asks (`ListPage`: `limit`, `cursor` the last script name of the page before, `order`);
-   * unset, every one. A version's script keeps its record for as long as its vertical exists, so a
-   * reader of the whole fleet pages. Access-logged (K-24). Reached through the host API only today.
+   * One page of the stored capability records, by script name: `limit` (required, at most
+   * `LIST_PAGE_MAX`), `cursor` the last script name of the page before, `order`. Confined by `reach`,
+   * which is required: one tenant's verticals (`{ tenantId }`, the verticals it owns now) or the
+   * whole fleet (`{ fleet: true }`), so a reader that forgets to confine itself is refused, never
+   * handed every tenant's deployments. A tenant reach follows the vertical's current owner, resolved
+   * at read time (`DeploymentWireAuthReach`). Optionally one vertical's within that. A bad filter is
+   * `validation_failed` (`assertWireAuthFilter`). Access-logged (K-24). Reached through the host API
+   * only today.
    */
-  listWireAuth?(actor: PlatformActorId, filter?: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
+  listWireAuth?(actor: PlatformActorId, filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   /**
    * Point a scope's ROUTING at the serving script its data now lives in. Per-scope
    * truth, deliberately not derived from the vertical: rerouting a scope whose DOs

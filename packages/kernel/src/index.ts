@@ -754,10 +754,14 @@ export {
 } from './vertical-scope-stores.js';
 export {
   DEPLOYMENT_WIRE_AUTH_DDL,
+  assertWireAuthFilter,
   forgetVerticalWireAuth,
   deploymentWireAuthOf,
+  wireAuthAccessTarget,
+  WIRE_AUTH_FILTER_TEXT_MAX,
   writeDeploymentWireAuth,
   type DeploymentWireAuthFilter,
+  type DeploymentWireAuthReach,
   type DeploymentWireAuthInput,
 } from './deployment-wire-auth.js';
 export {

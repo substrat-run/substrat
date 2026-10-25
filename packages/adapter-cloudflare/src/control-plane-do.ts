@@ -3570,7 +3570,12 @@ export class ControlPlaneDO extends DurableObject {
     }, audit);
   }
 
-  /** The stored capability records, every one or one vertical's, a page at a time when the filter asks. */
+  /**
+   * One page of the stored capability records the filter's reach confines it to (one tenant's
+   * verticals, or the fleet), by script name. The host judged the filter before the call; it is judged
+   * again here (`deploymentWireAuthOf`), so no caller of the object reaches the table unconfined or
+   * unbounded.
+   */
   listWireAuth(filter: DeploymentWireAuthFilter): DeploymentWireAuth[] {
     return deploymentWireAuthOf(this.kernelSql, filter);
   }
