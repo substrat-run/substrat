@@ -2098,6 +2098,8 @@ interface ScopeStubRpc {
   appliedMigrationsIfHeld(): Promise<AppliedMigration[] | null>;
   migrationBookmarksIfHeld(): Promise<{ bookmark: string; takenAt: string; pending: string[] }[] | null>;
   introspectTablesIfHeld(): Promise<ScopeTable[] | null>;
+  introspectTableIfHeld(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage> | null>;
+  introspectQueryIfHeld(sql: string): Promise<DoReply<ScopeQueryResult> | null>;
   undrainedEventsReadIfHeld(limit: number): Promise<UndrainedRead | null>;
   redrainCountIfHeld(drainedBefore: string): Promise<number | null>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
@@ -3780,13 +3782,32 @@ export class CloudflareScopeHost implements ScopeHost {
     return heldOrRefused(scopeId, await this.scopeStub(scopeId).introspectTablesIfHeld());
   }
 
+  /**
+   * The Data view's table page (#2563): refused `conflict` with the shared sentence for a scope the
+   * deployment does not hold, as the reads above are, never answered as an empty store. The carry
+   * and its cleanup read a wiped copy's tombstone, which is not held by design: they use
+   * `readTombstoneTable`.
+   */
   async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    const reply = heldOrRefused(
+      scopeId,
+      await this.scopeStub(scopeId).introspectTableIfHeld(input.table, input.limit, input.offset),
+    );
+    return unwrapReply(reply);
+  }
+
+  /**
+   * A table of a store this deployment may no longer HOLD, for the carry and its cleanup, which ask
+   * a wiped copy whether it carries the `carried_away` tombstone (#2563). Not guarded: a wiped copy
+   * answers nothing else. Not for a screen or a console; those use `introspectScopeTable`.
+   */
+  async readTombstoneTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
     return unwrapReply(await this.scopeStub(scopeId).introspectTableReply(input.table, input.limit, input.offset));
   }
 
-  /** The SQL console's CP-less path (#219) — same trust line as the pair above. */
+  /** The SQL console's CP-less path (#219): guarded as the table page is (#2563). */
   async introspectScopeQuery(scopeId: ScopeId, input: QueryScopeInput): Promise<ScopeQueryResult> {
-    return unwrapReply(await this.scopeStub(scopeId).introspectQueryReply(input.sql));
+    return unwrapReply(heldOrRefused(scopeId, await this.scopeStub(scopeId).introspectQueryIfHeld(input.sql)));
   }
 
   /**

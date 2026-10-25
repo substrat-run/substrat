@@ -672,12 +672,31 @@ export class VerticalClient {
     return this.getInternal<ScopeTable[]>(`/internal/tables?scopeId=${encodeURIComponent(scopeId)}`);
   }
 
-  /** A bounded page of one of the scope's tables. */
+  /**
+   * A bounded page of one of the scope's tables, for the Data view (#2563). Sends `held=1`: a
+   * deployment that does not hold the scope refuses it (409, `scopeNotHeldRefusal`) instead of
+   * answering an empty store. A vertical deployed before the flag ignores it and answers as it
+   * always did.
+   */
   async readScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    return this.tablePage(scopeId, input, true);
+  }
+
+  /**
+   * A table of a store the deployment may no longer hold, for the carry and its cleanup, which ask
+   * a wiped copy whether it carries the `carried_away` tombstone (#2563). Sends no `held` flag, so
+   * a wiped copy answers. Nothing that shows a person data calls this: `readScopeTable` does.
+   */
+  async readTombstoneTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
+    return this.tablePage(scopeId, input, false);
+  }
+
+  private async tablePage(scopeId: ScopeId, input: ReadScopeTableInput, held: boolean): Promise<ScopeTablePage> {
     const q = new URLSearchParams({
       scopeId,
       limit: String(input.limit),
       offset: String(input.offset),
+      ...(held ? { held: '1' } : {}),
     });
     return this.getInternal<ScopeTablePage>(
       `/internal/tables/${encodeURIComponent(input.table)}?${q}`,

@@ -100,6 +100,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
+    readTombstoneTable: async () => note('readTombstoneTable', { rows: [] }),
     introspectScopeQuery: async () => note('introspectScopeQuery', { columns: [], rows: [] }) as never,
     listDenialsLocal: async (_s: unknown, filter?: unknown) => note('listDenialsLocal', [filter]) as never,
     summarizeDenialsLocal: async (_s: unknown, filter?: unknown) =>
@@ -307,6 +308,27 @@ describe('mountPlatformSurface — the error envelope (#510 regression)', () => 
     expect(res.status).toBe(418);
     expect(((await res.json()) as { error: string }).error).toBe('short and stout');
   });
+  // #2563: `held=1` is the Data view's, and strict. Without it the read is the carry's (a control
+  // plane that predates the flag keeps the behaviour it always had); a value that is not '1' is not it.
+  describe('/internal/tables/:table — the held flag', () => {
+    const read = async (query: string) => {
+      const called: string[] = [];
+      const host = fakeHost({
+        introspectScopeTable: async () => (called.push('introspectScopeTable'), { rows: [] }),
+        readTombstoneTable: async () => (called.push('readTombstoneTable'), { rows: [] }),
+      });
+      const res = await appWith(host).request(`/internal/tables/_substrat_meta?scopeId=${SCOPE}${query}`, { headers: authed() }, ENV);
+      expect(res.status).toBe(200);
+      return called;
+    };
+
+    it('held=1 reads through the guarded form', async () => expect(await read('&held=1')).toEqual(['introspectScopeTable']));
+    it('no flag (an older control plane) reads as the carry does', async () => expect(await read('')).toEqual(['readTombstoneTable']));
+    it.each(['&held=0', '&held=true', '&held=', '&held=11', '&held=yes'])('%s is not the flag', async (q) =>
+      expect(await read(q)).toEqual(['readTombstoneTable']),
+    );
+  });
+
   // #113: the console's read-only gate is recognised by its code, not its sentence. The route
   // re-throws it as the caller's 400 before a vertical's `mapError` is consulted; a mapper that
   // claims every throw the route did NOT classify shows which ones it did.
