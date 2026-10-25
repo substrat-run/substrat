@@ -56,7 +56,8 @@ export function connectorUploadBody(bytes: Uint8Array): ByteBody {
 
 /**
  * Bytes already held, as a one-shot {@link SizedByteStream} handed out 1 MiB at a time. It saves no
- * memory, since the buffer is held; it lets a buffer go where a seam takes a stream.
+ * memory, since the buffer is held; it lets a buffer go where a seam takes a stream. Each chunk is a
+ * copy, not a view of `bytes`, so a consumer that takes a chunk's buffer cannot detach the rest.
  */
 export function bytesStream(bytes: Uint8Array): SizedByteStream {
   const CHUNK = 1024 * 1024;
@@ -68,7 +69,7 @@ export function bytesStream(bytes: Uint8Array): SizedByteStream {
           controller.close();
           return;
         }
-        controller.enqueue(bytes.subarray(at, Math.min(at + CHUNK, bytes.byteLength)));
+        controller.enqueue(bytes.slice(at, Math.min(at + CHUNK, bytes.byteLength)));
         at += CHUNK;
       },
       async cancel() {},
@@ -227,7 +228,7 @@ const SHA256_HEX = /^[0-9a-f]{64}$/;
  *
  * The held-back chunk is at most {@link VERIFIED_STREAM_CHUNK_MAX_BYTES}: a source chunk larger than
  * that is handed on in copies of that size, so the wait never holds more than one such piece beside the
- * source chunk it came from.
+ * source chunk it came from. A source chunk within the cap is handed on as the source gave it.
  *
  * Throws before reading anything when the stream's length is not the record's `size`, or the record
  * carries no sha256 to verify against, so a file is never handed on as verified when it could not be.

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { attachmentRecord, type AttachmentRecord } from '@substrat-run/contracts';
 import {
   VERIFIED_STREAM_CHUNK_MAX_BYTES,
+  bytesStream,
   openAttachmentByteStream,
   verifiedStream,
   type ByteStream,
@@ -218,6 +219,21 @@ describe('verifiedStream (#2514)', () => {
     };
     const out = await read(verifiedStream({ stream: source, length: 1 }, { size: 1, sha256: 'a'.repeat(64) }, nodeSha256()).stream);
     expect(out).toMatchObject({ ok: false, error: expect.stringMatching(/neither a chunk nor its end/) });
+  });
+});
+
+describe('bytesStream', () => {
+  it('hands a held buffer on 1 MiB at a time, each chunk a copy, so taking one detaches nothing else', async () => {
+    const bytes = new Uint8Array(2 * 1024 * 1024 + 5).map((_, i) => i % 255);
+    const { stream, length } = bytesStream(bytes);
+    expect(length).toBe(bytes.byteLength);
+    const out = await read(stream);
+    expect(out.chunks.map((c) => c.byteLength)).toEqual([1024 * 1024, 1024 * 1024, 5]);
+    expect(out.chunks.every((c) => c.buffer !== bytes.buffer)).toBe(true);
+    // Taking the first chunk's buffer leaves the source whole.
+    structuredClone(out.chunks[0]!.buffer, { transfer: [out.chunks[0]!.buffer] });
+    expect(bytes.byteLength).toBe(2 * 1024 * 1024 + 5);
+    expect(out).toMatchObject({ ok: true, sha256: sha256Of([bytes]) });
   });
 });
 
