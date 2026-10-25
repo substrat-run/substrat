@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PROMOTE_REVIEW_REASONS, REBIND_REVIEW_REASONS, substratError } from '@substrat-run/contracts';
+import { errorCodeOf, PROMOTE_REVIEW_REASONS, REBIND_REVIEW_REASONS, substratError } from '@substrat-run/contracts';
 import {
   assertPromoteReviewCurrent,
   assertRebindReviewCurrent,
@@ -8,6 +8,7 @@ import {
   rebindRaceRefusal,
   rebindReviewDigest,
   rebindReviewRefusalOf,
+  servingRaceRefusal,
   type ReviewedVersion,
 } from '../src/promote-review.js';
 
@@ -188,6 +189,14 @@ describe('rebindReviewDigest and the rebind gate (#2347)', () => {
     expect(promoteReviewRefusalOf(rebindRaceRefusal('acme/new'))).toBeNull();
     expect(rebindReviewRefusalOf(substratError('precondition_failed', 'x', { reason: PROMOTE_REVIEW_REASONS.stale }))).toBeNull();
     expect(rebindReviewRefusalOf(substratError('precondition_failed', 'x', { reason: REBIND_REVIEW_REASONS.unbound }))).toBe('unbound');
+  });
+
+  it('a lost serve is precondition_failed on one line, and not a promote or rebind review refusal (#2528)', () => {
+    const err = servingRaceRefusal('acme/new\n+ forged');
+    expect(errorCodeOf(err)).toBe('precondition_failed');
+    expect(err.message).not.toMatch(/\n/);
+    expect(promoteReviewRefusalOf(err)).toBeNull();
+    expect(rebindReviewRefusalOf(err)).toBeNull();
   });
 
   it('reads nothing when no binding was sent', async () => {

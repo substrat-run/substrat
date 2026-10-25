@@ -11,6 +11,7 @@ import {
   connectionId,
   errorCodeOf,
   fromWireFailure,
+  toWireFailure,
   instant,
   SCOPE_GATE_REASONS,
   type SubstratError,
@@ -156,15 +157,174 @@ scopeAdminAuditTransactionSuite('adapter-cloudflare', async () => {
   };
 });
 
+/** An admin-log row a host hands the ControlPlaneDO with the write it belongs to. */
+const isAdminEntry = (a: unknown): boolean =>
+  typeof a === 'object' && a !== null && 'action' in a && 'actor' in a && 'before' in a && 'after' in a;
+/** Whether a call's arguments carry one, directly or inside a `reply`'s argument list. */
+const carriesAdminEntry = (args: unknown[]): boolean =>
+  args.some((a) => isAdminEntry(a) || (Array.isArray(a) && carriesAdminEntry(a)));
+
+/**
+ * #2528: the control-plane namespace with its stub wrapped, so `intercept` runs ahead of every
+ * call the host makes; an answer it returns stands in for the DO's. Calls the stub's own method
+ * on the stub (never a bound copy), and leaves `then` alone so the wrapper is not a thenable.
+ */
+function interceptedControlPlane(
+  intercept: (args: unknown[], method: string) => Promise<{ answer: unknown } | void>,
+): typeof env.CONTROL_PLANE {
+  const ns = env.CONTROL_PLANE;
+  return {
+    idFromName: (name: string) => ns.idFromName(name),
+    get: (id: DurableObjectId) => {
+      const stub = ns.get(id) as unknown as Record<string, (...a: unknown[]) => unknown>;
+      return new Proxy(stub, {
+        get: (target, prop) => {
+          if (typeof prop !== 'string' || prop === 'then') return Reflect.get(target, prop);
+          return async (...args: unknown[]) => {
+            const over = await intercept(args, prop);
+            return over ? over.answer : target[prop]!(...args);
+          };
+        },
+      });
+    },
+  } as unknown as typeof env.CONTROL_PLANE;
+}
+
 directoryAdminAuditTransactionSuite('adapter-cloudflare', async () => {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
-    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  const directorySql = async (sql: string) => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
+    (_, state) => { state.storage.sql.exec(sql); });
+  // #2528: the armed statement commits on its own just before the next ControlPlaneDO call that
+  // carries an admin entry, which is the call an audited write's unit runs in on this adapter.
+  let armed: string | null = null;
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: interceptedControlPlane(async (args) => {
+    if (armed === null || !carriesAdminEntry(args)) return;
+    const sql = armed;
+    armed = null;
+    await directorySql(sql);
+  }), secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
   return {
     host,
-    directorySql: async (sql: string) => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
-      (_, state) => { state.storage.sql.exec(sql); }),
+    directorySql,
+    interleave: (sql: string) => { armed = sql; },
     cleanup: async () => host.close(),
   };
+});
+
+/**
+ * #2528 across a version skew. The coordinator and the ControlPlaneDO it calls ship together, but
+ * a deploy can briefly pair either side with the other's previous release: the old coordinator's
+ * calls must keep working against the new DO, and the new coordinator must fail closed, writing
+ * nothing, against an old DO that does not know the methods it now calls through `reply`.
+ */
+describe('#2528: vertical directory writes across a coordinator/DO version skew', () => {
+  const staff = platformActorId.parse(ulid());
+  const cpStub = () => env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+    updateVerticalInstallsBlocked(slug: string, blocked: number, audit: unknown): Promise<void>;
+    setAdmission(id: string, admission: string, note: string | null, audit: unknown): Promise<void>;
+    setVerticalServing(slug: string, s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string }, audit: unknown): Promise<boolean>;
+    deleteVertical(slug: string, audit: unknown, until?: string): Promise<void>;
+    insertVersion(v: Record<string, unknown>, audit: unknown): Promise<void>;
+  };
+  /** The entry an old coordinator minted: its own `before`, read outside the write. */
+  const entry = (action: string, before: unknown, after: unknown) => ({
+    id: ulid(), actor: staff, action, tenantId: null, causedBy: null, onBehalfOf: null,
+    scopeId: null, vertical: null, before, after, at: new Date().toISOString(),
+  });
+  const newHost = (controlPlane = env.CONTROL_PLANE) => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  const registered = async (host: CloudflareScopeHost) => {
+    const slug = `skew-${ulid().toLowerCase()}`;
+    await host.admin.registerVertical(staff, { slug, name: 'Skew', source: 'builtin' });
+    return slug;
+  };
+  const published = async (host: CloudflareScopeHost, slug: string) => {
+    const id = ulid();
+    await host.admin.publishVersion(staff, { id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`,
+      manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null });
+    return id;
+  };
+
+  it('an old coordinator\'s direct calls still write, and their rows', async () => {
+    const host = newHost();
+    try {
+      const cp = cpStub();
+      const slug = await registered(host);
+      const since = new Date().toISOString();
+      await cp.updateVerticalInstallsBlocked(slug, 1,
+        entry('setVerticalInstallsBlocked', { installsBlocked: false }, { installsBlocked: true }));
+      expect((await host.admin.listVerticals(staff)).find((v) => v.slug === slug)?.installsBlocked).toBe(true);
+
+      const version = await published(host, slug);
+      await cp.setAdmission(version, 'admitted', null, entry('admitVersion', { admission: 'pending' }, { admission: 'admitted' }));
+      expect((await host.admin.getVersion(staff, version))?.admission).toBe('admitted');
+
+      // No expected serving version: the write is unconditional, as it was.
+      await expect(cp.setVerticalServing(slug, { ref: 'skew-serving', versionId: version, doClassesJson: '[]', migrationTag: 'g' },
+        entry('setVerticalServing', null, { vertical: slug, ref: 'skew-serving', versionId: version }))).resolves.toBe(true);
+      expect((await host.admin.verticalServing(staff, slug))?.versionId).toBe(version);
+
+      const old = ulid();
+      await cp.insertVersion({ id: old, verticalSlug: slug, version: `1.0.${old.toLowerCase()}`, manifestDigest: 'm',
+        permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null, admission: 'pending', admissionNote: null,
+        manifestJson: null, originJson: null, migrations: null, createdAt: new Date().toISOString() },
+      entry('publishVersion', null, { id: old, admission: 'pending' }));
+      expect((await host.admin.getVersion(staff, old))?.admission).toBe('pending');
+
+      const gone = await registered(host);
+      await cp.deleteVertical(gone, entry('deleteVertical', { slug: gone, source: 'builtin', ownerTenant: null }, null), instant.parse(new Date().toISOString()));
+      expect((await host.admin.listVerticals(staff)).find((v) => v.slug === gone)).toBeUndefined();
+
+      const rows = await host.admin.auditLog(staff, {
+        action: ['setVerticalInstallsBlocked', 'admitVersion', 'setVerticalServing', 'publishVersion', 'deleteVertical'], since,
+      });
+      expect(rows.filter((r) => r.actor === staff).map((r) => [r.action, r.before])).toEqual(expect.arrayContaining([
+        ['setVerticalInstallsBlocked', { installsBlocked: false }],
+        ['admitVersion', { admission: 'pending' }],
+        ['setVerticalServing', null],
+        ['deleteVertical', { slug: gone, source: 'builtin', ownerTenant: null }],
+      ]));
+    } finally {
+      await host.close();
+    }
+  });
+
+  // What a DO from before this change answers for a method it does not list (`reply`).
+  const NEW_REPLIED = ['updateVerticalListed', 'updateVerticalPublishRequest', 'updateVerticalInstallsBlocked',
+    'updateVerticalTenantProvisioner', 'updateVerticalEmailSender', 'deleteVertical', 'admitVersion', 'rejectVersion',
+    'setVerticalServing'];
+  const oldDo = () => interceptedControlPlane(async (args, method) => {
+    if (method !== 'reply' || !NEW_REPLIED.includes(args[0] as string)) return;
+    return { answer: { failure: toWireFailure(new Error(`not a replied directory method: ${String(args[0])}`)) } };
+  });
+
+  it('a new coordinator against an old DO fails closed, naming the method, and writes nothing', async () => {
+    const reader = newHost();
+    const host = newHost(oldDo());
+    try {
+      const slug = await registered(reader);
+      const version = await published(reader, slug);
+      const since = new Date().toISOString();
+      await expect(host.admin.setVerticalInstallsBlocked(staff, slug, true))
+        .rejects.toThrow('not a replied directory method: updateVerticalInstallsBlocked');
+      await expect(host.admin.setVerticalListed(staff, slug, true))
+        .rejects.toThrow('not a replied directory method: updateVerticalListed');
+      await expect(host.admin.admitVersion(staff, version)).rejects.toThrow('not a replied directory method: admitVersion');
+      await expect(host.admin.deleteVertical(staff, slug)).rejects.toThrow('not a replied directory method: deleteVertical');
+      await expect(host.admin.setVerticalServing(staff, slug, { ref: 'skew', versionId: version, doClasses: [], migrationTag: 'g' }))
+        .rejects.toThrow('not a replied directory method: setVerticalServing');
+      const v = (await reader.admin.listVerticals(staff)).find((r) => r.slug === slug);
+      expect(v).toMatchObject({ installsBlocked: false, listed: false });
+      expect((await reader.admin.getVersion(staff, version))?.admission).toBe('pending');
+      expect(await reader.admin.verticalServing(staff, slug)).toBeNull();
+      expect((await reader.admin.auditLog(staff, { since })).filter((r) => r.actor === staff)).toEqual([]);
+      // Its twin: the same host's calls the old DO does list still go through.
+      await expect(host.admin.publishVersion(staff, { id: ulid(), verticalSlug: slug, version: `1.0.${ulid().toLowerCase()}`,
+        manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null })).resolves.toBeUndefined();
+    } finally {
+      await host.close();
+      await reader.close();
+    }
+  });
 });
 
 scopeHostContractSuite(

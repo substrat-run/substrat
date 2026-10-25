@@ -486,6 +486,7 @@ import {
   exportBreakRefusal,
   assertPromoteReviewCurrent,
   promoteRaceRefusal,
+  servingRaceRefusal,
   rebindRaceRefusal,
   type ExpectedServing,
   type ReviewedVersion,
@@ -928,7 +929,6 @@ interface ControlPlaneStub {
   updateVerticalInstallsBlocked(slug: string, blocked: number, audit: AdminEntry): Promise<void>;
   updateVerticalTenantProvisioner(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   updateVerticalEmailSender(slug: string, granted: number, audit: AdminEntry): Promise<void>;
-  countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
   deleteVertical(slug: string, audit: AdminEntry, until?: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
@@ -945,7 +945,9 @@ interface ControlPlaneStub {
     id: string,
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
-  setAdmission(id: string, admission: string, note: string | null, audit: AdminEntry): Promise<void>;
+  /** #2528: judged in the DO's unit, which fills the row's `before` and `after`. */
+  admitVersion(id: string, audit: AdminEntry): Promise<void>;
+  rejectVersion(id: string, note: string, audit: AdminEntry): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string, expectedServing?: ExpectedServing, audit?: AdminEntry): Promise<boolean>;
   servesNow(expected: ExpectedServing): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
@@ -964,7 +966,8 @@ interface ControlPlaneStub {
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit: AdminEntry,
-  ): Promise<void>;
+    expected?: { ref: string | null; versionId: string | null },
+  ): Promise<boolean>;
   recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<boolean>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
@@ -8376,7 +8379,9 @@ export class CloudflareScopeHost implements ScopeHost {
         // Lands PENDING — a push is not a deploy — except for a PRIVATE vertical
         // (tenant-owned, not listed), whose blast radius is its own tenant: there the
         // sandbox contract is the gate and the version self-admits, noted so the
-        // publish seam can tell a staff vouch from this shortcut.
+        // publish seam can tell a staff vouch from this shortcut. The DO judges it again on the
+        // vertical as the insert's unit reads it, and that is what the row and the version carry
+        // (#2528); this read answers an older DO, which takes what it is sent.
         const selfAdmits = owning.owner_tenant !== null && !owning.listed;
         // The manifest is retained for the serving upload (#286), not audited — a whole
         // manifest per publish would drown the admin log in bundle metadata.
@@ -8422,80 +8427,39 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'getVersion', {}, { versionId, verticalSlug }, hit ? 1 : 0);
         return hit ? mapVersion(hit) : undefined;
       },
+      // #2528: each vertical write below is one DO call that reads the row's `before`, and runs its
+      // guard, in the unit that writes; it refuses an unknown vertical with not_found.
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
-        const existing = await this.cp.readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        // Listing is the moment other tenants start trusting this code, so the
-        // version they would install must carry a real staff vouch — an auto-admitted
-        // prod version has never been read by anyone but its author.
-        if (listed) {
-          const prod = await this.cp.readChannel(slug, 'prod');
-          const prodVersion = prod ? await this.cp.readVersion(prod.version_id) : undefined;
-          if (prodVersion?.admission_note === AUTO_ADMISSION_NOTE) {
-            throw substratError(
-              'conflict',
-              `vertical '${slug}' prod version ${prodVersion.id} is auto-admitted (private self-serve) — ` +
-                `a staff admit must vouch for it before listing`,
-            );
-          }
-        }
-        await this.cp.updateVerticalListed(slug, listed ? 1 : 0, // also resolves any pending request
-          this.adminEntry(actor, 'setVerticalListed', { tenantId: null }, { listed: !!existing.listed }, { listed }));
+        // Listing is the moment other tenants start trusting this code, so the version they
+        // would install must carry a real staff vouch — an auto-admitted prod version has never
+        // been read by anyone but its author. The DO refuses one; it also resolves any pending
+        // publish request.
+        await this.directory('updateVerticalListed', slug, listed ? 1 : 0,
+          this.adminEntry(actor, 'setVerticalListed', { tenantId: null }, null, { listed }));
       },
       requestPublish: async (actor, slug: string) => {
-        const existing = await this.cp.readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalPublishRequest(slug, new Date().toISOString(),
+        await this.directory('updateVerticalPublishRequest', slug, new Date().toISOString(),
           this.adminEntry(actor, 'requestPublish', { tenantId: null }, null, { slug }));
       },
       setVerticalInstallsBlocked: async (actor, slug: string, blocked: boolean) => {
-        const existing = await this.cp.readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalInstallsBlocked(slug, blocked ? 1 : 0,
-          this.adminEntry(actor, 'setVerticalInstallsBlocked', { tenantId: null }, { installsBlocked: !!existing.installs_blocked }, { installsBlocked: blocked }));
+        await this.directory('updateVerticalInstallsBlocked', slug, blocked ? 1 : 0,
+          this.adminEntry(actor, 'setVerticalInstallsBlocked', { tenantId: null }, null, { installsBlocked: blocked }));
       },
       setVerticalTenantProvisioner: async (actor, slug: string, granted: boolean) => {
-        const existing = await this.cp.readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalTenantProvisioner(slug, granted ? 1 : 0,
-          this.adminEntry(actor, 'setVerticalTenantProvisioner', { tenantId: null }, { tenantProvisioner: !!existing.tenant_provisioner }, { tenantProvisioner: granted }));
+        await this.directory('updateVerticalTenantProvisioner', slug, granted ? 1 : 0,
+          this.adminEntry(actor, 'setVerticalTenantProvisioner', { tenantId: null }, null, { tenantProvisioner: granted }));
       },
       setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
-        const existing = await this.cp.readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        await this.cp.updateVerticalEmailSender(slug, granted ? 1 : 0,
-          this.adminEntry(actor, 'setVerticalEmailSender', { tenantId: null }, { emailSender: !!existing.email_sender }, { emailSender: granted }));
+        await this.directory('updateVerticalEmailSender', slug, granted ? 1 : 0,
+          this.adminEntry(actor, 'setVerticalEmailSender', { tenantId: null }, null, { emailSender: granted }));
       },
       deleteVertical: async (actor, slug: string) => {
-        const existing = await this.cp.readVertical(slug);
-        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
-        // Refuse while any restorable scope is bound: a deleted registry row would strand
-        // those scopes' version pins and routing. An `archived` scope (a deleted app) still
-        // blocks — unarchive can bring it back — but the refusal names reap/restore, not
-        // "delete", because the app itself is already gone. `reaped` is terminal history and
-        // never blocks. Deployed dispatch scripts are NOT reaped here — they become orphans
-        // for the cleanup script (#248).
-        const bound = await this.cp.countScopesForVertical(slug);
-        if (bound.live > 0) {
-          throw substratError(
-            'conflict',
-            `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`,
-          );
-        }
-        if (bound.archived > 0) {
-          throw substratError(
-            'conflict',
-            `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`,
-          );
-        }
-        // #2501: the period's `until` is read here, on the clock its `since` was.
-        await this.cp.deleteVertical(slug, this.adminEntry(
-          actor,
-          'deleteVertical',
-          { tenantId: null },
-          { slug, source: existing.source, ownerTenant: existing.owner_tenant },
-          null,
-        ), verticalOwnerNow());
+        // Refused while any restorable scope is bound (the DO counts them in the delete's unit).
+        // `reaped` is terminal history and never blocks. Deployed dispatch scripts are NOT reaped
+        // here — they become orphans for the cleanup script (#248). #2501: the period's `until`
+        // is read here, on the clock its `since` was.
+        await this.directory('deleteVertical', slug,
+          this.adminEntry(actor, 'deleteVertical', { tenantId: null }, null, null), verticalOwnerNow());
       },
       listVerticalOwners: async (actor, slug: string) => {
         const periods = (await this.cp.listVerticalOwners(slug)).map((p) => verticalOwnerPeriod.parse(p));
@@ -8503,21 +8467,10 @@ export class CloudflareScopeHost implements ScopeHost {
         return periods;
       },
       admitVersion: async (actor, versionId: string) => {
-        const v = await this.cp.readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        if (v.admission === 'admitted') {
-          // Idempotent — except an AUTO-admitted version, which this upgrades to a
-          // manual vouch by clearing the note (what the publish seam requires).
-          if (v.admission_note !== AUTO_ADMISSION_NOTE) return;
-          await this.cp.setAdmission(versionId, 'admitted', null,
-            this.adminEntry(actor, 'admitVersion', { tenantId: null }, { admission: v.admission, note: v.admission_note }, { admission: 'admitted', note: null }));
-          return;
-        }
-        if (v.admission === 'rejected') {
-          throw substratError('conflict', `version ${versionId} was rejected — publish a new one`);
-        }
-        await this.cp.setAdmission(versionId, 'admitted', null,
-          this.adminEntry(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, { admission: 'admitted' }));
+        // Judged in the DO's unit (#2528): idempotent on an admitted version, except an AUTO-admitted
+        // one, which it upgrades to a manual vouch; a rejected one is refused. The DO fills the row.
+        await this.directory('admitVersion', versionId,
+          this.adminEntry(actor, 'admitVersion', { tenantId: null }, null, null));
       },
       promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
         const incoming = await this.cp.readVersion(versionId);
@@ -8533,14 +8486,9 @@ export class CloudflareScopeHost implements ScopeHost {
         return breaks;
       },
       rejectVersion: async (actor, versionId: string, note: string) => {
-        const v = await this.cp.readVersion(versionId);
-        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
-        if (v.admission === 'admitted') {
-          throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
-        }
-        if (v.admission === 'rejected') return;
-        await this.cp.setAdmission(versionId, 'rejected', note,
-          this.adminEntry(actor, 'rejectVersion', { tenantId: null }, { admission: v.admission }, { admission: 'rejected', note }));
+        // Judged in the DO's unit (#2528): an admitted version is refused, a rejected one is a no-op.
+        await this.directory('rejectVersion', versionId, note,
+          this.adminEntry(actor, 'rejectVersion', { tenantId: null }, null, { admission: 'rejected', note }));
       },
       promoteVersion: async (
         actor,
@@ -8852,7 +8800,9 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
-        await this.cp.setVerticalServing(verticalSlug, {
+        // #2528: a compare-and-set on the serving ref and version the gate above judged, across
+        // awaits another serve can run in. The DO fills the row's `before` from the state it moves.
+        const moved = await this.directory('setVerticalServing', verticalSlug, {
           ref: parsed.ref,
           versionId: parsed.versionId,
           doClassesJson: JSON.stringify(parsed.doClasses),
@@ -8861,11 +8811,10 @@ export class CloudflareScopeHost implements ScopeHost {
           actor,
           'setVerticalServing',
           { tenantId: null },
-          r.serving_ref
-            ? { ref: r.serving_ref, versionId: r.serving_version_id }
-            : null,
+          null,
           { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
-        ));
+        ), { ref: r.serving_ref ?? null, versionId: r.serving_version_id ?? null });
+        if (!moved) throw servingRaceRefusal(verticalSlug);
       },
       versionManifest: async (actor, verticalSlug: string, versionId: string) => {
         const v = await this.cp.readVersion(versionId);
