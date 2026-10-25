@@ -5410,7 +5410,13 @@ export class CloudflareScopeHost implements ScopeHost {
       scopeId,
       (opts?.sourceScopeId ?? dump.scopeId) as ScopeId,
     );
-    const reprojected = await this.convergeLoadedProjection(tenantId, scopeId, existing.vertical, projection);
+    // The load has committed, so a failed re-projection is recorded with the restore and the
+    // switches still go back off below; it is rethrown last, loud.
+    let convergeFailure: unknown;
+    const reprojected = await this.convergeLoadedProjection(tenantId, scopeId, existing.vertical, projection).catch((e: unknown) => {
+      convergeFailure = e;
+      return 'failed' as const;
+    });
     await this.recordAdmin(
       actor,
       'restoreScope',
@@ -5427,6 +5433,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (carry) {
       await this.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: switchedOff });
     }
+    if (convergeFailure !== undefined) throw convergeFailure;
     return replay;
   }
 

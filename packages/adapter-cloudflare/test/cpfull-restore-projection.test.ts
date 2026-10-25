@@ -263,6 +263,25 @@ describe('a control-plane-full restore projects the directory’s current permis
     expect(audit.at(-1)?.after).toMatchObject({ reprojected: true });
   });
 
+  it('a re-projection that fails after the load committed still records the restore, then is thrown', async () => {
+    const { t, s } = await setup();
+    const dump = await host.admin.exportScope(staff, t, s);
+    const target = host as unknown as Record<string, unknown>;
+    target.projectScope = () => Promise.reject(new Error('fan-out unavailable'));
+    const restore = after(host, 'loadProjectionFor', async () => {
+      restore();
+      await host.admin.grantEntitlement(staff, t, 'sku:between');
+    });
+    try {
+      expect((await failure(host.restoreScope(staff, t, s, dump)))?.message).toBe('fan-out unavailable');
+    } finally {
+      restore();
+      delete target.projectScope;
+    }
+    const audit = (await host.admin.auditLog(staff, { tenantId: t })).filter((r) => r.action === 'restoreScope');
+    expect(audit.at(-1)?.after).toMatchObject({ reprojected: 'failed' });
+  });
+
   it('a directory write after the second read reaches the scope by its own fan-out; no re-projection is made', async () => {
     const { t, s } = await setup();
     const dump = await host.admin.exportScope(staff, t, s);
