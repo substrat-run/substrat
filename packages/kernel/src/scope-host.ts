@@ -6,7 +6,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
-import type { DeploymentWireAuthFilter, DeploymentWireAuthInput } from './deployment-wire-auth.js';
+import type { DeploymentWireAuthFilter, DeploymentWireAuthInput, WireWalkAudit } from './deployment-wire-auth.js';
 import type { StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverRolloutTarget, StoreDriverState } from './store-driver-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
@@ -2918,6 +2918,12 @@ export interface HostAdmin {
    * only today.
    */
   listWireAuth?(actor: PlatformActorId, filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
+  /**
+   * Audit one pass of the fleet walk (RFC wire-signing follow-on 4) as `walkWireAuth`: a person's act,
+   * dry run or applied. Each script the pass changed writes its own `recordWireAuth` row as well, with
+   * its record, in one directory transaction.
+   */
+  recordWireWalk?(actor: PlatformActorId, entry: WireWalkAudit): Promise<void>;
   /**
    * Point a scope's ROUTING at the serving script its data now lives in. Per-scope
    * truth, deliberately not derived from the vertical: rerouting a scope whose DOs

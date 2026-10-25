@@ -162,6 +162,7 @@ export type {
   DeployManifest,
 } from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
+export { createWfpWireSettingsApi, type WireSettingsApi } from './wire-settings.js';
 export { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR, storePlatformFingerprint } from './store-script.js';
 export {
   STORE_REBUILD_PASS_SUBREQUESTS,

@@ -103,6 +103,7 @@ import {
   type StoreCanaryTarget,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
+  createWfpWireSettingsApi,
   createCfObservabilityReader,
   createRouterRequestDayReader,
   createCfDoNamespaceReader,
@@ -1712,6 +1713,16 @@ function patchScriptBindingsFor(env: Env) {
   });
 }
 
+/** The script-settings endpoint the wire walk writes through (RFC wire-signing follow-on 4). */
+function wireSettingsFor(env: Env) {
+  if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
+  return createWfpWireSettingsApi({
+    accountId: env.CF_ACCOUNT_ID,
+    namespace: dispatchNamespaceOf(env),
+    apiToken: env.CF_API_TOKEN,
+  });
+}
+
 /**
  * Resolve the `VerticalClient` serving a scope — the serving-ref → bound-version → prod
  * ladder the control-plane API's `verticalForScope` uses. Shared by the platform-intent
@@ -3245,6 +3256,8 @@ export default {
     // The audited control-plane API under /api (the console's baseUrl). One host for the API and
     // the reach its edge-health read uses (#1705 PR 3), not one each.
     const apiHost = hostFor(env);
+    // Follow-on 4: the fleet walk's one write, a deployed script's four wire settings.
+    const wireSettings = wireSettingsFor(env);
     app.route(
       '/api',
       createControlPlaneApi({
@@ -3299,6 +3312,7 @@ export default {
         deployVertical: deployVerticalFor(env),
         // RFC wire-signing step 2 (follow-on 3): what both uploads give a deployment's verifier.
         wireUpload: { rollout: env.WIRE_KEYS_ROLLOUT, routerKeys: env.WIRE_ROUTER_PUBLIC_KEYS, platformKeys: env.WIRE_PLATFORM_PUBLIC_KEYS },
+        ...(wireSettings ? { wireSettings } : {}),
         ensureScopeStores: ensureScopeStoresFor(env),
         storeReleases: storeReleasesFor(env),
         humanStaffActor: humanStaffActorFor(env),

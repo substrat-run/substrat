@@ -347,6 +347,55 @@ describe('the uploader gives the deployments the rollout names their lists, audi
     expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining('"substrat":"wire-upload-record-failed"'));
     expect((await failuresOf(verticalSlug)).map((f) => [f.operation, f.version])).toContainEqual(['deploy.wire-record', id]);
   });
+
+  it('the first push of a vertical registers it before it records, and so does its first serve: the registered-only rule never refuses an upload', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    for (const settings of [fleet(), { rollout: 'off', routerKeys, platformKeys }]) {
+      // A tenant and a slug the registry has never seen.
+      const tenant = await tenantOf(`wire-first-${ulid().slice(-6).toLowerCase()}`);
+      const order: string[] = [];
+      const register = host.admin.registerVertical.bind(host.admin);
+      const record = host.admin.recordWireAuth!.bind(host.admin);
+      vi.spyOn(host.admin, 'registerVertical').mockImplementation(async (actor, input) => {
+        order.push(`register ${input.slug}`);
+        return register(actor, input);
+      });
+      vi.spyOn(host.admin, 'recordWireAuth').mockImplementation(async (actor, input) => {
+        order.push(`record ${input.deploymentRef}`);
+        return record(actor, input);
+      });
+      const { id, verticalSlug, scripts } = await serve(appWith(settings), tenant);
+      const [archive, serving] = scripts;
+      expect(order.indexOf(`register ${verticalSlug}`)).toBeGreaterThanOrEqual(0);
+      expect(order.indexOf(`register ${verticalSlug}`)).toBeLessThan(order.indexOf(`record ${archive}`));
+      expect(order.indexOf(`record ${serving}`)).toBeGreaterThan(order.indexOf(`record ${archive}`));
+      const records = await recordsOf(verticalSlug);
+      expect(Object.keys(records).sort()).toEqual([archive, serving].sort());
+      expect(records[archive]?.versionId).toBe(id);
+      expect((await failuresOf(verticalSlug)).filter((f) => f.operation === 'deploy.wire-record')).toEqual([]);
+      vi.restoreAllMocks();
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    }
+    errors.mockRestore();
+  });
+
+  it('a record refused because the vertical went away mid-push is the visible ops failure, and nothing is stored', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const record = host.admin.recordWireAuth!.bind(host.admin);
+    // The vertical is deleted between its upload and its record: the race the rule exists for.
+    vi.spyOn(host.admin, 'recordWireAuth').mockImplementation(async (actor, input) => {
+      await host.admin.deleteVertical(actor, input.verticalSlug);
+      return record(actor, input);
+    });
+    await push(appWith(fleet()), await tenantOf('wire-raced'));
+    vi.restoreAllMocks();
+    // Named here: the vertical is gone, so the push's answer can no longer name it.
+    const verticalSlug = 'wire-raced/crm';
+    expect(await host.admin.listWireAuth!(staff, { reach: { fleet: true }, limit: LIST_PAGE_MAX, verticalSlug })).toEqual([]);
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringContaining('"substrat":"wire-upload-record-failed"'));
+    expect(errors.mock.calls.map(([line]) => String(line))).toContainEqual(expect.stringMatching(/"error":"[^"]*not_found"/));
+    expect((await failuresOf(verticalSlug)).filter((f) => f.operation === 'deploy.wire-record').map((f) => f.version)).toEqual([expect.stringMatching(/^[0-9A-Z]{26}$/)]);
+  });
 });
 
 describe('wireUploadFor: every setting gives `dual` or nothing', () => {
