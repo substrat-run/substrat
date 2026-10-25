@@ -2071,6 +2071,28 @@ interface ScopeStubRpc {
   databaseSizeIfHeld(): Promise<number | null>;
   /** #2541: the attachment bytes, or null when this deployment does not hold the scope — one call, as the size is. */
   attachmentBytesIfHeld(): Promise<number | null>;
+  /**
+   * #2544: the introspection reads that name only a scope id, each `null` when this deployment does
+   * not hold the scope: the held check and the read in ONE call, as the two size reads are.
+   */
+  facetEventsIfHeld(input: EventFacetInput): Promise<EventFacetResult | null>;
+  eventEffectsIfHeld(input: EventEffectsInput): Promise<EffectsTree | null>;
+  invocationEventsIfHeld(input: InvocationEventsInput): Promise<InvocationEvents | null>;
+  deadLettersIfHeld(input: DeadLettersInput): Promise<Page<DeadLetter> | null>;
+  lifecycleFlowIfHeld(input: LifecycleFlowInput): Promise<LifecycleFlowResult | null>;
+  operationSeriesIfHeld(input: OperationSeriesInput): Promise<OperationSeriesResult | null>;
+  eventCauseIfHeld(input: EventCauseInput): Promise<CauseChain | null>;
+  entityHistoryIfHeld(input: {
+    entityType: string;
+    entityId: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<Page<HistoryEntry> | null>;
+  appliedMigrationsIfHeld(): Promise<AppliedMigration[] | null>;
+  migrationBookmarksIfHeld(): Promise<{ bookmark: string; takenAt: string; pending: string[] }[] | null>;
+  introspectTablesIfHeld(): Promise<ScopeTable[] | null>;
+  undrainedEventsReadIfHeld(limit: number): Promise<UndrainedRead | null>;
+  redrainCountIfHeld(drainedBefore: string): Promise<number | null>;
   /** #1705 PR 3: the replay lever, on the scope's queue, in one transaction. */
   importCursorMove(input: ImportCursorMoveAt & { now: number }): Promise<ImportCursorMoved>;
   redrainEvents(drainedBefore: string): Promise<number>;
@@ -2960,10 +2982,10 @@ const DOOR_WORDS = {
 /** #2029: the rewind hold's key for one subject — a module's id, bare as #1819 stored it, or `vertical:<slug>`. */
 const holdKeyOf = (kind: SwitchKind, key: string): string => (kind === 'system' ? key : peerSubjectRef(key));
 
-/** #2541: a vertical-side size read's answer, or the refusal when the scope's own object said it holds nothing (`null`). */
-function heldOrRefused(scopeId: ScopeId, size: number | null): number {
-  if (size === null) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
-  return size;
+/** #2541, #2544: a vertical-side read's answer, or the refusal when the scope's own object said it holds nothing (`null`). */
+function heldOrRefused<T>(scopeId: ScopeId, answer: T | null): T {
+  if (answer === null) throw substratError('conflict', scopeNotHeldRefusal(scopeId));
+  return answer;
 }
 
 /** #1819: one rewind's claim on one held module, as the hold object stores it. */
@@ -3742,7 +3764,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * gate (the caller is the control plane, which did the K-3 check + audit on its side).
    */
   async introspectScopeTables(scopeId: ScopeId): Promise<ScopeTable[]> {
-    return this.scopeStub(scopeId).introspectTables();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).introspectTablesIfHeld());
   }
 
   async introspectScopeTable(scopeId: ScopeId, input: ReadScopeTableInput): Promise<ScopeTablePage> {
@@ -4180,47 +4202,47 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */
   async facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
-    return this.scopeStub(scopeId).facetEvents(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).facetEventsIfHeld(input));
   }
 
   /** What one event set off (#1237) on this host's own scope — the vertical-host read. */
   async eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree> {
-    return this.scopeStub(scopeId).eventEffects(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).eventEffectsIfHeld(input));
   }
 
   /** Everything one call emitted (#1237) on this host's own scope — the vertical-host read. */
   async invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents> {
-    return this.scopeStub(scopeId).invocationEvents(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).invocationEventsIfHeld(input));
   }
 
   /** Every delivery that gave up (#1525) on this host's own scope — the vertical-host read. */
   async deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>> {
-    return this.scopeStub(scopeId).deadLetters(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).deadLettersIfHeld(input));
   }
 
   /** One entity's lifecycle replayed (#1744) on this host's own scope — the vertical-host read. */
   async lifecycleFlowLocal(scopeId: ScopeId, input: LifecycleFlowInput): Promise<LifecycleFlowResult> {
-    return this.scopeStub(scopeId).lifecycleFlow(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).lifecycleFlowIfHeld(input));
   }
 
   /** Business volumes per bucket (#1750) on this host's own scope — the vertical-host read. */
   async operationSeriesLocal(scopeId: ScopeId, input: OperationSeriesInput): Promise<OperationSeriesResult> {
-    return this.scopeStub(scopeId).operationSeries(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).operationSeriesIfHeld(input));
   }
 
   /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
   async eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain> {
-    return this.scopeStub(scopeId).eventCause(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).eventCauseIfHeld(input));
   }
 
   /** One record's event history (#1235) on this host's own scope — the vertical-host read. */
   async entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>> {
-    return this.scopeStub(scopeId).entityHistory(input);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).entityHistoryIfHeld(input));
   }
 
   /** When this host's own scope applied each migration (#1236) — the vertical-host read. */
   async appliedMigrationsLocal(scopeId: ScopeId): Promise<AppliedMigration[]> {
-    return this.scopeStub(scopeId).appliedMigrations();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).appliedMigrationsIfHeld());
   }
 
   /**
@@ -4298,7 +4320,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * so a caller cannot ask this side for more than the other would.
    */
   async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<UndrainedEvents> {
-    return undrainedEventsOf(await this.scopeStub(scopeId).undrainedEventsRead(Math.min(Math.max(limit, 1), 1000)));
+    const bounded = Math.min(Math.max(limit, 1), 1000);
+    return undrainedEventsOf(heldOrRefused(scopeId, await this.scopeStub(scopeId).undrainedEventsReadIfHeld(bounded)));
   }
 
   /**
@@ -4327,7 +4350,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * platform's `redrainEvents` is the door, and a count egresses nothing to record.
    */
   async redrainCountLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
-    return this.scopeStub(scopeId).redrainCount(drainedBefore);
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).redrainCountIfHeld(drainedBefore));
   }
 
   /**
@@ -4338,7 +4361,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async migrationBookmarksLocal(
     scopeId: ScopeId,
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
-    return this.scopeStub(scopeId).migrationBookmarks();
+    return heldOrRefused(scopeId, await this.scopeStub(scopeId).migrationBookmarksIfHeld());
   }
 
   /**

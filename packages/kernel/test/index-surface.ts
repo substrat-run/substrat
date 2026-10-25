@@ -188,6 +188,7 @@ export const INDEX_VALUE_EXPORTS = [
   'SYSTEM_DOOR_WAIT',
   'SYSTEM_SWITCHES_DDL',
   'SYSTEM_SWITCH_OFF_QUERY',
+  'ScopeNotHeld',
   'SealedKeyUnavailableError',
   'SearchTermTooShort',
   'SecretBoxUnconfiguredError',

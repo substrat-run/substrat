@@ -18,6 +18,7 @@ import {
   PROVISION_RECONCILE_BATCH,
   PROVISION_RECONCILE_REPORTED_IDS,
   registryImportCandidates,
+  ScopeNotHeld,
   runCrossVerticalFrom,
   runPlatformSweep,
   startPlatformSweeper,
@@ -2232,6 +2233,31 @@ describe('runPlatformSweep · event drain skips (#1636, #1641)', () => {
     const report = await sweep(h);
     expect(report.eventDrain).toEqual({ scopes: 1, shipped: 1, incomplete: 0 });
     expect(report.eventDrain).not.toHaveProperty('skipped');
+  });
+
+  it('counts an active scope its deployment does not hold, on every tick, and never as an error (#2544)', async () => {
+    const scope = sid();
+    const h = eventHost(scope, () => {
+      throw new ScopeNotHeld('the scope is not held here');
+    });
+    for (let tick = 0; tick < 3; tick += 1) {
+      const report = await sweep(h);
+      expect(report.eventDrain).toEqual({ scopes: 0, shipped: 0, incomplete: 0, notHeld: [{ tenantId: T, scopeId: scope }] });
+      // The digest mails every error, so a standing condition must not be one.
+      expect(report.errors).toEqual([]);
+    }
+    expect(h.shipped).toEqual([]);
+    expect(h.marked).toEqual([]);
+  });
+
+  it('a held scope that fails for another reason is still an error (#2544)', async () => {
+    const scope = sid();
+    const h = eventHost(scope, () => {
+      throw new Error('the deployment answered 500');
+    });
+    const report = await sweep(h);
+    expect(report.eventDrain).not.toHaveProperty('notHeld');
+    expect(report.errors).toEqual([{ kind: 'event-drain', id: scope, error: 'the deployment answered 500' }]);
   });
 });
 
