@@ -433,6 +433,11 @@ that way. The rule for "changed nothing" is the one above: every one of these is
 write that sets the value a row already holds (a re-grant, a re-assignment, the same definition
 again) still records a row. Only a write that matches no row, a same-name rename or a re-create
 (`createOrg` of an org that exists, `createTenant` of a tenant that exists) records nothing.
+On the Cloudflare adapter every tenant-level one of these but `createOrg` then fans the tenant's
+state out to its scopes (scope-local-permissions.md §4), `grantToConnection` included since #2526.
+The fan-out runs after the commit: when a scope refuses the projection, the call is rejected with
+`conflict` while the write and its row stand, `reconcileTenantProjection` brings the refusing scope
+up to date, and a retry records a second row.
 
 At a **scope node** the tuple lives in the scope's own store, which no directory transaction
 reaches, so `assignRole`, `grant`, `grantToOrg` and `grantToSystem` there still write the tuple and
