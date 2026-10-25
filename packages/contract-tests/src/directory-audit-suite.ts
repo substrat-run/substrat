@@ -580,12 +580,14 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
           const serve = (versionId: string, ref: string) =>
             host.admin.setVerticalServing(staff, slug, { ref, versionId, doClasses: [], migrationTag: 'g' });
           await serve(first, 'serving-a');
-          const since = new Date().toISOString();
           fixture.interleave(`UPDATE verticals SET serving_ref = 'serving-b' WHERE slug = '${slug}'`);
           const lost = await refusalOf(serve(second, 'serving-c'));
           expect(errorCodeOf(lost)).toBe('precondition_failed');
           expect(await host.admin.verticalServing(staff, slug)).toMatchObject({ ref: 'serving-b', versionId: first });
-          expect(await rowsSince(host, staff, 'setVerticalServing', since)).toEqual([]);
+          // Only the first serve's row: the refused one recorded none.
+          expect((await host.admin.auditLog(staff, { action: ['setVerticalServing'] }))
+            .filter((r) => (r.after as { vertical: string }).vertical === slug)
+            .map((r) => (r.after as { ref: string }).ref)).toEqual(['serving-a']);
         });
       });
 
