@@ -3231,6 +3231,8 @@ export default {
     // The audited control-plane API under /api (the console's baseUrl). One host for the API and
     // the reach its edge-health read uses (#1705 PR 3), not one each.
     const apiHost = hostFor(env);
+    // Follow-on 4: the fleet walk's one write, a deployed script's four wire settings.
+    const wireSettings = wireSettingsFor(env);
     app.route(
       '/api',
       createControlPlaneApi({
@@ -3285,8 +3287,7 @@ export default {
         deployVertical: deployVerticalFor(env),
         // RFC wire-signing step 2 (follow-on 3): what both uploads give a deployment's verifier.
         wireUpload: { rollout: env.WIRE_KEYS_ROLLOUT, routerKeys: env.WIRE_ROUTER_PUBLIC_KEYS, platformKeys: env.WIRE_PLATFORM_PUBLIC_KEYS },
-        // Follow-on 4: the fleet walk's one write, a deployed script's four wire settings.
-        ...(wireSettingsFor(env) ? { wireSettings: wireSettingsFor(env)! } : {}),
+        ...(wireSettings ? { wireSettings } : {}),
         ensureScopeStores: ensureScopeStoresFor(env),
         storeReleases: storeReleasesFor(env),
         humanStaffActor: humanStaffActorFor(env),

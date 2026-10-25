@@ -7,16 +7,21 @@
  *
  * A person runs it, a pass at a time, and it reports before it changes anything:
  *
- * - **Dry run by default.** Without `apply` a pass only reads: the settings write is unreachable.
+ * - **Dry run by default.** Without `apply` a pass only reads: the settings write is unreachable, no
+ *   operational failure is filed and no hold is released.
  * - **Bounded and resumable.** A pass walks at most `limit` scripts in a fixed order (verticals by
  *   slug; each one's serving script, then its versions' scripts by id) and answers the cursor the next
- *   pass starts from, `null` when the fleet is done.
+ *   pass starts from, `null` when the fleet is done. A vertical deleted since it was listed, or named by
+ *   a saved cursor, is passed over.
  * - **Only scripts it can attribute.** The inventory is the registry's: a vertical's serving script and
  *   each of its versions' scripts. A script the registry does not name is never touched, nor is one
  *   whose name is the platform's own.
  * - **No call it does not need.** A script whose record already says it was given what the settings give
  *   now is not read. A script with no record, which the settings give nothing, is not read either: in an
- *   environment where the rollout was never set, a pass makes no call to the runtime at all.
+ *   environment where the rollout was never set, a pass makes no call to the runtime at all. A
+ *   **confirming** pass (`confirm`) reads every recorded script instead, trusting no record.
+ * - **Only a script that verifies is given lists by it.** A script with no record is read back first; one
+ *   that runs without the platform's entry is skipped (`no-entry`), never recorded as verifying.
  * - **One script's failure is that script's.** It is reported, recorded as an operational failure by
  *   reason, and the pass goes on.
  * - **A script it cannot vouch for is held.** When the read after an update differs, or the serve moved
@@ -25,10 +30,11 @@
  *
  * Each script it changes writes its capability record and that record's admin row in one directory
  * transaction (`recordWireAuth`), and each pass writes one `walkWireAuth` row. The settings write is
- * `wire-settings.ts`, which states the one risk it cannot rule out: a write landing between its last
- * read and its own. Do not run the walk while a push or promote of the same vertical is in flight.
+ * `wire-settings.ts`. Do not run the walk while a push or promote of the same vertical is in flight,
+ * and end with a confirming pass.
  */
 import {
+  errorCodeOf,
   instant,
   LIST_PAGE_MAX,
   PLATFORM_SCRIPT_NAMES,
@@ -40,6 +46,7 @@ import {
 } from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
 import type { FetchVerticalModulesFn } from './deploy.js';
+import { PLATFORM_ENTRY_MODULE } from './platform-entry.js';
 import { applyWireSettings, CONCURRENT_RETRIES, type WireSettingsApi, type WireSettingsOutcome } from './wire-settings.js';
 import { wireEntryOf, wireUploadGiven, type WireEntry, type WireUploadSettings } from './wire-upload.js';
 
@@ -52,6 +59,7 @@ export const WIRE_WALK_RELEASE_MAX = 50;
 
 const PAGE = 50;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+const GONE: unique symbol = Symbol('gone');
 /** The cursor's position inside a vertical: just after its serving script. */
 const AFTER_SERVING = '-';
 
@@ -81,6 +89,8 @@ export type WireWalkAction =
   | 'unrecorded'
   /** Held by an earlier pass and not released: not read. */
   | 'held'
+  /** Not given lists, for `reason`: `no-entry`, a script with no record that runs without the platform's entry. */
+  | 'skipped'
   /** Read: it already carries what the settings give now. Applied, its record is refreshed. */
   | 'unchanged'
   /** A dry run: these settings would change. */
@@ -98,7 +108,7 @@ export interface WireWalkScript {
   readonly action: WireWalkAction;
   /** The settings that differ (`would-change`, `updated`), by name. */
   readonly changes?: readonly string[];
-  /** Why it failed: `concurrent-change`, `serve-in-flight`, `verify`, `entry-unknown`, `settings` or `record`. */
+  /** Why it failed (`concurrent-change`, `serve-in-flight`, `verify`, `entry-unknown`, `settings` or `record`), or was skipped (`no-entry`). */
   readonly reason?: string;
   /** For `verify`: the binding names that differed. Never a value. */
   readonly bindings?: readonly string[];
@@ -139,15 +149,26 @@ interface InventoryScript {
 
 /** The registry's scripts in walk order, from `from` on: each vertical's serving script, then its versions' scripts. */
 async function* inventory(admin: HostAdmin, actor: PlatformActorId, from: WireWalkCursor | null): AsyncGenerator<InventoryScript> {
+  /** A directory read of one vertical, or `gone` when the vertical no longer exists (deleted since it was listed, or named by a saved cursor). */
+  const ofVertical = async <T>(read: () => Promise<T>): Promise<T | typeof GONE> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (errorCodeOf(error) === 'not_found') return GONE;
+      throw error;
+    }
+  };
   async function* scriptsOf(vertical: string, after: string | null): AsyncGenerator<InventoryScript> {
-    const serving = await admin.verticalServing(actor, vertical);
+    const serving = await ofVertical(() => admin.verticalServing(actor, vertical));
+    if (serving === GONE) return;
     const servingRef = serving && !PLATFORM_SCRIPT_NAMES.has(serving.ref) ? serving.ref : null;
     if (after === null && servingRef !== null) {
       yield { vertical, deploymentRef: servingRef, versionId: serving!.versionId, kind: 'serving', cursor: cursorText(vertical, AFTER_SERVING) };
     }
     let cursor = after !== null && after !== AFTER_SERVING ? after : undefined;
     for (;;) {
-      const versions = await admin.listVersions(actor, vertical, { limit: PAGE, ...(cursor ? { cursor } : {}) });
+      const versions = await ofVertical(() => admin.listVersions(actor, vertical, { limit: PAGE, ...(cursor ? { cursor } : {}) }));
+      if (versions === GONE) return;
       for (const v of versions) {
         const ref = v.deploymentRef;
         if (ref === null || ref === servingRef || PLATFORM_SCRIPT_NAMES.has(ref)) continue;
@@ -184,23 +205,40 @@ function carriesAlready(stored: WireAuthRecord, given: WireAuthRecord): boolean 
 /** Run one pass. Never throws for one script's failure; throws only for a directory read that fails. */
 export async function runWireWalk(
   deps: WireWalkDeps,
-  input: { readonly apply: boolean; readonly cursor: WireWalkCursor | null; readonly limit: number; readonly release: readonly string[] },
+  input: {
+    readonly apply: boolean;
+    readonly cursor: WireWalkCursor | null;
+    readonly limit: number;
+    readonly release: readonly string[];
+    /** A confirming pass: read every recorded script, never trusting its record (no `current`). */
+    readonly confirm?: boolean;
+    /**
+     * Where each script's result is put as soon as it is known: the caller's, so a pass that ends in a
+     * throw still says what it did. Defaults to a fresh list.
+     */
+    readonly sink?: WireWalkScript[];
+  },
 ): Promise<WireWalkPass> {
   const { admin, actor, settings, api } = deps;
   const now = deps.now ?? (() => new Date());
-  const release = new Set(input.release);
-  const records = new Map<string, Map<string, DeploymentWireAuth>>();
-  const recordsOf = async (vertical: string) => {
-    let held = records.get(vertical);
-    if (held) return held;
-    held = new Map();
+  // A record written after this, by anything but this pass, is an upload's: newer than what the pass read.
+  const startedAt = now().toISOString();
+  const release = new Set(input.apply ? input.release : []);
+  const recordsBy = async (vertical: string) => {
+    const held = new Map<string, DeploymentWireAuth>();
     let cursor: string | undefined;
     for (;;) {
       const page = await admin.listWireAuth!(actor, { reach: { fleet: true }, verticalSlug: vertical, limit: LIST_PAGE_MAX, ...(cursor ? { cursor } : {}) });
       for (const r of page) held.set(r.deploymentRef, r);
-      if (page.length < LIST_PAGE_MAX) break;
+      if (page.length < LIST_PAGE_MAX) return held;
       cursor = page.at(-1)!.deploymentRef;
     }
+  };
+  const records = new Map<string, Map<string, DeploymentWireAuth>>();
+  const recordsOf = async (vertical: string) => {
+    let held = records.get(vertical);
+    if (held) return held;
+    held = await recordsBy(vertical);
     records.clear(); // one vertical at a time: the walk moves through them in order
     records.set(vertical, held);
     return held;
@@ -208,13 +246,20 @@ export async function runWireWalk(
   const record = (script: InventoryScript, rec: WireAuthRecord) =>
     admin.recordWireAuth!(actor, { deploymentRef: script.deploymentRef, verticalSlug: script.vertical, versionId: script.versionId, record: rec, recordedAt: now().toISOString() });
 
-  /** Whether the script's bundle carries the platform's entry, read back from the script itself. */
-  const entryOf = async (script: InventoryScript): Promise<WireEntry | null> => {
-    if (!deps.fetchModules || script.versionId === null) return null;
+  /**
+   * Whether the script carries the platform's entry, which holds the verifier, read back from the
+   * script itself: its modules must hold the entry module, and its own bundle must be one the entry
+   * wraps. `no-manifest` when it cannot be told; `no-entry` when the script runs without one.
+   */
+  const entryOf = async (script: InventoryScript): Promise<WireEntry | 'no-manifest' | 'no-entry'> => {
+    if (!deps.fetchModules || script.versionId === null) return 'no-manifest';
     const manifestJson = await admin.versionManifest(actor, script.vertical, script.versionId);
-    if (!manifestJson) return null;
+    if (!manifestJson) return 'no-manifest';
     const manifest = storedDeployManifest.parse(JSON.parse(manifestJson));
-    return wireEntryOf({ entry: manifest.entry, modules: await deps.fetchModules(script.deploymentRef) });
+    const modules = await deps.fetchModules(script.deploymentRef);
+    if (!modules.some((m) => m.name === PLATFORM_ENTRY_MODULE)) return 'no-entry';
+    const entry = wireEntryOf({ entry: manifest.entry, modules });
+    return entry.envelope === null ? 'no-entry' : entry;
   };
 
   const walkOne = async (script: InventoryScript): Promise<WireWalkScript> => {
@@ -228,21 +273,31 @@ export async function runWireWalk(
       ...(wasHeld && release.has(script.deploymentRef) ? { released: true as const } : {}),
     };
     if (wasHeld && !release.has(script.deploymentRef)) return { ...base, action: 'held' };
+    /** A failure: reported, and recorded as an operational failure when the pass applies (a dry run attempts nothing). */
     const failed = (reason: string, message: string, extra: Partial<WireWalkScript> = {}): WireWalkScript => {
-      deps.fail({ vertical: script.vertical, version: script.versionId, stage: reason, message: `the wire walk did not bring '${script.deploymentRef}' current: ${message}` });
+      if (input.apply) {
+        deps.fail({ vertical: script.vertical, version: script.versionId, stage: reason, message: `the wire walk did not bring '${script.deploymentRef}' current: ${message}` });
+      }
       return { ...base, action: 'failed', reason, ...extra };
     };
     /**
-     * Mark the script held: what was last known (its record, or what it was being given when it had
-     * none), no longer vouched for. Answers whether the hold was written; when it was not, the
-     * operational failure, which names the script, is the trace.
+     * Mark the script held, stating only what is true: its record as it stands now (read again, so an
+     * upload's record written during the pass is never overwritten with what the pass read before),
+     * or, with none, a record that claims no lists (`unverified`). Answers whether the hold was written:
+     * `superseded` when an upload recorded the script during the pass, which is then the truth.
      */
-    const hold = async (last: WireAuthRecord, reason: 'verify' | 'serve-in-flight', bindings: readonly string[]): Promise<boolean> => {
-      const { walkHold: _previous, ...known } = last;
-      return record(script, { ...known, walkHold: { reason, bindings: [...bindings], at: instant.parse(now().toISOString()) } }).then(
-        () => true,
-        () => false,
-      );
+    const hold = async (entry: WireEntry, reason: 'verify' | 'serve-in-flight', bindings: readonly string[]): Promise<'held' | 'superseded' | 'unwritten'> => {
+      try {
+        const latest = (await recordsBy(script.vertical)).get(script.deploymentRef);
+        if (latest && latest.recordedAt > startedAt) return 'superseded';
+        const known: WireAuthRecord = latest
+          ? (({ walkHold: _previous, ...rest }) => rest)(latest.record)
+          : { ...entry, state: 'legacy-only', audience: null, routerKids: [], platformKids: [], withheld: 'unverified' };
+        await record(script, { ...known, walkHold: { reason, bindings: [...bindings], at: instant.parse(now().toISOString()) } });
+        return 'held';
+      } catch {
+        return 'unwritten';
+      }
     };
 
     try {
@@ -252,11 +307,15 @@ export async function runWireWalk(
         // settings decide whether it needs reading at all; whether it carries the entry needs its bundle.
         const probe = await wireUploadGiven(settings, { vertical: script.vertical, deploymentRef: script.deploymentRef, entry: { envelope: 1, entrySkipped: null } });
         if (probe.bindings.length === 0) return { ...base, action: 'unrecorded' };
-        entry = await entryOf(script);
-        if (!entry) return failed('entry-unknown', 'no record, and no stored manifest to read its entry from: upload it again');
+        const read = await entryOf(script);
+        if (read === 'no-manifest') return failed('entry-unknown', 'no record, and no stored manifest to read its entry from: upload it again');
+        // It runs without the platform's entry, so nothing in it verifies: it is not given lists, nor
+        // recorded as verifying. Pushing it again wraps it.
+        if (read === 'no-entry') return { ...base, action: 'skipped', reason: 'no-entry' };
+        entry = read;
       }
       const given = await wireUploadGiven(settings, { vertical: script.vertical, deploymentRef: script.deploymentRef, entry });
-      if (stored && !stored.record.walkHold && carriesAlready(stored.record, given.record)) return { ...base, action: 'current' };
+      if (!input.confirm && stored && !stored.record.walkHold && carriesAlready(stored.record, given.record)) return { ...base, action: 'current' };
 
       let outcome: WireSettingsOutcome;
       try {
@@ -296,15 +355,16 @@ export async function runWireWalk(
           return failed('concurrent-change', `its bindings changed between reads ${CONCURRENT_RETRIES} times; nothing was written`);
         case 'serve-in-flight': {
           if (!outcome.written) return failed('serve-in-flight', 'it does not run the version the directory says it serves; nothing was written: promote again, then walk');
-          const held = await hold(stored?.record ?? given.record, 'serve-in-flight', []);
-          return failed('serve-in-flight', `the served version moved while it was updated${held ? ': held until a person looks' : ''}; promote again, then release it`, held ? { held: true } : {});
+          const held = await hold(entry, 'serve-in-flight', []);
+          const what = held === 'held' ? ': held until a person looks; promote again, then release it' : held === 'superseded' ? ': the promote’s upload recorded it since' : '; promote again';
+          return failed('serve-in-flight', `the served version moved while it was updated${what}`, held === 'held' ? { held: true } : {});
         }
         case 'verify': {
-          const held = await hold(stored?.record ?? given.record, 'verify', outcome.bindings);
+          const held = await hold(entry, 'verify', outcome.bindings);
           return failed(
             'verify',
-            `${held ? 'held until a person looks: ' : ''}after its update, these bindings read differently: ${outcome.bindings.join(', ')}`,
-            { bindings: outcome.bindings, ...(held ? { held: true as const } : {}) },
+            `${held === 'held' ? 'held until a person looks: ' : ''}after its update, these bindings read differently: ${outcome.bindings.join(', ')}`,
+            { bindings: outcome.bindings, ...(held === 'held' ? { held: true as const } : {}) },
           );
         }
       }
@@ -315,14 +375,23 @@ export async function runWireWalk(
     }
   };
 
-  const scripts: WireWalkScript[] = [];
+  const scripts = input.sink ?? [];
   let next: string | null = null;
-  for await (const script of inventory(admin, actor, input.cursor)) {
-    scripts.push(await walkOne(script));
-    if (scripts.length >= input.limit) {
-      next = script.cursor;
-      break;
+  const fleet = inventory(admin, actor, input.cursor);
+  try {
+    let step = await fleet.next();
+    while (!step.done) {
+      const script = step.value;
+      scripts.push(await walkOne(script));
+      step = await fleet.next();
+      // Looked one ahead, so the pass that ends on the fleet's last script answers `null`.
+      if (!step.done && scripts.length >= input.limit) {
+        next = script.cursor;
+        break;
+      }
     }
+  } finally {
+    await fleet.return(undefined);
   }
   return { apply: input.apply, from: input.cursor ? cursorText(input.cursor.vertical, input.cursor.after) : null, next, scripts };
 }

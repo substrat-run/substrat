@@ -209,13 +209,20 @@ export function deploymentWireAuthOf(db: SwitchSql, input: DeploymentWireAuthFil
  */
 export interface WireWalkAudit {
   readonly apply: boolean;
+  /** A confirming pass, which read every recorded script rather than trusting its record. */
+  readonly confirm: boolean;
   readonly from: string | null;
+  /** Where the next pass starts; `null` at the end of the fleet, or when the pass ended in an error. */
   readonly next: string | null;
+  /** Scripts walked, counted to where the pass ended, an error included. */
   readonly walked: number;
   readonly updated: readonly string[];
   readonly held: readonly string[];
   readonly released: readonly string[];
+  readonly skipped: readonly { readonly deploymentRef: string; readonly reason: string }[];
   readonly failed: readonly { readonly deploymentRef: string; readonly reason: string }[];
+  /** Set when the pass ended in an error: the fixed text a person reads, never an upstream message. */
+  readonly error?: string;
 }
 
 /** Forget a vertical's records, with the vertical. */

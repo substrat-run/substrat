@@ -12250,6 +12250,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const body = z
       .object({
         apply: z.boolean().optional(),
+        confirm: z.boolean().optional(),
         cursor: z.string().min(1).max(512).optional(),
         limit: z.number().int().min(1).max(WIRE_WALK_LIMIT_MAX).optional(),
         release: z.array(z.string().min(1).max(255)).max(WIRE_WALK_RELEASE_MAX).optional(),
@@ -12259,7 +12260,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const cursor = body.cursor === undefined ? null : parseWireWalkCursor(body.cursor);
     if (body.cursor !== undefined && cursor === null) throw new ControlPlaneError(422, 'the cursor is not one a pass answered');
     const apply = body.apply === true;
+    const confirm = body.confirm === true;
+    // The pass puts each script's result here as it goes, so a pass that ends in an error is still
+    // audited with what it did.
+    const walked: WireWalkPass['scripts'][number][] = [];
     let pass: WireWalkPass | null = null;
+    let failedWith: string | undefined;
     try {
       pass = await runWireWalk(
         {
@@ -12271,21 +12277,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           fail: ({ vertical, version, stage, message }) =>
             recordFailure({ actor, operation: 'wire-walk', stage, vertical, ...(version ? { version } : {}), message }),
         },
-        { apply, cursor, limit: body.limit ?? WIRE_WALK_LIMIT_DEFAULT, release: body.release ?? [] },
+        { apply, confirm, cursor, limit: body.limit ?? WIRE_WALK_LIMIT_DEFAULT, release: body.release ?? [], sink: walked },
       );
+    } catch (error) {
+      failedWith = 'the pass stopped on a directory read it could not make; the scripts it walked before are listed';
+      throw error;
     } finally {
       // Written however the pass ended: a person reached the fleet, or tried to.
-      const scripts = pass?.scripts ?? [];
-      const named = (pick: (s: WireWalkPass['scripts'][number]) => boolean) => scripts.filter(pick).map((s) => s.deploymentRef);
+      const named = (pick: (s: WireWalkPass['scripts'][number]) => boolean) => walked.filter(pick).map((s) => s.deploymentRef);
+      const why = (action: string) => walked.filter((s) => s.action === action).map((s) => ({ deploymentRef: s.deploymentRef, reason: s.reason ?? action }));
       await c.var.admin.recordWireWalk(actor, {
         apply,
+        confirm,
         from: body.cursor ?? null,
         next: pass?.next ?? null,
-        walked: scripts.length,
+        walked: walked.length,
         updated: named((s) => s.action === 'updated'),
         held: named((s) => s.held === true),
         released: named((s) => s.released === true),
-        failed: scripts.filter((s) => s.action === 'failed').map((s) => ({ deploymentRef: s.deploymentRef, reason: s.reason ?? 'failed' })),
+        skipped: why('skipped'),
+        failed: why('failed'),
+        ...(failedWith ? { error: failedWith } : {}),
       });
     }
     return c.json(pass);

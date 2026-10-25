@@ -2081,9 +2081,11 @@ export const wireAuthRecord = z
     /**
      * Why no lists were given: the rollout names no deployment yet (`unconfigured`), names others but
      * not this one's vertical (`not-in-rollout`), could not be read (`rollout-refused`), or the lists
-     * it would have given were refused before injecting (`lists-refused`). Null when lists were given.
+     * it would have given were refused before injecting (`lists-refused`), or the fleet walk could not
+     * confirm what a script it found with no record carries, and so claims no lists for it
+     * (`unverified`, always beside `walkHold`). Null when lists were given.
      */
-    withheld: z.enum(['unconfigured', 'not-in-rollout', 'rollout-refused', 'lists-refused']).nullable(),
+    withheld: z.enum(['unconfigured', 'not-in-rollout', 'rollout-refused', 'lists-refused', 'unverified']).nullable(),
     /**
      * The fleet walk (follow-on 4) stopped touching this script until a person looks: what it read
      * after its update differed (`verify`), or the serve moved under the update (`serve-in-flight`).
@@ -2108,6 +2110,9 @@ export const wireAuthRecord = z
     const none = r.audience === null && r.routerKids.length === 0 && r.platformKids.length === 0 && r.state === 'legacy-only';
     if (r.withheld === null ? !given : !none) {
       ctx.addIssue({ code: 'custom', path: ['withheld'], message: 'lists given (an audience, both lists, a state) or withheld with a reason: exactly one' });
+    }
+    if (r.withheld === 'unverified' && r.walkHold === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['withheld'], message: '`unverified` is the fleet walk’s, and only beside its hold' });
     }
   });
 export type WireAuthRecord = z.infer<typeof wireAuthRecord>;

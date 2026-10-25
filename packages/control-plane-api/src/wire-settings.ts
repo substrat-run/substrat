@@ -17,15 +17,13 @@
  *   retries from the newer read, at most `CONCURRENT_RETRIES` times, then gives up as
  *   `concurrent-change`;
  * - for a serving script it requires the `SUBSTRAT_VERSION_ID` it read to be the version the
- *   directory says is served, before and after, or it does not write (`serve-in-flight`): a promote
- *   between the reads and the write would otherwise have its version's settings put back;
+ *   directory says is served, before and after, or it does not write (`serve-in-flight`);
  * - after the write it reads once more and checks the four and every other binding it read
  *   (`verify`, by name).
  *
- * What it cannot rule out, and says so: a change landing between the last read and the write is lost.
- * An archive script is uploaded once, at its push, so only the store patcher writes it later; a
- * serving script is uploaded by every promote. The walk is not to be run while a push or promote of
- * the same vertical is in flight.
+ * Other writers of a script's bindings exist (an upload, a store attached to a scope), so the walk is
+ * not run while a push or promote of the same vertical is in flight, and a pass that changed anything
+ * is followed by a confirming pass, which reads every script again.
  */
 import { WIRE_AUDIENCE_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_ROUTER_KEYS_VAR, WIRE_STATE_VAR } from '@substrat-run/contracts/wire-signing';
 
