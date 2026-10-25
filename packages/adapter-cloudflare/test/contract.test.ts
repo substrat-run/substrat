@@ -205,6 +205,8 @@ directoryAdminAuditTransactionSuite('adapter-cloudflare', async () => {
   return {
     host,
     directorySql,
+    directoryRows: async (sql: string) => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
+      (_, state) => state.storage.sql.exec(sql).toArray()),
     interleave: (sql: string) => { armed = sql; },
     cleanup: async () => host.close(),
   };

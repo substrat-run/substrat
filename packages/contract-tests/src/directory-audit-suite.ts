@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { errorCodeOf, platformActorId, scopeId, tenantId, type AdminAction, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
+import {
+  connectionId, errorCodeOf, moduleId, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId,
+  type AdminAction, type OrgId, type PlatformActorId, type TenantId,
+} from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { heldMigrations } from './held-migrations.js';
 
@@ -10,6 +13,8 @@ import { heldMigrations } from './held-migrations.js';
 export interface DirectoryAuditFixture {
   host: ScopeHost;
   directorySql(sql: string): Promise<void>;
+  /** #2526: one read of the directory, for state no HostAdmin read answers (a tenant tuple). */
+  directoryRows(sql: string): Promise<unknown[]>;
   /**
    * #2528: arm one statement to run against the directory, committed on its own, immediately
    * before the host's next audited directory write begins its unit — the write another caller
@@ -34,7 +39,7 @@ interface DirectoryCase {
   /** The directory write the state statement is, refused in the reverse case. */
   write: { table: string; verb: 'INSERT' | 'UPDATE' | 'DELETE' };
   /** Arrange the world; answer the call, what it changes, and the row it must record. */
-  arrange(host: ScopeHost, staff: PlatformActorId): Promise<{
+  arrange(host: ScopeHost, staff: PlatformActorId, fixture: DirectoryAuditFixture): Promise<{
     call(): Promise<unknown>;
     state(): Promise<unknown>;
     changed: unknown;
@@ -69,6 +74,27 @@ const verticalOf = async (host: ScopeHost, staff: PlatformActorId, slug: string)
 /** #2501: how many of the slug's ownership periods are open (at most one). */
 const openPeriodsOf = async (host: ScopeHost, staff: PlatformActorId, slug: string) =>
   (await host.admin.listVerticalOwners!(staff, slug)).filter((p) => p.until === null).length;
+
+const AUDIT_READ = permissionKey.parse('audit:read');
+
+/** #2526: how many live tenant tuples hold `relation` for `subject`. */
+const tenantTuples = async (f: DirectoryAuditFixture, t: TenantId, subject: string, relation: string): Promise<number> =>
+  (await f.directoryRows(`SELECT 1 FROM _substrat_tenant_tuples WHERE tenant_id = '${t}' AND subject = '${subject}'
+     AND relation = '${relation}' AND revoked_at IS NULL`)).length;
+
+const newOrg = async (host: ScopeHost, staff: PlatformActorId, t: TenantId): Promise<OrgId> => {
+  const id = orgId.parse(ulid());
+  await host.admin.createOrg(staff, { id, tenantId: t, slug: slugOf(), name: 'Audit org' });
+  return id;
+};
+
+/** #2526: a live connection in tenant `t`, for vertical `vertical`. */
+const newConnection = async (host: ScopeHost, staff: PlatformActorId, t: TenantId, vertical = 'audit-vertical') => {
+  const id = connectionId.parse(ulid());
+  const provider = `audit-${id.toLowerCase()}`;
+  await host.admin.createConnection(staff, { id, tenantId: t, vertical, provider, label: 'Audit connection', secret: { accessToken: 'tok' } });
+  return { id, provider };
+};
 
 /** One vertical flag flipped by staff: the case is the same shape for each. */
 const flagCase = (
@@ -287,6 +313,127 @@ const CASES: DirectoryCase[] = [
       };
     },
   },
+  // #2526: the role, grant and org writes at a tenant node.
+  {
+    action: 'defineRole',
+    write: { table: '_substrat_roles', verb: 'INSERT' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      return {
+        call: () => host.admin.defineRole(staff, t, { key: 'auditor', permissions: [AUDIT_READ], source: 'vertical' }),
+        state: async () => (await host.admin.listRoles(staff, { tenantId: t })).find((r) => r.key === 'auditor')?.permissions ?? null,
+        changed: [AUDIT_READ],
+        row: { before: null, after: expect.objectContaining({ key: 'auditor', permissions: [AUDIT_READ], source: 'vertical' }) },
+      };
+    },
+  },
+  {
+    action: 'assignRole',
+    write: { table: '_substrat_tenant_tuples', verb: 'INSERT' },
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      await host.admin.defineRole(staff, t, { key: 'auditor', permissions: [AUDIT_READ], source: 'vertical' });
+      const assignment = { principalId: principalId.parse(ulid()), roleKey: 'auditor', node: { tenantId: t, scopeId: null } };
+      return {
+        call: () => host.admin.assignRole(staff, assignment),
+        state: () => tenantTuples(fixture, t, `principal:${assignment.principalId}`, 'role:auditor'),
+        changed: 1,
+        row: { before: null, after: assignment },
+      };
+    },
+  },
+  {
+    action: 'grant',
+    write: { table: '_substrat_tenant_tuples', verb: 'INSERT' },
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      const who = principalId.parse(ulid());
+      return {
+        call: () => host.admin.grant(staff, { principalId: who, permission: AUDIT_READ, node: { tenantId: t, scopeId: null }, grantedBy: who }),
+        state: () => tenantTuples(fixture, t, `principal:${who}`, `granted:${AUDIT_READ}`),
+        changed: 1,
+        row: { before: null, after: expect.objectContaining({ principalId: who, permission: AUDIT_READ }) },
+      };
+    },
+  },
+  {
+    action: 'grantToOrg',
+    write: { table: '_substrat_tenant_tuples', verb: 'INSERT' },
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      const org = await newOrg(host, staff, t);
+      return {
+        call: () => host.admin.grantToOrg(staff, org, AUDIT_READ, { tenantId: t, scopeId: null }),
+        state: () => tenantTuples(fixture, t, `org:${org}`, `granted:${AUDIT_READ}`),
+        changed: 1,
+        row: { before: null, after: { orgId: org, permission: AUDIT_READ, node: { tenantId: t, scopeId: null } } },
+      };
+    },
+  },
+  {
+    action: 'grantToSystem',
+    write: { table: '_substrat_tenant_tuples', verb: 'INSERT' },
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      const mod = moduleId.parse('audit-module');
+      const node = { tenantId: t, scopeId: null };
+      return {
+        call: () => host.admin.grantToSystem(staff, { moduleId: mod, permission: AUDIT_READ, node, grantedBy: staff }),
+        state: () => tenantTuples(fixture, t, `system:${mod}`, `granted:${AUDIT_READ}`),
+        changed: 1,
+        row: { before: null, after: { moduleId: mod, permission: AUDIT_READ, node } },
+      };
+    },
+  },
+  {
+    action: 'grantToConnection',
+    write: { table: '_substrat_connection_grants', verb: 'INSERT' },
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      const conn = await newConnection(host, staff, t);
+      const node = { tenantId: t, scopeId: null };
+      return {
+        call: () => host.admin.grantToConnection(staff, { connectionId: conn.id, permission: AUDIT_READ, node, grantedBy: staff }),
+        // The record and, at the tenant node, the tuple go back together.
+        state: async () => [
+          (await host.admin.listConnectionGrants(staff, t)).filter((g) => g.connectionId === conn.id).length,
+          await tenantTuples(fixture, t, `connection:${conn.id}`, `granted:${AUDIT_READ}`),
+        ],
+        changed: [1, 1],
+        row: { before: null, after: { connectionId: conn.id, provider: conn.provider, permission: AUDIT_READ, node } },
+      };
+    },
+  },
+  {
+    action: 'createOrg',
+    write: { table: 'orgs', verb: 'INSERT' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      const id = orgId.parse(ulid());
+      const slug = slugOf();
+      return {
+        call: () => host.admin.createOrg(staff, { id, tenantId: t, slug, name: 'Created org' }),
+        state: async () => (await host.admin.getOrg(staff, t, id))?.slug ?? null,
+        changed: slug,
+        row: { before: null, after: expect.objectContaining({ id, tenantId: t, slug, name: 'Created org' }) },
+      };
+    },
+  },
+  {
+    action: 'addMember',
+    write: { table: '_substrat_tenant_tuples', verb: 'INSERT' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      const org = await newOrg(host, staff, t);
+      const who = principalId.parse(ulid());
+      return {
+        call: () => host.admin.addMember(staff, t, who, org),
+        state: async () => (await host.admin.listMembers(staff, t, org)).map((m) => m.principal),
+        changed: [who],
+        row: { before: null, after: expect.objectContaining({ principal: who, orgId: org }) },
+      };
+    },
+  },
 ];
 
 /**
@@ -306,7 +453,7 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         : refusal(`test_refuse_write_${tag}`, `${c.write.verb} ON ${c.write.table}`);
       let lifted = true;
       try {
-        const { call, state, changed, row } = await c.arrange(host, staff);
+        const { call, state, changed, row } = await c.arrange(host, staff, fixture);
         const since = new Date().toISOString();
         const rows = () => host.admin.auditLog(staff, { action: [c.action], since });
         const before = await state();
@@ -589,6 +736,53 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
           expect((await host.admin.auditLog(staff, { action: ['setVerticalServing'] }))
             .filter((r) => (r.after as { vertical: string }).vertical === slug)
             .map((r) => (r.after as { ref: string }).ref)).toEqual(['serving-a']);
+        });
+      });
+
+      // #2526: the org and the connection a grant names are judged in the unit that writes it.
+      it.each(['grantToOrg', 'addMember'] as const)('%s refuses an org deleted since it was read, and writes nothing', async (action) => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          const org = await newOrg(host, staff, t);
+          const who = principalId.parse(ulid());
+          const since = new Date().toISOString();
+          fixture.interleave(`DELETE FROM orgs WHERE org_id = '${org}'`);
+          const refused = await refusalOf(action === 'grantToOrg'
+            ? host.admin.grantToOrg(staff, org, AUDIT_READ, { tenantId: t, scopeId: null })
+            : host.admin.addMember(staff, t, who, org));
+          expect(errorCodeOf(refused)).toBe('not_found');
+          expect(refused.message).toBe(`unknown org ${org} in tenant ${t}`);
+          expect(await fixture.directoryRows(`SELECT 1 FROM _substrat_tenant_tuples WHERE tenant_id = '${t}'`)).toEqual([]);
+          expect(await rowsSince(host, staff, action, since)).toEqual([]);
+        });
+      });
+
+      it('grantToConnection refuses a connection revoked since it was read, and writes nothing', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          const conn = await newConnection(host, staff, t);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE _substrat_connections SET revoked_at = '${since}' WHERE id = '${conn.id}'`);
+          const refused = await refusalOf(host.admin.grantToConnection(staff,
+            { connectionId: conn.id, permission: AUDIT_READ, node: { tenantId: t, scopeId: null }, grantedBy: staff }));
+          expect(refused.message).toContain(`connection ${conn.id} is revoked — grant nothing to it`);
+          expect(await fixture.directoryRows(`SELECT 1 FROM _substrat_connection_grants WHERE connection_id = '${conn.id}'`)).toEqual([]);
+          expect(await tenantTuples(fixture, t, `connection:${conn.id}`, `granted:${AUDIT_READ}`)).toBe(0);
+          expect(await rowsSince(host, staff, 'grantToConnection', since)).toEqual([]);
+        });
+      });
+
+      it('defineRole records the role its own unit read as its before', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          await host.admin.defineRole(staff, t, { key: 'auditor', permissions: [AUDIT_READ], source: 'vertical' });
+          fixture.interleave(`UPDATE _substrat_roles SET permissions = '["audit:write"]' WHERE tenant_id = '${t}' AND role_key = 'auditor'`);
+          await host.admin.defineRole(staff, t, { key: 'auditor', permissions: [AUDIT_READ], source: 'vertical' });
+          // The first definition's row has no `before`; the second's is the role as the interleave left it.
+          const befores = (await host.admin.auditLog(staff, { tenantId: t, action: ['defineRole'] }))
+            .map((r) => (r.before as { permissions: string[] } | null)?.permissions ?? null);
+          expect(befores).toHaveLength(2);
+          expect(befores).toEqual(expect.arrayContaining([null, ['audit:write']]));
         });
       });
 

@@ -9311,7 +9311,13 @@ export class SqliteScopeHost implements ScopeHost {
         let before: RoleDefinition | null = null;
         this.directoryWriteAndAudit(() => {
           this.refuseReservedDefinition(tenantId, parsed);
-          before = this.roles.get(`${tenantId}/${parsed.key}`) ?? null;
+          // The row as stored, read as `loadRoles` reads one.
+          const stored = this.directory
+            .prepare('SELECT permissions, source, holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?')
+            .get(tenantId, parsed.key) as { permissions: string; source: string; holder: 'person' | 'system' | null } | undefined;
+          before = stored
+            ? ({ key: parsed.key, permissions: JSON.parse(stored.permissions), source: stored.source, holder: stored.holder ?? undefined } as RoleDefinition)
+            : null;
           this.directory
             .prepare(
               `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder)
