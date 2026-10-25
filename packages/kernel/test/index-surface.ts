@@ -413,6 +413,7 @@ export const INDEX_VALUE_EXPORTS = [
   'impersonationStampOf',
   'importCursorSourceOf',
   'inUnitMovesToAudit',
+  'inUnitRoleRefusal',
   'indexVersionScopeStores',
   'insertConnectLink',
   'inspectUploadLink',
@@ -650,6 +651,7 @@ export const INDEX_VALUE_EXPORTS = [
   'reservedRoleRefusal',
   // #2447: `reservedRoleDefinitionRefusal` over a role set defined at once.
   'reservedRoleSetRefusal',
+  'reservedRoleSetRefusedRole',
   // #2430: the refusal both adapters' reconcile of declared entity-grant shapes answers.
   'reservedShapeRefusal',
   'resolveAttachmentTextBounds',

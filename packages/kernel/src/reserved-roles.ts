@@ -263,6 +263,31 @@ export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostRe
 }
 
 /**
+ * #2531: `reservedRoleSetRefusal`'s answer with the key of the role it refused: the same walk, for a
+ * unit that judges a set it is writing and answers a fixed sentence naming the role key only
+ * (`inUnitRoleRefusal`). The rule's own wording stays the pre-check's.
+ */
+export function reservedRoleSetRefusedRole(
+  roles: readonly RoleShape[],
+  host: HostReservations,
+  stored?: StoredRoles,
+): { key: string; refusal: string } | null {
+  const refused = firstRefusedRole(roles, host, stored);
+  return refused ? { key: refused.key, refusal: refused.refusal } : null;
+}
+
+/**
+ * #2531: the sentence a role set refused inside the unit that writes it answers: fixed, naming the
+ * role key only. The unit rolls back, so nothing it would have written is written.
+ */
+export function inUnitRoleRefusal(roleKey: string): string {
+  return (
+    `role '${roleKey}' is refused by the reserved-key rule, judged against the roles and seats this scope holds as ` +
+    `the write lands (K-55); nothing was written`
+  );
+}
+
+/**
  * `reservedRoleSetRefusal`'s walk: the first role of the set refused, with the refusal, or null.
  * `judged` narrows which roles are asked about; every role of the set stays their context.
  */
