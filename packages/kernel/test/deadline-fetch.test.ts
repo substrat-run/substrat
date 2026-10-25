@@ -758,7 +758,15 @@ describe('a streamed body is not retained once delivered (#2498, #2518)', () => 
       }
     }
     expect(read).toBe(CHUNKS * MB);
-    // 120 MB went through. A chunk kept alive per read would leave ~120 MB; one chunk is about 1.
-    expect(buffers() - before).toBeLessThan(10 * MB);
+    // The last chunks are not collected until a collection runs, so the end reading follows one, as
+    // the mid-stream samples do.
+    for (let i = 0; i < 3; i++) gc();
+    await settle();
+    // 120 MB went through. A chunk kept alive per read would leave ~120 MB at both readings and the
+    // peak grows with every read. A forced collection does not free a backing store at once: V8's
+    // array-buffer sweeper runs concurrently, and on a loaded two-core CI runner it trails by about
+    // eleven chunks (11 MiB read there twice, #2576; 1 MiB here), so the bound sits well above that
+    // lag (40) and a third of the stream below the leak (120).
+    expect(Math.max(peak, buffers() - before)).toBeLessThan(40 * MB);
   });
 });
