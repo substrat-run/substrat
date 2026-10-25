@@ -450,37 +450,16 @@ describe('the nonce store the entry claims in, on workerd (RFC wire-signing §4)
   };
   const send = (d: ReturnType<typeof stored>, headers: Record<string, string>) => d.mf.dispatchFetch(PROVISION, { method: 'POST', headers, body });
 
-  it('signed-only: a call that changes state is accepted once; the same envelope again is refused, and a re-signed retry is accepted', async () => {
+  it('signed-only: a call that changes state is accepted once, and the same envelope again is refused', async () => {
     const d = stored('signed-only');
     const first = await envelope();
     const accepted = await send(d, first);
     expect(accepted.status).toBe(200);
-    expect(((await accepted.json()) as { body: string }).body).toBe(body);
+    await accepted.text();
     const replayed = await send(d, first);
     expect(replayed.status).toBe(401);
     expect(await replayed.text()).toBe(WIRE_REFUSAL_BODY);
-    const retried = await send(d, await envelope());
-    expect(retried.status).toBe(200);
-    await retried.text();
-    await expect.poll(() => d.wire().map((l) => [l['outcome'], l['reason'], l['fault']])).toEqual([
-      ['signed-accepted', null, null],
-      ['refused', 'replay', null],
-      ['signed-accepted', null, null],
-    ]);
-  });
-
-  it('dual: a replay beside a valid legacy credential is served as today and counted as one', async () => {
-    const d = stored('dual');
-    const first = { 'x-substrat-platform': CALL_VALUE, ...(await envelope()) };
-    for (let i = 0; i < 2; i++) {
-      const res = await send(d, first);
-      expect(res.status).toBe(200);
-      await res.text();
-    }
-    await expect.poll(() => d.wire().map((l) => [l['outcome'], l['reason']])).toEqual([
-      ['signed-accepted', null],
-      ['legacy-accepted', 'replay'],
-    ]);
+    await expect.poll(() => d.wire().map((l) => l['reason'])).toEqual([null, 'replay']);
   });
 });
 

@@ -118,9 +118,8 @@ export function claimWireNonceIn(
   for (const [name, value] of [['until', until], ['nowSeconds', nowSeconds]] as const) {
     if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} is a non-negative whole number of seconds`);
   }
-  const stored = sql.all(`SELECT live FROM _substrat_wire_nonce_count WHERE slot = 'live'`)[0]?.live;
-  // A store from before the count row (or one a test filled by hand) is counted once, then kept.
-  let live = stored == null ? Number(sql.all('SELECT COUNT(*) AS n FROM _substrat_wire_nonces')[0]!.n) : Number(stored);
+  // No count row yet means no nonce yet: the row is written with the first one.
+  let live = Number(sql.all(`SELECT live FROM _substrat_wire_nonce_count WHERE slot = 'live'`)[0]?.live ?? 0);
   const before = live;
   live -= sql.all(PURGE_SQL, nowSeconds).length;
   let answer: WireNonceClaim;
@@ -130,7 +129,7 @@ export function claimWireNonceIn(
     live += 1;
     answer = true;
   } else answer = false;
-  if (live !== before || stored == null) sql.run(COUNT_WRITE_SQL, live);
+  if (live !== before) sql.run(COUNT_WRITE_SQL, live);
   return answer;
 }
 

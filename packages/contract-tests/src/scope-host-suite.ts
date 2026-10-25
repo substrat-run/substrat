@@ -52,6 +52,7 @@ import {
   BACKFILL_MOVE_ID,
   SCOPE_COPY_LEASE_MS,
   isSearchIndexTable,
+  isWireNonceTable,
   platformIntentFailureMessage,
   withheldOpsFailure,
   withheldStaffFailure,
@@ -3080,9 +3081,12 @@ export function scopeHostContractSuite(
           // asserted positively below, so the exemption is a contract rather than
           // a hole this loop happens not to notice.
           if (isSearchIndexTable(t.name)) continue;
+          // The wire nonce store is store-local (RFC wire-signing §4): never dumped, asserted below.
+          if (isWireNonceTable(t.name)) continue;
           expect(dumped.has(t.name)).toBe(true);
         }
         expect(dump.tables.some((t) => isSearchIndexTable(t.name))).toBe(false);
+        expect(dump.tables.some((t) => isWireNonceTable(t.name))).toBe(false);
         // The vertical table's rows are dumped in full (count matches introspection).
         const marker = dump.tables.find((t) => t.name === 'marker')!;
         const introMarker = tables.find((t) => t.name === 'marker')!;

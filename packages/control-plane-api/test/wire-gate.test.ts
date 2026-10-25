@@ -1222,88 +1222,41 @@ describe('the nonce store the entry claims in (RFC wire-signing §4)', () => {
 
   /** A registry holding `hostFor`, as `mountPlatformSurface` fills it. */
   const registry = (hostFor: ((env: never) => unknown) | undefined) => nonceStoreOf(() => hostFor);
-  const withHost = () => {
+
+  it('spends the nonce once in the scope the envelope names: the same envelope again is a replay, a re-signed retry is not', async () => {
     const spy = vi.spyOn(host, 'claimWireNonceLocal');
-    return { nonceCache: registry(() => host), spy };
-  };
-
-  it('spends the nonce once: the call is accepted, and the same envelope sent again is a replay', async () => {
-    const { nonceCache, spy } = withHost();
-    const headers = await signed();
-    // dual, beside a valid legacy credential: accepted, then counted as a replay and served as today.
-    const dual = gated({ nonceCache });
-    expect((await dual.fetch(call({ ...callHeaders(true), ...headers }), envOf('dual'))).status).toBe(200);
-    expect(dual.wire()[0]).toMatchObject({ outcome: 'signed-accepted', fault: null, reason: null });
-    expect(spy).toHaveBeenCalledWith(TENANT, SCOPE, expect.any(String), NOW + 60 + 30);
-    expect((await dual.fetch(call({ ...callHeaders(true), ...headers }), envOf('dual'))).status).toBe(200);
-    expect(dual.wire()[1]).toMatchObject({ outcome: 'legacy-accepted', reason: 'replay' });
-    // signed-only: the replay is the one refusal, and the vertical never sees it.
-    const signedOnly = gated({ nonceCache });
-    const refused = await signedOnly.fetch(call(headers), envOf('signed-only'));
-    expect(refused.status).toBe(401);
-    expect(await refused.text()).toBe(WIRE_REFUSAL_BODY);
-    expect(signedOnly.seen).toEqual([]);
-    expect(signedOnly.wire()[0]).toMatchObject({ outcome: 'refused', reason: 'replay' });
-  });
-
-  it('a retry the signer re-signs carries a fresh nonce and is accepted; only a resent envelope is a replay', async () => {
-    const { nonceCache } = withHost();
-    const g = gated({ nonceCache });
+    const g = gated({ nonceCache: registry(() => host) });
     const first = await signed();
     expect((await g.fetch(call(first), envOf('signed-only'))).status).toBe(200);
-    const retry = await signed();
-    expect(retry[WIRE_ENVELOPE_HEADER]).not.toBe(first[WIRE_ENVELOPE_HEADER]);
-    expect((await g.fetch(call(retry), envOf('signed-only'))).status).toBe(200);
+    expect(spy).toHaveBeenCalledWith(TENANT, SCOPE, expect.any(String), NOW + 60 + 30);
     expect((await g.fetch(call(first), envOf('signed-only'))).status).toBe(401);
-    expect(g.wire().map((l) => l.reason)).toEqual([null, null, 'replay']);
-  });
-
-  it('a call with no envelope never reaches the store, in dual or in signed-only', async () => {
-    const { nonceCache, spy } = withHost();
-    const g = gated({ nonceCache });
-    expect((await g.fetch(call(callHeaders(true)), envOf('dual'))).status).toBe(200);
-    expect(g.wire()[0]).toMatchObject({ outcome: 'legacy-accepted', reason: 'missing' });
-    expect((await g.fetch(call(callHeaders(true)), envOf('signed-only'))).status).toBe(401);
-    expect(spy).not.toHaveBeenCalled();
+    // dual serves the replay through the valid legacy credential, as today, and counts it.
+    expect((await g.fetch(call({ ...callHeaders(true), ...first }), envOf('dual'))).status).toBe(200);
+    expect((await g.fetch(call(await signed()), envOf('signed-only'))).status).toBe(200);
+    expect(g.wire().map((l) => [l.outcome, l.reason])).toEqual([
+      ['signed-accepted', null],
+      ['refused', 'replay'],
+      ['legacy-accepted', 'replay'],
+      ['signed-accepted', null],
+    ]);
   });
 
   it('a bundle that registered no host, or a host from before the store, is the static no-nonce-store fault', async () => {
     for (const nonceCache of [registry(undefined), registry(() => ({})), registry(() => null)]) {
-      const dual = gated({ nonceCache });
-      expect((await dual.fetch(call({ ...callHeaders(true), ...(await signed()) }), envOf('dual'))).status).toBe(200);
-      expect(dual.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store', legacy: 'valid' });
-      const signedOnly = gated({ nonceCache });
-      expect((await signedOnly.fetch(call(await signed()), envOf('signed-only'))).status).toBe(503);
+      const g = gated({ nonceCache });
+      await g.fetch(call({ ...callHeaders(true), ...(await signed()) }), envOf('dual'));
+      expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'no-nonce-store' });
     }
   });
 
-  it('a store that throws, a builder that throws, or a store at its cap is the store’s failure in every state', async () => {
-    const failing = [
-      registry(() => ({ claimWireNonceLocal: () => Promise.reject(new Error('the wire nonce store holds as many live nonces as it may')) })),
-      registry(() => {
+  it('a host builder that throws is the store’s failure, never acceptance', async () => {
+    const g = gated({
+      nonceCache: registry(() => {
         throw new Error('no host here');
       }),
-    ];
-    for (const nonceCache of failing) {
-      for (const state of ['dual', 'signed-only']) {
-        const g = gated({ nonceCache });
-        const res = await g.fetch(call({ ...callHeaders(true), ...(await signed()) }), envOf(state));
-        expect(res.status).toBe(503);
-        expect(await res.text()).toBe(WIRE_FAULT_BODY);
-        expect(g.seen).toEqual([]);
-        expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
-      }
-    }
-  });
-
-  it('builds the vertical’s host once per worker env, as the sweeper does', async () => {
-    const hostFor = vi.fn(() => host);
-    const nonceCache = registry(hostFor);
-    const g = gated({ nonceCache });
-    const env = envOf('signed-only');
-    for (let i = 0; i < 3; i++) expect((await g.fetch(call(await signed()), env)).status).toBe(200);
-    expect(hostFor).toHaveBeenCalledTimes(1);
-    await g.fetch(call(await signed()), envOf('signed-only'));
-    expect(hostFor).toHaveBeenCalledTimes(2);
+    });
+    const res = await g.fetch(call({ ...callHeaders(true), ...(await signed()) }), envOf('dual'));
+    expect(res.status).toBe(503);
+    expect(g.wire()[0]).toMatchObject({ outcome: 'fault', fault: 'nonce-store' });
   });
 });

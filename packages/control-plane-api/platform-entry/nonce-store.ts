@@ -27,20 +27,14 @@ interface NonceStoreHost {
 /**
  * The gate's `nonceCache` seam over a registry: the scope's nonce store for one call, or
  * `undefined` when this version has none. Asked by the gate only at the claim, after the envelope
- * verified, for the tenant and scope it names. A host is built once per worker env, as the
- * sweeper's is, and a builder that throws is the store's failure, which the gate answers as one.
+ * verified, for the tenant and scope it names. A builder that throws is the store's failure, which
+ * the gate answers as one.
  */
 export function nonceStoreOf(registered: RegisteredHost) {
-  const hosts = new WeakMap<object, unknown>();
   return (env: unknown, scopeId: string, tenantId: string | null): WireNonceCache | undefined => {
     const hostFor = registered();
-    if (!hostFor || typeof env !== 'object' || env === null) return undefined;
-    let host = hosts.get(env);
-    if (host === undefined) {
-      host = hostFor(env as never);
-      hosts.set(env, host);
-    }
-    const store = host as Partial<NonceStoreHost> | null | undefined;
+    if (!hostFor) return undefined;
+    const store = hostFor(env as never) as Partial<NonceStoreHost> | null | undefined;
     // A call that keeps nonces names its tenant with its scope (RFC §3.1: both or neither).
     if (typeof store?.claimWireNonceLocal !== 'function' || tenantId === null) return undefined;
     const claim = store.claimWireNonceLocal.bind(store);
