@@ -1081,6 +1081,30 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(again).toMatchObject({ status: 'done', result: { tenantId: newTenant, scopeId: newScope } });
   });
 
+  // #2564: an existing id makes the create a no-op, so ownership is what stops the writes after it.
+  it.each([
+    ['a tenant created another way', null],
+    ["another manager's tenant", 'other'],
+  ] as const)('refuses %s with the ownership sentence, granting and provisioning nothing', async (_case, by) => {
+    const other = tenantId.parse(ulid());
+    const otherManager = tenantId.parse(ulid());
+    if (by) await host.admin.createTenant(staff, { id: otherManager, slug: `m-${otherManager.slice(-8).toLowerCase()}`, name: 'M' });
+    await host.admin.createTenant(staff, {
+      id: other,
+      slug: `o-${other.slice(-8).toLowerCase()}`,
+      name: 'Other',
+      provisionedByTenant: by ? otherManager : null,
+    });
+    const outcome = await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: payloadFor(other, ulid()) }));
+    expect(outcome).toEqual({
+      status: 'failed',
+      error: "the payload's tenant was not provisioned by this vertical's tenant",
+      failure: { origin: 'platform', code: 'permission_denied', permission: null },
+    });
+    expect(await host.admin.listEntitlements(staff, other)).toEqual([]);
+    expect(await host.admin.listScopes(staff, { tenantId: other })).toEqual([]);
+  });
+
   it('refuses a vertical without the provisioner capability — terminal, with a reason', async () => {
     // Unregistered entirely…
     const outcome = await provisionTenantHandler(deps())(
@@ -1290,7 +1314,9 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
       entitlements: ['flows', 'vault'],
     });
     await host.admin.setVerticalTenantProvisioner(staff, 'manager-console', true);
-    await host.admin.createTenant(staff, { id: customer, slug: 'customer', name: 'Customer' });
+    await host.admin.createTenant(staff, { id: managerTenant, slug: 'manager', name: 'Manager' });
+    // The customer is the manager's own (#2564), as a `provision-tenant` would have stamped it.
+    await host.admin.createTenant(staff, { id: customer, slug: 'customer', name: 'Customer', provisionedByTenant: managerTenant });
     await host.provisionScope(staff, { tenantId: customer, scopeId: authScope, vertical: 'managed-product' });
     await host.admin.activateScope(staff, customer, authScope);
     // The state a downgrade reconciles away from: 'flows' held, plus a PLATFORM-granted
@@ -1349,6 +1375,30 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
     );
     expect(outcome.status).toBe('failed');
     expect(outcome.error).toMatch(/unknown scope for tenant/);
+  });
+
+  // #2564: one sentence whether the tenant exists or not, so the refusal tells nothing about it.
+  it.each([
+    ['a tenant created another way', async () => {
+      const other = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: other, slug: `other-${other.slice(-8).toLowerCase()}`, name: 'Other' });
+      await host.admin.grantEntitlement(staff, other, 'flows', { plan: 'pro' });
+      return { other, held: ['flows'] };
+    }],
+    ['a tenant id that does not exist', async () => ({ other: tenantId.parse(ulid()), held: [] })],
+  ])('refuses %s with the ownership sentence, touching nothing', async (_case, target) => {
+    const { other, held } = await target();
+    const outcome = await setEntitlementsHandler(deps())(
+      ctx,
+      intent('set-entitlements', { payload: { tenantId: other, authScopeId: ulid(), plan: 'x', entitlements: [] } }),
+    );
+    expect(outcome).toEqual({
+      status: 'failed',
+      error: "the payload's tenant was not provisioned by this vertical's tenant",
+      failure: { origin: 'platform', code: 'permission_denied', permission: null },
+    });
+    // The reconcile's revoke side never ran: a 'flows' grant the other tenant held is still held.
+    expect((await host.admin.listEntitlements(staff, other)).map((e) => e.entitlementKey)).toEqual(held);
   });
 });
 
