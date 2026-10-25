@@ -186,8 +186,11 @@ connection's activity view shows.
    ```
 
    `protocol.signatures-requested` then carries `documentAttachmentId`, and `create` opens it
-   (`conn.openAttachment`, on the very connection it is about to send with) and puts those
-   bytes out under the vertical's own filename. With nothing
+   (`conn.openAttachmentStream`, on the very connection it is about to send with) and streams
+   those bytes into `setfile` under the vertical's own filename, never holding the whole file.
+   Bytes that fail their integrity check part-way abort the upload before it completes, so
+   Scrive never gets a file from them; the draft document is left behind, no `start` follows,
+   and the delivery is retried or dead-letters as any failure does. With nothing
    bound, today's one-page sheet goes out unchanged — the template, the parties, and the content
    hash — which stays the honest artifact for a caller that renders nothing.
 

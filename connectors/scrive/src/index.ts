@@ -19,6 +19,7 @@ import type {
   ConnectorOptions,
   FetchLike,
   HostAdmin,
+  OpenedAttachmentStream,
   ScopeHost,
 } from '@substrat-run/kernel';
 import { connectorUploadBody, deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
@@ -589,7 +590,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // to sign again — with an id there is nothing to pick between, and the sealed
     // copy does not exist when the binding is made.
     //
-    // Read through `conn.openAttachment`, not `host.getConnectorAttachments`: this
+    // Read through `conn.openAttachmentStream`, not `host.getConnectorAttachments`: this
     // runs inside the scope's dispatch, and on the pure adapter that surface
     // re-enters the scope actor and wedges it (#711). On the connection, so the
     // read is authorized as the very credential this dispatch is using — the same
@@ -609,9 +610,16 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // document is a hard failure: it dead-letters, the operator sees it (a missing
     // `protocol:read` grant, a removed attachment), and because the ledger row is
     // written only after `start`, the retry that follows the fix sends the right one.
-    let bound = null;
+    //
+    // As a stream (#2514), so a large document is never held here: it goes on to
+    // `setfile` as it is read. Opened before `createDocument`, so a missing one is
+    // still refused with nothing to clean up. A stream that refuses part-way (bytes
+    // that do not match their record) aborts `setfile` before its closing boundary,
+    // so Scrive is never handed a file from them; the draft `createDocument` made is
+    // left behind, as on every failure after it, and no `start` or ledger row follows.
+    let bound: OpenedAttachmentStream | null = null;
     if (payload.documentAttachmentId) {
-      bound = await conn.openAttachment(payload.documentAttachmentId);
+      bound = await conn.openAttachmentStream(payload.documentAttachmentId);
       if (!bound) {
         throw new Error(
           `instance ${payload.instanceId} was frozen bound to attachment ` +
@@ -653,7 +661,14 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // Scrive callback will ever carry, so it has to be unguessable.
     const webhookToken = options.callbackUrl ? mintCallbackToken() : undefined;
 
-    const doc = await api.createDocument();
+    let doc: Awaited<ReturnType<ScriveApi['createDocument']>>;
+    try {
+      doc = await api.createDocument();
+    } catch (e) {
+      // Nothing read the document: let the stored object go rather than hold it behind the throw.
+      if (bound) await bound.body.stream.getReader().cancel(e).catch(() => {});
+      throw e;
+    }
     await api.setFile(doc.id, filename, pdf);
     await api.update(doc.id, {
       title,

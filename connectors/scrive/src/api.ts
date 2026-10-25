@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ByteStream, ConnectorConnection } from '@substrat-run/kernel';
+import { isSizedByteStream, type ByteStream, type ConnectorConnection, type SizedByteStream } from '@substrat-run/kernel';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as the kernel does.
@@ -448,15 +448,31 @@ export class ScriveApi {
    * the first version sent. The multipart envelope is built as bytes because the
    * file is binary and a string body would corrupt it (which is why
    * `ConnectorRequestInit.body` accepts `Uint8Array`).
+   *
+   * `pdf` may be a stream at its declared length (#2514), the vertical's document as
+   * `conn.openAttachmentStream` reads it: the envelope is then a stream too, never
+   * held whole. A stream that errors (an attachment stream refusing bytes that do not
+   * match their record) aborts the request before the closing boundary, so Scrive is
+   * never handed a whole file, and that error is what this throws.
    */
-  async setFile(documentId: string, filename: string, pdf: Uint8Array): Promise<void> {
+  async setFile(documentId: string, filename: string, pdf: Uint8Array | SizedByteStream): Promise<void> {
     const boundary = `----substrat${filename.length}${pdf.length}`;
-    const body = multipartFile(boundary, 'file', filename, pdf);
-    const res = await this.conn.fetch(`${this.baseUrl}/api/v2/documents/${documentId}/setfile`, {
-      method: 'POST',
-      headers: this.headers({ 'content-type': `multipart/form-data; boundary=${boundary}` }),
-      body,
-    });
+    const refused: { error?: unknown } = {};
+    const body = isSizedByteStream(pdf)
+      ? multipartStream(boundary, 'file', filename, pdf, refused)
+      : multipartFile(boundary, 'file', filename, pdf);
+    let res;
+    try {
+      res = await this.conn.fetch(`${this.baseUrl}/api/v2/documents/${documentId}/setfile`, {
+        method: 'POST',
+        headers: this.headers({ 'content-type': `multipart/form-data; boundary=${boundary}` }),
+        body,
+      });
+    } catch (e) {
+      // A runtime reports a body that errored as its own failure; the stream's error is the one that says why.
+      throw refused.error ?? e;
+    }
+    if (refused.error) throw refused.error;
     await asJson(res, 'setfile');
   }
 
@@ -565,13 +581,8 @@ export class ScriveApi {
   }
 }
 
-/** A one-file `multipart/form-data` body, as bytes. Web-standard, no node:buffer. */
-function multipartFile(
-  boundary: string,
-  field: string,
-  filename: string,
-  file: Uint8Array,
-): Uint8Array {
+/** The envelope around a one-file `multipart/form-data` body. */
+function multipartEdges(boundary: string, field: string, filename: string) {
   const enc = new TextEncoder();
   const head = enc.encode(
     `--${boundary}\r\n` +
@@ -579,6 +590,80 @@ function multipartFile(
       `content-type: application/pdf\r\n\r\n`,
   );
   const tail = enc.encode(`\r\n--${boundary}--\r\n`);
+  return { head, tail };
+}
+
+// Web-standard where this runs; declared locally so the connector pulls in no platform typings,
+// as the kernel does.
+declare const ReadableStream: new (
+  source: {
+    pull(controller: { enqueue(chunk: Uint8Array): void; close(): void; error(reason: unknown): void }): Promise<void>;
+    cancel(reason?: unknown): Promise<void>;
+  },
+  strategy?: { highWaterMark?: number },
+) => ByteStream;
+
+/**
+ * {@link multipartFile} over a stream (#2514): the head, the file's pieces as they are read, and the
+ * tail only once the file has ended at its length. A file that errors, or runs short or long, errors
+ * the body before the tail, and the error is left in `refused` for the caller to throw.
+ */
+function multipartStream(
+  boundary: string,
+  field: string,
+  filename: string,
+  file: SizedByteStream,
+  refused: { error?: unknown },
+): SizedByteStream {
+  const { head, tail } = multipartEdges(boundary, field, filename);
+  const reader = file.stream.getReader();
+  let stage: 'head' | 'file' | 'done' = 'head';
+  let read = 0;
+  const stream = new ReadableStream(
+    {
+      async pull(controller) {
+        if (stage === 'head') {
+          stage = 'file';
+          return controller.enqueue(head);
+        }
+        if (stage === 'done') return controller.close();
+        try {
+          // Read past empty pieces: a pull that enqueues nothing is never called again, and the body
+          // would hang until the deadline.
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            if (!next.value?.byteLength) continue;
+            read += next.value.byteLength;
+            if (read > file.length) throw new Error(`the document is longer than the ${file.length} bytes it declared`);
+            return controller.enqueue(next.value);
+          }
+          if (read !== file.length) throw new Error(`the document ended after ${read} of the ${file.length} bytes it declared`);
+          stage = 'done';
+          controller.enqueue(tail);
+        } catch (e) {
+          refused.error = e;
+          await reader.cancel(e).catch(() => {});
+          controller.error(e);
+        }
+      },
+      async cancel(reason) {
+        await reader.cancel(reason).catch(() => {});
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return { stream, length: head.length + file.length + tail.length };
+}
+
+/** A one-file `multipart/form-data` body, as bytes. Web-standard, no node:buffer. */
+function multipartFile(
+  boundary: string,
+  field: string,
+  filename: string,
+  file: Uint8Array,
+): Uint8Array {
+  const { head, tail } = multipartEdges(boundary, field, filename);
   const out = new Uint8Array(head.length + file.length + tail.length);
   out.set(head, 0);
   out.set(file, head.length);
