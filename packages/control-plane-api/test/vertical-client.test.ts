@@ -1809,6 +1809,16 @@ describe('VerticalClient.roleState (#2446)', () => {
     expect(seen).toEqual([{ path: '/internal/role-state', search: `?tenantId=${t}&scopeId=${s}`, secret: 'secret' }]);
   });
 
+  it('reads the tombstones a deployment sends (#2531), and none from one that predates them', async () => {
+    const withDropped = { ...state, dropped: [{ key: 'runner', permissions: ['a:run'], holder: 'system' }] };
+    await expect(answering(() => new Response(JSON.stringify(withDropped), { status: 200 })).roleState(input)).resolves.toEqual(withDropped);
+    const read = await answering(() => new Response(JSON.stringify(state), { status: 200 })).roleState(input);
+    expect(read).not.toHaveProperty('dropped');
+    // A malformed tombstone is a wrong-shaped answer, as a malformed role is.
+    const bad = { ...state, dropped: [{ key: '', permissions: ['a:run'] }] };
+    await expect(answering(() => new Response(JSON.stringify(bad), { status: 200 })).roleState(input)).rejects.toThrow(/unexpected shape/);
+  });
+
   it.each([
     ['a 404: the route is not there', () => new Response('404 Not Found', { status: 404 })],
     ['its own 501: the route is there, its scope host predates the method', () => new Response(JSON.stringify({ error: 'cannot report' }), { status: 501 })],

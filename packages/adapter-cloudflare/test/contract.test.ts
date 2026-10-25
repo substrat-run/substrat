@@ -965,7 +965,9 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       await local.assignScopeRole(scope, hostPrincipal, 'runner');
     });
 
-    it('a system-held tombstone’s keys stay reserved for a person’s role re-added under its key (#2531)', async () => {
+    // This class reserves the key itself, so the refusal here does not depend on the tombstone; the
+    // kernel's module-less case (`reserved-roles.test.ts`, #2531) is what holds the tombstone's half.
+    it('a person’s role re-added under a dropped system-held role’s key may not hold its reserved key; its twin is defined (#2531)', async () => {
       const scope = scopeId.parse(ulid());
       const tenant = tenantId.parse(ulid());
       const owner = principalId.parse(ulid());

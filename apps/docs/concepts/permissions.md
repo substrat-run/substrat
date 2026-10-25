@@ -130,10 +130,15 @@ Roles a host defines and seats itself are held to the same rule:
   schedules' grants, delivered connection grants and entity-grant retirements are not applied
   there while the scope runs the new code. To clear it, take those seats back in each such scope,
   or ship a release that keeps the role a person's.
-- **The same happens to a system-held role a release drops and a later one adds back** while
-  its host principal is still seated: the scope cannot tell that seat from a person's, since what
-  kind of principal holds a seat is not recorded. Keep the role defined across releases, or take
-  the host principal's seat back in each such scope and give it again once the role is back.
+- **A role a release drops is kept as a tombstone** (#2531): its row is marked revoked, with the
+  keys and holder it had, instead of deleted. It grants nothing, so a seat in it authorizes
+  nothing until the role comes back, and it is kept for good as evidence. A **system-held** role a
+  release drops and a later one adds back is judged as if it had stayed defined, so its host
+  principal's seat does not hold the reconcile, and adding the key back as a person's role cannot
+  give a person the keys it held. This treats a tombstone like a role kept defined; it does not
+  prove who holds the seat. A dropped **person's** role added back as system-held while someone
+  holds it is still refused. A scope that dropped the row before tombstones were kept has none:
+  there, take the host principal's seat back and give it again once the role is back.
 - **A system-held role stored before holders were recorded** (adapter 0.154 or 0.155, never
   reconciled under 0.156 to 0.159, or a dump taken before 2026-10-21) cannot be upgraded while
   its host principal holds a seat: no seat can be told to be a system principal's. A reconcile is

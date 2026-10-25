@@ -1,0 +1,11 @@
+---
+'@substrat-run/kernel': minor
+'@substrat-run/adapter-cloudflare': minor
+'@substrat-run/control-plane-api': minor
+---
+
+A role a release drops is kept as a tombstone, and the reserved-key rule reads a system-held one as the definition it was (#2531).
+
+- **adapter-cloudflare: `applyProjection` tombstones instead of deleting.** A CP-less provision, reconcile or restore repair that leaves a tenant's role out of its set now marks that role's row revoked (`revoked_at`, the column the table already has), keeping its keys and holder, rather than deleting it. A row already tombstoned keeps its first `revoked_at`, and a role the set names again is written live, which clears it. Tombstones are kept for good, as evidence (K-21). **Authorization is unchanged:** every reader that expands a role (the local checker's `getRole`, the lockout repair's effective-grant query, `roleStateHere`'s `roles`) skips a revoked row, so a seat in a dropped role grants nothing, exactly as when the row was deleted, and grants again once the role is added back. No migration, no new table or column; what changes is that dropped rows stay in the scope, and in its dumps.
+- **The rule (kernel).** `StoredRoles` gains an optional `dropped`, and `reservedRoleSetRefusal` judges a key with no live row against its tombstone when that tombstone is **system-held**: a re-add as system-held is not refused for a seat in it, and a re-add as a person's role counts its keys as reserved. A person's tombstone, or one with no holder, counts as no definition stored, as before. This is parity with keeping the role defined across releases, not proof the seat is a host principal's. `dumpRoleState` returns a dump's tombstones as `dropped`, so a restore's pre-check sees them too.
+- **The wire.** `RoleState` (the vertical's `GET /internal/role-state`, adapter-cloudflare's `roleStateLocal`) gains an optional `dropped`, and control-plane-api's `VerticalClient.roleState` reads it, so a promote judges with the tombstones its reconcile will. A deployment that predates tombstones sends none, and a control plane that predates them strips the field; either way the promote is as strict as before. adapter-sqlite has no release projection, drops no role and sends none.
