@@ -179,6 +179,43 @@ describe('a streamed refusal never commits a file (#2514)', () => {
     expect(drive.childrenNamed(general)).toEqual([]);
   });
 
+  it.each([3 * MiB, 10 * MiB])('reads past empty pieces, leading, middle and trailing, and lands whole (%i bytes)', { timeout: 5_000 }, async (size) => {
+    const h = harness(size);
+    const drive = h.drive;
+    const general = h.general;
+    // In place of the harness's source: every real piece has an empty one either side of it.
+    const pieces: Uint8Array[] = [new Uint8Array(0), new Uint8Array(0)];
+    for (let at = 0; at < size; at += MiB) pieces.push(bytesFrom(at, Math.min(MiB, size - at)), new Uint8Array(0));
+    pieces.push(new Uint8Array(0));
+    let i = 0;
+    const stream = new ReadableStream<Uint8Array>(
+      { pull: (c) => (i === pieces.length ? c.close() : c.enqueue(pieces[i++]!)) },
+      { highWaterMark: 0 },
+    );
+    const ctx = {
+      admin: {
+        getConnectorState: async (_: string, k: string) => (k.startsWith('microsoft365:binding:') ? { scopeId: '01SCOPE', folder: 'General', driveId: DRIVE, folderItemId: general, boundAt: '' } : undefined),
+        putConnectorState: async () => {},
+      },
+      scopeId: '01SCOPE',
+      connection: async () => ({
+        id: '01CONN',
+        secret: { tenantId: 't', clientId: APP_ID, senders: 'office@acme.example', siteUrl: 'https://acme.sharepoint.com/sites/Team', clientSecret: 's' },
+        fetch: drive.fetch,
+        openAttachmentStream: async (id: string) => ({
+          record: { id, filename: 'a.bin', size, contentType: 'application/octet-stream' },
+          body: { stream, length: size },
+          contentType: 'application/octet-stream',
+        }),
+      }),
+    } as unknown as ConnectorContext;
+    await microsoft365FilesConnector({ fetch: drive.fetch, loginBase: LOGIN, graphBase: GRAPH })(ctx, {
+      id: '01EVENT',
+      payload: { files: [{ attachmentId: 'a', size }], conflict: 'fail' },
+    } as unknown as DomainEvent);
+    expect(drive.childrenNamed(general)).toEqual(['a.bin']);
+  });
+
   it('the twin: a stream that ends at its length lands whole', async () => {
     const size = 10 * MiB;
     const h = harness(size);

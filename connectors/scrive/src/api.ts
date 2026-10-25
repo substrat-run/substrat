@@ -628,12 +628,15 @@ function multipartStream(
         }
         if (stage === 'done') return controller.close();
         try {
-          const next = await reader.read();
-          if (!next.done) {
-            read += next.value?.byteLength ?? 0;
+          // Read past empty pieces: a pull that enqueues nothing is never called again, and the body
+          // would hang until the deadline.
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            if (!next.value?.byteLength) continue;
+            read += next.value.byteLength;
             if (read > file.length) throw new Error(`the document is longer than the ${file.length} bytes it declared`);
-            if (next.value?.byteLength) controller.enqueue(next.value);
-            return;
+            return controller.enqueue(next.value);
           }
           if (read !== file.length) throw new Error(`the document ended after ${read} of the ${file.length} bytes it declared`);
           stage = 'done';

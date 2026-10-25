@@ -163,3 +163,29 @@ describe('ScriveApi.getMainFile size bound through deadlineFetch (#2552)', () =>
     expect((await api.getMainFile(doc.id)).byteLength).toBe(3 * 1024 * 1024 + 5);
   });
 });
+
+describe('ScriveApi.setFile over a stream (#2514)', () => {
+  /** A document stream of `pieces` as given, one per pull: empty ones included. */
+  const piecesOf = (pieces: string[]) => {
+    let i = 0;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (i === pieces.length) return controller.close();
+          controller.enqueue(new TextEncoder().encode(pieces[i++]!));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return { stream, length: pieces.join('').length };
+  };
+
+  it('reads past empty pieces, leading, middle and trailing, and completes', { timeout: 2_000 }, async () => {
+    const mock = new ScriveMock();
+    const api = new ScriveApi(conn(mock) as never, 'https://api-testbed.scrive.test');
+    const doc = await api.createDocument();
+    await api.setFile(doc.id, 'avtal.pdf', piecesOf(['', '', '%PDF', '', '', '-1.4', '', '']));
+    expect(mock.documents.get(doc.id)!.file).toEqual({ name: 'avtal.pdf', bytes: 8 });
+    expect(mock.setfileAborted).toEqual([]);
+  });
+});
