@@ -925,7 +925,6 @@ interface ControlPlaneStub {
   updateVerticalInstallsBlocked(slug: string, blocked: number, audit: AdminEntry): Promise<void>;
   updateVerticalTenantProvisioner(slug: string, granted: number, audit: AdminEntry): Promise<void>;
   updateVerticalEmailSender(slug: string, granted: number, audit: AdminEntry): Promise<void>;
-  countScopesForVertical(slug: string): Promise<{ live: number; archived: number }>;
   deleteVertical(slug: string, audit: AdminEntry, until?: string): Promise<void>;
   listVerticals(page?: ListPage): Promise<VerticalRow[]>;
   readVersion(id: string): Promise<VersionRow | undefined>;
@@ -942,7 +941,9 @@ interface ControlPlaneStub {
     id: string,
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
-  setAdmission(id: string, admission: string, note: string | null, audit: AdminEntry): Promise<void>;
+  /** #2528: judged in the DO's unit, which fills the row's `before` and `after`. */
+  admitVersion(id: string, audit: AdminEntry): Promise<void>;
+  rejectVersion(id: string, note: string, audit: AdminEntry): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string, expectedServing?: ExpectedServing, audit?: AdminEntry): Promise<boolean>;
   servesNow(expected: ExpectedServing): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
@@ -961,7 +962,8 @@ interface ControlPlaneStub {
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit: AdminEntry,
-  ): Promise<void>;
+    expectedVersionId?: string | null,
+  ): Promise<boolean>;
   recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<void>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;

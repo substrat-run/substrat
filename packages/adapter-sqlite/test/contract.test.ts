@@ -117,9 +117,29 @@ scopeAdminAuditTransactionSuite('adapter-sqlite', async () => {
 directoryAdminAuditTransactionSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-directory-audit-'));
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  type Tx = (...args: unknown[]) => unknown;
+  const directory = (host as unknown as {
+    directory: { exec(sql: string): void; transaction(fn: Tx): Tx };
+  }).directory;
+  // #2528: the armed statement commits on its own just before the next directory transaction
+  // begins, which is where every audited write's unit starts on this adapter.
+  let armed: string | null = null;
+  const transaction = directory.transaction.bind(directory);
+  directory.transaction = (fn: Tx): Tx => {
+    const tx = transaction(fn);
+    return (...args: unknown[]) => {
+      if (armed !== null) {
+        const sql = armed;
+        armed = null;
+        directory.exec(sql);
+      }
+      return tx(...args);
+    };
+  };
   return {
     host,
-    directorySql: async (sql: string) => (host as unknown as { directory: { exec(sql: string): void } }).directory.exec(sql),
+    interleave: (sql: string) => { armed = sql; },
+    directorySql: async (sql: string) => directory.exec(sql),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
