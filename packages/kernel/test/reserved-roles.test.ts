@@ -15,6 +15,7 @@ import {
   reservedRoleRefusal,
   reservedRoleSetRefusal,
   reservedShapeRefusal,
+  dumpRoleRefusal,
   dumpRoleState,
 } from '../src/reserved-roles.js';
 
@@ -320,6 +321,64 @@ describe('dumpRoleState (#2447 round 2)', () => {
 
   it('reads a dump with none of those tables as storing nothing', () => {
     expect(dumpRoleState([], 't1', now)).toEqual({ roles: [], seated: new Set() });
+  });
+});
+
+describe('dumpRoleRefusal (#2555)', () => {
+  const now = '2026-10-24T00:00:00.000Z';
+  const host = { reserved: new Set<string>(), declared: new Set<string>() };
+  const seats = (relation: string) => ({
+    name: '_substrat_tuples',
+    columns: ['subject', 'relation', 'object', 'expires_at', 'revoked_at'],
+    rows: [['principal:p1', relation, 'scope:s', null, null]],
+  });
+  const roleRow = (key: string, holder: 'person' | 'system') => ({
+    name: '_substrat_roles',
+    columns: ['tenant_id', 'role_key', 'permissions', 'source', 'holder', 'revoked_at'],
+    rows: [['t1', key, '["a:run"]', 'vertical', holder, null]],
+  });
+  const systemRole = { key: 'member', permissions: ['a:run'], holder: 'system' as const };
+  const changed = (key: string) =>
+    `restore refused: role '${key}', which the dump seats or defines, cannot be applied as the tenant defines it now (K-55); nothing was loaded`;
+  const undefinedInDump = (key: string) =>
+    `restore refused: the dump seats role '${key}' but carries no definition of it, so its seats cannot be told from a person's, ` +
+    `and the tenant now defines the role for a system principal (K-55); nothing was loaded`;
+
+  it('refuses a dump seated in a role the tenant now stores system-held, in one fixed sentence', () => {
+    const refusal = dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [roleRow('member', 'person'), seats('role:member')] }, now);
+    expect(refusal).toBe(changed('member'));
+    expect(refusal).not.toContain('p1');
+  });
+
+  it('twin: the same dump with no seat in the role is admitted', () => {
+    expect(dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [roleRow('member', 'person'), seats('role:other')] }, now)).toBeNull();
+  });
+
+  it('admits a seat where the dump stores the role system-held itself; names a dump with no definition of it', () => {
+    expect(dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [roleRow('member', 'system'), seats('role:member')] }, now)).toBeNull();
+    expect(dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [seats('role:member')] }, now)).toBe(undefinedInDump('member'));
+  });
+
+  it('reads the dump’s role rows for the tenant it was captured from', () => {
+    // A row the dump stores for another tenant is no evidence for this one's seats.
+    const other = { ...roleRow('member', 'system'), rows: [['t2', 'member', '["a:run"]', 'vertical', 'system', null]] };
+    expect(dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [other, seats('role:member')] }, now)).toBe(undefinedInDump('member'));
+  });
+
+  it('chooses the sentence from the reason: a refusal over the keys a definition holds is not blamed on the dump', () => {
+    // A person's role the tenant defines over a reserved key, seated by a dump with no role rows: the
+    // key is the reason, so the general sentence answers, not the one about a missing definition.
+    const reserving = { reserved: new Set(['a:run']), declared: new Set(['a:run']) };
+    const personRole = { key: 'member', permissions: ['a:run'], holder: 'person' as const };
+    expect(dumpRoleRefusal([personRole], reserving, { tenantId: 't1', tables: [seats('role:member')] }, now)).toBe(changed('member'));
+  });
+
+  it('asks only about roles the dump seats or stores; twin: the same role is judged once the dump seats it', () => {
+    // A system-held role holding a key a module declares for a person: the rule refuses it wherever it is asked about.
+    const wide = { key: 'wide', permissions: ['a:use'], holder: 'system' as const };
+    const declared = { reserved: new Set<string>(), declared: new Set(['a:use']) };
+    expect(dumpRoleRefusal([wide], declared, { tenantId: 't1', tables: [seats('role:other')] }, now)).toBeNull();
+    expect(dumpRoleRefusal([wide], declared, { tenantId: 't1', tables: [roleRow('wide', 'person'), seats('role:other')] }, now)).toBe(changed('wide'));
   });
 });
 

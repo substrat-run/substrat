@@ -619,6 +619,7 @@ export {
   SCOPE_SEATED_ROLES_SQL,
   SEAT_HOLDING_SCOPE_STATUSES,
   TENANT_SEATED_ROLES_SQL,
+  dumpRoleRefusal,
   dumpRoleState,
   type DeclaredPermissions,
   type DumpTable,
@@ -985,7 +986,7 @@ export type {
 // every receipt writer and the sweep answer both questions the same way.
 export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
 export type { ServingPointer } from './scope-identity.js';
-export { opsFailureReferenceWhere, withheldOpsFailure } from './ops-failure-reference.js';
+export { opsFailureReferenceWhere, withheldOpsFailure, withheldStaffFailure } from './ops-failure-reference.js';
 export {
   exportBreaksOf,
   exportBreakRefusal,
