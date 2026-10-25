@@ -93,6 +93,16 @@ Every attachment row carries a sha256, because both spines declare it `NOT NULL`
 requires it. A record without a valid one is refused before a byte is read, never handed on as
 verified.
 
+On a hosted vertical, a connector the platform runs reads the file from your deployment over the
+platform's own link, and the stream is held to the same rules there. Each check runs again on the
+platform's side: the size, the digest, and the held-back last chunk. The link's time is bounded the
+way a connection's `fetch` is. Start reading within 30 seconds of opening the stream: the call's
+deadline runs until your first read. From then on, a deployment that sends no byte for 30 seconds
+(`STREAM_IDLE_TIMEOUT_MS`), or has not finished after 10 minutes (`STREAM_MAX_DURATION_MS`),
+errors the stream. When a stream errors, what you received before the error is a prefix of an
+unverified file. Discard it, and undo anything you wrote from it, such as a partial upload to the
+provider. Cancel a stream you will not read; that releases the stored object straight away.
+
 ## Bytes that no row points at
 
 The bytes go to the store before the row is written, so a few paths leave an object that no row

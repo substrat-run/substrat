@@ -734,8 +734,11 @@ never rebuilt keeps the up-calls it was built with.
      script-settings endpoint, without uploading the script again (`wire-settings.ts`). Every other
      binding goes back as read; a secret is never read or sent, and rides `keep_bindings`. What the
      settings give is `wireUploadFor`'s own rule (`wireUploadGiven`), so a walked script and an
-     uploaded one are given the same. A script with no record is read back once: one whose modules
-     hold no platform entry verifies nothing, and is skipped (`no-entry`), never recorded as verifying.
+     uploaded one are given the same. A script with no record is read back on every pass that
+     reaches it: one whose modules hold no platform entry verifies nothing, and is skipped
+     (`no-entry`), never recorded as verifying. A pass is refused before it walks anything while the
+     settings are refused (the rollout setting does not parse, or the lists do not load), since giving
+     every script nothing would withdraw the lists fleet-wide.
    - **How it runs.** A person's act (a staff sign-in, never a service token), a dry run unless told
      `apply`, a bounded pass that answers where the next one starts, one `walkWireAuth` admin row a
      pass and a `recordWireAuth` row a script changed. A script whose record already says it carries
