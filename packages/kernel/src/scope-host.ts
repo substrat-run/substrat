@@ -1710,7 +1710,8 @@ export interface ScopedConnectorConnection extends ConnectorConnection {
    * that sends a file on to a provider. Gated the same way, before any byte is read. The sha256 is
    * checked as the bytes flow, and a mismatch errors the stream before its last chunk is handed on
    * (see {@link OpenedAttachmentStream}), so a connector that sends what it read must treat a stream
-   * error as "nothing was read", never as a shorter file.
+   * error as "nothing was read", never as a shorter file. A stream it decides not to read is
+   * cancelled (`body.stream.getReader().cancel()`), which releases the stored object at once.
    */
   openAttachmentStream(attachmentId: string): Promise<OpenedAttachmentStream | null>;
   /**
@@ -5315,7 +5316,8 @@ export interface OpenedAttachment {
  * An opened attachment whose bytes are a stream (#2514): the metadata fact, and its bytes at the
  * record's `size`, read as the consumer reads them. The sha256 is checked as they pass, so a
  * mismatch errors the stream before its last chunk instead of refusing up front: a consumer that
- * has received all `size` bytes has received bytes that matched the record. One-shot: read it once.
+ * has received all `size` bytes has received bytes that matched the record. One-shot: read it once,
+ * or cancel it, which releases the stored object; a stream that is neither holds it until collected.
  */
 export interface OpenedAttachmentStream {
   record: AttachmentRecord;

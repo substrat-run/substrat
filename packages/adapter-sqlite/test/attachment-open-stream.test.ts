@@ -49,6 +49,8 @@ describe('streamed attachment open (pure adapter)', () => {
 
   /** What the store was asked, and how far its reads got ahead of the consumer. */
   const flow = { get: 0, getStream: 0, fromDisk: 0, consumed: 0, maxLead: 0 };
+  /** Run once, after the read gate and before the store opens the object: the window a remove can land in. */
+  let beforeOpen: (() => void) | undefined;
 
   const counting = (store: TenantBlobStore): TenantBlobStore => ({
     ...store,
@@ -58,6 +60,8 @@ describe('streamed attachment open (pure adapter)', () => {
     },
     getStream: async (key) => {
       flow.getStream++;
+      beforeOpen?.();
+      beforeOpen = undefined;
       const obj = await store.getStream!(key);
       if (!obj) return null;
       const source = obj.stream.getReader();
@@ -197,6 +201,19 @@ describe('streamed attachment open (pure adapter)', () => {
     const { host, t, s, reader, record } = await world();
     rmSync(objectFile());
     await expect((await host.attachments(reader, t, s)).openStream(record.id)).rejects.toThrow(/bytes missing/);
+  });
+
+  it('an object removed after the read gate, before the open, is that same error, naming no host path', async () => {
+    const { host, t, s, reader, record } = await world();
+    const file = objectFile();
+    beforeOpen = () => rmSync(file);
+    const err = await (await host.attachments(reader, t, s)).openStream(record.id).then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    );
+    expect(err?.message).toMatch(new RegExp(`attachment ${record.id}: bytes missing from the blob store`));
+    expect(err?.message).not.toContain(dir!);
+    expect(err?.message).not.toMatch(/ENOENT/);
   });
 
   // In a dispatch, through `conn.openAttachmentStream`, is in `connector-reads.test.ts`, beside the

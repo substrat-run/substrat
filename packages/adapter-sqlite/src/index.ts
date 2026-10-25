@@ -961,19 +961,37 @@ async function writeStreamToFile(path: string, body: SizedByteStream): Promise<v
 }
 
 /**
- * The file at `path` as a stream read 64 KiB at a time as it is pulled (#2514), with its size. The
- * file is opened here, so a key removed after the open is still read whole from the open handle, and
- * closed once the stream ends, errors or is cancelled.
+ * A dropped stream's file handle, closed when the stream is collected (#2514): a consumer that neither
+ * reads a stream to its end nor cancels it would otherwise hold the handle for the life of the process.
+ * Best effort, since collection has no deadline; reading or cancelling is what closes it promptly.
  */
-function fileStream(path: string): { stream: ReadableStream<Uint8Array>; size: number } {
+const unreadFiles = new FinalizationRegistry<{ close(): void }>((handle) => handle.close());
+
+/**
+ * The file at `path` as a stream read 64 KiB at a time as it is pulled (#2514), with its size, or
+ * `null` when there is no such file. The file is opened here, so a key removed after the open is still
+ * read whole from the open handle, and closed once the stream ends, errors or is cancelled, or (best
+ * effort) once a stream nobody finished is collected.
+ */
+function fileStream(path: string): { stream: ReadableStream<Uint8Array>; size: number } | null {
   const CHUNK = 64 * 1024;
-  const fd = openSync(path, 'r');
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
+  } catch (err) {
+    // Removed between the read gate and here: the same answer as a key that was never there.
+    if ((err as { code?: string }).code === 'ENOENT') return null;
+    throw err;
+  }
   const size = fstatSync(fd).size;
   let closed = false;
-  const close = () => {
-    if (!closed) closeSync(fd);
-    closed = true;
+  const handle = {
+    close: () => {
+      if (!closed) closeSync(fd);
+      closed = true;
+    },
   };
+  const close = handle.close;
   const stream = new ReadableStream<Uint8Array>(
     {
       pull(controller) {
@@ -995,6 +1013,7 @@ function fileStream(path: string): { stream: ReadableStream<Uint8Array>; size: n
     },
     { highWaterMark: 0 },
   );
+  unreadFiles.register(stream, handle);
   return { stream, size };
 }
 
@@ -3819,8 +3838,8 @@ export class SqliteScopeHost implements ScopeHost {
       // #2514: the file read as the stream is read, never whole.
       getStream: async (key) => {
         const p = resolveKey(key);
-        if (!existsSync(p)) return null;
-        return { ...fileStream(p), ...contentTypeOf(p) };
+        const file = fileStream(p);
+        return file && { ...file, ...contentTypeOf(p) };
       },
       delete: async (key) => {
         const p = resolveKey(key);
