@@ -264,6 +264,34 @@ describe('a control-plane-full restore projects the directory’s current permis
     expect((await permissionState(s)).roles.find((r) => r.role_key === 'staffer')).toMatchObject({ holder: 'system', dropped: 0 });
   });
 
+  it('a directory role the dump has no part in does not refuse the load: only the loaded state’s roles are asked about', async () => {
+    const { t, s } = await setup();
+    const dump = await host.admin.exportScope(staff, t, s);
+    // Handed to the ScopeDO directly: a person's role holding a key this scope class reserves, which
+    // the whole set's walk refuses wherever it is asked (the directory's own door refuses it too, so
+    // no restore can carry it). Nothing the dump seats or stores is it.
+    const load = (roles: { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null }[]) =>
+      (stubOf(s) as unknown as { importDumpProjected(...args: unknown[]): Promise<{ value?: unknown; failure?: { message: string } }> }).importDumpProjected(
+        dump.tables,
+        s,
+        { sourceScopeId: s },
+        { tenantId: t, roles, tuples: [], entitlements: [], identities: [], connectionKeys: [], judge: { reserved: [], declared: [] } },
+      );
+    const odd = { role_key: 'odd', permissions: JSON.stringify(['rsv:run']), source: 'vertical', holder: 'person' as const };
+    const member = { role_key: 'member', permissions: JSON.stringify([USE]), source: 'vertical', holder: 'person' as const };
+    expect((await load([member, odd])).failure).toBeUndefined();
+    expect((await permissionState(s)).roles.map((r) => r.role_key)).toContain('odd');
+    // Twin: the same role, seated by the dump, is asked about and refused.
+    const seated = withRows(dump, '_substrat_tuples', [{ subject: `principal:${ulid()}`, relation: 'role:odd', object: `scope:${s}`, expires_at: null, revoked_at: null }]);
+    const refused = await (stubOf(s) as unknown as { importDumpProjected(...args: unknown[]): Promise<{ failure?: { message: string } }> }).importDumpProjected(
+      seated.tables,
+      s,
+      { sourceScopeId: s },
+      { tenantId: t, roles: [member, odd], tuples: [], entitlements: [], identities: [], connectionKeys: [], judge: { reserved: [], declared: [] } },
+    );
+    expect(refused.failure?.message).toMatch(/role 'odd' is refused by the reserved-key rule/);
+  });
+
   it('a directory write between the host’s read and the load is not left stale: the scope is projected once more', async () => {
     const { t, s } = await setup();
     const dump = await host.admin.exportScope(staff, t, s);
