@@ -584,8 +584,9 @@ On the wire, the guard is opt-in for now. Verticals deploy independently of the 
 flipping the default in one step would break an older control plane's carry reads against a newer
 vertical. `GET /internal/tables/:table` guards when the query carries `held=1` (strictly that
 value) and reads as before without it; the control plane's Data view sends it, its tombstone read
-does not. The SQL console has no tombstone reader, so `POST /internal/query` is guarded outright.
-A vertical that predates the flag ignores it and answers as it did. The default flips to guarded in
+does not. The SQL console has no tombstone reader, so `POST /internal/query` is guarded outright,
+with no flag: an older control plane's console against a newer vertical gets the `409` for a gone
+scope, which is the intended behaviour. A vertical that predates the flag ignores it and answers as it did. The default flips to guarded in
 a later release, once no control plane that omits `held=1` for a screen can call.
 
 **Links into the substrate, not just identifiers.** The console has always rendered the refs
