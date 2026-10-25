@@ -98,8 +98,8 @@ function harness(size: number, opts: { piece?: number; refuse?: (open: number) =
       },
     }),
   } as unknown as ConnectorContext;
-  const run = () =>
-    microsoft365FilesConnector({ fetch, loginBase: LOGIN, graphBase: GRAPH })(ctx, {
+  const run = async () =>
+    await microsoft365FilesConnector({ fetch, loginBase: LOGIN, graphBase: GRAPH })(ctx, {
       id: '01EVENT',
       type: 'microsoft365.channel-files-requested',
       payload: { files: [{ attachmentId: 'a', size }], conflict: 'fail' } satisfies Microsoft365FilesRequested,
