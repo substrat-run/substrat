@@ -2705,6 +2705,9 @@ function projectedRoleRows(roles: readonly RoleDefinition[]): LoadRoleRepair['ro
   return roles.map((r) => ({ role_key: r.key, permissions: JSON.stringify(r.permissions), source: r.source, holder: r.holder === 'system' ? 'system' : 'person' }));
 }
 
+/** #2555: a control-plane-full load whose role set was refused in its unit (`loadProjected`), told apart by identity. */
+const loadRoleRefusals = new WeakSet<Error>();
+
 /** #2555: a load projection's directory state as one comparable text; its judge is not state. */
 function projectionDigest({ judge: _judge, ...state }: LoadProjection): string {
   return JSON.stringify(state);
@@ -5350,7 +5353,14 @@ export class CloudflareScopeHost implements ScopeHost {
     // snapshot is left as it was: a same-instant copy of a live scope the fan-out keeps current.
     const projection = judge ? await this.loadProjectionFor(input.tenantId, input.vertical) : undefined;
     if (projection === undefined) await this.scopeStub(input.scopeId).importDump(dump.tables, input.scopeId, load);
-    else await this.loadProjected(input.scopeId, dump.tables, load, projection);
+    else {
+      try {
+        await this.loadProjected(input.scopeId, dump.tables, load, projection);
+      } catch (e) {
+        if (loadRoleRefusals.has(e as Error)) await this.dropRefusedImport(actor, input.scopeId);
+        throw e;
+      }
+    }
     await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
     const reprojected = projection ? await this.convergeLoadedProjection(input.tenantId, input.scopeId, input.vertical, projection) : false;
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
@@ -12282,8 +12292,37 @@ export class CloudflareScopeHost implements ScopeHost {
     try {
       return unwrapReply(await this.scopeStub(scopeId).importDumpProjected(tables, scopeId, opts, projection));
     } catch (e) {
-      if (errorCodeOf(e) === 'forbidden') throw substratError('forbidden', `restore refused: ${(e as Error).message}`);
-      throw e;
+      if (errorCodeOf(e) !== 'forbidden') throw e;
+      const refused = substratError('forbidden', `restore refused: ${(e as Error).message}`);
+      loadRoleRefusals.add(refused);
+      throw refused;
+    }
+  }
+
+  /**
+   * #2555: an import whose load refused its role set has a scope it created for itself, never
+   * activated and holding none of the dump. Its directory row goes, as the pure host takes such a
+   * scope down, so a retry with the same id imports; the storage object is left, holding only what
+   * the provision wrote, which a retry's load replaces. Best effort: the refusal is the answer
+   * whatever this does. A teardown that fails is a staff-only ops row (no tenant on it), with the
+   * scope left in `provisioning` for staff to reap. No admin row: the import never happened, and
+   * its `provisionScope` row stays as the record of the attempt.
+   */
+  private async dropRefusedImport(actor: PlatformActorId, scopeId: ScopeId): Promise<void> {
+    try {
+      await this.cp.deleteScopeDirectory(scopeId);
+    } catch (teardown) {
+      await this.admin
+        .recordOpsFailure({
+          actor,
+          operation: 'importScope',
+          stage: 'refused-import-teardown',
+          scopeId,
+          message: `a refused import's scope could not be taken down: ${teardown instanceof Error ? teardown.message : String(teardown)}`,
+        })
+        .catch(() => {
+          // Nothing more to do here: the refusal is still the answer.
+        });
     }
   }
 

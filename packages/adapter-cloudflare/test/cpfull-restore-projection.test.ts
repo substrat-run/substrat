@@ -168,7 +168,7 @@ describe('a control-plane-full restore projects the directory’s current permis
       // The scope reads the directory over RPC there; its own rows are the dump's.
       expect((await permissionState(s)).entitlements.map((e) => e.entitlement_key)).toEqual(['sku:dumped']);
     } finally {
-      flagOff.close();
+      await flagOff.close();
     }
   });
 
@@ -204,7 +204,7 @@ describe('a control-plane-full restore projects the directory’s current permis
         { key: 'permission_source', value: 'local' },
       ]);
     } finally {
-      flagOff.close();
+      await flagOff.close();
     }
   });
 
@@ -343,9 +343,11 @@ describe('a control-plane-full restore projects the directory’s current permis
     ]);
   });
 
-  it('an import refused in the load’s unit loads none of the dump, and the scope is never activated', async () => {
+  /** A dump seating alice in `staffer`, which the directory makes system-held after the host's pre-check. */
+  const refusedImport = async () => {
     const { t, s, alice } = await setup();
     await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [USE], source: 'vertical' });
+    const clean = await host.admin.exportScope(staff, t, s);
     await host.admin.assignRole(staff, { principalId: alice, roleKey: 'staffer', node: { tenantId: t, scopeId: s } });
     const dump = await host.admin.exportScope(staff, t, s);
     await host.admin.unassignRole(staff, { principalId: alice, roleKey: 'staffer', node: { tenantId: t, scopeId: s } });
@@ -354,12 +356,46 @@ describe('a control-plane-full restore projects the directory’s current permis
       await host.admin.defineRole(staff, t, { key: 'staffer', permissions: [RUN], source: 'vertical', holder: 'system' });
     });
     try {
-      const refused = await failure(host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, dump));
-      expect(refused?.message).toMatch(SENTENCE);
+      return { t, alice, fresh, clean, refused: await failure(host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, dump)) };
     } finally {
       restore();
     }
+  };
+
+  it('an import refused in the load’s unit takes its never-activated scope down, and a retry with the same id imports', async () => {
+    const { t, fresh, clean, refused } = await refusedImport();
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect(refused?.message).toMatch(SENTENCE);
+    expect((await host.admin.getScopeRecord(staff, t, fresh)) ?? null).toBeNull();
+    // No admin row for a teardown of an import that never happened; its provision row is the record.
+    const actions = (await host.admin.auditLog(staff, { tenantId: t })).filter((r) => r.scopeId === fresh).map((r) => r.action);
+    expect(actions).not.toContain('importScope');
+    expect(actions).not.toContain('deleteSnapshot');
+    // The same id, with a dump the rule admits.
+    await host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, clean);
+    expect((await host.admin.getScopeRecord(staff, t, fresh))?.status).toBe('active');
+  });
+
+  it('a teardown that fails leaves the refusal as the answer, files a staff-only ops row, and the scope in provisioning', async () => {
+    const view = host as unknown as { cp: object };
+    const original = view.cp;
+    view.cp = new Proxy(original, {
+      get: (target, prop) =>
+        prop === 'deleteScopeDirectory' ? () => Promise.reject(new Error('directory unavailable')) : Reflect.get(target, prop),
+    });
+    let outcome: Awaited<ReturnType<typeof refusedImport>>;
+    try {
+      outcome = await refusedImport();
+    } finally {
+      view.cp = original;
+    }
+    const { t, alice, fresh, refused } = outcome;
+    expect(refused?.message).toMatch(SENTENCE);
     expect((await host.admin.getScopeRecord(staff, t, fresh))?.status).toBe('provisioning');
+    const rows = (await host.admin.listOpsFailures(staff)).filter((r) => r.scopeId === fresh);
+    expect(rows).toEqual([expect.objectContaining({ operation: 'importScope', stage: 'refused-import-teardown', tenantId: null })]);
+    expect(rows[0]?.message).toMatch(/directory unavailable/);
+    // None of the dump was loaded into it.
     expect((await permissionState(fresh)).seats.filter((r) => String(r.subject).includes(alice))).toEqual([]);
   });
 

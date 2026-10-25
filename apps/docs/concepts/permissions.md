@@ -175,8 +175,10 @@ vertical's connection keys. Anything the directory has revoked since the backup 
 revoked, without waiting for the next fan-out. The scope's own seats are the dump's, and nothing
 revokes them. The role set is judged there, against the seats the dump has just brought, so the
 roles that land are the roles that were judged. A refusal leaves every row of the scope as it was.
-An import refused at that point has already created its scope, which stays in `provisioning` and
-is never activated. The scope keeps its own reader and enforcement settings through the load,
+An import refused at that point has already created its scope, which was never activated and holds
+none of the dump: its directory record is removed with the refusal, so a retry with the same scope
+id imports. If that removal fails, the refusal still stands, staff see an ops-failure row, and the
+scope stays in `provisioning` for staff to reap. The scope keeps its own reader and enforcement settings through the load,
 never the dump's, and the projection then moves them exactly as a fan-out would. The end state is
 the scope's old state followed by one fan-out. Where scopes are not projected, only those settings
 are kept. The directory is read once more after the load, and if it changed in between, the scope
