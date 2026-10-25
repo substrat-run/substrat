@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { platformActorId, scopeId, tenantId, type AdminAction, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, scopeId, tenantId, type AdminAction, type PlatformActorId, type TenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { heldMigrations } from './held-migrations.js';
 
@@ -10,6 +10,12 @@ import { heldMigrations } from './held-migrations.js';
 export interface DirectoryAuditFixture {
   host: ScopeHost;
   directorySql(sql: string): Promise<void>;
+  /**
+   * #2528: arm one statement to run against the directory, committed on its own, immediately
+   * before the host's next audited directory write begins its unit — the write another caller
+   * makes between whatever the host read first and the write. Runs once.
+   */
+  interleave(sql: string): void;
   cleanup(): Promise<void>;
 }
 
@@ -379,6 +385,235 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
       } finally {
         await fixture.cleanup();
       }
+    });
+
+    describe('#2528: the row and the guard are read in the unit that writes', () => {
+      const withFixture = async (body: (f: DirectoryAuditFixture, host: ScopeHost, staff: PlatformActorId) => Promise<void>) => {
+        const fixture = await makeFixture();
+        try {
+          await body(fixture, fixture.host, platformActorId.parse(ulid()));
+        } finally {
+          await fixture.cleanup();
+        }
+      };
+      const refusalOf = async (p: Promise<unknown>): Promise<Error> => {
+        try {
+          await p;
+        } catch (err) {
+          return err as Error;
+        }
+        throw new Error('expected the call to be refused');
+      };
+      const rowsSince = async (host: ScopeHost, staff: PlatformActorId, action: AdminAction, since: string) =>
+        (await host.admin.auditLog(staff, { action: [action], since })).map((r) => ({ before: r.before, after: r.after }));
+      /** A private vertical (tenant-owned, not listed), whose versions self-admit. */
+      const privateVertical = async (host: ScopeHost, staff: PlatformActorId) => {
+        const owner = await newTenant(host, staff);
+        const slug = `tenant-a/${slugOf()}`;
+        await host.admin.registerVertical(staff, { slug, name: 'Audit private', source: 'cli', ownerTenant: owner });
+        const release = async () => {
+          const id = ulid();
+          await host.admin.publishVersion(staff, { id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`,
+            manifestDigest: 'm', permissionDigest: 'p', ...(await heldMigrations('g')), deploymentRef: null });
+          return id;
+        };
+        return { slug, release };
+      };
+
+      const FLAGS = [
+        ['setVerticalListed', 'listed', 'listed'],
+        ['setVerticalInstallsBlocked', 'installsBlocked', 'installs_blocked'],
+        ['setVerticalTenantProvisioner', 'tenantProvisioner', 'tenant_provisioner'],
+        ['setVerticalEmailSender', 'emailSender', 'email_sender'],
+      ] as const;
+      it.each(FLAGS)('%s records the before its own unit read', async (action, field, column) => {
+        await withFixture(async (fixture, host, staff) => {
+          const slug = await newVertical(host, staff);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE verticals SET ${column} = 1 WHERE slug = '${slug}'`);
+          await host.admin[action](staff, slug, false);
+          expect((await verticalOf(host, staff, slug))?.[field]).toBe(false);
+          expect(await rowsSince(host, staff, action, since)).toEqual([{ before: { [field]: true }, after: { [field]: false } }]);
+        });
+      });
+
+      it('listing refuses an auto-admitted prod version a promote moved the channel to', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { slug, release } = await privateVertical(host, staff);
+          const vouched = await release();
+          await host.admin.admitVersion(staff, vouched);
+          await host.admin.promoteVersion(staff, slug, 'prod', vouched);
+          const auto = await release();
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE vertical_channels SET version_id = '${auto}' WHERE vertical_slug = '${slug}' AND channel = 'prod'`);
+          const refused = await refusalOf(host.admin.setVerticalListed(staff, slug, true));
+          expect(errorCodeOf(refused)).toBe('conflict');
+          expect(refused.message).toContain(`prod version ${auto} is auto-admitted`);
+          expect((await verticalOf(host, staff, slug))?.listed).toBe(false);
+          expect(await rowsSince(host, staff, 'setVerticalListed', since)).toEqual([]);
+        });
+      });
+
+      it('and lists when the channel moved from an auto-admitted version to a vouched one', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { slug, release } = await privateVertical(host, staff);
+          const vouched = await release();
+          await host.admin.admitVersion(staff, vouched);
+          const auto = await release();
+          await host.admin.promoteVersion(staff, slug, 'prod', auto);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE vertical_channels SET version_id = '${vouched}' WHERE vertical_slug = '${slug}' AND channel = 'prod'`);
+          await host.admin.setVerticalListed(staff, slug, true);
+          expect((await verticalOf(host, staff, slug))?.listed).toBe(true);
+          expect(await rowsSince(host, staff, 'setVerticalListed', since)).toEqual([{ before: { listed: false }, after: { listed: true } }]);
+        });
+      });
+
+      it('admitVersion refuses a version rejected since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const version = await publish(host, staff, await newVertical(host, staff));
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE vertical_versions SET admission = 'rejected', admission_note = 'interleaved' WHERE id = '${version}'`);
+          const refused = await refusalOf(host.admin.admitVersion(staff, version));
+          expect(errorCodeOf(refused)).toBe('conflict');
+          expect(refused.message).toBe(`version ${version} was rejected — publish a new one`);
+          expect((await host.admin.getVersion(staff, version))?.admission).toBe('rejected');
+          expect(await rowsSince(host, staff, 'admitVersion', since)).toEqual([]);
+        });
+      });
+
+      it('rejectVersion refuses a version admitted since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const version = await publish(host, staff, await newVertical(host, staff));
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE vertical_versions SET admission = 'admitted' WHERE id = '${version}'`);
+          const refused = await refusalOf(host.admin.rejectVersion(staff, version, 'not this one'));
+          expect(errorCodeOf(refused)).toBe('conflict');
+          expect(refused.message).toBe(`version ${version} is already admitted — it may be bound`);
+          expect((await host.admin.getVersion(staff, version))?.admission).toBe('admitted');
+          expect(await rowsSince(host, staff, 'rejectVersion', since)).toEqual([]);
+        });
+      });
+
+      it('admitVersion of an auto-admitted version another admit already vouched for records nothing', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { release } = await privateVertical(host, staff);
+          const auto = await release();
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE vertical_versions SET admission_note = NULL WHERE id = '${auto}'`);
+          await host.admin.admitVersion(staff, auto);
+          expect((await host.admin.getVersion(staff, auto))?.admissionNote).toBeNull();
+          expect(await rowsSince(host, staff, 'admitVersion', since)).toEqual([]);
+        });
+      });
+
+      it('deleteVertical refuses a vertical a scope was bound to since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const slug = await newVertical(host, staff);
+          const other = await newVertical(host, staff);
+          const t = await newTenant(host, staff);
+          const s = scopeId.parse(ulid());
+          await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: other });
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE scopes SET vertical = '${slug}' WHERE scope_id = '${s}'`);
+          const refused = await refusalOf(host.admin.deleteVertical(staff, slug));
+          expect(errorCodeOf(refused)).toBe('conflict');
+          expect(refused.message).toBe(`vertical '${slug}' still backs 1 scope(s) — delete or rebind them first`);
+          expect(await verticalOf(host, staff, slug)).toBeDefined();
+          expect(await rowsSince(host, staff, 'deleteVertical', since)).toEqual([]);
+        });
+      });
+
+      it('publishVersion does not self-admit on a vertical listed since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { slug, release } = await privateVertical(host, staff);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE verticals SET listed = 1 WHERE slug = '${slug}'`);
+          const version = await release();
+          expect(await host.admin.getVersion(staff, version)).toMatchObject({ admission: 'pending', admissionNote: null });
+          expect((await rowsSince(host, staff, 'publishVersion', since)).map((r) => (r.after as { admission: string }).admission))
+            .toEqual(['pending']);
+        });
+      });
+
+      it('and self-admits on a vertical unlisted since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const { slug, release } = await privateVertical(host, staff);
+          await fixture.directorySql(`UPDATE verticals SET listed = 1 WHERE slug = '${slug}'`);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE verticals SET listed = 0 WHERE slug = '${slug}'`);
+          const version = await release();
+          expect(await host.admin.getVersion(staff, version)).toMatchObject({ admission: 'admitted', admissionNote: expect.any(String) });
+          expect((await rowsSince(host, staff, 'publishVersion', since)).map((r) => (r.after as { admission: string }).admission))
+            .toEqual(['admitted']);
+        });
+      });
+
+      it('setVerticalServing refuses a serve whose serving version moved, and a retry after reading it again lands', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const slug = await newVertical(host, staff);
+          const [first, second, third] = [await publish(host, staff, slug), await publish(host, staff, slug), await publish(host, staff, slug)];
+          const serve = (versionId: string, ref: string) =>
+            host.admin.setVerticalServing(staff, slug, { ref, versionId, doClasses: [], migrationTag: 'g' });
+          const rows = async () => (await host.admin.auditLog(staff, { action: ['setVerticalServing'] }))
+            .filter((r) => (r.after as { vertical: string }).vertical === slug)
+            .map((r) => ({ before: r.before, after: r.after }));
+          await serve(first, 'serving-a');
+          fixture.interleave(`UPDATE verticals SET serving_ref = 'serving-b', serving_version_id = '${second}' WHERE slug = '${slug}'`);
+          const lost = await refusalOf(serve(third, 'serving-c'));
+          expect(errorCodeOf(lost)).toBe('precondition_failed');
+          expect(lost.message).toContain('moved while this serve was being judged');
+          expect((await host.admin.verticalServing(staff, slug))?.versionId).toBe(second);
+          expect(await rows()).toHaveLength(1);
+          await serve(third, 'serving-c');
+          expect((await host.admin.verticalServing(staff, slug))?.versionId).toBe(third);
+          expect(await rows()).toEqual([
+            { before: null, after: { vertical: slug, ref: 'serving-a', versionId: first } },
+            { before: { ref: 'serving-b', versionId: second }, after: { vertical: slug, ref: 'serving-c', versionId: third } },
+          ]);
+        });
+      });
+
+      it('setVerticalServing refuses a serve whose serving ref moved while its version stayed', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const slug = await newVertical(host, staff);
+          const [first, second] = [await publish(host, staff, slug), await publish(host, staff, slug)];
+          const serve = (versionId: string, ref: string) =>
+            host.admin.setVerticalServing(staff, slug, { ref, versionId, doClasses: [], migrationTag: 'g' });
+          await serve(first, 'serving-a');
+          fixture.interleave(`UPDATE verticals SET serving_ref = 'serving-b' WHERE slug = '${slug}'`);
+          const lost = await refusalOf(serve(second, 'serving-c'));
+          expect(errorCodeOf(lost)).toBe('precondition_failed');
+          expect(await host.admin.verticalServing(staff, slug)).toMatchObject({ ref: 'serving-b', versionId: first });
+          // Only the first serve's row: the refused one recorded none.
+          expect((await host.admin.auditLog(staff, { action: ['setVerticalServing'] }))
+            .filter((r) => (r.after as { vertical: string }).vertical === slug)
+            .map((r) => (r.after as { ref: string }).ref)).toEqual(['serving-a']);
+        });
+      });
+
+      it('setTenantStatus records the status its own unit read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          fixture.interleave(`UPDATE tenants SET status = 'suspended' WHERE tenant_id = '${t}'`);
+          await host.admin.setTenantStatus(staff, t, 'active');
+          expect((await host.admin.auditLog(staff, { tenantId: t, action: ['setTenantStatus'] })).map((r) => [r.before, r.after]))
+            .toEqual([[{ status: 'suspended' }, { status: 'active' }]]);
+        });
+      });
+
+      it('setTenantName records the name its own unit read, and nothing when that is already the name', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff, 'Before');
+          fixture.interleave(`UPDATE tenants SET name = 'Middle' WHERE tenant_id = '${t}'`);
+          await host.admin.setTenantName(staff, t, 'After');
+          fixture.interleave(`UPDATE tenants SET name = 'Last' WHERE tenant_id = '${t}'`);
+          await host.admin.setTenantName(staff, t, 'Last');
+          expect((await host.admin.getTenant(staff, t))?.name).toBe('Last');
+          expect((await host.admin.auditLog(staff, { tenantId: t, action: ['setTenantName'] })).map((r) => [r.before, r.after]))
+            .toEqual([[{ name: 'Middle' }, { name: 'After' }]]);
+        });
+      });
     });
   });
 }

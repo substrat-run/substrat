@@ -231,7 +231,7 @@ import type {
   VerticalResolution,
   ErrorCode,
 } from '@substrat-run/contracts';
-import { assertReplayableDump, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { assertReplayableDump, AUTO_ADMISSION_NOTE, instant, opsFailureFingerprint, ROUTE_SCOPE_HOSTNAMES_MAX, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import type { DeploymentWireAuth, FindingEntry, FindingFilter, FindingRuleEntry, FindingRuleInput, FindingStatusInput } from '@substrat-run/contracts';
 import type { ConnectLink, ConnectLinkConsume } from '@substrat-run/contracts';
 
@@ -1557,6 +1557,17 @@ export const REPLIED_METHODS = [
   // #2309: a fleet rebuild's lease write refuses with conflict or validation_failed.
   'claimStoreDriverRebuild',
   'advanceStoreDriverRebuild',
+  // #2528: the vertical writes that read their row's `before` and their guards in the unit that
+  // writes, refusing an unknown vertical or version with not_found and a failed guard with conflict.
+  'updateVerticalListed',
+  'updateVerticalPublishRequest',
+  'updateVerticalInstallsBlocked',
+  'updateVerticalTenantProvisioner',
+  'updateVerticalEmailSender',
+  'deleteVertical',
+  'admitVersion',
+  'rejectVersion',
+  'setVerticalServing',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -3405,34 +3416,66 @@ export class ControlPlaneDO extends DurableObject {
     }
   }
 
-  /** Publish/unpublish a vertical to the public marketplace + resolve any pending request. */
+  /**
+   * Publish/unpublish a vertical to the public marketplace + resolve any pending request. Listing
+   * refuses a prod version that is auto-admitted (only its author has read it), judged on the
+   * channel as this unit reads it (#2528).
+   */
   updateVerticalListed(slug: string, listed: number, audit?: AdminEntryInput): void {
-    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET listed = ?, publish_requested_at = NULL WHERE slug = ?', listed, slug)
-      .rowsWritten > 0, audit);
+    this.updateVertical(slug, 'listed = ?, publish_requested_at = NULL', [listed], (r) => {
+      if (listed) {
+        const prod = this.sql
+          .exec(
+            `SELECT v.id, v.admission_note FROM vertical_channels c JOIN vertical_versions v ON v.id = c.version_id
+              WHERE c.vertical_slug = ? AND c.channel = 'prod'`,
+            slug,
+          )
+          .toArray()[0] as { id: string; admission_note: string | null } | undefined;
+        if (prod?.admission_note === AUTO_ADMISSION_NOTE) {
+          throw substratError(
+            'conflict',
+            `vertical '${slug}' prod version ${prod.id} is auto-admitted (private self-serve) — ` +
+              `a staff admit must vouch for it before listing`,
+          );
+        }
+      }
+      return { listed: !!r.listed };
+    }, audit);
   }
 
   /** Record a builder's pending publish request (marketplace-publish.md §5). */
   updateVerticalPublishRequest(slug: string, requestedAt: string, audit?: AdminEntryInput): void {
-    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?', requestedAt, slug)
-      .rowsWritten > 0, audit);
+    this.updateVertical(slug, 'publish_requested_at = ?', [requestedAt], () => null, audit);
   }
 
   /** Block/unblock new installs of a vertical (staff kill-switch). */
   updateVerticalInstallsBlocked(slug: string, blocked: number, audit?: AdminEntryInput): void {
-    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET installs_blocked = ? WHERE slug = ?', blocked, slug)
-      .rowsWritten > 0, audit);
+    this.updateVertical(slug, 'installs_blocked = ?', [blocked], (r) => ({ installsBlocked: !!r.installs_blocked }), audit);
   }
 
   /** Grant/revoke the tenant-provisioner capability (#412, staff grant). */
   updateVerticalTenantProvisioner(slug: string, granted: number, audit?: AdminEntryInput): void {
-    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?', granted, slug)
-      .rowsWritten > 0, audit);
+    this.updateVertical(slug, 'tenant_provisioner = ?', [granted], (r) => ({ tenantProvisioner: !!r.tenant_provisioner }), audit);
   }
 
   /** Grant/revoke the email-sender capability (#303, staff grant). */
   updateVerticalEmailSender(slug: string, granted: number, audit?: AdminEntryInput): void {
-    this.writeAndAudit(() => this.sql.exec('UPDATE verticals SET email_sender = ? WHERE slug = ?', granted, slug)
-      .rowsWritten > 0, audit);
+    this.updateVertical(slug, 'email_sender = ?', [granted], (r) => ({ emailSender: !!r.email_sender }), audit);
+  }
+
+  /**
+   * #2528: one vertical row update whose row reads its `before` (and runs its guard, by throwing)
+   * from the vertical as this unit reads it, so neither can be stale against the write.
+   */
+  private updateVertical(slug: string, set: string, args: (string | number)[], judge: (r: VerticalRow) => unknown,
+    audit?: AdminEntryInput): void {
+    let before: unknown = null;
+    this.writeAndAudit(() => {
+      const r = this.readVertical(slug);
+      if (!r) throw substratError('not_found', `unknown vertical '${slug}'`);
+      before = judge(r);
+      return this.sql.exec(`UPDATE verticals SET ${set} WHERE slug = ?`, ...args, slug).rowsWritten > 0;
+    }, audit && (() => ({ ...audit, before })));
   }
 
   /**
@@ -3456,8 +3499,10 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /**
-   * Remove a vertical's registry presence: channels, versions, the row. The bound-scope
-   * refusal lives host-side (the audited seam), not here — this is the storage verb.
+   * Remove a vertical's registry presence: channels, versions, the row. Refused while any
+   * restorable scope is bound (`countScopesForVertical`): a deleted registry row would strand
+   * those scopes' version pins and routing. That refusal and `audit`'s `before` are read in the
+   * unit that deletes (#2528).
    */
   deleteVertical(slug: string, audit?: AdminEntryInput, until?: string): void {
     // #2501: one transaction, so the row and its ownership period close together. `until` is the
@@ -3465,7 +3510,21 @@ export class ControlPlaneDO extends DurableObject {
     // optional and trailing so a caller from before it, sending (slug, audit), still closes the
     // period, on this DO's own reading of that clock; anything but an instant is refused.
     const closedAt = until === undefined ? verticalOwnerNow() : instant.parse(until);
+    let before: unknown = null;
     this.writeAndAudit(() => {
+      const existing = this.readVertical(slug);
+      if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
+      // An `archived` scope (a deleted app) still blocks — unarchive can bring it back — but the
+      // refusal names reap/restore, because the app itself is already gone.
+      const bound = this.countScopesForVertical(slug);
+      if (bound.live > 0) {
+        throw substratError('conflict', `vertical '${slug}' still backs ${bound.live} scope(s) — delete or rebind them first`);
+      }
+      if (bound.archived > 0) {
+        throw substratError('conflict',
+          `vertical '${slug}' still backs ${bound.archived} archived scope(s) — reap or restore them first`);
+      }
+      before = { slug, source: existing.source, ownerTenant: existing.owner_tenant };
       this.sql.exec('DELETE FROM vertical_channels WHERE vertical_slug = ?', slug);
       this.sql.exec('DELETE FROM vertical_channel_history WHERE vertical_slug = ?', slug);
       this.sql.exec(
@@ -3479,7 +3538,7 @@ export class ControlPlaneDO extends DurableObject {
       const changed = this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug).rowsWritten > 0;
       if (changed) closeVerticalOwnerRow(doRedactionSql(this.sql), slug, closedAt);
       return changed;
-    }, audit);
+    }, audit && (() => ({ ...audit, before })));
   }
 
   /** #2501: every period of a slug's ownership, oldest first — kernel `vertical-owners.ts`. */
@@ -3522,7 +3581,15 @@ export class ControlPlaneDO extends DurableObject {
     migrations: DeclaredMigration[] | null;
     createdAt: string;
   }, audit?: AdminEntryInput): void {
+    // #2528: whether it self-admits is judged on the vertical as this unit reads it — a PRIVATE
+    // vertical (tenant-owned, not listed) self-admits, noted so the publish seam can tell a staff
+    // vouch from this shortcut — whatever the caller judged from its own earlier read.
+    let admission = v.admission;
     this.writeAndAudit(() => {
+      const owning = this.readVertical(v.verticalSlug);
+      if (!owning) throw substratError('not_found', `unknown vertical '${v.verticalSlug}'`);
+      const selfAdmits = owning.owner_tenant !== null && !owning.listed;
+      admission = selfAdmits ? 'admitted' : 'pending';
       this.sql.exec(
         `INSERT INTO vertical_versions
            (id, vertical_slug, version, manifest_digest, permission_digest,
@@ -3530,14 +3597,14 @@ export class ControlPlaneDO extends DurableObject {
             origin_json, migration_count, migrations_split, migration_digest_derived, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`,
         v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
-        v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.manifestJson,
+        v.migrationDigest, v.deploymentRef, admission, selfAdmits ? AUTO_ADMISSION_NOTE : null, v.manifestJson,
         v.originJson, v.migrations?.length ?? null, v.createdAt,
       );
       writeVersionMigrations(this.kernelSql, v.id, v.migrations);
       // #2286: the version's scope-store bindings, refusing one moved to another driver, in the insert's transaction.
       indexVersionScopeStores(this.kernelSql, v.verticalSlug, v.id, v.manifestJson);
       return true;
-    }, audit);
+    }, audit && (() => ({ ...audit, after: { ...(audit.after as object), admission } })));
   }
 
   /** Every scope-store binding any version of the vertical declared (#2286); indexes versions not indexed yet. */
@@ -3550,18 +3617,37 @@ export class ControlPlaneDO extends DurableObject {
     return versionMigrationsOf(this.kernelSql, id);
   }
 
-  /** Record what the serving script now runs — written only after a successful
-   *  in-place upload, so a failed serve leaves the trailing state visible. */
+  /**
+   * Record what the serving script now runs — written only after a successful in-place upload, so
+   * a failed serve leaves the trailing state visible. #2528: `expected` is the serving ref and
+   * version the caller's #2178 gate judged the move from (nulls: nothing served); the write lands
+   * only if the row still names both (`SERVES_NOW_CONDITION`), and `audit`'s `before` is the
+   * serving state this unit read. False when either moved. Optional and trailing, so a caller from
+   * before it still writes unconditionally.
+   */
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit?: AdminEntryInput,
-  ): void {
-    this.writeAndAudit(() => this.sql.exec(
-      `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
-              serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
-      s.ref, s.versionId, s.doClassesJson, s.migrationTag, slug,
-    ).rowsWritten > 0, audit);
+    expected?: { ref: string | null; versionId: string | null },
+  ): boolean {
+    let before: unknown = null;
+    let raced = false;
+    this.writeAndAudit(() => {
+      const r = this.readVertical(slug);
+      if (!r) throw substratError('not_found', `unknown vertical '${slug}'`);
+      before = r.serving_ref ? { ref: r.serving_ref, versionId: r.serving_version_id } : null;
+      const moved = this.sql.exec(
+        `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
+                serving_do_classes = ?, serving_migration_tag = ?
+          WHERE ${expected === undefined ? 'slug = ?' : SERVES_NOW_CONDITION}`,
+        s.ref, s.versionId, s.doClassesJson, s.migrationTag,
+        ...(expected === undefined ? [slug] : [slug, expected.ref, expected.versionId]),
+      ).rowsWritten > 0;
+      raced = !moved;
+      return moved;
+    }, audit && (() => ({ ...audit, before })));
+    return !raced;
   }
 
   /**
@@ -3630,11 +3716,54 @@ export class ControlPlaneDO extends DurableObject {
     return read();
   }
 
+  /** Kept for a coordinator from before #2528, which judged the admission itself. */
   setAdmission(id: string, admission: string, note: string | null, audit?: AdminEntryInput): void {
     this.writeAndAudit(() => this.sql.exec(
       'UPDATE vertical_versions SET admission = ?, admission_note = ? WHERE id = ?',
       admission, note, id,
     ).rowsWritten > 0, audit);
+  }
+
+  /**
+   * Admit a version, judged on its admission as this unit reads it (#2528). Idempotent on an
+   * admitted one — except an AUTO-admitted version, which this upgrades to a manual vouch by
+   * clearing the note (what the publish seam requires). A rejected one is refused.
+   */
+  admitVersion(id: string, audit?: AdminEntryInput): void {
+    let row: { before: unknown; after: unknown } = { before: null, after: null };
+    this.writeAndAudit(() => {
+      const v = this.versionAdmission(id);
+      if (v.admission === 'admitted') {
+        if (v.admission_note !== AUTO_ADMISSION_NOTE) return false;
+        row = { before: { admission: v.admission, note: v.admission_note }, after: { admission: 'admitted', note: null } };
+      } else if (v.admission === 'rejected') {
+        throw substratError('conflict', `version ${id} was rejected — publish a new one`);
+      } else {
+        row = { before: { admission: v.admission }, after: { admission: 'admitted' } };
+      }
+      return this.sql.exec("UPDATE vertical_versions SET admission = 'admitted', admission_note = NULL WHERE id = ?", id)
+        .rowsWritten > 0;
+    }, audit && (() => ({ ...audit, ...row })));
+  }
+
+  /** Reject a version, judged as `admitVersion` is: an admitted one is refused, a rejected one is a no-op. */
+  rejectVersion(id: string, note: string, audit?: AdminEntryInput): void {
+    let before: unknown = null;
+    this.writeAndAudit(() => {
+      const v = this.versionAdmission(id);
+      if (v.admission === 'admitted') throw substratError('conflict', `version ${id} is already admitted — it may be bound`);
+      if (v.admission === 'rejected') return false;
+      before = { admission: v.admission };
+      return this.sql.exec("UPDATE vertical_versions SET admission = 'rejected', admission_note = ? WHERE id = ?", note, id)
+        .rowsWritten > 0;
+    }, audit && (() => ({ ...audit, before, after: { admission: 'rejected', note } })));
+  }
+
+  private versionAdmission(id: string): { admission: string; admission_note: string | null } {
+    const v = this.sql.exec('SELECT admission, admission_note FROM vertical_versions WHERE id = ?', id)
+      .toArray()[0] as { admission: string; admission_note: string | null } | undefined;
+    if (!v) throw substratError('not_found', `unknown version ${id}`);
+    return v;
   }
 
   /**
