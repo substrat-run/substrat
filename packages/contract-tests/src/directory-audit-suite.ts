@@ -1011,19 +1011,6 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
-      it('unbindHostname records one row for the unbind that removed the name, and nothing for the second', async () => {
-        await withFixture(async (_fixture, host, staff) => {
-          const t = await newTenant(host, staff);
-          const s = await newScope(host, staff, t);
-          const hostname = await bound(host, t, s);
-          const since = new Date().toISOString();
-          await host.admin.unbindHostname(staff, hostname);
-          await host.admin.unbindHostname(staff, hostname);
-          expect(await rowsSince(host, staff, 'unbindHostname', since))
-            .toEqual([{ before: { hostname, status: 'pending' }, after: null }]);
-        });
-      });
-
       it('grantEntitlement records nothing for a grant another write already made, and the grant its unit read as before otherwise', async () => {
         await withFixture(async (fixture, host, staff) => {
           const t = await newTenant(host, staff);

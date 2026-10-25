@@ -460,7 +460,8 @@ These six do not follow the upsert rule above. Each one **judges** whether it ch
 and when it does not, it writes nothing and records no row: a status the name already holds, an
 issuance poll that finds the same status, records and id (the reconcile sweep polls on an
 interval and must not add a row each time), an entitlement grant whose merged expiry, quota and
-plan equal the held ones, a revoke of an entitlement not held, and an unbind of a name not bound.
+plan equal the held ones, a revoke of an entitlement not held, and an unbind of a name not bound
+(or, with an owner, bound to another scope).
 The judgement is made in the unit, so a write another caller made in
 between is what it compares against. `bindHostname` makes no such judgement: a re-bind resets the
 name's issuance state, so it always records a row.
