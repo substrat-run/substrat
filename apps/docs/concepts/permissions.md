@@ -167,6 +167,28 @@ definition of the role. The host throws `forbidden`; the control plane's restore
 that dump is trusted input: its provenance is the staff caller's. What is judged is how the
 tenant's roles apply to it now.
 
+On a deployment with no control plane (#2531), the role set a provision, a reconcile or a
+restore's role repair writes is judged again **inside the unit that writes it**, against the roles,
+tombstones and seats the scope holds as the write lands. The first check, before anything is
+written, still gives the detailed refusal in the usual case. The second catches a seat made in
+between. A restore's role repair now runs inside the load's own transaction, after the dump's rows
+are in, so it is judged against exactly the seats the restore brings. A paged (staged) restore is
+judged the same way, although its first check could see only the role set. A refusal there names
+the role key and nothing else: `role '<key>' is refused by the reserved-key rule, judged against
+the roles and seats this scope holds as the write lands (K-55); nothing was written`. Nothing is
+written:
+
+- **a provision or reconcile** leaves no role row, tombstone, owner seat, provisioning receipt or
+  enforcement flip. The scope's module migrations have already run by then, as they do before
+  every projection;
+- **a restore** keeps the scope's rows as they were, and a staged restore keeps its stage, so the
+  same commit can be retried.
+
+A deployment whose scope objects predate this refuses the call outright rather than writing
+unjudged, and a `@substrat-run/vertical-host` paired with an older adapter repairs the roles after
+the load as before. The directory's fan-out of a tenant's stored roles is still not judged again
+(below).
+
 Not covered yet:
 
 - on Cloudflare, a staff restore or import reads the directory's roles before the scope loads the
@@ -203,7 +225,8 @@ Decided, and left as is (#2531). These paths are deliberately not judged by the 
   roles and seats a live scope holds, which were judged where they were written, and a copy
   revokes nothing;
 - the fan-out of a tenant's stored roles into its scopes: the role was judged where it was
-  defined, and judging it again would drop it and revoke its seats;
+  defined, and judging it again would drop it and revoke its seats. It is left unjudged on
+  purpose, and the in-unit judgement above (#2531) does not apply to it;
 - the platform's own role assignment, which keeps the platform rule. Telling a person from a host
   principal needs a record of what kind of principal each one is, kept on the principal when it is
   created; that is decided with the host principal's lifecycle. Only staff and the platform's own
