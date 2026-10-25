@@ -123,6 +123,7 @@ import {
   type RoleState,
   type RoleShape,
   inUnitRoleRefusal,
+  loadedRoleSetRefusedRole,
   reservedRoleSetRefusedRole,
   reservedGrantRefusal,
   reservedRoleRefusal,
@@ -606,10 +607,32 @@ const roleRefusals = new WeakSet<Error>();
  * reservations of the caller's host (its registered modules and its `permissions`). This class's own
  * are joined in the unit. The set itself is the one the unit writes.
  */
-export type RoleJudge = { reserved: string[]; declared: string[] };
+export type RoleJudge = {
+  reserved: string[];
+  declared: string[];
+  /** #2555: ask only about the roles the scope's state seats, stores or keeps a tombstone of
+   *  (`loadedRoleSetRefusedRole`), as a load of the directory's set is judged. Set by this class. */
+  loaded?: true;
+};
 
 /** A role row as `applyProjection` writes it. */
 type ProjectedRoleRow = { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null };
+
+/**
+ * #2555: the directory's current permission state for one scope, as a fan-out projects it
+ * (`tenantProjection` and the vertical's connection keys), written by a control-plane-full load in
+ * its own transaction after the dump's rows are in. The roles are judged there against the state
+ * the dump has just brought, with `judge`'s reservations joined with the class's.
+ */
+export type LoadProjection = {
+  tenantId: TenantId;
+  roles: ProjectedRoleRow[];
+  tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[];
+  entitlements: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[];
+  identities: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[];
+  connectionKeys: { connection_id: string; provider: string; key_id: string; public_key: string }[];
+  judge: RoleJudge;
+};
 
 /**
  * #2531: a load's role repair, judged and written in the load's own transaction after the dump's
@@ -1037,7 +1060,16 @@ type ImportDumpOptions = {
   /** #2531: told when the repair was written in the load (it is not on a reaped store). Set by the
    *  judged methods in this object, never sent over the wire. */
   onRolesProjected?: () => void;
+  /** #2555: the directory's current permission state, judged and projected last in the load's
+   *  transaction. Reached only through `importDumpProjected`; not on a reaped store. */
+  projection?: LoadProjection;
+  /** #2555: this store's `permission_source` and `entitlements_enforced` stay as they were before
+   *  the load, never the dump's. Reached only through `importDumpProjected`. */
+  keepPermissionFlags?: boolean;
 };
+
+/** #2555: the `_substrat_meta` keys a control-plane-full load keeps from the destination. */
+const PERMISSION_FLAG_KEYS = ['permission_source', 'entitlements_enforced'] as const;
 
 /** A load's answer, its refusals as values (#1722). `roles` (#2531): the repair's role set was refused in the unit. */
 type CheckedLoad =
@@ -5313,7 +5345,7 @@ export function defineScopeDO(
      */
     private refuseRoleSetInUnit(tenantId: string, roles: readonly RoleShape[], judge: RoleJudge): void {
       const state = this.roleStateSync(tenantId);
-      const refused = reservedRoleSetRefusedRole(
+      const refused = (judge.loaded ? loadedRoleSetRefusedRole : reservedRoleSetRefusedRole)(
         roles,
         { reserved: new Set([...judge.reserved, ...this.reservedKeys]), declared: new Set([...judge.declared, ...this.declaredKeys]) },
         { roles: state.roles, seated: new Set(state.seated), ...(state.dropped ? { dropped: state.dropped } : {}) },
@@ -7536,6 +7568,8 @@ export function defineScopeDO(
         fence,
         roleRepair,
         onRolesProjected,
+        projection,
+        keepPermissionFlags,
       }: ImportDumpOptions = {},
       stageId?: string,
     ): Promise<SwitchedOff[]> {
@@ -7578,7 +7612,10 @@ export function defineScopeDO(
       // #2531: a reaped store takes no role repair, judged or not, as `projectInUnit` drops a
       // projection there: the load comes back with no roles, no receipt and no enforcement flip,
       // as it did before the repair rode the load. Read before the unit, as `projectInUnit` reads it.
-      const repair = roleRepair && !(await this.isReaped()) ? roleRepair : undefined;
+      // #2555: the directory's projection is dropped there too, for the same reason.
+      const reaped = roleRepair || projection ? await this.isReaped() : false;
+      const repair = roleRepair && !reaped ? roleRepair : undefined;
+      const directory = projection && !reaped ? projection : undefined;
       const switched = await this.revision.transaction(async () => {
         // #1722: first, before any read: a store a reap has since emptied must refuse the late load
         // too, and the check is against this store's clock, inside the load's own transaction.
@@ -7611,6 +7648,8 @@ export function defineScopeDO(
             }),
         );
         const receiptBefore = this.provisionedFor();
+        // #2555: this store's own permission flags, read before the drops take them.
+        const flagsBefore = keepPermissionFlags ? PERMISSION_FLAG_KEYS.map((key) => [key, this.metaValue(key)] as const) : [];
         if (provisionedFor !== undefined && receiptBefore !== null && receiptBefore !== provisionedFor) {
           const refused = substratError('conflict', tenantReceiptRefusal(receiptBefore, provisionedFor));
           tenantRefusals.add(refused);
@@ -7702,6 +7741,14 @@ export function defineScopeDO(
           if (receipt !== null) {
             this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, PROVISIONED_FOR_KEY, receipt);
           }
+          // #2555: which reader the checker uses, and whether entitlements are enforced, are this
+          // store's, as its receipt is: the dump's values describe the scope it was captured from,
+          // when it was. A flag this store did not hold stays unset. The projection below may then
+          // move them as a fan-out would.
+          for (const [key, value] of flagsBefore) {
+            this.sql.exec(`DELETE FROM _substrat_meta WHERE key = ?`, key);
+            if (value !== null) this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, key, value);
+          }
           // #1722: whatever stamp an export read here no longer describes this store, so every load
           // replaces it: with the carry's own, or with none. And the write revision moves on from
           // where it stood before the drops, so it never goes back.
@@ -7757,9 +7804,29 @@ export function defineScopeDO(
           // seats the dump has just brought (`refuseRoleSetInUnit`), then projected exactly as
           // `projectRolesLocal` projects it. A refusal rolls the whole load back, so the scope keeps
           // its rows and a staged load keeps its stage; an admitted load lands with its repair.
-          if (repair) {
+          // #2555: a control-plane-full load writes the directory's current state the same way, in the
+          // same place: the tenant's roles, tuples, entitlements, identity links and the vertical's
+          // connection keys, each a full replace as a fan-out writes it, so nothing the directory has
+          // since revoked comes back with the dump. Scope-level tuples (the seats) are not touched.
+          // The roles are judged only where the loaded state has a part in them (`loaded`).
+          const projected = repair
+            ? (): SwitchedOff[] => this.projectionBody(repair.judge, repair.tenantId, repair.roles, [])
+            : directory
+              ? (): SwitchedOff[] =>
+                  this.projectionBody(
+                    { ...directory.judge, loaded: true },
+                    directory.tenantId,
+                    directory.roles,
+                    directory.tuples,
+                    directory.entitlements,
+                    undefined,
+                    directory.identities,
+                    directory.connectionKeys,
+                  )
+              : undefined;
+          if (projected) {
             try {
-              this.projectionBody(repair.judge, repair.tenantId, repair.roles, []);
+              projected();
             } catch (e) {
               // The projection's own tenant refusal (its receipt check) is a tenant refusal of the
               // load, not the kept-copy `conflict` `checkedLoad` would otherwise read it as.
@@ -7847,6 +7914,31 @@ export function defineScopeDO(
     ): Promise<CheckedLoad> {
       return this.judgedLoad((onRolesProjected) =>
         this.checkedLoad(() => this.importDump(tables, destScopeId, { ...opts, roleRepair, onRolesProjected })),
+      );
+    }
+
+    /**
+     * #2555: a control-plane-full restore or import. `importDump`, with this store's permission flags
+     * kept through it and, when `projection` is given (a host that projects permissions into its
+     * scopes), the directory's current state judged and projected last in the load's transaction. A
+     * refusal, the role judgement's included, rolls the whole load back, and is answered as data so
+     * its code survives the hop. A method of its own, so a host meeting a ScopeDO from before it is
+     * refused by the runtime, nothing loaded, rather than loading the dump's permission state as is.
+     */
+    importDumpProjected(
+      tables: ScopeDumpTable[],
+      destScopeId: ScopeId,
+      opts: Pick<ImportDumpOptions, 'switchOff' | 'sourceScopeId' | 'exact'>,
+      projection: LoadProjection | null,
+    ): Promise<DoReply<SwitchedOff[]>> {
+      return replyOf(() =>
+        this.importDump(tables, destScopeId, {
+          switchOff: opts.switchOff,
+          sourceScopeId: opts.sourceScopeId,
+          exact: opts.exact,
+          keepPermissionFlags: true,
+          ...(projection ? { projection } : {}),
+        }),
       );
     }
 

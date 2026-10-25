@@ -338,8 +338,8 @@ export function dumpRoleRefusal(
   // the stored definition it was (`storedDefinitionOf`), and a role the dump keeps only as a tombstone
   // is one it defines: judged, and answered as defined rather than as having no definition.
   const stored = dumpRoleState(dump.tables, dump.tenantId, now);
-  const inDump = (key: string) => stored.roles.some((r) => r.key === key) || (stored.dropped ?? []).some((r) => r.key === key);
-  const refused = firstRefusedRole(roles, host, stored, (r) => stored.seated.has(r.key) || inDump(r.key));
+  const inDump = (key: string) => storesRole(stored, key);
+  const refused = firstRefusedRole(roles, host, stored, touchedBy(stored));
   if (!refused) return null;
   if (refused.reason === 'seated' && !inDump(refused.key)) {
     return (
@@ -348,6 +348,33 @@ export function dumpRoleRefusal(
     );
   }
   return `restore refused: role '${refused.key}', which the dump seats or defines, cannot be applied as the tenant defines it now (K-55); nothing was loaded`;
+}
+
+/**
+ * #2555: `dumpRoleRefusal`'s question asked of a scope's stored state rather than of a dump's
+ * tables: the directory's role set a load projects, judged inside the load's own transaction
+ * against the roles, tombstones and seats the dump has just brought (`refuseRoleSetInUnit`). Only
+ * the roles that state seats, stores or keeps a tombstone of are asked about, so a directory role
+ * the load has no part in never refuses it; the whole set stays their context. The same walk as
+ * `reservedRoleSetRefusedRole`, answered the same way, for `inUnitRoleRefusal`.
+ */
+export function loadedRoleSetRefusedRole(
+  roles: readonly RoleShape[],
+  host: HostReservations,
+  stored: StoredRoles,
+): { key: string; refusal: string } | null {
+  const refused = firstRefusedRole(roles, host, stored, touchedBy(stored));
+  return refused ? { key: refused.key, refusal: refused.refusal } : null;
+}
+
+/** Whether `stored` holds a row for `key`, live or a tombstone. */
+function storesRole(stored: StoredRoles, key: string): boolean {
+  return stored.roles.some((r) => r.key === key) || (stored.dropped ?? []).some((r) => r.key === key);
+}
+
+/** The roles a load's state has a part in: seated there, or stored there (#2555). */
+function touchedBy(stored: StoredRoles): (role: RoleShape) => boolean {
+  return (role) => stored.seated.has(role.key) || storesRole(stored, role.key);
 }
 
 /**
