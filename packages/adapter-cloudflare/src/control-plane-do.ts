@@ -4125,11 +4125,14 @@ export class ControlPlaneDO extends DurableObject {
     return this.writeAndAudit(() => {
       const now = this.readChannel(history.vertical_slug, history.channel);
       if ((now?.version_id ?? null) !== from) return false;
-      const listed = this.readVertical(history.vertical_slug)?.listed;
+      const vertical = this.readVertical(history.vertical_slug);
+      const listed = vertical?.listed;
       if (listed && unlistedOnly) throw listedPromoteRefusal();
-      // A re-promote of what prod already names moves nothing, so it is not judged again.
+      // A re-promote of what prod already names, and what serves (if anything does), moves
+      // nothing, so it is not judged again. One whose serve would change what runs is.
+      const serving = vertical?.serving_ref && vertical.serving_version_id ? vertical.serving_version_id : history.version_id;
       if (
-        listed && history.channel === 'prod' && from !== history.version_id &&
+        listed && history.channel === 'prod' && (from !== history.version_id || serving !== history.version_id) &&
         this.versionAdmission(history.version_id).admission_note === AUTO_ADMISSION_NOTE
       ) {
         throw autoAdmittedProdRefusal(history.vertical_slug, history.version_id);

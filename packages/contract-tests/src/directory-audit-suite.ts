@@ -725,15 +725,21 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
-      it('but re-promoting the auto-admitted version a listed vertical already names as prod is not refused', async () => {
+      it('re-promoting the auto-admitted version a listed vertical names as prod is refused only if its serve would change what runs', async () => {
         await withFixture(async (fixture, host, staff) => {
           const { slug, release } = await privateVertical(host, staff);
           const auto = await release();
+          const vouched = await release();
           await host.admin.promoteVersion(staff, slug, 'prod', auto);
           // Listed before listing refused an auto-admitted prod: the state is kept, not judged again.
           await fixture.directorySql(`UPDATE verticals SET listed = 1 WHERE slug = '${slug}'`);
           await host.admin.promoteVersion(staff, slug, 'prod', auto);
           expect((await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId).toBe(auto);
+          // A failed serve left another version serving: the retry would put `auto` on every install.
+          await fixture.directorySql(`UPDATE verticals SET serving_ref = 'serving-a', serving_version_id = '${vouched}' WHERE slug = '${slug}'`);
+          const refused = await refusalOf(host.admin.promoteVersion(staff, slug, 'prod', auto));
+          expect(errorCodeOf(refused)).toBe('conflict');
+          expect(refused.message).toContain(`prod version ${auto} is auto-admitted`);
         });
       });
 

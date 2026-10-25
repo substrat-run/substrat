@@ -10517,9 +10517,11 @@ export class SqliteScopeHost implements ScopeHost {
           // #2565: the listing's rule and the builder's door, read where the listing could land.
           const listed = readVertical(verticalSlug)?.listed;
           if (listed && options?.unlistedOnly) throw listedPromoteRefusal();
-          // A re-promote of what prod already names moves nothing, so it is not judged again.
+          // A re-promote of what prod already names, and what serves (if anything does), moves
+          // nothing, so it is not judged again. One whose serve would change what runs is.
+          const serving = this.servingPointerOfVertical(verticalSlug)?.versionId ?? versionId;
           if (
-            listed && channel === 'prod' && outgoing?.id !== versionId &&
+            listed && channel === 'prod' && (outgoing?.id !== versionId || serving !== versionId) &&
             versionAdmission(versionId).admission_note === AUTO_ADMISSION_NOTE
           ) {
             throw autoAdmittedProdRefusal(verticalSlug, versionId);

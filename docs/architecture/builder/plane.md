@@ -56,7 +56,9 @@ split:
 - **Listed vertical: the staff gate returns, exactly where the audience widened.** Publishing
   (`setVerticalListed`) refuses while prod points at an auto-admitted version — a staff
   `admitVersion` upgrades it to a recorded manual vouch first. Once listed, pushes land
-  **pending** again and prod promotion is staff-only.
+  **pending** again and prod promotion is staff-only. A promote holds a listed vertical's prod
+  to the same vouch (#2565), rollback included: rolling back to an older auto-admitted version
+  needs a staff `admitVersion` of that version first.
 
 Model A (an inspecting build pipeline that makes admission mechanical) remains the later
 evolution for the *listed* tier.

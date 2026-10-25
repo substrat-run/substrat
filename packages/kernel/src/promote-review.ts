@@ -137,7 +137,7 @@ export function autoAdmittedProdRefusal(vertical: string, versionId: string): Er
   return substratError(
     'conflict',
     `vertical '${vertical}' prod version ${versionId} is auto-admitted (private self-serve) — ` +
-      'a staff admit must vouch for it before listing',
+      'a staff admit must vouch for it before it can be prod of a listed vertical',
   );
 }
 

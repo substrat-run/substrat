@@ -177,6 +177,7 @@ import {
   exportBreakRefusal,
   isBindExportBreakRefusal,
   isExportBreakRefusal,
+  listedPromoteRefusal,
   isExportBreakUnjudged,
   isPrimaryScope,
   promoteReviewDigest,
@@ -9195,8 +9196,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // a tenant may do inside its own. Taking the gate away from them here would be a
       // capability change hidden in a security fix.
       //
-      // #2565: judged by the host (`unlistedOnly`, below), in the unit that moves the channel, so
-      // a listing that lands while this promote is judged is seen.
+      // Answered here, before any other gate or read, and judged again by the host (`unlistedOnly`,
+      // below) in the unit that moves the channel, so a listing that lands meanwhile is seen (#2565).
+      if (p.kind === 'builder' && channel === 'prod' && v.listed) {
+        return refuse(c, 'forbidden', listedPromoteRefusal().message);
+      }
     }
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
     // #1705 PR 3: the installed consumers a promotion breaks (an export they import, dropped or
