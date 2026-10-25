@@ -14,6 +14,8 @@ import {
   reservedRoleDefinitionRefusal,
   reservedRoleRefusal,
   reservedRoleSetRefusal,
+  reservedRoleSetRefusedRole,
+  inUnitRoleRefusal,
   reservedShapeRefusal,
   dumpRoleRefusal,
   dumpRoleState,
@@ -275,6 +277,22 @@ describe('reservedRoleSetRefusal against what the scope stores (#2447 round 1)',
     expect(reservedRoleSetRefusal(roles, host, stored)).toMatch(/role 'staff' is held by a principal/);
     expect(reservedRoleSetRefusal(roles, host, { ...stored, seated: new Set() })).toBeNull();
     expect(reservedRoleSetRefusal(roles, host)).toBeNull();
+  });
+});
+
+describe('reservedRoleSetRefusedRole and the in-unit sentence (#2531 part C)', () => {
+  const host = { reserved: new Set(['a:run']), declared: new Set(['a:run', 'a:use']) };
+  const stored = { roles: [{ key: 'staff', permissions: ['a:use'], holder: 'person' as const }], seated: new Set(['staff']) };
+  it('answers the key of the role the set’s walk refuses, with the same refusal; null when admitted', () => {
+    const roles = [{ key: 'ok', permissions: ['a:use'] }, { key: 'staff', permissions: ['a:run'], holder: 'system' as const }];
+    const refused = reservedRoleSetRefusedRole(roles, host, stored);
+    expect(refused).toEqual({ key: 'staff', refusal: reservedRoleSetRefusal(roles, host, stored) });
+    expect(reservedRoleSetRefusedRole(roles, host, { ...stored, seated: new Set() })).toBeNull();
+  });
+  it('the sentence names the role key and nothing else of the scope', () => {
+    expect(inUnitRoleRefusal('staff')).toBe(
+      "role 'staff' is refused by the reserved-key rule, judged against the roles and seats this scope holds as the write lands (K-55); nothing was written",
+    );
   });
 });
 

@@ -207,6 +207,55 @@ describe('a restore judges the role set its repair defines before it imports any
   });
 });
 
+describe('a restore hands its role repair to the load, which judges and projects it in its transaction (#2531)', () => {
+  const ROLES = [{ key: 'staff', permissions: ['doc:read'], source: 'vertical' as const }];
+  const post = (host: VerticalScopeHost, path: string, body: object) =>
+    appWith(host, { roles: ROLES }).request(path, { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify(body) }, ENV);
+  const ROUTES = [
+    ['/internal/restore', { tenantId: TENANT, scopeId: SCOPE, tables: [] }, 'restoreScopeLocal'],
+    ['/internal/restore-staged', { tenantId: TENANT, scopeId: SCOPE, stageId: 'stage-1' }, 'restoreStagedScopeLocal'],
+  ] as const;
+  const loader = (answer: { tables: number; rolesProjected?: true }, seen: unknown[]) => async (_s: unknown, _t: unknown, opts?: unknown) => {
+    seen.push((opts as { roles?: unknown }).roles);
+    return answer;
+  };
+
+  it('a load that says it projected the roles leaves no repair to make; the vertical’s roles ride the load', async () => {
+    for (const [path, body] of ROUTES) {
+      const seen: unknown[] = [];
+      const host = fakeHost({ restoreScopeLocal: loader({ tables: 3, rolesProjected: true }, seen), restoreStagedScopeLocal: loader({ tables: 3, rolesProjected: true }, seen) });
+      expect((await post(host, path, body)).status).toBe(200);
+      expect(seen).toEqual([ROLES]);
+      expect(host.calls).not.toContain('projectRolesLocal');
+    }
+  });
+
+  it('twin: a load with no such answer (a host built before it, or a retry answered as applied) is repaired by projectRolesLocal', async () => {
+    for (const [path, body] of ROUTES) {
+      const seen: unknown[] = [];
+      const host = fakeHost({ restoreScopeLocal: loader({ tables: 3 }, seen), restoreStagedScopeLocal: loader({ tables: 3 }, seen) });
+      expect((await post(host, path, body)).status).toBe(200);
+      expect(host.calls.filter((c) => c === 'projectRolesLocal')).toHaveLength(1);
+    }
+  });
+
+  it('a load refused in its unit answers 409 with its sentence, and no repair is attempted after it', async () => {
+    for (const [path, body] of ROUTES) {
+      const refusing = async () => {
+        throw substratError(
+          'conflict',
+          "the vertical's roles cannot be defined here: role 'staff' is refused by the reserved-key rule, judged against the roles and seats this scope holds as the write lands (K-55); nothing was written",
+        );
+      };
+      const host = fakeHost({ restoreScopeLocal: refusing, restoreStagedScopeLocal: refusing });
+      const res = await post(host, path, body);
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toMatch(/role 'staff' is refused by the reserved-key rule.*nothing was written/);
+      expect(host.calls).not.toContain('projectRolesLocal');
+    }
+  });
+});
+
 describe('mountPlatformSurface — the error envelope (#510 regression)', () => {
   it('renders a thrown route as { error: <real message> }, never bare "Internal Server Error"', async () => {
     const host = fakeHost({
