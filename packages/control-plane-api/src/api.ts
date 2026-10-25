@@ -9980,7 +9980,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
     // #1877: scoped to the app's own scripts — the scan and trust boundary.
     const services = await appServices(c.get('actor'), input.tenantId, input.scopeId, input.vertical);
-    return c.json(await options.observability.tenantLogs({ ...input, services }));
+    const { events, incomplete } = await options.observability.tenantLogs({ ...input, services });
+    // The body stays the list every caller reads; a page that may be missing lines behind a cut
+    // says so beside it, as `/observability/logs` does (#2521).
+    if (incomplete) c.header(LOGS_INCOMPLETE_HEADER, '1');
+    return c.json(events);
   });
 
   // #1331: one app's sampled field reports, joined to the router's own request lines.

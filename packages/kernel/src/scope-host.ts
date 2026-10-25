@@ -198,8 +198,10 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import {
+  bytesStream,
   isSizedByteStream,
   knownLengthInit,
+  verifiedStream,
   witnessedStream,
   type ByteBody,
   type ByteStream,
@@ -1703,6 +1705,15 @@ export interface ScopedConnectorConnection extends ConnectorConnection {
    * falls back rather than failing a dispatch over a missing file.
    */
   openAttachment(attachmentId: string): Promise<OpenedAttachment | null>;
+  /**
+   * `openAttachment`, with the bytes as a stream that is never held whole (#2514), for a connector
+   * that sends a file on to a provider. Gated the same way, before any byte is read. The sha256 is
+   * checked as the bytes flow, and a mismatch errors the stream before its last chunk is handed on
+   * (see {@link OpenedAttachmentStream}), so a connector that sends what it read must treat a stream
+   * error as "nothing was read", never as a shorter file. A stream it decides not to read is
+   * cancelled (`body.stream.getReader().cancel()`), which releases the stored object at once.
+   */
+  openAttachmentStream(attachmentId: string): Promise<OpenedAttachmentStream | null>;
   /**
    * What this connection may do in the scope this delivery is for (#726 gap 1) —
    * `connectionGrantsInScope`, narrowed to this connection.
@@ -4997,6 +5008,13 @@ export interface TenantBlobStore {
    */
   put(key: string, body: ByteBody, opts?: { contentType?: string }): Promise<void>;
   get(key: string): Promise<{ body: Uint8Array; contentType?: string } | null>;
+  /**
+   * The object under `key` as a stream (#2514), with the size the store holds for it, read as the
+   * consumer reads it and never collected first. Optional, so a store written before it still
+   * satisfies this interface: an open over such a store reads the object with `get` and hands it on
+   * as a stream, which works but holds the object whole.
+   */
+  getStream?(key: string): Promise<{ stream: ByteStream; size: number; contentType?: string } | null>;
   delete(key: string): Promise<void>;
   /** Keys under `prefix` — the GC/ops walk. */
   list(prefix: string): Promise<string[]>;
@@ -5076,6 +5094,51 @@ export async function putAttachmentBytes(
     await store.delete(key).catch(() => {});
     throw err;
   }
+}
+
+/**
+ * The bytes of an attachment the scope has already AUTHORIZED, as a stream held to its record (#2514):
+ * the "bytes" half of every streamed open, one path for both adapters, as {@link putAttachmentBytes}
+ * is for the write. The caller checks the read permission first and calls this only once it passed,
+ * so a refused read never reaches the store.
+ *
+ * The length is the record's `size`, which the upload took from the bytes themselves. The store's own
+ * size for the object is held to it before the first byte, so an object that is not the recorded one
+ * is refused up front. The sha256 is checked as the bytes flow ({@link verifiedStream}): a mismatch
+ * errors the stream before its last chunk is handed on. A store without `getStream` is read whole with
+ * `get` and handed on the same way.
+ */
+export async function openAttachmentByteStream(
+  store: TenantBlobStore,
+  key: string,
+  record: AttachmentRecord,
+  sha256: () => IncrementalSha256,
+): Promise<OpenedAttachmentStream> {
+  const missing = () =>
+    new Error(
+      `attachment ${record.id}: bytes missing from the blob store — the metadata row ` +
+        `survived something the object did not (rewind/reap); see the #473 integrity notes`,
+    );
+  let source: { stream: ByteStream; size: number; contentType?: string };
+  if (store.getStream) {
+    const obj = await store.getStream(key);
+    if (!obj) throw missing();
+    source = obj;
+  } else {
+    const obj = await store.get(key);
+    if (!obj) throw missing();
+    const { stream, length } = bytesStream(obj.body);
+    source = { stream, size: length, ...(obj.contentType !== undefined ? { contentType: obj.contentType } : {}) };
+  }
+  let body: SizedByteStream;
+  try {
+    body = verifiedStream({ stream: source.stream, length: source.size }, record, sha256());
+  } catch (err) {
+    // Refused before the first byte: the object is let go rather than left open behind the throw.
+    await source.stream.getReader().cancel(err).catch(() => {});
+    throw new Error(`attachment ${record.id}: ${(err as Error).message}`);
+  }
+  return { record, body, contentType: source.contentType ?? record.contentType };
 }
 
 /**
@@ -5256,6 +5319,19 @@ export interface OpenedAttachment {
 }
 
 /**
+ * An opened attachment whose bytes are a stream (#2514): the metadata fact, and its bytes at the
+ * record's `size`, read as the consumer reads them. The sha256 is checked as they pass, so a
+ * mismatch errors the stream before its last chunk instead of refusing up front: a consumer that
+ * has received all `size` bytes has received bytes that matched the record. One-shot: read it once,
+ * or cancel it, which releases the stored object; a stream that is neither holds it until collected.
+ */
+export interface OpenedAttachmentStream {
+  record: AttachmentRecord;
+  body: SizedByteStream;
+  contentType: string;
+}
+
+/**
  * The attachment surface a host mints per (principal, scope) — `attachmentTargets`
  * finally consumed (#473). Every method is gated INSIDE the platform by the declared
  * target's permission, checked as the ambient principal with the owning entity as the
@@ -5271,6 +5347,12 @@ export interface ScopeAttachments {
   list(entity: EntityRef): Promise<AttachmentRecord[]>;
   /** Record + bytes, or null for an id this scope does not know. Gated per entity. */
   open(attachmentId: string): Promise<OpenedAttachment | null>;
+  /**
+   * `open`, with the bytes as a stream that is never held whole (#2514). The same gate, checked
+   * before the store is touched, and the same `null`; the integrity check moves to the stream (see
+   * {@link OpenedAttachmentStream}).
+   */
+  openStream(attachmentId: string): Promise<OpenedAttachmentStream | null>;
   /** Delete row (and event) first, then bytes; returns the removed record, null if unknown. */
   remove(attachmentId: string): Promise<AttachmentRecord | null>;
   /**
