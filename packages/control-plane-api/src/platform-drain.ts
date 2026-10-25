@@ -1,12 +1,15 @@
 import {
   INERT_SCOPE_REASON,
+  intentIdOfFailureMessage,
   isPrimaryScope,
   lifecycleRefusal,
   platformIntentFailureMessage,
   resolveScopeRecord,
   ulid,
   withheldOpsFailure,
+  withheldStaffFailure,
   type ConnectorHandler,
+  type OpsFailureFilter,
   type OpsFailureInput,
   type ProvisionScopeInput,
   type ScopeHost,
@@ -32,6 +35,7 @@ import {
   platformRequestId,
   createTenantInput,
   errorCodeOf,
+  type OpsFailureEntry,
   type z,
   type PlatformActorId,
   type PlatformRequest,
@@ -123,6 +127,14 @@ export interface PlatformRequestOutcome {
    * NULL, which reads as "nobody classified this" rather than a guess nobody made.
    */
   failure?: PlatformRequestFailure;
+  /**
+   * #2556: `error` came from beyond the drained scope's own deployment or tenant (another
+   * vertical's deployment, a tenant the scope does not belong to), so it is not the scope's to
+   * read. This is the sentence the settle journals in its place: what failed, and at which stage.
+   * The drain adds the platform's reference, and `error` goes to staff's row under that reference.
+   * The journaled attribution keeps its origin and code, not a permission key read from the text.
+   */
+  withheld?: string;
 }
 
 /** Executes one intent kind with platform authority. Registered per `kind` (mirrors connector sweepers). */
@@ -184,6 +196,14 @@ export interface PlatformDrainOptions {
    * mask the settle it is recording. The drain adds the `actor` upstream.
    */
   recordFailure?: (entry: Omit<OpsFailureInput, 'actor'>) => void;
+  /**
+   * #2556: the failure ledger, read to find staff's row for a withheld transient failure filed on
+   * an earlier pass (`WITHHELD_REFILE_MS`), so that pass's reference is journaled again and no
+   * second row is filed. Without it, every such pass files its own row.
+   */
+  listFailures?: (filter: OpsFailureFilter) => Promise<OpsFailureEntry[]>;
+  /** The clock `listFailures`' window is read against; injectable for a test. */
+  now?: () => Date;
   /** Test override of {@link MAX_PLATFORM_REQUEST_ATTEMPTS}. */
   maxAttempts?: number;
   /**
@@ -209,6 +229,7 @@ function intentFailure(
   outcome: PlatformRequestOutcome,
   raw: string,
   answered: (reference: string) => string,
+  reference?: string,
 ): Omit<OpsFailureInput, 'actor'> {
   return withheldOpsFailure(
     {
@@ -224,7 +245,88 @@ function intentFailure(
     },
     raw,
     answered,
+    reference,
   );
+}
+
+/** The stage of staff's row for a withheld failure on a pass that left the intent pending (#2556). */
+const WITHHELD_TRANSIENT_STAGE = 'transient';
+
+/**
+ * How long staff's row for a withheld transient failure stands for the same intent (#2556). Every
+ * pass of a stuck intent journals the same reference meanwhile, and files nothing: the staff digest
+ * mails every row since its watermark, so a row per pass would repeat one stuck intent every quarter
+ * hour. A condition that lasts is filed again after this, under a new reference.
+ */
+export const WITHHELD_REFILE_MS = 24 * 60 * 60_000;
+
+/** The ledger pages `withheldTransientReference` reads at most before it files anew. */
+const WITHHELD_LOOKUP_PAGES = 10;
+const WITHHELD_LOOKUP_PAGE = 100;
+
+/**
+ * The reference a withheld failure on a pass that left the intent pending is journaled under
+ * (#2556). The ledger is the memory, not this isolate: staff's row for the same intent and stage
+ * filed within `WITHHELD_REFILE_MS` is found by the grammar the erasure link reads
+ * (`intentIdOfFailureMessage`), and its reference is reused with nothing filed. Otherwise a new
+ * reference is minted and staff's row filed under it, with no tenant, in the drained scope, so a
+ * subject erasure of the intent reaches it. A ledger that cannot be read files anew: a second row
+ * is the safer error than a reference nothing resolves.
+ */
+async function withheldTransientReference(
+  ctx: PlatformRequestContext,
+  kind: string,
+  id: string,
+  outcome: PlatformRequestOutcome,
+  opts: PlatformDrainOptions | undefined,
+): Promise<string> {
+  const operation = `intent.${kind}`;
+  if (opts?.listFailures) {
+    const since = new Date((opts.now?.() ?? new Date()).getTime() - WITHHELD_REFILE_MS).toISOString();
+    try {
+      let cursor: string | undefined;
+      for (let page = 0; page < WITHHELD_LOOKUP_PAGES; page++) {
+        const rows = await opts.listFailures({
+          scopeId: ctx.scopeId,
+          operation,
+          since,
+          limit: WITHHELD_LOOKUP_PAGE,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        const filed = rows.find(
+          (r) => r.tenantId === null && r.stage === WITHHELD_TRANSIENT_STAGE && r.reference !== null &&
+            intentIdOfFailureMessage(r.message) === id,
+        );
+        if (filed?.reference) return filed.reference;
+        if (rows.length < WITHHELD_LOOKUP_PAGE) break;
+        cursor = rows[rows.length - 1]!.id;
+      }
+    } catch {
+      // deliberately swallowed: filed anew below
+    }
+  }
+  const reference = ulid();
+  opts?.recordFailure?.(
+    withheldStaffFailure(
+      {
+        operation,
+        stage: WITHHELD_TRANSIENT_STAGE,
+        scopeId: ctx.scopeId,
+        vertical: ctx.vertical,
+        version: ctx.versionId ?? null,
+        origin: outcome.failure?.origin ?? null,
+        code: outcome.failure?.code ?? null,
+      },
+      platformIntentFailureMessage(id, `pending: ${outcome.error ?? 'unknown'}`),
+      reference,
+    ),
+  );
+  return reference;
+}
+
+/** What a withheld failure's settle journals: its origin and code, never a permission read from the text. */
+function withheldAttribution(failure: PlatformRequestFailure | undefined): PlatformRequestFailure | null {
+  return failure ? { ...failure, permission: null } : null;
 }
 
 /**
@@ -313,15 +415,24 @@ export async function drainScopePlatformRequests(
     // lands an ops-failure row (#559) so a six-day retry loop is an operator's headline,
     // not a spine-table archaeology find.
     const maxAttempts = opts?.maxAttempts ?? MAX_PLATFORM_REQUEST_ATTEMPTS;
+    // #2556: a withheld error is journaled as its sentence under the platform's reference, the
+    // reference staff's row is filed under (terminal and give-up: the pair below; a pass that
+    // leaves the intent pending: `withheldTransientReference`).
+    const withheld = outcome.withheld;
+    let journaled = outcome.error ?? null;
     if (outcome.status === 'pending' && attempts + 1 >= maxAttempts) {
+      const gaveUp = `gave up after ${attempts + 1} drain attempts`;
       outcome = {
         status: 'failed',
         result: outcome.result,
-        error: `gave up after ${attempts + 1} drain attempts — last error: ${outcome.error ?? 'unknown'}`,
+        error: `${gaveUp} — last error: ${outcome.error ?? 'unknown'}`,
         // The give-up inherits the last pass's attribution rather than inventing one: what
         // refused a hundred times is what refused on the last attempt.
         failure: outcome.failure,
+        ...(withheld === undefined ? {} : { withheld }),
       };
+      const reference = ulid();
+      journaled = withheld === undefined ? outcome.error! : `${gaveUp} — last error: ${withheld} (reference ${reference})`;
       opts?.recordFailure?.(
         intentFailure(
           ctx,
@@ -329,10 +440,13 @@ export async function drainScopePlatformRequests(
           'attempt-ceiling',
           outcome,
           platformIntentFailureMessage(id, outcome.error ?? 'unknown'),
-          (reference) => platformIntentFailureMessage(id, `gave up after ${attempts + 1} drain attempts (reference ${reference})`),
+          (r) => platformIntentFailureMessage(id, `${gaveUp} (reference ${r})`),
+          reference,
         ),
       );
     } else if (outcome.status === 'failed' && !inert) {
+      const reference = ulid();
+      if (withheld !== undefined) journaled = `${withheld} (reference ${reference})`;
       // An inert settle (#2005) is expected, not an operator's headline; the settle below
       // still journals its reason and attribution.
       //
@@ -347,9 +461,12 @@ export async function drainScopePlatformRequests(
           'terminal',
           outcome,
           platformIntentFailureMessage(id, `failed: ${outcome.error ?? 'unknown'}`),
-          (reference) => platformIntentFailureMessage(id, `failed (reference ${reference})`),
+          (r) => platformIntentFailureMessage(id, `failed (reference ${r})`),
+          reference,
         ),
       );
+    } else if (outcome.status === 'pending' && withheld !== undefined) {
+      journaled = `${withheld} (reference ${await withheldTransientReference(ctx, kind, id, outcome, opts)})`;
     }
     // No special case for a refused row: every row that reaches here has an id the settle
     // route accepts (#1637 left the rest out above), so its settle is refused for the same
@@ -360,8 +477,8 @@ export async function drainScopePlatformRequests(
     await client.settlePlatformRequest(ctx.tenantId, ctx.scopeId, id, {
       status,
       result: outcome.result,
-      lastError: outcome.error ?? null,
-      failure: outcome.failure ?? null,
+      lastError: journaled,
+      failure: withheld === undefined ? (outcome.failure ?? null) : withheldAttribution(outcome.failure),
       ...(outcome.event ? { event: outcome.event } : {}),
     });
     report[status]++;
@@ -550,6 +667,21 @@ export function provisionSiblingHandler(deps: ProvisionSiblingDeps): PlatformReq
 /** The attribution of a request refused for its own input: ours, and the input's to fix. */
 const INPUT_REFUSED = { origin: 'platform', code: 'validation_failed', permission: null } as const;
 
+/**
+ * #2556: a throw whose text is not the drained scope's to read (`PlatformRequestOutcome.withheld`),
+ * kept pending as the drain's own catch would keep it, attributed as that catch would, and
+ * journaled as `sentence`.
+ */
+function withheldThrow(e: unknown, sentence: string, result?: unknown): PlatformRequestOutcome {
+  return {
+    status: 'pending',
+    ...(result === undefined ? {} : { result }),
+    error: e instanceof Error ? e.message : String(e),
+    failure: attributeFailure(e),
+    withheld: sentence,
+  };
+}
+
 /** A payload that does not parse, settled `failed` at once: it never will parse. */
 function malformedPayload(kind: string, error: z.ZodError): PlatformRequestOutcome {
   const fields = error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
@@ -723,17 +855,24 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
     if (!client) {
       return { status: 'failed', error: `no deployment serves '${payload.vertical}' in this tenant` };
     }
-    const result = await client.verticalInvoke({
-      // `tenantSlug`: the directory's, for the tenant this intent was drained in (#2252), so a
-      // pinned caller meets a bare `peers` entry at the door (`peerCallerAt`).
-      caller: { vertical: ctx.vertical, scope: ctx.scopeId, tenantSlug: tenant.slug },
-      tenantId: ctx.tenantId,
-      scopeId: resolution.instance.scopeId,
-      operation: payload.operation,
-      ...(payload.input === undefined ? {} : { input: payload.input }),
-      // The intent id: a redelivery reaches the recorded response instead of running twice.
-      idempotencyKey: request.id,
-    });
+    let result: unknown;
+    try {
+      result = await client.verticalInvoke({
+        // `tenantSlug`: the directory's, for the tenant this intent was drained in (#2252), so a
+        // pinned caller meets a bare `peers` entry at the door (`peerCallerAt`).
+        caller: { vertical: ctx.vertical, scope: ctx.scopeId, tenantSlug: tenant.slug },
+        tenantId: ctx.tenantId,
+        scopeId: resolution.instance.scopeId,
+        operation: payload.operation,
+        ...(payload.input === undefined ? {} : { input: payload.input }),
+        // The intent id: a redelivery reaches the recorded response instead of running twice.
+        idempotencyKey: request.id,
+      });
+    } catch (e) {
+      // #2556: the target's answer is its deployment's text, possibly another builder's code, so
+      // the caller's journal says only which call did not complete. Transient, as it always was.
+      return withheldThrow(e, `the call to '${payload.vertical}' (operation '${payload.operation}') did not complete at its deployment`);
+    }
     return { status: 'done', result: { invoked: payload.operation, result: result ?? null } };
   };
 }
@@ -882,48 +1021,57 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
       const message = e instanceof Error ? e.message : String(e);
       // Both adapters fail closed on a slug owned by a DIFFERENT tenant id with this
       // phrasing — a retry can never converge, so settle terminal instead of pending.
+      // The text names only the payload's own slug (#2556), so it is journaled as it is.
       if (message.includes('slugs are unique')) return { status: 'failed', error: message };
       throw e;
     }
-    // Granted BEFORE provisionInstance so the #310 projection carries them on day one.
-    for (const grant of payload.entitlements) {
-      await admin.grantEntitlement(actor, tenantId, grant.key, { plan: grant.plan });
-    }
-    // Past the first write, so a throw keeps its old classification (pending, retried): the
-    // tenant exists, and a later pass is what finishes it.
-    await host.provisionScope(actor, scopeInput);
-    const created = await adoptServingForProvisioning(
-      host,
-      actor,
-      await admin.getScopeRecord(actor, tenantId, scopeId),
-    );
-    const vertical = created ? await deps.resolveVerticalForScope(created) : undefined;
-    if (!vertical) {
-      return {
-        status: 'failed',
-        result: { tenantId, scopeId },
-        error: `no deployment is bound for vertical '${payload.instance.vertical}'`,
-      };
-    }
-    const entitlements = await admin.listEntitlements(actor, tenantId);
-    // #301: a NEW tenant's first install is exactly the minting path — the stores are
-    // per (tenant, target vertical), keyed by the PAYLOAD's vertical, not the manager's.
-    const tenantStores = await collectTenantStoreHandles({
-      host,
-      actor,
-      slug: payload.instance.vertical,
-      tenantId,
-      patchBindings: deps.patchScriptBindings,
-    });
-    // #473: same blob-store minting on the manager-driven provision-tenant path.
-    await collectBlobStoreHandles({
-      host,
-      actor,
-      slug: payload.instance.vertical,
-      tenantId,
-      patchBindings: deps.patchScriptBindings,
-    });
+    // #2556: from here every write and call concerns the tenant being provisioned and the
+    // payload vertical's deployment, neither of them the manager's, so a throw's text is withheld
+    // from the manager's journal: it learns the step, and staff read the text under the reference.
+    let step = 'granting its entitlements';
     try {
+      // Granted BEFORE provisionInstance so the #310 projection carries them on day one.
+      for (const grant of payload.entitlements) {
+        await admin.grantEntitlement(actor, tenantId, grant.key, { plan: grant.plan });
+      }
+      // Past the first write, so a throw keeps its old classification (pending, retried): the
+      // tenant exists, and a later pass is what finishes it.
+      step = 'provisioning its scope';
+      await host.provisionScope(actor, scopeInput);
+      const created = await adoptServingForProvisioning(
+        host,
+        actor,
+        await admin.getScopeRecord(actor, tenantId, scopeId),
+      );
+      const vertical = created ? await deps.resolveVerticalForScope(created) : undefined;
+      if (!vertical) {
+        return {
+          status: 'failed',
+          result: { tenantId, scopeId },
+          error: `no deployment is bound for vertical '${payload.instance.vertical}'`,
+        };
+      }
+      step = 'collecting its stores';
+      const entitlements = await admin.listEntitlements(actor, tenantId);
+      // #301: a NEW tenant's first install is exactly the minting path — the stores are
+      // per (tenant, target vertical), keyed by the PAYLOAD's vertical, not the manager's.
+      const tenantStores = await collectTenantStoreHandles({
+        host,
+        actor,
+        slug: payload.instance.vertical,
+        tenantId,
+        patchBindings: deps.patchScriptBindings,
+      });
+      // #473: same blob-store minting on the manager-driven provision-tenant path.
+      await collectBlobStoreHandles({
+        host,
+        actor,
+        slug: payload.instance.vertical,
+        tenantId,
+        patchBindings: deps.patchScriptBindings,
+      });
+      // A refusal from the vertical is transient (`pending`), as is anything else thrown here.
+      step = `provisioning its '${payload.instance.vertical}' instance`;
       // #1674: a re-drain reuses the proposed ids, so this can re-seat a wiped, switched-off scope.
       await reconcileThenReassert(admin, actor, { tenantId, scopeId }, (carry) =>
         vertical.provisionInstance({
@@ -938,6 +1086,7 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
         }),
       );
       if (payload.config && Object.keys(payload.config).length) {
+        step = `configuring its '${payload.instance.vertical}' instance`;
         try {
           await vertical.configureInstance({
             tenantId,
@@ -950,13 +1099,11 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
           if (!(e instanceof ControlPlaneError && e.status === 501)) throw e;
         }
       }
+      step = 'activating its scope';
+      await admin.activateScope(actor, tenantId, scopeId);
     } catch (e) {
-      if (e instanceof ControlPlaneError) {
-        return { status: 'pending', result: { tenantId, scopeId }, error: e.message };
-      }
-      throw e;
+      return withheldThrow(e, `provisioning tenant '${payload.tenant.slug}' did not complete while ${step}`, { tenantId, scopeId });
     }
-    await admin.activateScope(actor, tenantId, scopeId);
     return { status: 'done', result: { tenantId, scopeId } };
   };
 }
@@ -1058,39 +1205,43 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
     if (!scope) {
       return { status: 'failed', error: `unknown scope for tenant: (${tenantId}, ${scopeId})` };
     }
-    const target = new Map(payload.entitlements.map((e) => [e.key, e.plan]));
-    for (const key of admitted.declared) {
-      if (target.has(key)) {
-        await admin.grantEntitlement(actor, tenantId, key, { plan: target.get(key) });
-      } else {
-        await admin.revokeEntitlement(actor, tenantId, key);
-      }
-    }
-    const vertical = await deps.resolveVerticalForScope(scope);
-    if (!vertical) {
-      return {
-        status: 'failed',
-        error: `no deployment is bound for vertical '${scope.vertical ?? 'none'}'`,
-      };
-    }
-    const entitlements = await admin.listEntitlements(actor, tenantId);
-    const identityLinks = (await admin.listIdentityLinks(actor, tenantId)).map(
-      ({ tenantId: _tenantId, ...link }) => link,
-    );
-    // #592: every reconcile re-delivers the tenant's live connection grants, whoever
-    // triggered it — this drain-side reconcile must not silently wipe or omit them.
-    const connectionGrants = connectionGrantsForScope(
-      await admin.listConnectionGrants(actor, tenantId),
-      scope.vertical,
-      scopeId,
-    );
-    // #687: sealing keys ride every reconcile too, for the same reason grants do — a
-    // drain-side reconcile must not leave a scope unable to seal to a connector it could
-    // seal to a moment ago.
-    const connectionKeys = scope.vertical
-      ? await admin.connectionSealingKeys(tenantId, scope.vertical)
-      : [];
+    // #2556: the writes and the reconcile concern the managed tenant and its scope's deployment,
+    // neither of them the manager's, so a throw's text is withheld from the manager's journal.
+    let step = 'reconciling its entitlements';
     try {
+      const target = new Map(payload.entitlements.map((e) => [e.key, e.plan]));
+      for (const key of admitted.declared) {
+        if (target.has(key)) {
+          await admin.grantEntitlement(actor, tenantId, key, { plan: target.get(key) });
+        } else {
+          await admin.revokeEntitlement(actor, tenantId, key);
+        }
+      }
+      const vertical = await deps.resolveVerticalForScope(scope);
+      if (!vertical) {
+        // Named by the payload's own ids, not by what the managed tenant's scope runs (#2556).
+        return { status: 'failed', error: `no deployment is bound for scope ${scopeId} of tenant ${tenantId}` };
+      }
+      step = 'gathering what its instance is reconciled with';
+      const entitlements = await admin.listEntitlements(actor, tenantId);
+      const identityLinks = (await admin.listIdentityLinks(actor, tenantId)).map(
+        ({ tenantId: _tenantId, ...link }) => link,
+      );
+      // #592: every reconcile re-delivers the tenant's live connection grants, whoever
+      // triggered it — this drain-side reconcile must not silently wipe or omit them.
+      const connectionGrants = connectionGrantsForScope(
+        await admin.listConnectionGrants(actor, tenantId),
+        scope.vertical,
+        scopeId,
+      );
+      // #687: sealing keys ride every reconcile too, for the same reason grants do — a
+      // drain-side reconcile must not leave a scope unable to seal to a connector it could
+      // seal to a moment ago.
+      const connectionKeys = scope.vertical
+        ? await admin.connectionSealingKeys(tenantId, scope.vertical)
+        : [];
+      // A refusal from the vertical is transient (`pending`), as is anything else thrown here.
+      step = 'reconciling its instance';
       await reconcileThenReassert(admin, actor, { tenantId, scopeId }, (carry) =>
         vertical.reconcileInstance({
           tenantId,
@@ -1103,8 +1254,7 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
         }),
       );
     } catch (e) {
-      if (e instanceof ControlPlaneError) return { status: 'pending', error: e.message };
-      throw e;
+      return withheldThrow(e, `setting the entitlements of tenant ${tenantId} did not complete while ${step}`);
     }
     return { status: 'done', result: { tenantId, plan: payload.plan } };
   };

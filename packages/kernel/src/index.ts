@@ -543,6 +543,7 @@ export {
   issueExemplarOwner,
   redactSubjectDirectoryText,
   platformIntentFailureMessage,
+  intentIdOfFailureMessage,
 } from './subject-redaction.js';
 export type {
   LegacySubjectRedactionCounts,
@@ -978,7 +979,7 @@ export type {
 // every receipt writer and the sweep answer both questions the same way.
 export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
 export type { ServingPointer } from './scope-identity.js';
-export { opsFailureReferenceWhere, withheldOpsFailure } from './ops-failure-reference.js';
+export { opsFailureReferenceWhere, withheldOpsFailure, withheldStaffFailure } from './ops-failure-reference.js';
 export {
   exportBreaksOf,
   exportBreakRefusal,

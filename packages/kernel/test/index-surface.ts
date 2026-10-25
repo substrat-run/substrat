@@ -414,6 +414,8 @@ export const INDEX_VALUE_EXPORTS = [
   'installReconciled',
   'installsReconciledNote',
   'installsReconciledOf',
+  // #2556: the drain finds its own transient row about an intent by the grammar erasure reads.
+  'intentIdOfFailureMessage',
   'intentPayloadCarriesSubject',
   'invocationLine',
   'isActiveContentType',
@@ -774,6 +776,7 @@ export const INDEX_VALUE_EXPORTS = [
   'withheldNote',
   // #2554: a tenant-filed failure whose text only staff read, for every writer, the hosts' included.
   'withheldOpsFailure',
+  'withheldStaffFailure',
   // RFC wire-signing §7: the capability record's write, which the adapters' recordWireAuth runs.
   'writeDeploymentWireAuth',
   'writeExplicitTupleIn',

@@ -22,6 +22,19 @@ export function withheldOpsFailure<E extends Omit<OpsFailureInput, 'actor' | 'me
 }
 
 /**
+ * #2556: staff's row alone, for a failure whose text is withheld from a tenant that is told
+ * nothing on the ledger (the drain journals the sentence and `reference` in the scope instead):
+ * no tenant, `reference` the platform's, the text in the form staff's row of a pair takes.
+ */
+export function withheldStaffFailure<E extends Omit<OpsFailureInput, 'actor' | 'message' | 'detail' | 'reference' | 'tenantId'>>(
+  entry: E,
+  raw: string,
+  reference: string,
+): E & { tenantId: null; message: string; reference: string } {
+  return { ...entry, tenantId: null, reference, message: withUpstreamReference(raw) };
+}
+
+/**
  * #2540: the `reference` narrowing of an ops-failure list, as SQL over `_substrat_ops_failures`,
  * the one both adapters run. Exact by default. With `inText` (staff's search), also both rows of
  * every pair whose row with no tenant begins with `reference` as its upstream handle

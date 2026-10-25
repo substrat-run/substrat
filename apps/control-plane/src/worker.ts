@@ -2318,6 +2318,8 @@ async function drainOneScope(
       recordFailure: (entry) => {
         void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch(() => undefined);
       },
+      // #2556: where a withheld transient failure finds the row an earlier pass filed.
+      listFailures: (filter) => host.admin.listOpsFailures(SWEEP_ACTOR, filter),
       ...(opts?.skip?.length ? { skip: new Set(opts.skip) } : {}),
       attempted,
     },
