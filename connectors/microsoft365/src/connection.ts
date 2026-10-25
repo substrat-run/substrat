@@ -1,5 +1,5 @@
 import { tenantId as tenantIdSchema } from '@substrat-run/contracts';
-import { settleConnectionUse, type FetchLike, type HostAdmin } from '@substrat-run/kernel';
+import { deadlineFetch, settleConnectionUse, type FetchLike, type HostAdmin } from '@substrat-run/kernel';
 import { acquireToken, microsoft365Secret, type Microsoft365Secret } from './credential.js';
 import type { GraphClient } from './graph.js';
 
@@ -52,6 +52,7 @@ export async function openMicrosoft365Connection(
 ) {
   const { open, secret } = await openSecret(admin, connection);
   const timeoutMs = options.timeoutMs ?? 15_000;
+  const bounded = deadlineFetch(options.fetch, timeoutMs);
   type Settled = Parameters<typeof settleConnectionUse>[2];
   const record = (durationMs: number, settled: Settled) =>
     admin.recordConnectionUse(open.id, settleConnectionUse(MICROSOFT365_PROVIDER, durationMs, settled));
@@ -61,7 +62,7 @@ export async function openMicrosoft365Connection(
     async (input, init) => {
       const started = Date.now();
       try {
-        const res = await options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        const res = await bounded(input, init);
         await settle(Date.now() - started, { response: res });
         return res;
       } catch (err) {

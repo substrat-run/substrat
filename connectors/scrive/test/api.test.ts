@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { deadlineFetch } from '@substrat-run/kernel';
 import { SCRIVE_MAX_DOWNLOAD_BYTES, ScriveApi, ScriveFileTooLargeError, type ScriveSecret } from '../src/api.js';
 import { ScriveMock } from '../src/mock.js';
 
@@ -116,5 +117,49 @@ describe('ScriveApi.getMainFile size bound (#2552)', () => {
     const { api, doc } = await sealed(100, 100);
     await expect(api.getMainFile(doc.id, 99)).rejects.toBeInstanceOf(ScriveFileTooLargeError);
     expect((await api.getMainFile(doc.id, 100)).byteLength).toBe(100);
+  });
+});
+
+/** The same bound through the wrapper a connection's `fetch` really is (#2518): its guarded body, not the bare stream. */
+describe('ScriveApi.getMainFile size bound through deadlineFetch (#2552)', () => {
+  const MAX = SCRIVE_MAX_DOWNLOAD_BYTES;
+
+  async function sealed(declared: number | null, actual: number) {
+    const mock = new ScriveMock();
+    const signals: { aborted: boolean }[] = [];
+    const wrapped = deadlineFetch(async (input, init) => {
+      signals.push(init?.signal as { aborted: boolean });
+      return mock.fetch(input, init);
+    }, 30_000);
+    const api = new ScriveApi({ ...conn(mock), fetch: wrapped } as never, 'https://api-testbed.scrive.test');
+    const doc = await api.createDocument();
+    await api.setFile(doc.id, 'doc.pdf', new Uint8Array([1]));
+    mock.setSealedFile(doc.id, { declared, actual, encoded: false });
+    return { mock, api, doc, signals };
+  }
+
+  it('cuts a body with no declared length off at the ceiling and releases it', async () => {
+    const CHUNK = 1024 * 1024;
+    const total = 2 * MAX;
+    const { mock, api, doc } = await sealed(null, total);
+    const err = await api.getMainFile(doc.id).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ScriveFileTooLargeError);
+    expect(mock.sealedBytesServed.get(doc.id)).toBeLessThan(total);
+    // The guarded stream reads ahead no further than one chunk past the bound.
+    expect(mock.sealedBytesServed.get(doc.id)).toBeLessThanOrEqual(MAX + 2 * CHUNK);
+    expect(mock.sealedCancelled.has(doc.id)).toBe(true);
+  });
+
+  it('refuses a declared length over the ceiling unread and aborts the call', async () => {
+    const { mock, api, doc, signals } = await sealed(MAX + 1, 8);
+    await expect(api.getMainFile(doc.id)).rejects.toBeInstanceOf(ScriveFileTooLargeError);
+    expect(mock.sealedBytesServed.get(doc.id) ?? 0).toBe(0);
+    // Nothing was read, so the release is the call's abort, which frees the connection.
+    expect(signals.at(-1)?.aborted).toBe(true);
+  });
+
+  it('reads a file under the ceiling whole', async () => {
+    const { api, doc } = await sealed(null, 3 * 1024 * 1024 + 5);
+    expect((await api.getMainFile(doc.id)).byteLength).toBe(3 * 1024 * 1024 + 5);
   });
 });

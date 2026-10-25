@@ -1594,11 +1594,14 @@ export interface ConnectorResponse {
    * has no `Content-Encoding`. Otherwise take the length from the provider's own record of the
    * file (its item metadata); a stream sized by the wrong number is refused, not landed.
    *
-   * The stream is read under the call's timeout. A connection's `fetch` sets the connector's
-   * `timeoutMs` (default 30 s) as the request's signal, and that signal also errors a body still
-   * being read, so streaming bounds memory, not time: the whole file must arrive within the
-   * timeout. A file that does not errors the stream (`TimeoutError`), and an upload reading it
-   * lands no object and no row. A connector that moves large files declares a larger `timeoutMs`.
+   * The stream is bounded by IDLENESS, not by total transfer time (#2518). A connection's `fetch`
+   * holds the connector's `timeoutMs` (default 30 s) over the call up to the headers and over a
+   * buffered read, and still holds it while `body` is only looked at or never read. From the first
+   * read of the stream the deadline hands over: it errors (`TimeoutError`) when the provider sends
+   * no byte for `STREAM_IDLE_TIMEOUT_MS` (an empty chunk is not a byte), or when
+   * `STREAM_MAX_DURATION_MS` has passed in all. A transfer that keeps flowing completes within
+   * that. A stalled or endless one errors, the connection is released, and an upload reading it
+   * lands no object and no row.
    *
    * OPTIONAL for the reason `headers` is: a hand-built stand-in is an object literal, and most
    * connectors never read a stream. A caller that needs one falls back to `arrayBuffer()` when it
@@ -1769,9 +1772,10 @@ export type ConnectorHandler = (ctx: ConnectorContext, event: DomainEvent) => vo
 /** Tuning for one connector's egress. */
 export interface ConnectorOptions extends ExecutorRetryPolicy {
   /**
-   * Per-request timeout. Default 30s. It bounds the whole call, reading a streamed response
-   * body included (#2498): a provider file read through `ConnectorResponse.body` must arrive
-   * within it.
+   * Per-request timeout. Default 30s. It bounds the call up to the response headers and a
+   * buffered read of the body. A streamed body (`ConnectorResponse.body`) is bounded by an idle
+   * window instead (#2518, `STREAM_IDLE_TIMEOUT_MS`) and an absolute cap (`STREAM_MAX_DURATION_MS`):
+   * it may take longer than this, as long as bytes keep arriving.
    */
   timeoutMs?: number;
   /**

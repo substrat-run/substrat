@@ -94,13 +94,14 @@ describe('streamed attachment upload (pure adapter)', () => {
     },
   });
 
-  const world = async () => {
+  const world = async (hostOptions: { streamIdleTimeoutMs?: number } = {}) => {
     Object.assign(flow, { produced: 0, read: 0, maxLead: 0 });
     dir = mkdtempSync(join(tmpdir(), 'substrat-attach-stream-'));
     const host = new SqliteScopeHost({
       dir,
       secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(5)),
       wrapBlobStore: slowReader,
+      ...hostOptions,
     });
     host.registerModule(permMod);
     const staff = platformActorId.parse(ulid());
@@ -169,25 +170,28 @@ describe('streamed attachment upload (pure adapter)', () => {
     expect(objectFiles()).toEqual([]);
   });
 
-  it("a provider body still arriving when the connection's timeout fires errors the stream, and lands nothing", async () => {
-    // The current behaviour, pinned (#2498): a connection's fetch runs under `timeoutMs`, and that
-    // signal also errors a body still being read. The server sends its headers at once and then
-    // trickles the body for longer than the timeout.
+  /**
+   * A provider that sends its headers at once and then a chunk every 100 ms, `chunks` in all and
+   * then either the end or silence; the stream a connector gets from it, read under `timeoutMs`
+   * 300 and the given idle window (#2518).
+   */
+  async function trickleUpload(chunks: number, then: 'end' | 'silence', streamIdleTimeoutMs: number) {
     const srv = createServer((_req, res) => {
       res.writeHead(200, { 'content-length': String(8 * CHUNK) });
       let i = 0;
       const tick = setInterval(() => {
-        if (res.destroyed || i === 8) {
+        if (res.destroyed || (i === chunks && then === 'end')) {
           clearInterval(tick);
           if (!res.destroyed) res.end();
           return;
         }
-        res.write(chunkOf(i++));
+        if (i < chunks) res.write(chunkOf(i++));
       }, 100);
     });
+    srvs.push(srv);
     await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
-    try {
-      const { host, t, s, editor } = await world();
+    {
+      const { host, t, s, editor } = await world({ streamIdleTimeoutMs });
       await host.admin.createConnection(platformActorId.parse(ulid()), {
         id: connectionId.parse(ulid()),
         tenantId: t,
@@ -210,13 +214,32 @@ describe('streamed attachment upload (pure adapter)', () => {
         { timeoutMs: 300 },
       );
       const att = await host.attachments(editor, t, s);
-      await expect(att.upload(upload({ stream: response!.body!, length: 8 * CHUNK }))).rejects.toThrow(/timeout|aborted/i);
-      expect(await att.list(item)).toEqual([]);
-      expect(objectFiles()).toEqual([]);
-    } finally {
+      const landed = att.upload(upload({ stream: response!.body!, length: 8 * CHUNK }));
+      return { landed, att };
+    }
+  }
+  const srvs: Array<ReturnType<typeof createServer>> = [];
+  afterEach(async () => {
+    for (const srv of srvs.splice(0)) {
       srv.closeAllConnections();
       await new Promise<void>((resolve) => srv.close(() => resolve()));
     }
+  });
+
+  it("a steady provider body outlasting the connection's timeout lands whole (#2518)", async () => {
+    // 8 chunks 100 ms apart is ~800 ms, past `timeoutMs` (300 ms), and never 400 ms of silence.
+    const { landed, att } = await trickleUpload(8, 'end', 400);
+    await landed;
+    expect(await att.list(item)).toHaveLength(1);
+    expect(objectFiles()).toHaveLength(1);
+  });
+
+  it('a provider body that stalls errors the stream, and lands nothing (#2518)', async () => {
+    // Two chunks, then silence with the connection open: the idle window (150 ms) cuts it.
+    const { landed, att } = await trickleUpload(2, 'silence', 150);
+    await expect(landed).rejects.toThrow(/stalled|timeout/i);
+    expect(await att.list(item)).toEqual([]);
+    expect(objectFiles()).toEqual([]);
   });
 
   it('a caller who may not write is refused before the first byte is read (#2516)', async () => {

@@ -1881,8 +1881,18 @@ export function defineScopeDO(
      * written since this table shipped and selected by nobody — the frontier
      * readers want `(module_id, version)` only — so "when did this scope's
      * schema change" had no answer. A pre-column row reads null, a fact.
+     *
+     * Every row, never a page (#2553): the caller treats the list as the scope's whole
+     * migration history, and a cap truncated it silently once a scope passed 100 rows.
+     * A row is a few short columns (~150 B on the wire) and every row is an authored
+     * migration a push shipped, so the set is bounded by authored migrations × pushes:
+     * hundreds of rows, tens of KB, far under the RPC and response limits.
+     *
+     * `rowid DESC` breaks a tie: each migration reads its own clock, so neighbours can
+     * share a millisecond, and the rowid is the order they were written in. `module_id,
+     * version` ascending would read those oldest-first.
      */
-    appliedMigrations(limit = 100): {
+    appliedMigrations(): {
       moduleId: string;
       version: string;
       appliedAt: string | null;
@@ -1892,8 +1902,7 @@ export function defineScopeDO(
       return this.sql
         .exec(
           `SELECT module_id, version, applied_at, duration_ms, rows_changed FROM _substrat_migrations
-            ORDER BY applied_at DESC, module_id, version LIMIT ?`,
-          limit,
+            ORDER BY applied_at DESC, rowid DESC`,
         )
         .toArray()
         .map((r) => ({

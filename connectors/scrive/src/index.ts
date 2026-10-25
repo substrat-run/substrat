@@ -21,7 +21,7 @@ import type {
   HostAdmin,
   ScopeHost,
 } from '@substrat-run/kernel';
-import { connectorUploadBody, settleConnectionUse } from '@substrat-run/kernel';
+import { connectorUploadBody, deadlineFetch, settleConnectionUse } from '@substrat-run/kernel';
 import { ScriveApi, ScriveApiError, ScriveFileTooLargeError, SCRIVE_MAX_DOWNLOAD_BYTES, SCRIVE_TESTBED, scriveSecret, type ScriveDocument, type ScriveParty } from './api.js';
 import { renderPdf, representableInWinAnsi } from './pdf.js';
 
@@ -1225,7 +1225,7 @@ export async function probeScriveSecret(
     secret: parsed.data,
     // Probe stub, not where expiry is set. Scrive holds OAuth1 personal access credentials (api.ts, scriveSecret): no refresh token, no horizon to record. See connections.md §3.6.
     expiresAt: null,
-    fetch: (input, init) => options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
+    fetch: deadlineFetch(options.fetch, timeoutMs),
   };
   return probeWith(conn, options.baseUrl);
 }
@@ -1727,13 +1727,14 @@ async function openScriveConnection(
   if (!open) {
     throw new Error(`no live 'scrive' connection for tenant ${tenant} / vertical '${vertical}'`);
   }
+  const bounded = deadlineFetch(fetchImpl, timeoutMs);
   return {
     ...open,
     fetch: async (input, init) => {
       // #1691: timed, so the host's per-call data point carries a duration.
       const started = Date.now();
       try {
-        const res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        const res = await bounded(input, init);
         await admin.recordConnectionUse(
           open.id,
           settleConnectionUse('scrive', Date.now() - started, { response: res }),
