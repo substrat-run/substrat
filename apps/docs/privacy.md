@@ -8,7 +8,7 @@ next: false
 
 # Privacy policy
 
-Last updated: 21 October 2026
+Last updated: 25 October 2026
 
 Substrat is operated by **Ahlstrand Technologies SL**, NIF **B76309178**
 (“Substrat”, “we”, “us”). Ahlstrand Technologies SL is the data controller for
@@ -44,6 +44,21 @@ team through our [support desk](/guide/support).
   records to deliver the service, diagnose problems, prevent abuse, and keep
   accounts secure.
 
+## AI features in the dashboard
+
+The dashboard can explain a finding, write a note under a process map, and answer
+questions about your team's apps (**Ask**). These run only when someone in your team
+asks for them. To answer, we send the model a limited set of operational facts from
+your team's apps: finding and failure counts, error codes, timestamps, versions, the
+names of apps and lifecycle states, and up to a few error messages. Error messages
+are redacted first: we remove what looks like a key, a token, a password, the
+credentials in a URL, an email address, or a phone number. We do not send tenant,
+scope, or person identifiers. The model runs on Cloudflare Workers AI, on Cloudflare's
+network. Cloudflare does not use these inputs or outputs to train models, and does not
+retain them once the answer is returned ([Workers AI data usage](https://developers.cloudflare.com/workers-ai/platform/data-usage/)).
+The text the model writes is stored in your team's dashboard data for 90 days, together
+with who asked and how much it used.
+
 ## Google sign-in
 
 When you choose Google sign-in, we request basic identity information: your
@@ -66,9 +81,10 @@ browser storage does not delete information already submitted to the service.
 ## Sharing and service providers
 
 We use service providers for hosting, authentication, email delivery, and AI
-features. These include Cloudflare for hosting and infrastructure, Resend for
-support desk email delivery, and AI providers such as Anthropic when selected
-to answer support messages. Google processes sign-in information when you choose
+features. These include Cloudflare for hosting and infrastructure and for the AI
+features in the dashboard (Cloudflare Workers AI), Resend for support desk email
+delivery, and AI providers such as Anthropic when selected to answer support
+messages. Google processes sign-in information when you choose
 Google sign-in. Providers process the information needed to perform those functions.
 Information you put in a team or application may also be available to its
 authorized members and administrators. We may disclose information when required
