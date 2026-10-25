@@ -6599,7 +6599,9 @@ describe('#1743 — an OFF landing between a tenant grant’s check and its writ
             const value = target[prop as string];
             if (typeof value !== 'function') return value;
             return async (...a: unknown[]) => {
-              if (beforeWrite && WRITES.has(String(prop))) {
+              // A write called through `reply` (#2526) names its method in the first argument.
+              const method = prop === 'reply' ? String(a[0]) : String(prop);
+              if (beforeWrite && WRITES.has(method)) {
                 const hook = beforeWrite;
                 beforeWrite = null; // one-shot: the OFF's own calls pass straight through
                 await hook();
