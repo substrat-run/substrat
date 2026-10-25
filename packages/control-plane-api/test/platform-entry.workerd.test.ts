@@ -75,7 +75,15 @@ afterAll(async () => {
 });
 
 /** Upload `source` the way the platform does, with these declared flags and bindings, and run it on workerd. */
-function deployed(source: string, { compatibilityFlags = [] as string[], compatibilityDate = RUNTIME_BASELINE, bindings = {} as Record<string, string> } = {}) {
+function deployed(
+  source: string,
+  {
+    compatibilityFlags = [] as string[],
+    compatibilityDate = RUNTIME_BASELINE,
+    bindings = {} as Record<string, string>,
+    durableObjects = {} as Record<string, { className: string; useSQLite: true }>,
+  } = {},
+) {
   const uploaded = withPlatformEntry({
     entry: 'worker.js',
     modules: [{ name: 'worker.js', content: new TextEncoder().encode(source), contentType: 'application/javascript+module' }],
@@ -88,6 +96,7 @@ function deployed(source: string, { compatibilityFlags = [] as string[], compati
     compatibilityDate,
     compatibilityFlags: uploaded.compatibilityFlags,
     bindings: { ROUTER_SECRET: SECRET, ...bindings },
+    durableObjects,
     // #2192: the network, answered here — a host named `undeclared` the way the egress worker
     // answers one a vertical never declared, everything else 200.
     outboundService: (request: Request) =>
@@ -364,6 +373,114 @@ describe('the wire-signing verifier in the platform entry, on workerd (RFC wire-
     const everything = [text, JSON.stringify([...refused.headers]), JSON.stringify([...served.headers]), ...d.lines].join('\n');
     expect(everything).not.toContain(SECRET);
     expect(everything).not.toContain(CALL_VALUE);
+  });
+});
+
+/**
+ * RFC wire-signing §4, on workerd: a vertical whose bundle carries a current adapter and registers
+ * its host, as `mountPlatformSurface` does, has its signed calls' nonces spent in the scope's own
+ * object, the adapter's own `defineScopeDO` bound as the vertical binds it. The vertical answers
+ * with the body it was handed, after the legacy check every vertical makes.
+ */
+const STORING = `
+import { CloudflareScopeHost, defineScopeDO } from ${JSON.stringify(fileURLToPath(new URL('../../adapter-cloudflare/src/index.ts', import.meta.url)))};
+import { registerScopeSweepHost } from ${JSON.stringify(fileURLToPath(new URL('../../vertical-host/src/scope-sweep-host.ts', import.meta.url)))};
+import { assertPlatformCall } from ${JSON.stringify(fileURLToPath(new URL('../../contracts/src/wire-auth.ts', import.meta.url)))};
+export const ScopeDO = defineScopeDO([], {});
+registerScopeSweepHost((env) => new CloudflareScopeHost({ scope: env.SCOPE }));
+export default {
+  async fetch(request, env) {
+    try {
+      assertPlatformCall(request.headers, { expectedSecret: env.PLATFORM_SECRET });
+    } catch {
+      return new Response('not a platform call', { status: 403 });
+    }
+    // Read through the platform's stamp, as a current vertical-host does, so the entry wraps it.
+    const stamped = globalThis[Symbol.for('substrat.invocation-stamp')]?.get(request) !== undefined;
+    return Response.json({ stamped, body: await request.text() });
+  },
+};`;
+
+describe('the nonce store the entry claims in, on workerd (RFC wire-signing §4)', () => {
+  const CALL_VALUE = 'call-legacy-value-0002';
+  const AUD = 'acme-widgets-deployment';
+  const TENANT = '01JZ0000000000000000TEN001';
+  const SCOPE = '01JZ0000000000000000SCP001';
+  const PROVISION = 'https://vertical/internal/provision';
+  let storing: string;
+  let platform: WireSigningKey;
+  let lists: Record<string, string>;
+  beforeAll(async () => {
+    const out = await build({
+      stdin: { contents: STORING, loader: 'ts', resolveDir: fileURLToPath(new URL('.', import.meta.url)) },
+      bundle: true,
+      format: 'esm',
+      platform: 'neutral',
+      conditions: ['workerd', 'worker', 'import'],
+      mainFields: ['module', 'main'],
+      external: ['cloudflare:*', 'node:*'],
+      write: false,
+    });
+    storing = out.outputFiles[0]!.text;
+    const [r, p] = await Promise.all([generateScopeStoreKeyPair(), generateScopeStoreKeyPair()]);
+    platform = await importWireSigningKey(p.privateKey);
+    lists = { [WIRE_ROUTER_KEYS_VAR]: r.publicKey, [WIRE_PLATFORM_KEYS_VAR]: p.publicKey, [WIRE_AUDIENCE_VAR]: AUD };
+  });
+
+  function stored(state: string) {
+    const { mf, lines } = deployed(storing, {
+      compatibilityFlags: ['nodejs_compat'],
+      bindings: { PLATFORM_SECRET: CALL_VALUE, ...lists, [WIRE_STATE_VAR]: state },
+      durableObjects: { SCOPE: { className: 'ScopeDO', useSQLite: true } },
+    });
+    return { mf, wire: () => linesOf(lines, 'wire') };
+  }
+  const body = JSON.stringify({ tenantId: TENANT, scopeId: SCOPE });
+  const envelope = async () => {
+    const issued = await signWireEnvelope(platform, {
+      iss: 'platform',
+      kind: 'call',
+      aud: AUD,
+      tenantId: TENANT,
+      scopeId: SCOPE,
+      ...wireRequestBinding({ method: 'POST', url: PROVISION }),
+      body,
+    });
+    return { [WIRE_ENVELOPE_HEADER]: issued.header, [WIRE_SIGNATURE_HEADER]: issued.signature };
+  };
+  const send = (d: ReturnType<typeof stored>, headers: Record<string, string>) => d.mf.dispatchFetch(PROVISION, { method: 'POST', headers, body });
+
+  it('signed-only: a call that changes state is accepted once; the same envelope again is refused, and a re-signed retry is accepted', async () => {
+    const d = stored('signed-only');
+    const first = await envelope();
+    const accepted = await send(d, first);
+    expect(accepted.status).toBe(200);
+    expect(((await accepted.json()) as { body: string }).body).toBe(body);
+    const replayed = await send(d, first);
+    expect(replayed.status).toBe(401);
+    expect(await replayed.text()).toBe(WIRE_REFUSAL_BODY);
+    const retried = await send(d, await envelope());
+    expect(retried.status).toBe(200);
+    await retried.text();
+    await expect.poll(() => d.wire().map((l) => [l['outcome'], l['reason'], l['fault']])).toEqual([
+      ['signed-accepted', null, null],
+      ['refused', 'replay', null],
+      ['signed-accepted', null, null],
+    ]);
+  });
+
+  it('dual: a replay beside a valid legacy credential is served as today and counted as one', async () => {
+    const d = stored('dual');
+    const first = { 'x-substrat-platform': CALL_VALUE, ...(await envelope()) };
+    for (let i = 0; i < 2; i++) {
+      const res = await send(d, first);
+      expect(res.status).toBe(200);
+      await res.text();
+    }
+    await expect.poll(() => d.wire().map((l) => [l['outcome'], l['reason']])).toEqual([
+      ['signed-accepted', null],
+      ['legacy-accepted', 'replay'],
+    ]);
   });
 });
 
