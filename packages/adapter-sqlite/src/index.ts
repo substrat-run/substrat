@@ -9307,16 +9307,21 @@ export class SqliteScopeHost implements ScopeHost {
         // #2447: judged before the write, against this host's keys and the tenant's other roles, so a
         // role assigned through a door cannot be widened afterwards. A refusal writes nothing, so a
         // seat of the role as it was stored keeps working.
-        this.refuseReservedDefinition(tenantId, parsed);
-        const before = this.roles.get(`${tenantId}/${parsed.key}`) ?? null;
-        this.directory
-          .prepare(
-            `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder)
-             VALUES (?, ?, ?, ?, ?)`,
-          )
-          .run(tenantId, parsed.key, JSON.stringify(parsed.permissions), String(parsed.source), parsed.holder ?? 'person');
+        // #2526: the judgement, the row's `before`, the write and the row are one directory unit.
+        let before: RoleDefinition | null = null;
+        this.directoryWriteAndAudit(() => {
+          this.refuseReservedDefinition(tenantId, parsed);
+          before = this.roles.get(`${tenantId}/${parsed.key}`) ?? null;
+          this.directory
+            .prepare(
+              `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder)
+               VALUES (?, ?, ?, ?, ?)`,
+            )
+            .run(tenantId, parsed.key, JSON.stringify(parsed.permissions), String(parsed.source), parsed.holder ?? 'person');
+          return true;
+        }, () => this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed));
+        // The cache follows the commit, so a rolled-back definition is never served.
         this.roles.set(`${tenantId}/${parsed.key}`, { ...parsed, holder: parsed.holder ?? 'person' });
-        this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
       },
       listRoles: async (actor, filter?: RoleFilter): Promise<TenantRole[]> => {
         const where: string[] = [];
@@ -9370,29 +9375,30 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       assignRole: async (actor: PlatformActorId, assignment: RoleAssignment) => {
-        // #2430: the platform's door — a role mixing reserved and other keys is refused (K-55).
-        this.refuseReservedRole(assignment.node.tenantId, assignment.roleKey, 'platform');
         const subject = `principal:${assignment.principalId}`;
-        if (assignment.node.scopeId) {
-          const scopeNode = assignment.node.scopeId;
-          await onNode(assignment.node, () =>
-            writeScopeTuple(assignment.node, subject, `role:${assignment.roleKey}`, `scope:${scopeNode}`),
-          );
-        } else {
-          writeTenantTuple(
-            assignment.node.tenantId,
-            subject,
-            `role:${assignment.roleKey}`,
-            `tenant:${assignment.node.tenantId}`,
-          );
-        }
-        this.recordAdmin(
+        const audit = () => this.recordAdmin(
           actor,
           'assignRole',
           { tenantId: assignment.node.tenantId, scopeId: assignment.node.scopeId },
           null,
           assignment,
         );
+        if (assignment.node.scopeId) {
+          // #2430: the platform's door — a role mixing reserved and other keys is refused (K-55).
+          this.refuseReservedRole(assignment.node.tenantId, assignment.roleKey, 'platform');
+          const scopeNode = assignment.node.scopeId;
+          await onNode(assignment.node, () =>
+            writeScopeTuple(assignment.node, subject, `role:${assignment.roleKey}`, `scope:${scopeNode}`),
+          );
+          audit();
+          return;
+        }
+        // #2526: at the tenant node the refusal, the tuple and the row are one directory unit.
+        this.directoryWriteAndAudit(() => {
+          this.refuseReservedRole(assignment.node.tenantId, assignment.roleKey, 'platform');
+          writeTenantTuple(assignment.node.tenantId, subject, `role:${assignment.roleKey}`, `tenant:${assignment.node.tenantId}`);
+          return true;
+        }, audit);
       },
       unassignRole: async (actor: PlatformActorId, assignment: RoleAssignment) => {
         // Tombstone (K-21), never DELETE — the checker skips revoked_at rows, so the
@@ -9425,22 +9431,22 @@ export class SqliteScopeHost implements ScopeHost {
         // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
         const grant = capabilityGrant.parse(raw);
         this.refuseReservedGrant([grant.permission]); // #2430
-        await onNode(grant.node, () =>
-          writeGrant(
-            `principal:${grant.principalId}`,
-            grant.permission,
-            grant.node,
-            grant.entity,
-            grant.expiresAt,
-          ),
-        );
-        this.recordAdmin(
+        const write = () =>
+          writeGrant(`principal:${grant.principalId}`, grant.permission, grant.node, grant.entity, grant.expiresAt);
+        const audit = () => this.recordAdmin(
           actor,
           'grant',
           { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId },
           null,
           grant,
         );
+        if (grant.node.scopeId) {
+          await onNode(grant.node, write);
+          audit();
+          return;
+        }
+        // #2526: a tenant-level grant is a directory tuple, committed with its row.
+        this.directoryWriteAndAudit(() => { write(); return true; }, audit);
       },
       grantEntityShape: async (actor, grant) => {
         const { tenantId, scopeId } = grant.node;
@@ -9530,12 +9536,10 @@ export class SqliteScopeHost implements ScopeHost {
         // row, so a refused grant is gathered by no later provision. A grant recorded before stays.
         this.refuseReservedGrant([grant.permission]);
         // Once BEFORE the turn, so a refused grant never opens (and so creates) the scope's
-        // file; then again inside it, with the tuple and the directory row, in ONE body on
-        // the scope actor (#1678) — so the tuple cannot roll back with a stranger's
-        // transaction and leave the directory row (#592) claiming a grant the scope lacks.
+        // file; then again inside it, in ONE body on the scope actor (#1678), so the tuple
+        // cannot roll back with a stranger's transaction.
         check();
-        const conn = await onNode(grant.node, () => {
-          const row = check();
+        const tuple = () =>
           writeGrant(
             subjectRef({ kind: 'connection', id: grant.connectionId }),
             grant.permission,
@@ -9543,40 +9547,48 @@ export class SqliteScopeHost implements ScopeHost {
             undefined,
             grant.expiresAt,
           );
-          // #592: the directory-side record, alongside the tuple. The tuple is checked
-          // where it lives; this row is what provision/reconcile gather FROM, so the
-          // grant reaches scopes provisioned after it without a human replaying it.
-          this.directory
-            .prepare(
-              `INSERT OR REPLACE INTO _substrat_connection_grants
-                 (connection_id, tenant_id, vertical, permission, scope_id, expires_at,
-                  granted_by, granted_at, revoked_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-            )
-            .run(
-              grant.connectionId,
-              grant.node.tenantId,
-              row.vertical,
-              grant.permission,
-              grant.node.scopeId ?? null,
-              grant.expiresAt ?? null,
-              grant.grantedBy,
-              new Date().toISOString(),
+        await onNode(grant.node, () => {
+          // #2526: the check, the directory record (#592: what provision/reconcile gather FROM, so
+          // the grant reaches scopes provisioned after it) and the admin row are one directory unit,
+          // with the tuple too at the tenant node, where it is a directory row. A scope tuple lives
+          // in the scope's own store and is written after the unit: if it fails, the call throws and
+          // the record and its row stand without it. This host re-seats nothing from the record, so
+          // a re-grant is what delivers it then.
+          this.directory.transaction(() => {
+            const conn = check();
+            if (!grant.node.scopeId) tuple();
+            this.directory
+              .prepare(
+                `INSERT OR REPLACE INTO _substrat_connection_grants
+                   (connection_id, tenant_id, vertical, permission, scope_id, expires_at,
+                    granted_by, granted_at, revoked_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+              )
+              .run(
+                grant.connectionId,
+                grant.node.tenantId,
+                conn.vertical,
+                grant.permission,
+                grant.node.scopeId ?? null,
+                grant.expiresAt ?? null,
+                grant.grantedBy,
+                new Date().toISOString(),
+              );
+            this.recordAdmin(
+              actor,
+              'grantToConnection',
+              { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId, vertical: conn.vertical },
+              null,
+              {
+                connectionId: grant.connectionId,
+                provider: conn.provider,
+                permission: grant.permission,
+                node: grant.node,
+              },
             );
-          return row;
+          })();
+          if (grant.node.scopeId) tuple();
         });
-        this.recordAdmin(
-          actor,
-          'grantToConnection',
-          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId, vertical: conn.vertical },
-          null,
-          {
-            connectionId: grant.connectionId,
-            provider: conn.provider,
-            permission: grant.permission,
-            node: grant.node,
-          },
-        );
       },
 
       grantToSystem: async (actor: PlatformActorId, raw: SystemGrant) => {
@@ -9596,6 +9608,13 @@ export class SqliteScopeHost implements ScopeHost {
             grant.expiresAt,
           );
         const scope = grant.node.scopeId;
+        const audit = () => this.recordAdmin(
+          actor,
+          'grantToSystem',
+          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId },
+          null,
+          { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
+        );
         if (scope) {
           // #1666: refused while the module is switched off on this scope. The check and the
           // write share one synchronous body inside one turn on the scope actor, so no switch
@@ -9610,23 +9629,19 @@ export class SqliteScopeHost implements ScopeHost {
             }
             write();
           });
+          audit();
         } else {
           // Tenant-level: a directory write, which no scope's transaction can hold. #1743:
           // refused while the record holds the module off on any scope (`scopesSwitchedOffFor`);
-          // the record and the tenant tuple share the directory, so this is one transaction.
-          this.directory.transaction(() => {
+          // the record, the tenant tuple and (#2526) the row share the directory, so this is one
+          // transaction.
+          this.directoryWriteAndAudit(() => {
             const off = scopesSwitchedOffFor(switchSqlOf(this.directory), grant.node.tenantId, grant.moduleId);
             if (off.length > 0) throw substratError('conflict', tenantSystemSwitchedOffMessage(grant.moduleId, off));
             write();
-          })();
+            return true;
+          }, audit);
         }
-        this.recordAdmin(
-          actor,
-          'grantToSystem',
-          { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId },
-          null,
-          { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
-        );
       },
 
       // #1666: the schedule kill switch and its lever back — `system-switch.ts` is the
@@ -9750,17 +9765,24 @@ export class SqliteScopeHost implements ScopeHost {
         // the write in one body, on the scope actor when the node is a scope (#1678).
         requireOrg(node.tenantId, orgId);
         this.refuseReservedGrant([permission]); // #2430: an org's members are people
-        await onNode(node, () => {
+        const write = () => {
           requireOrg(node.tenantId, orgId);
           writeGrant(`org:${orgId}`, permission, node, entity);
-        });
-        this.recordAdmin(
+        };
+        const audit = () => this.recordAdmin(
           actor,
           'grantToOrg',
           { tenantId: node.tenantId, scopeId: node.scopeId },
           null,
           { orgId, permission, node, entity },
         );
+        if (node.scopeId) {
+          await onNode(node, write);
+          audit();
+          return;
+        }
+        // #2526: at the tenant node the org's check, the tuple and the row are one directory unit.
+        this.directoryWriteAndAudit(() => { write(); return true; }, audit);
       },
       // -- vertical + version registry (#31) ---------------------------------
 
@@ -11276,24 +11298,27 @@ export class SqliteScopeHost implements ScopeHost {
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);
-        if (readOrg(parsed.tenantId, parsed.id)) return; // idempotent, unaudited
-        // Checked explicitly rather than left to the UNIQUE index: OR IGNORE would
-        // swallow a collision from a DIFFERENT id and report success, silently not
-        // creating the org the caller asked for. Fail closed instead (as createTenant).
-        const slugOwner = this.directory
-          .prepare('SELECT org_id FROM orgs WHERE tenant_id = ? AND slug = ?')
-          .get(parsed.tenantId, parsed.slug) as { org_id: string } | undefined;
-        if (slugOwner) {
-          throw substratError('conflict',
-            `org slug '${parsed.slug}' already taken by ${slugOwner.org_id} (slugs are unique per tenant)`,
-          );
-        }
-        this.directory
-          .prepare(
-            'INSERT INTO orgs (org_id, tenant_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)',
-          )
-          .run(parsed.id, parsed.tenantId, parsed.slug, parsed.name, new Date().toISOString());
-        this.recordAdmin(actor, 'createOrg', { tenantId: parsed.tenantId }, null, parsed);
+        // #2526: the checks, the insert and the row are one directory unit.
+        this.directoryWriteAndAudit(() => {
+          if (readOrg(parsed.tenantId, parsed.id)) return false; // idempotent, unaudited
+          // Checked explicitly rather than left to the UNIQUE index: OR IGNORE would
+          // swallow a collision from a DIFFERENT id and report success, silently not
+          // creating the org the caller asked for. Fail closed instead (as createTenant).
+          const slugOwner = this.directory
+            .prepare('SELECT org_id FROM orgs WHERE tenant_id = ? AND slug = ?')
+            .get(parsed.tenantId, parsed.slug) as { org_id: string } | undefined;
+          if (slugOwner) {
+            throw substratError('conflict',
+              `org slug '${parsed.slug}' already taken by ${slugOwner.org_id} (slugs are unique per tenant)`,
+            );
+          }
+          this.directory
+            .prepare(
+              'INSERT INTO orgs (org_id, tenant_id, slug, name, created_at) VALUES (?, ?, ?, ?, ?)',
+            )
+            .run(parsed.id, parsed.tenantId, parsed.slug, parsed.name, new Date().toISOString());
+          return true;
+        }, () => this.recordAdmin(actor, 'createOrg', { tenantId: parsed.tenantId }, null, parsed));
       },
       listOrgs: async (actor, tenantId: TenantId) => {
         const rows = (
@@ -11310,12 +11335,15 @@ export class SqliteScopeHost implements ScopeHost {
         return o;
       },
       addMember: async (actor, tenantId, principal, orgId, opts) => {
-        requireOrg(tenantId, orgId);
         // INSERT OR REPLACE, so re-adding a revoked member clears the tombstone —
         // they are a member again. The add/revoke history is not lost: it lives in
         // the append-only admin log, which is where "what happened" belongs. The
         // tuple carries "what is true now" plus enough to explain a live proof.
-        joinOrg(actor, tenantId, principal, orgId, opts?.expiresAt ?? null);
+        // #2526: the org's check, the tuple and the row are one directory unit.
+        this.directory.transaction(() => {
+          requireOrg(tenantId, orgId);
+          joinOrg(actor, tenantId, principal, orgId, opts?.expiresAt ?? null);
+        })();
       },
       applyMembership: async (actor, change) => {
         // ONE directory transaction, synchronous throughout (#1184): the fence (an add's), the
