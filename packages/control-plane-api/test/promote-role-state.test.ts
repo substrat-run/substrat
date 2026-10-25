@@ -50,7 +50,7 @@ describe('a promote judges its roles against the scopes it moves (#2446)', () =>
       wipeCarriedCopy: async () => 'unfenced',
       loadMarker: async () => 'unfenced',
       keptCopy: async () => null,
-      readScopeTable: async (sid: string) => {
+      readTombstoneTable: async (sid: string) => {
         const m = ensure(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: m?.columns ?? ['key', 'value'], rows: m?.rows ?? [] };
       },

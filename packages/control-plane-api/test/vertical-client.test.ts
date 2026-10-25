@@ -1860,3 +1860,32 @@ describe('VerticalClient.roleState (#2446)', () => {
     expect(err.status).toBe(status);
   });
 });
+
+// #2563: the Data view's table page asks the vertical to hold the scope; the carry's tombstone read does not.
+describe('the table reads and the held flag (#2563)', () => {
+  const urlsOf = async (read: (c: VerticalClient) => Promise<unknown>): Promise<URL[]> => {
+    const urls: URL[] = [];
+    const client = new VerticalClient({
+      fetch: (async (url: string) => {
+        urls.push(new URL(url));
+        return Response.json({ table: '_substrat_meta', columns: [], rows: [], rowCount: 0, limit: 100, offset: 0 });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    await read(client);
+    return urls;
+  };
+  const meta = { table: '_substrat_meta', limit: 100, offset: 0 };
+
+  it('readScopeTable sends held=1', async () => {
+    const [url] = await urlsOf((c) => c.readScopeTable(s, meta));
+    expect(url!.pathname).toBe('/internal/tables/_substrat_meta');
+    expect(url!.searchParams.get('held')).toBe('1');
+  });
+
+  it('readTombstoneTable sends no held flag, on the same route', async () => {
+    const [url] = await urlsOf((c) => c.readTombstoneTable(s, meta));
+    expect(url!.pathname).toBe('/internal/tables/_substrat_meta');
+    expect(url!.searchParams.has('held')).toBe(false);
+  });
+});

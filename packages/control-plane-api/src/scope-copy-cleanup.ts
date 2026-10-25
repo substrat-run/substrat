@@ -56,7 +56,7 @@ export async function routeOfScope(
 
 /** Whether the scope's store in this script holds the tombstone a wipe leaves: proof it was wiped. */
 export async function hasCarriedAwayTombstone(holder: VerticalClient, scopeId: ScopeId): Promise<boolean> {
-  const meta = await holder.readScopeTable(scopeId, { table: '_substrat_meta', limit: 100, offset: 0 });
+  const meta = await holder.readTombstoneTable(scopeId, { table: '_substrat_meta', limit: 100, offset: 0 });
   const key = meta.columns.indexOf('key');
   return key >= 0 && meta.rows.some((r) => r[key] === CARRIED_AWAY_KEY);
 }

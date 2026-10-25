@@ -2126,6 +2126,20 @@ export function defineScopeDO(
       return this.ifHeld(() => this.introspectTables());
     }
 
+    /**
+     * #2563: the table page and the SQL console, each as the held check and the read in ONE call.
+     * They answer as a `DoReply` (a refusal keeps its code across the hop, #113), `null` outside it
+     * for a scope the deployment does not hold. The carry's reader of a wiped copy's tombstone does
+     * not come through here: that copy is not held, by design, and it asks `introspectTableReply`.
+     */
+    introspectTableIfHeld(table: string, limit: number, offset: number): Promise<DoReply<ScopeTablePage> | null> {
+      return this.ifHeld(() => this.introspectTableReply(table, limit, offset));
+    }
+
+    introspectQueryIfHeld(sql: string): Promise<DoReply<ScopeQueryResult> | null> {
+      return this.ifHeld(() => this.introspectQueryReply(sql));
+    }
+
     undrainedEventsReadIfHeld(limit: number): Promise<UndrainedRead | null> {
       return this.ifHeld(() => this.undrainedEventsRead(limit));
     }

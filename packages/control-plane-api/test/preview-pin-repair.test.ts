@@ -102,7 +102,7 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
       loadMarker: async () => 'unfenced',
       // A deployment built before the fenced wipe holds no kept copies.
       keptCopy: async () => null,
-      readScopeTable: async (sid: string) => {
+      readTombstoneTable: async (sid: string) => {
         const meta = storeOf(ref).get(sid)?.find((tb) => tb.name === '_substrat_meta');
         return { table: '_substrat_meta', columns: meta?.columns ?? ['key', 'value'], rows: meta?.rows ?? [] };
       },

@@ -190,10 +190,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         await hooks.markerRead?.(ref, sid);
         return read;
       },
-      readScopeTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
+      readTombstoneTable: (sid: ScopeId, input: { table: string; limit: number; offset: number }) =>
         relay(async () => {
           await hooks.read?.(ref, sid);
-          return host.introspectScopeTable(sid, input);
+          return host.readTombstoneTable(sid, input);
         }),
       wipeCarriedCopy: async (input: {
         scopeId: ScopeId;
