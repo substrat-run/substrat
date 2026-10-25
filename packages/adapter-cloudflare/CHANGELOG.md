@@ -1,5 +1,31 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.162.0
+
+### Minor Changes
+
+- 3310b4d: A CP-less deployment judges the role set a provision, a reconcile or a restore writes inside the transaction that writes it (#2531).
+
+  - **adapter-cloudflare, provision and repair.** `provisionScopeLocal` and `projectRolesLocal` judge their role set again inside the projection's own unit, against the roles, tombstones and seats the scope holds as it writes, so a seat made after the first check is seen. Refused: `forbidden`, nothing written (no role row, tombstone, owner seat, receipt or enforcement flip). On a provision the module migrations have already run by then, as before.
+  - **adapter-cloudflare, restore.** `restoreScopeLocal` and `restoreStagedScopeLocal` take an optional `roles` (with `tenantId`): the role repair is judged on the seats the dump has just brought and projected in the load's own transaction, answered `rolesProjected: true`. Refused: `conflict`, the scope keeps its rows and a staged load its stage.
+  - **The refusal** is one fixed sentence naming the role key only: `role '<key>' is refused by the reserved-key rule, judged against the roles and seats this scope holds as the write lands (K-55); nothing was written`.
+  - **Version skew.** The judged calls are new ScopeDO methods (`applyJudgedProjectionReply`, `importDumpJudged`, `commitStagedDumpJudged`): a host meeting an older ScopeDO is refused with nothing written. The old methods stay and behave as before. The directory fan-out is not judged (K-55).
+  - **vertical-host.** `/internal/restore` and `/internal/restore-staged` hand the vertical's roles to the load, and repair with `projectRolesLocal` only when the load does not answer `rolesProjected: true` (an older adapter, or a retry answered as already applied).
+  - **kernel.** `reservedRoleSetRefusedRole` (the set's walk, with the refused role's key) and `inUnitRoleRefusal` (the sentence).
+
+### Patch Changes
+
+- c880a1c: HostAdmin's role, grant and org writes at a tenant node now commit with their audit row, on both adapters: `defineRole`, and `assignRole`, `grant`, `grantToOrg`, `grantToSystem` and `grantToConnection` with no scope, plus `createOrg` and `addMember`. A refused audit insert leaves the state as it was, and a refused state write leaves no row. The guards these writes judge are read in the same transaction: the role's reservation, the org a grant or a membership names (one deleted meanwhile is refused `not_found`), the connection a grant names, and the role a definition replaces, which is its row's `before`. An audit row's fields are unchanged, and a write that sets the value already held still records a row.
+
+  At a scope node the tuple lives in the scope's own store, so `assignRole`, `grant`, `grantToOrg` and `grantToSystem` there still write the tuple and then the row. `grantToConnection` at a scope node now commits its directory record and its row first, then delivers the tuple. If the delivery fails, the call throws and the record and its row stand without the tuple. On adapter-cloudflare a reconcile re-seats the tuple from the record. adapter-sqlite has no re-seat from the record, so a re-grant delivers it. On adapter-cloudflare a tenant-level `grantToConnection` now also fans out to the tenant's scopes, as `grant`, `grantToOrg` and `grantToSystem` do, so a scope-local scope holds it without waiting for a reconcile. Like theirs, that fan-out runs after the grant and its row have committed: when a scope refuses the projection, the call is rejected with `conflict` while the grant stands, `reconcileTenantProjection` brings the refusing scope up to date, and a retry of the grant records a second audit row.
+
+  On adapter-cloudflare these writes now go through the ControlPlaneDO's `reply`, with new DO methods `assignTenantRole`, `writeOrgTenantTuple`, `grantConnectionInDirectory` and `insertOrg`, and an optional trailing audit entry on `defineRoleOrRefusal`, `writeTenantTuple` and `writeTenantSystemGrant`. A coordinator from before this change keeps working against the new ControlPlaneDO. A coordinator from after it, paired with an older ControlPlaneDO, refuses these writes with `not a replied directory method: <name>` and writes nothing. The workers that make these writes export the ControlPlaneDO class their own host calls, so the two ship together.
+
+- Updated dependencies [3310b4d]
+- Updated dependencies [7d71f13]
+  - @substrat-run/kernel@0.162.0
+  - @substrat-run/contracts@0.162.0
+
 ## 0.161.0
 
 ### Minor Changes
@@ -7592,7 +7618,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
