@@ -4304,17 +4304,15 @@ export class SqliteScopeHost implements ScopeHost {
     input: ProvisionScopeInput,
     dump: ScopeDumpInput,
   ): Promise<void> {
-    this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
-    // #2555: judged before the scope is created, so a refused import leaves nothing behind.
-    this.refuseDumpRoles(input.tenantId, dump);
     await this.importScopeFrom(actor, input, dump, true);
   }
 
   /**
-   * `importScope` after its first role judgement. `judge` repeats it inside the load's transaction,
-   * so a role defined since that read is judged too. A snapshot passes false: it is the platform's
-   * copy of a live scope of this host, made at once, so its seats are the ones that scope holds now
-   * (K-55).
+   * `importScope`, with its role judgement (#2555) when `judge`: once before the scope is created,
+   * so a refused import leaves nothing behind, and again inside the load's transaction, so a role
+   * defined since that read is judged too. That second refusal comes after the scope was created, so
+   * the scope goes with it. A snapshot passes false: it is the platform's copy of a live scope of this
+   * host, made at once, so its seats are the ones that scope holds now (K-55).
    */
   private async importScopeFrom(
     actor: PlatformActorId,
@@ -4322,6 +4320,19 @@ export class SqliteScopeHost implements ScopeHost {
     dump: ScopeDumpInput,
     judge: boolean,
   ): Promise<void> {
+    this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
+    if (judge) this.refuseDumpRoles(input.tenantId, dump);
+    let refusedInLoad = false;
+    const recheck = judge
+      ? () => {
+          try {
+            this.refuseDumpRoles(input.tenantId, dump);
+          } catch (e) {
+            refusedInLoad = true;
+            throw e;
+          }
+        }
+      : undefined;
     // Create the destination scope (directory row + storage). Its migration step
     // creates some tables; the dump then replaces them wholesale, so the end state
     // is the dump, not whatever the local module set would have built. Provenance is
@@ -4333,7 +4344,14 @@ export class SqliteScopeHost implements ScopeHost {
       forkedAt: input.forkedAt ?? dump.capturedAt,
     });
     // A fork: its callers (snapshotScope) hand it a dump the platform exported.
-    await this.loadDump(input.tenantId, input.scopeId, { ...dump, exact: true }, undefined, judge ? () => this.refuseDumpRoles(input.tenantId, dump) : undefined);
+    try {
+      await this.loadDump(input.tenantId, input.scopeId, { ...dump, exact: true }, undefined, recheck);
+    } catch (e) {
+      // The scope was created for this import alone, and holds nothing loaded: it goes with the
+      // refusal (as a fork, which it is, `forkedFrom` stamped above), so a retry meets no scope.
+      if (refusedInLoad) await this.deleteSnapshot(actor, input.tenantId, input.scopeId);
+      throw e;
+    }
     await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
     this.recordAdmin(

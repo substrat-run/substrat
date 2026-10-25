@@ -5144,21 +5144,22 @@ export class CloudflareScopeHost implements ScopeHost {
     input: ProvisionScopeInput,
     dump: ScopeDumpInput,
   ): Promise<void> {
-    this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
-    // #2555: judged before the scope is created, so a refused import leaves nothing behind.
-    await this.refuseDumpRoles(input.tenantId, null, dump);
-    await this.importScopeFrom(actor, input, dump);
+    await this.importScopeFrom(actor, input, dump, true);
   }
 
   /**
-   * `importScope` past its role judgement. A snapshot calls it directly: it is the platform's copy
-   * of a live scope of this host, made at once, so its seats are the ones that scope holds now (K-55).
+   * `importScope`, with its role judgement (#2555) when `judge`, made before the scope is created so a
+   * refused import leaves nothing behind. A snapshot passes false: it is the platform's copy of a live
+   * scope of this host, made at once, so its seats are the ones that scope holds now (K-55).
    */
   private async importScopeFrom(
     actor: PlatformActorId,
     input: ProvisionScopeInput,
     dump: ScopeDumpInput,
+    judge: boolean,
   ): Promise<void> {
+    this.refuseUnusableScopeStores(dump.stores, input.vertical ?? null);
+    if (judge) await this.refuseDumpRoles(input.tenantId, null, dump);
     // Create the destination scope (directory row + DO + lazy migrate); the DO then
     // replaces its provisioned schema with the dump wholesale (drop-then-replay), so
     // the end state is the dump, at the source's frontier. Provenance is stamped from
@@ -5299,6 +5300,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // forkedFrom/forkedAt are stamped from the dump by importScope.
       },
       dump,
+      false,
     );
     // Bind the snapshot to the source's current version so it is a runnable copy at the
     // same frontier (a fresh bind, so it never re-triggers the snapshot path).
@@ -12125,11 +12127,14 @@ export class CloudflareScopeHost implements ScopeHost {
    * (a restore), else at a live scope of the tenant (an import, whose scope is not created yet: asking
    * its object would create storage for a scope a refusal leaves unmade).
    *
-   * A stated residual: the directory is read here and the dump is loaded in the scope's own call, so a
-   * role defined between the two is not judged against the dump's seats.
+   * Two stated residuals. The directory is read here and the dump is loaded in the scope's own call,
+   * so a role defined between the two is not judged against the dump's seats. And an import for a
+   * tenant with no live scope reads no class, so it is judged with this host's reservations alone: the
+   * seat rule holds without them, and a key only the class reserves is not counted.
    */
   private async refuseDumpRoles(tenantId: TenantId, scopeId: ScopeId | null, dump: ScopeDumpInput): Promise<void> {
-    const classScope = scopeId ?? ((await this.cp.listScopes({ tenantId, status: ['active', 'suspended'] }))[0]?.scope_id as ScopeId | undefined);
+    const classScope =
+      scopeId ?? ((await this.cp.listScopes({ tenantId, status: ['active', 'suspended'], limit: 1 }))[0]?.scope_id as ScopeId | undefined);
     const [rows, here] = await Promise.all([
       this.cp.listRoles({ tenantId }),
       classScope ? this.scopeStub(classScope).reservationHere() : { reserved: [], declared: [] },

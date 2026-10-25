@@ -206,13 +206,18 @@ export function reservedRoleSetRefusal(roles: readonly RoleShape[], host: HostRe
   return firstRefusedRole(roles, host, stored)?.refusal ?? null;
 }
 
-/** `reservedRoleSetRefusal`'s walk: the first role of the set refused, with the refusal, or null. */
+/**
+ * `reservedRoleSetRefusal`'s walk: the first role of the set refused, with the refusal, or null.
+ * `judged` narrows which roles are asked about; every role of the set stays their context.
+ */
 function firstRefusedRole(
   roles: readonly RoleShape[],
   host: HostReservations,
   stored?: StoredRoles,
+  judged: (role: RoleShape) => boolean = () => true,
 ): { key: string; refusal: string } | null {
   for (const role of roles) {
+    if (!judged(role)) continue;
     const own = stored?.roles.find((r) => r.key === role.key);
     const tenantRoles = [...roles.filter((r) => r.key !== role.key), ...(own ? [own] : [])];
     const refusal = reservedRoleDefinitionRefusal(role, host, tenantRoles, stored?.seated.has(role.key) ?? false);
@@ -230,11 +235,15 @@ function firstRefusedRole(
  * has since made system-held is refused, unless the dump stores that role system-held itself. A dump
  * with no role rows (a pure-SQLite scope file, or a scope that read its roles over RPC) says nothing
  * about the definition its seats were made under, so such a seat is judged as a person's, the rule's
- * reading of a seat whose holder is not recorded.
+ * reading of a seat whose holder is not recorded. A scope holding a seat in a system-held role
+ * therefore cannot be restored from its own export on a host whose dump carries no role rows.
  *
- * Asked before anything is replaced, so a refused load moves nothing. The answer is one fixed
- * sentence naming the role key only: the rule's own wording is kept out of it, since it is read by
- * whoever sent the dump.
+ * Only the roles the dump seats or stores are asked about, so a directory role the dump has no part
+ * in never refuses a load (the directory's own doors judge it); the whole set stays their context.
+ *
+ * Asked before anything is replaced, so a refused load moves nothing. The answer is one of two fixed
+ * sentences naming the role key only: the rule's own wording is kept out of it, since it is read by
+ * whoever sent the dump. The second names the case where the dump carries no definition of the role.
  */
 export function dumpRoleRefusal(
   roles: readonly RoleShape[],
@@ -242,10 +251,18 @@ export function dumpRoleRefusal(
   dump: { tenantId: string; tables: readonly DumpTable[] },
   now: string,
 ): string | null {
-  const refused = firstRefusedRole(roles, host, dumpRoleState(dump.tables, dump.tenantId, now));
-  return refused
-    ? `restore refused: the dump holds a seat or role that role '${refused.key}', as the tenant defines it now, does not admit (K-55); nothing was loaded`
-    : null;
+  const stored = dumpRoleState(dump.tables, dump.tenantId, now);
+  const inDump = (key: string) => stored.roles.some((r) => r.key === key);
+  const refused = firstRefusedRole(roles, host, stored, (r) => stored.seated.has(r.key) || inDump(r.key));
+  if (!refused) return null;
+  const role = roles.find((r) => r.key === refused.key);
+  if (role?.holder === 'system' && !inDump(refused.key) && stored.seated.has(refused.key)) {
+    return (
+      `restore refused: the dump seats role '${refused.key}' but carries no definition of it, so its seats cannot be told ` +
+      `from a person's, and the tenant now defines the role for a system principal (K-55); nothing was loaded`
+    );
+  }
+  return `restore refused: role '${refused.key}', which the dump seats or defines, cannot be applied as the tenant defines it now (K-55); nothing was loaded`;
 }
 
 /**

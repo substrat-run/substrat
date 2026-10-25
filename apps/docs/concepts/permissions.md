@@ -149,18 +149,24 @@ Roles a host defines and seats itself are held to the same rule:
 
 A staff restore or import on a host the control plane runs is judged too (#2555). It loads the
 dump's seats under the tenant's roles as the directory stores them now, so before anything is
-replaced, those roles are judged against the dump's own roles and seats. A dump holding a seat in
-a role since made system-held is refused, with nothing loaded, unless the dump itself stores that
-role system-held. A dump that carries no roles (a SQLite scope file, or a scope that read its
-roles from the control plane) cannot say which definition its seats were made under, so such a
-seat is judged as a person's. The refusal names the role key and nothing else. A staff restore
-takes a dump the staff caller supplies, and that dump is trusted input: its provenance is the
-staff caller's. What is judged is how the tenant's roles apply to it now.
+replaced, the roles the dump seats or stores are judged against the dump's own roles and seats.
+A dump holding a seat in a role since made system-held is refused, with nothing loaded, unless the
+dump itself stores that role system-held. A dump that carries no roles (a SQLite scope file, or a
+scope that read its roles from the control plane) cannot say which definition its seats were made
+under, so such a seat is judged as a person's. On such a host, a scope holding a seat in a
+system-held role therefore cannot be restored from its own export. No role is system-held on such
+a host today; the remedy, an export that carries the tenant's roles, is a follow-up. The refusal
+names the role key and nothing else, and says so when the reason is that the dump carries no
+definition of the role. The host throws `forbidden`; the control plane's restore route answers
+422, with the sentence in `detail`. A staff restore takes a dump the staff caller supplies, and
+that dump is trusted input: its provenance is the staff caller's. What is judged is how the
+tenant's roles apply to it now.
 
 Not covered yet:
 
 - on Cloudflare, a staff restore or import reads the directory's roles before the scope loads the
-  dump, so a role defined in between is not judged against the dump;
+  dump, so a role defined in between is not judged against the dump. An import for a tenant with
+  no live scope is judged without the scope class's reserved keys (the seat rule still holds);
 - on Cloudflare, a scope archived straight from provisioning whose record shows no migration
   applied is not read (reading would create its storage), so a definition that scope could decide
   is refused, naming it. The migration count is not proof the scope was never used: a vertical

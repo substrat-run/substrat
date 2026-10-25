@@ -32,29 +32,70 @@ describe('#2555: a role defined after the first judgement is judged inside the l
     await host.admin.assignRole(staff, seat);
     const dump = await host.admin.exportScope(staff, t, s);
     await host.admin.unassignRole(staff, seat);
+    const redefine = (holder: 'system' | 'person') =>
+      host.admin.defineRole(staff, t, { key: 'member', permissions: [holder === 'system' ? RUN : USE], source: 'vertical', ...(holder === 'system' ? { holder } : {}) });
     // The role changes while the restore awaits its fence, after the first judgement read the roles.
     const fence = (host as unknown as { fenceOrphanSweep: (...a: unknown[]) => Promise<void> }).fenceOrphanSweep.bind(host);
     const redefineDuringFence = (holder: 'system' | 'person') => {
       (host as unknown as { fenceOrphanSweep: (...a: unknown[]) => Promise<void> }).fenceOrphanSweep = async (...a: unknown[]) => {
-        await host.admin.defineRole(staff, t, { key: 'member', permissions: [holder === 'system' ? RUN : USE], source: 'vertical', ...(holder === 'system' ? { holder } : {}) });
+        await redefine(holder);
         return fence(...a);
+      };
+    };
+    // An import's: while it creates its scope, after the first judgement and before the load.
+    const provision = host.provisionScope.bind(host);
+    const redefineDuringProvision = (holder: 'system' | 'person') => {
+      host.provisionScope = async (...a: Parameters<typeof host.provisionScope>) => {
+        await provision(...a);
+        await redefine(holder);
       };
     };
     const done = async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
     };
-    return { host, staff, t, s, dump, redefineDuringFence, done };
+    return { host, staff, t, s, dump, redefine, redefineDuringFence, redefineDuringProvision, provision, done };
   };
+  // A pure-SQLite dump carries no role rows, so the second sentence is the one met.
+  const refused =
+    "restore refused: the dump seats role 'member' but carries no definition of it, so its seats cannot be told from a person's, " +
+    'and the tenant now defines the role for a system principal (K-55); nothing was loaded';
 
   it('made system-held during the fence: refused inside the load, and the seat does not come back', async () => {
     const { host, staff, t, s, dump, redefineDuringFence, done } = await setup();
     try {
       redefineDuringFence('system');
-      await expect(host.restoreScope(staff, t, s, dump)).rejects.toThrow(
-        "restore refused: the dump holds a seat or role that role 'member', as the tenant defines it now, does not admit (K-55); nothing was loaded",
-      );
+      await expect(host.restoreScope(staff, t, s, dump)).rejects.toThrow(refused);
       expect((await host.roleStateLocal(t, s)).seated).toEqual([]);
+    } finally {
+      await done();
+    }
+  });
+
+  it('import: made system-held while its scope is created, refused inside the load, and the scope taken down', async () => {
+    const { host, staff, t, dump, redefine, redefineDuringProvision, provision, done } = await setup();
+    try {
+      const fresh = scopeId.parse(ulid());
+      redefineDuringProvision('system');
+      await expect(host.importScope(staff, { tenantId: t, scopeId: fresh }, dump)).rejects.toThrow(refused);
+      expect((await host.admin.getScopeRecord(staff, t, fresh)) ?? null).toBeNull();
+      // Nothing is left for a retry to meet: once the role is a person's again, the same id imports.
+      host.provisionScope = provision;
+      await redefine('person');
+      await host.importScope(staff, { tenantId: t, scopeId: fresh }, dump);
+      expect((await host.admin.getScopeRecord(staff, t, fresh))?.status).toBe('active');
+    } finally {
+      await done();
+    }
+  });
+
+  it('import twin: redefined as a person’s role while its scope is created, the import loads with the seat', async () => {
+    const { host, staff, t, dump, redefineDuringProvision, done } = await setup();
+    try {
+      const fresh = scopeId.parse(ulid());
+      redefineDuringProvision('person');
+      await host.importScope(staff, { tenantId: t, scopeId: fresh }, dump);
+      expect((await host.roleStateLocal(t, fresh)).seated).toEqual(['member']);
     } finally {
       await done();
     }

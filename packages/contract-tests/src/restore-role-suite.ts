@@ -28,8 +28,14 @@ export function restoreRoleContractSuite(
     const alice = principalId.parse(ulid());
     const USE = 'rrs:use' as PermissionKey;
     const RUN = 'rrs:run' as PermissionKey;
+    const undefinedInDump = (key: string) =>
+      `restore refused: the dump seats role '${key}' but carries no definition of it, so its seats cannot be told from a person's, ` +
+      `and the tenant now defines the role for a system principal (K-55); nothing was loaded`;
+    /** The refusal of a seat in a role since made system-held: which sentence depends on whether the dump stores the role. */
     const refusalFor = (key: string) =>
-      `restore refused: the dump holds a seat or role that role '${key}', as the tenant defines it now, does not admit (K-55); nothing was loaded`;
+      fixture.dumpCarriesRoles
+        ? `restore refused: role '${key}', which the dump seats or defines, cannot be applied as the tenant defines it now (K-55); nothing was loaded`
+        : undefinedInDump(key);
 
     const scope = async () => {
       const id = scopeId.parse(ulid());
@@ -100,6 +106,7 @@ export function restoreRoleContractSuite(
       expect((await fixture.roleState(t, s)).seated).toEqual(['editor']);
     });
 
+    // Where the dump carries no role rows, this is a scope that cannot be restored from its own export (K-55).
     it('a seat in a role stored system-held when the dump was taken: admitted where the dump stores the role, else judged a person’s', async () => {
       const s = await scope();
       await fixture.host.admin.defineRole(staff, t, { key: 'runner', permissions: [RUN], source: 'vertical', holder: 'system' });
@@ -111,7 +118,7 @@ export function restoreRoleContractSuite(
         expect(restored).toBeUndefined();
       } else {
         // A dump with no role rows says nothing about the definition its seat was made under.
-        expect(restored?.message).toBe(refusalFor('runner'));
+        expect(restored?.message).toBe(undefinedInDump('runner'));
       }
       expect((await fixture.roleState(t, s)).seated).toEqual(['runner']);
     });
