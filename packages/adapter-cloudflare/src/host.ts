@@ -961,7 +961,7 @@ interface ControlPlaneStub {
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit: AdminEntry,
   ): Promise<void>;
-  recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<void>;
+  recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<boolean>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
@@ -8813,13 +8813,15 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       recordWireAuth: async (actor, input) => {
         const row = deploymentWireAuth.parse(input);
-        await this.cp.recordWireAuth(row, this.adminEntry(
+        const written = await this.cp.recordWireAuth(row, this.adminEntry(
           actor,
           'recordWireAuth',
           { tenantId: null, vertical: row.verticalSlug },
           null,
           { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
         ));
+        // Thrown here, not in the directory's object, so the code survives the RPC.
+        if (!written) throw substratError('not_found', `no capability record for '${row.deploymentRef}': vertical '${row.verticalSlug}' is not registered`);
       },
       listWireAuth: async (actor, input) => {
         // Judged here, before the call into the directory's object, so a refusal keeps its code; the
@@ -9173,6 +9175,9 @@ export class CloudflareScopeHost implements ScopeHost {
       advanceStoreDriverRebuild: async (_actor, input) => this.directory('advanceStoreDriverRebuild', { ...input, at: new Date().toISOString() }),
       recordStoreDriverRebuildRun: async (actor, entry) => {
         await this.recordAdmin(actor, 'rebuildStoreDriver', { tenantId: null }, null, entry);
+      },
+      recordWireWalk: async (actor, entry) => {
+        await this.recordAdmin(actor, 'walkWireAuth', { tenantId: null }, null, entry);
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair

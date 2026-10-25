@@ -80,9 +80,29 @@ export async function wireUploadFor(
   settings: WireUploadSettings | undefined,
   upload: { readonly vertical: string; readonly deploymentRef: string; readonly bundle: Pick<VerticalBundle, 'entry' | 'modules'> },
 ): Promise<WireUpload> {
+  return wireUploadGiven(settings, { vertical: upload.vertical, deploymentRef: upload.deploymentRef, entry: wireEntryOf(upload.bundle) });
+}
+
+/** Whether a bundle carries the platform's entry, which holds the verifier, as a record states it. */
+export function wireEntryOf(bundle: Pick<VerticalBundle, 'entry' | 'modules'>): WireEntry {
+  const skipped = platformEntrySkipReason(bundle) ?? null;
+  return { envelope: skipped === null ? WIRE_ENVELOPE_VERSION : null, entrySkipped: skipped };
+}
+
+/** The record's half that is a fact about the bundle: its envelope version, or why the entry was left off. */
+export type WireEntry = Pick<WireAuthRecord, 'envelope' | 'entrySkipped'>;
+
+/**
+ * `wireUploadFor` from a bundle's entry state already known (`wireEntryOf`, or a record of the
+ * script's upload): what the settings give the script now, and the record of it. The fleet walk's
+ * reading of the same rule, so a walked script and an uploaded one are given the same.
+ */
+export async function wireUploadGiven(
+  settings: WireUploadSettings | undefined,
+  upload: { readonly vertical: string; readonly deploymentRef: string; readonly entry: WireEntry },
+): Promise<WireUpload> {
   const { vertical, deploymentRef } = upload;
-  const skipped = platformEntrySkipReason(upload.bundle) ?? null;
-  const entry: Pick<WireAuthRecord, 'envelope' | 'entrySkipped'> = { envelope: skipped === null ? WIRE_ENVELOPE_VERSION : null, entrySkipped: skipped };
+  const entry: WireEntry = { envelope: upload.entry.envelope, entrySkipped: upload.entry.entrySkipped };
   const nothing = (withheld: NonNullable<WireAuthRecord['withheld']>, refusal: string | null = null): WireUpload => ({
     vertical,
     deploymentRef,

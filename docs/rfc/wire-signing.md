@@ -15,8 +15,10 @@ proposed · **Primitives:**
 deployment is given key lists · **Signers:** the router (`apps/router/src/worker.ts`) and the
 control plane (`packages/control-plane-api/src/platform-wire.ts`), each off until its `WIRE_SIGN`
 flag is `on` · **Uploader:** `packages/control-plane-api/src/wire-upload.ts`, giving key lists only
-to the deployments `WIRE_KEYS_ROLLOUT` names, and recording every upload's capability ·
-**Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
+to the deployments `WIRE_KEYS_ROLLOUT` names, and recording every upload's capability · **Fleet
+walk:** `packages/control-plane-api/src/wire-walk.ts` and `wire-settings.ts`, `POST /wire-auth/walk`,
+bringing every script's lists to what the control plane gives now, a person's act and a dry run by
+default · **Keys:** `pnpm wire-keys`, runbook `secrets/wire-keys.md` · **Precedent:**
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
 the scope-store envelope, whose scheme this reuses.
 
@@ -493,7 +495,10 @@ step 6, withdraws the credential.
   reader exists: `listWireAuth` is one page (`limit` required, at most `LIST_PAGE_MAX`) and names its
   reach, one tenant's verticals (`{ tenantId }`, the verticals it owns now) or the whole fleet
   (`{ fleet: true }`), with no default; anything else is `validation_failed`
-  (`assertWireAuthFilter`), judged before the call into the directory's object.
+  (`assertWireAuthFilter`), judged before the call into the directory's object. A record is written
+  only beside its vertical's registration: one for a slug the registry does not hold is refused
+  (`not_found`), so a slug's later registrant never reads a record of an upload made before it held
+  the slug.
 - **A readiness report per environment** lists every live version: the serving version of every
   install, every preview, and every version a scope is bound to. For each it shows whether it
   verifies, which key lists it carries (the standby keys included), which state it is in, and
@@ -716,6 +721,29 @@ never rebuilt keeps the up-calls it was built with.
    ready, by name, whatever its own counts say. Key lists are pasted from the key tool's own output
    only (`generate`, `rotate`); its `doctor` refuses values that look like private material, but it
    cannot recognise every encoding of one.
+   Lands as several pull requests. The first bounds and confines the record's read (#2559). The
+   second is the walk, and decided:
+   - **What it reaches.** Every script the registry names: each vertical's serving script, and every
+     version's own script, the one a preview of it is routed to. Never a script the registry does not
+     name, nor one whose name is the platform's.
+   - **What it changes.** Only the four `SUBSTRAT_WIRE_*` settings, through the runtime's
+     script-settings endpoint, without uploading the script again (`wire-settings.ts`). Every other
+     binding goes back as read; a secret is never read or sent, and rides `keep_bindings`. What the
+     settings give is `wireUploadFor`'s own rule (`wireUploadGiven`), so a walked script and an
+     uploaded one are given the same; a script with no record is read back once to learn whether it
+     carries the entry.
+   - **How it runs.** A person's act (a staff sign-in, never a service token), a dry run unless told
+     `apply`, a bounded pass that answers where the next one starts, one `walkWireAuth` admin row a
+     pass and a `recordWireAuth` row a script changed. A script whose record already says it carries
+     what is given is not read, so where the rollout was never set a pass makes no call at all. One
+     script's failure is an operational failure, and the pass goes on.
+   - **What it cannot rule out.** The endpoint has no conditional write, so the walk reads, reads again
+     right before it writes and retries a change, and reads once more after: a change landing between
+     its last read and its write is lost. A serving script must run the served version before and
+     after, or it is not written. A read after that differs, or a serve that moved, holds the script
+     (`walkHold` on its record, by binding name) until a person releases it or an upload of it
+     writes a fresh record. It is not to be run while a push or promote of the same vertical is in
+     flight.
 5. **The nonce store** in the scope object, for calls that change state. It fills the seam the
    verifier already calls (§4). Until it is live in a version, that version counts every call that
    keeps nonces (§4) as the `no-nonce-store` fault (§3.4), handed on as it came in `dual`, so step

@@ -10504,16 +10504,14 @@ export class SqliteScopeHost implements ScopeHost {
       },
       recordWireAuth: async (actor, input) => {
         const row = deploymentWireAuth.parse(input);
-        this.directoryWriteAndAudit(() => {
-          writeDeploymentWireAuth(switchSqlOf(this.directory), row);
-          return true;
-        }, () => this.recordAdmin(
+        const written = this.directoryWriteAndAudit(() => writeDeploymentWireAuth(switchSqlOf(this.directory), row), () => this.recordAdmin(
           actor,
           'recordWireAuth',
           { tenantId: null, vertical: row.verticalSlug },
           null,
           { vertical: row.verticalSlug, deploymentRef: row.deploymentRef, versionId: row.versionId, record: row.record },
         ));
+        if (!written) throw substratError('not_found', `no capability record for '${row.deploymentRef}': vertical '${row.verticalSlug}' is not registered`);
       },
       listWireAuth: async (actor, input) => {
         // The judged copy, not the caller's object: only its own fields, the reach first, reach the log.
@@ -11316,6 +11314,9 @@ export class SqliteScopeHost implements ScopeHost {
       },
       recordStoreDriverRebuildRun: async (actor, entry) => {
         this.recordAdmin(actor, 'rebuildStoreDriver', { tenantId: null }, null, entry, this.clock());
+      },
+      recordWireWalk: async (actor, entry) => {
+        this.recordAdmin(actor, 'walkWireAuth', { tenantId: null }, null, entry, this.clock());
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {
         const r = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as

@@ -31,16 +31,16 @@ export const DEPLOYMENT_WIRE_AUTH_DDL = `
  * Whose records a read may return: the verticals one tenant owns now (`verticals.owner_tenant`), or
  * the whole fleet, said in so many words. There is no default, so a reader that forgets to confine
  * itself is refused rather than handed every tenant's deployments: a record names scripts, versions
- * and key ids, and a tenant reads only its own. A record whose vertical no tenant owns, or that the
- * registry does not know, is reached only by the fleet.
+ * and key ids, and a tenant reads only its own. A record of a platform-owned vertical (no owning
+ * tenant) is reached only by the fleet.
  *
  * A tenant reach follows the vertical's current owner: it is resolved at read time, so whoever owns
  * the slug then reads every record the table holds for it, and a tenant that no longer owns it reads
  * none. Apart from a whole-directory restore (`restoreDirectory`), which replaces the owners and the
  * records together from one dump, no host path moves the owner of a registered vertical today: an
  * owner changes by deleting the vertical, which removes its records, and registering the slug again.
- * A record written while no tenant owned the slug is read by the tenant that owns it at read time. Key
- * ids are not secrets.
+ * A record is written only beside its vertical's registration (`writeDeploymentWireAuth`), so a new
+ * registrant of a slug reads only what was recorded since it registered. Key ids are not secrets.
  */
 export type DeploymentWireAuthReach = { readonly tenantId: TenantId } | { readonly fleet: true };
 
@@ -130,11 +130,20 @@ export function wireAuthAccessTarget(filter: DeploymentWireAuthFilter): { tenant
 }
 
 /**
- * Record an upload's capability for its script, replacing the script's earlier record. Takes the row
- * the adapter parsed (`deploymentWireAuth`) before it reached here: on Cloudflare that parse runs
- * before the call into the directory's object, so a refusal keeps its code across the RPC.
+ * Record an upload's capability for its script, replacing the script's earlier record, and answer
+ * whether it did. Takes the row the adapter parsed (`deploymentWireAuth`) before it reached here: on
+ * Cloudflare that parse runs before the call into the directory's object, so a refusal keeps its code
+ * across the RPC.
+ *
+ * Writes nothing, and answers `false`, for a vertical the registry does not hold: a record exists only
+ * beside its vertical's registration, so no later registrant of a slug can read a record of an upload
+ * made before it held it. Every upload records after its vertical is registered (a push registers,
+ * then publishes, then records; a serve runs for a registered vertical), so this refuses only a write
+ * that raced the vertical's delete. Judged in the caller's transaction, beside the write it guards; the
+ * adapter turns `false` into `not_found`.
  */
-export function writeDeploymentWireAuth(db: SwitchSql, row: DeploymentWireAuth): void {
+export function writeDeploymentWireAuth(db: SwitchSql, row: DeploymentWireAuth): boolean {
+  if (db.all('SELECT 1 FROM verticals WHERE slug = ?', row.verticalSlug).length === 0) return false;
   db.run(
     `INSERT INTO vertical_wire_auth (deployment_ref, vertical_slug, version_id, record, recorded_at)
        VALUES (?, ?, ?, ?, ?)
@@ -149,6 +158,7 @@ export function writeDeploymentWireAuth(db: SwitchSql, row: DeploymentWireAuth):
     JSON.stringify(row.record),
     row.recordedAt,
   );
+  return true;
 }
 
 /**
@@ -189,6 +199,23 @@ export function deploymentWireAuthOf(db: SwitchSql, input: DeploymentWireAuthFil
       recordedAt: r['recorded_at'],
     }),
   );
+}
+
+/**
+ * One pass of the fleet walk (RFC wire-signing follow-on 4), as its `walkWireAuth` admin row: whether
+ * it applied or only reported, the cursor it started from and the one it ended at, how many scripts it
+ * walked, and by name the scripts it updated, held, released and failed on. Script names and reasons
+ * only, never a key or a binding's value.
+ */
+export interface WireWalkAudit {
+  readonly apply: boolean;
+  readonly from: string | null;
+  readonly next: string | null;
+  readonly walked: number;
+  readonly updated: readonly string[];
+  readonly held: readonly string[];
+  readonly released: readonly string[];
+  readonly failed: readonly { readonly deploymentRef: string; readonly reason: string }[];
 }
 
 /** Forget a vertical's records, with the vertical. */

@@ -30,14 +30,6 @@ interface MockDocument {
   status: 'preparation' | 'pending' | 'closed' | 'canceled' | 'timedout' | 'rejected';
   title: string;
   callbackUrl: string | null;
-  /** The provider's last-change stamp, moved by `touch`. */
-  mtime: string;
-  /**
-   * What `files/main` answers instead of the stand-in PDF, when a test set one (#2552): the length
-   * the response declares (null for none), and how many bytes its body really carries. The body is
-   * a stream of zeros that is produced only as it is read, so a test can see how much was.
-   */
-  sealed?: { declared: number | null; actual: number; encoded: boolean };
   /**
    * The uploaded file as the multipart envelope declared it: the filename from the
    * `content-disposition`, and the payload's own length — NOT the envelope's.
@@ -101,16 +93,11 @@ export interface ScriveMockOptions {
 // the connector pulls in no platform typings, exactly as the kernel does.
 declare const URL: new (input: string) => { pathname: string };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
-declare const ReadableStream: new <T>(
-  source: { pull(controller: { enqueue(chunk: T): void; close(): void }): void; cancel?(reason?: unknown): void },
-  strategy?: { highWaterMark?: number },
-) => { getReader(): { read(): Promise<{ done: boolean; value?: T }>; cancel(reason?: unknown): Promise<void>; releaseLock(): void } };
 
 export class ScriveMock {
   readonly documents = new Map<string, MockDocument>();
   private seq = 0;
   private partySeq = 0;
-  private touches = 0;
   failWith: number | undefined;
   private readonly onCallback: ScriveMockOptions['onCallback'];
   private readonly strictDelivery: boolean;
@@ -142,28 +129,6 @@ export class ScriveMock {
     if (doc.parties.every((p) => !p.isSignatory || p.signTime)) doc.status = 'closed';
     this.fireCallback(doc);
   }
-
-  /** Move the document's `mtime`, as any change at the provider does. */
-  touch(documentId: string): void {
-    const doc = this.mustGet(documentId);
-    this.touches += 1;
-    doc.mtime = `2026-08-01T10:${String(this.touches % 60).padStart(2, '0')}:00Z`;
-  }
-
-  /**
-   * Make `files/main` answer a file of `actual` bytes that declares `declared` as its
-   * `Content-Length` (null: no header) — a size a test chooses without allocating it. `encoded`
-   * adds a `Content-Encoding`, for which the header counts wire bytes, not the file's.
-   */
-  setSealedFile(documentId: string, sealed: { declared: number | null; actual: number; encoded?: boolean }): void {
-    this.mustGet(documentId).sealed = { encoded: false, ...sealed };
-  }
-
-  /** Bytes of a sealed body the mock has produced for a reader, per document id. */
-  readonly sealedBytesServed = new Map<string, number>();
-
-  /** Documents whose sealed body a reader cancelled before its end. */
-  readonly sealedCancelled = new Set<string>();
 
   /**
    * Reorder the party list: `order[i]` is the old index now at position i. Each party
@@ -223,7 +188,6 @@ export class ScriveMock {
       id: doc.id,
       status: doc.status,
       title: doc.title,
-      mtime: doc.mtime,
       parties: doc.parties.map((p) => ({
         id: p.id,
         is_author: p.isAuthor,
@@ -249,41 +213,6 @@ export class ScriveMock {
           arrayBuffer: () =>
             Promise.resolve(new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer),
         });
-      const respondSealed = (id: string, sealed: NonNullable<MockDocument['sealed']>) => {
-        const CHUNK = 1024 * 1024;
-        let at = 0;
-        const body = new ReadableStream<Uint8Array>(
-          {
-            pull: (controller) => {
-              if (at >= sealed.actual) return controller.close();
-              const n = Math.min(CHUNK, sealed.actual - at);
-              at += n;
-              this.sealedBytesServed.set(id, (this.sealedBytesServed.get(id) ?? 0) + n);
-              controller.enqueue(new Uint8Array(n));
-            },
-            cancel: () => {
-              this.sealedCancelled.add(id);
-            },
-          },
-          { highWaterMark: 0 },
-        );
-        const headers = new Map<string, string>();
-        if (sealed.declared !== null) headers.set('content-length', String(sealed.declared));
-        if (sealed.encoded) headers.set('content-encoding', 'gzip');
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          text: () => Promise.resolve(''),
-          json: () => Promise.reject(new Error('mock: binary body is not JSON')),
-          arrayBuffer: async () => {
-            const out = new Uint8Array(sealed.actual);
-            this.sealedBytesServed.set(id, (this.sealedBytesServed.get(id) ?? 0) + sealed.actual);
-            return out.buffer as ArrayBuffer;
-          },
-          body,
-          headers: { get: (name: string) => headers.get(name.toLowerCase()) ?? null },
-        });
-      };
       const respondBytes = (bytes: Uint8Array) =>
         Promise.resolve({
           ok: true,
@@ -338,7 +267,6 @@ export class ScriveMock {
           status: 'preparation',
           title: '',
           callbackUrl: null,
-          mtime: '2026-08-01T10:00:00Z',
           file: null,
           parties: [],
         };
@@ -355,7 +283,6 @@ export class ScriveMock {
         if (!doc.file) return respond(409, { error_message: 'mock: document has no file' });
         // The bytes carry the id and status so a test can prove it pulled THIS
         // document's sealed copy — the real API returns the signed PDF.
-        if (doc.sealed) return respondSealed(doc.id, doc.sealed);
         return respondBytes(new TextEncoder().encode(`%PDF sealed ${doc.id} ${doc.status}`));
       }
 

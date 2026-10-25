@@ -762,6 +762,7 @@ export {
   writeDeploymentWireAuth,
   type DeploymentWireAuthFilter,
   type DeploymentWireAuthReach,
+  type WireWalkAudit,
   type DeploymentWireAuthInput,
 } from './deployment-wire-auth.js';
 export {

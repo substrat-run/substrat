@@ -259,6 +259,12 @@ export const adminAction = z.enum([
   // script it went to (the state, the audience, the key ids of each list, or why it gave none).
   // Names the vertical, the script and the version; never a key.
   'recordWireAuth',
+  // RFC wire-signing follow-on 4 — a person ran a pass of the fleet walk, which brings every script's
+  // key lists, audience and state to what the control plane gives now: dry run or applied, the
+  // cursor it started from and the one it ended at, the scripts it changed, held, released or failed
+  // on, each by name. Never a key or a binding's value; each script it changed also writes its own
+  // `recordWireAuth` row.
+  'walkWireAuth',
   // Historic, never written: the same three actions as #2300 wrote them, before K-53 renamed a
   // store's code its driver. Kept so a log that already holds one still reads.
   ...HISTORIC_ADMIN_ACTIONS,
@@ -2078,6 +2084,21 @@ export const wireAuthRecord = z
      * it would have given were refused before injecting (`lists-refused`). Null when lists were given.
      */
     withheld: z.enum(['unconfigured', 'not-in-rollout', 'rollout-refused', 'lists-refused']).nullable(),
+    /**
+     * The fleet walk (follow-on 4) stopped touching this script until a person looks: what it read
+     * after its update differed (`verify`), or the serve moved under the update (`serve-in-flight`).
+     * Names the bindings that differed, never a value. Absent unless the walk held it; the next upload
+     * of the script writes a record without it, and a person releases it by naming the script to the
+     * walk. A held record states what was last known, not what the script now runs.
+     */
+    walkHold: z
+      .object({
+        reason: z.enum(['verify', 'serve-in-flight']),
+        bindings: z.array(z.string().min(1).max(256)).max(64),
+        at: instant,
+      })
+      .strict()
+      .optional(),
   })
   .superRefine((r, ctx) => {
     if ((r.envelope === null) === (r.entrySkipped === null)) {

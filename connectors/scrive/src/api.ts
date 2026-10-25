@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ByteStream, ConnectorConnection } from '@substrat-run/kernel';
+import type { ConnectorConnection } from '@substrat-run/kernel';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as the kernel does.
@@ -80,8 +80,6 @@ export type ScriveStartedDocument = z.infer<typeof scriveStartedDocument>;
 export const scriveDocument = z.object({
   id: z.string().min(1),
   status: z.enum(['preparation', 'pending', 'closed', 'canceled', 'timedout', 'rejected']),
-  /** When the provider last changed the document; how a held sealed file is told to be worth another try. */
-  mtime: z.string().optional(),
   parties: z
     .array(
       z.object({
@@ -289,98 +287,6 @@ const asBytes = async (
   return new Uint8Array(await res.arrayBuffer());
 };
 
-/**
- * The most bytes of a sealed file this connector downloads into memory (#2552): 32 MiB. It is NOT the
- * streamed-upload ceiling (95 MiB, `CONNECTOR_ATTACHMENT_STREAM_MAX_BYTES`), which bounds what the
- * platform will accept, not what a worker can hold. The download is resident once (32 MiB); the upload
- * seam then holds at most one more copy of it (a buffer over 16 MiB goes as a stream of views over the
- * same bytes, which copies nothing, but the platform client may still hold one), so the worst case is
- * about 2 x 32 = 64 MiB of a ~128 MB isolate, the same margin the 16 MiB buffered bound keeps (#2538).
- * A file above it is skipped and held. Streaming the provider's download straight through to the
- * upload, which would lift this to the platform ceiling, is a later step.
- */
-export const SCRIVE_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024;
-
-/**
- * The sealed file is larger than this connector downloads (#2552), found before its body was read.
- * `bytes` is the size the provider declared, and absent when it declared none and the count was
- * stopped at the bound.
- */
-export class ScriveFileTooLargeError extends Error {
-  constructor(
-    readonly bytes: number | undefined,
-    readonly maxBytes: number,
-  ) {
-    super(
-      bytes === undefined
-        ? `the sealed document is larger than this connector downloads (${maxBytes} bytes); it was not downloaded`
-        : `the sealed document is ${bytes} bytes, larger than this connector downloads (${maxBytes} bytes); it was not downloaded`,
-    );
-    this.name = 'ScriveFileTooLargeError';
-  }
-}
-
-/** Throw the too-large error, giving up the body first so the connection is not left streaming. */
-const refuseLarge = async (
-  res: { body?: ByteStream | null },
-  bytes: number | undefined,
-  maxBytes: number,
-): Promise<never> => {
-  const reader = res.body?.getReader();
-  if (reader) await reader.cancel().catch(() => {});
-  throw new ScriveFileTooLargeError(bytes, maxBytes);
-};
-
-/**
- * A binary response's bytes, at most `maxBytes` of them, held once. A `Content-Length` over the bound
- * refuses before the body is read. A length within it is a hint to allocate the one buffer the body
- * is read into; the count still decides, so a body that outruns its header grows the buffer by
- * doubling (never past the bound). Without a length the buffer starts at 1 MiB and doubles, which
- * peaks at the old and new buffer together while it grows. Either way the read is cut off, and the
- * body released with `cancel()`, on the read that crosses the bound. (The connection's `fetch` sets
- * its own `signal`, replacing any passed in, so cancelling the body is the release available here.)
- * A response with no stream (a hand-built stand-in) is read whole, then judged.
- */
-const boundedBytes = async (
-  res: {
-    headers?: { get(name: string): string | null };
-    body?: ByteStream | null;
-    arrayBuffer(): Promise<ArrayBuffer>;
-  },
-  maxBytes: number,
-): Promise<Uint8Array> => {
-  // The header counts the bytes on the wire: with a Content-Encoding the body decodes to more, so
-  // it can only prove a file too large, never small. Either way the count below is the check.
-  const declared = Number(res.headers?.get('content-length') ?? Number.NaN);
-  if (Number.isFinite(declared) && declared > maxBytes) return refuseLarge(res, declared, maxBytes);
-  const reader = res.body?.getReader();
-  if (!reader) {
-    const whole = new Uint8Array(await res.arrayBuffer());
-    if (whole.byteLength > maxBytes) throw new ScriveFileTooLargeError(whole.byteLength, maxBytes);
-    return whole;
-  }
-  const hinted = Number.isInteger(declared) && declared > 0 ? declared : 0;
-  let buf = new Uint8Array(hinted || 1024 * 1024);
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    if (size + value.byteLength > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw new ScriveFileTooLargeError(undefined, maxBytes);
-    }
-    if (size + value.byteLength > buf.byteLength) {
-      const grown = new Uint8Array(Math.min(maxBytes, Math.max(buf.byteLength * 2, size + value.byteLength)));
-      grown.set(buf.subarray(0, size));
-      buf = grown;
-    }
-    buf.set(value, size);
-    size += value.byteLength;
-  }
-  return size === buf.byteLength ? buf : buf.subarray(0, size);
-};
-
 export class ScriveApi {
   private readonly secret: ScriveSecret;
 
@@ -546,22 +452,13 @@ export class ScriveApi {
    * sealed file exists only once the document is `closed`; on an open document the
    * response is the working copy or an error depending on account settings, so the
    * return path fetches only after `get` reports `closed` (issue #476).
-   *
-   * Scrive's `get` carries no file size, so the size is the response's own: a `Content-Length`
-   * over `maxBytes` ({@link SCRIVE_MAX_DOWNLOAD_BYTES} by default) throws {@link ScriveFileTooLargeError}
-   * before a byte of the body is read, and a body that declares none is counted and cut off at the
-   * bound (#2552). That is a thrown refusal, not a truncation: the caller holds the decision.
    */
-  async getMainFile(
-    documentId: string,
-    maxBytes: number = SCRIVE_MAX_DOWNLOAD_BYTES,
-  ): Promise<Uint8Array> {
+  async getMainFile(documentId: string): Promise<Uint8Array> {
     const res = await this.conn.fetch(
       `${this.baseUrl}/api/v2/documents/${documentId}/files/main`,
       { method: 'GET', headers: this.headers() },
     );
-    if (!res.ok) return asBytes(res, 'files/main');
-    return boundedBytes(res, maxBytes);
+    return asBytes(res, 'files/main');
   }
 }
 
