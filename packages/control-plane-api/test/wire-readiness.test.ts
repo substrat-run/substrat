@@ -20,6 +20,7 @@ import { PLATFORM_ENTRY_MODULE } from '../src/platform-entry.js';
 import {
   WIRE_CONFIRM_ROWS_MAX,
   WIRE_READINESS_ADVISORY,
+  WIRE_READINESS_AS_OF,
   WIRE_READINESS_REASONS as R,
   wireConfirmation,
   wireKeyDropSince,
@@ -406,6 +407,81 @@ describe('the readiness report', () => {
     const settings = refused.fleetWide((p) => p.blockers.signedOnly).filter((b) => b.kind === 'settings');
     expect(settings.map((b) => b.reason)).toEqual([expect.stringMatching(/^the control plane’s wire settings are refused \(lists-refused\): WIRE_ROUTER_PUBLIC_KEYS/)]);
     expect(refused.fleetWide((p) => p.blockers.credentialWithdrawal).map((b) => b.kind)).toContain('settings');
+  });
+
+  it('every script blocker of signed-only blocks the credential withdrawal too: a script that does not carry and verify signed calls still needs the credential', async () => {
+    // A canary: the vertical it names is given lists, the other is not.
+    const lists = fleet();
+    const canaryOf = (slug: string): WireUploadSettings => ({ ...lists, rollout: `canary:${slug}` });
+    // A pushed vertical's slug is its tenant's slug and the manifest's name.
+    const inCanary = await vertical(appWith(canaryOf('ready-canary-a/crm')), 'ready-canary-a');
+    expect(inCanary.slug).toBe('ready-canary-a/crm');
+    const outside = await vertical(appWith(canaryOf(inCanary.slug)), 'ready-canary-b');
+    const canary = await report(appWith(canaryOf(inCanary.slug)));
+    for (const s of outside.scripts) {
+      expect(reasonsFor(canary.signedOnly, s), s).toEqual([`${R.noLists} (not-in-rollout)`]);
+      expect(reasonsFor(canary.withdrawal, s), s).toEqual([`${R.noLists} (not-in-rollout)`]);
+    }
+    for (const s of inCanary.scripts) expect(reasonsFor(canary.withdrawal, s), s).toEqual(reasonsFor(canary.signedOnly, s));
+    expect(canary.fleetWide((p) => p.blockers.credentialWithdrawal).map((b) => b.reason)).toEqual(expect.arrayContaining([R.rolloutNotFleet]));
+    // The rollout off: no deployment is given lists.
+    const off = await vertical(appWith({ ...lists, rollout: 'off' }), 'ready-off');
+    const offReport = await report(appWith({ ...lists, rollout: 'off' }));
+    for (const s of off.scripts) expect(reasonsFor(offReport.withdrawal, s), s).toEqual([`${R.noLists} (unconfigured)`]);
+    // Lists withheld because they were refused at upload.
+    const refusedLists: WireUploadSettings = { rollout: 'fleet', routerKeys: 'not-a-key', platformKeys: lists.platformKeys! };
+    const withheld = await vertical(appWith(refusedLists), 'ready-withheld');
+    const withheldReport = await report(appWith(refusedLists));
+    for (const s of withheld.scripts) expect(reasonsFor(withheldReport.withdrawal, s), s).toEqual([`${R.noLists} (lists-refused)`]);
+    // No standby, and a record before the confirming walk: each blocks the withdrawal as it blocks signed-only.
+    const single = fleet([keys.router[0]!], [keys.platform[0]!]);
+    const standby = await vertical(appWith(single), 'ready-w-standby');
+    await confirmWalk(appWith(single));
+    await rewrite(await recordOf(standby.slug, standby.scripts[0]!), {}, '2020-01-01T00:00:00.000Z');
+    const standbyReport = await report(appWith(single));
+    expect(reasonsFor(standbyReport.withdrawal, standby.scripts[0]!)).toEqual([R.noRouterStandby, R.noPlatformStandby, R.unconfirmed]);
+    for (const s of standby.scripts.slice(1)) expect(reasonsFor(standbyReport.withdrawal, s), s).toEqual([R.noRouterStandby, R.noPlatformStandby]);
+    // And the confirmation unknown blocks it too (an applied walk that was not confirming ran last).
+    await walkAll(appWith(single), { apply: true });
+    const unconfirmedReport = await report(appWith(single));
+    expect(unconfirmedReport.fleetWide((p) => p.blockers.credentialWithdrawal).map((b) => b.kind)).toContain('confirmation');
+  });
+
+  it('refused settings are reported alone: the rollout state they hide is not', async () => {
+    await vertical(appWith(fleet()), 'ready-refused-alone');
+    for (const settings of [{ ...fleet(), rollout: 'bogus' }, { ...fleet(), rollout: 'canary:a,b' }, { rollout: 'fleet', routerKeys: 'not-a-key', platformKeys: fleet().platformKeys! }]) {
+      const r = await report(appWith(settings));
+      const reasons = r.fleetWide((p) => p.blockers.signedOnly).filter((b) => b.kind === 'settings').map((b) => b.reason);
+      expect(reasons, JSON.stringify(settings.rollout)).toEqual([expect.stringMatching(/^the control plane’s wire settings are refused/)]);
+      expect(reasons).not.toContain(R.rolloutNotFleet);
+    }
+    // Its twin: a readable rollout that is not fleet-wide is named as such.
+    const off = await report(appWith({ ...fleet(), rollout: 'off' }));
+    expect(off.fleetWide((p) => p.blockers.signedOnly).filter((b) => b.kind === 'settings').map((b) => b.reason)).toEqual([R.rolloutNotFleet]);
+  });
+
+  it('says its answer is as of each record, not live, on every page', async () => {
+    const app = appWith(fleet());
+    await vertical(app, 'ready-as-of');
+    const r = await report(app, { limit: 1 });
+    for (const p of r.pages) expect(p.asOf).toBe(WIRE_READINESS_AS_OF);
+    expect(WIRE_READINESS_AS_OF).toMatch(/not live: run the confirming pass immediately before any flip or drop, and run the report after it/);
+  });
+
+  it('answers 501 on a host that keeps no capability records', async () => {
+    const admin = { ...host.admin, listWireAuth: undefined };
+    const bare = new Proxy(host, { get: (target, key) => (key === 'admin' ? admin : Reflect.get(target, key, target)) });
+    const app = createControlPlaneApi({
+      host: bare,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      humanStaffActor: async (r) => (r.headers.get(DEV_ACTOR_HEADER) === person ? person : null),
+      wireUpload: fleet(),
+    });
+    const res = await post(app, '/wire-auth/readiness', {});
+    expect(res.status).toBe(501);
+    expect(await res.text()).toContain('this control plane does not keep capability records');
+    // Its twin: the same request on the host that keeps them.
+    expect((await post(appWith(fleet()), '/wire-auth/readiness', {})).status).toBe(200);
   });
 
   it('is bounded and resumable: a limit out of range is refused, not clamped; a cursor it did not answer is refused; pages cover the fleet once', async () => {

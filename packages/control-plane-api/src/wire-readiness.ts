@@ -37,6 +37,10 @@ export const WIRE_CONFIRM_ROWS_MAX = 200;
 export const WIRE_READINESS_ADVISORY =
   'advisory: this report informs the person who flips the down-channel, drops a key or withdraws the shared credential; no tooling enforces it yet (follow-on 7)';
 
+/** What every report says second: when its answer holds. */
+export const WIRE_READINESS_AS_OF =
+  'the answer is as of each record’s recorded time, not live: run the confirming pass immediately before any flip or drop, and run the report after it';
+
 export type WireGate = 'signed-only' | 'key-drop' | 'credential-withdrawal';
 
 /** One thing that blocks a gate. */
@@ -83,6 +87,7 @@ export interface WireKeyDrop {
 
 export interface WireReadinessReport {
   readonly advisory: string;
+  readonly asOf: string;
   readonly from: string | null;
   /** Where the next page starts, `null` at the end of the fleet. A gate is clear only when every page, from the start, shows it clear. */
   readonly next: string | null;
@@ -211,19 +216,15 @@ export async function wireReadinessReport(
     ...WIRE_UNSIGNED_ROUTES.map((r) => ({ kind: 'standing' as const, reason: `${r.method} ${r.path}: ${r.reason}` })),
     { kind: 'standing', reason: R.counters },
   ];
-  const withdrawal: WireBlocker[] = [
-    { kind: 'standing', reason: R.notSignedOnly },
-    { kind: 'standing', reason: R.upChannel },
-    { kind: 'standing', reason: R.perDeployment },
-  ];
   const drop: WireBlocker[] | undefined = input.keyDrop ? [] : undefined;
   const settingsBlocker: WireBlocker | null = refused ? { kind: 'settings', reason: `the control plane’s wire settings are refused (${refused.withheld}): ${refused.reason}` } : null;
   if (settingsBlocker) {
     signedOnly.push(settingsBlocker);
-    withdrawal.push(settingsBlocker);
     drop?.push(settingsBlocker);
+  } else if ('refused' in rollout || rollout.kind !== 'fleet') {
+    // Only while the settings are usable: a refusal hides the rollout state, and is the fix to make first.
+    signedOnly.push({ kind: 'settings', reason: R.rolloutNotFleet });
   }
-  if ('refused' in rollout || rollout.kind !== 'fleet') signedOnly.push({ kind: 'settings', reason: R.rolloutNotFleet });
   if (confirmation.status === 'unknown') {
     const blocker: WireBlocker = { kind: 'confirmation', reason: `${R.confirmationUnknown}: ${confirmation.reason}` };
     signedOnly.push(blocker);
@@ -257,7 +258,6 @@ export async function wireReadinessReport(
     if (unknown !== null || !stored) {
       const blocker = named(unknown ?? R.noRecord);
       signedOnly.push(blocker);
-      withdrawal.push(blocker);
       drop?.push(blocker);
       return { ...base, status: 'unknown', ...(stored ? { state: stored.record.state } : {}), confirmed: null };
     }
@@ -266,7 +266,6 @@ export async function wireReadinessReport(
     const verifies = record.envelope !== null && record.withheld === null;
     if (record.envelope === null) {
       signedOnly.push(named(R.noEntry));
-      withdrawal.push(named(R.noEntry));
     } else if (record.withheld !== null) {
       signedOnly.push(named(`${R.noLists} (${record.withheld})`));
     }
@@ -291,8 +290,18 @@ export async function wireReadinessReport(
 
   const scripts: WireReadinessScript[] = [];
   const next = await wireInventoryPass(wireInventory(admin, actor, input.cursor), input.limit, judge, scripts);
+  // Everything that blocks signed-only but its standing blockers blocks the withdrawal too: a script
+  // that does not carry and verify signed calls still needs the shared credential. Signed-only's
+  // standing blockers are covered by the withdrawal's own first one (no environment is signed-only).
+  const withdrawal: WireBlocker[] = [
+    { kind: 'standing', reason: R.notSignedOnly },
+    { kind: 'standing', reason: R.upChannel },
+    { kind: 'standing', reason: R.perDeployment },
+    ...signedOnly.filter((b) => b.kind !== 'standing'),
+  ];
   return {
     advisory: WIRE_READINESS_ADVISORY,
+    asOf: WIRE_READINESS_AS_OF,
     from: input.from,
     next,
     confirmation,
