@@ -775,8 +775,13 @@ never rebuilt keeps the up-calls it was built with.
      it, and is blocked while the list still names it or would be left empty, by any script that still
      trusts it or lacks a key the list names now, by every unknown or unconfirmed script, and while the
      last confirming walk began before that moment. The credential withdrawal is blocked by its
-     standing blockers until steps 5, 6 and Q10 are recorded, and by every unknown script or one
-     without the entry. Every reason is a fixed sentence, naming at most a setting or a vertical.
+     standing blockers until steps 5, 6 and Q10 are recorded, and by everything that blocks
+     `signed-only` but that step's standing blockers: every script that does not carry and verify
+     signed calls still needs the shared credential, one given no lists under a canary or with the
+     rollout off included. Refused settings are reported alone, without the rollout state they hide.
+     Every reason is a fixed sentence, naming at most a setting or a vertical. The answer is as of
+     each record's recorded time, not live: the confirming pass runs immediately before any flip or
+     drop, and the report after it.
    - **A streamed call is unsigned only to a listed route.** The control plane's signer counts a
      streamed call to a route in `WIRE_UNSIGNED_ROUTES` as `skipped`, and one to any other route as
      `failed` (`stream-unlisted`), still sent as given, so a new streamed route shows in the counts until

@@ -242,7 +242,15 @@ most a setting or a vertical, never a key, a key id or a tenant.
   any call, and only its response streams.
 - **Standing blockers of the credential withdrawal.** No environment is `signed-only`, the up-channel
   removals (step 6) are not recorded per version, and no version carries per-deployment values (Q10).
-  So the withdrawal is blocked today, by design and by name.
+  So the withdrawal is blocked today, by design and by name. Everything else that blocks
+  `signed-only` blocks the withdrawal too: a script that does not carry and verify signed calls (one
+  given no lists under a canary or with the rollout off, one without a standby, one unconfirmed)
+  still needs the shared credential.
+- **Refused settings are reported alone.** While `WIRE_KEYS_ROLLOUT` does not parse or a list does
+  not load, the report names that refusal and not the rollout state it hides: fix it first.
+- **As of the records, not live.** The answer is as of each record's recorded time: run the
+  confirming pass immediately before any flip or drop, and run the report after it. Every page says
+  so (`asOf`).
 
 ## Turning signing off
 
