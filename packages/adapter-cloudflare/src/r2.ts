@@ -146,9 +146,9 @@ export function createR2BlobStores(opts: R2BlobStoresOptions): R2BlobStores {
  * held. The kernel's `putAttachmentBytes` takes it.
  */
 export function workerdSha256(): IncrementalSha256 {
-  const digest = runtimeSha256();
-  if (!digest) throw new Error('this runtime has no crypto.DigestStream; the Cloudflare adapter runs on workerd');
-  return digest;
+  const make = runtimeSha256();
+  if (!make) throw new Error('this runtime has no crypto.DigestStream; the Cloudflare adapter runs on workerd');
+  return make();
 }
 
 /** The minimal slice of a worker `R2Bucket` binding this adapter relies on. */

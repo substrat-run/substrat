@@ -252,7 +252,7 @@ describe('runtimeSha256 (#2514)', () => {
     const crypto = globalThis.crypto as unknown as { DigestStream?: unknown };
     crypto.DigestStream = DigestStream;
     try {
-      const digest = runtimeSha256()!;
+      const digest = runtimeSha256()!();
       await digest.update(new TextEncoder().encode('%PDF'));
       await digest.update(new TextEncoder().encode('-1.4'));
       expect(await digest.hex()).toBe(createHash('sha256').update('%PDF-1.4').digest('hex'));

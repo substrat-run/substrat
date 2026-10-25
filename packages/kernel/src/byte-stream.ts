@@ -108,20 +108,24 @@ type DigestStreamCtor = new (algorithm: string) => {
 };
 
 /**
- * The runtime's own running SHA-256, where it has one (workerd's `crypto.DigestStream`), or
+ * What makes the runtime's own running SHA-256, where it has one (workerd's `crypto.DigestStream`), or
  * `undefined` where it has none (Node, a browser): the kernel finds the runtime's, it never holds one.
+ * A maker rather than a digest, so a caller can learn whether it can check bytes before it asks for
+ * any, and opens a digest only for bytes it has.
  */
-export function runtimeSha256(): IncrementalSha256 | undefined {
+export function runtimeSha256(): (() => IncrementalSha256) | undefined {
   const DigestStream = (globalThis as { crypto?: { DigestStream?: DigestStreamCtor } }).crypto?.DigestStream;
   if (!DigestStream) return undefined;
-  const digest = new DigestStream('SHA-256');
-  const writer = digest.getWriter();
-  return {
-    update: (chunk) => writer.write(chunk),
-    hex: async () => {
-      await writer.close();
-      return [...new Uint8Array(await digest.digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
-    },
+  return () => {
+    const digest = new DigestStream('SHA-256');
+    const writer = digest.getWriter();
+    return {
+      update: (chunk) => writer.write(chunk),
+      hex: async () => {
+        await writer.close();
+        return [...new Uint8Array(await digest.digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+      },
+    };
   };
 }
 

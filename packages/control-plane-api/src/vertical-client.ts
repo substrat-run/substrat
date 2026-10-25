@@ -130,7 +130,7 @@ import {
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, DeadlineOptions, FetchLike, IncrementalSha256, KeptCopy, LoadMarker, OpenedAttachment, OpenedAttachmentStream, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
-import { STREAM_IDLE_TIMEOUT_MS, attachmentSha256, deadlineFetch, isSizedByteStream, knownLengthInit, runtimeSha256, scopeNotHeldRefusal, ulid, undrainedEventsOf, verifiedStream, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
+import { STREAM_IDLE_TIMEOUT_MS, STREAM_MAX_DURATION_MS, attachmentSha256, deadlineFetch, isSizedByteStream, knownLengthInit, runtimeSha256, scopeNotHeldRefusal, ulid, undrainedEventsOf, verifiedStream, type ByteBody, type SizedByteStream } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 
 /**
@@ -190,33 +190,77 @@ function attachmentRecordOf(res: Response): AttachmentRecord {
   return attachmentRecord.parse(JSON.parse(raw));
 }
 
+/** How a refusal of an attachment read ends: what the caller holds of the file when it is thrown (#2514). */
+const NOTHING_READ = 'Nothing was read.';
+/**
+ * A streamed read's refusal can land after most of the file has been handed on: every chunk but the
+ * held-back last one. So it says what those bytes are, and what to do with them, never "nothing".
+ */
+export const STREAMED_ATTACHMENT_UNVERIFIED =
+  'The bytes delivered before this error are a prefix of an unverified file: discard them, and undo anything written from them.';
+
 /** An attachment read whose bytes are not the ones its record names (#2514): the deployment's fault. */
-function attachmentIntegrity(record: AttachmentRecord, why: string, cause?: unknown): ControlPlaneError {
+function attachmentIntegrity(record: AttachmentRecord, why: string, cause?: unknown, tail = NOTHING_READ): ControlPlaneError {
   return new ControlPlaneError(
     502,
-    `connector-attachment-open: attachment ${record.id} failed its integrity check: ${why} (#2514). Nothing was read.`,
+    `connector-attachment-open: attachment ${record.id} failed its integrity check: ${why} (#2514). ${tail}`,
     undefined,
     { code: 'internal', ...(cause !== undefined ? { cause } : {}) },
   );
 }
 
+/** A `deadlineFetch` bound ran out (#2514): the deployment was slow, which is retryable, never an integrity fault. */
+const isTimeout = (err: unknown): boolean => (err as { name?: unknown } | null)?.name === 'TimeoutError';
+
+/** The deployment too slow to answer an attachment read (#2514): a 504, `unavailable`, retryable. */
+function attachmentTimeout(what: string, err: unknown, tail: string): ControlPlaneError {
+  const message = err instanceof Error ? err.message : String(err);
+  return new ControlPlaneError(
+    504,
+    `connector-attachment-open: ${what} timed out: ${message} (#2514). ${tail}`,
+    undefined,
+    { code: 'unavailable', cause: err },
+  );
+}
+
 /**
- * What a streamed attachment read's error becomes (#2514). A bound running out (`deadlineFetch`'s
- * `TimeoutError`) is the deployment being slow, retryable: a 504. Anything else, a body that broke off
- * or bytes that did not match, is the integrity refusal the buffered read gives.
+ * What a streamed attachment read's error becomes (#2514). A bound running out is a 504; anything
+ * else, a body that broke off or bytes that did not match, is the integrity refusal the buffered read
+ * gives. Both end in {@link STREAMED_ATTACHMENT_UNVERIFIED}: by the time they land, the caller may hold
+ * all but the last chunk.
  */
 function streamRefusal(record: AttachmentRecord, err: unknown): ControlPlaneError {
   if (err instanceof ControlPlaneError) return err;
-  const message = err instanceof Error ? err.message : String(err);
-  if ((err as { name?: unknown } | null)?.name === 'TimeoutError') {
-    return new ControlPlaneError(
-      504,
-      `connector-attachment-open: reading attachment ${record.id} timed out: ${message} (#2514). Nothing was read.`,
-      undefined,
-      { code: 'unavailable', cause: err },
-    );
+  if (isTimeout(err)) return attachmentTimeout(`reading attachment ${record.id}`, err, STREAMED_ATTACHMENT_UNVERIFIED);
+  return attachmentIntegrity(record, err instanceof Error ? err.message : String(err), err, STREAMED_ATTACHMENT_UNVERIFIED);
+}
+
+/** The longest any one bound of a streamed attachment read may be set to (#2514): an hour. */
+const ATTACHMENT_STREAM_BOUND_MAX_MS = 60 * 60_000;
+
+/**
+ * `VerticalClientOptions.attachmentStream`'s bounds, with the defaults filled in and each held to a
+ * whole number of milliseconds in (0, an hour] (#2514). Zero, a negative, NaN or Infinity would end
+ * every read at once or never, so it is refused in words instead.
+ */
+function attachmentStreamBounds(
+  given: VerticalClientOptions['attachmentStream'],
+): { timeoutMs: number; idleMs: number; maxStreamMs: number; timers?: DeadlineOptions['timers'] } {
+  const bounds = {
+    timeoutMs: given?.timeoutMs ?? STREAM_IDLE_TIMEOUT_MS,
+    idleMs: given?.idleMs ?? STREAM_IDLE_TIMEOUT_MS,
+    maxStreamMs: given?.maxStreamMs ?? STREAM_MAX_DURATION_MS,
+  };
+  for (const [name, ms] of Object.entries(bounds)) {
+    if (!Number.isSafeInteger(ms) || ms <= 0 || ms > ATTACHMENT_STREAM_BOUND_MAX_MS) {
+      throw new ControlPlaneError(
+        500,
+        `VerticalClientOptions.attachmentStream.${name} must be a whole number of milliseconds from 1 to ` +
+          `${ATTACHMENT_STREAM_BOUND_MAX_MS}, not ${ms}`,
+      );
+    }
   }
-  return attachmentIntegrity(record, message, err);
+  return { ...bounds, ...(given?.timers ? { timers: given.timers } : {}) };
 }
 
 /**
@@ -1147,10 +1191,16 @@ export class VerticalClient {
    *   match), runs short or long, or does not match, errors the stream with a `ControlPlaneError` 502,
    *   code `internal`, as the buffered read refuses it. A consumer that has received all `size` bytes
    *   has received the bytes the record names.
-   * - **Time.** `deadlineFetch`'s bounds, as on a connection's own `fetch`: the call is bounded up to
-   *   the response headers; from the first read, the body errors when the deployment sends no byte for
-   *   `STREAM_IDLE_TIMEOUT_MS`, or after `STREAM_MAX_DURATION_MS` in all. Either is a
-   *   `ControlPlaneError` 504, code `unavailable`, and the call is released.
+   * - **Time.** `deadlineFetch`'s bounds, as on a connection's own `fetch`. The call's `timeoutMs`
+   *   runs from the request until the caller's FIRST read of the stream, so read promptly once it is
+   *   open: work awaited in between spends it. From that read, the body errors when the deployment
+   *   sends no byte for `STREAM_IDLE_TIMEOUT_MS`, or after `STREAM_MAX_DURATION_MS` in all. Each of
+   *   these, a deployment too slow to answer at all included, is a `ControlPlaneError` 504, code
+   *   `unavailable`, and the call is released. The bounds are `VerticalClientOptions.attachmentStream`,
+   *   each a whole number of milliseconds up to an hour.
+   * - **What an error means.** One thrown before the stream is handed back means nothing was read.
+   *   One the stream errors with ends in {@link STREAMED_ATTACHMENT_UNVERIFIED}: the caller may hold
+   *   all but the last chunk by then, and must discard it.
    * - **Cancel.** Cancelling the stream cancels the response body, which the deployment reads as its
    *   reader going away.
    */
@@ -1158,21 +1208,31 @@ export class VerticalClient {
     input: Parameters<VerticalClient['connectorOpenAttachment']>[0],
   ): Promise<OpenedAttachmentStream | null> {
     const verb = 'connector-attachment-open';
-    const bounds = this.options.attachmentStream ?? {};
-    const digest = bounds.sha256?.() ?? runtimeSha256();
-    if (!digest) {
+    const bounds = attachmentStreamBounds(this.options.attachmentStream);
+    // Asked for here, so a runtime that cannot check the bytes sends nothing; made only once there is a
+    // body to check, so a refusal or an unknown id leaves no digest open.
+    const makeDigest = this.options.attachmentStream?.sha256 ?? runtimeSha256();
+    if (!makeDigest) {
       throw new ControlPlaneError(
         500,
         `${verb}: this runtime has no running sha256 to check a streamed attachment with; ` +
           `pass VerticalClientOptions.attachmentStream.sha256`,
       );
     }
-    const timed = deadlineFetch(this.options.fetch as unknown as FetchLike, bounds.timeoutMs ?? STREAM_IDLE_TIMEOUT_MS, bounds);
-    const res = (await this.reach(verb, async () =>
-      (await timed(this.attachmentReadUrl(input), {
-        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-      })) as unknown as Response,
-    )) as Response;
+    const timed = deadlineFetch(this.options.fetch as unknown as FetchLike, bounds.timeoutMs, bounds);
+    const res = (await this.reach(verb, async () => {
+      try {
+        return (await timed(this.attachmentReadUrl(input), {
+          headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+        })) as unknown as Response;
+      } catch (err) {
+        // The same slowness as a stall in the body, so the same answer, not `reach`'s "unreachable".
+        if (isTimeout(err)) {
+          throw attachmentTimeout(`attachment ${input.attachmentId}: the deployment's answer`, err, NOTHING_READ);
+        }
+        throw err;
+      }
+    })) as Response;
     if (res.status === 404) {
       await res.text().catch(() => {});
       return null;
@@ -1188,7 +1248,7 @@ export class VerticalClient {
     const source = res.body ?? new Response(new Uint8Array(0)).body!;
     let verified: SizedByteStream;
     try {
-      verified = verifiedStream({ stream: source, length: record.size }, record, digest);
+      verified = verifiedStream({ stream: source, length: record.size }, record, makeDigest());
     } catch (err) {
       await source.cancel().catch(() => {});
       throw attachmentIntegrity(record, (err as Error).message, err);
@@ -2243,6 +2303,8 @@ export class VerticalClient {
     try {
       return await request();
     } catch (e) {
+      // Already classified by the call itself (a streamed read's timeout, #2514): kept as it is.
+      if (e instanceof ControlPlaneError) throw e;
       const detail = e instanceof Error ? e.message : String(e);
       throw new ControlPlaneError(502, `vertical unreachable during ${verb}: ${detail}`);
     }

@@ -11,7 +11,7 @@ import {
   tenantId as tenantIdOf,
 } from '@substrat-run/contracts';
 import { ulid, verifiedStream, type IncrementalSha256 } from '@substrat-run/kernel';
-import { ControlPlaneError, VerticalClient, type VerticalClientOptions } from '../src/index.js';
+import { ControlPlaneError, STREAMED_ATTACHMENT_UNVERIFIED, VerticalClient, type VerticalClientOptions } from '../src/index.js';
 
 /**
  * The platform's streamed attachment read (#2514): `VerticalClient.connectorOpenAttachmentStream`
@@ -191,8 +191,10 @@ describe('VerticalClient.connectorOpenAttachmentStream (#2514)', () => {
       }
     }
     expect(size).toBe(120 * MiB);
-    // 120 MiB went through; a body held at any hop would leave tens of MiB live at a sample.
-    expect(peak).toBeLessThan(16 * MiB);
+    // 120 MiB went through, and the steady state measures about 1 MiB. The bound is the repo's 40 MiB:
+    // room for chunks the sweeper has not yet freed on a loaded runner (#2576), and still a third of
+    // what a body held at any hop would leave live (about 120 MiB).
+    expect(peak).toBeLessThan(40 * MiB);
   }, 60_000);
 
   it('a deployment from before #2514 answers in full, and the bytes are still handed on, held to the record', async () => {
@@ -212,6 +214,9 @@ describe('VerticalClient.connectorOpenAttachmentStream (#2514)', () => {
       expect(err).toBeInstanceOf(ControlPlaneError);
       expect(err).toMatchObject({ status: 502, code: 'internal' });
       expect((err as Error).message).toMatch(/attachment att-1 failed its integrity check/);
+      // By now the caller may hold all but the last chunk: it is told what those bytes are.
+      expect((err as Error).message).toContain(STREAMED_ATTACHMENT_UNVERIFIED);
+      expect((err as Error).message).not.toMatch(/Nothing was read/);
       return err as ControlPlaneError;
     };
 
@@ -236,6 +241,14 @@ describe('VerticalClient.connectorOpenAttachmentStream (#2514)', () => {
       const { client } = world(buffered(o, new Uint8Array(3 * 256 * KiB)));
       const out = await read((await streamOf(client)).body.stream as ReadableStream<Uint8Array>);
       expect((integrityError(out) as Error).message).toMatch(/ended after 786432 bytes; its record says 2097152/);
+    });
+
+    it('a body longer than the record: refused, the caller short of the size', async () => {
+      const o = object(8, 256 * KiB);
+      const { client } = world(buffered(o, new Uint8Array(o.size + 1)));
+      const out = await read((await streamOf(client)).body.stream as ReadableStream<Uint8Array>);
+      expect((integrityError(out) as Error).message).toMatch(/carried more than the 2097152 bytes its record says/);
+      expect(out.size).toBeLessThan(o.size);
     });
 
     it('over a real socket too: a cut body is the integrity refusal, not a bare network error', async () => {
@@ -283,7 +296,81 @@ describe('VerticalClient.connectorOpenAttachmentStream (#2514)', () => {
     expect(err).toBeInstanceOf(ControlPlaneError);
     expect(err).toMatchObject({ status: 504, code: 'unavailable' });
     expect((err as Error).message).toMatch(/timed out: The response body stalled: no bytes for 100 ms/);
+    // Two chunks were handed on before it: the error says what they are.
+    expect((err as Error).message).toContain(STREAMED_ATTACHMENT_UNVERIFIED);
     expect(out.size).toBe(2 * 64 * KiB);
+  });
+
+  it('a deployment that never answers: the same 504 unavailable, before any byte, and nothing was read', async () => {
+    const client = new VerticalClient({
+      // A deployment that takes the request and never answers it, as long as the call is not aborted.
+      fetch: ((_input: RequestInfo, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+        })) as typeof fetch,
+      platformSecret: SECRET,
+      attachmentStream: { sha256: nodeSha256, timeoutMs: 50 },
+    });
+    const err = await client.connectorOpenAttachmentStream(args).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ControlPlaneError);
+    expect(err).toMatchObject({ status: 504, code: 'unavailable' });
+    expect((err as Error).message).toMatch(/attachment att-1: the deployment's answer timed out/);
+    expect((err as Error).message).toMatch(/Nothing was read\.$/);
+  });
+
+  it.each([
+    ['timeoutMs', 0],
+    ['idleMs', -1],
+    ['maxStreamMs', Number.NaN],
+    ['timeoutMs', Number.POSITIVE_INFINITY],
+    ['idleMs', 1.5],
+    ['maxStreamMs', 60 * 60_000 + 1],
+  ])('a %s of %s is refused in words before anything is sent', async (name, ms) => {
+    let sent = 0;
+    const client = new VerticalClient({
+      fetch: (async () => {
+        sent++;
+        return new Response(null);
+      }) as unknown as typeof fetch,
+      platformSecret: SECRET,
+      attachmentStream: { sha256: nodeSha256, [name]: ms },
+    });
+    await expect(client.connectorOpenAttachmentStream(args)).rejects.toThrow(
+      new RegExp(`attachmentStream\\.${name} must be a whole number of milliseconds from 1 to 3600000, not ${ms}`),
+    );
+    expect(sent).toBe(0);
+  });
+
+  it('its twin: an hour exactly is a bound it takes', async () => {
+    const o = object(2, 64 * KiB);
+    const { client } = world(streaming(o), { attachmentStream: { sha256: nodeSha256, maxStreamMs: 60 * 60_000 } });
+    expect(await read((await streamOf(client)).body.stream as ReadableStream<Uint8Array>)).toMatchObject({ ok: true });
+  });
+
+  it('a digest is made only for a body: an unknown id and a refusal open none', async () => {
+    let made = 0;
+    const counted = () => {
+      made++;
+      return nodeSha256();
+    };
+    const options = { attachmentStream: { sha256: counted } };
+    expect(await world({ connectorAttachmentOpenStreamLocal: async () => null }, options).client.connectorOpenAttachmentStream(args)).toBeNull();
+    const refused = world(
+      {
+        connectorAttachmentOpenStreamLocal: async () => {
+          throw substratError('permission_denied', 'connection lacks protocol:read');
+        },
+      },
+      options,
+    );
+    await expect(refused.client.connectorOpenAttachmentStream(args)).rejects.toMatchObject({ status: 403 });
+    expect(made).toBe(0);
+    const o = object(2, 64 * KiB);
+    await read((await world(streaming(o), options).client.connectorOpenAttachmentStream(args))!.body.stream as ReadableStream<Uint8Array>);
+    expect(made).toBe(1);
   });
 
   it('its twin: a deployment that keeps sending outlasts the call timeout', async () => {
