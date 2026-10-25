@@ -905,7 +905,6 @@ interface ControlPlaneStub {
   dumpTenantTuples(
     tenantId: string,
   ): Promise<{ subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[]>;
-  readHostname(hostname: string): Promise<HostnameRow | undefined>;
   readRoute(hostname: string): Promise<RouteRow | undefined>;
   /** #1706: "vertical Y in tenant T", by the kernel's one rule — see `HostAdmin.resolveVerticalInstance`. */
   resolveVerticalInstance(tenantId: string, vertical: string): Promise<VerticalResolution>;
@@ -916,11 +915,6 @@ interface ControlPlaneStub {
     { ok: true; changed: boolean; previous: string | null } |
     { ok: false; code: 'not_found'; message: string }
   >;
-  demoteCanonical(scopeId: string, surface: string): Promise<void>;
-  upsertHostname(h: {
-    hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
-    surface: string; region: string | null; canonical: boolean; createdAt: string;
-  }): Promise<void>;
   /** #2526: the guard, the demotion, the bind and its row, one unit; called through `reply`. */
   bindHostnameInDirectory(h: {
     hostname: string; tenantId: string; scopeId: string;

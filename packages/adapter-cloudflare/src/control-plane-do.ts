@@ -3379,7 +3379,11 @@ export class ControlPlaneDO extends DurableObject {
     };
   }
 
-  /** Demote any current canonical for this surface — exactly one may hold it. */
+  /**
+   * Demote any current canonical for this surface — exactly one may hold it. This and
+   * `upsertHostname` are `bindHostnameInDirectory`'s steps; a coordinator from before #2526 still
+   * calls them directly.
+   */
   demoteCanonical(scopeId: string, surface: string): void {
     this.sql.exec(
       'UPDATE hostnames SET canonical = 0 WHERE scope_id = ? AND surface = ?',
