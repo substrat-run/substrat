@@ -135,6 +135,19 @@ export function reservedRoleDefinitionRefusal(
   tenantRoles: readonly RoleShape[],
   seated = false,
 ): string | null {
+  return definitionRefusal(role, host, tenantRoles, seated)?.refusal ?? null;
+}
+
+/**
+ * `reservedRoleDefinitionRefusal` with why it refused (#2555): `seated`, a system-held definition of a
+ * key someone holds a seat in with no system-held definition stored; `keys`, a key the role may not hold.
+ */
+function definitionRefusal(
+  role: RoleShape,
+  host: HostReservations,
+  tenantRoles: readonly RoleShape[],
+  seated: boolean,
+): { reason: 'seated' | 'keys'; refusal: string } | null {
   const stored = tenantRoles.find((r) => r.key === role.key);
   const others = tenantRoles.filter((r) => r.key !== role.key);
   const personKey = (p: string) => host.declared.has(p) && !host.reserved.has(p);
@@ -146,12 +159,14 @@ export function reservedRoleDefinitionRefusal(
     // A row stored before the holder was recorded (#2480) is no exception: an upgrade admitted beside
     // a person's seat would leave a system-held row a later definition widens unjudged by its seats.
     if (stored?.holder !== 'system' && seated) {
-      return (
-        `role '${role.key}' is held by a principal (${storedAs(stored)}), so it cannot be declared holder: 'system': what kind ` +
-        `of principal holds a seat is not recorded, so the seat may be a person\'s. Take that seat back first, wherever it is ` +
-        `held (a scope, or the tenant; a host principal\'s seat can be given again after), keep the role defined across ` +
-        `releases, or define the system-held role under a new key (K-55)`
-      );
+      return {
+        reason: 'seated',
+        refusal:
+          `role '${role.key}' is held by a principal (${storedAs(stored)}), so it cannot be declared holder: 'system': what kind ` +
+          `of principal holds a seat is not recorded, so the seat may be a person\'s. Take that seat back first, wherever it is ` +
+          `held (a scope, or the tenant; a host principal\'s seat can be given again after), keep the role defined across ` +
+          `releases, or define the system-held role under a new key (K-55)`,
+      };
     }
     const personsKeys = new Map<string, string>();
     for (const r of others) if (r.holder !== 'system') for (const p of r.permissions) if (!personsKeys.has(p)) personsKeys.set(p, r.key);
@@ -162,10 +177,12 @@ export function reservedRoleDefinitionRefusal(
       return holder ? [`${p} (held by the person's role '${holder}')`] : [];
     });
     if (offences.length === 0) return null;
-    return (
-      `role '${role.key}' is declared holder: 'system' but holds ${offences.join(', ')}: a system-held role holds only ` +
-      `keys reserved to a system principal (K-55)`
-    );
+    return {
+      reason: 'keys',
+      refusal:
+        `role '${role.key}' is declared holder: 'system' but holds ${offences.join(', ')}: a system-held role holds only ` +
+        `keys reserved to a system principal (K-55)`,
+    };
   }
   // The stored system-held definition this one replaces is evidence too: its keys are reserved.
   if (stored?.holder === 'system') for (const p of stored.permissions) if (!bySystemRole.has(p)) bySystemRole.set(p, `its stored system-held definition`);
@@ -176,10 +193,12 @@ export function reservedRoleDefinitionRefusal(
     return by ? [`${p} (held by ${by})`] : [];
   });
   if (held.length === 0) return null;
-  return (
-    `role '${role.key}' is a person's role and would hold ${held.join(', ')}, reserved to a system principal: take the key ` +
-    `out, or declare a role made only of reserved keys holder: 'system' (K-55)`
-  );
+  return {
+    reason: 'keys',
+    refusal:
+      `role '${role.key}' is a person's role and would hold ${held.join(', ')}, reserved to a system principal: take the key ` +
+      `out, or declare a role made only of reserved keys holder: 'system' (K-55)`,
+  };
 }
 
 /** How the seated-key refusal names the stored row of the key, so it says only what is true of it. */
@@ -215,13 +234,13 @@ function firstRefusedRole(
   host: HostReservations,
   stored?: StoredRoles,
   judged: (role: RoleShape) => boolean = () => true,
-): { key: string; refusal: string } | null {
+): { key: string; reason: 'seated' | 'keys'; refusal: string } | null {
   for (const role of roles) {
     if (!judged(role)) continue;
     const own = stored?.roles.find((r) => r.key === role.key);
     const tenantRoles = [...roles.filter((r) => r.key !== role.key), ...(own ? [own] : [])];
-    const refusal = reservedRoleDefinitionRefusal(role, host, tenantRoles, stored?.seated.has(role.key) ?? false);
-    if (refusal) return { key: role.key, refusal };
+    const refused = definitionRefusal(role, host, tenantRoles, stored?.seated.has(role.key) ?? false);
+    if (refused) return { key: role.key, ...refused };
   }
   return null;
 }
@@ -243,7 +262,9 @@ function firstRefusedRole(
  *
  * Asked before anything is replaced, so a refused load moves nothing. The answer is one of two fixed
  * sentences naming the role key only: the rule's own wording is kept out of it, since it is read by
- * whoever sent the dump. The second names the case where the dump carries no definition of the role.
+ * whoever sent the dump. The second is chosen from the rule's reason, not from the dump's shape: the
+ * seat rule refused, and the dump carries no definition of the role to show its seats were made as a
+ * system principal's. A refusal over the keys the tenant's definition holds takes the first.
  */
 export function dumpRoleRefusal(
   roles: readonly RoleShape[],
@@ -255,8 +276,7 @@ export function dumpRoleRefusal(
   const inDump = (key: string) => stored.roles.some((r) => r.key === key);
   const refused = firstRefusedRole(roles, host, stored, (r) => stored.seated.has(r.key) || inDump(r.key));
   if (!refused) return null;
-  const role = roles.find((r) => r.key === refused.key);
-  if (role?.holder === 'system' && !inDump(refused.key) && stored.seated.has(refused.key)) {
+  if (refused.reason === 'seated' && !inDump(refused.key)) {
     return (
       `restore refused: the dump seats role '${refused.key}' but carries no definition of it, so its seats cannot be told ` +
       `from a person's, and the tenant now defines the role for a system principal (K-55); nothing was loaded`

@@ -4347,9 +4347,26 @@ export class SqliteScopeHost implements ScopeHost {
     try {
       await this.loadDump(input.tenantId, input.scopeId, { ...dump, exact: true }, undefined, recheck);
     } catch (e) {
-      // The scope was created for this import alone, and holds nothing loaded: it goes with the
-      // refusal (as a fork, which it is, `forkedFrom` stamped above), so a retry meets no scope.
-      if (refusedInLoad) await this.deleteSnapshot(actor, input.tenantId, input.scopeId);
+      // The scope was created for this import alone and holds nothing loaded, so it goes with the
+      // refusal, and a retry meets no scope. Best effort: the refusal is the answer whatever the
+      // teardown does, and a teardown that fails is a staff-only ops row (no tenant on it), with the
+      // scope left in `provisioning` for staff to reap. No admin row is written for the teardown:
+      // the import never happened, and its `provisionScope` row stays as the record of the attempt.
+      if (refusedInLoad) {
+        await this.dropScopeOutright(input.tenantId, input.scopeId).catch((teardown: unknown) => {
+          try {
+            this.writeOpsFailure({
+              actor,
+              operation: 'importScope',
+              stage: 'refused-import-teardown',
+              scopeId: input.scopeId,
+              message: `a refused import's scope could not be taken down: ${teardown instanceof Error ? teardown.message : String(teardown)}`,
+            });
+          } catch {
+            // Nothing more to do here: the refusal below is still the answer.
+          }
+        });
+      }
       throw e;
     }
     await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
@@ -4612,6 +4629,17 @@ export class SqliteScopeHost implements ScopeHost {
           `archive a primary scope instead`,
       );
     }
+    await this.dropScopeOutright(tenantId, scopeId);
+    this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
+      forkedFrom: rec.forkedFrom,
+      forkedAt: rec.forkedAt,
+      expiresAt: rec.expiresAt,
+      kind: rec.kind,
+    });
+  }
+
+  /** `deleteSnapshot`'s teardown, without its refusal or its audit row: the scope's stores, file and directory rows. */
+  private async dropScopeOutright(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     await this.wipeScopeStores(tenantId, scopeId);
     // Close and evict the runtime handle before touching the file.
     const rt = this.scopes.get(`${tenantId}/${scopeId}`);
@@ -4630,12 +4658,6 @@ export class SqliteScopeHost implements ScopeHost {
       forgetScopeStorage(redactionSqlOf(this.directory), scopeId);
       this.directory.prepare('DELETE FROM scopes WHERE scope_id = ?').run(scopeId);
     })();
-    this.recordAdmin(actor, 'deleteSnapshot', { tenantId, scopeId }, null, {
-      forkedFrom: rec.forkedFrom,
-      forkedAt: rec.forkedAt,
-      expiresAt: rec.expiresAt,
-      kind: rec.kind,
-    });
   }
 
   async getScope(

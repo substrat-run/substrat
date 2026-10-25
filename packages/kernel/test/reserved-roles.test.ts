@@ -365,6 +365,14 @@ describe('dumpRoleRefusal (#2555)', () => {
     expect(dumpRoleRefusal([systemRole], host, { tenantId: 't1', tables: [other, seats('role:member')] }, now)).toBe(undefinedInDump('member'));
   });
 
+  it('chooses the sentence from the reason: a refusal over the keys a definition holds is not blamed on the dump', () => {
+    // A person's role the tenant defines over a reserved key, seated by a dump with no role rows: the
+    // key is the reason, so the general sentence answers, not the one about a missing definition.
+    const reserving = { reserved: new Set(['a:run']), declared: new Set(['a:run']) };
+    const personRole = { key: 'member', permissions: ['a:run'], holder: 'person' as const };
+    expect(dumpRoleRefusal([personRole], reserving, { tenantId: 't1', tables: [seats('role:member')] }, now)).toBe(changed('member'));
+  });
+
   it('asks only about roles the dump seats or stores; twin: the same role is judged once the dump seats it', () => {
     // A system-held role holding a key a module declares for a person: the rule refuses it wherever it is asked about.
     const wide = { key: 'wide', permissions: ['a:use'], holder: 'system' as const };

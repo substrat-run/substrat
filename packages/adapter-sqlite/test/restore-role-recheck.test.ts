@@ -79,11 +79,33 @@ describe('#2555: a role defined after the first judgement is judged inside the l
       redefineDuringProvision('system');
       await expect(host.importScope(staff, { tenantId: t, scopeId: fresh }, dump)).rejects.toThrow(refused);
       expect((await host.admin.getScopeRecord(staff, t, fresh)) ?? null).toBeNull();
+      // The teardown is not a snapshot reap, so it is not audited as one.
+      expect((await host.admin.auditLog(staff)).map((e) => e.action)).not.toContain('deleteSnapshot');
       // Nothing is left for a retry to meet: once the role is a person's again, the same id imports.
       host.provisionScope = provision;
       await redefine('person');
       await host.importScope(staff, { tenantId: t, scopeId: fresh }, dump);
       expect((await host.admin.getScopeRecord(staff, t, fresh))?.status).toBe('active');
+    } finally {
+      await done();
+    }
+  });
+
+  it('import: a teardown that throws leaves the refusal as the answer, and files a staff-only ops row', async () => {
+    const { host, staff, t, dump, redefineDuringProvision, done } = await setup();
+    try {
+      const fresh = scopeId.parse(ulid());
+      redefineDuringProvision('system');
+      (host as unknown as { dropScopeOutright: () => Promise<void> }).dropScopeOutright = async () => {
+        throw new Error('disk gone');
+      };
+      await expect(host.importScope(staff, { tenantId: t, scopeId: fresh }, dump)).rejects.toThrow(refused);
+      const rows = (await host.admin.listOpsFailures(staff)).filter((r) => r.stage === 'refused-import-teardown');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ operation: 'importScope', scopeId: fresh, tenantId: null });
+      expect(rows[0]?.message).toContain('disk gone');
+      // The scope stays for staff to reap; the row is what names it.
+      expect((await host.admin.getScopeRecord(staff, t, fresh))?.status).toBe('provisioning');
     } finally {
       await done();
     }
