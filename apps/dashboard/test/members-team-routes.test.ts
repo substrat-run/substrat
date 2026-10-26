@@ -61,7 +61,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 
 const workerModule = '../src/worker.js';
 const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, executionCtx?: { waitUntil(p: Promise<unknown>): void; passThroughOnException(): void }): Response | Promise<Response> };
 };
 
 const PROVIDER = 'authhero';
@@ -166,7 +166,10 @@ function req(method: string, path: string, opts: { sub?: string | null; cookieTe
   const cookie = [sub ? `sb_session=${sub}` : '', opts.cookieTeam ? `sb_team=${opts.cookieTeam}` : ''].filter(Boolean).join('; ');
   const headers: Record<string, string> = { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) };
   const body = opts.body === undefined || method === 'GET' ? {} : { body: JSON.stringify(opts.body) };
-  return app.request(path, { method, headers, ...body }, env);
+  return app.request(path, { method, headers, ...body }, env, {
+    waitUntil() {},
+    passThroughOnException() {},
+  });
 }
 
 const inTeam = (t: Team | TenantId, rest: string) => `/api/teams/${typeof t === 'string' ? t : t.tenant}${rest}`;
@@ -210,6 +213,16 @@ const routesOf = (t: TenantId, id = ulid()) =>
   ] as const;
 
 describe('members & invites under /api/teams/:teamId (#2170)', () => {
+  it('/api/me reads the caller’s own dashboard/my-role, independent of the roster page', async () => {
+    const t = await team('sub-owner');
+    await join_(t, 'sub-viewer', 'viewer');
+    const owner = await req('GET', '/api/me');
+    const viewer = await req('GET', '/api/me', { sub: 'sub-viewer' });
+    expect(owner.status, await owner.clone().text()).toBe(200);
+    expect(viewer.status, await viewer.clone().text()).toBe(200);
+    expect(((await owner.json()) as { roleKey: string }).roleKey).toBe('owner');
+    expect(((await viewer.json()) as { roleKey: string }).roleKey).toBe('viewer');
+  });
   it('a team the caller is not in is a 404 on every route — before its input is parsed, and before its scope is opened', async () => {
     await team('sub-owner');
     const other = await team('sub-stranger', 'Other');

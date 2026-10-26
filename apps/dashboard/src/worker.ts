@@ -968,6 +968,8 @@ app.get('/api/me', async (c) => {
   const node = await resolveNode(host, STAFF, memo, memberships, getCookie(c, TEAM_COOKIE));
   rememberNode(memo, user.id, getCookie(c, TEAM_COOKIE), node, Date.now());
   if (!node) return problem(c, 401, 'unauthorized');
+  const roleKey = await (await host.getScope(node.principal, node.tenantId, node.scopeId))
+    .invoke<string | null>('dashboard/my-role', {});
   // Re-mirror this login's links into the shared plane's directory off the hot
   // path — the backfill for teams created before the mirror existed, and the
   // self-heal when a best-effort mirror was missed (see mirrorBuilderIdentity).
@@ -982,6 +984,7 @@ app.get('/api/me', async (c) => {
     name: user.name ?? null,
     teams: teamsOf(memberships),
     currentTeamId: node.tenantId,
+    roleKey,
   });
 });
 

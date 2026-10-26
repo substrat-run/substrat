@@ -946,11 +946,10 @@ export function App() {
   if (['audit', 'domains', 'team', 'integrations', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
-  // A hint for what to draw, never the gate: the dashboard's own scope refuses. Import
-  // keeps its existing fallback while Back out waits until the caller's role is known.
-  const teamRole = members.find((m) => m.principal === me.principal)?.role_key;
-  const isTeamAdmin = ['owner', 'admin'].includes(teamRole ?? 'owner');
-  const canRewind = ['owner', 'admin', 'member'].includes(teamRole ?? '');
+  // Hints for what to draw, never the gate: /api/me reads the caller's own role,
+  // independent of the roster page shown on Team. The dashboard scope still refuses.
+  const isTeamAdmin = ['owner', 'admin'].includes(me.roleKey ?? '');
+  const canRewind = ['owner', 'admin', 'member'].includes(me.roleKey ?? '');
 
   return (
     <DashShell

@@ -93,6 +93,8 @@ export interface Me {
   teams: Team[];
   /** The selected team's id (mirrors `tenant`); drives the switcher's checkmark. */
   currentTeamId: TenantId;
+  /** The caller's role on the selected team, independent of the roster's current page. */
+  roleKey: string | null;
 }
 
 export interface CatalogEntry {

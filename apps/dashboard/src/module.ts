@@ -1393,6 +1393,15 @@ const listMembersOp: OperationHandler<PagedInput, Page<DashboardMemberRow>> = as
   return mapPage(page, (row) => joinedAs(ctx, row));
 };
 
+/** The caller's role without paging through the roster displayed on the Team page. */
+const myRoleOp: OperationHandler<undefined, string | null> = async (ctx) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  return ctx.sql.query<{ role_key: string }>(
+    "SELECT role_key FROM dashboard_members WHERE principal = ? AND status IN ('active','joining')",
+    [ctx.principal],
+  )[0]?.role_key ?? null;
+};
+
 /**
  * A 'joining' row as it actually stands (#1184): the membership executor's journal for the
  * request its accept emitted. Read, never written back — a read must not mutate (#964).
@@ -2107,6 +2116,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     // roster route serves one page at a time. No declared input: the host hands a paged read an empty page request.
     paged: { sortKey: 'id', order: 'desc' },
   },
+  'dashboard/my-role': {
+    summary: 'Read the caller’s role on this team',
+    permission: DASHBOARD_PERM.read,
+    output: z.string().nullable(),
+  },
   'dashboard/remove-member': {
     summary: 'Remove a member from the team',
     permission: DASHBOARD_PERM.manageMembers,
@@ -2203,6 +2217,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/invite-link': inviteLinkOp,
     'dashboard/revoke-invite': revokeInviteOp,
     'dashboard/list-members': listMembersOp,
+    'dashboard/my-role': myRoleOp,
     'dashboard/remove-member': removeMemberOp,
     'dashboard/leave-self': leaveSelfOp,
     'dashboard/delete-team': deleteTeamOp,
