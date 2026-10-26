@@ -12,7 +12,8 @@ import { exportAppData, restoreAppData, listAppSnapshots } from '../src/provisio
  * The Export & import card's backend, embedded mode (preview-and-snapshots.md §8):
  * the check-then-effect helpers the worker's `/export` and `/restore` routes call.
  * Authorization runs in the caller's own dashboard scope (`dashboard/export-app-data`
- * / `dashboard/restore-app-data` gate on dashboard:provision-app); the effect is the
+ * gates on dashboard:provision-app, `dashboard/restore-app-data` on the owner's and
+ * admin's dashboard:restore-app-data, #2573); the effect is the
  * platform's exportScope/restoreScope. Connected mode routes the same calls through
  * the tenant-narrowed control plane — that seam is covered by authority.test.ts.
  */

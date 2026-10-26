@@ -11,6 +11,8 @@ import { MODULES, provisionDashboard } from '../src/index.js';
  * `POST /api/apps/:scopeId/restore` (#1869): the uploaded file's own `scopeId` reaches the
  * control plane as a SEPARATE `sourceScopeId` hint for the grant re-point, and the body's
  * `tenantId`/`scopeId` (which pick the keys that open sealed payloads) are unchanged by it.
+ * And the route is a team owner's or admin's (#2573): a member, who manages the team's apps
+ * otherwise, is refused before the plane is asked for anything, the safety copy included.
  *
  * Driven through the WORKER, with the plane behind the service binding a recorder, the way
  * `app-requests.test.ts` drives it; the seams the worker cannot run in Node are replaced the
@@ -51,7 +53,7 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
 
-describe("an app upload's own scope reaches the plane as a separate re-point hint (#1869)", () => {
+describe('the app restore route: who may upload (#2573), and the re-point hint (#1869)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   const tenant = tenantId.parse(ulid());
@@ -59,6 +61,8 @@ describe("an app upload's own scope reaches the plane as a separate re-point hin
   const appScope = scopeId.parse(ulid());
   /** Every restore body that reached the plane. */
   let restores: Record<string, unknown>[];
+  /** Every path the plane was asked for. */
+  let planeCalls: string[];
   let env: Record<string, unknown>;
 
   beforeEach(async () => {
@@ -67,13 +71,19 @@ describe("an app upload's own scope reaches the plane as a separate re-point hin
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     restores = [];
+    planeCalls = [];
 
     const owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'restores', name: 'Restores' });
     await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
-    await host.admin.linkIdentity(staff, {
-      provider: PROVIDER, externalId: 'sub-owner', principal: owner, tenantId: tenant, scopeId: dashScope,
-    });
+    const link = (sub: string, principal: typeof owner) =>
+      host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: sub, principal, tenantId: tenant, scopeId: dashScope });
+    await link('sub-owner', owner);
+    for (const role of ['admin', 'member'] as const) {
+      const p = principalId.parse(ulid());
+      await host.admin.assignRole(staff, { principalId: p, roleKey: role, node: { tenantId: tenant, scopeId: null } });
+      await link(`sub-${role}`, p);
+    }
     const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
     await dash.invoke('dashboard/provision-app', { appScopeId: appScope, verticalSlug: 'acme/widgets', name: 'Widgets' });
 
@@ -85,6 +95,7 @@ describe("an app upload's own scope reaches the plane as a separate re-point hin
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const path = new URL(String(url)).pathname.replace(/^\/api/, '');
+          planeCalls.push(path);
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           if (path.endsWith('/snapshots')) return Response.json({ id: ulid() }, { status: 201 });
           if (path.endsWith('/restore')) {
@@ -102,16 +113,28 @@ describe("an app upload's own scope reaches the plane as a separate re-point hin
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const upload = (file: Record<string, unknown>) =>
+  const upload = (file: Record<string, unknown>, as: 'owner' | 'admin' | 'member' = 'owner') =>
     app.request(
       `/api/apps/${appScope}/restore`,
       {
         method: 'POST',
-        headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+        headers: { cookie: `sb_session=sub-${as}`, 'content-type': 'application/json' },
         body: JSON.stringify({ tables: [{ name: 't', ddl: 'CREATE TABLE t (x)', columns: ['x'], rows: [] }], ...file }),
       },
       env,
     );
+
+  it('a member is refused with 403 before the plane is asked for anything, the safety copy included', async () => {
+    const res = await upload({}, 'member');
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('permission denied: dashboard:restore-app-data');
+    expect(planeCalls).toEqual([]);
+  });
+
+  it('an owner and an admin restore', async () => {
+    for (const as of ['owner', 'admin'] as const) expect((await upload({}, as)).status).toBe(200);
+    expect(restores).toHaveLength(2);
+  });
 
   it("sends the file's scopeId as sourceScopeId, and leaves tenantId/scopeId as the destination", async () => {
     const source = scopeId.parse(ulid());

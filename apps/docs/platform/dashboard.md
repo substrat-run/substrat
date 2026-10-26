@@ -128,7 +128,9 @@ who opens a table to see its rows is the one who asks what its columns mean. **P
 [described below](#previews-environments). **Export & import**: *Export* downloads the app's data
 as a `.dump.json` the CLI accepts (personal data redacted unless it's a staff/CLI full-fidelity
 export); *Import* replaces the app's data with an uploaded dump, behind a danger dialog and always
-after the platform forks a safety preview first.
+after the platform forks a safety preview first. Import is for a team **owner or admin**
+(`dashboard:restore-app-data`): a restore replaces the app's data and its permission state, so a
+member, who otherwise runs the team's apps, sees Export only and is refused with a 403.
 
 ### Deployments
 

@@ -145,6 +145,7 @@ export function AppDetail({
   onDeleted,
   authServers = [],
   teamApps = [],
+  canRestore = true,
 }: {
   /** The team the tab is on — hostname calls name it in their URL (#2170). */
   teamId: string;
@@ -156,6 +157,8 @@ export function AppDetail({
   authServers?: AppRow[];
   /** #2192: the team's app scope ids — where a related request in another app may be opened. */
   teamApps?: readonly string[];
+  /** #2573: whether to draw Import — a team owner's or admin's act. A hint; the server refuses. */
+  canRestore?: boolean;
 }) {
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
@@ -239,6 +242,7 @@ export function AppDetail({
           app={app}
           section={sub ?? 'tables'}
           onSection={(s) => onTab(s === 'tables' ? 'data' : `data/${s}`)}
+          canRestore={canRestore}
         />
       )}
       {main === 'deployments' && <Deployments teamId={teamId} app={app} />}
@@ -2115,9 +2119,10 @@ function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
  * `scope pull`/`scope restore`). Export downloads the app's data as a `.dump.json`
  * the CLI accepts; Import replaces the app's data with an uploaded dump — behind a
  * danger dialog, and always after the platform forks a safety preview (visible in
- * the Previews tab).
+ * the Previews tab). Import is a team owner's or admin's (#2573): a restore replaces
+ * the app's permission state with the file's too.
  */
-function ExportImport({ app }: { app: AppRow }) {
+function ExportImport({ app, canRestore }: { app: AppRow; canRestore: boolean }) {
   const [exporting, setExporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [pending, setPending] = useState<{ name: string; tables: DumpTable[]; rows: number } | null>(null);
@@ -2197,9 +2202,14 @@ function ExportImport({ app }: { app: AppRow }) {
         </span>
         <div style={{ flex: 1 }} />
         <Button onClick={doExport} disabled={exporting}>{exporting ? 'Exporting…' : 'Export data'}</Button>
-        <Button variant="secondary" onClick={() => fileRef.current?.click()} disabled={restoring}>Import data…</Button>
-        <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={(e) => onFile(e.target.files?.[0])} />
+        {canRestore && (
+          <>
+            <Button variant="secondary" onClick={() => fileRef.current?.click()} disabled={restoring}>Import data…</Button>
+            <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }} onChange={(e) => onFile(e.target.files?.[0])} />
+          </>
+        )}
       </div>
+      {!canRestore && <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Replacing an app’s data needs an owner or admin of the team.</div>}
       {note && <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>{note}</div>}
       <Dialog
         open={pending !== null}
@@ -3111,7 +3121,7 @@ const DATA_SECTIONS = [
  * exactly there). Previews is here because a preview IS a copy of this scope's data
  * with a URL, which makes it a data fact, not a fifth noun.
  */
-export function Data({ teamId, app, section, onSection }: { teamId: string; app: AppRow; section: string; onSection: (s: string) => void }) {
+export function Data({ teamId, app, section, onSection, canRestore = true }: { teamId: string; app: AppRow; section: string; onSection: (s: string) => void; canRestore?: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={DATA_SECTIONS} value={section} onChange={onSection} />
@@ -3124,7 +3134,7 @@ export function Data({ teamId, app, section, onSection }: { teamId: string; app:
         </div>
       )}
       {section === 'previews' && <Previews teamId={teamId} app={app} />}
-      {section === 'export' && <ExportImport app={app} />}
+      {section === 'export' && <ExportImport app={app} canRestore={canRestore} />}
     </div>
   );
 }
