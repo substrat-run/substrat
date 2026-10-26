@@ -51,7 +51,7 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     const admin = host().admin;
     await admin.createTenant(staff, { id: mine, slug: `acme-${mine.toLowerCase()}`, name: 'Acme' });
     await admin.createTenant(staff, { id: stranger, slug: takenSlug, name: 'Tenant A' });
-    await admin.createTenant(staff, { id: customer, slug: `customer-${customer.toLowerCase()}`, name: 'Customer' });
+    await admin.createTenant(staff, { id: customer, slug: `customer-${customer.toLowerCase()}`, name: 'Customer', provisionedByTenant: mine });
     await admin.registerVertical(staff, { slug: managerVertical, name: 'Manager', source: 'builtin', entitlements: ['flows'] });
     await admin.setVerticalTenantProvisioner(staff, managerVertical, true);
     for (const [t, s, vertical] of [
@@ -219,6 +219,35 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     );
     expect(taken).toMatchObject({ status: 'failed', lastError: `tenant slug '${takenSlug}' is already taken (slugs are unique)` });
     expect(JSON.stringify(taken)).not.toContain(stranger);
+  });
+
+  it("both kinds act only on a tenant the manager provisioned (#2564): one sentence for any other, existing or not", async () => {
+    const unbound = { host: host(), actor: staff, resolveVerticalForScope: async () => undefined };
+    const provision = (id: string, scope = ulid()) =>
+      drain(mine, manager, managerVertical, intent('provision-tenant', {
+        tenant: { id, slug: `own-${id.toLowerCase()}`, name: 'Own' },
+        instance: { vertical: 'managed-product', scopeId: scope, slug: 'main', name: 'Main', owner },
+        entitlements: [],
+      }), provisionTenantHandler(unbound));
+    // The manager's own tenant, created by the first pass, passes the check on the retry and
+    // reaches the next refusal: no deployment is bound in this file.
+    const [own, ownScope] = [ulid(), ulid()];
+    for (let pass = 0; pass < 2; pass++) {
+      expect((await provision(own, ownScope)).lastError).toBe("no deployment is bound for vertical 'managed-product'");
+    }
+    const refused = {
+      status: 'failed',
+      lastError: "the payload's tenant was not provisioned by this vertical's tenant",
+      failure: { origin: 'platform', code: 'permission_denied', permission: null },
+    };
+    expect(await provision(stranger)).toMatchObject(refused);
+    for (const t of [stranger, ulid()]) {
+      const settled = await drain(mine, manager, managerVertical,
+        intent('set-entitlements', { tenantId: t, authScopeId: ulid(), plan: 'x', entitlements: [] }),
+        setEntitlementsHandler(unbound));
+      expect(settled).toMatchObject(refused);
+    }
+    expect(await host().admin.listScopes(staff, { tenantId: stranger })).toEqual([]);
   });
 
   it("set-entitlements: a failing reconcile of the managed tenant's instance journals the step", async () => {

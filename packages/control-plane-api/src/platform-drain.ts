@@ -916,9 +916,9 @@ export function peerInvokeHandler(deps: PeerInvokeDeps): PlatformRequestHandler 
  *     `provision-tenant` payload's vertical must be among the declared targets. Phased:
  *     a granted manager with no declaration keeps its unbounded #444 behavior until its
  *     next push declares (then the bound engages, reviewably).
- *
- * Still phased (#412 invariant 2, before any third-party manager): `tenants.provisionedBy`
- * ownership — until it exists, a listed manager can `set-entitlements` on any tenant.
+ *  4. ownership (#412 invariant 2, #2564) — the payload's tenant must be one the manager's
+ *     tenant provisioned (`provisionedByTenant`), so a manager acts only on what it made.
+ *     A tenant created any other way, or before the stamp existed, is refused.
  */
 export interface ManagedTenantDeps {
   host: ScopeHost;
@@ -978,6 +978,26 @@ async function admitManager(
     }
   }
   return { declared };
+}
+
+/**
+ * The manager's ownership bound (#2564): the refusal when `tenantId` is not a tenant the drained
+ * scope's tenant provisioned, or `undefined` when it is. The sentence names no tenant. For
+ * `set-entitlements` it is the same for a foreign tenant and a missing one; `provision-tenant` runs
+ * this after its create, so a free id is created and an existing tenant it does not own is refused.
+ */
+async function refuseUnmanagedTenant(
+  deps: ManagedTenantDeps,
+  ctx: PlatformRequestContext,
+  tenantId: TenantId,
+): Promise<PlatformRequestOutcome | undefined> {
+  const tenant = await deps.host.admin.getTenant(deps.actor, tenantId);
+  if (tenant?.provisionedByTenant === ctx.tenantId) return undefined;
+  return {
+    status: 'failed',
+    error: "the payload's tenant was not provisioned by this vertical's tenant",
+    failure: { origin: 'platform', code: 'permission_denied', permission: null },
+  };
 }
 
 /**
@@ -1047,6 +1067,10 @@ export function provisionTenantHandler(deps: ManagedTenantDeps): PlatformRequest
       if (message.includes('slugs are unique')) return { status: 'failed', error: message };
       throw e;
     }
+    // After the create, which is a no-op on an existing id: the read sees whichever create won,
+    // so a retry of the manager's own tenant passes and anyone else's stops before any write.
+    const unmanaged = await refuseUnmanagedTenant(deps, ctx, tenantId);
+    if (unmanaged) return unmanaged;
     // #2556: from here every write and call concerns the tenant being provisioned and the
     // payload vertical's deployment, neither of them the manager's, so a throw's text is withheld
     // from the manager's journal: it learns the step, and staff read the text under the reference.
@@ -1223,6 +1247,8 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
     const admin = deps.host.admin;
     const tenantId = tenantIdSchema.parse(payload.tenantId);
     const scopeId = scopeIdSchema.parse(payload.authScopeId);
+    const unmanaged = await refuseUnmanagedTenant(deps, ctx, tenantId);
+    if (unmanaged) return unmanaged;
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) {
       return { status: 'failed', error: `unknown scope for tenant: (${tenantId}, ${scopeId})` };
