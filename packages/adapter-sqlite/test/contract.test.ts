@@ -773,6 +773,16 @@ attachmentTextContractSuite('adapter-sqlite', async (options = {}) => {
         db.close();
       }
     },
+    plantRows: async (tenant, scope, statements) => {
+      const db = new Database(join(dir, `${tenant}__${scope}.sqlite`));
+      try {
+        db.transaction(() => {
+          for (const [sql, ...params] of statements) db.prepare(sql).run(...params);
+        })();
+      } finally {
+        db.close();
+      }
+    },
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

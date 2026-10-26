@@ -1960,7 +1960,11 @@ const attachmentHostFixture = async (options: AttachmentTextHostOptions = {}) =>
         ATTACHMENT_TEXT_JOB,
       );
     });
-  return { host, forgetAttachmentText, cleanup: async () => host.close() };
+  const plantRows = async (_tenant: TenantId, scope: ScopeId, statements: readonly (readonly [string, ...(string | number)[]])[]) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+      for (const [sql, ...params] of statements) state.storage.sql.exec(sql, ...params);
+    });
+  return { host, forgetAttachmentText, plantRows, cleanup: async () => host.close() };
 };
 capabilityAttachmentContractSuite('adapter-cloudflare', attachmentHostFixture);
 

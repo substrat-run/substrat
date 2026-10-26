@@ -70,9 +70,29 @@ const PERM_READ = permissionKey.parse('perm:read');
 const PERM_USE = permissionKey.parse('perm:use');
 const item = (id: string): EntityRef => ({ entityType: 'item', entityId: id });
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
-const UPLOAD_BATCH_SIZE = 20;
 /** For a test that uploads and extracts thousands of files: the setup, not the search, takes the time. */
 const SETUP_HEAVY_MS = 120_000;
+
+/**
+ * The rows an upload and its extraction would leave for a text file, written directly: the id
+ * is fixed (`n` in hex, so ids order as `n` does), as is the time.
+ */
+const plantedIndexed = (n: number, entityId: string, filename: string, text: string): PlantStatement[] => {
+  const id = n.toString(16).toUpperCase().padStart(26, '0');
+  const at = '2026-10-01T00:00:00.000Z';
+  return [
+    [
+      `INSERT INTO _substrat_attachments (id, entity_type, entity_id, filename, content_type, size, sha256, visibility, created_by, created_at)
+       VALUES (?, 'item', ?, ?, 'text/plain', ?, ?, 'internal', ?, ?)`,
+      id, entityId, filename, text.length, '0'.repeat(64), 'planted', at,
+    ],
+    [
+      `INSERT INTO _substrat_search__attachment_text (attachment_id, status, extractor, body, body_bytes, truncated, updated_at)
+       VALUES (?, 'indexed', 'text', ?, ?, 0, ?)`,
+      id, text, new TextEncoder().encode(text).length, at,
+    ],
+  ];
+};
 
 
 /** What a fixture builds its host with. Omitted extractors are the host's real ones. */
@@ -88,7 +108,16 @@ export interface AttachmentTextHostFixture extends ScopeHostFixture {
    * to the store, since no host surface may write the spine.
    */
   forgetAttachmentText(tenantId: TenantId, scopeId: ScopeId): Promise<void>;
+  /**
+   * Run these statements straight against the scope's store, in one batch — for a test whose
+   * subject is a page or a cap that uploads would take minutes to reach. No host surface
+   * writes the spine, so a fixture reaches the store the way `forgetAttachmentText` does.
+   */
+  plantRows(tenantId: TenantId, scopeId: ScopeId, statements: readonly PlantStatement[]): Promise<void>;
 }
+
+/** One statement of a planted batch: the SQL, then its bound parameters. */
+export type PlantStatement = readonly [sql: string, ...params: (string | number)[]];
 
 export function attachmentTextContractSuite(
   adapterName: string,
@@ -304,19 +333,17 @@ export function attachmentTextContractSuite(
         const control = await newScope();
         for (const scope of [s, control]) {
           await grant(scope, bob, item('allowed'));
-          await upload(scope, item('allowed'), 'old.txt', 'text/plain', bytes('the margay ledger, readable'));
+          await fixture.plantRows(t, scope, plantedIndexed(0, 'allowed', 'old.txt', 'the margay ledger, readable'));
         }
-        // Every one of these is NEWER than old.txt. A scan bound applied before the gate would
-        // have spent itself on them and handed bob nothing.
-        // Keep the producer path, but pipeline a bounded number of independent uploads.
-        for (let i = 0; i < 1001; i += UPLOAD_BATCH_SIZE) {
-          await Promise.all(Array.from({ length: Math.min(UPLOAD_BATCH_SIZE, 1001 - i) }, (_, offset) => {
-            const n = i + offset;
-            return upload(s, item('denied'), `hidden-${n}.txt`, 'text/plain', bytes(`the margay ledger, hidden ${n}`));
-          }));
-        }
-        await extract(s);
-        await extract(control);
+        // Every one of these is NEWER than old.txt (a greater id). A scan bound applied before the
+        // gate would have spent itself on them and handed bob nothing.
+        await fixture.plantRows(
+          t,
+          s,
+          Array.from({ length: 1001 }, (_, n) =>
+            plantedIndexed(n + 1, 'denied', `hidden-${n}.txt`, `the margay ledger, hidden ${n}`),
+          ).flat(),
+        );
         for (const limit of [1, 20]) {
           const page = (await search(s, bob, 'margay', limit)).map((r) => r.filename);
           expect(page).toEqual(['old.txt']);
@@ -326,7 +353,7 @@ export function attachmentTextContractSuite(
         const editors = await search(s, editor, 'margay', 20);
         expect(editors).toHaveLength(20);
         expect(editors.map((r) => r.filename)).not.toContain('old.txt');
-      }, SETUP_HEAVY_MS);
+      });
 
       it('is not "wide" for a node-level grant on a different key, nor for an entity grant alone', async () => {
         const s = await newScope();
@@ -346,13 +373,13 @@ export function attachmentTextContractSuite(
       it('refuses a narrowed caller past the owner cap — the same for a term with matches and one without', async () => {
         const s = await newScope();
         await grant(s, bob, item('o0'));
-        for (let i = 0; i <= ATTACHMENT_SEARCH_OWNER_MAX; i += UPLOAD_BATCH_SIZE) {
-          await Promise.all(Array.from({ length: Math.min(UPLOAD_BATCH_SIZE, ATTACHMENT_SEARCH_OWNER_MAX + 1 - i) }, (_, offset) => {
-            const n = i + offset;
-            return upload(s, item(`o${n}`), `o${n}.txt`, 'text/plain', bytes(n === 0 ? 'the jerboa note' : 'filler only'));
-          }));
-        }
-        await extract(s);
+        await fixture.plantRows(
+          t,
+          s,
+          Array.from({ length: ATTACHMENT_SEARCH_OWNER_MAX + 1 }, (_, n) =>
+            plantedIndexed(n, `o${n}`, `o${n}.txt`, n === 0 ? 'the jerboa note' : 'filler only'),
+          ).flat(),
+        );
         const refusalOf = async (term: string) => {
           const err = await search(s, bob, term).then(
             () => undefined,
@@ -365,7 +392,7 @@ export function attachmentTextContractSuite(
         expect(await refusalOf('nothingmatchesthis')).toEqual(refused); // no match at all
         // The twin: a caller who reads the type at the scope is never refused.
         expect((await search(s, editor, 'jerboa')).map((r) => r.filename)).toEqual(['o0.txt']);
-      }, SETUP_HEAVY_MS);
+      });
 
       it('records no denial for a hit it withheld — nobody asked for that row', async () => {
         const s = await newScope();
