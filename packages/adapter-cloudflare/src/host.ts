@@ -5389,9 +5389,13 @@ export class CloudflareScopeHost implements ScopeHost {
       reprojected = converged.reprojected;
       if ('error' in converged) {
         // A scope this call created is not activated, and goes as a refused import does. One that
-        // existed has had its rows replaced by the committed load, so that is recorded first.
+        // existed has had its rows replaced by the committed load, so its stores follow the load
+        // (as a restore's do) and the import is recorded first.
         if (created) await this.dropRefusedImport(actor, input.tenantId, input.scopeId, created);
-        else await this.recordImport(actor, input, dump, reprojected);
+        else {
+          await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
+          await this.recordImport(actor, input, dump, reprojected);
+        }
         throw converged.error;
       }
     }
