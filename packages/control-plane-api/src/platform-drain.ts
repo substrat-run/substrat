@@ -47,6 +47,8 @@ import {
   sweepRunsPayload,
   neutralUpstreamMarkers,
   withoutUpstreamReference,
+  grantableEntitlements,
+  bareSlug,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
@@ -943,10 +945,9 @@ async function admitManager(
   ctx: PlatformRequestContext,
   requestedKeys: string[],
   targetVertical?: string,
-): Promise<{ declared: string[] } | { refusal: PlatformRequestOutcome }> {
-  const registered = (await deps.host.admin.listVerticals(deps.actor)).find(
-    (v) => v.slug === ctx.vertical,
-  );
+): Promise<{ declared: string[]; revocable: string[] } | { refusal: PlatformRequestOutcome }> {
+  const verticals = await deps.host.admin.listVerticals(deps.actor);
+  const registered = verticals.find((v) => v.slug === ctx.vertical);
   if (!registered?.tenantProvisioner) {
     // Undeclared vs declared-but-ungranted (#455): the former is a manifest fix the
     // vertical author makes alone; the latter is a request already on the console's
@@ -966,7 +967,12 @@ async function admitManager(
       },
     };
   }
-  const declared = registered.entitlements ?? [];
+  // #2388: only keys the manager may declare, so a row pushed before the rule grants nothing foreign.
+  const declared = grantableEntitlements(
+    ctx.vertical,
+    registered.entitlements ?? [],
+    verticals.map((v) => bareSlug(v.slug)),
+  );
   for (const key of requestedKeys) {
     if (!declared.includes(key)) {
       return {
@@ -977,7 +983,8 @@ async function admitManager(
       };
     }
   }
-  return { declared };
+  // A revoke widens nothing, so a key declared before the rule can still be taken back.
+  return { declared, revocable: registered.entitlements ?? [] };
 }
 
 /**
@@ -1258,7 +1265,7 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
     let step = 'reconciling its entitlements';
     try {
       const target = new Map(payload.entitlements.map((e) => [e.key, e.plan]));
-      for (const key of admitted.declared) {
+      for (const key of admitted.revocable) {
         if (target.has(key)) {
           await admin.grantEntitlement(actor, tenantId, key, { plan: target.get(key) });
         } else {

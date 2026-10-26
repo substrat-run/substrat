@@ -12,7 +12,7 @@
  * break at install time and damage the name it exists to protect.
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -70,7 +70,7 @@ function usage() {
 function toPackageName(dir) {
   const name = basename(resolve(dir))
     .toLowerCase()
-    .replace(/[^a-z0-9-~]+/g, '-')
+    .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^[-_.]+|[-_.]+$/g, '');
   return name || 'substrat-vertical';
 }
@@ -227,6 +227,12 @@ function main() {
   // Generated configs — these need the project name, so they aren't in the template.
   const name = toPackageName(target);
   writeFileSync(join(dest, 'package.json'), packageJson(name));
+  // The gate key is the project's registry slug (the package name): a vertical may declare only
+  // its own slug and the engines' keys (#2388), so the template's `bikeshop` becomes the name.
+  for (const file of ['src/manifest.ts', 'src/provision.ts']) {
+    const path = join(dest, file);
+    writeFileSync(path, readFileSync(path, 'utf8').replace(/(entitlementKey: |ENTITLEMENT_KEYS = \[[^\]]*)'bikeshop'/, `$1'${name}'`));
+  }
   writeFileSync(join(dest, 'tsconfig.json'), TSCONFIG);
   writeFileSync(join(dest, 'vitest.config.ts'), VITEST_CONFIG);
   writeFileSync(join(dest, '.gitignore'), GITIGNORE);

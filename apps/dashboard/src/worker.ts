@@ -22,7 +22,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
+import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
@@ -879,7 +879,13 @@ async function installSpecFor(
       // A vertical that declares no `entitlements` still gates on its own
       // `entitlementKey` (slug, by convention) — derive it, or the install grants
       // NOTHING and every gated operation fails closed on first use (#443).
-      entitlements: installEntitlements(slug, registered?.entitlements, cat?.entitlements),
+      // The deployment's own registry holds builtins, never a manager, so the plain-vertical rule
+      // applies (#2388); a pushed vertical's rows were already reduced by the plane's catalog.
+      entitlements: installEntitlements(
+        slug,
+        registered?.entitlements && grantableEntitlements(slug, registered.entitlements),
+        cat?.entitlements && grantableEntitlements(slug, cat.entitlements),
+      ),
       ownerGrants: (registered?.ownerGrants ?? cat?.ownerGrants ?? []) as PermissionKey[],
       envSpec: registered?.envSpec ?? cat?.envSpec ?? [],
     };

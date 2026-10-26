@@ -162,6 +162,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
+import { ENGINE_ENTITLEMENT_KEYS, bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
@@ -8164,6 +8165,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * vertical stays owner-only, and so do the reads narrowed on purpose (migration SQL,
    * the prod history).
    */
+  /** The bare slug of every registered vertical: what a manager's SKU may not be (#2388). */
+  const verticalSlugsOf = async (actor: PlatformActorId): Promise<string[]> =>
+    (await host.admin.listVerticals(actor)).map((v) => bareSlug(v.slug));
+
   /**
    * Whether a CONFINED principal may grant its own tenant `key` (#977): some vertical it
    * can read — its own, or a listed one — declares the key, or is the vertical whose
@@ -8171,15 +8176,44 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * (`installEntitlements`), checked here so a credential cannot grant what no install
    * would. Read through the configured host: a check audits nothing.
    */
+  /**
+   * The refusal for REGISTERING a vertical whose bare slug is a plan SKU a manager declares (#2388),
+   * so the manager's key does not change meaning under a later registration. A manager is a row that
+   * holds the tenant-provisioner capability or declares `provisions` (the capability is granted after
+   * the first push). Its own slug and the engine keys are always declarable, so they reserve nothing.
+   * Only a new slug is judged; the sentence names no other vertical.
+   */
+  const slugClaimsSku = async (actor: PlatformActorId, slug: string): Promise<string | undefined> => {
+    const all = await host.admin.listVerticals(actor);
+    if (all.some((v) => v.slug === slug)) return undefined;
+    const name = bareSlug(slug);
+    return all.some(
+      (v) =>
+        (v.tenantProvisioner || v.provisions?.length) &&
+        bareSlug(v.slug) !== name &&
+        !ENGINE_ENTITLEMENT_KEYS.includes(name) &&
+        v.entitlements?.includes(name),
+    )
+      ? `'${bareSlug(slug)}' is not available as a vertical name`
+      : undefined;
+  };
+
+  /** The declared keys of a registry row that an install may grant: a manager's include plan SKUs. */
+  const grantableOf = (v: { slug: string; entitlements?: string[]; tenantProvisioner?: boolean }, slugs: string[]): string[] =>
+    grantableEntitlements(v.slug, v.entitlements ?? [], v.tenantProvisioner ? slugs : undefined);
+
   const tenantGrantable = async (p: Principal, key: string): Promise<boolean> => {
     const pin = confinedTenant(p);
     if (pin === null) return true;
-    const visible = (await host.admin.listVerticals(p.actor)).filter((v) => v.ownerTenant === pin || v.listed);
-    return visible.some((v) =>
-      v.entitlements && v.entitlements.length > 0
-        ? v.entitlements.includes(key)
-        : (v.slug.split('/').pop() || v.slug) === key,
-    );
+    const all = await host.admin.listVerticals(p.actor);
+    const slugs = all.map((v) => bareSlug(v.slug));
+    const visible = all.filter((v) => v.ownerTenant === pin || v.listed);
+    return visible.some((v) => {
+      // The install's own derivation (`installEntitlements`): the declared keys the vertical may
+      // declare, else its bare slug.
+      const grantable = grantableOf(v, slugs);
+      return (grantable.length > 0 ? grantable : declarableEntitlementKey(v.slug, bareSlug(v.slug), v.tenantProvisioner ? slugs : undefined) ? [bareSlug(v.slug)] : []).includes(key);
+    });
   };
 
   const notReadable = async (p: Principal, slug: string): Promise<boolean> => {
@@ -8263,7 +8297,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               (ownerTenant === undefined || v.ownerTenant === ownerTenant) &&
               (visibleTo === undefined || v.listed || v.ownerTenant === visibleTo),
           );
-    return c.json(pageSlice(visible, page, (v) => v.slug));
+    // The install catalog (`visibleTo`) carries what an install may grant, not what a row declared
+    // before the namespace rule (#2388), so the dashboard's install and the grant paths agree.
+    const slugs = visibleTo === undefined || p.kind === 'builder' ? [] : all.map((v) => bareSlug(v.slug));
+    const rows =
+      visibleTo === undefined || p.kind === 'builder'
+        ? visible
+        : visible.map((v) => (v.entitlements ? { ...v, entitlements: grantableOf(v, slugs) } : v));
+    return c.json(pageSlice(rows, page, (v) => v.slug));
   });
 
   // -- the service→dimensions resolver (#1231's last item) -----------------------
@@ -8372,6 +8413,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const owner = await ownerOf(p.actor, input.slug);
       if (owner !== undefined && owner !== p.tenantId) return refuse(c, 'forbidden', 'forbidden');
       input.ownerTenant = p.tenantId;
+    }
+    const claimed = await slugClaimsSku(c.get('actor'), input.slug);
+    if (claimed) return refuseStatus(c, 422, claimed);
+    // #2388: the same declaration rule as a push, for any principal that is not staff.
+    if (p.kind !== 'staff') {
+      const foreignKey = entitlementNamespaceRefusal(
+        input.slug,
+        input.entitlements ?? [],
+        input.provisions?.length ? await verticalSlugsOf(c.get('actor')) : undefined,
+      );
+      if (foreignKey) return refuseStatus(c, 422, foreignKey);
     }
     await c.var.admin.registerVertical(c.get('actor'), input);
     // Idempotent on the slug (a conflicting re-register throws below the seam), so
@@ -9579,6 +9631,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!modules.some((m) => m.name === manifest.entry)) {
       return refuse(c, 'validation_failed', `entry module '${manifest.entry}' is not among the uploaded files`);
     }
+
+    // #2388: a new version declares only keys its vertical may (its own, the engines', and those of
+    // the verticals it provisions). The capability is granted after a first push, so the declaration
+    // is judged here and honoured by the grant paths only for a tenant-provisioner. Earlier versions
+    // are not re-judged.
+    // Declaring `provisions` marks a manager: the capability itself is granted after a first push.
+    const foreignKey = entitlementNamespaceRefusal(
+      slug,
+      manifest.entitlements ?? [],
+      manifest.provisions?.length ? await verticalSlugsOf(c.get('actor')) : undefined,
+    );
+    if (foreignKey) return refuseStatus(c, 422, foreignKey);
+    const claimed = await slugClaimsSku(c.get('actor'), slug);
+    if (claimed) return refuseStatus(c, 422, claimed);
 
     // The static-asset half of the §4 sandbox contract (self-serve-deploy.md §4.1). The
     // bytes are inert — no code, no authority — so they are ACCEPTED; the content-address

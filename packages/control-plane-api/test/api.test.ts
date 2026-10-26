@@ -5621,6 +5621,39 @@ describe('control-plane API — deploy', () => {
     expect(res.status).toBe(403);
   });
 
+  it("refuses a push declaring another vertical's entitlement key before anything is uploaded, and takes its own and an engine's (#2388)", async () => {
+    const before = deployed.length;
+    const res = await push('fsm-keys', form(manifest({ entitlements: ['fsm-keys', 'crm'] })));
+    expect(res.status).toBe(422);
+    expect(await res.text()).toMatch(/entitlement 'crm' is not declarable by 'fsm-keys'/);
+    expect(deployed).toHaveLength(before);
+    expect((await host.admin.listVerticals(staff)).map((v) => v.slug)).not.toContain('fsm-keys');
+    const ok = await push('fsm-keys', form(manifest({ entitlements: ['fsm-keys', 'protocol'] })));
+    expect(ok.status).toBe(201);
+  });
+
+  it("refuses to register a vertical named for a plan SKU a tenant-provisioner declares, and takes any other name (#2388)", async () => {
+    await host.admin.registerVertical(staff, { slug: 'sku-console', name: 'Console', source: 'cli', entitlements: ['flows'] });
+    await host.admin.setVerticalTenantProvisioner(staff, 'sku-console', true);
+    const res = await push('flows', form(manifest()));
+    expect(res.status).toBe(422);
+    expect(await res.text()).toMatch(/'flows' is not available as a vertical name/);
+    expect((await push('flows-2', form(manifest()))).status).toBe(201);
+  });
+
+  it('reserves the SKUs of a manager that only declares provisions, but not its own slug or an engine key (#2388)', async () => {
+    await host.admin.registerVertical(staff, {
+      slug: 'pre-console',
+      name: 'Pre',
+      source: 'cli',
+      entitlements: ['pre-console', 'invoicing', 'vault'],
+      provisions: ['managed'],
+    });
+    expect((await push('vault', form(manifest()))).status).toBe(422);
+    // Always declarable by their holders, so they must not block a name.
+    expect((await push('invoicing', form(manifest()))).status).toBe(201);
+  });
+
   it('400s when the entry module is not among the uploaded files', async () => {
     const res = await push('fsm', form(manifest({ entry: 'missing.js' })));
     expect(res.status).toBe(400);

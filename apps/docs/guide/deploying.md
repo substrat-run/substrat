@@ -166,9 +166,10 @@ renders when someone installs your vertical, no catalog edit needed:
 
 - `entitlements` — the full entitlement set an install grants the installing tenant (your
   own SKU flag plus any engine you compose, e.g. `["helpdesk", "workorder"]`). **Absent, the
-  platform derives your slug** — so a vertical whose module gates on
-  `entitlementKey: '<slug>'` (the convention) installs entitled to itself out of the box.
-  Declare the list explicitly the moment you gate on anything else.
+  platform derives your slug.** Your module gates on `entitlementKey: '<slug>'` — the key is
+  your slug, plus the engines' keys. A push declaring any other key is refused; so is the
+  platform's (`dashboard`, `builder`). A tenant-provisioner manager (one declaring `provisions`)
+  may also declare plan SKUs, as long as none is another vertical's slug.
 - `ownerGrants` — the permissions the installing owner holds inside the fresh scope on day
   one.
 - `envSpec` / `surfaces` — the install form's config fields and your declared UI surfaces.

@@ -395,6 +395,12 @@ export function enclosingNames(names, all) {
  */
 export const READS = [
   { reader: '@substrat-run/console', paths: /^engines\/[^/]+\/src\/index\.ts$/, suite: 'apps/console/test/skus.test.ts' },
+  // The engine keys contracts publishes, held to what every engine declares on disk.
+  {
+    reader: '@substrat-run/contracts',
+    paths: /^engines\/[^/]+\/src\/index\.ts$/,
+    suite: 'packages/contracts/test/entitlement-namespace.test.ts',
+  },
   // The local source answered over a real vertical's artifacts, not only the suite's world.
   {
     reader: '@substrat-run/console-data',

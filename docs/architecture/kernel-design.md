@@ -815,6 +815,20 @@ Loading rule: the kernel loads a module only if the tenant's entitlements includ
 `entitlementKey` and the semver ranges are satisfiable. Entitlements are kernel-owned
 precisely because they gate this loader (D-20).
 
+**Who may declare which key ([#2388](https://github.com/substrat-run/substrat/issues/2388)).**
+A key is one flat word, so a vertical declares only keys inside its own namespace: its bare
+slug (a workspace prefix is not part of the key) and the keys the platform publishes for engines
+(`ENGINE_ENTITLEMENT_KEYS`). A tenant-provisioner manager sells plan SKUs of the products it
+creates, so it may also declare any key that is not the bare slug of another registered vertical
+(a push declaring `provisions` is judged as a manager; the grant paths honour it only once staff
+grant the capability). A platform-granted key
+(`PLATFORM_ENTITLEMENT_KEYS`: the dashboard's and the builder studio's) is declarable by no
+vertical. A push declaring anything else is refused (422). Where an install or a grant derives
+keys from a registry row (the dashboard install, a manager's `provision-tenant` /
+`set-entitlements`, a confined credential's grant) the same predicate filters the row, so a
+vertical pushed before the rule grants nothing foreign; its published versions keep loading,
+since their own `entitlementKey` gate is untouched.
+
 **One exception: a module's own declared schedule, fired through the system door
 ([#1654](https://github.com/substrat-run/substrat/issues/1654)).** A composed engine's
 schedule runs in the engine's name (meridian composes `engine-absence` by call, and

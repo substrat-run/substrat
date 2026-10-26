@@ -1193,6 +1193,26 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(outcome.error).toMatch(/'not-declared' is not among the SKUs/);
   });
 
+  it("ignores a declared SKU that is another vertical's slug or a platform key, even for a manager (#2388)", async () => {
+    await host.admin.registerVertical(staff, { slug: 'crm', name: 'Crm', source: 'cli' });
+    await host.admin.registerVertical(staff, {
+      slug: 'legacy-console',
+      name: 'Legacy',
+      source: 'cli',
+      entitlements: ['crm', 'builder', 'flows'],
+    });
+    await host.admin.setVerticalTenantProvisioner(staff, 'legacy-console', true);
+    for (const key of ['crm', 'builder']) {
+      const payload = { ...payloadFor(ulid(), ulid()), entitlements: [{ key, plan: null }] };
+      const outcome = await provisionTenantHandler(deps())(
+        { ...ctx, vertical: 'legacy-console' },
+        intent('provision-tenant', { payload }),
+      );
+      expect(outcome.status).toBe('failed');
+      expect(outcome.error).toMatch(new RegExp(`'${key}' is not among the SKUs 'legacy-console' declares`));
+    }
+  });
+
   it('a tenant slug owned by a DIFFERENT id settles failed (a retry can never converge)', async () => {
     const first = payloadFor(ulid(), ulid());
     expect((await provisionTenantHandler(deps())(ctx, intent('provision-tenant', { payload: first }))).status).toBe(

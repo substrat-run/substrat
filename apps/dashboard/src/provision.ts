@@ -20,6 +20,8 @@ import {
   type ScopeDumpTable,
   type ScopeId,
   type TenantId,
+  bareSlug,
+  declarableEntitlementKey,
 } from '@substrat-run/contracts';
 import { bindExportBreakRefusal, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
@@ -192,23 +194,19 @@ export async function provisionDashboard(
  * enforcement, then denies every gated operation. De-prefixing is retroactive: it repairs
  * already-pushed verticals on their next install without a re-push.
  *
- * This fixes the CONVENTION-following case (key === bare slug). A vertical whose
- * `entitlementKey` diverges from its slug still has to declare `substrat.entitlements` in
- * package.json — the manifest never reaches the control plane, so no derivation can guess
- * it. The denial message names both sides so that case diagnoses itself.
+ * A declared set is taken as given (#2388): the caller has already reduced it to what the vertical
+ * may declare. The shared plane's catalog does that for a pushed vertical (a manager's plan SKUs
+ * included), and `installSpecFor` does it for the deployment's own registry.
  */
 export function installEntitlements(
   verticalSlug: string,
   ...declared: Array<readonly string[] | undefined>
 ): string[] {
   for (const set of declared) if (set && set.length > 0) return [...set];
-  return [bareSlug(verticalSlug)];
+  // The slug fallback is judged like any declared key, so a reserved slug requests nothing (as the grant paths).
+  return declarableEntitlementKey(verticalSlug, bareSlug(verticalSlug)) ? [bareSlug(verticalSlug)] : [];
 }
 
-/** The entitlement-key-legal tail of a possibly workspace-prefixed registry slug. */
-function bareSlug(verticalSlug: string): string {
-  return verticalSlug.split('/').pop() || verticalSlug;
-}
 
 /**
  * Create an app — provision a new scope running `verticalSlug` **in the caller's
