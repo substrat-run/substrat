@@ -3007,6 +3007,8 @@ export function mountPlatformSurface<Env extends object>(
 export * from './operations-routes.js';
 export { requestConnectUrl, ConnectUrlRequestError } from './connect-url.js';
 export type { ConnectUrlRequest } from './connect-url.js';
+export { mailInAddress, MailInAddressError } from './mail-in.js';
+export type { MailInAddressRequest } from './mail-in.js';
 export { mintConnectLink, listConnectLinks, revokeConnectLink, ConnectLinkRequestError } from './connect-link.js';
 export type {
   ConnectLinkRelayAccess,

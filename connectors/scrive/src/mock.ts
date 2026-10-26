@@ -32,6 +32,8 @@ interface MockDocument {
   callbackUrl: string | null;
   /** The provider's last-change stamp, moved by `touch`. */
   mtime: string;
+  /** In Scrive's trash: gone from the list, and the only state `delete` accepts. */
+  trashed?: boolean;
   /**
    * What `files/main` answers instead of the stand-in PDF, when a test set one (#2552): the length
    * the response declares (null for none), and how many bytes its body really carries. The body is
@@ -112,6 +114,8 @@ export class ScriveMock {
   private partySeq = 0;
   private touches = 0;
   failWith: number | undefined;
+  /** Reject one action (`setfile`, `update`, `start`, `trash`, `delete`) with this status — one step failing on demand. */
+  readonly failOn: Partial<Record<string, number>> = {};
   private readonly onCallback: ScriveMockOptions['onCallback'];
   private readonly strictDelivery: boolean;
 
@@ -327,7 +331,7 @@ export class ScriveMock {
 
       // The account's documents, newest first — the live half of the activity view.
       if (path === '/api/v2/documents/list') {
-        const documents = [...this.documents.values()].reverse().map((d) => ({
+        const documents = [...this.documents.values()].filter((d) => !d.trashed).reverse().map((d) => ({
           id: d.id,
           title: d.title,
           status: d.status,
@@ -365,12 +369,25 @@ export class ScriveMock {
         return respondBytes(new TextEncoder().encode(`%PDF sealed ${doc.id} ${doc.status}`));
       }
 
-      const m = /^\/api\/v2\/documents\/([^/]+)\/(setfile|update|start|get)$/.exec(path);
+      const m = /^\/api\/v2\/documents\/([^/]+)\/(setfile|update|start|get|trash|delete)$/.exec(path);
       if (!m) return respond(404, { error: `mock: no route for ${path}` });
       const [, id, action] = m;
       const doc = this.documents.get(id!);
       if (!doc) return respond(404, { error: `mock: unknown document ${id}` });
 
+      const failure = this.failOn[action!];
+      if (failure) return respond(failure, { error_message: `mock: ${action} failed` });
+
+      if (action === 'trash') {
+        doc.trashed = true;
+        return respond(200, this.wire(doc));
+      }
+      if (action === 'delete') {
+        // Only a trashed document can be deleted — the order the connector discards a draft in.
+        if (!doc.trashed) return respond(409, { error_message: 'mock: delete needs a trashed document' });
+        this.documents.delete(doc.id);
+        return respond(200, {});
+      }
       if (action === 'setfile') {
         // The real body is multipart/form-data bytes (a Uint8Array), not a string.
         // Unwrap the envelope rather than measuring it: the filename and the

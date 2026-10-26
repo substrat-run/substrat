@@ -16,13 +16,19 @@ import { cleanText, redact } from './explain.js';
  * - **The tools are the dashboard's own reads.** Every declared GET route becomes a tool
  *   (`exposedReads`), run through the route's own handler as the person asking, so the
  *   assistant reads exactly what that person may read: no more, since every handler checks its
- *   own permission, and no less, since a read the dashboard gains is a tool the same day. Only
- *   GET routes: the assistant cannot write, by construction, and a test pins the list.
+ *   own permission, and no less, since a read the dashboard gains is a tool the same day. Its
+ *   answer goes through the route's declared output schema, as the HTTP mount sends it, so a
+ *   field a handler returns and the route does not publish never reaches the model. Only GET
+ *   routes, and a test pins the list. That is "no act the person did not ask for", not "no
+ *   write": a GET may repair its own rows as the caller, as `list-apps` marks a finished install
+ *   active, which is the same write the person's own page load makes.
  * - **What reaches the model is shaped** (`shapeForModel`): free text is redacted (secrets,
- *   and contact details inside log lines and error messages), and a field that is exactly one
- *   person's email address is kept, since the team's roster and audit trail are the asker's
- *   own data (the privacy policy says so). Then it is fitted under the protocol's tool-output
- *   bound (`fitToolOutput`), cutting the longest list first and saying so.
+ *   and contact details inside log lines and error messages). Two kinds of field are passed
+ *   whole: an identifier the model must hand back (an id, a cursor), and a roster or audit field
+ *   that is exactly one person's email address (`email`, `actor`, `…By`), since the team's
+ *   roster and audit trail are the asker's own data. Any other address, an app's end user's
+ *   included, is redacted. Then it is fitted under the protocol's tool-output bound
+ *   (`fitToolOutput`), cutting the largest list first and saying so.
  * - **Every event is parsed** with the protocol's strict schema before it leaves, so a bound the
  *   protocol sets (a tool output's size, a delta's length) is a refusal here, not a surprise in
  *   the client.
@@ -48,6 +54,9 @@ export const ASK_SYSTEM = [
 
 /** What a tool says when the caller may not read what it reads. The model is told to pass it on. */
 export const REFUSED = { refused: 'access to this part of the dashboard is not part of your role' } as const;
+
+/** What a tool says when the read failed on the platform's side. The failure's own words are logged, never sent. */
+export const READ_FAILED = 'this read failed on the platform’s side; try again in a while';
 
 /** A step of a run, as the model host reports it. */
 export interface AskStep {
@@ -89,8 +98,11 @@ export function answeredTurn(input: {
       } else {
         // The error is ours (a read that failed), not a provider's, and is shown to the person
         // asking, who may read what the read reads; bounded, as the protocol requires.
+        // Redacted, as everything the model reads is: a read's own failure is turned into a fixed
+        // sentence before it gets here (the worker's `asCaller`), so what is left is the model
+        // host's (arguments that did not parse), and even that may quote a value.
         const failed = step.toolErrors?.find((x) => x.callId === call.callId);
-        events.push({ t: 'tool-error', callId: call.callId, tool: call.tool, message: (failed?.message ?? 'the tool did not answer').slice(0, 2_000) });
+        events.push({ t: 'tool-error', callId: call.callId, tool: call.tool, message: redact(failed?.message ?? 'the tool did not answer', 300) });
       }
     }
     events.push({ t: 'step-end', step: name });
@@ -136,13 +148,15 @@ export function askSummary(steps: readonly AskStep[]): string {
 
 /**
  * GET routes the assistant is not given, each with why. Everything else that reads is a tool.
- * These are the assistant's own records: reading them back would let a turn quote an earlier
+ * Most are the assistant's own records: reading them back would let a turn quote an earlier
  * model's text as if it were the dashboard's.
  */
 export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
   'dashboard/explanations-status': 'the AI features’ own switch and budget',
   'dashboard/get-finding-explanation': 'an earlier model’s text, not the dashboard’s data',
   'dashboard/get-process-note': 'an earlier model’s text, not the dashboard’s data',
+  'dashboard/list-github-repos': 'GitHub’s data, not the dashboard’s: each call is a GitHub API call as the App',
+  'dashboard/list-github-branches': 'GitHub’s data, not the dashboard’s: each call is a GitHub API call as the App',
 };
 
 /** A tool's name for a route: `dashboard/list-members` → `list_members`. */
@@ -156,18 +170,34 @@ export function exposedReads<D extends { http: { method: string } }>(routes: Rea
 const EMAIL = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 /** The longest single string sent: a log line or an error message, after redaction. */
 export const ASK_STRING_MAX = 600;
+/** The longest identifier passed whole. Past it a value is not an id this dashboard mints. */
+const IDENTIFIER_MAX = 512;
+/** A field whose value the model hands back to a tool: `id`, `scopeId`, `app_scope_id`, `nextCursor`. */
+const IDENTIFIER_KEY = /^(id|.+Id|.+_id|cursor|.+Cursor|.+_cursor|slug|.+Slug)$/;
+/** A roster or audit field naming one person of the team: `email`, `actor`, `invitedBy`, `granted_by`. */
+const PERSON_KEY = /^(email|.+Email|.+_email|actor|.+Actor|inviter|by|.+By|.+_by)$/;
 
 /**
  * A route's answer as the model may read it. Every string is redacted (`redact`: keys, tokens,
- * URL credentials, and the email addresses and phone numbers inside free text) and bounded,
- * except a field that is exactly one email address: a member's, an inviter's, an actor's, which
- * is the team's own roster and audit trail, shown to the asker on the same pages.
+ * URL credentials, and the email addresses and phone numbers inside free text) and bounded, with
+ * two exceptions, both decided by the field's NAME rather than by what the value looks like:
+ *
+ * - an identifier (`IDENTIFIER_KEY`): the model passes it back to a tool, and a redacted or cut
+ *   cursor (`[opaque]`, `…`) would make the next page unreachable;
+ * - a roster or audit field that is exactly one email address (`PERSON_KEY`): a member's, an
+ *   inviter's, an actor's, the team's own data, shown to the asker on the same pages. The same
+ *   address anywhere else, an app's end user in a log record say, is redacted.
  */
-export function shapeForModel(value: unknown): unknown {
-  if (typeof value === 'string') return EMAIL.test(value) ? value : redact(value, ASK_STRING_MAX);
-  if (Array.isArray(value)) return value.map(shapeForModel);
+export function shapeForModel(value: unknown, key?: string): unknown {
+  if (typeof value === 'string') {
+    if (key !== undefined && IDENTIFIER_KEY.test(key) && value.length <= IDENTIFIER_MAX) return value;
+    if (key !== undefined && PERSON_KEY.test(key) && EMAIL.test(value)) return value;
+    return redact(value, ASK_STRING_MAX);
+  }
+  // An array's elements are the field's values: `invitedBy: ['a@x']` is still named by its key.
+  if (Array.isArray(value)) return value.map((v) => shapeForModel(v, key));
   if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, shapeForModel(v)]));
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, shapeForModel(v, k)]));
   }
   return value;
 }
@@ -175,34 +205,78 @@ export function shapeForModel(value: unknown): unknown {
 /** The most a tool output may weigh: under the protocol's 32 KiB, with room for the cut's own marks. */
 export const ASK_TOOL_OUTPUT_MAX = 24 * 1024;
 
-const sizeOf = (v: unknown) => new TextEncoder().encode(JSON.stringify(v) ?? 'null').byteLength;
+const encoder = new TextEncoder();
+const bytesOf = (s: string) => encoder.encode(s).byteLength;
+const sizeOf = (v: unknown) => bytesOf(JSON.stringify(v) ?? 'null');
+
+/** The cursor fields a page carries. A cut page's cursor would skip what was cut, so it is dropped. */
+const CURSOR_KEYS = ['nextCursor', 'cursor', 'next_cursor'];
 
 /**
- * Fit an output under the bound by halving its longest list until it fits, and say so with
- * `truncated: true`, so the model can tell the reader the list may be longer. An output that
- * still does not fit (one huge record) is replaced by its first characters, marked the same way.
+ * Fit an output under the bound by halving its largest list (of two or more items, at any depth)
+ * until it fits, and say so with `truncated: true`, so the model can tell the reader the list may
+ * be longer. A cut page's cursor is dropped rather than kept: it points past everything the page
+ * held, and following it would skip the items that were cut without anyone being told. An output
+ * that still does not fit (one huge record) is replaced by its first characters, bounded in BYTES
+ * and cut on a whole character, marked the same way.
  */
 export function fitToolOutput(value: unknown, max = ASK_TOOL_OUTPUT_MAX): unknown {
   if (sizeOf(value) <= max) return value;
   let out = structuredClone(value);
-  for (let i = 0; i < 24 && sizeOf(out) > max; i++) {
-    const longest = longestArray(out);
-    if (!longest || longest.length <= 1) break;
-    longest.length = Math.ceil(longest.length / 2);
+  for (let i = 0; i < 24; i++) {
+    const { size, largest } = measure(out);
+    if (size <= max || !largest) break;
+    largest.length = Math.ceil(largest.length / 2);
   }
-  if (sizeOf(out) > max) return { truncated: true, preview: JSON.stringify(out).slice(0, max / 2) };
-  if (out !== null && typeof out === 'object' && !Array.isArray(out)) return { ...(out as object), truncated: true };
+  if (sizeOf(out) > max) return { truncated: true, preview: previewOf(JSON.stringify(out) ?? 'null', max / 2) };
+  if (out !== null && typeof out === 'object' && !Array.isArray(out)) {
+    const page = { ...(out as Record<string, unknown>) };
+    for (const k of CURSOR_KEYS) if (k in page) page[k] = null;
+    return { ...page, truncated: true };
+  }
   return { items: out, truncated: true };
 }
 
-function longestArray(v: unknown): unknown[] | null {
-  let best: unknown[] | null = null;
-  const walk = (x: unknown) => {
+/** The first characters of `text` whose UTF-8 encoding fits `budget` bytes, never half a character. */
+function previewOf(text: string, budget: number): string {
+  const chars = Array.from(text);
+  let lo = 0;
+  let hi = chars.length;
+  // The preview is serialized again inside the output, so it is measured as it will be sent.
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (bytesOf(JSON.stringify(chars.slice(0, mid).join(''))) <= budget) lo = mid;
+    else hi = mid - 1;
+  }
+  return chars.slice(0, lo).join('');
+}
+
+/**
+ * One pass over the output: its serialized size, and the largest array in it that can still be
+ * halved (two or more items), by the bytes it serializes to. Each node is measured once, bottom
+ * up, so a halving costs one walk rather than a stringify per array visited.
+ */
+function measure(v: unknown): { size: number; largest: unknown[] | null } {
+  let largest: unknown[] | null = null;
+  let largestSize = -1;
+  const walk = (x: unknown): number => {
     if (Array.isArray(x)) {
-      if (!best || sizeOf(x) > sizeOf(best)) best = x;
-      x.forEach(walk);
-    } else if (x !== null && typeof x === 'object') Object.values(x as object).forEach(walk);
+      let size = 2 + Math.max(0, x.length - 1);
+      for (const item of x) size += walk(item === undefined ? null : item);
+      if (x.length > 1 && size > largestSize) {
+        largest = x;
+        largestSize = size;
+      }
+      return size;
+    }
+    if (x !== null && typeof x === 'object') {
+      const entries = Object.entries(x as Record<string, unknown>).filter(([, val]) => val !== undefined && typeof val !== 'function');
+      let size = 2 + Math.max(0, entries.length - 1);
+      for (const [k, val] of entries) size += bytesOf(JSON.stringify(k)) + 1 + walk(val);
+      return size;
+    }
+    return bytesOf(JSON.stringify(x) ?? 'null');
   };
-  walk(v);
-  return best;
+  const size = walk(v);
+  return { size, largest };
 }

@@ -95,7 +95,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   and a PR wants a filter the root script cannot carry.
   In `.github/workflows/ci.yml` the `checks` job builds everything (`pnpm -r build`, as
   `deploy-test` does again), because its lints read built output from every package, and
-  runs typecheck over a selection; the three `test-shard` jobs each build and test only
+  runs typecheck over a selection; the six `test-shard` jobs each build and test only
   their slice of that same selection. The selection is `tools/ci-scope.mjs`: the packages
   the diff touched plus everything that depends on them (pnpm's `...[<base>]`), plus the
   importers a lockfile change can be pinned to, widening back to everything when the

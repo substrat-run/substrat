@@ -890,16 +890,57 @@ describe('scrive connector — outbound dispatch', () => {
         expect(scrive.setfileAborted).toEqual([expect.objectContaining({ closed: false })]);
         expect(scrive.setfileAborted[0]!.bytes).toBeGreaterThan(MiB);
         expect(scrive.setfileAborted[0]!.bytes).toBeLessThan(LARGE.byteLength);
-        // Scrive holds no file and was never told to start; the draft is left behind (#2514, (A)).
-        const [doc] = [...scrive.documents.values()];
-        expect(scrive.documents.size).toBe(1);
-        expect(doc!.file).toBeNull();
-        expect(doc!.status).toBe('preparation');
+        // Scrive was never handed a file or told to start, and the draft is discarded (#2589).
+        expect(scrive.documents.size).toBe(0);
         expect(await dispatchState(instanceId)).toBeUndefined();
         const [dead] = await host.executorDeadLetters(t, s);
         expect(dead!.eventType).toBe('protocol.signatures-requested');
         expect(dead!.error).toMatch(/sha256|integrity|digest/i);
       });
+    });
+  });
+
+  describe('a dispatch that fails after createDocument discards its own draft (#2589)', () => {
+    /** One dispatch attempt, no retry, so the first failure is the one to read. */
+    const failingDispatch = async (failOn: ScriveMock['failOn'], beforeIssue: () => Promise<void> = async () => {}) => {
+      const discarded = dir;
+      await host.close();
+      await boot({ retry: { maxAttempts: 1, baseDelayMs: 0 } });
+      rmSync(discarded, { recursive: true, force: true });
+      Object.assign(scrive.failOn, failOn);
+      await beforeIssue();
+      const { instance } = await issue();
+      const [dead] = await host.executorDeadLetters(t, s);
+      return { instanceId: instance.id, error: dead!.error };
+    };
+
+    it.each([
+      ['setfile', 500],
+      ['update', 400],
+      ['start', 409],
+    ])('%s failing leaves no draft and no ledger row', async (step, status) => {
+      const { instanceId, error } = await failingDispatch({ [step]: status });
+      expect(error).toMatch(new RegExp(`${step} failed: HTTP ${status}`));
+      expect(scrive.documents.size).toBe(0);
+      expect(await dispatchState(instanceId)).toBeUndefined();
+    });
+
+    it('a cleanup that fails does not replace the failure that caused it', async () => {
+      const { error } = await failingDispatch({ setfile: 500, trash: 500 });
+      expect(error).toMatch(/setfile failed: HTTP 500/);
+      expect(scrive.documents.size).toBe(1); // the draft is orphaned, as before this fix
+    });
+
+    it('never discards a document this dispatch did not create', async () => {
+      let otherId = '';
+      await failingDispatch({ setfile: 500 }, async () => {
+        const res = await scrive.fetch('https://api-testbed.scrive.test/api/v2/documents/new', {
+          method: 'POST',
+          headers: { authorization: 'oauth_signature_method="PLAINTEXT"' },
+        });
+        otherId = ((await res.json()) as { id: string }).id;
+      });
+      expect([...scrive.documents.keys()]).toEqual([otherId]);
     });
   });
 

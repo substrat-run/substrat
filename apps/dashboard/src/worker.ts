@@ -50,7 +50,7 @@ import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer, type ProcessPeriod } from './process-map.js';
 import { createModelHost, type ModelHost, type ModelTool } from '@substrat-run/vertical-host/model';
-import { ASK_MAX_STEPS, ASK_SYSTEM, REFUSED, answeredTurn, askSummary, endedTurn, exposedReads, fitToolOutput, shapeForModel, toolNameOf } from './ask.js';
+import { ASK_MAX_STEPS, ASK_SYSTEM, READ_FAILED, REFUSED, answeredTurn, askSummary, endedTurn, exposedReads, fitToolOutput, shapeForModel, toolNameOf } from './ask.js';
 import {
   DEFAULT_EXPLANATION_MODEL,
   EXPLANATION_SENT,
@@ -2947,7 +2947,8 @@ app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
  * and the Import button both accept; connected mode arrives MASKED from the CP
  * (this surface has no break-glass). POST loads an uploaded dump into the app,
  * replacing its data wholesale — the helper forks a safety copy first, so the
- * response names the fork to back out to. Same authority as managing the app.
+ * response names the fork to back out to. GET is the authority of managing the app;
+ * POST is a team owner's or admin's (`dashboard:restore-app-data`, #2573).
  */
 app.get('/api/apps/:scopeId/export', async (c) => {
   const host = hostFor(c.env);
@@ -5252,8 +5253,12 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
    * Run a read as the caller. A refused gate is an answer the model passes on; any other 4xx
    * (an app id that is not this team's, a malformed argument) is an answer too, so the model can
    * correct itself instead of the turn failing. Shaped and fitted for the model either way.
+   *
+   * Anything else is the platform's failure, and its message is the platform's (a SQL error, an
+   * upstream URL): it is logged here and the model, and through it the person, is told only that
+   * the read failed on the platform's side.
    */
-  const asCaller = async (read: () => Promise<unknown>): Promise<unknown> => {
+  const asCaller = async (tool: string, read: () => Promise<unknown>): Promise<unknown> => {
     try {
       return fitToolOutput(shapeForModel(await read()));
     } catch (e) {
@@ -5261,18 +5266,27 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
       if (e instanceof HTTPException && e.status >= 400 && e.status < 500) return { error: e.message };
       const status = isSubstratError(e) ? e.status : 0;
       if (status >= 400 && status < 500) return { error: (e as Error).message };
-      throw e;
+      console.warn(JSON.stringify({ msg: 'ask: a read failed', tool, error: e instanceof Error ? e.message : String(e) }));
+      return { error: READ_FAILED };
     }
   };
   // Every declared read, through the route's own handler: the person's access, exactly (#2283).
   const handlers = routeHandlers as unknown as Record<string, (ctx: TeamContext, input: unknown) => Promise<unknown>>;
   const tools: Record<string, ModelTool<any>> = {}; // eslint-disable-line @typescript-eslint/no-explicit-any -- each tool parses its own input
   for (const [name, decl] of exposedReads(dashboardRoutes)) {
+    // The route's published output, applied as the HTTP mount applies it: a field the handler
+    // returns and the route does not declare is stripped here too, so the model reads what the
+    // person's browser would, and nothing a row happens to carry beyond it.
+    const output = (decl as { output?: { parse(v: unknown): unknown } }).output;
     tools[toolNameOf(name)] = {
       description: decl.summary,
       // A route with no input takes none; the SDK parses the model's arguments with this before `execute`.
       input: 'input' in decl ? decl.input : z.object({}),
-      execute: (input: unknown) => asCaller(() => handlers[name]!(ctx, input)),
+      execute: (input: unknown) =>
+        asCaller(toolNameOf(name), async () => {
+          const result = await handlers[name]!(ctx, input);
+          return output ? output.parse(result) : { ok: true };
+        }),
     };
   }
   // Two reads no route answers in this shape: a finding's redacted evidence (#1749's facts), and
@@ -5280,13 +5294,13 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
   tools.finding_evidence = {
     description: 'Read one finding’s evidence: its failure records (who refused, status codes, redacted messages) or sweep runs, and its likely cause.',
     input: z.object({ id: z.string().min(1).max(64) }),
-    execute: ({ id }: { id: string }) => asCaller(async () => (await findingFactsIn(await findingsPlane(ctx, 'read'), id, {})).facts),
+    execute: ({ id }: { id: string }) => asCaller('finding_evidence', async () => (await findingFactsIn(await findingsPlane(ctx, 'read'), id, {})).facts),
   };
   tools.process_map = {
     description: 'One app’s process map: a declared lifecycle replayed over a period, as counts per state and move, against the period before. Takes the app’s scopeId.',
     input: z.object({ scopeId: z.string().min(1), entity: z.string().min(1).max(128).optional(), period: z.enum(['24h', '7d', '30d']).optional() }),
     execute: ({ scopeId, entity, period }: { scopeId: string; entity?: string; period?: ProcessPeriod }) =>
-      asCaller(async () => {
+      asCaller('process_map', async () => {
         const { answer } = await processMapIn(dash, teamPlane(ctx), scopeId, period ?? '7d', entity);
         if (!answer.current || !answer.entity) return { processes: answer.processes, unavailable: answer.unavailable ?? 'no counts' };
         return { processes: answer.processes, ...processFacts(answer.entity, answer.period, answer.current, answer.previous) };
@@ -5905,6 +5919,10 @@ const routeHandlers = {
   'dashboard/create-preview': async (ctx, body) => createPreviewIn(ctx, body),
   'dashboard/delete-preview': async (ctx, { slug, tag }) => deletePreviewIn(ctx, slug, tag),
   'dashboard/bind-preview-domain': async (ctx, body) => bindPreviewDomainIn(ctx, body),
+  'dashboard/connect-github': async (ctx) => connectGithubIn(ctx),
+  'dashboard/list-github-repos': async (ctx, { account }) => githubReposIn(ctx, account),
+  'dashboard/list-github-branches': async (ctx, { repo, account }) => githubBranchesIn(ctx, repo, account),
+  'dashboard/setup-github-ci': async (ctx, body) => setupGithubCiIn(ctx, body),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
 mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);
@@ -5916,34 +5934,40 @@ mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: tea
 // "Git namespace" shape).
 const GIT_VERTICAL = 'dashboard';
 
-/**
- * Begin a GitHub connection. Authorize IN-SCOPE first (the tenant admin's
- * permission-checked act via `begin-connection`), then redirect to the App's install
- * page carrying a signed state that binds this connect to the authorizing principal +
- * tenant. B's authority originates here — not in the callback, not from a platform actor.
- */
-app.get('/api/github/connect', async (c) => {
-  const cfg = githubConfig(c.env);
+/** The GitHub App's config, or a 503 on a deployment that has none. */
+function githubOrThrow(env: Env) {
+  const cfg = githubConfig(env);
   if (!cfg) throw new HTTPException(503, { message: 'GitHub is not configured' });
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  return cfg;
+}
+
+/**
+ * Begin a GitHub connection for the team in the path. Authorize IN-SCOPE first (the team
+ * admin's permission-checked act via `begin-connection`), then answer the App's install
+ * URL carrying a signed state that binds this connect to the authorizing principal + team.
+ * B's authority originates here — not in the callback, not from a platform actor.
+ */
+async function connectGithubIn({ c, host, node }: TeamContext) {
+  const cfg = githubOrThrow(c.env);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   // Throws a `permission_denied` (→ 403 via onError) if the caller may not connect providers.
   const { principal } = (await dash.invoke('dashboard/begin-connection', { provider: 'github' })) as { principal: string };
   const state = await signGithubState(c.env, { tenantId: node.tenantId, principal, provider: 'github' });
-  return c.redirect(installUrl(cfg, state));
-});
+  return { url: installUrl(cfg, state) };
+}
 
 /**
  * The App install callback. Verify the signed state (the connect was authorized
- * in-scope by this principal for this tenant) AND that the callback's session is that
- * same principal, then record the connection: the installationId sealed, attributed to
- * the principal (`createdBy`), effected with platform authority.
+ * in-scope by this principal for this team) AND that the callback's session is that
+ * same principal IN THAT TEAM, then record the connection: the installationId sealed,
+ * attributed to the principal (`createdBy`), effected with platform authority.
+ *
+ * The team is the state's, never the `sb_team` cookie's (#2170): another tab may have
+ * moved the cookie while this one was on GitHub. The tab comes back to the team it
+ * connected, so the cookie (the "last team used") is pointed there.
  */
 app.get('/api/github/callback', async (c) => {
-  const cfg = githubConfig(c.env);
-  if (!cfg) throw new HTTPException(503, { message: 'GitHub is not configured' });
+  const cfg = githubOrThrow(c.env);
   const installationId = c.req.query('installation_id');
   const stateToken = c.req.query('state');
   if (!installationId || !stateToken) throw new HTTPException(400, { message: 'missing installation_id or state' });
@@ -5951,7 +5975,7 @@ app.get('/api/github/callback', async (c) => {
   if (!state) throw new HTTPException(400, { message: 'invalid or expired state' });
 
   const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), state.tenantId);
   if (!node || node.principal !== state.principal || node.tenantId !== state.tenantId) {
     throw new HTTPException(403, { message: 'state does not match your session' });
   }
@@ -5975,6 +5999,7 @@ app.get('/api/github/callback', async (c) => {
     secret: { installationId },
     createdBy: node.principal, // B: the authorizing principal, never STAFF.
   });
+  setCookie(c, TEAM_COOKIE, node.tenantId, teamCookieOpts(new URL(c.req.url).protocol));
   // Back to the create-app flow; the Git card re-fetches and shows the repos. The SPA
   // router reads the path, so the deep link resolves via the assets' single-page-application
   // fallback and boots straight onto the create-app screen.
@@ -6021,51 +6046,32 @@ async function githubInstallationFor(
 }
 
 /**
- * List the repos the tenant granted us — `{ connected: false }` when no connection
- * exists yet (the UI shows Connect). `?account=` picks among several connected
+ * List the repos the team granted us — `{ connected: false }` when no connection
+ * exists yet (the UI shows Connect). `account` picks among several connected
  * accounts; `accounts` always carries the full namespace list for the picker. The
  * installation token is minted fresh from the stored installationId on each call,
  * so nothing durable is a bearer secret.
  */
-app.get('/api/github/repos', async (c) => {
+async function githubReposIn({ c, host, node }: TeamContext, account: string | undefined) {
   const cfg = githubConfig(c.env);
-  if (!cfg) return c.json({ configured: false, connected: false, accounts: [], repos: [] });
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const account = c.req.query('account') || undefined;
+  if (!cfg) return { configured: false, connected: false, accounts: [], repos: [] };
   const { conns, selected } = await githubConnectionFor(host, node.tenantId, account);
   const accounts = conns.map((x) => x.externalAccountRef).filter((x): x is string => x !== null);
-  if (conns.length === 0) return c.json({ configured: true, connected: false, accounts: [], repos: [] });
+  if (conns.length === 0) return { configured: true, connected: false, accounts: [], repos: [] };
   if (!selected) throw new HTTPException(404, { message: `GitHub account '${account}' is not connected` });
   const installationId = await githubInstallationFor(host, node.tenantId, account);
-  if (!installationId) return c.json({ configured: true, connected: false, accounts, repos: [] });
+  if (!installationId) return { configured: true, connected: false, accounts, repos: [] };
   const repos = await listInstallationRepos(cfg, installationId);
-  return c.json({ configured: true, connected: true, account: selected.externalAccountRef, accounts, repos });
-});
+  return { configured: true, connected: true, account: selected.externalAccountRef, accounts, repos };
+}
 
 /** A repo's branches — the import step's branch picker. */
-app.get('/api/github/branches', async (c) => {
-  const cfg = githubConfig(c.env);
-  if (!cfg) throw new HTTPException(503, { message: 'GitHub is not configured' });
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const repo = c.req.query('repo');
-  if (!repo || !/^[^/\s]+\/[^/\s]+$/.test(repo)) throw new HTTPException(400, { message: 'missing or malformed repo (owner/name)' });
-  const installationId = await githubInstallationFor(host, node.tenantId, c.req.query('account') || undefined);
+async function githubBranchesIn({ c, host, node }: TeamContext, repo: string, account: string | undefined) {
+  const cfg = githubOrThrow(c.env);
+  const installationId = await githubInstallationFor(host, node.tenantId, account);
   if (!installationId) throw new HTTPException(409, { message: 'GitHub is not connected' });
-  return c.json({ branches: await listRepoBranches(cfg, installationId, repo) });
-});
-
-const setupCiBody = z.object({
-  repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
-  branch: z.string().min(1).max(200),
-  /** Which connected GitHub account (namespace) holds the repo — omitted, the default. */
-  account: z.string().min(1).optional(),
-  /** The vertical's directory inside the repo (monorepo) — omitted, the repo root. */
-  path: z.string().min(1).max(300).optional(),
-});
+  return { branches: await listRepoBranches(cfg, installationId, repo) };
+}
 
 /**
  * Normalize a monorepo package directory, or 400 — the generator throws on traversal and
@@ -6088,13 +6094,11 @@ function packageDirOrThrow(path: string | undefined): string | undefined {
  * the chosen branch. Authorized in-scope first (`begin-connection` = the
  * `dashboard:manage-integrations` check), the same gate as connecting GitHub itself.
  */
-app.post('/api/github/setup-ci', async (c) => {
-  const cfg = githubConfig(c.env);
-  if (!cfg) throw new HTTPException(503, { message: 'GitHub is not configured' });
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const body = setupCiBody.parse(await c.req.json());
+async function setupGithubCiIn(
+  { c, host, node }: TeamContext,
+  body: z.infer<(typeof dashboardRoutes)['dashboard/setup-github-ci']['input']>,
+) {
+  const cfg = githubOrThrow(c.env);
 
   // Permission check, in-scope (throws → 403 via onError if the caller may not manage integrations).
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
@@ -6126,21 +6130,21 @@ app.post('/api/github/setup-ci', async (c) => {
   });
   if ('needsPermissions' in result) {
     // Structured, not an HTTP error: the UI offers the re-approve link + manual path.
-    return c.json({ ok: false, needsPermissions: true });
+    return { ok: false as const, needsPermissions: true as const };
   }
   // The durable repo → app link: what lets the App's webhook stream route a PR
   // event back to this tenant's app (preview comment + reap). Idempotent; re-running
   // setup refreshes it. Repos wired before this existed link on their next re-run.
   await repoLinkStub(c.env, body.repo).setLink({ tenantId: node.tenantId, slug, repo: body.repo });
-  return c.json({
-    ok: true,
+  return {
+    ok: true as const,
     workflowPath,
     workflowUpdated: result.workflowUpdated,
     branch: body.branch,
     // What the pushed versions will be registered under (builder-plane.md §5).
     vertical: `${tenantSlug}/${slug}`,
-  });
-});
+  };
+}
 
 /**
  * The GitHub App's webhook sink — ONE URL for every installation (App settings →

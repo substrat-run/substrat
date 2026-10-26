@@ -103,7 +103,7 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     ] as const) {
       await call(own, name, { appScopeId: app, detail: 'detail' });
     }
-    for (const name of ['dashboard/authorize-scope-change', 'dashboard/authorize-findings-read', 'dashboard/authorize-findings-change'] as const) {
+    for (const name of ['dashboard/authorize-scope-change', 'dashboard/authorize-findings-read', 'dashboard/authorize-findings-change', 'dashboard/authorize-restore'] as const) {
       await call(own, name);
     }
     await call(own, 'dashboard/provision-app', { appScopeId: stuck, verticalSlug: 'protocol', name: 'Two' });

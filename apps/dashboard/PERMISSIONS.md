@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/dashboard
 
-9 keys · 2 modules · 4 roles
+10 keys · 2 modules · 4 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -17,6 +17,7 @@
 | `dashboard:provision-app` | Provision and manage apps (vertical instances) in this tenant — the tenant admin | `@substrat-run/dashboard` |
 | `dashboard:read` | Read the tenant’s apps | `@substrat-run/dashboard` |
 | `dashboard:read-findings` | Read the tenant’s findings and suppress rules | `@substrat-run/dashboard` |
+| `dashboard:restore-app-data` | Replace an app’s data, and its permission state, with an uploaded dump | `@substrat-run/dashboard` |
 | `invites:read` | List invitations and their state | `@substrat-run/engine-invites` |
 | `invites:revoke` | Withdraw an invitation before it is accepted | `@substrat-run/engine-invites` |
 | `invites:send` | Invite someone to an organization | `@substrat-run/engine-invites` |
@@ -27,9 +28,9 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 
 | Role | Permissions |
 | --- | --- |
-| `admin` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings`, `invites:read`, `invites:revoke`, `invites:send` |
+| `admin` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings`, `dashboard:restore-app-data`, `invites:read`, `invites:revoke`, `invites:send` |
 | `member` | `dashboard:manage-findings`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings` |
-| `owner` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings`, `invites:read`, `invites:revoke`, `invites:send` |
+| `owner` | `dashboard:manage-findings`, `dashboard:manage-integrations`, `dashboard:manage-members`, `dashboard:provision-app`, `dashboard:read`, `dashboard:read-findings`, `dashboard:restore-app-data`, `invites:read`, `invites:revoke`, `invites:send` |
 | `viewer` | `dashboard:read`, `dashboard:read-findings` |
 
 ## 3. Coverage — which roles hold each key
@@ -42,6 +43,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `dashboard:provision-app` | `admin`, `member`, `owner` |
 | `dashboard:read` | `admin`, `member`, `owner`, `viewer` |
 | `dashboard:read-findings` | `admin`, `member`, `owner`, `viewer` |
+| `dashboard:restore-app-data` | `admin`, `owner` |
 | `invites:read` | `admin`, `owner` |
 | `invites:revoke` | `admin`, `owner` |
 | `invites:send` | `admin`, `owner` |
@@ -60,6 +62,7 @@ shapes.
 | `dashboard/app-events` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-findings-change` | `dashboard:manage-findings` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-findings-read` | `dashboard:read-findings` | the scope | `@substrat-run/dashboard` |
+| `dashboard/authorize-restore` | `dashboard:restore-app-data` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-scope-change` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/begin-connection` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
 | `dashboard/bind-app-hostname` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
@@ -91,7 +94,7 @@ shapes.
 | `dashboard/remove-member` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
 | `dashboard/resend-invite` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
 | `dashboard/reserve-explanation` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
-| `dashboard/restore-app-data` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/restore-app-data` | `dashboard:restore-app-data` | the scope | `@substrat-run/dashboard` |
 | `dashboard/restore-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
 | `dashboard/resume-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/revoke-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |

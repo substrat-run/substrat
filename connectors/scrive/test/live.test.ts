@@ -206,6 +206,22 @@ const NET = 30_000;
 
 describe.skipIf(!creds)('scrive connector — LIVE testbed', () => {
   /**
+   * Discarding a draft (#2589): `trash` then `delete`, as the dispatch does when a step fails
+   * after `createDocument`. The mock encodes our reading of these two endpoints; this is the
+   * check against the provider, and the first run with credentials is what verifies them.
+   */
+  it('trash then delete removes a draft from the document list', async () => {
+    const api = new ScriveApi(liveConnection(creds!) as never, creds!.baseUrl);
+    const { id } = await api.createDocument();
+    const listed = async () => (await api.listDocuments({ max: 100 })).documents.some((d) => d.id === id);
+    expect(await listed()).toBe(true);
+
+    await api.trash(id);
+    await api.delete(id);
+    expect(await listed()).toBe(false);
+  }, NET);
+
+  /**
    * The two reads the inspection surface (#605) rests on. Exactly the check the mock
    * cannot make: that these endpoints exist, at these paths, returning what the
    * connector parses. `/api/v2/getprofile` — NOT `/api/v2/user/getprofile`, which is a

@@ -285,7 +285,10 @@ export function App() {
 
   // Git-import state is fetched lazily by the Create-App view (it hits GitHub), so it
   // isn't loaded on every dashboard open. Mock-aware so the dev preview renders it.
-  const loadGitRepos = useCallback(async (account?: string): Promise<GitReposResult> => (DEV_MOCK ? MOCK_GIT_REPOS : api.gitRepos(account)), []);
+  const loadGitRepos = useCallback(
+    async (account?: string): Promise<GitReposResult> => (DEV_MOCK ? MOCK_GIT_REPOS : teamClient().listGithubRepos({ account })),
+    [teamClient],
+  );
 
   // Session check → on sign-in, load apps + members + catalog + deployments. First,
   // handle an invite acceptance (a `/invite/<token>` link, or one stashed across the
@@ -943,6 +946,9 @@ export function App() {
   if (['audit', 'domains', 'team', 'integrations', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
+  // A hint for what to draw, never the gate: the dashboard's own scope refuses. A roster not loaded
+  // yet draws the controls, so a slow read never hides one.
+  const isTeamAdmin = ['owner', 'admin'].includes(members.find((m) => m.principal === me.principal)?.role_key ?? 'owner');
 
   return (
     <DashShell
@@ -990,6 +996,7 @@ export function App() {
           onDeleted={() => void deleteApp(openApp)}
           authServers={authServers}
           teamApps={apps.map((a) => a.app_scope_id)}
+          canRestore={isTeamAdmin}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight — or older pages are still being
@@ -1023,12 +1030,12 @@ export function App() {
           <NotFound label="That vertical could not be found." backLabel="Back to verticals" onBack={() => go('/verticals')} />
         )
       ) : route.section === 'verticals' ? (
-        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
+        <Verticals teamId={me.currentTeamId} deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
         <Team
           members={members}
           meEmail={me.email ?? ''}
-          canManage={['owner', 'admin'].includes(members.find((m) => m.principal === me.principal)?.role_key ?? 'owner')}
+          canManage={isTeamAdmin}
           onInvite={inviteMember}
           onCopyLink={copyInviteLink}
           onResend={(id) => void resendInvite(id)}

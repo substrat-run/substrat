@@ -965,7 +965,8 @@ describe('runPlatformSweep', () => {
       connectionId: live,
     });
     expect(byUnit.get(live)!.elapsedMs).toBeGreaterThanOrEqual(0);
-    expect(byUnit.get(broken)).toMatchObject({ outcome: 'failed', error: 'provider 500' });
+    // #2316: the row is the tenant's to read: the platform's sentence, never the provider's text.
+    expect(byUnit.get(broken)).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^the sweep did not complete \(reference [0-9A-Z]{26}\)$/) });
     expect(byUnit.get(orphan)).toMatchObject({ outcome: 'skipped', operation: 'sweep.connector:fortnox' });
     expect(recorded.length).toBe(3); // the revoked connection wrote no row
 

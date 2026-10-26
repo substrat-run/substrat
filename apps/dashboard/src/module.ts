@@ -49,7 +49,7 @@ import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } 
  * A dashboard key typed as its own literal as well as a `PermissionKey`. The brand alone is the
  * same type for every key, so a `defineOperations` allow-list built from branded keys admits any
  * key at all (an invites key on a dashboard operation compiled); the literal is what tells the
- * dashboard's six from a foreign one.
+ * dashboard's own from a foreign one.
  */
 const dashboardKey = <const K extends string>(key: K) => permissionKey.parse(key) as PermissionKey & K;
 
@@ -70,6 +70,11 @@ export const DASHBOARD_PERM = {
   readFindings: dashboardKey('dashboard:read-findings'),
   /** Acknowledge, resolve or reopen a finding, and create or revoke a suppress rule (#1748). */
   manageFindings: dashboardKey('dashboard:manage-findings'),
+  /**
+   * Replace an app's data with an uploaded dump (#2573). A restore replaces the app's data and
+   * its permission state, so it is an admin power, not one of managing the app.
+   */
+  restoreAppData: dashboardKey('dashboard:restore-app-data'),
 };
 
 /**
@@ -82,11 +87,11 @@ export const DASHBOARD_PERM = {
  *
  * `owner` and `admin` are equal in permissions today; the distinction is that the
  * owner is the un-removable first member (and will own billing). `member` runs apps
- * but cannot manage the team; `viewer` is read-only.
+ * but cannot manage the team or replace an app's data; `viewer` is read-only.
  */
 export const MEMBER_ROLES: Record<string, PermissionKey[]> = {
-  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
-  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  owner: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
+  admin: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.manageMembers, DASHBOARD_PERM.manageIntegrations, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings, DASHBOARD_PERM.restoreAppData, INVITES_PERM.send, INVITES_PERM.read, INVITES_PERM.revoke],
   // A member runs the apps, so triaging what they do wrong is theirs too; a viewer only reads.
   member: [DASHBOARD_PERM.provisionApp, DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings, DASHBOARD_PERM.manageFindings],
   viewer: [DASHBOARD_PERM.read, DASHBOARD_PERM.readFindings],
@@ -117,6 +122,10 @@ export const dashboardManifest = moduleManifest.parse({
     {
       key: 'dashboard:manage-findings',
       description: 'Acknowledge, resolve or reopen findings, and create or revoke suppress rules',
+    },
+    {
+      key: 'dashboard:restore-app-data',
+      description: 'Replace an app’s data, and its permission state, with an uploaded dump',
     },
   ],
   // #1184: a removal is asked of the kernel's membership executor, as an add is by the invites engine.
@@ -720,11 +729,12 @@ const exportAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: 
 
 /**
  * Authorize + record a restore INTO the app (§8's write half): an uploaded dump
- * replaces the app's data wholesale. The safety copy taken just before is part of
- * the recorded detail, so the trail names the fork to back out to.
+ * replaces the app's data and its permission state wholesale, so it asks the owner's
+ * and admin's key rather than app management (#2573). The safety copy taken just
+ * before is part of the recorded detail, so the trail names the fork to back out to.
  */
 const restoreAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
-  assertAllowed(await ctx.check(DASHBOARD_PERM.provisionApp));
+  assertAllowed(await ctx.check(DASHBOARD_PERM.restoreAppData));
   const input = snapshotAppInput.parse(raw);
   recordAppEvent(ctx, input.appScopeId, 'data-restored', input.detail ?? null);
   return { ok: true };
@@ -778,6 +788,13 @@ const authorizeScopeChangeOp = checkOnly(DASHBOARD_PERM.provisionApp);
  */
 const authorizeFindingsReadOp = checkOnly(DASHBOARD_PERM.readFindings);
 const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
+
+/**
+ * Whether the caller may restore an app's data (#2573), asked before the safety copy is forked,
+ * so a refused caller leaves no copy and no trail row. `restore-app-data` records the restore
+ * after the fork, naming the copy, and asks the same key again.
+ */
+const authorizeRestoreOp = checkOnly(DASHBOARD_PERM.restoreAppData);
 
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
 
@@ -1826,6 +1843,7 @@ export const DASHBOARD_PERMISSIONS = [
   DASHBOARD_PERM.manageIntegrations,
   DASHBOARD_PERM.readFindings,
   DASHBOARD_PERM.manageFindings,
+  DASHBOARD_PERM.restoreAppData,
 ] as const;
 
 export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
@@ -1873,7 +1891,7 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   },
   'dashboard/restore-app-data': {
     summary: 'Authorize restoring an app’s data',
-    permission: DASHBOARD_PERM.provisionApp,
+    permission: DASHBOARD_PERM.restoreAppData,
     input: snapshotAppInput,
     output: ok,
   },
@@ -1902,6 +1920,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   'dashboard/authorize-findings-change': {
     summary: 'Answer whether the caller may act on the team’s findings',
     permission: DASHBOARD_PERM.manageFindings,
+    output: ok,
+  },
+  'dashboard/authorize-restore': {
+    summary: 'Answer whether the caller may replace an app’s data with an uploaded dump',
+    permission: DASHBOARD_PERM.restoreAppData,
     output: ok,
   },
   'dashboard/mark-app-failed': {
@@ -2152,6 +2175,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/authorize-scope-change': authorizeScopeChangeOp,
     'dashboard/authorize-findings-read': authorizeFindingsReadOp,
     'dashboard/authorize-findings-change': authorizeFindingsChangeOp,
+    'dashboard/authorize-restore': authorizeRestoreOp,
     'dashboard/mark-app-failed': markAppFailedOp,
     'dashboard/record-install-step': recordInstallStepOp,
     'dashboard/install-steps': installStepsOp,

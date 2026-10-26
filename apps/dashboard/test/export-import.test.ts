@@ -7,12 +7,14 @@ import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
 import { exportAppData, restoreAppData, listAppSnapshots } from '../src/provision.js';
+import { walkAll } from '../src/walk-all.js';
 
 /**
  * The Export & import card's backend, embedded mode (preview-and-snapshots.md §8):
  * the check-then-effect helpers the worker's `/export` and `/restore` routes call.
  * Authorization runs in the caller's own dashboard scope (`dashboard/export-app-data`
- * / `dashboard/restore-app-data` gate on dashboard:provision-app); the effect is the
+ * gates on dashboard:provision-app, `dashboard/restore-app-data` on the owner's and
+ * admin's dashboard:restore-app-data, #2573); the effect is the
  * platform's exportScope/restoreScope. Connected mode routes the same calls through
  * the tenant-narrowed control plane — that seam is covered by authority.test.ts.
  */
@@ -88,6 +90,10 @@ describe('Dashboard export & import — dump out, dump in, safety copy', () => {
     expect(copies[0]!.id).toBe(result.safetyCopyId);
     expect(copies[0]!.forkedFrom).toBe(appScope);
     expect(copies[0]!.expiresAt).not.toBeNull();
+    // The trail's restore row names that copy, the one to back out to.
+    const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId: appScope });
+    expect(events.find((e) => e.kind === 'data-restored')?.detail).toContain(result.safetyCopyId);
   });
 
   it("an upload naming its real source re-points exactly; with no provenance it falls back (#1869)", async () => {
@@ -126,7 +132,7 @@ describe('Dashboard export & import — dump out, dump in, safety copy', () => {
     expect(await objectOf('principal:bob')).toEqual([`scope:${appScope}`]);
   });
 
-  it('both halves require app-management authority, before any effect', async () => {
+  it('a caller with no role in the team can neither export nor restore, and a refused restore forks nothing', async () => {
     const { node, appScope } = await makeTeamWithApp();
     const stranger: DashboardNode = { ...node, principal: principalId.parse(ulid()) };
 

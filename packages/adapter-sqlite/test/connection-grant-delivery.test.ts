@@ -5,7 +5,7 @@
  * nothing from the record (no provision or reconcile reads it), so a re-grant is what delivers it.
  *
  * ADAPTER-SPECIFIC: the hosted adapter's half-state is the same, but its reconcile re-seats the
- * tuple from the record (`adapter-cloudflare/test/contract.test.ts`).
+ * tuple from the record (`adapter-cloudflare/test/contract-hosts.test.ts`).
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

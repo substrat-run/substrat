@@ -73,7 +73,7 @@ if (CONNECTORS.length === 0) {
 }
 
 type Catalog = Record<string, { grants?: readonly string[]; sendsMail?: true } | undefined>;
-type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector'>;
+type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector' | 'minted'>;
 type EngineModule = { manifest: { id: string; permissions: readonly { key: string; description: string; holder?: 'system' }[] } };
 
 /**
@@ -98,6 +98,19 @@ function wiringProblems(connectors: readonly Connector[], catalog: Catalog, engi
   for (const connector of connectors) {
     const { provider } = connector;
     const entry = catalog[provider];
+    // #2611: a provider whose connections the platform mints has no door by design, and must not
+    // grow one — a door is a paste form, and there is nothing to paste.
+    if (connector.minted) {
+      if (entry) {
+        problems.push(`${provider}: the platform mints this provider's connections, but the dashboard catalog offers a door to paste one`);
+      }
+      for (const half of ['probe', 'probeCandidate'] as const) {
+        if (typeof connector.inspector({})[half] !== 'function') {
+          problems.push(`${provider}: the registration has no \`${half}\` — a connected tenant pressing Test connection gets a 501`);
+        }
+      }
+      continue;
+    }
     if (!entry) {
       problems.push(
         `${provider}: the control plane operates this connector but the dashboard catalog has ` +

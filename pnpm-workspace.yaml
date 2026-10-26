@@ -99,6 +99,11 @@ catalog:
   # published package depends on it.
   parse5: ^7.3.0
 
+  # The MIME parser behind inbound mail (`connectors/mail-in`, #2611): runs unchanged in
+  # Workers and Node, and has no dependencies of its own. Exact, not a range — a parser
+  # that decides what a stranger's message contains moves only when someone reads the diff.
+  postal-mime: 4.0.4
+
   # The node SQLite driver behind the pure host, the dev servers and every node suite.
   # One version: v13 ships prebuilt binaries and needs no build step, and a second copy
   # resolved beside it would not (#546). Here rather than in `overrides:`, which this

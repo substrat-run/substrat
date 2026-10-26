@@ -180,6 +180,9 @@ const processNoteInput = z.object({
   period: z.enum(['24h', '7d', '30d']),
 });
 
+/** A GitHub repo as `owner/name`. */
+const githubRepo = z.string().regex(/^[^/\s]+\/[^/\s]+$/, 'repo is owner/name');
+
 /** A suppress rule (contracts `findingRuleEntry`). Its `kind` and `code` are the plane's, as on a finding. */
 export const findingRuleRow = findingRuleEntry.extend({ kind: z.string().nullable(), code: z.string().nullable() });
 
@@ -1025,6 +1028,51 @@ export const dashboardRoutes = defineRoutes({
     output: previewDomainRow,
     http: { method: 'POST', path: '/deployments/{slug}/previews/{tag}/domain' },
     status: 201,
+  },
+
+  // -- git import (#2170) -----------------------------------------------------
+  // The team's GitHub connections (one per account) and the one-click CI that wires a repo to
+  // push into THIS team. Connecting and setting up CI ask `dashboard:manage-integrations` in the
+  // dashboard scope first (`dashboard/begin-connection`), as the cookie routes they replace did.
+  'dashboard/connect-github': {
+    summary: "Begin connecting a GitHub account to this team: the App's install URL, carrying a state signed for this team and caller",
+    output: z.object({ url: z.string() }),
+    http: { method: 'POST', path: '/github/connect' },
+  },
+  'dashboard/list-github-repos': {
+    summary: "The repos one of this team's GitHub accounts granted (`account` omitted: the oldest), and every connected account",
+    input: z.object({ account: z.string().min(1).optional() }),
+    output: z.object({
+      configured: z.boolean(),
+      connected: z.boolean(),
+      account: z.string().nullable().optional(),
+      accounts: z.array(z.string()),
+      repos: z.array(z.object({ fullName: z.string(), defaultBranch: z.string(), private: z.boolean(), updatedAt: z.string() })),
+    }),
+    http: { method: 'GET', path: '/github/repos' },
+  },
+  'dashboard/list-github-branches': {
+    summary: "A repo's branches, read through one of this team's GitHub accounts",
+    input: z.object({ repo: githubRepo, account: z.string().min(1).optional() }),
+    output: z.object({ branches: z.array(z.object({ name: z.string() })) }),
+    http: { method: 'GET', path: '/github/branches' },
+  },
+  'dashboard/setup-github-ci': {
+    summary: "One-click deploy: commit the workflow to a repo and store a push credential for this team as its secret",
+    input: z.object({
+      repo: githubRepo,
+      branch: z.string().min(1).max(200),
+      /** Which connected account holds the repo; omitted, the oldest. */
+      account: z.string().min(1).optional(),
+      /** The vertical's directory inside the repo (monorepo); omitted, the repo root. */
+      path: z.string().min(1).max(300).optional(),
+    }),
+    // `ok: false` is an installation approved before the App's write permissions: re-approve, or set it up by hand.
+    output: z.union([
+      z.object({ ok: z.literal(true), workflowPath: z.string(), workflowUpdated: z.boolean(), branch: z.string(), vertical: z.string() }),
+      z.object({ ok: z.literal(false), needsPermissions: z.literal(true) }),
+    ]),
+    http: { method: 'POST', path: '/github/setup-ci' },
   },
 
   // -- findings (#1748) ------------------------------------------------------

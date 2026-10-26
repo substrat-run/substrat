@@ -149,7 +149,7 @@ Two rules that are not negotiable:
 This is the part that decides whether the whole design is real, because it is where the
 old one died. **v0.1 proposed a sentinel prefix on `message`, and then guessed that
 `name` would be a cleaner carrier. Phase 2 measured both against workerd. The measurement
-is in `packages/adapter-cloudflare/test/contract.test.ts` and it says:**
+is in `packages/adapter-cloudflare/test/contract-data.test.ts` and it says:**
 
 > Across the `ScopeDO` boundary, **only `message` survives.** `name` is not a second
 > channel: setting it on the rewrapped error does not deliver a `name` on the far side —

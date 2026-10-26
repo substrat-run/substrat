@@ -328,11 +328,13 @@ const workspace = [
   'demos/ticket0', 'demos/tock', 'packages/kernel', 'packages/contracts', 'engines/workorder',
   'packages/some-new-package', 'demos/another-new-demo',
 ].map((dir) => ({ name: `@x/${dir.replace('/', '-')}`, dir }));
+// The shard matrix in .github/workflows/ci.yml.
+const SHARDS = 6;
 
 test('the shards partition the selection exactly, new packages included', () => {
-  const shards = assignShards(workspace, 3);
+  const shards = assignShards(workspace, SHARDS);
   const units = unitsOf(workspace).map((u) => u.name);
-  assert.equal(shards.length, 3);
+  assert.equal(shards.length, SHARDS);
   assert.deepEqual(shards.flat().sort(), [...units].sort());
   assert.equal(new Set(shards.flat()).size, units.length);
   // Every package is tested: whole, or every one of its parts.
@@ -340,17 +342,17 @@ test('the shards partition the selection exactly, new packages included', () => 
 });
 
 test('a split package is tested as its parts, on different shards', () => {
-  const shards = assignShards(workspace, 3);
+  const shards = assignShards(workspace, SHARDS);
   const cf = '@x/packages-adapter-cloudflare';
   assert.ok(!shards.flat().includes(cf), 'the whole package is never also a unit');
   const where = PARTS['packages/adapter-cloudflare'].map((script) => shards.findIndex((s) => s.includes(`${cf}#${script}`)));
   assert.equal(new Set(where).size, where.length);
-  assert.deepEqual(parseUnit(`${cf}#test:rest`), { name: cf, script: 'test:rest' });
+  assert.deepEqual(parseUnit(`${cf}#test:rest-1`), { name: cf, script: 'test:rest-1' });
   assert.deepEqual(parseUnit(cf), { name: cf, script: 'test' });
 });
 
-test('the three longest suites land in three different shards', () => {
-  const shards = assignShards(workspace, 3);
+test('every pinned unit lands on its own shard', () => {
+  const shards = assignShards(workspace, SHARDS);
   for (const [dir, index] of Object.entries(PINNED)) {
     assert.ok(shards[index].includes(`@x/${dir.replace('/', '-')}`), dir);
   }
@@ -394,12 +396,19 @@ test('each split package\'s parts exist and together run its whole `test`', () =
       assert.ok(pkg.scripts[name], `${dir} has no script ${name}`);
       return pkg.scripts[name];
     });
-    // The files one part names are exactly the files another part excludes, so a file is
-    // in one part or the other, and a new file falls into the excluding part.
+    // The files some parts name are exactly the files each other part excludes, so a file is
+    // in a naming part or an excluding one, and a new file falls into the excluding parts —
+    // which vitest's `--shard` splits between them, so together they take shards 1..n of n.
     const named = parts.flatMap((s) => [...s.matchAll(/vitest run ((?:test\/\S+\.test\.ts ?)+)/g)].flatMap((m) => m[1].trim().split(' ')));
-    const excluded = parts.flatMap((s) => [...s.matchAll(/--exclude (\S+)/g)].map((m) => m[1]));
     assert.ok(named.length > 0, `${dir}: no part names a file`);
-    assert.deepEqual([...named].sort(), [...excluded].sort(), `${dir}: the named and excluded files differ`);
+    const excluding = parts.filter((s) => s.includes('--exclude'));
+    assert.ok(excluding.length > 0, `${dir}: no part runs the files the others do not name`);
+    for (const s of excluding) {
+      const excluded = [...s.matchAll(/--exclude (\S+)/g)].map((m) => m[1]);
+      assert.deepEqual([...excluded].sort(), [...named].sort(), `${dir}: the named and excluded files differ`);
+    }
+    const shards = excluding.map((s) => /--shard=(\d+\/\d+)/.exec(s)?.[1] ?? '1/1').sort();
+    assert.deepEqual(shards, excluding.map((_, i) => `${i + 1}/${excluding.length}`), `${dir}: the excluding parts are not shards 1..n of n`);
     // Every extra vitest config `test` runs is run by a part too.
     for (const [, config] of pkg.scripts.test.matchAll(/-c (\S+)/g)) {
       assert.ok(parts.some((s) => s.includes(`-c ${config}`)), `${dir}: no part runs ${config}`);

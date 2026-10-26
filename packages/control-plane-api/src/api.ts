@@ -7243,7 +7243,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   // The write half of the governed pull (§8) — load a dump INTO an existing scope:
   // restore a backup, back out to a snapshot, or land a locally-built world on a
-  // hosted app. Staff-only like the export (not in BUILDER_ROUTES). No jurisdiction
+  // hosted app. Staff, and a tenant's own credential (TENANT_ROUTES, path-pinned): the
+  // dashboard's Import sends a file a team owner or admin uploaded (#2573), the dashboard
+  // asking that role, since this plane sees the credential, not the person. Builders are
+  // refused (not in BUILDER_ROUTES). The dump is input, judged on load. No jurisdiction
   // gate: this is ingress — the data ENTERS the scope's pinned region, it never
   // leaves one. Mirrors the export's delegation shape: the canonical `restoreScope`
   // writes the audit row (and the co-located bytes); when the scope's data lives in
@@ -7345,7 +7348,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // A restore throw is driven by the caller-supplied dump (a shape the target cannot
       // load, a DDL the engine rejects), so DISCLOSE it as an actionable 422 rather than
       // collapsing to the generic 500 `internal error` mapError would produce (#321,
-      // secondary obs #2). The route is staff/owner-gated and the detail is about the
+      // secondary obs #2). The route is staff- or own-tenant-gated and the detail is about the
       // dump the caller sent, not another tenant's state.
       const detail = e instanceof Error ? e.message : String(e);
       return refuseStatus(c, 422, 'restore failed — the backup could not be loaded', { detail });

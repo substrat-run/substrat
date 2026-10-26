@@ -600,7 +600,7 @@ export function systemSwitchContractSuite(
      * the OFF marker. Since #1883 a restore builds that table from the kernel's DDL, so a dump can
      * no longer make the switch throw: its CHECK never reaches the table, and the restore lands
      * switched off. The rollback itself is proven per adapter, with the fault injected at the
-     * switch's own write (`adapter-cloudflare/test/contract.test.ts`,
+     * switch's own write (`adapter-cloudflare/test/contract-switch.test.ts`,
      * `adapter-sqlite/test/restore-switch-rollback.test.ts`).
      */
     const refusingMarker = (dump: ScopeDump): ScopeDump => ({

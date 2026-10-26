@@ -19,7 +19,7 @@ const SCHED = moduleId.parse('@test/sched');
  * refusing the OFF marker. Since #1883 that table is built from KERNEL_DDL, so no dump can make
  * the switch throw, and the fault is injected at the switch's own write instead: the scope's
  * connection refuses to run the statement that writes the marker. The DO has the same test
- * (`adapter-cloudflare/test/contract.test.ts`).
+ * (`adapter-cloudflare/test/contract-switch.test.ts`).
  */
 describe('#1742: a switch that fails inside a restore rolls the whole restore back', () => {
   const setup = async () => {

@@ -823,7 +823,9 @@ connections: [
   together, and the pass never seats them again.
 - **Nothing lands silently.** A connection with no binding reads *nothing polls this connection*;
   a scope the connector could not land in, or a declaration the provider refuses (an option it
-  does not take), fails the connection's row and names the scope.
+  does not take), fails the connection's row. The row counts what did not land (*1 of 3 bindings
+  did not land*) under a reference; the provider's own answer stays with platform staff, who find
+  it by that reference.
 
 ## Assigning a role: `ctx.canAssign`
 
