@@ -2176,6 +2176,7 @@ export class ControlPlaneDO extends DurableObject {
         `tenant ${tenantId} cannot be set to 'reaped' via setTenantStatus — reap goes through reapTenant (control-plane.md §4.8)`,
       );
     }
+    if (before.status === 'reaped') throw substratError('conflict', `tenant ${tenantId} is reaped and cannot change status`);
     // Stamp/clear deleting_at so the grace-window sweep can age tenants (§4.8):
     // entering `deleting` stamps, leaving it (an un-delete) clears — the same shape
     // transitionScope uses for archived_at.

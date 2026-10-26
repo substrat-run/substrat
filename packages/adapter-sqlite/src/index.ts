@@ -11510,6 +11510,7 @@ export class SqliteScopeHost implements ScopeHost {
         this.directoryWriteAndAudit(() => {
           before = readTenant(tenantId);
           if (!before) throw substratError('not_found', `unknown tenant: ${tenantId}`);
+          if (before.status === 'reaped') throw substratError('conflict', `tenant ${tenantId} is reaped and cannot change status`);
           return (status === 'deleting'
             ? this.directory
               .prepare('UPDATE tenants SET status = ?, deleting_at = ? WHERE tenant_id = ?')
