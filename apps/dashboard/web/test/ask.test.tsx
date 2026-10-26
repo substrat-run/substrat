@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommandPalette, type AskFn } from '../src/components/CommandPalette';
-import { foldTurn, historyFor, mockAsk, type AskTurn } from '../src/lib/ask';
+import { foldTurn, historyFor, lookLabel, mockAsk, type AskTurn } from '../src/lib/ask';
 import type { PaletteContext } from '../src/lib/palette';
 
 /**
@@ -166,5 +166,15 @@ describe('⌘K Ask', () => {
     vi.useRealTimers();
     expect(turn.answer).toContain('likely cause');
     expect(turn.provenance?.sources).toBe(1);
+  });
+});
+
+describe('lookLabel', () => {
+  it('counts a bare list, and reads a record that carries an error field as a read', () => {
+    expect(lookLabel('list_deployments', [{ slug: 'a' }, { slug: 'b' }])).toBe('Read deployments (2)');
+    expect(lookLabel('list_deployments', { items: [{ slug: 'a' }], truncated: true })).toBe('Read deployments (1+)');
+    expect(lookLabel('get_install', { status: 'failed', error: 'push rejected' })).toBe('Read install');
+    expect(lookLabel('get_install', { error: 'not found' })).toBe('Could not read install: not found');
+    expect(lookLabel('list_findings', { refused: 'no' })).toBe('Could not read findings: not part of your role');
   });
 });
