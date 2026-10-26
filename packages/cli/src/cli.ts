@@ -61,6 +61,7 @@ import { writeModelView } from './model.js';
 import { CannotRun, changesetCommand } from './changeset.js';
 import { syncConceptFile } from './concept.js';
 import { planCommand } from './plan.js';
+import { dev } from './dev.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -122,6 +123,7 @@ Usage:
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
   substrat version                            print the CLI version (also --version, -v)
+  substrat dev      [dir] [--no-trace]         run the project's dev script with local request traces
   substrat push     [dir] [--promote prod]     push a vertical (slug/name/version default
                                                from package.json; version auto-bumps);
                                                --promote prod points the serving channel at
@@ -1396,6 +1398,9 @@ async function main(): Promise<void> {
   warnIfDistStale();
   const command = argv[0];
   switch (command) {
+    case 'dev':
+      process.exitCode = await dev({ dir: positional(0, ['no-trace']), trace: !argv.includes('--no-trace') });
+      return;
     case 'login':
       return cmdLogin();
     case 'versions':
