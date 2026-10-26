@@ -416,19 +416,24 @@ that blocks listing, whether a publish self-admits), so the row and the guard se
 write saw. A serving write is a compare-and-set on the serving state its #2178 gate judged: the
 ref and version, and the DO class set and migration tag the next upload diffs against (#2577), since
 a serve of a version that adds a class and a re-serve of the old one bring the ref and version back
-over a grown class set. The control-plane serve passes the state it read BEFORE its upload as
-`expected`, which is where that upload's class delta and `old_tag` came from, and a row that no
-longer holds it is refused before the gate. Either refusal is `precondition_failed` and writes
-nothing to the directory. Nothing retries it. The serve has already uploaded the serving script by
-then and passes the refusal up (the promote answers that the serve failed and to promote again), so
-the script runs that serve's code while the row names the other serve's until a serve lands again;
-before the compare-and-set the last writer won instead. One residual stays: a lost serve whose
-upload carried a migration has moved the script's tag past the row's, and the next serve's upload,
-diffed from the row, names an `old_tag` the runtime refuses. That is the script running ahead of
-the row, which a compare-and-set after the upload cannot undo.
+over a grown class set. The control-plane serve also passes the state it read BEFORE its upload as
+`expected`, and a row whose class set or tag no longer matches it is refused before the gate: those
+two are where the upload's class delta and `old_tag` came from. Its ref and version are not
+compared. A serve recorded during the upload that moved only those left the upload's migration
+right, so the record lands over it as it did before #2577, and the last writer wins what the row
+names. Either refusal is `precondition_failed` and writes nothing to the directory. Nothing retries
+it. The serve has already uploaded the serving script, so the script runs the refused serve's code
+while the row names the other serve's, until a serve lands again. The promote answers that the serve
+failed and to promote again, except when the refused upload itself added a class. The runtime's tag
+is then already past the row's, a re-serve diffed from the row names an `old_tag` the runtime
+refuses, and the promote says that promoting again cannot land until the record is repaired by hand.
+That is the one interleave nothing after the upload can resolve: two overlapping serves that both
+change the class set. Only serialising serves (a lease on the serving row across the upload) would,
+and that is not built.
 
-The class set and tag joined the DO's `expected` as optional fields, under the same method name,
-because the coordinator and the ControlPlaneDO can briefly run each other's previous release:
+The class set and tag joined the DO's `expected` (the host's own read, which the in-unit write
+compares) as optional fields, under the same method name, because the coordinator and the
+ControlPlaneDO can briefly run each other's previous release:
 
 | coordinator ╲ DO | before #2577 | from #2577 |
 |---|---|---|
