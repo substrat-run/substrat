@@ -189,7 +189,8 @@ connection's activity view shows.
    (`conn.openAttachmentStream`, on the very connection it is about to send with) and streams
    those bytes into `setfile` under the vertical's own filename, never holding the whole file.
    Bytes that fail their integrity check part-way abort the upload before it completes, so
-   Scrive never gets a file from them; the draft document is left behind, no `start` follows,
+   Scrive never gets a file from them; the draft document is trashed and deleted (best-effort, any
+   failure after `createDocument` does the same), no `start` follows,
    and the delivery is retried or dead-letters as any failure does. With nothing
    bound, today's one-page sheet goes out unchanged — the template, the parties, and the content
    hash — which stays the honest artifact for a caller that renders nothing.
