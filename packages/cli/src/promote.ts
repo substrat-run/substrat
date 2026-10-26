@@ -16,7 +16,8 @@
  * #2333: an acknowledgement answers ONE review — the diffs printed against the version prod served
  * when they were read. Every refusal that prints them also prints the `--review` token they were
  * read with, and the control plane refuses a token whose base or stored rows have moved since
- * (and a `--ack-migrations` sent with none), so a person never acknowledges a diff they were not shown.
+ * (and a permission or migration acknowledgement sent without one), so a person never
+ * acknowledges a diff they were not shown.
  */
 import {
   diffRegistries,
@@ -119,7 +120,7 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
     if (!message.includes(NEEDS_ACK) && review === undefined) throw new Error(message + listing);
     const lines = await explainRefusal(opts, {
       permission: message.includes('changes the permission surface'),
-      migration: message.includes('changes migrations') || review === 'promote_review_unbound',
+      migration: message.includes('changes migrations'),
     });
     throw new Error(`${message}${listing}\n\n${lines.join('\n')}`);
   }

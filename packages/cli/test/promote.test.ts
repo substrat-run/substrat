@@ -372,6 +372,17 @@ describe('substrat promote — the acknowledgement answers the review it printed
     expect(text).toContain(`--review v1:${D1}`);
   });
 
+  it('a permission-only unbound acknowledgement does not claim migrations changed', async () => {
+    plane({ refusal: UNBOUND, reason: 'promote_review_unbound', migrations: diff({ added: [], total: 0 }), review: { base: 'v1', digest: D1 } });
+    const text = await refusalOf();
+    expect(text).toContain('Upgrade the Substrat CLI to version 0.45.0 or later');
+    expect(text).toContain('permission changes:\n  + desk:admin');
+    expect(text).toContain('no SQL migration added or edited');
+    expect(text).not.toContain('the Durable-Object classes moved the digest');
+    expect(text).not.toContain('the migration digest changed');
+    expect(text).toContain(`--review v1:${D1}`);
+  });
+
   it('a review sentence with no reason is any other failure — no diff reads', async () => {
     const seen = plane({ refusal: STALE, migrations: diff() });
     await refusalOf();

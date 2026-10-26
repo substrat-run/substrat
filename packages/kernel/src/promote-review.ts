@@ -203,7 +203,7 @@ export async function assertPromoteReviewCurrent(opts: {
   }
 }
 
-/** Where the unbound rebind refusal sends a person; by what the release does, as `PROMOTE_REVIEW_DOCS`. */
+/** The guide URL included in an unbound rebind refusal. */
 const REBIND_REVIEW_DOCS = 'https://substrat.net/guide/deploying#a-rebind-answers-one-review';
 
 const rebindStale = (why: string): Error =>
