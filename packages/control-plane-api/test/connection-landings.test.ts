@@ -15,6 +15,7 @@ import {
   type FetchLike,
   type ModuleRegistration,
   type OperationHandler,
+  type PlatformSweepOptions,
 } from '@substrat-run/kernel';
 import {
   connectionId,
@@ -188,7 +189,7 @@ describe('declared connection landings (#2316)', () => {
       },
     },
   };
-  const pass = (sweepEveryMinutes?: Record<string, number>) =>
+  const pass = (sweepEveryMinutes?: Record<string, number>, recordFailure?: PlatformSweepOptions['recordFailure']) =>
     runPlatformSweep(host, {
       actor: staff,
       fetch,
@@ -196,6 +197,7 @@ describe('declared connection landings (#2316)', () => {
       ...(sweepEveryMinutes ? { sweepEveryMinutes } : {}),
       drainRetries: false,
       recordSweepRun: (e) => void runs.push(e),
+      ...(recordFailure ? { recordFailure } : {}),
       connectionLandings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders },
     });
   /** The last sweep row each connection got, by id. */
@@ -339,6 +341,30 @@ describe('declared connection landings (#2316)', () => {
     expect((await listPlanimaBindings(host, plan))[0]).toMatchObject({ horizonYears: 10 });
     expect(planPages).toHaveLength(pages);
     expect(runs).toHaveLength(rows);
+  });
+
+  it('records a failed landing while the provider poll waits for its interval', async () => {
+    const plan = await connect('planima');
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    await pass();
+    await host.admin.recordSweepRun({ kind: 'connector', unit: plan, outcome: 'ok', tenantId: t, vertical: SLUG, connectionId: plan });
+    const pages = planPages.length;
+    const rows = runs.length;
+    const refused = DECLARED.map((l) => l.provider === 'planima' ? { ...l, options: { horizonYear: 50 } } : l);
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(refused)));
+    const staffText: string[] = [];
+
+    const report = await pass({ planima: 120 }, (entry) => void staffText.push(entry.message));
+
+    expect(report.connectionLandings).toMatchObject({ failed: 1 });
+    expect(report.connectionsSwept).toBe(0);
+    expect(report.connectionsSkipped).toBe(1);
+    expect(planPages).toHaveLength(pages);
+    expect(runs).toHaveLength(rows + 1);
+    expect(lastRun(plan)).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^1 declared landing could not be granted or bound \(reference \w{26}\)$/) });
+    expect(staffText).toHaveLength(1);
+    expect(staffText[0]).toContain(`scope ${s}`);
+    expect(report.errors).toEqual([]);
   });
 
   it('re-writes a Fortnox binding that predates the company it reads, once', async () => {

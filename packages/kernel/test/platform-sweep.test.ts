@@ -939,6 +939,9 @@ describe('runPlatformSweep', () => {
     await pass();
     expect(polls).toBe(2);
     expect(recorded).toHaveLength(2);
+    rows = [{ at: new Date(Date.now() + 121 * 60_000).toISOString(), outcome: 'ok' }];
+    await pass();
+    expect(polls).toBe(3);
   });
 
   it('waits the provider interval after a failed poll too', async () => {
