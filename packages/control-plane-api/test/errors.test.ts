@@ -174,9 +174,10 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
 
   it('reads the registry\'s own refusals from the code now that their rows are gone (#113 phases 5–6)', () => {
     // The sixth to tenth families off `CODE_PATTERNS`: `is owned by`, `is auto-admitted`,
-    // `not admitted`, and — `rejectVersion` / `promoteVersion` — `is already admitted` and `belongs to`. Every
-    // site is on the coordinator (`host.ts`, `adapter-sqlite`) — none is raised inside a
-    // Durable Object — so the real error object reaches `mapError` and the code is read.
+    // `not admitted`, and — `rejectVersion` / `promoteVersion` — `is already admitted` and `belongs to`. Each
+    // reaches `mapError` as a typed error carrying its code: raised on the coordinator (`host.ts`,
+    // `adapter-sqlite`), or — `is auto-admitted`, from `updateVerticalListed` and `promoteChannel` —
+    // inside the ControlPlaneDO and answered through `reply`, which rebuilds it with its code.
     const sentences = [
       `vertical 'helpdesk' is owned by 01AAA, not 01BBB`,
       `vertical 'helpdesk' is owned by the platform, not 01BBB`,

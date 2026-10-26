@@ -735,6 +735,9 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
           await fixture.directorySql(`UPDATE verticals SET listed = 1 WHERE slug = '${slug}'`);
           await host.admin.promoteVersion(staff, slug, 'prod', auto);
           expect((await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId).toBe(auto);
+          // Serving the same version (the usual hosted state): the retry changes nothing either.
+          await fixture.directorySql(`UPDATE verticals SET serving_ref = 'serving-a', serving_version_id = '${auto}' WHERE slug = '${slug}'`);
+          await host.admin.promoteVersion(staff, slug, 'prod', auto);
           // A failed serve left another version serving: the retry would put `auto` on every install.
           await fixture.directorySql(`UPDATE verticals SET serving_ref = 'serving-a', serving_version_id = '${vouched}' WHERE slug = '${slug}'`);
           const refused = await refusalOf(host.admin.promoteVersion(staff, slug, 'prod', auto));
