@@ -188,11 +188,12 @@ describe('declared connection landings (#2316)', () => {
       },
     },
   };
-  const pass = () =>
+  const pass = (sweepEveryMinutes?: Record<string, number>) =>
     runPlatformSweep(host, {
       actor: staff,
       fetch,
       sweepers,
+      ...(sweepEveryMinutes ? { sweepEveryMinutes } : {}),
       drainRetries: false,
       recordSweepRun: (e) => void runs.push(e),
       connectionLandings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders },
@@ -319,6 +320,25 @@ describe('declared connection landings (#2316)', () => {
       horizonYears: 10, organizationId: 42, currency: 'EUR', window: { fromYear: 2026, toYear: 2030 },
     });
     expect((await pass()).connectionLandings).toEqual({ granted: 0, bound: 0, failed: 0 });
+  });
+
+  it('repairs a changed landing while the provider poll waits for its interval', async () => {
+    const plan = await connect('planima');
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    await pass();
+    await host.admin.recordSweepRun({ kind: 'connector', unit: plan, outcome: 'ok', tenantId: t, vertical: SLUG, connectionId: plan });
+    const pages = planPages.length;
+    const rows = runs.length;
+    const changed = DECLARED.map((l) => l.provider === 'planima' ? { ...l, options: { horizonYears: 10 } } : l);
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(changed)));
+
+    const report = await pass({ planima: 120 });
+
+    expect(report.connectionLandings).toEqual({ granted: 0, bound: 1, failed: 0 });
+    expect(report.connectionsSkipped).toBe(1);
+    expect((await listPlanimaBindings(host, plan))[0]).toMatchObject({ horizonYears: 10 });
+    expect(planPages).toHaveLength(pages);
+    expect(runs).toHaveLength(rows);
   });
 
   it('re-writes a Fortnox binding that predates the company it reads, once', async () => {

@@ -182,6 +182,8 @@ export interface PlatformSweepOptions {
   fetch: FetchLike;
   /** provider slug → its reconcile sweeper. A connection whose provider is absent is skipped. */
   sweepers: Record<string, ConnectorSweeper>;
+  /** Provider poll interval in minutes. Absent providers poll on every pass. */
+  sweepEveryMinutes?: Record<string, number>;
   /**
    * #2316: grant and bind each live connection from the landings its vertical's running version
    * declares, before it is swept. UNSET skips the step, and a connection is swept on whatever
@@ -520,7 +522,7 @@ export interface PlatformSweepReport {
   drainTotals: ExecutorDrainReport;
   /** Connections a sweeper ran for. */
   connectionsSwept: number;
-  /** Connections skipped — revoked, or their provider has no registered sweeper. */
+  /** Connections skipped — revoked, without a sweeper, or not yet due. */
   connectionsSkipped: number;
   /**
    * #2316: what the landing step granted and bound from declarations, summed over connections, or
@@ -1989,6 +1991,23 @@ export async function runPlatformSweep(
       report.connectionLandings.failed += landed.failed.length;
     }
     const landingFailed = landed?.failed ?? [];
+    const everyMinutes = options.sweepEveryMinutes?.[c.provider];
+    if (everyMinutes) {
+      try {
+        const [last] = await host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, limit: 1 });
+        // A skipped row means no provider poll took place. Cadence skips write no row, so the
+        // most recent real attempt remains the clock even when a later pass repairs a landing.
+        if (last && last.outcome !== 'skipped' && Date.now() - Date.parse(last.at) < everyMinutes * 60_000) {
+          report.connectionsSkipped += 1;
+          return;
+        }
+      } catch (err) {
+        // Without the ledger's clock, do not risk spending the provider's daily allowance.
+        report.errors.push({ kind: 'sweep', id: c.id, error: `cannot read connector cadence: ${message(err)}` });
+        report.connectionsSkipped += 1;
+        return;
+      }
+    }
     // #2316: the row is the connection's tenant's to read, so it says what became of the sweep, in
     // the platform's words with counts, under one reference; the text (a provider's answer, a landing
     // refusal) is staff's row under the same reference, or the report's when nothing files one.

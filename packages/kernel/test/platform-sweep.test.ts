@@ -51,10 +51,12 @@ function fakeHost(opts: {
   scopes?: { id: ReturnType<typeof sid>; tenantId: typeof T }[];
   connections?: { id: ReturnType<typeof cid>; provider: string; revokedAt: string | null }[];
   drainDue?: ScopeHost['drainDue'];
+  sweepRuns?: () => Promise<{ at: string; outcome: 'ok' | 'failed' | 'skipped' }[]>;
 }): ScopeHost {
   const admin = {
     listScopes: async () => (opts.scopes ?? []).map((s) => ({ ...s, status: 'active' })),
     listConnections: async () => opts.connections ?? [],
+    listSweepRuns: opts.sweepRuns ?? (async () => []),
   };
   return {
     admin,
@@ -906,6 +908,49 @@ describe('runPlatformSweep', () => {
     expect(swept).toEqual([live]);
     expect(report.connectionsSwept).toBe(1);
     expect(report.connectionsSkipped).toBe(2);
+  });
+
+  it('polls a new connection, waits for its provider interval, then polls when due', async () => {
+    const id = cid();
+    let rows: { at: string; outcome: 'ok' | 'failed' | 'skipped' }[] = [];
+    const host = fakeHost({ connections: [{ id, provider: 'planima', revokedAt: null }], sweepRuns: async () => rows });
+    const recorded: SweepRunInput[] = [];
+    let polls = 0;
+    const pass = () => runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { planima: async () => { polls += 1; } },
+      sweepEveryMinutes: { planima: 120 },
+      recordSweepRun: (row) => void recorded.push(row),
+    });
+
+    await pass();
+    expect(polls).toBe(1);
+    rows = [{ at: new Date().toISOString(), outcome: 'ok' }];
+    const waiting = await pass();
+    expect(waiting.connectionsSkipped).toBe(1);
+    expect(polls).toBe(1);
+    expect(recorded).toHaveLength(1);
+
+    rows = [{ at: new Date(Date.now() - 121 * 60_000).toISOString(), outcome: 'ok' }];
+    await pass();
+    expect(polls).toBe(2);
+    expect(recorded).toHaveLength(2);
+  });
+
+  it('waits the provider interval after a failed poll too', async () => {
+    const id = cid();
+    const rows = [{ at: new Date().toISOString(), outcome: 'failed' as const }];
+    const host = fakeHost({ connections: [{ id, provider: 'planima', revokedAt: null }], sweepRuns: async () => rows });
+    let polls = 0;
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { planima: async () => { polls += 1; } },
+      sweepEveryMinutes: { planima: 120 },
+    });
+    expect(report.connectionsSkipped).toBe(1);
+    expect(polls).toBe(0);
   });
 
   it("hands a sweeper a fetch that converts a sized body before the injected fetch sees it (#2498)", async () => {
