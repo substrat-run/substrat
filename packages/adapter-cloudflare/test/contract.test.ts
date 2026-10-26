@@ -1960,11 +1960,28 @@ const attachmentHostFixture = async (options: AttachmentTextHostOptions = {}) =>
         ATTACHMENT_TEXT_JOB,
       );
     });
-  const plantRows = async (_tenant: TenantId, scope: ScopeId, statements: readonly (readonly [string, ...(string | number)[]])[]) =>
+  const plantIndexedAttachments = async (
+    _tenant: TenantId,
+    scope: ScopeId,
+    rows: readonly { id: string; entityId: string; filename: string; text: string }[],
+  ) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
-      for (const [sql, ...params] of statements) state.storage.sql.exec(sql, ...params);
+      const at = '2026-10-01T00:00:00.000Z';
+      for (const r of rows) {
+        const bytes = new TextEncoder().encode(r.text).length;
+        state.storage.sql.exec(
+          `INSERT INTO _substrat_attachments (id, entity_type, entity_id, filename, content_type, size, sha256, visibility, created_by, created_at)
+         VALUES (?, 'item', ?, ?, 'text/plain', ?, ?, 'internal', 'planted', ?)`,
+          r.id, r.entityId, r.filename, bytes, '0'.repeat(64), at,
+        );
+        state.storage.sql.exec(
+          `INSERT INTO _substrat_search__attachment_text (attachment_id, status, extractor, body, body_bytes, truncated, updated_at)
+         VALUES (?, 'indexed', 'text', ?, ?, 0, ?)`,
+          r.id, r.text, bytes, at,
+        );
+      }
     });
-  return { host, forgetAttachmentText, plantRows, cleanup: async () => host.close() };
+  return { host, forgetAttachmentText, plantIndexedAttachments, cleanup: async () => host.close() };
 };
 capabilityAttachmentContractSuite('adapter-cloudflare', attachmentHostFixture);
 

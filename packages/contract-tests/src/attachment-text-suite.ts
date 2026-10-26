@@ -73,26 +73,13 @@ const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 /** For a test that uploads and extracts thousands of files: the setup, not the search, takes the time. */
 const SETUP_HEAVY_MS = 120_000;
 
-/**
- * The rows an upload and its extraction would leave for a text file, written directly: the id
- * is fixed (`n` in hex, so ids order as `n` does), as is the time.
- */
-const plantedIndexed = (n: number, entityId: string, filename: string, text: string): PlantStatement[] => {
-  const id = n.toString(16).toUpperCase().padStart(26, '0');
-  const at = '2026-10-01T00:00:00.000Z';
-  return [
-    [
-      `INSERT INTO _substrat_attachments (id, entity_type, entity_id, filename, content_type, size, sha256, visibility, created_by, created_at)
-       VALUES (?, 'item', ?, ?, 'text/plain', ?, ?, 'internal', ?, ?)`,
-      id, entityId, filename, text.length, '0'.repeat(64), 'planted', at,
-    ],
-    [
-      `INSERT INTO _substrat_search__attachment_text (attachment_id, status, extractor, body, body_bytes, truncated, updated_at)
-       VALUES (?, 'indexed', 'text', ?, ?, 0, ?)`,
-      id, text, new TextEncoder().encode(text).length, at,
-    ],
-  ];
-};
+/** A planted attachment; the id is `n` in hex, so ids order as `n` does. */
+const planted = (n: number, entityId: string, filename: string, text: string): PlantedAttachment => ({
+  id: n.toString(16).toUpperCase().padStart(26, '0'),
+  entityId,
+  filename,
+  text,
+});
 
 
 /** What a fixture builds its host with. Omitted extractors are the host's real ones. */
@@ -109,15 +96,20 @@ export interface AttachmentTextHostFixture extends ScopeHostFixture {
    */
   forgetAttachmentText(tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /**
-   * Run these statements straight against the scope's store, in one batch — for a test whose
-   * subject is a page or a cap that uploads would take minutes to reach. No host surface
-   * writes the spine, so a fixture reaches the store the way `forgetAttachmentText` does.
+   * Write these indexed text attachments straight to the scope's store, in one batch — for a
+   * test whose subject is a page or a cap that uploads would take minutes to reach. No host
+   * surface writes the spine, so a fixture reaches the store the way `forgetAttachmentText` does.
    */
-  plantRows(tenantId: TenantId, scopeId: ScopeId, statements: readonly PlantStatement[]): Promise<void>;
+  plantIndexedAttachments(tenantId: TenantId, scopeId: ScopeId, rows: readonly PlantedAttachment[]): Promise<void>;
 }
 
-/** One statement of a planted batch: the SQL, then its bound parameters. */
-export type PlantStatement = readonly [sql: string, ...params: (string | number)[]];
+/** An attachment as an upload and its extraction would leave it: the row and its indexed text. */
+export interface PlantedAttachment {
+  readonly id: string;
+  readonly entityId: string;
+  readonly filename: string;
+  readonly text: string;
+}
 
 export function attachmentTextContractSuite(
   adapterName: string,
@@ -333,16 +325,16 @@ export function attachmentTextContractSuite(
         const control = await newScope();
         for (const scope of [s, control]) {
           await grant(scope, bob, item('allowed'));
-          await fixture.plantRows(t, scope, plantedIndexed(0, 'allowed', 'old.txt', 'the margay ledger, readable'));
+          await fixture.plantIndexedAttachments(t, scope, [planted(0, 'allowed', 'old.txt', 'the margay ledger, readable')]);
         }
         // Every one of these is NEWER than old.txt (a greater id). A scan bound applied before the
         // gate would have spent itself on them and handed bob nothing.
-        await fixture.plantRows(
+        await fixture.plantIndexedAttachments(
           t,
           s,
           Array.from({ length: 1001 }, (_, n) =>
-            plantedIndexed(n + 1, 'denied', `hidden-${n}.txt`, `the margay ledger, hidden ${n}`),
-          ).flat(),
+            planted(n + 1, 'denied', `hidden-${n}.txt`, `the margay ledger, hidden ${n}`),
+          ),
         );
         for (const limit of [1, 20]) {
           const page = (await search(s, bob, 'margay', limit)).map((r) => r.filename);
@@ -373,12 +365,12 @@ export function attachmentTextContractSuite(
       it('refuses a narrowed caller past the owner cap — the same for a term with matches and one without', async () => {
         const s = await newScope();
         await grant(s, bob, item('o0'));
-        await fixture.plantRows(
+        await fixture.plantIndexedAttachments(
           t,
           s,
           Array.from({ length: ATTACHMENT_SEARCH_OWNER_MAX + 1 }, (_, n) =>
-            plantedIndexed(n, `o${n}`, `o${n}.txt`, n === 0 ? 'the jerboa note' : 'filler only'),
-          ).flat(),
+            planted(n, `o${n}`, `o${n}.txt`, n === 0 ? 'the jerboa note' : 'filler only'),
+          ),
         );
         const refusalOf = async (term: string) => {
           const err = await search(s, bob, term).then(
