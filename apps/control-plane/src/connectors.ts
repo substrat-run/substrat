@@ -53,13 +53,20 @@ import {
   probeMicrosoft365Connection,
   probeMicrosoft365Secret,
 } from '@substrat-run/connector-microsoft365';
+import {
+  MAIL_IN_CONNECTION_GRANTS,
+  probeMailInConnection,
+  probeMailInSecret,
+  sweepMailIn,
+} from '@substrat-run/connector-mail-in';
+import { mailInInboundDeps, type MailInEnv } from './mail-in.js';
 
 /**
  * The env slice the connectors read — declared HERE rather than in `worker.ts`, so a
  * second connector's configuration arrives with the connector instead of in a second
  * file. `Env` extends this, which is what makes one entry below the whole edit.
  */
-export interface ConnectorEnv {
+export interface ConnectorEnv extends MailInEnv {
   /**
    * Scrive API base for the platform-run connector pass (#574/#96) — the sweep, the
    * webhook ingress and the inspection reads (#605) all go through it.
@@ -181,6 +188,13 @@ export interface ConnectorRegistration {
    * pass. Absent for a provider with one connection per (tenant, vertical).
    */
   readonly accountOnBinding?: true;
+  /**
+   * #2611: the platform mints this provider's connections itself — a mail-in address is requested
+   * for a scope, never pasted — so no dashboard door connects it, and `pnpm lint:connector-grants`
+   * does not ask for one. Its `probeCandidate` refuses every credential, so the paste relay cannot
+   * create one either.
+   */
+  readonly minted?: true;
   /**
    * The webhook ingress, for a provider that calls back (#96). Absent is a complete
    * connector — push collapses the sweep's latency, it never replaces it.
@@ -454,6 +468,25 @@ const MICROSOFT365: ConnectorRegistration = {
   mail: (env) => microsoft365MailSender(microsoft365Options(env)),
 };
 
+/**
+ * Inbound mail (#2611) — a scope's address on the platform's receiving subdomain. Each address is
+ * its own connection, minted by the platform when a scope asks (`/internal/mail-in/address`, the
+ * dashboard), so there is no door and no credential. Email Routing hands each message to the
+ * `email()` handler, which accepts or refuses it at SMTP time; this sweep is the retry floor for
+ * deliveries that did not land straight after accept. No dispatch: nothing in a scope sends
+ * through an address.
+ */
+const MAIL_IN: ConnectorRegistration = {
+  provider: 'mail-in',
+  grants: MAIL_IN_CONNECTION_GRANTS,
+  minted: true,
+  inspector: () => ({
+    probe: async (h, row) => probeMailInConnection(h, row),
+    probeCandidate: async () => probeMailInSecret(),
+  }),
+  sweep: (env) => async (h, id) => sweepMailIn(h, mailInInboundDeps(env), id),
+};
+
 function microsoft365Options(env: ConnectorEnv) {
   return {
     fetch: globalFetch,
@@ -467,7 +500,7 @@ function microsoft365Options(env: ConnectorEnv) {
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, MICROSOFT365];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA, MICROSOFT365, MAIL_IN];
 
 /** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {

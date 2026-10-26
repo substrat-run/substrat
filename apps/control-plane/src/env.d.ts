@@ -21,5 +21,8 @@ declare namespace Cloudflare {
      * rather than a constant that can silently disagree with it.
      */
     SCRIVE_BASE_URL?: string;
+    /** Inbound mail (#2611): the receiving domain and the bucket accepted mail waits in, from `wrangler.jsonc`. */
+    MAIL_IN_DOMAIN?: string;
+    MAIL_IN_BUCKET?: R2Bucket;
   }
 }
