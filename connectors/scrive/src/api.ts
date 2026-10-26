@@ -541,6 +541,28 @@ export class ScriveApi {
   }
 
   /**
+   * Move a document to Scrive's trash — the first half of discarding a draft. The
+   * sequence is the one `test/live.test.ts` cleans the testbed with; the response
+   * body is not read, since nothing here depends on it.
+   */
+  async trash(documentId: string): Promise<void> {
+    await this.post(documentId, 'trash');
+  }
+
+  /** Delete a trashed document for good — the second half of discarding a draft. */
+  async delete(documentId: string): Promise<void> {
+    await this.post(documentId, 'delete');
+  }
+
+  private async post(documentId: string, action: 'trash' | 'delete'): Promise<void> {
+    const res = await this.conn.fetch(`${this.baseUrl}/api/v2/documents/${documentId}/${action}`, {
+      method: 'POST',
+      headers: this.headers(),
+    });
+    if (!res.ok) await asJson(res, action);
+  }
+
+  /**
    * Current state — the polling path, and the only call that returns `status`.
    * Webhook ingress (#96) is not on the critical path precisely because this
    * exists and Scrive's callbacks are unauthenticated anyway.

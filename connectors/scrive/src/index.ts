@@ -616,7 +616,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
     // still refused with nothing to clean up. A stream that refuses part-way (bytes
     // that do not match their record) aborts `setfile` before its closing boundary,
     // so Scrive is never handed a file from them; the draft `createDocument` made is
-    // left behind, as on every failure after it, and no `start` or ledger row follows.
+    // discarded (below), and no `start` or ledger row follows.
     let bound: OpenedAttachmentStream | null = null;
     if (payload.documentAttachmentId) {
       bound = await conn.openAttachmentStream(payload.documentAttachmentId);
@@ -669,8 +669,7 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
       if (bound) await bound.body.stream.getReader().cancel(e).catch(() => {});
       throw e;
     }
-    await api.setFile(doc.id, filename, pdf);
-    await api.update(doc.id, {
+    const patch: Parameters<ScriveApi['update']>[1] = {
       title,
       ...(options.callbackUrl && webhookToken
         ? {
@@ -741,8 +740,23 @@ export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandl
           }),
         ),
       ],
-    });
-    const started = await api.start(doc.id);
+    };
+    // The draft is this dispatch's own: a failure before `start` returns would leave it at
+    // Scrive with nobody to finish it, and the retry builds a fresh one (#2589). Best-effort —
+    // the failure that got us here is the one that must surface, and a draft that cannot be
+    // discarded is no worse off than before.
+    let started: Awaited<ReturnType<ScriveApi['start']>>;
+    try {
+      await api.setFile(doc.id, filename, pdf);
+      await api.update(doc.id, patch);
+      started = await api.start(doc.id);
+    } catch (e) {
+      await api
+        .trash(doc.id)
+        .then(() => api.delete(doc.id))
+        .catch(() => {});
+      throw e;
+    }
     // #1927: Scrive's id per party, the one key that survives an edit at Scrive.
     // `undefined` when the answer did not carry the shape sent — the first poll then
     // pins them from `get`, so a surprise here never costs the dispatch.
