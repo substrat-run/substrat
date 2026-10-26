@@ -40,6 +40,7 @@ import {
   type ReservedStoreOperation,
   type ScopeStoreNeed,
   type StoreDriverRegistration,
+  mailInRelayRequest,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
@@ -191,6 +192,14 @@ import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
 import { sendEmailDepsOf } from './email-intent.js';
+import { MAIL_IN_ACTOR, handleInboundEmail, mailInAddressDeps } from './mail-in.js';
+import {
+  MailInError,
+  mailInAddressOf,
+  requestMailInAddress,
+  revokeMailInAddress,
+  rotateMailInAddress,
+} from '@substrat-run/connector-mail-in';
 import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
 import { fileNotHeld, undrainedOrNotHeld } from './event-drain-not-held.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, staffRefusalOf, type StaffAuthEnv } from './staff-auth.js';
@@ -2436,6 +2445,15 @@ function authFor(env: Env): PlatformActorAuth {
 
 export default {
   /**
+   * Inbound mail (#2611): Email Routing on the receiving subdomain hands every message here. It is
+   * refused at SMTP time or made durable before this returns; delivery follows in `waitUntil`, and
+   * the connector sweep in `scheduled` retries what did not land.
+   */
+  async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
+    await handleInboundEmail(message, env, ctx, hostFor(env));
+  },
+
+  /**
    * The platform's scheduled pass (docs/architecture/scheduler.md; cron in wrangler.jsonc):
    * `runPlatformSweep`, whose GC phase reaps expired snapshot forks (preview-and-
    * snapshots.md §3/§9). Executor drains are skipped here — this deployment's SCOPE
@@ -3227,6 +3245,51 @@ export default {
       '/internal/connections/connect-links/revoke',
       connectLinkRelay((host, body) => relayConnectLinkRevoke(host, CONNECTION_RELAY_ACTOR, body)),
     );
+
+    // The mail-in relay (#2611) — a vertical's worker asks for, rotates or gives up its own
+    // scope's inbound address, the authorizing act having been its own operation's `ctx.check`
+    // (named as `createdBy`). Unlike the connect relays above, a PROVEN caller is required for
+    // every action, a read included: an address is a capability that delivers into the scope it
+    // names, so minting one for a scope on the shared platform secret alone would let any
+    // dispatched script open a door into another tenant's scope. Which vertical, operation and key
+    // the address lands through is re-read from this directory, never taken from the body.
+    app.post('/internal/mail-in/address', async (c) => {
+      try {
+        assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+      } catch (e) {
+        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        throw e;
+      }
+      const body: unknown = await c.req.json().catch(() => ({}));
+      const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+      if (!caller.ok) return c.json({ error: caller.error }, 403);
+      if (!caller.proven) {
+        return c.json({ error: "a mail-in address needs a proven caller — call the relay from the vertical's worker, not from inside a Durable Object" }, 403);
+      }
+      const parsed = mailInRelayRequest.safeParse(body);
+      if (!parsed.success) {
+        const first = parsed.error.issues[0];
+        return c.json({ error: `invalid mail-in request: ${first ? `${first.path.join('.') || '(root)'} — ${first.message}` : 'malformed body'}` }, 400);
+      }
+      const input = parsed.data;
+      if (input.action !== 'get' && !input.createdBy) return c.json({ error: `'${input.action}' names the principal whose check authorized it (createdBy)` }, 400);
+      const host = hostFor(c.env);
+      const deps = mailInAddressDeps(c.env, host);
+      const key = { tenantId: input.tenantId, scopeId: input.scopeId };
+      try {
+        if (input.action === 'get') return c.json({ address: await mailInAddressOf(host, MAIL_IN_ACTOR, key.tenantId, key.scopeId) });
+        if (input.action === 'revoke') {
+          await revokeMailInAddress(host, deps, key);
+          return c.json({ address: null });
+        }
+        const act = input.action === 'request' ? requestMailInAddress : rotateMailInAddress;
+        const address = await act(host, deps, { ...key, createdBy: input.createdBy!, ...(input.allowlist ? { allowlist: input.allowlist } : {}) });
+        return c.json({ address });
+      } catch (e) {
+        if (e instanceof MailInError) return c.json({ error: e.message }, e.status);
+        throw e;
+      }
+    });
 
     // The connector webhook ingresses (#574 phase 2, #96): for a CP-less dispatch vertical
     // the capability URL terminates HERE, not on the vertical — the dispatch ledger the token

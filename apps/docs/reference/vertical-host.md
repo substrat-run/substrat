@@ -520,6 +520,36 @@ preview or a fork, and for a provider with no platform consent round. A refusal 
 secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
 card and can revoke them there.
 
+## `mailInAddress(request)`
+
+This scope's [inbound mail](/connectors/mail-in) address (#2611): ask for one, read it, rotate
+it, or give it up. Mail sent to it lands through the operation your manifest declares under
+`connections: [{ provider: 'mail-in', … }]`, with attachment bytes stored on the entity that
+operation answers.
+
+```ts
+import { mailInAddress, MailInAddressError } from '@substrat-run/vertical-host';
+
+const { principal } = await scope.invoke('docs/manage-mail-in', {});   // your ctx.check
+const address = await mailInAddress({
+  controlPlaneUrl: env.CONTROL_PLANE_URL,
+  platformSecret: env.PLATFORM_SECRET,
+  tenantId, scopeId,
+  action: 'request',                 // 'get' | 'request' | 'rotate' | 'revoke'
+  createdBy: principal,              // required for everything but 'get'
+  allowlist: ['me@example.com'],     // optional; replaces the list
+});
+// address?.address === 'docs-x7k2…@in.substrat.run', or null when the scope has none
+```
+
+The same split as `requestConnectUrl`: the check in the operation, the call in the worker.
+Unlike it, the platform requires a **proven caller** for every action, a read included — an
+address delivers into the scope it names — so call it from the worker, never from inside a
+Durable Object. Which operation and key the address lands through is read from the manifest
+the scope runs, never from this call; a vertical that declares none is refused with `409`. A
+refusal throws `MailInAddressError` with the relay's status. The call goes through
+`POST /internal/mail-in/address`.
+
 ## `mountUploadLinkRedeem(app, options)`
 
 Mounts `PUT` and `POST` at `/api/attachment-uploads/:entityType/:entityId/:secret`, the path

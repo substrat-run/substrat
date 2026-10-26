@@ -208,6 +208,7 @@ export function guideSidebar() {
         { text: 'Fortnox (accounting)', link: '/connectors/fortnox' },
         { text: 'Planima (facility maintenance)', link: '/connectors/planima' },
         { text: 'Microsoft 365 (mail, documents)', link: '/connectors/microsoft365' },
+        { text: 'Inbound mail', link: '/connectors/mail-in' },
       ],
     },
     {
