@@ -31,6 +31,8 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/delete-team deleted': ACK,
   'dashboard/promote-deployment promoted': ACK,
   'dashboard/delete-deployment removed': ACK,
+  'dashboard/setup-github-ci ok': 'the handler’s own verdict on what GitHub answered',
+  'dashboard/setup-github-ci needsPermissions': 'the handler’s own verdict on what GitHub answered',
   'dashboard/get-deployment-traffic markers[].kind': 'derived in this worker from the push and go-live instants',
   'dashboard/business-volumes apps[].unavailable': 'the worker’s own labels for absent versions, moves or a supported read',
   'dashboard/move-scopes refusal.reason': 'read from the plane’s refusal by `rebindReviewReasonIn`, which drops a reason it does not know',

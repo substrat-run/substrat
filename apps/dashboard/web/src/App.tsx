@@ -285,7 +285,10 @@ export function App() {
 
   // Git-import state is fetched lazily by the Create-App view (it hits GitHub), so it
   // isn't loaded on every dashboard open. Mock-aware so the dev preview renders it.
-  const loadGitRepos = useCallback(async (account?: string): Promise<GitReposResult> => (DEV_MOCK ? MOCK_GIT_REPOS : api.gitRepos(account)), []);
+  const loadGitRepos = useCallback(
+    async (account?: string): Promise<GitReposResult> => (DEV_MOCK ? MOCK_GIT_REPOS : teamClient().listGithubRepos({ account })),
+    [teamClient],
+  );
 
   // Session check → on sign-in, load apps + members + catalog + deployments. First,
   // handle an invite acceptance (a `/invite/<token>` link, or one stashed across the
@@ -1027,7 +1030,7 @@ export function App() {
           <NotFound label="That vertical could not be found." backLabel="Back to verticals" onBack={() => go('/verticals')} />
         )
       ) : route.section === 'verticals' ? (
-        <Verticals deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
+        <Verticals teamId={me.currentTeamId} deployments={deployments} onPromote={(slug, vid, ch) => void promoteDeployment(slug, vid, ch)} onRemove={(slug) => void removeDeployment(slug)} onOpen={(slug) => go(`/verticals/${encodeURIComponent(slug)}`)} busy={promoting} loadGitRepos={loadGitRepos} />
       ) : route.section === 'team' ? (
         <Team
           members={members}
