@@ -117,6 +117,7 @@ describe('substrat dev', () => {
     expect(traces.find((trace) => trace.status === 200)?.steps).toContainEqual(expect.objectContaining({ type: 'check', allowed: true, decidedBy: 'role:member' }));
     expect(traces.find((trace) => trace.status === 403)?.steps).toContainEqual(expect.objectContaining({ type: 'check', allowed: false, requires: ['member'] }));
     expect(output).toContain('[substrat trace]');
+    expect(output).toContain('requires member; caller has viewer');
     const stopped = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => child.once('exit', (code, signal) => resolve([code, signal])));
     child.kill('SIGINT');
     await stopped;

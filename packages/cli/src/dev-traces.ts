@@ -12,8 +12,8 @@ import {
   type TraceStep,
 } from '@substrat-run/contracts';
 
-export const TRACE_MAX_REQUESTS = 256;
-export const TRACE_MAX_BYTES = 8 * 1024 * 1024;
+const TRACE_MAX_REQUESTS = 256;
+const TRACE_MAX_BYTES = 8 * 1024 * 1024;
 
 /** A file per completed request lets watch restarts write concurrently without a shared index. */
 export class LocalTraceStore {
@@ -32,9 +32,11 @@ export class LocalTraceStore {
     if (Buffer.byteLength(data) > this.maxBytes) {
       // One verbose request still gets a record. Its head survives and the omitted steps
       // are explicit, so the buffer never grows past its byte budget for one request.
-      data = JSON.stringify({ ...trace, steps: [], capture: {
-        ...trace.capture, stepsDropped: trace.capture.stepsDropped + trace.steps.length,
-      } });
+      data = JSON.stringify({
+        ...trace,
+        steps: [],
+        capture: { ...trace.capture, stepsDropped: trace.capture.stepsDropped + trace.steps.length },
+      });
     }
     if (Buffer.byteLength(data) > this.maxBytes) return;
     try {
@@ -182,7 +184,9 @@ export function traceLine(trace: RequestTrace): string {
     : trace.principal ? Object.values(trace.principal).join(':') : trace.principalKind ?? '-';
   const check = [...trace.steps].reverse().find((step) => step.type === 'check');
   const rule = check?.type === 'check'
-    ? check.allowed ? `allowed by ${check.decidedBy ?? '-'}` : `requires ${check.requires.join(',') || '-'}; caller has ${check.callerHas.join(',') || '-'}`
+    ? check.allowed
+      ? `allowed by ${check.decidedBy ?? '-'}`
+      : `requires ${check.requires.join(',') || '-'}; caller has ${check.callerHas.join(',') || '-'}`
     : '-';
   return `[substrat trace] ${trace.invocationId} ${trace.operation ?? '-'} ${principal} ${trace.status ?? '-'} ${trace.durationMs}ms ${trace.problemCode ?? '-'} ${rule}`;
 }

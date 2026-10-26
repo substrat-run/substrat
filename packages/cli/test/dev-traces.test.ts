@@ -64,6 +64,9 @@ describe('dev request trace recorder', () => {
     byteStore.write(head('a'));
     byteStore.write(head('b'));
     expect(byteStore.traces().map((trace) => trace.invocationId)).toEqual(['b']);
+
+    byteStore.write({ ...head('verbose'), steps: [{ type: 'log', atMs: 0, level: 'info', message: 'x'.repeat(1000) }] });
+    expect(byteStore.traces()[0]).toMatchObject({ invocationId: 'verbose', steps: [], capture: { stepsDropped: 1 } });
   });
 
   it('keeps complete records when two processes write and prune at the cap', async () => {
