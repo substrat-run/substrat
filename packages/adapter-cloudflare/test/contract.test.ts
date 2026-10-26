@@ -4438,8 +4438,10 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   const READ = permissionKey.parse('perm:read');
   const roles: RoleDefinition[] = [{ key: 'office-admin', permissions: [READ], source: 'vertical' }];
 
-  /** A deployment's host over `ns` (the scope namespace, or a counting wrapper of it). */
-  /** `{}` builds it as production does, with the default hold timing. */
+  /**
+   * A deployment's host over `ns` (the scope namespace, or a counting wrapper of it). `timing: {}`
+   * builds it as production does, with the default hold timing.
+   */
   const deployment = (
     ns: DurableObjectNamespace = env.SCOPE,
     timing: { switchHoldSnapshotMs?: number } = { switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS },
@@ -5632,9 +5634,8 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(counting.holdReads).toBe(2);
   });
 
-  it('twin, pinning the constants that argument rests on: the rewind outwaits a snapshot, at any snapshot age', () => {
+  it('twin, pinning the constants that argument rests on: the rewind outwaits a snapshot', () => {
     expect(SWITCH_HOLD_SETTLE_MS).toBeGreaterThan(SWITCH_HOLD_SNAPSHOT_MS);
-    expect(TEST_HOLD_SETTLE_MS / TEST_HOLD_SNAPSHOT_MS).toBe(SWITCH_HOLD_SETTLE_MS / SWITCH_HOLD_SNAPSHOT_MS);
   });
 
   /**

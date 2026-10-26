@@ -6,7 +6,8 @@ import { SWITCH_HOLDS_NAME, switchHoldSettleMs, type SwitchHoldClaim } from '../
  * #1819: the hold's snapshot age every rewinding test hands its hosts (`switchHoldSnapshotMs`), so a
  * rewind settles in a fraction of a second instead of the production 3 s. The settle derives from it
  * as in production, so the ratio the hold's argument rests on is the same. Hosts that race each other
- * share it. Chosen by loaded runs, not by argument: the smallest value stable under load.
+ * share it. Chosen by loaded runs, not by argument: the smallest value stable under load, and never
+ * below 300 ms.
  */
 export const TEST_HOLD_SNAPSHOT_MS = 300;
 export const TEST_HOLD_SETTLE_MS = switchHoldSettleMs(TEST_HOLD_SNAPSHOT_MS);
