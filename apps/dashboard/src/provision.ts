@@ -200,7 +200,6 @@ export function installEntitlements(
   verticalSlug: string,
   ...declared: Array<readonly string[] | undefined>
 ): string[] {
-  // #2388: a declared key the vertical may not declare (a row pushed before the rule) is ignored.
   for (const set of declared) {
     const grantable = set ? grantableEntitlements(verticalSlug, set) : [];
     if (grantable.length > 0) return grantable;
