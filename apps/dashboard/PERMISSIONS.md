@@ -62,6 +62,7 @@ shapes.
 | `dashboard/app-events` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-findings-change` | `dashboard:manage-findings` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-findings-read` | `dashboard:read-findings` | the scope | `@substrat-run/dashboard` |
+| `dashboard/authorize-restore` | `dashboard:restore-app-data` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-scope-change` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/begin-connection` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
 | `dashboard/bind-app-hostname` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |

@@ -730,8 +730,8 @@ const exportAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: 
 /**
  * Authorize + record a restore INTO the app (§8's write half): an uploaded dump
  * replaces the app's data and its permission state wholesale, so it asks the owner's
- * and admin's key rather than app management (#2573). Invoked before the safety copy
- * is forked, so a refusal leaves nothing behind.
+ * and admin's key rather than app management (#2573). The safety copy taken just
+ * before is part of the recorded detail, so the trail names the fork to back out to.
  */
 const restoreAppDataOp: OperationHandler<z.infer<typeof snapshotAppInput>, { ok: true }> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.restoreAppData));
@@ -788,6 +788,13 @@ const authorizeScopeChangeOp = checkOnly(DASHBOARD_PERM.provisionApp);
  */
 const authorizeFindingsReadOp = checkOnly(DASHBOARD_PERM.readFindings);
 const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
+
+/**
+ * Whether the caller may restore an app's data (#2573), asked before the safety copy is forked,
+ * so a refused caller leaves no copy and no trail row. `restore-app-data` records the restore
+ * after the fork, naming the copy, and asks the same key again.
+ */
+const authorizeRestoreOp = checkOnly(DASHBOARD_PERM.restoreAppData);
 
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
 
@@ -1915,6 +1922,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     permission: DASHBOARD_PERM.manageFindings,
     output: ok,
   },
+  'dashboard/authorize-restore': {
+    summary: 'Answer whether the caller may replace an app’s data with an uploaded dump',
+    permission: DASHBOARD_PERM.restoreAppData,
+    output: ok,
+  },
   'dashboard/mark-app-failed': {
     summary: 'Mark an app’s install failed',
     permission: DASHBOARD_PERM.provisionApp,
@@ -2163,6 +2175,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/authorize-scope-change': authorizeScopeChangeOp,
     'dashboard/authorize-findings-read': authorizeFindingsReadOp,
     'dashboard/authorize-findings-change': authorizeFindingsChangeOp,
+    'dashboard/authorize-restore': authorizeRestoreOp,
     'dashboard/mark-app-failed': markAppFailedOp,
     'dashboard/record-install-step': recordInstallStepOp,
     'dashboard/install-steps': installStepsOp,

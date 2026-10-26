@@ -2947,7 +2947,8 @@ app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
  * and the Import button both accept; connected mode arrives MASKED from the CP
  * (this surface has no break-glass). POST loads an uploaded dump into the app,
  * replacing its data wholesale — the helper forks a safety copy first, so the
- * response names the fork to back out to. Same authority as managing the app.
+ * response names the fork to back out to. GET is the authority of managing the app;
+ * POST is a team owner's or admin's (`dashboard:restore-app-data`, #2573).
  */
 app.get('/api/apps/:scopeId/export', async (c) => {
   const host = hostFor(c.env);

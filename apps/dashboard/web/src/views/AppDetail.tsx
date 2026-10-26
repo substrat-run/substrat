@@ -145,7 +145,7 @@ export function AppDetail({
   onDeleted,
   authServers = [],
   teamApps = [],
-  canRestore = true,
+  canRestore,
 }: {
   /** The team the tab is on — hostname calls name it in their URL (#2170). */
   teamId: string;
@@ -158,7 +158,7 @@ export function AppDetail({
   /** #2192: the team's app scope ids — where a related request in another app may be opened. */
   teamApps?: readonly string[];
   /** #2573: whether to draw Import — a team owner's or admin's act. A hint; the server refuses. */
-  canRestore?: boolean;
+  canRestore: boolean;
 }) {
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
@@ -3121,7 +3121,7 @@ const DATA_SECTIONS = [
  * exactly there). Previews is here because a preview IS a copy of this scope's data
  * with a URL, which makes it a data fact, not a fifth noun.
  */
-export function Data({ teamId, app, section, onSection, canRestore = true }: { teamId: string; app: AppRow; section: string; onSection: (s: string) => void; canRestore?: boolean }) {
+export function Data({ teamId, app, section, onSection, canRestore }: { teamId: string; app: AppRow; section: string; onSection: (s: string) => void; canRestore: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={DATA_SECTIONS} value={section} onChange={onSection} />

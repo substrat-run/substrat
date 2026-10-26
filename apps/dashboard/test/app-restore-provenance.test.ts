@@ -131,7 +131,7 @@ describe('the app restore route: who may upload (#2573), and the re-point hint (
     expect(planeCalls).toEqual([]);
   });
 
-  it('a team whose roles predate the key: the first upload heals them, so an admin restores and a member still cannot', async () => {
+  it('an owner and an admin restore, on a team whose roles predate the key too; a member still cannot', async () => {
     // The role rows as a tenant provisioned before #2573 stores them: no restore key anywhere.
     for (const role of ROLES) {
       const old = role.permissions.filter((p) => p !== 'dashboard:restore-app-data');
@@ -140,13 +140,9 @@ describe('the app restore route: who may upload (#2573), and the re-point hint (
     expect((await host.admin.listRoles(staff, { tenantId: tenant })).flatMap((r) => r.permissions)).not.toContain('dashboard:restore-app-data');
     // The very first request resolves the caller and re-defines the drifted roles before the route
     // runs, so there is no first-try 403 for an admin.
-    expect((await upload({}, 'admin')).status).toBe(200);
-    expect((await upload({}, 'member')).status).toBe(403);
-  });
-
-  it('an owner and an admin restore', async () => {
-    for (const as of ['owner', 'admin'] as const) expect((await upload({}, as)).status).toBe(200);
+    for (const as of ['admin', 'owner'] as const) expect((await upload({}, as)).status).toBe(200);
     expect(restores).toHaveLength(2);
+    expect((await upload({}, 'member')).status).toBe(403);
   });
 
   it("sends the file's scopeId as sourceScopeId, and leaves tenantId/scopeId as the destination", async () => {
