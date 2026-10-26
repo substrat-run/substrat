@@ -390,6 +390,21 @@ test('a shard builds the apps nested under the packages it tests', () => {
   assert.deepEqual(buildNames(['shop', 'auth-server-2'], all), ['auth-server-2', 'shop', 'shop-admin']);
 });
 
+test('a CLI shard builds the demos its push suite reads and their engine dependencies', () => {
+  const demoNames = ['@substrat-run/demo-meridian', '@substrat-run/demo-ticket0'];
+  const all = [{ name: '@substrat-run/cli', dir: 'packages/cli' },
+    { name: demoNames[0], dir: 'demos/meridian' },
+    { name: demoNames[1], dir: 'demos/ticket0' }];
+  const names = buildNames(['@substrat-run/cli'], all);
+  assert.deepEqual(names, ['@substrat-run/cli', ...demoNames]);
+  const selected = JSON.parse(execFileSync('pnpm', ['-r', ...names.map((name) => `--filter=${name}...`), 'list', '--depth', '-1', '--json'], {
+    cwd: new URL('../', import.meta.url), encoding: 'utf8',
+  })).map((p) => p.name);
+  for (const engine of ['absence', 'protocol', 'metering']) {
+    assert.ok(selected.includes(`@substrat-run/engine-${engine}`), `build must include engine-${engine}`);
+  }
+});
+
 test('each split package\'s parts exist and together run its whole `test`', () => {
   for (const [dir, scripts] of Object.entries(PARTS)) {
     const pkg = JSON.parse(readFileSync(new URL(`../${dir}/package.json`, import.meta.url), 'utf8'));

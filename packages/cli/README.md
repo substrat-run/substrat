@@ -23,6 +23,7 @@ pnpm add -D @substrat-run/cli
 
 ```sh
 substrat login                 # authenticate against the control plane
+substrat dev [dir]             # run the project's dev script with local request traces
 substrat whoami                # show the current identity + reachable tenants
 substrat push <dir>            # upload a vertical as a new immutable version
 substrat versions <slug>       # list a vertical's uploaded versions
@@ -33,6 +34,13 @@ substrat help                  # full usage
 ```
 
 Run `substrat help` for the authoritative flag set — this list is a map, not the spec.
+
+`substrat dev` runs the project's `pnpm run dev` with its normal output and exit code.
+When the local server mounts `invocationLog` (as the scaffold does), completed requests
+print a compact trace line and are kept under `.data/substrat-traces/` in the project.
+The newest 256 requests, up to 8 MiB total, are retained. SQL parameter values and
+request and response bodies are not recorded. `--no-trace` runs the same script without
+the trace preload.
 
 ## Documentation
 
