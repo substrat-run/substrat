@@ -50,7 +50,7 @@ import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer, type ProcessPeriod } from './process-map.js';
 import { createModelHost, type ModelHost, type ModelTool } from '@substrat-run/vertical-host/model';
-import { ASK_MAX_STEPS, ASK_SYSTEM, REFUSED, answeredTurn, askSummary, endedTurn, exposedReads, fitToolOutput, shapeForModel, toolNameOf } from './ask.js';
+import { ASK_MAX_STEPS, ASK_SYSTEM, READ_FAILED, REFUSED, answeredTurn, askSummary, endedTurn, exposedReads, fitToolOutput, shapeForModel, toolNameOf } from './ask.js';
 import {
   DEFAULT_EXPLANATION_MODEL,
   EXPLANATION_SENT,
@@ -5252,8 +5252,12 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
    * Run a read as the caller. A refused gate is an answer the model passes on; any other 4xx
    * (an app id that is not this team's, a malformed argument) is an answer too, so the model can
    * correct itself instead of the turn failing. Shaped and fitted for the model either way.
+   *
+   * Anything else is the platform's failure, and its message is the platform's (a SQL error, an
+   * upstream URL): it is logged here and the model, and through it the person, is told only that
+   * the read failed on the platform's side.
    */
-  const asCaller = async (read: () => Promise<unknown>): Promise<unknown> => {
+  const asCaller = async (tool: string, read: () => Promise<unknown>): Promise<unknown> => {
     try {
       return fitToolOutput(shapeForModel(await read()));
     } catch (e) {
@@ -5261,18 +5265,27 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
       if (e instanceof HTTPException && e.status >= 400 && e.status < 500) return { error: e.message };
       const status = isSubstratError(e) ? e.status : 0;
       if (status >= 400 && status < 500) return { error: (e as Error).message };
-      throw e;
+      console.warn(JSON.stringify({ msg: 'ask: a read failed', tool, error: e instanceof Error ? e.message : String(e) }));
+      return { error: READ_FAILED };
     }
   };
   // Every declared read, through the route's own handler: the person's access, exactly (#2283).
   const handlers = routeHandlers as unknown as Record<string, (ctx: TeamContext, input: unknown) => Promise<unknown>>;
   const tools: Record<string, ModelTool<any>> = {}; // eslint-disable-line @typescript-eslint/no-explicit-any -- each tool parses its own input
   for (const [name, decl] of exposedReads(dashboardRoutes)) {
+    // The route's published output, applied as the HTTP mount applies it: a field the handler
+    // returns and the route does not declare is stripped here too, so the model reads what the
+    // person's browser would, and nothing a row happens to carry beyond it.
+    const output = (decl as { output?: { parse(v: unknown): unknown } }).output;
     tools[toolNameOf(name)] = {
       description: decl.summary,
       // A route with no input takes none; the SDK parses the model's arguments with this before `execute`.
       input: 'input' in decl ? decl.input : z.object({}),
-      execute: (input: unknown) => asCaller(() => handlers[name]!(ctx, input)),
+      execute: (input: unknown) =>
+        asCaller(toolNameOf(name), async () => {
+          const result = await handlers[name]!(ctx, input);
+          return output ? output.parse(result) : { ok: true };
+        }),
     };
   }
   // Two reads no route answers in this shape: a finding's redacted evidence (#1749's facts), and
@@ -5280,13 +5293,13 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
   tools.finding_evidence = {
     description: 'Read one finding’s evidence: its failure records (who refused, status codes, redacted messages) or sweep runs, and its likely cause.',
     input: z.object({ id: z.string().min(1).max(64) }),
-    execute: ({ id }: { id: string }) => asCaller(async () => (await findingFactsIn(await findingsPlane(ctx, 'read'), id, {})).facts),
+    execute: ({ id }: { id: string }) => asCaller('finding_evidence', async () => (await findingFactsIn(await findingsPlane(ctx, 'read'), id, {})).facts),
   };
   tools.process_map = {
     description: 'One app’s process map: a declared lifecycle replayed over a period, as counts per state and move, against the period before. Takes the app’s scopeId.',
     input: z.object({ scopeId: z.string().min(1), entity: z.string().min(1).max(128).optional(), period: z.enum(['24h', '7d', '30d']).optional() }),
     execute: ({ scopeId, entity, period }: { scopeId: string; entity?: string; period?: ProcessPeriod }) =>
-      asCaller(async () => {
+      asCaller('process_map', async () => {
         const { answer } = await processMapIn(dash, teamPlane(ctx), scopeId, period ?? '7d', entity);
         if (!answer.current || !answer.entity) return { processes: answer.processes, unavailable: answer.unavailable ?? 'no counts' };
         return { processes: answer.processes, ...processFacts(answer.entity, answer.period, answer.current, answer.previous) };

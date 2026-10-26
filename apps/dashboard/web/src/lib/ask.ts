@@ -38,10 +38,15 @@ export function readName(tool: string): string {
  * when the list was cut, "Could not read findings: not part of your role" for a refusal.
  */
 export function lookLabel(tool: string, output: unknown): string {
-  const out = (output ?? {}) as { entries?: unknown[]; items?: unknown[]; truncated?: boolean; refused?: string; error?: string };
   const name = readName(tool);
-  if (out.refused) return `Could not read ${name}: not part of your role`;
-  if (out.error) return `Could not read ${name}: ${out.error}`;
+  // A bare list is a read's answer as much as a page is (`list_deployments` answers one).
+  if (Array.isArray(output)) return `Read ${name} (${output.length})`;
+  const out = (output ?? {}) as { entries?: unknown[]; items?: unknown[]; truncated?: boolean; refused?: unknown; error?: unknown };
+  const keys = Object.keys(out).filter((k) => k !== 'truncated');
+  // A refusal or a failure is the tool's whole answer — one field — never a record that happens
+  // to carry an `error` of its own (a deployment's last failure, an install's status).
+  if (keys.length === 1 && typeof out.refused === 'string') return `Could not read ${name}: not part of your role`;
+  if (keys.length === 1 && typeof out.error === 'string') return `Could not read ${name}: ${out.error}`;
   const list = out.entries ?? out.items;
   return Array.isArray(list) ? `Read ${name} (${list.length}${out.truncated ? '+' : ''})` : `Read ${name}`;
 }

@@ -7,7 +7,7 @@ import { orgId, platformActorId, principalId, scopeId, tenantId, type EmittedMod
 import { manualClock, ulid, type ManualClock, type OperationHandler } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { EXPLANATION_LIMITS } from '../src/module.js';
-import { ASK_MAX_STEPS, ASK_UNEXPOSED, exposedReads, toolNameOf } from '../src/ask.js';
+import { ASK_MAX_STEPS, ASK_UNEXPOSED, READ_FAILED, exposedReads, toolNameOf } from '../src/ask.js';
 import { dashboardRoutes } from '../src/routes.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
@@ -316,6 +316,50 @@ describe('AI-written text in the dashboard (#1749)', () => {
       const roster = evs.find((e) => e.t === 'tool-output')!.output as { entries: Array<{ email: string; role_key: string; status: string }> };
       expect(roster.entries).toEqual(expect.arrayContaining([expect.objectContaining({ email: 'jane@acme.test', role_key: 'viewer', status: 'invited' })]));
       expect(sentOn(2)).toContain('jane@acme.test');
+    });
+
+    /** Wrap the team scope's `list-members` so it answers `answer` (or throws it), and leave every other call alone. */
+    const membersAnswer = (answer: (real: unknown) => unknown) => {
+      const real = host.getScope.bind(host);
+      return vi.spyOn(host, 'getScope').mockImplementation(async (...args: Parameters<typeof host.getScope>) => {
+        const stub = await real(...args);
+        return {
+          ...stub,
+          invoke: async (op: string, input?: unknown) =>
+            op === 'dashboard/list-members' ? answer(await stub.invoke(op, input)) : stub.invoke(op, input),
+        } as typeof stub;
+      });
+    };
+
+    it('reads what the route publishes: a field the handler returns and the route does not declare never reaches the model', async () => {
+      const spy = membersAnswer((real) => {
+        const page = real as { entries: Array<Record<string, unknown>> };
+        return { ...page, internalNote: 'tenant-internal-zz', entries: page.entries.map((e) => ({ ...e, rowSecret: 'row-internal-zz' })) };
+      });
+      try {
+        script({ response: '', tool_calls: [{ id: 'call_1', name: 'list_members', arguments: {} }] }, { response: 'Ok.' });
+        const evs = await events(ask('viewer', [{ role: 'user', text: 'Who is on the team?' }]));
+        expect(evs.some((e) => e.t === 'tool-output')).toBe(true);
+        expect(JSON.stringify(modelCalls)).not.toContain('internal-zz');
+        expect(JSON.stringify(evs)).not.toContain('internal-zz');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('a read that fails on the platform’s side says so in a fixed sentence, never in its own words', async () => {
+      const spy = membersAnswer(() => {
+        throw new Error('SQLITE_ERROR: no such column members.secret_column_zz');
+      });
+      try {
+        script({ response: '', tool_calls: [{ id: 'call_1', name: 'list_members', arguments: {} }] }, { response: 'The roster could not be read.' });
+        const evs = await events(ask('viewer', [{ role: 'user', text: 'Who is on the team?' }]));
+        expect(evs.find((e) => e.t === 'tool-output')).toMatchObject({ output: { error: READ_FAILED } });
+        expect(JSON.stringify(modelCalls)).not.toContain('secret_column_zz');
+        expect(JSON.stringify(evs)).not.toContain('secret_column_zz');
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('carries the conversation so far to the model', async () => {
