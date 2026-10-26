@@ -22,7 +22,7 @@ declare const __PROBE_DO_LIMITS__: boolean;
  *    Linux workerd there (`kj/table.c++: HashIndex detected hash table inconsistency`, then
  *    SIGSEGV, in the shared pool) on every run of #1758 that included it, and on none without it,
  *    while macOS ran it clean. The trigger is one of its search patterns, not the boundary statements
- *    above (which run in CI, and in `contract.test.ts`). It is a workerd fault, not a limit.
+ *    above (which run in CI, and in `contract-data.test.ts`). It is a workerd fault, not a limit.
  *    The opt-in is decided in `vitest.config.ts`, because `process.env` inside workerd is not the
  *    runner's.
  */

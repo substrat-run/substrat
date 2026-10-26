@@ -18,7 +18,7 @@
  * - a pass deletes only an object its scope tombstoned first, in a transaction the insert is
  *   serialized against (`attachment-sweep.ts`).
  * `orphanSweepContractSuite` holds both on the pure adapter and on the Durable Object
- * (`packages/contract-tests/src/orphan-sweep-suite.ts`, run by both adapters' `contract.test.ts`):
+ * (`packages/contract-tests/src/orphan-sweep-suite.ts`, run by both adapters' contract tests):
  * an upload held between its bytes and its row while a pass condemns it is refused and leaves no
  * row without bytes, and a dump that would bring back a condemned id is refused before anything is
  * dropped. The kernel's `attachment-sweep.test.ts` holds the refusal and the re-stamp on SQLite.

@@ -8,7 +8,7 @@
  * `capabilityLive` / `capabilityExchangeable` in the kernel — for the checker, the session
  * door and the exchange alike, and the kernel's evaluator tests pin it against an expired
  * row directly. The DO's own transitions are asserted in adapter-cloudflare's
- * `test/contract.test.ts` (#1686), the one way its wall clock can see time pass: each
+ * `test/contract-hosts.test.ts` (#1686), the one way its wall clock can see time pass: each
  * stored instant moved behind it, in the ScopeDO's SQLite, for the same three clocks.
  *
  * Three clocks run out here, and each has a positive twin one step before it:

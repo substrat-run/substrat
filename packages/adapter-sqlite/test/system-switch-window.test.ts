@@ -34,7 +34,7 @@ type Runtime = {
  * The window is held open deterministically: the test takes the scope actor's turn, so OFF
  * reaches the scope and waits there. A tenant grant issued while it waits must be refused.
  * The Durable-Object adapter has the same test, holding its window at the delegation seam
- * (`adapter-cloudflare/test/contract.test.ts`).
+ * (`adapter-cloudflare/test/contract-data.test.ts`).
  */
 describe('#1823: OFF records before the scope moves — no tenant grant lands in between', () => {
   const setup = async () => {

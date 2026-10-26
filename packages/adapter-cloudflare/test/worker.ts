@@ -3,7 +3,7 @@
  * (a Durable Object cannot receive handler closures over RPC, so the modules are
  * code-time), exports the two DO classes wrangler binds, and a no-op fetch
  * handler so the Worker is valid. The contract tests drive everything through
- * the exported bindings via `CloudflareScopeHost` — see contract.test.ts.
+ * the exported bindings via `CloudflareScopeHost` — see the contract-*.test.ts files.
  */
 import { platformActorId } from '@substrat-run/contracts';
 import {
@@ -222,7 +222,7 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
   };
 }
 
-/** The schedule suite's scopes (contract.test.ts), over `SCHED_CONTROL_PLANE`. */
+/** The schedule suite's scopes (contract-switch.test.ts), over `SCHED_CONTROL_PLANE`. */
 export const SchedScopeDO = onDirectory(ScopeDO, 'SCHED_CONTROL_PLANE');
 /** The platform-sweep trigger's scopes (platform-sweeper.test.ts), over `SWEEP_CONTROL_PLANE`. */
 export const SweepScopeDO = onDirectory(ScopeDO, 'SWEEP_CONTROL_PLANE');
