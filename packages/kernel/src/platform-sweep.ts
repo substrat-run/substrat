@@ -2009,28 +2009,30 @@ export async function runPlatformSweep(
     };
     const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
     const scoped = (fs: readonly { scopeId: string; error: string }[]) => fs.map((f) => `scope ${f.scopeId}: ${f.error}`);
+    let result: unknown;
     try {
       // #2498: a sized stream body the connector sends reaches the injected fetch converted.
-      const result = await sweeper(host, c.id, { fetch: fetchLikeOf(options.fetch) });
-      const answer = options.connectionLandings?.binders[c.provider] ? connectorSweepAnswerOf(result) : null;
-      report.connectionsSwept += 1;
-      // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
-      // landing the platform could not seat, fails the row; a poll that found nothing to poll is
-      // `skipped`, which a console reads as "nothing polls this connection".
-      const pollFailed = answer?.failed ?? [];
-      if (landingFailed.length > 0 || pollFailed.length > 0) {
-        fail(
-          [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land`] : [])],
-          scoped([...landingFailed, ...pollFailed]),
-        );
-      } else if (answer && answer.found === 0) {
-        record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
-      } else {
-        record('ok', { elapsedMs: Date.now() - started });
-      }
+      result = await sweeper(host, c.id, { fetch: fetchLikeOf(options.fetch) });
     } catch (err) {
       // The landing step's failures, if any, belong on the same row as the poll's throw.
       fail([...landingSaid, 'the sweep did not complete'], [...scoped(landingFailed), message(err)]);
+      return;
+    }
+    const answer = options.connectionLandings?.binders[c.provider] ? connectorSweepAnswerOf(result) : null;
+    report.connectionsSwept += 1;
+    // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
+    // landing the platform could not seat, fails the row; a poll that found nothing to poll is
+    // `skipped`, which a console reads as "nothing polls this connection".
+    const pollFailed = answer?.failed ?? [];
+    if (landingFailed.length > 0 || pollFailed.length > 0) {
+      fail(
+        [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land`] : [])],
+        scoped([...landingFailed, ...pollFailed]),
+      );
+    } else if (answer && answer.found === 0) {
+      record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
+    } else {
+      record('ok', { elapsedMs: Date.now() - started });
     }
   });
 
