@@ -176,8 +176,10 @@ revoked, without waiting for the next fan-out. The scope's own seats are the dum
 revokes them. The role set is judged there, against the seats the dump has just brought, so the
 roles that land are the roles that were judged. A refusal leaves every row of the scope as it was.
 An import that cannot finish takes down the scope it created, never activated, and only that one:
-its directory record is removed, so a retry with the same scope id imports, and an import pointed at
-an existing scope leaves it as it was. If that removal fails, the refusal still stands, staff see an
+its directory record is removed, so a retry with the same scope id imports. An import pointed at an
+existing scope is never taken down. Refused in the load, it leaves that scope as it was. Failing
+after the load (in the second read, below), it has replaced the scope's rows, and that is recorded
+before it fails, as a restore is. If that removal fails, the refusal still stands, staff see an
 ops-failure row, and the scope stays in `provisioning` for staff to reap. The removed scope's
 storage is left for the retry to replace. Until then it holds the tenant's projected permission
 state (identity links and connection keys included), and a later tenant deletion does not reach it.
@@ -187,7 +189,9 @@ the scope's old state followed by one fan-out. Where scopes are not projected, o
 are kept. The directory is read once more after the load, and if it changed in between, the scope
 is projected again, once, judged against the seats the load brought. A role redefined in that
 window which those seats refuse is refused there. The restore is still recorded, then fails, and
-the scope stays on the set the load judged. A preview's snapshot is not projected: it
+the scope stays on the set the load judged, but only until the next fan-out, which is not judged
+and writes the refused definition over those seats. So act on such a refusal: take the restored
+seats in that role back, or define the role person-held again. The refusal says so. A preview's snapshot is not projected: it
 is a same-instant copy, and the fan-out keeps its source current. The pure SQLite host keeps this
 state in its directory and no scope holds a copy of it, so nothing changes there.
 
