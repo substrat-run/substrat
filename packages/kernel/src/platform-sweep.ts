@@ -21,7 +21,7 @@ import type {
   ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, HostAdmin, OpsFailureInput, ReconcileOutcome, ScopeFilter, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
+import type { ExecutorDrainReport, HostAdmin, OpsFailureInput, ReconcileOutcome, ScopeFilter, ScopeHost, SweepRunInput } from './scope-host.js';
 import { withheldStaffFailure } from './ops-failure-reference.js';
 import { ulid } from './ulid.js';
 import type { FindingPruneReport } from './findings.js';
@@ -40,7 +40,8 @@ import {
   requestRollupDueDays,
   type RequestDayCount,
 } from './request-rollup.js';
-import { assertRowLimit, backoffAt, fetchLikeOf, TELEMETRY_PRUNE_BATCH } from './scope-host.js';
+import { backoffAt, fetchLikeOf, type FetchLike } from './connector-transport.js';
+import { assertRowLimit, TELEMETRY_PRUNE_BATCH, type TelemetryPruneReport } from './retention.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 import { UNDRAINED_SKIPPED_IDS, type UndrainedSkipped } from './outbox-event.js';
 import { resolveVerticalInstanceFrom, type PeerTenant } from './peer.js';

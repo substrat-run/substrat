@@ -11,7 +11,7 @@ import {
   type TenantStatus,
 } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
-import { assertRowLimit } from './scope-host.js';
+import { assertRowLimit } from './retention.js';
 import { pruneBillingDays, pushDayWindow } from './billing-retention.js';
 import {
   countScope,

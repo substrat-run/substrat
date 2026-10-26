@@ -12,8 +12,8 @@ import {
 } from '@substrat-run/contracts';
 import { isUnknownRoleError } from './permission-checker.js';
 import { refuseDelivery, type DeliveryRefusal } from './delivery-refusal.js';
+import type { ExecutorRetryPolicy } from './connector-transport.js';
 import {
-  type ExecutorRetryPolicy,
   type ExecutorScope,
   type HostAdmin,
   type MembershipChangeResult,

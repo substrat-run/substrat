@@ -38,7 +38,8 @@ import {
   type ExtractionTimers,
 } from '../src/attachment-extractor.js';
 import { JOB_RUN_DDL, type JobPassContext } from '../src/job-run.js';
-import { attachmentSha256, type ScopedSql, type SqlValue } from '../src/scope-host.js';
+import { attachmentSha256 } from '../src/attachment-bytes.js';
+import type { ScopedSql, SqlValue } from '../src/scope-host.js';
 import { SearchTermTooShort, searchMatchExpression } from '../src/search-index.js';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);

@@ -4,7 +4,8 @@ import type { AdminLogEntry, OrphanSweepAudit, ScopeId, TenantId } from '@substr
 import { runPlatformSweep, ORPHAN_SWEEP_DRY_RUN_WINDOW_MS } from '../src/platform-sweep.js';
 import type { OrphanAttachmentOutcome, OrphanAttachmentSweepOptions, PlatformSweepOptions } from '../src/platform-sweep.js';
 import type { OrphanSweepReport } from '../src/attachment-sweep.js';
-import type { FetchLike, ScopeHost } from '../src/scope-host.js';
+import type { FetchLike } from '../src/connector-transport.js';
+import type { ScopeHost } from '../src/scope-host.js';
 
 /**
  * The orphan-attachment phase (#2314), with fakes: which scopes it visits, what it asks of each,

@@ -87,7 +87,8 @@ import {
   type PermissionKey,
 } from '@substrat-run/contracts';
 import type { JobHandler } from './job-run.js';
-import { attachmentSha256, type ScopedSql } from './scope-host.js';
+import { attachmentSha256 } from './attachment-bytes.js';
+import type { ScopedSql } from './scope-host.js';
 import { searchLimit, searchMatchExpression } from './search-index.js';
 import {
   DEFAULT_ATTACHMENT_TEXT_BOUNDS,

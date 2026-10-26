@@ -9,7 +9,8 @@ import {
   type MeterDayTakeInput,
 } from '../src/meter-days.js';
 import { BILLING_ROLLUP_RETENTION_MONTHS } from '../src/billing-retention.js';
-import type { FetchLike, ScopeHost } from '../src/scope-host.js';
+import type { FetchLike } from '../src/connector-transport.js';
+import type { ScopeHost } from '../src/scope-host.js';
 
 /**
  * The daily meter snapshot (#2501), with fakes: what a day's rows hold, and what a pass does with a

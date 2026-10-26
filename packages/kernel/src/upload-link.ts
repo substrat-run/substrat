@@ -34,7 +34,8 @@ import { attachmentRecordOfRow, type AttachmentRowShape } from './attachment-tex
 import { toBase64url } from './base64url.js';
 import { capabilityTokenHash } from './capability.js';
 import { assertAllowed } from './permission-checker.js';
-import { attachmentSha256, type RedeemedUploadLink, type ScopedSql, type SqlValue } from './scope-host.js';
+import { attachmentSha256 } from './attachment-bytes.js';
+import type { RedeemedUploadLink, ScopedSql, SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
 
 /**

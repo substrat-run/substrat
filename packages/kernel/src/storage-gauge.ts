@@ -7,7 +7,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
-import { assertRowLimit, boundedRetentionDelete } from './scope-host.js';
+import { assertRowLimit, boundedRetentionDelete } from './retention.js';
 import { utcDayMonthsBefore } from './billing-retention.js';
 
 /**
