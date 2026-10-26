@@ -7,7 +7,15 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'v
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
 import { seedProjectedRole, seedProjectedTenantTuple, tombstoneProjectedRole } from './seed-projection.js';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
-import { armRewind, awaitRestart, holdsStub as holdsOf, landRewind, restartNow } from './pitr-emulation.js';
+import {
+  armRewind,
+  awaitRestart,
+  holdsStub as holdsOf,
+  landRewind,
+  restartNow,
+  TEST_HOLD_SETTLE_MS,
+  TEST_HOLD_SNAPSHOT_MS,
+} from './pitr-emulation.js';
 import {
   connectionId,
   errorCodeOf,
@@ -4449,7 +4457,8 @@ describe('#1742 — the CP-full seat and restore switch off in their own unit', 
  * `rewindToBookmark` runs, and so does the restart it causes; the rewound bytes are a dump from
  * before the switch, written into the restarted object with no host code in between.
  */
-// Every rewind waits `SWITCH_HOLD_SETTLE_MS` before it rewinds, so these are slow by design.
+// Every rewind settles before it rewinds. The hosts settle on `TEST_HOLD_SNAPSHOT_MS`; one case runs
+// the production values.
 describe('#1819 — a PITR rewind to before the switch runs nothing until the switch is back', () => {
   const SCHED = moduleId.parse('@test/sched');
   const t = tenantId.parse(ulid());
@@ -4457,9 +4466,15 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   const READ = permissionKey.parse('perm:read');
   const roles: RoleDefinition[] = [{ key: 'office-admin', permissions: [READ], source: 'vertical' }];
 
-  /** A deployment's host over `ns` (the scope namespace, or a counting wrapper of it). */
-  const deployment = (ns: DurableObjectNamespace = env.SCOPE) => {
-    const h = new CloudflareScopeHost({ scope: ns, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  /**
+   * A deployment's host over `ns` (the scope namespace, or a counting wrapper of it). `timing: {}`
+   * builds it as production does, with the default hold timing.
+   */
+  const deployment = (
+    ns: DurableObjectNamespace = env.SCOPE,
+    timing: { switchHoldSnapshotMs?: number } = { switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS },
+  ) => {
+    const h = new CloudflareScopeHost({ scope: ns, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)), ...timing });
     h.registerModule(scheduleMod);
     return h;
   };
@@ -4507,13 +4522,17 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   };
 
   /** Switch off (or not), then rewind to a bookmark taken before that (the whole issue). */
-  const rewoundPastTheSwitch = async (switchOff = true, beforeBookmark?: (s: ScopeId) => Promise<unknown>): Promise<ScopeId> => {
+  const rewoundPastTheSwitch = async (
+    switchOff = true,
+    beforeBookmark?: (s: ScopeId) => Promise<unknown>,
+    by = host,
+  ): Promise<ScopeId> => {
     const s = await newScope();
     await beforeBookmark?.(s);
     const atBookmark = await host.exportScopeLocal(s);
     if (switchOff) await off(s);
     await armRewind(env.SCOPE, s);
-    expect(await host.rewindScopeLocal(s, 'bm-before-switch', { force: true })).toEqual({
+    expect(await by.rewindScopeLocal(s, 'bm-before-switch', { force: true })).toEqual({
       rewindingTo: 'bm-before-switch',
     });
     await landRewind(env.SCOPE, s, atBookmark);
@@ -4992,6 +5011,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
       scope: env.SCOPE,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       attachmentBuckets: () => ({}),
+      switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS,
     });
     h.registerModule(scheduleMod);
     const held = await rewoundPastTheSwitch();
@@ -5278,7 +5298,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     await off(s);
     r.resume();
     await r.rewinding;
-    expect(Date.now() - joinedBy).toBeGreaterThanOrEqual(SWITCH_HOLD_SETTLE_MS);
+    expect(Date.now() - joinedBy).toBeGreaterThanOrEqual(TEST_HOLD_SETTLE_MS);
     expect(r.rewinder.ageReads).toBe(2); // one after the settle, one after the wait it asked for
     await landRewind(env.SCOPE, s, atBookmark);
     expect(await pass(s, swept)).toMatchObject({ fired: 0, switchedOff: true });
@@ -5602,15 +5622,16 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * The race the order in `runDueSchedules` closes. One pass reads the hold ONCE and keeps it
    * for `SWITCH_HOLD_SNAPSHOT_MS`. A pass that read it before the rewind wrote its hold must
    * not act on that read when it meets the rewound storage. The rewind waits longer than a
-   * snapshot lives, so that snapshot is always too old by then.
+   * snapshot lives, so that snapshot is always too old by then. The one case on the production
+   * values: both hosts are built with no `switchHoldSnapshotMs`.
    */
   it('a pass that read the hold before the rewind re-reads it before acting on the rewound scope', async () => {
     const counting = countingScopes(env.SCOPE);
-    const h = deployment(counting.ns);
+    const h = deployment(counting.ns, {});
     const bystander = await newScope();
     await pass(bystander, h); // the snapshot, taken before any hold for `s` exists
     expect(counting.holdReads).toBe(1);
-    const s = await rewoundPastTheSwitch();
+    const s = await rewoundPastTheSwitch(true, undefined, deployment(env.SCOPE, {}));
     expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
     expect(counting.holdReads).toBe(2);
   });
@@ -5645,6 +5666,13 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(SWITCH_HOLD_SETTLE_MS).toBeGreaterThan(SWITCH_HOLD_SNAPSHOT_MS);
   });
 
+  // A snapshot age that never expires, or a settle that waits nothing, is refused at construction.
+  it('a host refuses a snapshot age that is not a positive, finite number', () => {
+    for (const switchHoldSnapshotMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => deployment(env.SCOPE, { switchHoldSnapshotMs })).toThrow(/switchHoldSnapshotMs must be a positive, finite number/);
+    }
+  });
+
   /**
    * The cost on the hot path. A pass reads the hold once, whatever the number of scopes, and
    * a scope that was never rewound costs no RPC of its own.
@@ -5652,7 +5680,8 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   it('a pass over many scopes reads the hold once, not once per scope', async () => {
     const scopes = await Promise.all(Array.from({ length: 10 }, () => newScope()));
     const counting = countingScopes(env.SCOPE);
-    const h = deployment(counting.ns);
+    // The production snapshot age: the cost it buys is what this measures, and it waits on nothing.
+    const h = deployment(counting.ns, {});
     const started = Date.now();
     for (const s of scopes) expect(await pass(s, h)).toMatchObject({ fired: 2 });
     const passMs = Date.now() - started;
@@ -5731,9 +5760,9 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const [a, b] = await Promise.all([newScope(), newScope()]);
     const counting = countingScopes(env.SCOPE);
     const h = deployment(counting.ns);
-    counting.slowNextReadMs = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
+    counting.slowNextReadMs = TEST_HOLD_SNAPSHOT_MS + 1_000;
     const first = pass(a, h); // its read is still in flight when the next consult comes
-    await sleep(SWITCH_HOLD_SNAPSHOT_MS + 300);
+    await sleep(TEST_HOLD_SNAPSHOT_MS + 300);
     await pass(b, h); // too old to join: it sends its own read
     await first;
     expect(counting.holdReads).toBe(2);
@@ -5761,7 +5790,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     const counting = countingScopes(env.SCOPE);
     const h = deployment(counting.ns);
     expect(await pass(s, h)).toMatchObject({ fired: 0, switchedOff: true });
-    await sleep(SWITCH_HOLD_SNAPSHOT_MS + 100);
+    await sleep(TEST_HOLD_SNAPSHOT_MS + 100);
     counting.failReads = true;
     const r = await pass(s, h);
     expect(r).toMatchObject({ fired: 0, switchedOff: true });
@@ -5787,6 +5816,7 @@ describe('#1819 — the co-located rewind holds, and the CP-full switch releases
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS,
   });
   host.registerModule(scheduleMod);
   const t = tenantId.parse(ulid());

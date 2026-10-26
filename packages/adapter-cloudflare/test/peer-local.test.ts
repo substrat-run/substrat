@@ -19,7 +19,7 @@ import { PEER_BARE, PEER_CALLER, PEER_LISTENER, peerMod, scheduleMod } from '@su
 import { switchCarryFor } from '@substrat-run/control-plane-api';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
-import { armRewind, holdsStub, landRewind, restartNow } from './pitr-emulation.js';
+import { armRewind, holdsStub, landRewind, restartNow, TEST_HOLD_SNAPSHOT_MS } from './pitr-emulation.js';
 
 /**
  * The peer door's FAR END on the hosted shape (#1706): a CP-less host — what a pushed vertical
@@ -794,7 +794,7 @@ describe('#2029 — a PITR rewind to before a peer switch admits nothing until t
 
   /** A deployment's host, CP-less, as a pushed vertical runs. `peers: false` registers no peer module. */
   const hostFor = (peers = true) => {
-    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS });
     if (peers) host.registerModule(peerMod);
     return host;
   };

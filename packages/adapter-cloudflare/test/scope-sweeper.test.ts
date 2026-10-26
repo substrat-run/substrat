@@ -17,7 +17,7 @@ import {
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scheduleMod } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from './test-host.js';
-import { armRewind, holdsStub, landRewind } from './pitr-emulation.js';
+import { armRewind, holdsStub, landRewind, TEST_HOLD_SNAPSHOT_MS } from './pitr-emulation.js';
 import { warmDurableObject, warmSwitchHolds } from './do-warmup.js';
 import {
   SCOPE_SWEEPER_NAME,
@@ -255,6 +255,7 @@ describe('#1819 — the deployment sweep after a rewind to before the switch', (
     const h = new CloudflareScopeHost({
       scope: env.LOCAL_SWEEP_SCOPE,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS,
     });
     h.registerModule(scheduleMod);
     return h;
