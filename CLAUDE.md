@@ -327,6 +327,33 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   production through `substrat push`, which is the whole point of the dispatch namespace.
   Meridian, manyfold and ticket0 are pushed.
 
+## Writing tests: lean and fast
+
+One test per distinct failing scenario. A positive twin is owed only where it proves something
+its refusal does not; a case that restates another's assertion is a merge, table-driven where
+that reads better. Beyond the shape `pnpm lint:tests` refuses (above), these are held by review:
+
+- **No real wait for a platform constant.** Code that waits `X_MS` takes `X` as a host option
+  with the production default; the test injects a small value, keeps the ratios, and one test
+  asserts the default. A 3 s settle repeated across ~45 tests was minutes of every CI run.
+- **Never fill a production-size page through the public API.** Make the page or cap an option, or
+  plant the rows in one SQL batch, and assert the boundary rather than the production N.
+- **Twins share the subject's fixture** when the initial state allows it; one that rebuilds the
+  same world is a merge. A twin that needs a different world keeps its own.
+- **Budget: a node test under 1 s, a workerd test under 2 s, and under half its timeout on main.**
+  Over that, say why in a comment and set an explicit timeout of at least 3× its CI duration.
+  A test at 80 % of its timeout is the next flake; raising a timeout after main went red is not a fix.
+- **Keep files small.** A new workerd test file joins a CI part, never an 8000-line file; a file
+  over ~300 s of CI time is split, and one over ~120 s needs a reason in the PR.
+- **Exhaustive sweeps** (years, grammars, token spaces) run a sampled slice on PRs and the full
+  sweep on main or weekly, and the file header says so.
+- **Cost measurements are opt-in probes** (`__PROBE_*__`), never part of the gate.
+- **No `retry:` in a vitest config.** Absorb a named transient at its call site; a retried
+  flake is a hidden red.
+- **No reading state another `it` left behind.** Workerd suites carry state across `it` blocks, so
+  one timeout cascades into unrelated failures; shared setup belongs in `beforeAll`, which fails as setup.
+- **No test for a hypothetical problem, and no code written only to be tested.**
+
 ## The three-layer rule (never violated)
 
 1. **Kernel owns no domain entities.** It provides `OperationContext` (`ctx.sql`,
