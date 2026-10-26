@@ -5659,6 +5659,13 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(SWITCH_HOLD_SETTLE_MS).toBeGreaterThan(SWITCH_HOLD_SNAPSHOT_MS);
   });
 
+  // A snapshot age that never expires, or a settle that waits nothing, is refused at construction.
+  it('a host refuses a snapshot age that is not a positive, finite number', () => {
+    for (const switchHoldSnapshotMs of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => deployment(env.SCOPE, { switchHoldSnapshotMs })).toThrow(/switchHoldSnapshotMs must be a positive, finite number/);
+    }
+  });
+
   /**
    * The cost on the hot path. A pass reads the hold once, whatever the number of scopes, and
    * a scope that was never rewound costs no RPC of its own.

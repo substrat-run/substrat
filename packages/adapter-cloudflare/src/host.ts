@@ -2520,7 +2520,9 @@ export interface CloudflareScopeHostOptions {
   /**
    * #1819: how long one read of the rewind hold serves a pass. Defaults to `SWITCH_HOLD_SNAPSHOT_MS`;
    * the rewind's settle is derived from it (`switchHoldSettleMs`). Here so a test need not wait
-   * the production seconds; every host a test races against each other must share the value.
+   * the production seconds. Every host over one scope namespace must use the same value: the
+   * settle one host waits is only safe against a snapshot no longer than its own. A positive,
+   * finite number of milliseconds.
    */
   switchHoldSnapshotMs?: number;
   /**
@@ -3241,6 +3243,10 @@ export class CloudflareScopeHost implements ScopeHost {
     this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.streamIdleMs = options.streamIdleTimeoutMs;
     this.holdSnapshotMs = options.switchHoldSnapshotMs ?? SWITCH_HOLD_SNAPSHOT_MS;
+    // NaN or Infinity never expires a snapshot; zero or less settles for nothing.
+    if (!Number.isFinite(this.holdSnapshotMs) || this.holdSnapshotMs <= 0) {
+      throw new RangeError(`switchHoldSnapshotMs must be a positive, finite number of milliseconds, got ${this.holdSnapshotMs}`);
+    }
     this.holdSettleMs = switchHoldSettleMs(this.holdSnapshotMs);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
