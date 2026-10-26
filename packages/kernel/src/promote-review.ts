@@ -346,7 +346,6 @@ export const servedFromState = (s: VerticalServingState | null): Required<Served
 export function servesAsFrom(r: ServingColumns, from: ServedFrom): boolean {
   const now = servedFromRow(r);
   return now.ref === from.ref && now.versionId === from.versionId &&
-    (from.doClasses === undefined ||
-      (now.doClasses.length === from.doClasses.length && now.doClasses.every((c, i) => c === from.doClasses![i]))) &&
+    (from.doClasses === undefined || JSON.stringify(now.doClasses) === JSON.stringify(from.doClasses)) &&
     (from.migrationTag === undefined || now.migrationTag === from.migrationTag);
 }

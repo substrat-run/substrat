@@ -1033,7 +1033,6 @@ export {
   servedFromState,
   servesAsFrom,
   type ServedFrom,
-  type ServingColumns,
   type ExpectedServing,
   type ReviewedVersion,
 } from './promote-review.js';
