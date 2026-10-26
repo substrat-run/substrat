@@ -793,6 +793,9 @@ import {
   SERVES_NOW_CONDITION,
   SERVES_NOW_PREDICATE,
   servesNowParams,
+  servedFromRow,
+  servedFromState,
+  servesAsFrom,
   type ExpectedServing,
   type ReviewedVersion,
   bindExportBreaksOf,
@@ -10885,38 +10888,41 @@ export class SqliteScopeHost implements ScopeHost {
           migrationTag: r.serving_migration_tag,
         });
       },
-      setVerticalServing: async (actor, verticalSlug: string, state) => {
+      setVerticalServing: async (actor, verticalSlug: string, state, expected) => {
         const parsed = verticalServingState.parse(state);
         const r = this.directory
           .prepare('SELECT * FROM verticals WHERE slug = ?')
           .get(verticalSlug) as VerticalRow | undefined;
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
+        // #2577: the caller's upload was diffed from `expected`, so the gate judges only that state.
+        if (expected !== undefined && !servesAsFrom(r, servedFromState(expected))) throw servingRaceRefusal(verticalSlug);
         // #2178: every install on the serving script runs the new version from this moment.
         this.assertNoStrandFrom(
           [r.serving_version_id],
           parsed.versionId,
           r.serving_ref ? this.provisionedVersionsOf(verticalSlug, r.serving_version_id ? { ref: r.serving_ref, versionId: r.serving_version_id } : null, null) : [],
         );
-        // #2528: a compare-and-set on the serving ref and version the gate judged
-        // (`SERVES_NOW_CONDITION`), and the row's `before` read in the transaction that moves it,
-        // as the Cloudflare host does.
+        // #2528/#2577: a compare-and-set on the serving state the gate judged, its ref, version,
+        // class set and tag (a serve and a re-serve can bring the ref and version back over a grown
+        // class set), and the row's `before` read in the transaction that moves it, as the
+        // Cloudflare host does.
         let before: unknown = null;
         let raced = false;
         this.directoryWriteAndAudit(() => {
           const now = this.directory
-            .prepare('SELECT serving_ref, serving_version_id FROM verticals WHERE slug = ?')
-            .get(verticalSlug) as Pick<VerticalRow, 'serving_ref' | 'serving_version_id'> | undefined;
+            .prepare('SELECT * FROM verticals WHERE slug = ?')
+            .get(verticalSlug) as VerticalRow | undefined;
           if (!now) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
           before = now.serving_ref ? { ref: now.serving_ref, versionId: now.serving_version_id } : null;
-          const moved = this.directory
+          raced = !servesAsFrom(now, servedFromRow(r));
+          if (raced) return false;
+          this.directory
             .prepare(
               `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
-                      serving_do_classes = ?, serving_migration_tag = ? WHERE ${SERVES_NOW_CONDITION}`,
+                      serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
             )
-            .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag,
-              verticalSlug, r.serving_ref ?? null, r.serving_version_id ?? null).changes > 0;
-          raced = !moved;
-          return moved;
+            .run(parsed.ref, parsed.versionId, JSON.stringify(parsed.doClasses), parsed.migrationTag, verticalSlug);
+          return true;
         }, () => this.recordAdmin(
           actor,
           'setVerticalServing',

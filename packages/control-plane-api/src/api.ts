@@ -8952,6 +8952,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
     await recordWireUpload(admin, actor, versionId, wire);
     const addedClasses = serving ? doClasses.some((cls) => !serving.doClasses.includes(cls)) : false;
+    // #2577: `serving` is what the upload was diffed from, so the record lands only while the row
+    // still holds it. A serve that landed in between is refused (`precondition_failed`) and nothing
+    // retries it: the script already runs this upload, and promoting again serves from what is now.
     await admin.setVerticalServing(actor, slug, {
       ref,
       versionId,
@@ -8964,7 +8967,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ? nextMigrationTag(serving.migrationTag)
           : serving.migrationTag
         : 'v1',
-    });
+    }, serving);
   };
 
   /**
