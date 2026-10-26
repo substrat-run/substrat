@@ -234,7 +234,8 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
   const cpStub = () => env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
     updateVerticalInstallsBlocked(slug: string, blocked: number, audit: unknown): Promise<void>;
     setAdmission(id: string, admission: string, note: string | null, audit: unknown): Promise<void>;
-    setVerticalServing(slug: string, s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string }, audit: unknown): Promise<boolean>;
+    setVerticalServing(slug: string, s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string }, audit: unknown,
+      expected?: { ref: string | null; versionId: string | null }): Promise<boolean>;
     deleteVertical(slug: string, audit: unknown, until?: string): Promise<void>;
     insertVersion(v: Record<string, unknown>, audit: unknown): Promise<void>;
   };
@@ -275,6 +276,12 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
       await expect(cp.setVerticalServing(slug, { ref: 'skew-serving', versionId: version, doClassesJson: '[]', migrationTag: 'g' },
         entry('setVerticalServing', null, { vertical: slug, ref: 'skew-serving', versionId: version }))).resolves.toBe(true);
       expect((await host.admin.verticalServing(staff, slug))?.versionId).toBe(version);
+      // #2577: a coordinator from #2528 expects the ref and version alone, and the class set and tag
+      // it does not send are not compared.
+      await expect(cp.setVerticalServing(slug, { ref: 'skew-serving', versionId: version, doClassesJson: '["ScopeDO"]', migrationTag: 'g2' },
+        entry('setVerticalServing', null, { vertical: slug, ref: 'skew-serving', versionId: version }),
+        { ref: 'skew-serving', versionId: version })).resolves.toBe(true);
+      expect((await host.admin.verticalServing(staff, slug))?.migrationTag).toBe('g2');
 
       const old = ulid();
       await cp.insertVersion({ id: old, verticalSlug: slug, version: `1.0.${old.toLowerCase()}`, manifestDigest: 'm',

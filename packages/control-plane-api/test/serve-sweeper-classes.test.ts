@@ -35,7 +35,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
   /** The metadata of every script PUT, in order. */
   const puts: { url: string; meta: Record<string, any> }[] = [];
 
-  beforeAll(() => {
+  beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-serve-sweeper-'));
     host = new SqliteScopeHost({ dir });
     app = createControlPlaneApi({
@@ -46,6 +46,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
         { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
       ],
     });
+    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'sweep-serve', name: 'sweep-serve' });
   });
   afterAll(async () => {
     await host.close();
@@ -96,7 +97,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
   };
   // #2339: a DO class is part of the migration digest the platform derives, so a promote across
   // a class change acknowledges it against the review the migrations read shows.
-  const promote = async (slug: string, versionId: string, migrationChange = false) => {
+  const promote = async (slug: string, versionId: string, migrationChange = false, status = 200) => {
     let acknowledge: object | undefined;
     if (migrationChange) {
       const base = (await host.admin.listChannels(staff, slug)).find((ch) => ch.channel === 'prod')?.versionId;
@@ -111,7 +112,8 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
       headers: { ...auth, 'content-type': 'application/json' },
       body: JSON.stringify({ versionId, acknowledge }),
     });
-    expect(res.status, await res.clone().text()).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(status);
+    return res;
   };
   /** The last PUT to the serving script, and the serving record after it. */
   const served = async (slug: string) => {
@@ -122,7 +124,6 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
 
   it('records SweeperDO with the first serve; no later upload re-declares it, and a new class still moves the tag', async () => {
     stubCloudflare();
-    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'sweep-serve', name: 'sweep-serve' });
     const v1 = await push('0.1.0');
     const slug = v1.verticalSlug;
     const BASE = ['ScopeDO', 'ConfigDO', 'SweeperDO'];
@@ -157,5 +158,32 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
     const back = await served(slug);
     expect(back.meta['migrations']).toBeUndefined();
     expect(back.record).toMatchObject({ doClasses: [...BASE, 'NotesDO'], migrationTag: 'v2', versionId: v1.id });
+  });
+
+  // #2577: the record's class set and tag are diffed from the serving state read before the upload,
+  // so it lands only while the row still holds them. Both serves add a class here, so the refused
+  // one's migration already rode its upload, and promoting again cannot land.
+  it('refuses to record a serve when another serve changed the classes during its upload, and keeps the other serve\'s classes and tag', async () => {
+    stubCloudflare();
+    const v1 = await push('0.4.0');
+    const slug = v1.verticalSlug;
+    await promote(slug, v1.id);
+    const before = await host.admin.verticalServing(staff, slug);
+    const v2 = await push('0.5.0', [{ type: 'durable_object_namespace', name: 'JOURNAL', class_name: 'JournalDO' }]);
+    const grown = await push('0.6.0', [{ type: 'durable_object_namespace', name: 'EXTRA', class_name: 'ExtraDO' }]);
+    const landed = { ref: before!.ref, versionId: grown.id, doClasses: [...before!.doClasses, 'ExtraDO'], migrationTag: 'v9' };
+    // The other serve lands while this one's upload to the serving script is in flight.
+    const upload = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method === 'PUT' && String(url).endsWith(`/scripts/${encodeURIComponent(before!.ref)}`)) {
+        vi.mocked(fetch).mockImplementation(upload);
+        await host.admin.setVerticalServing(staff, slug, landed);
+      }
+      return upload(url, init);
+    });
+    const said = await (await promote(slug, v2.id, true, 502)).json() as { error: string };
+    expect(said.error).toContain('promoting again cannot land until the record is repaired');
+    expect(said.error).not.toContain('promote again to retry');
+    expect(await host.admin.verticalServing(staff, slug)).toEqual(landed);
   });
 });

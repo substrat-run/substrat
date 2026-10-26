@@ -200,7 +200,7 @@ import {
   type ServingPointer,
 } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing, servesAsFrom, type ServedFrom,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3787,17 +3787,19 @@ export class ControlPlaneDO extends DurableObject {
 
   /**
    * Record what the serving script now runs — written only after a successful in-place upload, so
-   * a failed serve leaves the trailing state visible. #2528: `expected` is the serving ref and
-   * version the caller's #2178 gate judged the move from (nulls: nothing served); the write lands
-   * only if the row still names both (`SERVES_NOW_CONDITION`), and `audit`'s `before` is the
-   * serving state this unit read. False when either moved. Optional and trailing, so a caller from
-   * before it still writes unconditionally.
+   * a failed serve leaves the trailing state visible. #2528: `expected` is the serving state the
+   * caller's #2178 gate judged the move from (nulls: nothing served); the write lands only if the
+   * row still holds it (`servesAsFrom`), and `audit`'s `before` is the serving state this unit read.
+   * False when it moved. #2577 added the class set and tag to `expected`, since a serve and a
+   * re-serve can bring the ref and version back over a grown class set. Each is optional, so a
+   * coordinator from before still sends the ref and version alone and gets the CAS it always had;
+   * `expected` is trailing, so one from before #2528 still writes unconditionally.
    */
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit?: AdminEntryInput,
-    expected?: { ref: string | null; versionId: string | null },
+    expected?: ServedFrom,
   ): boolean {
     let before: unknown = null;
     let raced = false;
@@ -3805,15 +3807,14 @@ export class ControlPlaneDO extends DurableObject {
       const r = this.readVertical(slug);
       if (!r) throw substratError('not_found', `unknown vertical '${slug}'`);
       before = r.serving_ref ? { ref: r.serving_ref, versionId: r.serving_version_id } : null;
-      const moved = this.sql.exec(
+      raced = expected !== undefined && !servesAsFrom(r, expected);
+      if (raced) return false;
+      this.sql.exec(
         `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
-                serving_do_classes = ?, serving_migration_tag = ?
-          WHERE ${expected === undefined ? 'slug = ?' : SERVES_NOW_CONDITION}`,
-        s.ref, s.versionId, s.doClassesJson, s.migrationTag,
-        ...(expected === undefined ? [slug] : [slug, expected.ref, expected.versionId]),
-      ).rowsWritten > 0;
-      raced = !moved;
-      return moved;
+                serving_do_classes = ?, serving_migration_tag = ? WHERE slug = ?`,
+        s.ref, s.versionId, s.doClassesJson, s.migrationTag, slug,
+      );
+      return true;
     }, audit && (() => ({ ...audit, before })));
     return !raced;
   }
