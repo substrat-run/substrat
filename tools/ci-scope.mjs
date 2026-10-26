@@ -105,7 +105,7 @@ export function parseLockfile(text) {
     blockIndent = null;
     if (line === '---' || line.startsWith('--- ')) throw new Error(`line ${n}: multi-document lockfile`);
     if (indent % 2 !== 0) throw new Error(`line ${n}: odd indentation`);
-    if (/^.*?: [|>](?:[+-][1-9]?|[1-9][+-]?|)$/.test(line)) blockIndent = indent;
+    if (/: [|>](?:[+-][1-9]?|[1-9][+-]?)?$/.test(line)) blockIndent = indent;
     if (indent === 0) {
       const { key } = splitKey(line, n);
       if (sections.has(key)) throw new Error(`line ${n}: section ${key} twice`);
