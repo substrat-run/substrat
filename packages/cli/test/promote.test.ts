@@ -344,7 +344,7 @@ describe('substrat promote — the acknowledgement answers the review it printed
   const D1 = 'a'.repeat(64);
   const D2 = 'b'.repeat(64);
   const STALE = 'the promote review is stale: it was read against version v0, and prod now points at version v1. Read the review again and acknowledge what it shows now';
-  const UNBOUND = "acknowledging a migration change needs the review it answers: send acknowledge.review (…). From the command line, upgrade to a CLI release whose 'substrat promote' supports --review, and run it without --ack-migrations: it prints the migrations and the --review token to acknowledge them with (https://substrat.net/guide/deploying#acknowledgement-answers-one-review)";
+  const UNBOUND = 'Acknowledging a permission or migration change requires a review. Upgrade the Substrat CLI to version 0.45.0 or later, read the current promote review, and retry with --review.';
 
   it('a digest refusal prints the token the migrations read answered beside the diff it prints', async () => {
     const seen = plane({ refusal: MIG_REFUSAL, migrations: diff(), review: { base: 'v1', digest: D1 } });
@@ -364,11 +364,22 @@ describe('substrat promote — the acknowledgement answers the review it printed
     expect(text).toContain(`--review v1:${D2}`);
   });
 
-  it('a migration acknowledgement sent without a token is answered with the migrations and one', async () => {
+  it('an unbound acknowledgement prints the upgrade version and the current review token', async () => {
     plane({ refusal: UNBOUND, reason: 'promote_review_unbound', migrations: diff(), review: { base: 'v1', digest: D1 } });
     const text = await refusalOf();
-    expect(text).toContain('supports --review');
+    expect(text).toContain('Upgrade the Substrat CLI to version 0.45.0 or later');
     expect(text).toMatch(/migration changes:\n {2}\+ desk 0002-priority/);
+    expect(text).toContain(`--review v1:${D1}`);
+  });
+
+  it('a permission-only unbound acknowledgement does not claim migrations changed', async () => {
+    plane({ refusal: UNBOUND, reason: 'promote_review_unbound', migrations: diff({ added: [], total: 0 }), review: { base: 'v1', digest: D1 } });
+    const text = await refusalOf();
+    expect(text).toContain('Upgrade the Substrat CLI to version 0.45.0 or later');
+    expect(text).toContain('permission changes:\n  + desk:admin');
+    expect(text).toContain('no SQL migration added or edited');
+    expect(text).not.toContain('the Durable-Object classes moved the digest');
+    expect(text).not.toContain('the migration digest changed');
     expect(text).toContain(`--review v1:${D1}`);
   });
 

@@ -330,7 +330,7 @@ that changes the permission or migration surface is refused until the change is
 acknowledged (--ack-permissions / --ack-migrations) — the refusal prints the permission
 diff and each new migration's SQL; read them first. It also prints a --review token: the
 acknowledgement answers that review, and is refused if prod moved since it was read (a
-migration acknowledgement is refused without one). For a non-prod environment, run the version against a copy of the data with 'substrat preview
+permission or migration acknowledgement is refused without one). For a non-prod environment, run the version against a copy of the data with 'substrat preview
 create' — dev/staging channels were retired (#509).
 
 Auth resolves: explicit --token/SUBSTRAT_SERVICE_TOKEN → stored browser session →

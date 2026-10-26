@@ -187,8 +187,8 @@ describe('the console promote review (#1677)', () => {
       'v', 'old', 'new', { permission: true, migration: true },
     );
     expect(r).toEqual({ kind: 'error', message: '502 bad gateway' });
-    // The gate is the digests, not the review: unrenderable or not, it is not satisfied.
-    expect(promoteAckSatisfied({ permission: true, migration: true, exportBreak: false }, {})).toBe(false);
+    // A failed review has no binding to acknowledge, even if both boxes were ticked.
+    expect(promoteAckSatisfied({ permission: true, migration: true, exportBreak: false }, { permissionChange: true, migrationChange: true }, r)).toBe(false);
   });
 
   it('the client asks the routes the staff API serves, base included', async () => {

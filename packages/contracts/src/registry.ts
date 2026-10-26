@@ -419,9 +419,8 @@ export const promotionAcknowledgement = z.object({
    * The host recomputes the digest from its own stored rows and refuses (`precondition_failed`,
    * reason `promote_review_stale`) when the channel no longer points at `base` or the digest
    * differs. The sent digest is only ever compared, never read as the diff. A consumed
-   * `migrationChange` without a binding is refused too (`promote_review_unbound`); a
-   * permission-only acknowledgement without one is still honoured, so an older client keeps
-   * promoting wherever no migration — and so no declared data loss — is involved.
+   * `permissionChange` or `migrationChange` without a binding is refused too
+   * (`promote_review_unbound`).
    */
   review: z
     .object({
@@ -446,7 +445,8 @@ export type BindAcknowledgement = z.infer<typeof bindAcknowledgement>;
 /**
  * #2333: the `reason` on the promote gate's two refusals of a review binding (both
  * `precondition_failed`): `stale`, the binding's base or digest no longer holds, and `unbound`, a
- * migration acknowledgement sent without one. A client answers either by reading the review again.
+ * permission or migration acknowledgement sent without one. A client answers either by reading
+ * the review again.
  */
 export const PROMOTE_REVIEW_REASONS = {
   stale: 'promote_review_stale',

@@ -16,9 +16,11 @@ describe('the console promote dialog: the export-break acknowledgement (#1705 PR
 
   it('Promote waits for every acknowledgement the dialog shows, each on its own', () => {
     const needs = { permission: true, migration: false, exportBreak: true };
-    expect(promoteAckSatisfied(needs, { permissionChange: true })).toBe(false);
-    expect(promoteAckSatisfied(needs, { exportBreak: true })).toBe(false);
-    expect(promoteAckSatisfied(needs, { permissionChange: true, exportBreak: true })).toBe(true);
-    expect(promoteAckSatisfied({ permission: false, migration: false, exportBreak: false }, {})).toBe(true);
+    const review = { kind: 'ready', permission: null, migration: null, binding: { base: 'v1', digest: '0'.repeat(64) } } as const;
+    expect(promoteAckSatisfied(needs, { permissionChange: true }, review)).toBe(false);
+    expect(promoteAckSatisfied(needs, { exportBreak: true }, review)).toBe(false);
+    expect(promoteAckSatisfied(needs, { permissionChange: true, exportBreak: true }, review)).toBe(true);
+    expect(promoteAckSatisfied(needs, { permissionChange: true, exportBreak: true }, { ...review, binding: null })).toBe(false);
+    expect(promoteAckSatisfied({ permission: false, migration: false, exportBreak: false }, {}, { kind: 'loading' })).toBe(true);
   });
 });

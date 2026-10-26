@@ -98,7 +98,7 @@ export interface PromoteAcknowledge {
   /**
    * #2333: the review these acknowledgements answer, as the migrations read returned it beside the
    * diff that was shown (`getVersionMigrations` → `review`). The control plane refuses one that no
-   * longer holds, and a migration acknowledgement without one.
+   * longer holds, and a permission or migration acknowledgement without one.
    */
   review?: PromoteReviewBinding;
 }

@@ -420,11 +420,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const permChanged = !!(current && target && current.permissionDigest !== target.permissionDigest);
   const migChanged = !!(current && target && current.migrationDigest !== target.migrationDigest);
   const breaks = exportBreakAckNeeded(impact);
-  const ackSatisfied = promoteAckSatisfied({ permission: permChanged, migration: migChanged, exportBreak: breaks }, ack);
-
-  // #1677: the diffs the digests only hint at. Read for the kinds that changed; the
-  // acknowledgement above never waits on them, so an unreadable diff still asks.
+  // #1677: the diffs the digests only hint at. A changed digest needs the review binding.
   const [review, setReview] = useState<ReviewState>({ kind: 'loading' });
+  const ackSatisfied = promoteAckSatisfied({ permission: permChanged, migration: migChanged, exportBreak: breaks }, ack, review);
   const reviewFrom = current?.id;
   const reviewTo = target?.id;
   useEffect(() => {
@@ -641,7 +639,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   async function confirmPromote() {
     if (!promote) return;
     if (!ackSatisfied) {
-      onToast('Acknowledge the change to promote', 'The permission or migration surface changed.', 'danger');
+      onToast('Review and acknowledge the change to promote', 'The permission or migration surface changed.', 'danger');
       return;
     }
     setBusy('promote');
@@ -649,7 +647,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       await api.promoteVersion(vertical.slug, promote.channel, promote.versionId, boundAcknowledgement(ack, review));
     } catch (e) {
       // #2333: the review these boxes were ticked against is no longer what the promote would apply
-      // (or a migration acknowledgement went without one). Reload what the channel points at, which
+      // (or an acknowledgement went without one). Reload what the channel points at, which
       // re-reads the review in this same dialog, and ask again from scratch.
       if (promoteReviewReasonIn((e as { body?: unknown }).body) !== undefined) {
         setAck({});
@@ -1232,7 +1230,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             )}
             {(permChanged || migChanged) && review.kind === 'error' && (
               <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                Could not read the diff ({review.message}). The digests differ, so the change still needs acknowledging.
+                Could not read the diff ({review.message}). Reopen this dialog to retry the review before promoting.
               </span>
             )}
             {permChanged && review.kind === 'ready' && review.permission && <PermissionDiffView review={review.permission} />}
@@ -1281,7 +1279,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             )}
             {!ackSatisfied && (
               <span style={{ fontSize: 12, color: 'var(--status-warning-fg, var(--text-tertiary))' }}>
-                Acknowledge the change to promote.
+                Read and acknowledge the current review to promote.
               </span>
             )}
           </div>

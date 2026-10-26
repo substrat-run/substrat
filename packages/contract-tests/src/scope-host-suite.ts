@@ -7605,7 +7605,7 @@ export function scopeHostContractSuite(
       const before = await host.admin.listChannels(staff, 'callout');
       expect(before.find((c) => c.channel === 'prod')?.versionId).not.toBe(v2);
 
-      await host.admin.promoteVersion(staff, 'callout', 'prod', v2, { permissionChange: true });
+      await host.admin.promoteVersion(staff, 'callout', 'prod', v2, { permissionChange: true, review: await reviewOf('callout', v2) });
       const after = await host.admin.listChannels(staff, 'callout');
       expect(after.find((c) => c.channel === 'prod')?.versionId).toBe(v2);
     });
@@ -7614,7 +7614,7 @@ export function scopeHostContractSuite(
       const v3 = await publish('2.2.0', { perm: 'pB', mig: 'gB' }); // migrations moved
       await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', v3), 'conflict', /changes migrations/);
       // #2333: the acknowledgement that lets a migration reach live data names the review it answers.
-      await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', v3, { migrationChange: true }), 'precondition_failed', /needs the review it answers/);
+      await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', v3, { migrationChange: true }), 'precondition_failed', /requires a review/);
       await host.admin.promoteVersion(staff, 'callout', 'prod', v3, { migrationChange: true, review: await reviewOf('callout', v3) });
       expect(
         (await host.admin.listChannels(staff, 'callout')).find((c) => c.channel === 'prod')
@@ -7751,7 +7751,7 @@ export function scopeHostContractSuite(
         const same = await put('pA', 'gA', []);
         const shown = await reviewOf(slug, same);
         const b = await put('pB', 'gA', []);
-        await host.admin.promoteVersion(staff, slug, 'prod', b, { permissionChange: true });
+        await host.admin.promoteVersion(staff, slug, 'prod', b, { permissionChange: true, review: await reviewOf(slug, b) });
         expect((await refusal(host.admin.promoteVersion(staff, slug, 'prod', same, { review: shown }))).kind).toBe('stale');
         expect(await prodOf(slug)).toBe(b);
         // Twin: bound to the base that still serves, it promotes.
@@ -7795,24 +7795,15 @@ export function scopeHostContractSuite(
         expect(await prodOf(slug)).toBe(c);
       });
 
-      it('a migration acknowledgement without a binding is refused; a permission-only one is still honoured', async () => {
+      it('a permission change needs a bound review', async () => {
         const { slug, put } = await fresh();
-        const c = await put('pA', 'gC', [MIGRATION({ c: 'gone' })]);
-        const unbound = await refusal(host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true }));
-        expect(unbound.kind).toBe('unbound');
-        // It names the fix: the client release that binds, and how to read the review.
-        // By what the release does, never a version number the release tooling has not cut yet.
-        expect(unbound.message).toContain("a CLI release whose 'substrat promote' supports --review");
-        expect(unbound.message).toContain('/guide/deploying#acknowledgement-answers-one-review');
-        expect(unbound.message).not.toMatch(/\d+\.\d+\.\d+/);
-        // The compatibility rule: no migration moves, so an older client's bare flag still promotes.
         const p = await put('pP', 'gA', []);
-        await host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true });
+        const unbound = await refusal(host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true }));
+        expect(unbound.kind).toBe('unbound');
+        expect(unbound.message).toBe('Acknowledging a permission or migration change requires a review. Upgrade the Substrat CLI to version 0.45.0 or later, read the current promote review, and retry with --review.');
+        expect(await prodOf(slug)).not.toBe(p);
+        await host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true, review: await reviewOf(slug, p) });
         expect(await prodOf(slug)).toBe(p);
-        // And a migrationChange the gate does not consume needs no binding either.
-        const q = await put('pP', 'gA', []);
-        await host.admin.promoteVersion(staff, slug, 'prod', q, { migrationChange: true });
-        expect(await prodOf(slug)).toBe(q);
       });
 
       it('the digest is over the stored declarations, and the binding is recorded', async () => {
