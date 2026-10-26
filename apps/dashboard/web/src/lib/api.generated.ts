@@ -404,6 +404,13 @@ export interface DashboardClient {
   businessVolumes(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ window: { since: string; until: string }; bucketMinutes: number; rows: { scopeId: string; entityType: string; state: string; terminal: boolean; fromInitial: boolean; operations: string[]; today: number; yesterday: number; buckets: { start: string; count: number }[] }[]; apps: ({ scopeId: string; unavailable: "no-version" | "no-moves" | "not-yet-available" | null })[] }>;
 
   /**
+   * Begin connecting a GitHub account to this team: the App's install URL, carrying a state signed for this team and caller
+   *
+   * `POST /github/connect` — `dashboard/connect-github`
+   */
+  connectGithub(): Promise<{ url: string }>;
+
+  /**
    * Connector calls for this team on Pulse's time axis
    *
    * `GET /observability/connector-calls` — `dashboard/connector-calls`
@@ -607,6 +614,20 @@ export interface DashboardClient {
   listFindings(input: { status?: "open" | "acked" | "resolved" | "suppressed"; kind?: "invariant" | "drift" | "recurring"; limit?: number; cursor?: string }): Promise<{ available: boolean; entries: FindingEntry[]; nextCursor: string | null; cut: boolean }>;
 
   /**
+   * A repo's branches, read through one of this team's GitHub accounts
+   *
+   * `GET /github/branches` — `dashboard/list-github-branches`
+   */
+  listGithubBranches(input: { repo: string; account?: string }): Promise<{ branches: { name: string }[] }>;
+
+  /**
+   * The repos one of this team's GitHub accounts granted (`account` omitted: the oldest), and every connected account
+   *
+   * `GET /github/repos` — `dashboard/list-github-repos`
+   */
+  listGithubRepos(input: { account?: string }): Promise<{ configured: boolean; connected: boolean; account?: string | null; accounts: string[]; repos: { fullName: string; defaultBranch: string; private: boolean; updatedAt: string }[] }>;
+
+  /**
    * One page of this team's roster (active members and outstanding invites), newest first
    *
    * `GET /members` — `dashboard/list-members`
@@ -747,6 +768,13 @@ export interface DashboardClient {
   setFindingStatus(input: { id: string; status: "open" | "acked" | "resolved" }): Promise<FindingEntry>;
 
   /**
+   * One-click deploy: commit the workflow to a repo and store a push credential for this team as its secret
+   *
+   * `POST /github/setup-ci` — `dashboard/setup-github-ci`
+   */
+  setupGithubCi(input: { repo: string; branch: string; account?: string; path?: string }): Promise<{ ok: true; workflowPath: string; workflowUpdated: boolean; branch: string; vertical: string } | { ok: false; needsPermissions: true }>;
+
+  /**
    * Zero-filled traffic series for this team's installed apps
    *
    * `GET /observability/traffic` — `dashboard/team-traffic`
@@ -867,6 +895,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
     businessVolumes: (input: Args) =>
       send("/observability/business-volumes", "GET", undefined, input),
+    connectGithub: () =>
+      send("/github/connect", "POST", undefined, undefined),
     connectorCalls: (input: Args) =>
       send("/observability/connector-calls", "GET", undefined, input),
     createFindingRule: (input: Args) =>
@@ -925,6 +955,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/findings/rules", "GET", undefined, input),
     listFindings: (input: Args) =>
       send("/findings", "GET", undefined, input),
+    listGithubBranches: (input: Args) =>
+      send("/github/branches", "GET", undefined, input),
+    listGithubRepos: (input: Args) =>
+      send("/github/repos", "GET", undefined, input),
     listMembers: (input: Args) =>
       send("/members", "GET", undefined, input),
     listPreviews: (input: Args) =>
@@ -965,6 +999,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "POST", omit(input, ["scopeId"]), undefined),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
+    setupGithubCi: (input: Args) =>
+      send("/github/setup-ci", "POST", input, undefined),
     teamTraffic: (input: Args) =>
       send("/observability/traffic", "GET", undefined, input),
     tenantMetricsSeries: (input: Args) =>

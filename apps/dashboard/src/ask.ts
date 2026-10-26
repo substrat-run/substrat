@@ -136,13 +136,15 @@ export function askSummary(steps: readonly AskStep[]): string {
 
 /**
  * GET routes the assistant is not given, each with why. Everything else that reads is a tool.
- * These are the assistant's own records: reading them back would let a turn quote an earlier
+ * Most are the assistant's own records: reading them back would let a turn quote an earlier
  * model's text as if it were the dashboard's.
  */
 export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
   'dashboard/explanations-status': 'the AI features’ own switch and budget',
   'dashboard/get-finding-explanation': 'an earlier model’s text, not the dashboard’s data',
   'dashboard/get-process-note': 'an earlier model’s text, not the dashboard’s data',
+  'dashboard/list-github-repos': 'GitHub’s data, not the dashboard’s: each call is a GitHub API call as the App',
+  'dashboard/list-github-branches': 'GitHub’s data, not the dashboard’s: each call is a GitHub API call as the App',
 };
 
 /** A tool's name for a route: `dashboard/list-members` → `list_members`. */

@@ -887,6 +887,7 @@ export function VerticalDetail({
 }
 
 export function Verticals({
+  teamId,
   deployments,
   onPromote,
   onRemove,
@@ -894,6 +895,7 @@ export function Verticals({
   busy,
   loadGitRepos,
 }: {
+  teamId: string;
   deployments: Deployment[];
   onPromote: (slug: string, versionId: string, channel: 'prod') => void;
   onRemove: (slug: string) => void;
@@ -946,10 +948,10 @@ export function Verticals({
       <div style={{ marginTop: sorted.length === 0 ? 0 : 16, display: 'grid', gap: 12 }}>
         <h3 style={{ margin: 0, fontSize: 15 }}>Add a vertical</h3>
         {repo ? (
-          <RepoDeploy repo={repo} onBack={() => setRepo(null)} onDone={() => setRepo(null)} />
+          <RepoDeploy teamId={teamId} repo={repo} onBack={() => setRepo(null)} onDone={() => setRepo(null)} />
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 16, alignItems: 'start' }}>
-            <GitImportCard git={git} error={gitError} onPick={setRepo} onSelectAccount={setGitAccount} />
+            <GitImportCard teamId={teamId} git={git} error={gitError} onPick={setRepo} onSelectAccount={setGitAccount} />
             <CliPushPanel />
           </div>
         )}
@@ -989,8 +991,9 @@ function CliPushPanel() {
  * switches which account's repos are listed, and connecting another account is the
  * same App-install flow as the first.
  */
-function GitImportCard({ git, error, onPick, onSelectAccount }: { git: GitReposResult | null; error: boolean; onPick: (repo: { fullName: string; branch: string; account?: string }) => void; onSelectAccount: (account: string) => void }) {
+function GitImportCard({ teamId, git, error, onPick, onSelectAccount }: { teamId: string; git: GitReposResult | null; error: boolean; onPick: (repo: { fullName: string; branch: string; account?: string }) => void; onSelectAccount: (account: string) => void }) {
   const [filter, setFilter] = useState('');
+  const connect = () => void connectGithub(teamId);
   const repos = git?.repos ?? [];
   const shown = filter.trim() ? repos.filter((r) => r.fullName.toLowerCase().includes(filter.toLowerCase())) : repos;
 
@@ -1028,7 +1031,7 @@ function GitImportCard({ git, error, onPick, onSelectAccount }: { git: GitReposR
       ) : !git.connected ? (
         <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'flex-start' }}>
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Connect GitHub to import a repository and push a version on every push.</div>
-          <Button onClick={connectGithub}>Connect GitHub</Button>
+          <Button onClick={connect}>Connect GitHub</Button>
         </div>
       ) : shown.length === 0 ? (
         <div style={{ padding: '20px 16px', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
@@ -1054,7 +1057,7 @@ function GitImportCard({ git, error, onPick, onSelectAccount }: { git: GitReposR
             href="#"
             onClick={(e) => {
               e.preventDefault();
-              connectGithub();
+              connect();
             }}
           >
             Adjust the GitHub App’s access
@@ -1066,7 +1069,7 @@ function GitImportCard({ git, error, onPick, onSelectAccount }: { git: GitReposR
               e.preventDefault();
               // Same install flow — pick a different org/user on GitHub's chooser and
               // it lands as an additional namespace next to the ones already here.
-              connectGithub();
+              connect();
             }}
           >
             Connect another GitHub account
@@ -1086,7 +1089,7 @@ function GitImportCard({ git, error, onPick, onSelectAccount }: { git: GitReposR
  * in the list above. The copy-paste manual path remains as the fallback (older App
  * installations may lack the write permissions until re-approved).
  */
-function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch: string; account?: string }; onBack: () => void; onDone: () => void }) {
+function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { fullName: string; branch: string; account?: string }; onBack: () => void; onDone: () => void }) {
   const [branches, setBranches] = useState<string[] | null>(null);
   const [branch, setBranch] = useState(repo.branch);
   // Monorepo: the vertical's directory inside the repo. Empty = the repo root (the common
@@ -1101,8 +1104,8 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
 
   useEffect(() => {
     let live = true;
-    api
-      .gitBranches(repo.fullName, repo.account)
+    teamApi(teamId)
+      .listGithubBranches({ repo: repo.fullName, account: repo.account })
       .then((r) => {
         if (!live) return;
         const names = r.branches.map((b) => b.name);
@@ -1113,13 +1116,13 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
     return () => {
       live = false;
     };
-  }, [repo.fullName, repo.branch, repo.account]);
+  }, [teamId, repo.fullName, repo.branch, repo.account]);
 
   const setup = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      const result = await api.setupCi(repo.fullName, branch, repo.account, packageDir);
+      const result = await teamApi(teamId).setupGithubCi({ repo: repo.fullName, branch, account: repo.account, path: packageDir });
       if (result.ok) setDone(result);
       else setNeedsPermissions(true);
     } catch (e) {
@@ -1196,7 +1199,7 @@ function RepoDeploy({ repo, onBack, onDone }: { repo: { fullName: string; branch
               The GitHub App is missing write access on this repository (an older installation). Re-approve the App's updated
               permissions on GitHub, or{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setManual(true); }}>set it up manually</a>.{' '}
-              <a href="#" onClick={(e) => { e.preventDefault(); connectGithub(); }}>Review the App's access</a>
+              <a href="#" onClick={(e) => { e.preventDefault(); void connectGithub(teamId); }}>Review the App's access</a>
             </div>
           )}
           {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}

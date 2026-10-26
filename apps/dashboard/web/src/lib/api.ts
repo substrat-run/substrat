@@ -880,7 +880,7 @@ export interface GitRepo {
   updatedAt: string;
 }
 
-/** `GET /api/github/repos` — the Git-import card's live state. */
+/** `GET /api/teams/:teamId/github/repos` — the Git-import card's live state. */
 export interface GitReposResult {
   /** Is the GitHub App configured on this deployment at all? `false` ⇒ show nothing/hint. */
   configured: boolean;
@@ -892,11 +892,6 @@ export interface GitReposResult {
   accounts: string[];
   repos: GitRepo[];
 }
-
-/** `POST /api/github/setup-ci` — what the one-click deploy setup did (or still needs). */
-export type SetupCiResult =
-  | { ok: true; workflowPath: string; workflowUpdated: boolean; branch: string; vertical: string }
-  | { ok: false; needsPermissions: true };
 
 /** `GET /api/github/workflow-preview` — the manual path's copy-paste workflow. */
 export interface WorkflowPreview {
@@ -1994,21 +1989,6 @@ export const api = {
     call<LogPatterns>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/log-patterns?${query.toString()}`),
   appRequests: (teamId: string, scopeId: string, query: URLSearchParams) =>
     call<RequestRecord[]>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/list?${query.toString()}`),
-  /** The tenant's GitHub-import state — connection status + the selected account's repos. */
-  gitRepos: (account?: string) =>
-    call<GitReposResult>(`/github/repos${account ? `?account=${encodeURIComponent(account)}` : ''}`),
-  /** A repo's branches, for the import step's branch picker. */
-  gitBranches: (repo: string, account?: string) =>
-    call<{ branches: Array<{ name: string }> }>(
-      `/github/branches?repo=${encodeURIComponent(repo)}${account ? `&account=${encodeURIComponent(account)}` : ''}`,
-    ),
-  /** One-click deploy setup: commit the workflow + write the scoped push credential.
-   *  `path` is the vertical's directory inside the repo (monorepo) — omitted, the root. */
-  setupCi: (repo: string, branch: string, account?: string, path?: string) =>
-    call<SetupCiResult>('/github/setup-ci', {
-      method: 'POST',
-      body: JSON.stringify({ repo, branch, ...(account ? { account } : {}), ...(path ? { path } : {}) }),
-    }),
   /** The manual path's workflow YAML (same generator the one-click commit uses). */
   workflowPreview: (repo: string, branch: string, path?: string) =>
     call<WorkflowPreview>(
@@ -2156,9 +2136,9 @@ export const signIn = (
   const qs = p.toString();
   window.location.href = `/api/auth/login${qs ? `?${qs}` : ''}`;
 };
-/** Connect GitHub — a full-page redirect to the App install flow (returns to /apps/new). */
-export const connectGithub = () => {
-  window.location.href = '/api/github/connect';
+/** Connect GitHub to `teamId` — a full-page redirect to the App install flow (returns to /apps/new). */
+export const connectGithub = async (teamId: string) => {
+  window.location.href = (await teamApi(teamId).connectGithub()).url;
 };
 export const signOut = (opts: { returnTo?: string } = {}) => {
   const rt = typeof opts?.returnTo === 'string' ? opts.returnTo : undefined;
