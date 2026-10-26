@@ -2518,6 +2518,12 @@ export interface CloudflareScopeHostOptions {
    */
   streamIdleTimeoutMs?: number;
   /**
+   * #1819: how long one read of the rewind hold serves a pass. Defaults to `SWITCH_HOLD_SNAPSHOT_MS`;
+   * the rewind's settle is derived from it (`switchHoldSettleMs`). Here so a test need not wait
+   * the production seconds; every host a test races against each other must share the value.
+   */
+  switchHoldSnapshotMs?: number;
+  /**
    * #1691: where each connector call's data point goes, beside the health line
    * `recordConnectionUse` settles — on the platform, the control plane's Analytics
    * Engine dataset (`analyticsEngineConnectorCallRecorder`). Defaults to the no-op
@@ -2810,9 +2816,11 @@ export const SWITCH_HOLD_SNAPSHOT_MS = 2_000;
  * one older than `SWITCH_HOLD_SNAPSHOT_MS`. A state read that met rewound storage therefore
  * finished at least this long after the hold was written, so a snapshot taken before the hold
  * is past its age by then and is re-read. Each side measures a duration on its own clock;
- * nothing compares two clocks.
+ * nothing compares two clocks. Derived from the snapshot age, never set on its own, so no host
+ * can be given a settle that does not outlast its snapshot (`switchHoldSnapshotMs`).
  */
-export const SWITCH_HOLD_SETTLE_MS = SWITCH_HOLD_SNAPSHOT_MS + 1_000;
+export const switchHoldSettleMs = (snapshotMs: number): number => (snapshotMs * 3) / 2;
+export const SWITCH_HOLD_SETTLE_MS = switchHoldSettleMs(SWITCH_HOLD_SNAPSHOT_MS);
 
 /**
  * #1839: how many times a rewind waits again, after its settle, for a row a late OFF added to its
@@ -3198,6 +3206,9 @@ export class CloudflareScopeHost implements ScopeHost {
    * join this one read rather than each sending their own.
    */
   private holdRefresh: { at: number; done: Promise<{ error?: string }> } | null = null;
+  /** #1819: `SWITCH_HOLD_SNAPSHOT_MS` and `SWITCH_HOLD_SETTLE_MS`, unless `switchHoldSnapshotMs` is given. */
+  private readonly holdSnapshotMs: number;
+  private readonly holdSettleMs: number;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -3229,6 +3240,8 @@ export class CloudflareScopeHost implements ScopeHost {
     // #2498: whatever fetch is injected, a sized stream body reaches it converted (`fetchLikeOf`).
     this.fetchImpl = fetchLikeOf(options.fetch ?? globalFetch);
     this.streamIdleMs = options.streamIdleTimeoutMs;
+    this.holdSnapshotMs = options.switchHoldSnapshotMs ?? SWITCH_HOLD_SNAPSHOT_MS;
+    this.holdSettleMs = switchHoldSettleMs(this.holdSnapshotMs);
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
@@ -11410,12 +11423,12 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<{ held: boolean; error?: string; scopeClear?: true }> {
     const at = Date.now();
     let error: string | undefined;
-    if (!this.holdSnapshot || at - this.holdSnapshot.at > SWITCH_HOLD_SNAPSHOT_MS) {
+    if (!this.holdSnapshot || at - this.holdSnapshot.at > this.holdSnapshotMs) {
       const inflight = this.holdRefresh;
       // Join a read that went out within the snapshot age of this consult: its result is then as
       // fresh as one this consult would take itself, which is what the settle argument needs.
       // Only the consult that sent the read reports its failure.
-      if (inflight && at - inflight.at <= SWITCH_HOLD_SNAPSHOT_MS) {
+      if (inflight && at - inflight.at <= this.holdSnapshotMs) {
         await inflight.done;
       } else {
         const refresh = { at, done: this.refreshHolds(at) };
@@ -11661,7 +11674,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * claimed by the re-read.
    */
   private async settleClaim(holds: ScopeStubRpc, scopeId: ScopeId, claimId: string): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS));
+    await new Promise((resolve) => setTimeout(resolve, this.holdSettleMs));
     for (let waits = 0; ; waits++) {
       const token = await holds.switchHoldToken();
       const off = await this.offInStorage(scopeId);
@@ -11670,7 +11683,7 @@ export class CloudflareScopeHost implements ScopeHost {
         this.holdSnapshot = null;
       }
       const youngest = await holds.switchHoldYoungestMs(scopeId, claimId);
-      if (youngest === null || youngest >= SWITCH_HOLD_SETTLE_MS) return;
+      if (youngest === null || youngest >= this.holdSettleMs) return;
       if (waits === SWITCH_HOLD_EXTRA_WAITS) {
         throw new Error(
           `${REWIND_REFUSED}schedule switches kept being pulled off while this rewind waited for them to ` +
@@ -11678,7 +11691,7 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       }
       // Never longer than one settle, even if the hold object's clock moved back under a restart.
-      await new Promise((resolve) => setTimeout(resolve, SWITCH_HOLD_SETTLE_MS - Math.max(0, youngest)));
+      await new Promise((resolve) => setTimeout(resolve, this.holdSettleMs - Math.max(0, youngest)));
     }
   }
 

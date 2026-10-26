@@ -33,7 +33,7 @@ import { ControlPlaneError, VerticalClient, hostedCrossVerticalReach } from '@su
 import { CloudflareScopeHost, type CapabilityDelegation, type EventDrainDelegation } from './test-host.js';
 import { kickCoalescerName, type KickCoalescerDo, type KickOutcome } from '../src/kick-coalescer-do.js';
 import { warmControlPlane } from './do-warmup.js';
-import { armRewind, landRewind } from './pitr-emulation.js';
+import { armRewind, landRewind, TEST_HOLD_SNAPSHOT_MS } from './pitr-emulation.js';
 
 /**
  * #2114: the lever's outcome-row fault — a trigger on the suite's directory singleton, which both
@@ -221,7 +221,7 @@ function deployment(
     for (const path of Object.keys(CROSS_VERTICAL_ROUTES)) app.all(path, (c) => c.notFound());
   }
   const hostFor = (): CloudflareScopeHost => {
-    const host = new CloudflareScopeHost({ scope });
+    const host = new CloudflareScopeHost({ scope, switchHoldSnapshotMs: TEST_HOLD_SNAPSHOT_MS });
     host.registerModule(mod);
     return host;
   };
