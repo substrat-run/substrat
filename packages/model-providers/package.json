@@ -29,9 +29,9 @@
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "3.0.70",
+    "@ai-sdk/openai-compatible": "3.0.77",
     "@substrat-run/contracts": "workspace:^",
-    "ai": "7.0.142"
+    "ai": "7.0.150"
   },
   "devDependencies": {
     "typescript": "catalog:",

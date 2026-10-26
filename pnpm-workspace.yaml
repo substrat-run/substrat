@@ -73,15 +73,15 @@ catalog:
   # config, and it peers on vitest 4 or 5.
   vitest: ^5.0.5
   '@vitest/ui': ^5.0.5
-  '@cloudflare/vitest-plugin': ^1.4.3
+  '@cloudflare/vitest-plugin': ^1.4.7
 
   # The apps' bundler (#2121): every app and demo builds on the same vite and React plugin.
   # `apps/docs` declares vite only for its EPUB figure renderer; vitepress 1.x keeps its own
   # vite 5 inside, and has no stable release on a newer one.
-  vite: ^8.3.4
+  vite: ^8.3.5
   '@vitejs/plugin-react': ^6.1.2
   '@cloudflare/workers-types': ^4.20250109.0
-  wrangler: ^4.151.0
+  wrangler: ^4.152.0
   '@types/node': ^22.20.5
 
   # The compiler. Here for the same reason as the rest, and it had already
@@ -102,7 +102,7 @@ catalog:
   # The MIME parser behind inbound mail (`connectors/mail-in`, #2611): runs unchanged in
   # Workers and Node, and has no dependencies of its own. Exact, not a range — a parser
   # that decides what a stranger's message contains moves only when someone reads the diff.
-  postal-mime: 4.0.4
+  postal-mime: 4.1.4
 
   # The node SQLite driver behind the pure host, the dev servers and every node suite.
   # One version: v13 ships prebuilt binaries and needs no build step, and a second copy
