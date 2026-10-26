@@ -48,6 +48,7 @@ import {
   neutralUpstreamMarkers,
   withoutUpstreamReference,
   grantableEntitlements,
+  bareSlug,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
@@ -945,9 +946,8 @@ async function admitManager(
   requestedKeys: string[],
   targetVertical?: string,
 ): Promise<{ declared: string[]; revocable: string[] } | { refusal: PlatformRequestOutcome }> {
-  const registered = (await deps.host.admin.listVerticals(deps.actor)).find(
-    (v) => v.slug === ctx.vertical,
-  );
+  const verticals = await deps.host.admin.listVerticals(deps.actor);
+  const registered = verticals.find((v) => v.slug === ctx.vertical);
   if (!registered?.tenantProvisioner) {
     // Undeclared vs declared-but-ungranted (#455): the former is a manifest fix the
     // vertical author makes alone; the latter is a request already on the console's
@@ -968,7 +968,11 @@ async function admitManager(
     };
   }
   // #2388: only keys the manager may declare, so a row pushed before the rule grants nothing foreign.
-  const declared = grantableEntitlements(ctx.vertical, registered.entitlements ?? [], registered.provisions);
+  const declared = grantableEntitlements(
+    ctx.vertical,
+    registered.entitlements ?? [],
+    verticals.map((v) => bareSlug(v.slug)),
+  );
   for (const key of requestedKeys) {
     if (!declared.includes(key)) {
       return {

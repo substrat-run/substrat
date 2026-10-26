@@ -8,9 +8,8 @@ import {
 } from '../src/entitlement-namespace.js';
 
 describe('entitlement key namespace (#2388)', () => {
-  it('accepts a vertical own key (workspace prefix stripped), an engine key, and a provisioned vertical key', () => {
+  it('accepts a vertical own key (workspace prefix stripped) and an engine key', () => {
     expect(entitlementNamespaceRefusal('t-abc/helpdesk', ['helpdesk', 'protocol'])).toBeUndefined();
-    expect(entitlementNamespaceRefusal('manager', ['flows'], ['flows'])).toBeUndefined();
   });
 
   it("refuses another vertical's key, naming the key and the vertical's own namespace", () => {
@@ -19,9 +18,14 @@ describe('entitlement key namespace (#2388)', () => {
     );
   });
 
-  it('refuses a platform key, even for a vertical whose slug spells it', () => {
+  it('lets a manager declare a plan SKU, but not another vertical slug', () => {
+    expect(entitlementNamespaceRefusal('console', ['flows'], ['console', 'crm'])).toBeUndefined();
+    expect(entitlementNamespaceRefusal('console', ['crm'], ['console', 'crm'])).toMatch(/^entitlement 'crm' /);
+  });
+
+  it('refuses a platform key, even for a manager or a vertical whose slug spells it', () => {
     expect(entitlementNamespaceRefusal('acme/builder', ['builder'])).toMatch(/^entitlement 'builder' /);
-    expect(entitlementNamespaceRefusal('helpdesk', ['dashboard'])).toMatch(/^entitlement 'dashboard' /);
+    expect(entitlementNamespaceRefusal('console', ['dashboard'], [])).toMatch(/^entitlement 'dashboard' /);
   });
 
   it('keeps only declarable keys of a row pushed before the rule', () => {

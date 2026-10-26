@@ -8162,6 +8162,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * vertical stays owner-only, and so do the reads narrowed on purpose (migration SQL,
    * the prod history).
    */
+  /** The bare slug of every registered vertical: what a manager's SKU may not be (#2388). */
+  const verticalSlugsOf = async (actor: PlatformActorId): Promise<string[]> =>
+    (await host.admin.listVerticals(actor)).map((v) => bareSlug(v.slug));
+
   /**
    * Whether a CONFINED principal may grant its own tenant `key` (#977): some vertical it
    * can read — its own, or a listed one — declares the key, or is the vertical whose
@@ -8172,12 +8176,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const tenantGrantable = async (p: Principal, key: string): Promise<boolean> => {
     const pin = confinedTenant(p);
     if (pin === null) return true;
-    const visible = (await host.admin.listVerticals(p.actor)).filter((v) => v.ownerTenant === pin || v.listed);
+    const all = await host.admin.listVerticals(p.actor);
+    const slugs = all.map((v) => bareSlug(v.slug));
+    const visible = all.filter((v) => v.ownerTenant === pin || v.listed);
     return visible.some((v) => {
       // The install's own derivation (`installEntitlements`): the declared keys the vertical may
       // declare, else its bare slug.
-      const grantable = grantableEntitlements(v.slug, v.entitlements ?? [], v.tenantProvisioner ? v.provisions : []);
-      return (grantable.length > 0 ? grantable : declarableEntitlementKey(v.slug, bareSlug(v.slug)) ? [bareSlug(v.slug)] : []).includes(key);
+      const grantable = grantableEntitlements(v.slug, v.entitlements ?? [], v.tenantProvisioner ? slugs : undefined);
+      return (grantable.length > 0 ? grantable : declarableEntitlementKey(v.slug, bareSlug(v.slug), v.tenantProvisioner ? slugs : undefined) ? [bareSlug(v.slug)] : []).includes(key);
     });
   };
 
@@ -8374,7 +8380,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // #2388: the same declaration rule as a push, for any principal that is not staff.
     if (p.kind !== 'staff') {
-      const foreignKey = entitlementNamespaceRefusal(input.slug, input.entitlements ?? [], input.provisions);
+      const foreignKey = entitlementNamespaceRefusal(
+        input.slug,
+        input.entitlements ?? [],
+        input.provisions?.length ? await verticalSlugsOf(c.get('actor')) : undefined,
+      );
       if (foreignKey) return refuseStatus(c, 422, foreignKey);
     }
     await c.var.admin.registerVertical(c.get('actor'), input);
@@ -9588,7 +9598,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the verticals it provisions). The capability is granted after a first push, so the declaration
     // is judged here and honoured by the grant paths only for a tenant-provisioner. Earlier versions
     // are not re-judged.
-    const foreignKey = entitlementNamespaceRefusal(slug, manifest.entitlements ?? [], manifest.provisions);
+    // Declaring `provisions` marks a manager: the capability itself is granted after a first push.
+    const foreignKey = entitlementNamespaceRefusal(
+      slug,
+      manifest.entitlements ?? [],
+      manifest.provisions?.length ? await verticalSlugsOf(c.get('actor')) : undefined,
+    );
     if (foreignKey) return refuseStatus(c, 422, foreignKey);
 
     // The static-asset half of the §4 sandbox contract (self-serve-deploy.md §4.1). The

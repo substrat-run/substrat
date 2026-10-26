@@ -963,7 +963,6 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
       name: 'Manager Console',
       source: 'builtin',
       entitlements: ['flows', 'vault'],
-      provisions: ['managed-product', 'flows', 'vault'],
     });
     // The capability is a staff GRANT on the registry row (#444), not deployment config.
     await host.admin.setVerticalTenantProvisioner(staff, 'manager-console', true);
@@ -1161,7 +1160,7 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
       name: 'Bounded',
       source: 'cli',
       entitlements: ['flows'],
-      provisions: ['managed-product', 'flows'],
+      provisions: ['managed-product'],
     });
     await host.admin.setVerticalTenantProvisioner(staff, 'bounded-console', true);
 
@@ -1194,16 +1193,16 @@ describe('provisionTenantHandler — a manager vertical creates a NEW customer t
     expect(outcome.error).toMatch(/'not-declared' is not among the SKUs/);
   });
 
-  it("ignores a declared key its manager may not declare: a foreign one from before the rule, and a platform key even if provisioned (#2388)", async () => {
+  it("ignores a declared SKU that is another vertical's slug or a platform key, even for a manager (#2388)", async () => {
+    await host.admin.registerVertical(staff, { slug: 'crm', name: 'Crm', source: 'cli' });
     await host.admin.registerVertical(staff, {
       slug: 'legacy-console',
       name: 'Legacy',
       source: 'cli',
-      entitlements: ['flows', 'builder'],
-      provisions: ['managed-product', 'builder'],
+      entitlements: ['crm', 'builder', 'flows'],
     });
     await host.admin.setVerticalTenantProvisioner(staff, 'legacy-console', true);
-    for (const key of ['flows', 'builder']) {
+    for (const key of ['crm', 'builder']) {
       const payload = { ...payloadFor(ulid(), ulid()), entitlements: [{ key, plan: null }] };
       const outcome = await provisionTenantHandler(deps())(
         { ...ctx, vertical: 'legacy-console' },
@@ -1333,7 +1332,6 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
       name: 'Manager Console',
       source: 'builtin',
       entitlements: ['flows', 'vault'],
-      provisions: ['flows', 'vault'],
     });
     await host.admin.setVerticalTenantProvisioner(staff, 'manager-console', true);
     await host.admin.createTenant(staff, { id: managerTenant, slug: 'manager', name: 'Manager' });

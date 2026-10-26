@@ -52,7 +52,7 @@ describe('the journal withholds text from beyond the drained scope (#2556)', () 
     await admin.createTenant(staff, { id: mine, slug: `acme-${mine.toLowerCase()}`, name: 'Acme' });
     await admin.createTenant(staff, { id: stranger, slug: takenSlug, name: 'Tenant A' });
     await admin.createTenant(staff, { id: customer, slug: `customer-${customer.toLowerCase()}`, name: 'Customer', provisionedByTenant: mine });
-    await admin.registerVertical(staff, { slug: managerVertical, name: 'Manager', source: 'builtin', entitlements: ['flows'], provisions: ['managed-product', 'flows'] });
+    await admin.registerVertical(staff, { slug: managerVertical, name: 'Manager', source: 'builtin', entitlements: ['flows'] });
     await admin.setVerticalTenantProvisioner(staff, managerVertical, true);
     for (const [t, s, vertical] of [
       [mine, caller, 'acme/board-room'],
