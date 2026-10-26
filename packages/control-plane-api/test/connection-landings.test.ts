@@ -370,7 +370,8 @@ describe('declared connection landings (#2316)', () => {
 
     expect(report.connectionLandings).toMatchObject({ bound: 0, failed: 1 });
     expect(await listPlanimaBindings(host, plan)).toEqual([]);
-    expect(lastRun(plan)).toMatchObject({ outcome: 'failed', error: expect.stringContaining(`scope ${s}`) });
+    expect(lastRun(plan)).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^1 declared landing could not be granted or bound \(reference \w{26}\)$/) });
+    expect(report.errors).toEqual([expect.objectContaining({ kind: 'sweep', id: plan, error: expect.stringContaining(`scope ${s}`) })]);
   });
 });
 
@@ -407,23 +408,36 @@ describe('connector sweep outcome (#2316)', () => {
     }),
   };
 
-  const sweep = () =>
-    runPlatformSweep(host, {
+  let filed: Promise<unknown>[];
+  const sweep = async (planimaSweeper?: ConnectorSweeper) => {
+    const report = await runPlatformSweep(host, {
       actor: staff,
       fetch: planima.fetch,
       sweepers: {
-        planima: (h, id, o) => sweepPlanimaPlan(h, id, { ...o, apiBase: planima.apiBase, sleep: async () => {} }),
+        planima: planimaSweeper ?? ((h, id, o) => sweepPlanimaPlan(h, id, { ...o, apiBase: planima.apiBase, sleep: async () => {} })),
         // A dispatch connector whose answer has the same two names and means something else.
         scrive: async () => ({ found: 0, failed: [] }),
       },
       drainRetries: false,
       recordSweepRun: (e) => void runs.push(e),
+      // The control plane's wiring: staff's row on the real ledger.
+      recordFailure: (e) => void filed.push(host.admin.recordOpsFailure({ actor: staff, ...e })),
       // Planima binds; its answer is read. The version declares nothing, so nothing is granted here.
       connectionLandings: {
         read: async () => ({ kind: 'none' }),
         binders: { planima: { list: (h, row) => listPlanimaBindings(h, row.id), bind: async () => undefined } },
       },
     });
+    await Promise.all(filed);
+    return report;
+  };
+  /**
+   * What the staff digest is handed for this pass (`sendFailureDigest`): the ledger since the pass
+   * began, and the pass's own errors. Each line that names `text` counts.
+   */
+  const digestLinesNaming = async (since: string, report: { errors: { error: string }[] }, text: string) =>
+    [...(await host.admin.listOpsFailures(staff, { since })).map((f) => f.message), ...report.errors.map((e) => e.error)].filter((l) => l.includes(text));
+  const referenceOf = (row: SweepRunInput | undefined) => /\(reference (\w{26})\)$/.exec(row?.error ?? '')?.[1];
   const connect = async (): Promise<ConnectionId> => {
     const id = connectionId.parse(ulid());
     await host.admin.createConnection(staff, { id, tenantId: t, vertical: 'maintenance', provider: 'planima', label: 'Planima', scopes: [], secret: { token: 'planima-test-token' } });
@@ -440,6 +454,7 @@ describe('connector sweep outcome (#2316)', () => {
       actions: [],
     });
     runs = [];
+    filed = [];
     host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(7)), fetch: planima.fetch });
     host.registerModule(refusing);
     await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
@@ -466,15 +481,39 @@ describe('connector sweep outcome (#2316)', () => {
     expect(report.errors).toEqual([]);
   });
 
-  it('records a binding whose every page is refused as failed, naming the scope', async () => {
+  it("records a binding whose every page is refused as failed, with the refusal on staff's row alone", async () => {
     const id = await connect();
     await host.admin.grantToConnection(staff, { connectionId: id, permission: PLAN_RECORD, node: { tenantId: t, scopeId: s }, grantedBy: staff });
     await bindPlanimaScope(host, { connectionId: id, tenantId: t, scopeId: s, vertical: 'maintenance', operation: 'maintenance/record-plan', permission: PLAN_RECORD });
+    const since = new Date().toISOString();
 
     const report = await sweep();
 
+    // The tenant's row counts what did not land, under the platform's reference, in its own words.
     const row = runs.find((r) => r.connectionId === id);
-    expect(row).toMatchObject({ outcome: 'failed', error: expect.stringMatching(new RegExp(`scope ${s}: .*plan closed for the year`)) });
-    expect(report.errors).toEqual([expect.objectContaining({ kind: 'sweep', id, error: expect.stringContaining(`scope ${s}`) })]);
+    expect(row).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^1 of 1 binding did not land \(reference \w{26}\)$/) });
+    // The refusal is staff's: one row with no tenant, under that reference, naming the scope.
+    expect(await host.admin.listOpsFailures(staff, { reference: referenceOf(row)! })).toEqual([
+      expect.objectContaining({ tenantId: null, operation: 'sweep.connector:planima', message: expect.stringMatching(new RegExp(`^connection ${id} of tenant ${t}: scope ${s}: .*plan closed for the year`)) }),
+    ]);
+    expect(await host.admin.listOpsFailures(staff, { tenantId: t })).toEqual([]);
+    // The digest is handed it once: from the ledger, not again from the pass's errors.
+    expect(await digestLinesNaming(since, report, 'plan closed for the year')).toHaveLength(1);
+  });
+
+  it("records a sweep that throws as failed, with the throw on staff's row alone", async () => {
+    const id = await connect();
+    const since = new Date().toISOString();
+
+    const report = await sweep(async () => {
+      throw new Error('Planima GET /facilities failed: upstream body 7f3a');
+    });
+
+    const row = runs.find((r) => r.connectionId === id);
+    expect(row).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/^the sweep did not complete \(reference \w{26}\)$/) });
+    expect(await host.admin.listOpsFailures(staff, { reference: referenceOf(row)! })).toEqual([
+      expect.objectContaining({ tenantId: null, message: `connection ${id} of tenant ${t}: Planima GET /facilities failed: upstream body 7f3a` }),
+    ]);
+    expect(await digestLinesNaming(since, report, 'upstream body 7f3a')).toHaveLength(1);
   });
 });

@@ -21,7 +21,9 @@ import type {
   ManifestImports,
   WantedEvent,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, HostAdmin, ReconcileOutcome, ScopeFilter, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, HostAdmin, OpsFailureInput, ReconcileOutcome, ScopeFilter, ScopeHost, SweepRunInput, TelemetryPruneReport } from './scope-host.js';
+import { withheldStaffFailure } from './ops-failure-reference.js';
+import { ulid } from './ulid.js';
 import type { FindingPruneReport } from './findings.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, STORED_SCOPE_STATUSES, holdsStore, type ScopeStorageReadingInput } from './storage-gauge.js';
 import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon, utcDayOf } from './billing-retention.js';
@@ -97,6 +99,9 @@ export function connectorSweepAnswerOf(result: unknown): ConnectorSweepAnswer | 
       .map((f) => ({ scopeId: String(f.scopeId), error: String(f.error) })),
   };
 }
+
+/** `n noun`, with the noun's plural when `n` is not one. */
+const counted = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 /** The text a connection's sweep row carries when a poll found no binding to sweep. */
 export const NO_BINDING = 'connection has no binding: nothing was polled for any scope';
@@ -182,6 +187,14 @@ export interface PlatformSweepOptions {
    * bindings it already has, as before.
    */
   connectionLandings?: ConnectionLandingOptionsInput;
+  /**
+   * #2316: staff's ledger row for a connection sweep that failed. The connection's sweep row is read
+   * by its tenant, so it says only what became of the sweep, with counts, under the platform's
+   * reference; the failure's own text (a provider's answer, a landing refusal) is filed here under
+   * the same reference with no tenant (`withheldStaffFailure`). Fire-and-forget, as `recordSweepRun`.
+   * UNSET ⇒ the text stays in the report's `errors`, as before.
+   */
+  recordFailure?: (entry: Omit<OpsFailureInput, 'actor'>) => void;
   /** Max scope drains / connection sweeps in flight at once. Default 8. */
   concurrency?: number;
   /**
@@ -1974,19 +1987,42 @@ export async function runPlatformSweep(
       report.connectionLandings.bound += landed.bound.length;
       report.connectionLandings.failed += landed.failed.length;
     }
+    const landingFailed = landed?.failed ?? [];
+    // #2316: the row is the connection's tenant's to read, so it says what became of the sweep, in
+    // the platform's words with counts, under one reference; the text (a provider's answer, a landing
+    // refusal) is staff's row under the same reference, or the report's when nothing files one.
+    const fail = (said: string[], raw: string[]) => {
+      const reference = ulid();
+      if (options.recordFailure) {
+        options.recordFailure(
+          withheldStaffFailure(
+            { operation: `sweep.connector:${c.provider}`, stage: 'sweep', vertical: c.vertical },
+            raw.join('; '),
+            reference,
+            `connection ${c.id} of tenant ${c.tenantId}: `,
+          ),
+        );
+      } else {
+        for (const r of raw) report.errors.push({ kind: 'sweep', id: c.id, error: r });
+      }
+      record('failed', { error: `${said.join('; ')} (reference ${reference})`, elapsedMs: Date.now() - started });
+    };
+    const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
+    const scoped = (fs: readonly { scopeId: string; error: string }[]) => fs.map((f) => `scope ${f.scopeId}: ${f.error}`);
     try {
       // #2498: a sized stream body the connector sends reaches the injected fetch converted.
       const result = await sweeper(host, c.id, { fetch: fetchLikeOf(options.fetch) });
       const answer = options.connectionLandings?.binders[c.provider] ? connectorSweepAnswerOf(result) : null;
       report.connectionsSwept += 1;
-      // #2316: a resolved sweep is not a landed one. A scope the connector could not land in, or a
-      // landing the platform could not seat, fails the row and names the scope; a poll that found
-      // nothing to poll is `skipped`, which a console reads as "nothing polls this connection".
-      const failed = [...(landed?.failed ?? []), ...(answer?.failed ?? [])];
-      if (failed.length > 0) {
-        const error = failed.map((f) => `scope ${f.scopeId}: ${f.error}`).join('; ');
-        for (const f of failed) report.errors.push({ kind: 'sweep', id: c.id, error: `scope ${f.scopeId}: ${f.error}` });
-        record('failed', { error, elapsedMs: Date.now() - started });
+      // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
+      // landing the platform could not seat, fails the row; a poll that found nothing to poll is
+      // `skipped`, which a console reads as "nothing polls this connection".
+      const pollFailed = answer?.failed ?? [];
+      if (landingFailed.length > 0 || pollFailed.length > 0) {
+        fail(
+          [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land`] : [])],
+          scoped([...landingFailed, ...pollFailed]),
+        );
       } else if (answer && answer.found === 0) {
         record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
       } else {
@@ -1994,10 +2030,7 @@ export async function runPlatformSweep(
       }
     } catch (err) {
       // The landing step's failures, if any, belong on the same row as the poll's throw.
-      const landing = (landed?.failed ?? []).map((f) => `scope ${f.scopeId}: ${f.error}`);
-      for (const l of landing) report.errors.push({ kind: 'sweep', id: c.id, error: l });
-      report.errors.push({ kind: 'sweep', id: c.id, error: message(err) });
-      record('failed', { error: [...landing, message(err)].join('; '), elapsedMs: Date.now() - started });
+      fail([...landingSaid, 'the sweep did not complete'], [...scoped(landingFailed), message(err)]);
     }
   });
 

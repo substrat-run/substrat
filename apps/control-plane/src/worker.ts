@@ -2494,6 +2494,9 @@ export default {
       // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
       // never sink the pass it is recording (the ops-failure recorder's shape).
       recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
+      // #2316: a failed connection sweep's own text, staff's row under the reference its sweep row
+      // names; the digest lists it from the ledger. Fire-and-forget, as the row above.
+      recordFailure: (entry) => void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch(() => undefined),
       drainRetries: false,
       deleteSnapshotFn: (tenantId, scopeId) => reapExpiredSnapshot({
         host,

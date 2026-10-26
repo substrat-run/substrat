@@ -82,7 +82,7 @@ so `PERMISSIONS.md` shows it and a change to it is acknowledged at promote. See
 rules.
 
 `options` takes exactly what the binding door takes: `organizationId`, `currency`, `window` and
-`horizonYears`. Anything else is refused and reported on the connection's sweep row, never bound
+`horizonYears`. Anything else is refused and counted on the connection's sweep row, never bound
 with a default. A pass that finds the binding already matching writes nothing, so the sync cursor
 survives; a changed declaration re-binds. An option the declaration leaves out is left as it is.
 
