@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Classification } from '../src/bump.js';
@@ -11,6 +11,7 @@ import {
   checkPackages,
   computeFor,
   defaultBase,
+  gitRoot,
   parseChangeset,
   renderChangeset,
   report,
@@ -288,5 +289,79 @@ describe('against a git checkout', () => {
   it('a project with no .changeset/config.json is refused, not written into', () => {
     rmSync(join(repo, '.changeset'), { recursive: true });
     expect(() => changesetDirFor(pkgDir, repo)).toThrow(/does not release with changesets/);
+  });
+});
+
+/**
+ * The vertical's directory as the user typed it, against git's top level as git reports it. The
+ * two can name one directory differently: through a link (macOS's /var is /private/var), and on
+ * Windows through an 8.3 short name (`os.tmpdir()` there is often `C:\Users\RUNNER~1\…`, while
+ * git answers with the long name). A path relative to the wrong form climbs out of the repository.
+ */
+describe('a vertical reached by another name than the one git reports', () => {
+  let outer: string;
+  const MODEL = { entities: { list: { table: 'lists', fields: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' } } } } } };
+
+  /** A checkout at `repo` holding one vertical, committed on `main`, with its `name` field since removed. */
+  const checkout = (repo: string): string => {
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-c', 'user.email=t@example.test', '-c', 'user.name=t', ...args], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const pkgDir = join(repo, 'verticals', 'acme');
+    mkdirSync(pkgDir, { recursive: true });
+    mkdirSync(join(repo, '.changeset'));
+    writeFileSync(join(repo, '.changeset', 'config.json'), JSON.stringify({ baseBranch: 'main', fixed: [] }));
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: PKG, version: '0.1.0' }));
+    writeFileSync(join(pkgDir, 'model.json'), JSON.stringify(MODEL, null, 2));
+    git('init', '-q', '-b', 'main');
+    git('add', '-A');
+    git('commit', '-qm', 'base');
+    const m = structuredClone(MODEL) as any;
+    delete m.entities.list.fields.properties.name;
+    writeFileSync(join(pkgDir, 'model.json'), JSON.stringify(m, null, 2));
+    return pkgDir;
+  };
+
+  /** The diff, the changeset directory and the command, all from `pkgDir` as given. */
+  const expectDiffsFrom = (pkgDir: string, repo: string) => {
+    expect(computeFor(pkgDir, 'main').result.bump).toBe('major');
+    expect(realpathSync.native(changesetDirFor(pkgDir, gitRoot(pkgDir)))).toBe(realpathSync.native(join(repo, '.changeset')));
+    const run = changesetCommand(pkgDir, { base: 'main', check: false, json: true });
+    expect(JSON.parse(run.out[0]!)).toMatchObject({ package: PKG, bump: 'major' });
+  };
+
+  beforeEach(() => {
+    // The long form, so the 8.3 test below can reach the same directory by its short one.
+    outer = realpathSync.native(mkdtempSync(join(tmpdir(), 'substrat-changeset-name-')));
+  });
+  afterEach(() => rmSync(outer, { recursive: true, force: true }));
+
+  it('through a link to the checkout', () => {
+    const repo = join(outer, 'checkout');
+    mkdirSync(repo);
+    const pkgDir = checkout(repo);
+    // A junction on Windows, which needs no privilege; the type is ignored elsewhere.
+    symlinkSync(repo, join(outer, 'link'), 'junction');
+    expectDiffsFrom(join(outer, 'link', 'verticals', 'acme'), repo);
+    expectDiffsFrom(pkgDir, repo);
+  });
+
+  it.runIf(process.platform === 'win32')('through a Windows 8.3 short name — and the walk for .changeset stops at the checkout', (ctx) => {
+    const repo = join(outer, 'checkout with a long name');
+    mkdirSync(repo);
+    const pkgDir = checkout(repo);
+    // `%~sI` prints the short form of each component that has one.
+    const short = spawnSync('cmd', ['/d', '/s', '/c', `"for %I in ("${pkgDir}") do @echo %~sI"`], {
+      encoding: 'utf8',
+      windowsVerbatimArguments: true,
+    }).stdout.trim();
+    // A volume with 8.3 names turned off has no short form to reach it by.
+    if (short.toLowerCase() === pkgDir.toLowerCase() || !existsSync(short)) ctx.skip();
+    expectDiffsFrom(short, repo);
+    // A .changeset ABOVE the checkout is not this project's: the walk ends at git's top level,
+    // which it only recognises when both sides are in one form.
+    mkdirSync(join(outer, '.changeset'));
+    writeFileSync(join(outer, '.changeset', 'config.json'), JSON.stringify({ baseBranch: 'outer', fixed: [] }));
+    rmSync(join(repo, '.changeset'), { recursive: true });
+    expect(() => changesetDirFor(short, gitRoot(short))).toThrow(/does not release with changesets/);
   });
 });

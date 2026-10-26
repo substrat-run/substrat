@@ -329,7 +329,9 @@ describe.runIf(ready)('the replay process kills itself at its hard deadline', ()
       { childPath, timeoutMs: 600_000 },
     );
     expect(r).toMatchObject({ kind: 'error' });
-    expect((r as { message: string }).message).toMatch(/the replay process ended \(SIGKILL\) without an answer/);
+    // The watchdog's SIGKILL; Windows has no signals, and a process killed there just exits 1.
+    const how = process.platform === 'win32' ? 'exit 1' : 'SIGKILL';
+    expect((r as { message: string }).message).toMatch(new RegExp(`^the replay process ended \\(${how}\\) without an answer, past its hard deadline of 1\\.5 s`));
   }, 30_000);
 });
 

@@ -5,12 +5,13 @@ on:
     branches: [main]
   pull_request:
 
-# Three jobs, one verdict. `checks` builds everything and runs every lint and the
+# Four jobs, one verdict. `checks` builds everything and runs every lint and the
 # typecheck — the lints import built output from all over the workspace, so their
 # build stays whole. `test-shard` runs the test suites in three parallel slices, each
 # building only what its own slice needs, so the long suites stop queueing behind one
-# another. `test` is the aggregate that fails unless both did their job, and it keeps
-# the name everything downstream (deploy-test's `needs`) already waits on.
+# another. `test-windows` runs the CLI's suite on Windows, the one package a builder runs on
+# their own machine. `test` is the aggregate that fails unless all three did their job, and
+# it keeps the name everything downstream (deploy-test's `needs`) already waits on.
 #
 # Which packages a run covers is decided by tools/ci-scope.mjs, once per job, from the
 # same inputs — the merge commit and its first parent — so every job agrees without
@@ -584,20 +585,73 @@ jobs:
             pnpm --filter "${part%%#*}" run "${part#*#}"
           done
 
-  # The one verdict: green only when the checks and every shard succeeded. A skipped
-  # or cancelled shard is not a pass. Named `test` because that is the job name
-  # deploy-test waits on and the one a merge has always been judged by.
+  # The CLI on Windows. `@substrat-run/cli` is the one package that runs on a builder's own
+  # machine, and every other job runs on Linux. That let a push that could not spawn
+  # wrangler (`spawnSync npx ENOENT`), a login that opened a URL cut at its first `&`, and a
+  # suite whose stubs were shell scripts all reach a release. Unscoped on purpose: it is one
+  # package's suite, cheap beside the shards, and a change elsewhere (contracts, the kernel
+  # the push links in) breaks the CLI on Windows as easily as a change to the CLI does.
+  #
+  # The suite includes the real-wrangler smoke test (test/wrangler-build.test.ts): a minimal
+  # vertical built through `push --check` on paths with a space and a non-ASCII letter. The
+  # runner's own temp directory is an 8.3 short path (C:\Users\RUNNER~1\…), as a person's is.
+  # Node 24 because that is where Windows builders run the CLI today; the shards cover 22.
+  test-windows:
+    name: test (windows, cli)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The workspace's package scripts are POSIX shell. pnpm runs them with cmd.exe on
+      # Windows unless told otherwise; Git Bash is on every windows-latest runner. The pinned
+      # pnpm 10 reads `npm_config_*`; later majors read only `pnpm_config_*`, so both are set.
+      npm_config_script_shell: C:\Program Files\Git\bin\bash.exe
+      pnpm_config_script_shell: C:\Program Files\Git\bin\bash.exe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The CLI and what it imports, plus what its suites read off disk: the kernel and
+      # adapter-sqlite the push links into a fixture vertical, and the engines the two
+      # demos' permission entries import (tools/ci-scope.mjs READS has the same edges).
+      - run: >-
+          pnpm -r
+          --filter "@substrat-run/cli..."
+          --filter "@substrat-run/kernel..."
+          --filter "@substrat-run/adapter-sqlite..."
+          --filter "@substrat-run/demo-meridian^..."
+          --filter "@substrat-run/demo-ticket0..."
+          build
+      - name: test
+        env:
+          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs --require=${{ github.workspace }}/tools/vitest/sql-limits.cjs --require=${{ github.workspace }}/tools/vitest/unchecked-operations.cjs
+        run: pnpm --filter @substrat-run/cli --filter create-substrat test
+      # The repo tools a Windows contributor runs locally, held to Windows too: the NODE_OPTIONS
+      # every suite runs under (a checkout path with a space), and the publish gate and guard
+      # (tar read `C:\…` as a remote host; `pnpm release` refused a native pnpm.exe).
+      - run: pnpm test:preloads
+      - run: pnpm test:publish-manifests
+
+  # The one verdict: green only when the checks, every shard and the Windows CLI suite
+  # succeeded. A skipped or cancelled job is not a pass. Named `test` because that is the
+  # job name deploy-test waits on and the one a merge has always been judged by.
   test:
-    needs: [checks, test-shard]
+    needs: [checks, test-shard, test-windows]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - env:
           CHECKS: ${{ needs.checks.result }}
           SHARDS: ${{ needs.test-shard.result }}
+          WINDOWS: ${{ needs.test-windows.result }}
         run: |
-          echo "checks: $CHECKS, test shards: $SHARDS"
-          [ "$CHECKS" = "success" ] && [ "$SHARDS" = "success" ]
+          echo "checks: $CHECKS, test shards: $SHARDS, windows cli: $WINDOWS"
+          [ "$CHECKS" = "success" ] && [ "$SHARDS" = "success" ] && [ "$WINDOWS" = "success" ]
 
   # Deploy the prod apps to the shared TEST environment on every green push to
   # main. Prod itself is deployed separately, only on an actual changeset

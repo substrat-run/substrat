@@ -29,11 +29,29 @@ async function s256(verifier: string): Promise<string> {
   return b64url(new Uint8Array(await webcrypto.subtle.digest('SHA-256', enc.encode(verifier))));
 }
 
+/**
+ * The command that hands `url` to the platform's default browser, the URL as ONE argv
+ * element that no shell parses. Windows must not go through `cmd /c start`: cmd.exe reads
+ * `&` as a command separator, so the browser got `…/auth/cli?port=N` alone, without
+ * `state` and `challenge`, and the broker answered "bad cli request". `rundll32
+ * url.dll,FileProtocolHandler` opens the URL with no shell in between (what Go's
+ * pkg/browser does).
+ */
+export function browserCommand(platform: NodeJS.Platform, url: string): { cmd: string; args: string[] } {
+  if (platform === 'darwin') return { cmd: 'open', args: [url] };
+  if (platform === 'win32') return { cmd: 'rundll32', args: ['url.dll,FileProtocolHandler', url] };
+  return { cmd: 'xdg-open', args: [url] };
+}
+
 function openBrowser(url: string): void {
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
-  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
+  const { cmd, args } = browserCommand(process.platform, url);
   try {
-    spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
+    // A missing opener (no xdg-open on a headless box) is not a throw here: spawn reports it
+    // as an async 'error' event, and an 'error' event with no listener crashes the process
+    // mid-login. Swallow it — the printed URL is the fallback either way.
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    child.on('error', () => {});
+    child.unref();
   } catch {
     /* the printed URL is the fallback */
   }

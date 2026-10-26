@@ -17,18 +17,23 @@
  * `tools/publish-manifests.mjs` refuses a public package that does not declare this hook,
  * so a new package cannot opt out by omission.
  */
-import { basename, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** The script every public package declares as `prepublishOnly` (each sits at `<dir>/<name>/`). */
 export const PUBLISH_GUARD = 'node ../../tools/publish-guard.mjs';
 
-/** pnpm's entry points: the standalone binary, or `pnpm.cjs` / `pnpm.js` under node (corepack, npm -g). */
-const PNPM = /^pnpm(\.c?js)?$/;
+/**
+ * pnpm's entry points: the standalone binary (`pnpm`, and `pnpm.exe` on Windows — the winget and
+ * standalone installs), or `pnpm.cjs` / `pnpm.js` under node (corepack, npm -g). Case-blind, as
+ * Windows names files. Without `.exe` here, `pnpm release` on such a machine refused itself.
+ */
+const PNPM = /^pnpm(\.exe|\.c?js)?$/i;
 
 /** Why a publish run by `execpath` (the `npm_execpath` value) must not proceed, or `null`. */
 export function publisherProblem(execpath) {
-  const bin = execpath ? basename(execpath) : '';
+  // Either separator: a Windows path's file name is read the same on every OS.
+  const bin = execpath ? (execpath.split(/[\\/]/).pop() ?? '') : '';
   if (PNPM.test(bin)) return null;
   return (
     `refusing to publish with ${bin || 'an unknown client'}: only \`pnpm publish\` rewrites the workspace: ` +

@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFil
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { installFakeWrangler } from './fake-wrangler.js';
 import type { DeployManifest } from '@substrat-run/contracts';
 
 /**
@@ -11,12 +12,15 @@ import type { DeployManifest } from '@substrat-run/contracts';
  *
  * The BUILT push, in a plain node child: the push imports a module it bundles on the fly,
  * which vitest's module runner cannot load (the `--check` suite in push.test.ts runs the
- * built CLI for the same reason). The wrangler build is a stub `npx` that writes one module
- * where wrangler would, and the upload is a stubbed `fetch` that prints the manifest part.
+ * built CLI for the same reason). The wrangler build is a fake `wrangler` package in the
+ * vertical's node_modules (fake-wrangler.ts) that writes one module where wrangler would, and
+ * the upload is a stubbed `fetch` that prints the manifest part.
  * Everything between those two is the push as it ships.
  */
 export const pushJs = fileURLToPath(new URL('../dist/push.js', import.meta.url));
 export const built = existsSync(pushJs);
+/** What a plain-node runner passes to `import()`: a file URL works on every OS, a path does not on Windows. */
+export const pushJsUrl = pathToFileURL(pushJs).href;
 
 /** `migrations` per module, as a `ModuleRegistration` carries them; `searchables` and `lists`
  *  as its manifest declares them (#1677: the host derives index migrations from those). */
@@ -57,6 +61,7 @@ export function vertical(
   );
   mkdirSync(join(dir, 'src'), { recursive: true });
   writeFileSync(join(dir, 'src', 'worker.ts'), 'export default {};\n');
+  installFakeWrangler(dir);
   const entries = modules.map((m) => ({
     manifest: {
       id: m.id,
@@ -70,11 +75,11 @@ export function vertical(
   }));
   if (opts.kernel) {
     mkdirSync(join(dir, 'node_modules', '@substrat-run'), { recursive: true });
-    symlinkSync(workspaceKernel, join(dir, 'node_modules', '@substrat-run', 'kernel'), 'dir');
+    symlinkSync(workspaceKernel, join(dir, 'node_modules', '@substrat-run', 'kernel'), 'junction');
   }
   if (opts.adapterSqlite) {
     mkdirSync(join(dir, 'node_modules', '@substrat-run'), { recursive: true });
-    symlinkSync(workspaceAdapterSqlite, join(dir, 'node_modules', '@substrat-run', 'adapter-sqlite'), 'dir');
+    symlinkSync(workspaceAdapterSqlite, join(dir, 'node_modules', '@substrat-run', 'adapter-sqlite'), 'junction');
   }
   writeFileSync(join(dir, 'perms.mjs'), `export const permissions = ${JSON.stringify({ modules: entries, roles: [] })};\n`);
   return dir;
@@ -108,18 +113,11 @@ export function pushRun(
   /** Further `PushOptions`, e.g. `{ requireDataLossCheck: true }`. */
   extra: Record<string, unknown> = {},
 ): { status: number | null; stdout: string; stderr: string } {
-  const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-push-'));
-  // An `npx` that "builds" by writing the entry module into wrangler's --outdir.
-  writeFileSync(
-    join(scratch, 'npx'),
-    '#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = "--outdir" ]; then echo "export default {}" > "$2/worker.js"; fi; shift; done\n',
-    { mode: 0o755 },
-  );
-  const runner = join(scratch, 'run.mjs');
+  const runner = join(mkdtempSync(join(tmpdir(), 'substrat-cli-push-')), 'run.mjs');
   writeFileSync(runner, RUNNER);
-  const r = spawnSync(process.execPath, [runner, pushJs, dir, JSON.stringify(extra)], {
+  const r = spawnSync(process.execPath, [runner, pushJsUrl, dir, JSON.stringify(extra)], {
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${scratch}:${process.env.PATH ?? ''}`, GITHUB_ACTIONS: '' },
+    env: { ...process.env, GITHUB_ACTIONS: '' },
   });
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }

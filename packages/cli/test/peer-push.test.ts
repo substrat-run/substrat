@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { installFakeWrangler } from './fake-wrangler.js';
 
 it.each([undefined, [], ['acme/crm']])('push sends an explicit calls declaration for %j', (calls) => {
   const dir = mkdtempSync(join(tmpdir(), 'peer-push-'));
@@ -11,6 +12,7 @@ it.each([undefined, [], ['acme/crm']])('push sends an explicit calls declaration
     writeFileSync(join(dir, 'permissions.mjs'), 'export const permissions = { modules: [], roles: [], entityGrants: [] };');
     writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({ main: 'worker.ts', compatibility_date: '2026-07-01' }));
     writeFileSync(join(dir, 'worker.ts'), 'export default { fetch: () => new Response("ok") };');
+    installFakeWrangler(dir);
     // A real Node module loader can import the runtime-built permission file; Vitest cannot.
     // Replace only wrangler's subprocess. Metadata, manifest validation and upload stay real.
     const result = spawnSync(process.execPath, ['--input-type=module'], {
@@ -22,7 +24,8 @@ it.each([undefined, [], ['acme/crm']])('push sends an explicit calls declaration
         import { join } from 'node:path';
         let bundleDir;
         cp.execFileSync = (file, args) => {
-          if (file !== 'npx' || !args.includes('--dry-run')) throw new Error('unexpected subprocess');
+          // The project's own wrangler, run by node: installFakeWrangler gives the push one to resolve.
+          if (file !== process.execPath || !args.includes('--dry-run')) throw new Error('unexpected subprocess');
           bundleDir = args[args.indexOf('--outdir') + 1];
           writeFileSync(join(bundleDir, 'worker.js'), 'export default {};');
           return Buffer.from('');

@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import npa from 'npm-package-arg';
 import {
   DEP_FIELDS,
@@ -21,6 +21,7 @@ import {
   isRegistrySpec,
   npmViewAnswer,
   packedManifest,
+  pnpmCommand,
   provenanceNote,
   pnpmMembers,
   unresolvedEdges,
@@ -107,6 +108,43 @@ test('against the producer: `pnpm pack` rewrites workspace: and catalog:, and th
   assert.deepEqual(manifestProblems(packed, workspace), []);
 });
 
+test('packs and reads a package on paths with a space and a non-ASCII letter, temp directory included', async () => {
+  // On Windows the temp directory is absolute with a drive letter, and GNU tar (Git Bash's)
+  // read `C:\…\x.tgz` as `host:file`: every package failed with "Cannot connect to C:".
+  const awkward = (prefix) => mkdtempSync(join(tmpdir(), `${prefix} å `));
+  const pkgDir = awkward('publish-manifests-pkg');
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'acme-packed', version: '1.2.3', dependencies: { 'is-number': '^7.0.0' } }));
+  const temp = awkward('publish-manifests-tmp');
+  const saved = { TMPDIR: process.env.TMPDIR, TEMP: process.env.TEMP, TMP: process.env.TMP };
+  Object.assign(process.env, { TMPDIR: temp, TEMP: temp, TMP: temp });
+  try {
+    const packed = await packedManifest(pkgDir);
+    assert.equal(packed.name, 'acme-packed');
+    assert.deepEqual(packed.dependencies, { 'is-number': '^7.0.0' });
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(pkgDir, { recursive: true, force: true });
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('pnpm is started as the run that started this script names it, never through a shell', () => {
+  const node = '/usr/bin/node';
+  // A native binary runs as itself; a JS entry runs with this node.
+  assert.deepEqual(pnpmCommand({ npm_execpath: 'C:\\pnpm\\pnpm.exe' }, node), { file: 'C:\\pnpm\\pnpm.exe', args: [] });
+  assert.deepEqual(pnpmCommand({ npm_execpath: '/opt/pnpm/bin/pnpm.cjs' }, node), { file: node, args: ['/opt/pnpm/bin/pnpm.cjs'] });
+  assert.deepEqual(pnpmCommand({ npm_execpath: '/home/runner/setup-pnpm/node_modules/.bin/pnpm' }, node), {
+    file: '/home/runner/setup-pnpm/node_modules/.bin/pnpm',
+    args: [],
+  });
+  // Started by npm, or by node directly: not pnpm's path, so PATH's pnpm.
+  assert.deepEqual(pnpmCommand({ npm_execpath: '/usr/lib/node_modules/npm/bin/npm-cli.js' }, node), { file: 'pnpm', args: [] });
+  assert.deepEqual(pnpmCommand({}, node), { file: 'pnpm', args: [] });
+});
+
 test('workspace members come from pnpm, with their private flag', () => {
   assert.equal(workspace.get('@substrat-run/control-plane-client')?.private, false);
   assert.equal(workspace.get('@substrat-run/engine-test-kit')?.private, true);
@@ -118,9 +156,16 @@ test('the publish guard: pnpm passes, npm and an unknown client are refused', ()
     '/home/runner/setup-pnpm/node_modules/.bin/pnpm',
     '/usr/local/lib/node_modules/corepack/shims/../../pnpm/bin/pnpm.cjs',
     '/opt/pnpm/bin/pnpm.js',
+    // Windows: the native binary winget and the standalone installer put on PATH, any case.
+    'C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Packages\\pnpm.pnpm_x\\pnpm.exe',
+    'C:\\Program Files\\pnpm\\PNPM.EXE',
+    'C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\pnpm\\bin\\pnpm.cjs',
   ]) {
     assert.equal(publisherProblem(pnpm), null, pnpm);
   }
+  assert.match(publisherProblem('C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js'), /^refusing to publish with npm-cli\.js/);
+  // Twin: a name that merely starts with pnpm is not pnpm.
+  assert.notEqual(publisherProblem('C:\\tools\\pnpx.exe'), null);
   assert.match(publisherProblem('/usr/lib/node_modules/npm/bin/npm-cli.js'), /^refusing to publish with npm-cli\.js/);
   assert.match(publisherProblem('/usr/lib/node_modules/yarn/bin/yarn.js'), /^refusing to publish with yarn\.js/);
   assert.match(publisherProblem(undefined), /^refusing to publish with an unknown client/);
@@ -178,10 +223,15 @@ test('against the producers: `npm publish` is refused by the guard, `pnpm publis
     };
     // --dry-run on both: the lifecycle runs, nothing is uploaded. npm runs with pnpm's
     // environment inherited — as under `pnpm test` — which must not let it through.
-    const npm = await run('npm', ['publish', '--dry-run'], dir, { ...env, npm_config_user_agent: 'pnpm/10.10.0 npm/? node/v24.0.0' });
+    // Neither through a shell. On Windows `npm` is npm.cmd, which Node will not spawn without one
+    // (CVE-2024-27980), so npm runs as its JS entry beside node, which is where every Windows
+    // install keeps it; pnpm runs as the pnpm that started this test (pnpmCommand).
+    const npmCli = process.platform === 'win32' ? [process.execPath, join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')] : ['npm'];
+    const npm = await run(npmCli[0], [...npmCli.slice(1), 'publish', '--dry-run'], dir, { ...env, npm_config_user_agent: 'pnpm/10.10.0 npm/? node/v24.0.0' });
     assert.notEqual(npm.status, 0, npm.output);
     assert.match(npm.output, /refusing to publish with npm-cli\.js/);
-    const pnpm = await run('pnpm', ['publish', '--dry-run', '--no-git-checks'], dir, env);
+    const pnpmCli = pnpmCommand();
+    const pnpm = await run(pnpmCli.file, [...pnpmCli.args, 'publish', '--dry-run', '--no-git-checks'], dir, env);
     assert.doesNotMatch(pnpm.output, /refusing to publish/);
     assert.equal(pnpm.status, 0, pnpm.output);
   } finally {

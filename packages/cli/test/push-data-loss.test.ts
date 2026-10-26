@@ -109,18 +109,13 @@ describe.runIf(built && kernelBuilt)('push --check refuses the same tree', () =>
 describe.runIf(built)('the commands pass the strict switch to the push', () => {
   const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
   const command = (args: string[], env: NodeJS.ProcessEnv = {}) => {
+    // The vertical's own (fake) wrangler builds it: `vertical()` installs one.
     const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-cmd-'));
-    writeFileSync(
-      join(scratch, 'npx'),
-      '#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = "--outdir" ]; then echo "export default {}" > "$2/worker.js"; fi; shift; done\n',
-      { mode: 0o755 },
-    );
     const r = spawnSync(process.execPath, [cli, ...args, '--skip-lint'], {
       env: {
         ...process.env,
         HOME: scratch,
         USERPROFILE: scratch,
-        PATH: `${scratch}:${process.env.PATH ?? ''}`,
         GITHUB_ACTIONS: '',
         SUBSTRAT_CP_URL: 'http://127.0.0.1:9',
         SUBSTRAT_SERVICE_TOKEN: 'svc_test',

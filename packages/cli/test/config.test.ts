@@ -14,13 +14,16 @@ import { resolveAuth } from '../src/config.js';
 describe('resolveAuth (#387 shadowed-auth warnings)', () => {
   let home: string;
   let warned: string[];
-  const ENV_KEYS = ['SUBSTRAT_SERVICE_TOKEN', 'SUBSTRAT_CP_URL', 'SUBSTRAT_TENANT', 'HOME'] as const;
+  const ENV_KEYS = ['SUBSTRAT_SERVICE_TOKEN', 'SUBSTRAT_CP_URL', 'SUBSTRAT_TENANT', 'HOME', 'USERPROFILE'] as const;
   let saved: Record<string, string | undefined>;
 
   beforeEach(() => {
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
     home = mkdtempSync(join(tmpdir(), 'cli-auth-'));
-    process.env.HOME = home; // os.homedir() reads $HOME on posix — the config lives under it
+    // os.homedir() reads $HOME on POSIX and %USERPROFILE% on Windows — the config lives under it,
+    // and without both a Windows run reads (and its warnings follow) the real user's session.
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
     delete process.env.SUBSTRAT_SERVICE_TOKEN;
     delete process.env.SUBSTRAT_CP_URL;
     delete process.env.SUBSTRAT_TENANT;

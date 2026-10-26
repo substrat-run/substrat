@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installFakeWrangler } from './fake-wrangler.js';
 
 /** A Wrangler dry-run stub that performs the configured build and counts uploads. */
 function pushWithGeneratedFile(generated: string, forgedReceipt = false): { status: number; output: string } {
@@ -13,6 +14,7 @@ function pushWithGeneratedFile(generated: string, forgedReceipt = false): { stat
     writeFileSync(join(dir, 'permissions.mjs'), 'export const permissions = { modules: [], roles: [], entityGrants: [] };');
     writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({ main: 'worker.js', compatibility_date: '2026-07-01', build: { command: 'node generate.mjs' } }));
     writeFileSync(join(dir, 'worker.js'), `import './generated.js'; export default { fetch: () => new Response('ok') };`);
+    installFakeWrangler(dir);
     const result = spawnSync(process.execPath, ['--input-type=module'], {
       encoding: 'utf8',
       input: `
@@ -25,7 +27,8 @@ function pushWithGeneratedFile(generated: string, forgedReceipt = false): { stat
         let uploads = 0;
         let out;
         cp.execFileSync = (file, args) => {
-          if (file !== 'npx' || !args.includes('--dry-run')) throw new Error('unexpected subprocess');
+          // The project's own wrangler, run by node: installFakeWrangler gives the push one to resolve.
+          if (file !== process.execPath || !args.includes('--dry-run')) throw new Error('unexpected subprocess');
           builds++;
           writeFileSync(join(dir, 'generated.js'), ${JSON.stringify(generated)});
           out = args[args.indexOf('--outdir') + 1];
@@ -85,6 +88,7 @@ function commandWithBuiltin(flags: string[], command: 'push' | 'preview'): { sta
     writeFileSync(join(dir, 'permissions.mjs'), 'export const permissions = { modules: [], roles: [], entityGrants: [] };');
     writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({ main: 'worker.js', compatibility_date: '2026-07-01', compatibility_flags: flags }));
     writeFileSync(join(dir, 'worker.js'), `import 'node:crypto'; export default { fetch: () => new Response('ok') };`);
+    installFakeWrangler(dir);
     const marker = join(dir, 'network-called');
     const builds = join(dir, 'build-count');
     const cli = new URL('../dist/cli.js', import.meta.url).href;
@@ -98,7 +102,8 @@ function commandWithBuiltin(flags: string[], command: 'push' | 'preview'): { sta
         process.argv = [process.execPath, ${JSON.stringify(cli)}, ${command === 'push' ? "'push'," : "'preview', 'create',"} ${JSON.stringify(dir)}, '--tag', 'pr-1', '--cp', 'https://cp.invalid', '--token', 'test-token'];
         let buildCount = 0;
         cp.execFileSync = (file, args) => {
-          if (file !== 'npx' || !args.includes('--dry-run')) throw new Error('unexpected subprocess');
+          // The project's own wrangler, run by node: installFakeWrangler gives the push one to resolve.
+          if (file !== process.execPath || !args.includes('--dry-run')) throw new Error('unexpected subprocess');
           writeFileSync(${JSON.stringify(builds)}, String(++buildCount));
           writeFileSync(join(args[args.indexOf('--outdir') + 1], 'worker.js'), 'export default {};');
           return Buffer.from('');
@@ -141,19 +146,17 @@ it.each([false, true])('push --check --json stays parseable with a configured bu
       ...(withBuild ? { build: { command: 'node generate.mjs' } } : {}),
     }));
     writeFileSync(join(dir, 'worker.js'), `${withBuild ? "import './generated.js';" : ''} export default { fetch: () => new Response('ok') };`);
-    const bin = join(dir, 'bin');
-    mkdirSync(bin);
-    writeFileSync(join(bin, 'npx'), `#!/bin/sh
-echo 'configured build stdout'
-echo 'configured build stderr' >&2
-printf 'export const ready = true;\n' > generated.js
-while [ "$1" != '--outdir' ]; do shift; done
-shift
-printf 'export default {};\n' > "$1/worker.js"
-`, { mode: 0o755 });
+    installFakeWrangler(dir, `
+const { writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+console.log('configured build stdout');
+console.error('configured build stderr');
+writeFileSync('generated.js', 'export const ready = true;\\n');
+const args = process.argv.slice(2);
+writeFileSync(join(args[args.indexOf('--outdir') + 1], 'worker.js'), 'export default {};\\n');
+`);
     const result = spawnSync(process.execPath, [fileURLToPath(new URL('../dist/cli.js', import.meta.url)), 'push', dir, '--check', '--json'], {
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
     });
     expect(result.status, result.stderr).toBe(0);
     expect(() => JSON.parse(result.stdout), result.stdout).not.toThrow();

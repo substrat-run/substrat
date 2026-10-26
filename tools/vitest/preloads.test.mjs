@@ -13,11 +13,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { nodeOptions, preloadFiles } from './node-options.mjs';
+import { nodeOptions, preloadFiles, requireOption } from './node-options.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', '..');
@@ -48,12 +48,25 @@ export function withoutComment(line) {
   return line;
 }
 
+/**
+ * A line that takes its preloads from node-options.mjs — the command (`$(node
+ * tools/vitest/node-options.mjs)`) or the function (`nodeOptions()`) — has every one by
+ * construction, because node-options.mjs is itself held to every preload below.
+ */
+const FROM_THE_ONE_SOURCE = /\$\(node tools\/vitest\/node-options\.mjs\)|\bnodeOptions\(\)/;
+
 /** The preloads one line does not `--require`. */
 export function missingFrom(text, names) {
   // A path token, where a workflow expression (`${{ github.workspace }}`) may hold spaces.
   const path = String.raw`(?:\$\{\{[^}]*\}\}|[^\s"'\`])*`;
+  // Or a quoted path, which may hold spaces too: what node-options.mjs prints.
+  const quoted = String.raw`"(?:[^"\\]|\\.)*`;
   const code = text.split('\n').map(withoutComment).join('\n');
-  return names.filter((name) => !new RegExp(`--require=${path}tools/vitest/${name.replace(/\./g, '\\.')}`).test(code));
+  if (FROM_THE_ONE_SOURCE.test(code)) return [];
+  return names.filter((name) => {
+    const file = `tools/vitest/${name.replace(/\./g, '\\.')}`;
+    return !new RegExp(`--require=(?:${path}${file}|${quoted}${file}")`).test(code);
+  });
 }
 
 /** Each line that leaves a preload out, with what it leaves out. */
@@ -113,6 +126,27 @@ test('a line that leaves one out is named — and one that requires all is not',
   assert.deepEqual(missingFrom('--require=$PWD/a#b/tools/vitest/a.cjs', ['a.cjs']), []);
   // A name that is only a prefix of another does not count as the other.
   assert.deepEqual(missingFrom('--require=$PWD/tools/vitest/ab.cjs', ['b.cjs']), ['b.cjs']);
+  // A quoted path, with a space in it, is a path: what node-options.mjs prints.
+  assert.deepEqual(missingFrom('--require="/Users/Jane Doe/repo/tools/vitest/a.cjs"', ['a.cjs']), []);
+  assert.deepEqual(missingFrom('--require="C:/Users/Jane Doe/repo/tools/vitest/a.cjs"', ['a.cjs', 'b.cjs']), ['b.cjs']);
+  // A line that takes its preloads from node-options.mjs has them all: that source is held below.
+  assert.deepEqual(missingFrom('NODE_OPTIONS="$(node tools/vitest/node-options.mjs)" pnpm -r test', ['a.cjs', 'b.cjs']), []);
+  assert.deepEqual(missingFrom('NODE_OPTIONS: [process.env.NODE_OPTIONS, nodeOptions()]', ['a.cjs', 'b.cjs']), []);
+  // Twin: named only in a comment, it is not taken.
+  assert.deepEqual(missingFrom('NODE_OPTIONS: x # nodeOptions()', ['a.cjs']), ['a.cjs']);
+});
+
+test('node-options.mjs quotes each path, so a checkout path with a space still loads every preload', () => {
+  assert.equal(requireOption('/Users/Jane Doe/x.cjs'), '--require="/Users/Jane Doe/x.cjs"');
+  // Inside quotes node reads a backslash as an escape: a POSIX name that holds one is escaped.
+  if (sep === '/') assert.equal(requireOption('/a\b/x".cjs'), '--require="/a\\b/x\\".cjs"');
+  // Started for real: node parses the printed NODE_OPTIONS and runs every preload in it.
+  const loaded = execFileSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(Object.keys(require.cache)))'], {
+    encoding: 'utf8',
+    env: { ...process.env, NODE_OPTIONS: nodeOptions() },
+  });
+  const cache = JSON.parse(loaded).map((k) => realpathSync(k));
+  for (const name of preloads) assert.ok(cache.includes(realpathSync(join(here, name))), `${name} was not loaded`);
 });
 
 test('one complete job does not cover an incomplete one in the same workflow', () => {
@@ -135,13 +169,20 @@ test('one complete job does not cover an incomplete one in the same workflow', (
   assert.deepEqual(incompleteLines([lines[0], lines[0]], ['a.cjs', 'b.cjs']), []);
 });
 
-test('node-options.mjs prints every preload when started through a symlink', () => {
+test('node-options.mjs prints every preload when started through a symlink', (t) => {
   // A checkout reached through a linked path: the script must not mistake itself for an import
   // and print nothing, which would leave NODE_OPTIONS empty and every preload off.
   const dir = mkdtempSync(join(tmpdir(), 'node-options-'));
   try {
     const link = join(dir, 'node-options.mjs');
-    symlinkSync(join(here, 'node-options.mjs'), link);
+    try {
+      symlinkSync(join(here, 'node-options.mjs'), link);
+    } catch (error) {
+      // A file symlink on Windows needs admin rights or Developer Mode; without them there is
+      // nothing to start the script through. Any other failure is a failure.
+      if (process.platform === 'win32' && error.code === 'EPERM') return t.skip('file symlinks need Developer Mode on Windows');
+      throw error;
+    }
     const printed = execFileSync(process.execPath, [link], { encoding: 'utf8' });
     assert.equal(printed, nodeOptions());
     assert.deepEqual(missingFrom(printed, preloads), []);

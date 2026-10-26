@@ -39,13 +39,39 @@
 import { execFileSync, execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { basename, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import npa from 'npm-package-arg';
 import { PUBLISH_GUARD } from './publish-guard.mjs';
 
 const run = promisify(execFile);
+
+/**
+ * How to start pnpm without a shell: `{ file, args }` to put in front of pnpm's own arguments.
+ *
+ * Under `pnpm run`, `npm_execpath` names the pnpm that started this script: a native binary
+ * (`pnpm.exe`) or its JS entry (`pnpm.cjs`, run with this node). Spawning the bare name instead
+ * finds only a native `pnpm` on PATH. On Windows pnpm is usually `pnpm.cmd`, a batch file that
+ * Node will not spawn without a shell (CVE-2024-27980), so the bare name is ENOENT there.
+ */
+export function pnpmCommand(env = process.env, execPath = process.execPath) {
+  const self = env.npm_execpath;
+  if (self && /^pnpm(\.exe|\.[cm]?js)?$/i.test(basename(self))) {
+    return /\.[cm]?js$/i.test(self) ? { file: execPath, args: [self] } : { file: self, args: [] };
+  }
+  return { file: 'pnpm', args: [] };
+}
+
+/** A missing pnpm, said with the way out: a bare ENOENT names nothing a person can act on. */
+function pnpmMissing(error) {
+  if (error?.code !== 'ENOENT') return error;
+  return new Error(
+    'could not start pnpm: run this through pnpm (`pnpm lint:publish-manifests`), which tells it ' +
+      'where pnpm is. Started by node directly, only a pnpm executable on PATH is found, and on ' +
+      'Windows pnpm is usually pnpm.cmd, which cannot be started without a shell.',
+  );
+}
 
 /** Specifier protocols that mean something inside a workspace and nothing on npm. */
 export const UNPUBLISHABLE_PROTOCOLS = ['workspace:', 'catalog:', 'link:', 'file:', 'portal:'];
@@ -233,9 +259,14 @@ export function guardProblem(manifest) {
  * studio scratch projects, which are members locally and never published (#769).
  */
 export function pnpmMembers(root = process.cwd()) {
-  const listed = JSON.parse(
-    execFileSync('pnpm', ['-r', 'ls', '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8' }),
-  );
+  const pnpm = pnpmCommand();
+  let out;
+  try {
+    out = execFileSync(pnpm.file, [...pnpm.args, '-r', 'ls', '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8' });
+  } catch (error) {
+    throw pnpmMissing(error);
+  }
+  const listed = JSON.parse(out);
   const members = new Map();
   for (const { path } of listed) {
     if (relative(root, path).startsWith('.builder')) continue;
@@ -253,10 +284,16 @@ export function pnpmMembers(root = process.cwd()) {
 export async function packedManifest(path) {
   const dest = mkdtempSync(join(tmpdir(), 'publish-manifests-'));
   try {
-    await run('pnpm', ['pack', '--pack-destination', dest], { cwd: path });
+    const pnpm = pnpmCommand();
+    await run(pnpm.file, [...pnpm.args, 'pack', '--pack-destination', dest], { cwd: path }).catch((e) => {
+      throw pnpmMissing(e);
+    });
     const tgz = readdirSync(dest).find((f) => f.endsWith('.tgz'));
     if (!tgz) throw new Error(`pnpm pack wrote no tarball for ${path}`);
-    const { stdout } = await run('tar', ['-xzOf', join(dest, tgz), 'package/package.json']);
+    // The tarball by its bare name, from its own directory. An absolute Windows path is read by
+    // GNU tar (Git Bash's) as `host:file`, so `C:\…` failed with "Cannot connect to C: resolve
+    // failed". `--force-local` would fix GNU tar but is unknown to bsdtar (macOS, Windows' own).
+    const { stdout } = await run('tar', ['-xzOf', tgz, 'package/package.json'], { cwd: dest });
     return JSON.parse(stdout);
   } finally {
     rmSync(dest, { recursive: true, force: true });

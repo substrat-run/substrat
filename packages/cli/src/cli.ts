@@ -2,7 +2,7 @@
 /**
  * substrat — authenticated deploy tooling for the platform.
  *
- *   substrat login  [--cp <url>] [--token <serviceToken>]
+ *   substrat login  [--cp <url>] [--token <serviceToken>] [--workspace <slug>]
  *   substrat push   [dir]  [--slug <slug>] [--version <v>] [--name <name>]
  *                   [--cp <url>] [--token <serviceToken>]
  *   substrat push   [dir] --check [--json]   the local gate: layer rules + the declared
@@ -18,11 +18,17 @@
  * so `push` just works; any command also accepts --cp/--token or SUBSTRAT_CP_URL /
  * SUBSTRAT_SERVICE_TOKEN. A push is not a deploy — the version lands PENDING; admission
  * (in the console) still gates serving.
+ *
+ * `login --workspace <slug>` stores the default workspace the non-push commands fall back to,
+ * with no prompt. Without a TTY `login` asks nothing at all (see cmdLogin): the URL is --cp,
+ * the stored one or the public plane, and several workspaces with no --workspace leave the
+ * session saved with no new default and a hint printed.
  */
 import { bindConnectionScope, listConnectionBindings } from './connections.js';
 import { join, resolve as resolvePath } from 'node:path';
 import { rmSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { ask } from './prompt.js';
+import { doctor } from './doctor.js';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
 import {
@@ -101,24 +107,22 @@ function positional(n: number, booleanFlags: readonly string[] = []): string | u
   return found[n];
 }
 
-/** Prompt on the TTY for a plain (non-secret) value. */
-function ask(question: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
-}
-
 const USAGE = `substrat — authenticated deploy tooling
 
 Usage:
   substrat login    [--cp <url>] [--fresh]    sign in via the browser (per-human);
-                                              --fresh re-prompts past any live browser
-                                              or IdP session (switch accounts)
+                    [--workspace <slug>]      --fresh re-prompts past any live browser
+                                              or IdP session (switch accounts);
+                                              --workspace sets the default workspace
+                                              (slug or id) instead of asking. With no
+                                              terminal (agent, pipe, CI) nothing is
+                                              asked: the URL is --cp, else the stored
+                                              one, else console.substrat.net
   substrat login    --token <serviceToken>    store a service credential (CI)
+  substrat doctor   [dir] [--fix]             is this machine and project ready to push:
+                                              Node, the project's wrangler, and on Windows
+                                              long paths. --fix turns long paths on (Windows
+                                              asks you to allow it, once)
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
   substrat version                            print the CLI version (also --version, -v)
@@ -342,12 +346,24 @@ authenticated response; an out-of-date CLI prints a one-line upgrade nudge to st
 async function cmdLogin(): Promise<void> {
   const existing = loadConfig();
   const cpDefault = existing.controlPlaneUrl ?? 'https://console.substrat.net/api';
-  const cp = ((flag('cp') ?? (await ask(`control-plane URL [${cpDefault}]: `))) || cpDefault).replace(/\/$/, '');
+  // No TTY (an agent, piped stdin, CI, some Windows terminals): nobody can answer a prompt,
+  // so the URL is --cp, else the stored one, else the public plane — said out loud.
+  const interactive = Boolean(process.stdin.isTTY);
+  let cpInput = flag('cp');
+  if (cpInput === undefined && interactive) {
+    cpInput = await ask(`control-plane URL [${cpDefault}]: `);
+    if (cpInput === undefined) throw new Error('no control-plane URL given (input ended) — pass --cp <url>');
+  } else if (cpInput === undefined) {
+    console.log(`control-plane URL: ${cpDefault} (no terminal to ask on — pass --cp <url> for another)`);
+  }
+  const cp = (cpInput || cpDefault).replace(/\/$/, '');
+  const wanted = flag('workspace');
 
-  // CI path: a service credential, no browser.
+  // CI path: a service credential, no browser. There is no account to check --workspace
+  // against, so it is stored as given — the control plane resolves it per request, as --tenant.
   const serviceToken = flag('token');
   if (serviceToken) {
-    const path = saveConfig({ ...existing, controlPlaneUrl: cp, serviceToken });
+    const path = saveConfig({ ...existing, controlPlaneUrl: cp, serviceToken, ...(wanted ? { defaultTenant: wanted } : {}) });
     console.log(`✓ saved service credential → ${path}`);
     return;
   }
@@ -359,28 +375,56 @@ async function cmdLogin(): Promise<void> {
 
   // Resolve the builder's workspace so `promote`/`scope` just work (builder-plane.md §5).
   // `push` never uses this default — its workspace is the project's (package.json pin).
-  // One tenant → store it; several → pick; none → they still need to sign up in the app.
+  // One tenant → store it; several → --workspace, else pick on a TTY; none → they still
+  // need to sign up in the app. Whatever happens here, the session below is saved: a
+  // completed browser login is never thrown away over the choice of a default.
   const { user, tenants } = await fetchWhoami(cp, { authorization: `Bearer ${bearerToken}` }).catch(
     () => ({ user: null, tenants: [] as { id: string; slug: string; name: string }[] }),
   );
+  const byKey = (key: string) => tenants.find((t) => t.slug === key || t.id === key);
+  // When no choice is made, the previous default survives only if THIS account can act for
+  // it — a re-login keeps an earlier pick, a different account does not inherit a stranger's.
+  const kept = existing.defaultTenant === undefined ? undefined : byKey(existing.defaultTenant)?.slug;
+  const howToSet = '  set one with `substrat login --workspace <slug>`, or pass --tenant <slug> (or SUBSTRAT_TENANT) per command.';
   let defaultTenant = existing.defaultTenant;
-  if (tenants.length === 1) {
+  let refused: string | undefined;
+  if (wanted !== undefined) {
+    // Slug or id, as the prompt takes — not the prompt's list number, which shifts as
+    // memberships change and would make a scripted login pick a different workspace.
+    const hit = byKey(wanted);
+    if (hit) {
+      defaultTenant = hit.slug;
+      console.log(`  default workspace: ${defaultTenant}`);
+    } else {
+      defaultTenant = kept;
+      const valid = user ? tenants.map((t) => t.slug).join(', ') || '(none yet)' : '(could not list them)';
+      refused = `'${wanted}' is not one of your workspaces (yours: ${valid}) — signed in, ${kept ? `default workspace stays '${kept}'` : 'no default workspace set'}`;
+    }
+  } else if (tenants.length === 1) {
     defaultTenant = tenants[0]!.slug;
     console.log(`  workspace: ${defaultTenant}`);
   } else if (tenants.length > 1) {
     console.log('  you belong to several workspaces:');
     tenants.forEach((t, i) => console.log(`    ${i + 1}. ${t.name}  [${t.slug}]`));
-    const pick = await ask(`  default workspace [1-${tenants.length}, or a slug]: `);
-    defaultTenant =
-      tenants[Number(pick) - 1]?.slug ??
-      tenants.find((t) => t.slug === pick || t.id === pick)?.slug ??
-      tenants[0]!.slug;
-    console.log(`  default workspace: ${defaultTenant} (promote/scope use it; push pins one per project)`);
+    // Without a TTY the question would go unanswered (see `ask`) — do not ask it.
+    const pick = interactive ? await ask(`  default workspace [1-${tenants.length}, or a slug]: `) : undefined;
+    if (pick === undefined) {
+      defaultTenant = kept;
+      console.log(kept ? `  default workspace stays: ${kept} (none chosen)` : '  no default workspace set (none chosen).');
+      console.log(howToSet);
+    } else {
+      defaultTenant = tenants[Number(pick) - 1]?.slug ?? byKey(pick)?.slug ?? tenants[0]!.slug;
+      console.log(`  default workspace: ${defaultTenant} (promote/scope use it; push pins one per project)`);
+    }
   } else if (user) {
     console.log('  no workspace yet — create one at your dashboard, then `substrat push`.');
   }
   const path = saveConfig({ ...existing, controlPlaneUrl: cp, bearerToken, defaultTenant });
   console.log(`✓ signed in${user?.email ? ` as ${user.email}` : ''}. session saved to ${path}`);
+  if (refused) {
+    console.log(howToSet);
+    throw new Error(refused); // main() prints it and exits non-zero — a script must not read this as success
+  }
 }
 
 /**
@@ -408,6 +452,7 @@ async function pickWorkspace(auth: { controlPlaneUrl: string; header: Record<str
     const suggested = loadConfig().defaultTenant;
     const def = tenants.findIndex((t) => t.slug === suggested) + 1; // 0 = no login default among them
     const pick = await ask(`push as [1-${tenants.length}${def ? `, enter = ${def}` : ''}]: `);
+    if (pick === undefined) throw new Error(`no workspace selected — ${hint}`);
     const chosen =
       (pick === '' && def ? tenants[def - 1] : undefined) ??
       tenants[Number(pick) - 1] ??
@@ -416,7 +461,8 @@ async function pickWorkspace(auth: { controlPlaneUrl: string; header: Record<str
     tenant = chosen.slug;
   }
   const pin = await ask(`pin '${tenant}' in package.json so this project always pushes there? [Y/n]: `);
-  if (pin === '' || /^y/i.test(pin)) {
+  // Input ended (undefined): no answer is not a yes — the push goes on, package.json untouched.
+  if (pin !== undefined && (pin === '' || /^y/i.test(pin))) {
     try {
       pinTenant(dir, tenant);
       console.log(`✓ pinned — package.json now carries "substrat": { "tenant": "${tenant}" }`);
@@ -1378,6 +1424,14 @@ async function cmdPlan(): Promise<void> {
   }
 }
 
+/** `substrat doctor [dir] [--fix]`: is this machine and project ready to push? See doctor.ts. */
+function cmdDoctor(): void {
+  const dir = positional(0, ['fix']) ?? '.';
+  const { lines, problems } = doctor(dir, { fix: argv.includes('--fix') });
+  console.log(['substrat doctor', ...lines].join('\n'));
+  if (problems > 0) process.exit(1);
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -1398,6 +1452,8 @@ async function main(): Promise<void> {
   switch (command) {
     case 'login':
       return cmdLogin();
+    case 'doctor':
+      return cmdDoctor();
     case 'versions':
       return cmdVersions();
     case 'installs':

@@ -9,7 +9,7 @@
  * output, the root `test` script, CI's test step and `pnpm test:affected` to the same directory.
  */
 import { readdirSync, realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // The real path, resolved once. `import.meta.url` is already real by default, but under
@@ -23,10 +23,21 @@ export function preloadFiles() {
   return readdirSync(here).filter((f) => f.endsWith('.cjs')).sort();
 }
 
-/** `--require=<abs path>` for each preload, space-separated. */
+/**
+ * One `--require` for NODE_OPTIONS, quoted. Node splits NODE_OPTIONS on spaces, so an unquoted
+ * checkout path holding one (`/Users/Jane Doe/…`, `C:\Users\Jane Doe\…`) turned into a preload
+ * named `C:\Users\Jane` and every suite died before it started. Inside quotes node reads `\` as an
+ * escape, so the path is written with `/` (Windows takes either) and any `\` or `"` left in a
+ * POSIX name is escaped.
+ */
+export function requireOption(file) {
+  return `--require="${file.split(sep).join('/').replace(/["\\]/g, '\\$&')}"`;
+}
+
+/** `--require="<abs path>"` for each preload, space-separated. */
 export function nodeOptions() {
   return preloadFiles()
-    .map((f) => `--require=${join(here, f)}`)
+    .map((f) => requireOption(join(here, f)))
     .join(' ');
 }
 

@@ -25,6 +25,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { buildNames, CHANGED_NAMES, decide, enclosingNames, lockfileScope, LOCKFILE, MEMBERS } from './ci-scope.mjs';
+import { nodeOptions } from './vitest/node-options.mjs';
 
 /**
  * Which workspace members own `files`. A file belongs to the member with the longest
@@ -101,7 +102,8 @@ function main(argv) {
         });
 
   const preloads = {
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${process.cwd()}/tools/vitest/like-pattern-limit.cjs`, `--require=${process.cwd()}/tools/vitest/sql-limits.cjs`, `--require=${process.cwd()}/tools/vitest/unchecked-operations.cjs`]
+    // nodeOptions(): every preload, quoted, so a checkout path with a space still loads them.
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, nodeOptions()]
       .filter(Boolean)
       .join(' '),
   };

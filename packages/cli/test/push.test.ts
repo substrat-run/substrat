@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, isAbsolute, resolve } from 'node:path';
+import { FAILING_WRANGLER, installFakeWrangler } from './fake-wrangler.js';
 import {
   buildPermissionRegistry,
   definePermissions,
@@ -866,6 +867,8 @@ export const permissions = {
     const r = runCheck(dir);
     expect(r.status).not.toBe(0);
     expect(r.stderr).toMatch(/worker\.mjs -> .*dependency\.mjs -> node:crypto/);
+    // Named with `/` on every OS, never `..\x\worker.mjs` in a Windows log.
+    expect(r.stderr.split('\n').find((l) => l.includes('-> node:crypto'))).not.toContain('\\');
     expect(r.stdout).not.toContain('uploading');
   });
 
@@ -1242,15 +1245,10 @@ describe('substrat preview create — push overrides reach the same push (#1209)
     writeFileSync(join(dir, 'src', 'worker.ts'), 'export default { fetch: () => new Response("ok") };\n');
     mkdirSync(join(dir, 'app'), { recursive: true });
     writeFileSync(join(dir, 'app', 'index.html'), '<!doctype html><div id="root"></div>');
+    // A wrangler that fails instantly, so the case which gets PAST the preflight stops at the
+    // build instead of running a real one for a bundle no assertion looks at.
+    installFakeWrangler(dir, FAILING_WRANGLER);
     return dir;
-  }
-
-  /** An `npx` that fails instantly, so the case which gets PAST the preflight stops at the
-   *  build instead of fetching and running wrangler for a bundle no assertion looks at. */
-  function stubNpx(): string {
-    const bin = mkdtempSync(join(tmpdir(), 'substrat-cli-bin-'));
-    writeFileSync(join(bin, 'npx'), '#!/bin/sh\necho "stub wrangler" >&2\nexit 9\n', { mode: 0o755 });
-    return bin;
   }
 
   function runPreview(dir: string, ...args: string[]): { status: number; stdout: string; stderr: string } {
@@ -1259,7 +1257,6 @@ describe('substrat preview create — push overrides reach the same push (#1209)
       ...process.env,
       HOME: home,
       USERPROFILE: home,
-      PATH: `${stubNpx()}:${process.env.PATH ?? ''}`,
       // Enough for `resolveAuth` to answer without a stored login and without a request:
       // the run never gets far enough to send one (the port is deliberately unusable).
       SUBSTRAT_CP_URL: 'http://127.0.0.1:1/api',
@@ -1283,7 +1280,7 @@ describe('substrat preview create — push overrides reach the same push (#1209)
 
   it.runIf(built)('and --allow-unserved-ui is honoured rather than silently dropped', () => {
     const r = runPreview(verticalWithUnservedUi(), '--allow-unserved-ui');
-    // Past the preflight: it reached the build (the stubbed npx), so the flag arrived.
+    // Past the preflight: it reached the build (the failing fake wrangler), so the flag arrived.
     expect(r.stderr).not.toMatch(/nothing in the push would serve/);
     expect(r.stdout).toMatch(/building Worker/);
   });

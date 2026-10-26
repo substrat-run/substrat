@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertAttachmentBindingFree } from '../src/push.js';
-import { built, pushed, pushJs, pushRun, STORES, vertical } from './push-harness.js';
+import { built, pushed, pushJs, pushJsUrl, pushRun, STORES, vertical } from './push-harness.js';
 
 /**
  * The attachment store a push declares (#1995), driven through the real `push()`
@@ -99,7 +99,7 @@ process.stdout.write('ATTACHES ' + (await deriveDeclaredSurface(dir)).declaresAt
   const attaches = (dir: string): string => {
     const runner = join(mkdtempSync(join(tmpdir(), 'substrat-cli-attaches-')), 'run.mjs');
     writeFileSync(runner, SURFACE);
-    const r = spawnSync(process.execPath, [runner, pushJs, dir], { cwd: repo, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [runner, pushJsUrl, dir], { cwd: repo, encoding: 'utf8' });
     const line = (r.stdout ?? '').split('\n').find((l) => l.startsWith('ATTACHES '));
     if (r.status !== 0 || !line) throw new Error(`surface not derived (${r.status}):\n${r.stdout}\n${r.stderr}`);
     return line.slice('ATTACHES '.length);
