@@ -122,10 +122,10 @@
     "concurrently": "^9.0.0",
     "esbuild": "^0.28.2",
     "npm-package-arg": "^13.0.2",
-    "oxlint": "1.88.0",
-    "oxlint-tsgolint": "7.0.2004",
+    "oxlint": "1.89.0",
+    "oxlint-tsgolint": "7.0.2005",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "wrangler": "^4.151.0"
+    "wrangler": "^4.152.0"
   }
 }

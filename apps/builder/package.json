@@ -17,7 +17,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "0.12.10",
+    "@cloudflare/sandbox": "0.12.14",
     "@substrat-run/adapter-cloudflare": "workspace:*",
     "@substrat-run/builder-generator": "workspace:*",
     "@substrat-run/builder-workspace": "workspace:*",
@@ -27,7 +27,7 @@
     "@substrat-run/kernel": "workspace:*",
     "@substrat-run/model-providers": "workspace:*",
     "@substrat-run/oidc-rp": "workspace:*",
-    "ai": "7.0.142",
+    "ai": "7.0.150",
     "hono": "catalog:"
   },
   "devDependencies": {
