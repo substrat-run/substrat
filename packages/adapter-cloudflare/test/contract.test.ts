@@ -293,10 +293,16 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
     }
   });
 
+  // #2565: an old coordinator moves a channel with `moveChannel`, which judged no listing. The new
+  // DO has none, so that call is refused by the RPC layer before anything runs.
+  it('#2565: an old coordinator\'s channel move finds no method on the new DO', () => {
+    expect('moveChannel' in ControlPlaneDO.prototype).toBe(false);
+  });
+
   // What a DO from before this change answers for a method it does not list (`reply`).
   const NEW_REPLIED = ['updateVerticalListed', 'updateVerticalPublishRequest', 'updateVerticalInstallsBlocked',
     'updateVerticalTenantProvisioner', 'updateVerticalEmailSender', 'deleteVertical', 'admitVersion', 'rejectVersion',
-    'setVerticalServing'];
+    'setVerticalServing', 'promoteChannel'];
   const oldDo = () => interceptedControlPlane(async (args, method) => {
     if (method !== 'reply' || !NEW_REPLIED.includes(args[0] as string)) return;
     return { answer: { failure: toWireFailure(new Error(`not a replied directory method: ${String(args[0])}`)) } };
@@ -308,7 +314,13 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
     try {
       const slug = await registered(reader);
       const version = await published(reader, slug);
+      const admitted = await published(reader, slug);
+      // Another actor, so its row is not the one the assertion below counts, even in the same millisecond.
+      await reader.admin.admitVersion(platformActorId.parse(ulid()), admitted);
       const since = new Date().toISOString();
+      // #2565: the promote's channel move, which judges the vertical's listing in its unit.
+      await expect(host.admin.promoteVersion(staff, slug, 'prod', admitted)).rejects.toThrow('not a replied directory method: promoteChannel');
+      expect(await reader.admin.listChannels(staff, slug)).toEqual([]);
       await expect(host.admin.setVerticalInstallsBlocked(staff, slug, true))
         .rejects.toThrow('not a replied directory method: updateVerticalInstallsBlocked');
       await expect(host.admin.setVerticalListed(staff, slug, true))

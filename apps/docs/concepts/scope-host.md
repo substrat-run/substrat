@@ -131,6 +131,7 @@ interface OperationContext {
   readonly sql: ScopedSql;          // synchronous, scope-local SQL
   now(): Instant;                   // the operation's instant — the only clock
   readonly log: ModuleLog;          // debug / info / warn / error (template, fields)
+  readonly requestId: string | null; // the request (or delivery, or run) this call belongs to
   emit(event: DomainEventInput): void;
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
   search(entityType: string, term: string, options?: SearchOptions): SearchHit[];
@@ -170,6 +171,11 @@ interface OperationContext {
   trimmed, a non-primitive field is stringified, and a capability secret minted in the same
   call is withheld. It is not transactional, so a line is kept even when the operation later
   rolls back — those are usually the lines you want.
+- **`requestId`** is the id the platform minted for the request this call belongs to: the
+  response's `x-substrat-request-id`, the id on every `ctx.log` line and event the call emits,
+  and the request the dashboard opens for it. Put it in your own error messages so a person can
+  quote it. A consumer gets its delivery's id and a schedule run gets its run's; it is `null`
+  only for an in-process call such as a test or a seed. Opaque — read it only to repeat it.
 - **`emit`** validates the event input and stamps the envelope kernel-side (id,
   timestamp, tenant, scope, actor). See [Events & audit](/concepts/events).
 - **`check`** asks the permission checker about the ambient principal at the ambient

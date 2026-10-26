@@ -787,6 +787,8 @@ import {
   assertPromoteReviewCurrent,
   promoteRaceRefusal,
   servingRaceRefusal,
+  autoAdmittedProdRefusal,
+  listedPromoteRefusal,
   rebindRaceRefusal,
   SERVES_NOW_CONDITION,
   SERVES_NOW_PREDICATE,
@@ -10319,11 +10321,7 @@ export class SqliteScopeHost implements ScopeHost {
               )
               .get(slug) as { id: string; admission_note: string | null } | undefined;
             if (prod?.admission_note === AUTO_ADMISSION_NOTE) {
-              throw substratError(
-                'conflict',
-                `vertical '${slug}' prod version ${prod.id} is auto-admitted (private self-serve) — ` +
-                  `a staff admit must vouch for it before listing`,
-              );
+              throw autoAdmittedProdRefusal(slug, prod.id);
             }
           }
           return { listed: existing.listed };
@@ -10456,6 +10454,7 @@ export class SqliteScopeHost implements ScopeHost {
         channel,
         versionId: string,
         acknowledge?: PromotionAcknowledgement,
+        options?: { unlistedOnly?: boolean },
       ) => {
         const incoming = await readVersion(versionId);
         if (!incoming) throw substratError('not_found', `unknown version ${versionId}`);
@@ -10548,6 +10547,18 @@ export class SqliteScopeHost implements ScopeHost {
             .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
             .get(verticalSlug, channel) as { version_id: string } | undefined;
           if ((now?.version_id ?? null) !== (outgoing?.id ?? null)) return false;
+          // #2565: the listing's rule and the builder's door, read where the listing could land.
+          const listed = readVertical(verticalSlug)?.listed;
+          if (listed && options?.unlistedOnly) throw listedPromoteRefusal();
+          // A re-promote of what prod already names, and what serves (if anything does), moves
+          // nothing, so it is not judged again. One whose serve would change what runs is.
+          const serving = this.servingPointerOfVertical(verticalSlug)?.versionId ?? versionId;
+          if (
+            listed && channel === 'prod' && (outgoing?.id !== versionId || serving !== versionId) &&
+            versionAdmission(versionId).admission_note === AUTO_ADMISSION_NOTE
+          ) {
+            throw autoAdmittedProdRefusal(verticalSlug, versionId);
+          }
           this.directory
             .prepare(
               `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)

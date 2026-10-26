@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AUTO_ADMISSION_NOTE, SCOPE_GATE_REASONS, substratError, type ErrorCode } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
+import { autoAdmittedProdRefusal } from '@substrat-run/kernel';
 import { mapError } from '../src/errors.js';
 
 /**
@@ -13,15 +14,11 @@ import { mapError } from '../src/errors.js';
  * rather than only through whichever route happens to reach them.
  */
 describe('mapError — a refusal that names its fix must survive as itself', () => {
-  // The exact text both adapters throw (adapter-sqlite `setVerticalListed`,
-  // adapter-cloudflare `host.ts` — identical strings), typed `conflict` by both and pinned
-  // on that code by the contract suite. Its pattern row is gone (#113 phase 5), so a throw
-  // reaches `mapError` carrying the code, as the adapters now raise it.
-  const autoAdmitRefusal = substratError(
-    'conflict',
-    `vertical 'substrat-9yjbbn/auth-server' prod version 01KZN76M38AWJ9KHE6RWVFSC8W is auto-admitted ` +
-      `(private self-serve) — a staff admit must vouch for it before listing`,
-  );
+  // The refusal both adapters throw (`setVerticalListed`, and `promoteVersion` on a listed
+  // vertical — the kernel's `autoAdmittedProdRefusal`), typed `conflict` and pinned on that code
+  // by the contract suite. Its pattern row is gone (#113 phase 5), so a throw reaches `mapError`
+  // carrying the code, as the adapters now raise it.
+  const autoAdmitRefusal = autoAdmittedProdRefusal('acme/crm', '01KZN76M38AWJ9KHE6RWVFSC8W');
 
   it('answers the publish-seam refusal 409, with its text intact', () => {
     const { status, body } = mapError(autoAdmitRefusal);
@@ -177,13 +174,14 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
 
   it('reads the registry\'s own refusals from the code now that their rows are gone (#113 phases 5–6)', () => {
     // The sixth to tenth families off `CODE_PATTERNS`: `is owned by`, `is auto-admitted`,
-    // `not admitted`, and — `rejectVersion` / `promoteVersion` — `is already admitted` and `belongs to`. Every
-    // site is on the coordinator (`host.ts`, `adapter-sqlite`) — none is raised inside a
-    // Durable Object — so the real error object reaches `mapError` and the code is read.
+    // `not admitted`, and — `rejectVersion` / `promoteVersion` — `is already admitted` and `belongs to`. Each
+    // reaches `mapError` as a typed error carrying its code: raised on the coordinator (`host.ts`,
+    // `adapter-sqlite`), or — `is auto-admitted`, from `updateVerticalListed` and `promoteChannel` —
+    // inside the ControlPlaneDO and answered through `reply`, which rebuilds it with its code.
     const sentences = [
       `vertical 'helpdesk' is owned by 01AAA, not 01BBB`,
       `vertical 'helpdesk' is owned by the platform, not 01BBB`,
-      `vertical 'crm' prod version 01ABC is auto-admitted (private self-serve) — a staff admit must vouch for it before listing`,
+      `vertical 'crm' prod version 01ABC is auto-admitted (private self-serve) — a staff admit must vouch for it before it can be prod of a listed vertical`,
       `version 01ABC is pending, not admitted — it cannot be bound to a scope`,
       `version 01ABC is rejected, not admitted — it cannot be promoted`,
       `version 01ABC is already admitted — it may be bound`,

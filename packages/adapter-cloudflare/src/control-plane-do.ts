@@ -204,7 +204,7 @@ import {
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
-import { opsFailureReferenceWhere } from '@substrat-run/kernel';
+import { autoAdmittedProdRefusal, listedPromoteRefusal, opsFailureReferenceWhere } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -1568,6 +1568,9 @@ export const REPLIED_METHODS = [
   'admitVersion',
   'rejectVersion',
   'setVerticalServing',
+  // #2565: refuses a listed vertical's prod with forbidden (`unlistedOnly`) or conflict (an
+  // auto-admitted version). A DO from before lists it not, so the current coordinator fails closed.
+  'promoteChannel',
   // #2526: the role, grant and org writes at a tenant node, each with its admin row in its unit. A
   // DO from before lists none of them, so the current coordinator fails closed against it. That is
   // why the org write is `insertOrg` and not `createOrg` with a trailing row: an older DO lists
@@ -3601,13 +3604,7 @@ export class ControlPlaneDO extends DurableObject {
             slug,
           )
           .toArray()[0] as { id: string; admission_note: string | null } | undefined;
-        if (prod?.admission_note === AUTO_ADMISSION_NOTE) {
-          throw substratError(
-            'conflict',
-            `vertical '${slug}' prod version ${prod.id} is auto-admitted (private self-serve) — ` +
-              `a staff admit must vouch for it before listing`,
-          );
-        }
+        if (prod?.admission_note === AUTO_ADMISSION_NOTE) throw autoAdmittedProdRefusal(slug, prod.id);
       }
       return { listed: !!r.listed };
     }, audit);
@@ -4215,11 +4212,28 @@ export class ControlPlaneDO extends DurableObject {
    * channel has none yet). A compare-and-set in one synchronous transaction, so no other promote
    * runs between the read and the write: a promote judged its gates against `from` across awaits,
    * and the one that lost the race is told so (`false`) and writes nothing, `audit` included.
+   *
+   * #2565: the vertical's `listed` is read in the same unit — refusing a listed vertical when
+   * `unlistedOnly`, and an auto-admitted version as a listed vertical's new prod. It replaces
+   * `moveChannel`, which judged neither: a new name, so a DO from before refuses the call and a
+   * coordinator from before finds no `moveChannel` to call. Both fail closed.
    */
-  moveChannel(from: string | null, history: ChannelHistoryRow, audit?: AdminEntryInput): boolean {
+  promoteChannel(from: string | null, history: ChannelHistoryRow, unlistedOnly: boolean, audit: AdminEntryInput): boolean {
     return this.writeAndAudit(() => {
       const now = this.readChannel(history.vertical_slug, history.channel);
       if ((now?.version_id ?? null) !== from) return false;
+      const vertical = this.readVertical(history.vertical_slug);
+      const listed = vertical?.listed;
+      if (listed && unlistedOnly) throw listedPromoteRefusal();
+      // A re-promote of what prod already names, and what serves (if anything does), moves
+      // nothing, so it is not judged again. One whose serve would change what runs is.
+      const serving = vertical?.serving_ref && vertical.serving_version_id ? vertical.serving_version_id : history.version_id;
+      if (
+        listed && history.channel === 'prod' && (from !== history.version_id || serving !== history.version_id) &&
+        this.versionAdmission(history.version_id).admission_note === AUTO_ADMISSION_NOTE
+      ) {
+        throw autoAdmittedProdRefusal(history.vertical_slug, history.version_id);
+      }
       this.sql.exec(
         `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
          VALUES (?, ?, ?, ?)

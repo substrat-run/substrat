@@ -177,6 +177,7 @@ import {
   exportBreakRefusal,
   isBindExportBreakRefusal,
   isExportBreakRefusal,
+  listedPromoteRefusal,
   isExportBreakUnjudged,
   isPrimaryScope,
   promoteReviewDigest,
@@ -9194,8 +9195,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // service token, and this issue narrows WHOSE data a credential reaches, not what
       // a tenant may do inside its own. Taking the gate away from them here would be a
       // capability change hidden in a security fix.
+      //
+      // Answered here, before any other gate or read, and judged again by the host (`unlistedOnly`,
+      // below) in the unit that moves the channel, so a listing that lands meanwhile is seen (#2565).
       if (p.kind === 'builder' && channel === 'prod' && v.listed) {
-        return refuse(c, 'forbidden', 'promotion to prod is staff-only for a listed vertical');
+        return refuse(c, 'forbidden', listedPromoteRefusal().message);
       }
     }
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
@@ -9237,7 +9241,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // and refuses a non-admitted version. Both are enforced below the seam and
     // surface as a 4xx through mapError, not a 500.
     try {
-      await c.var.admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge);
+      await c.var.admin.promoteVersion(c.get('actor'), slug, channel, versionId, acknowledge, { unlistedOnly: p.kind === 'builder' });
     } catch (err) {
       if (!isExportBreakRefusal(err)) throw err;
       // The refusal stands whether or not the listing can be read. A listing that fails turns
