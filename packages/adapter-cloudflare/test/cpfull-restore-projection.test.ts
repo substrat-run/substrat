@@ -257,11 +257,16 @@ describe('a control-plane-full restore projects the directory’s current permis
     expect(audit.at(-1)?.after).toMatchObject({ reprojected: true });
   });
 
-  it('a re-projection that fails: a restore is still recorded, then thrown; an import is taken down, never activated', async () => {
+  it('a re-projection that fails: a restore, or an import onto an existing scope, is still recorded, then thrown; a new import is taken down', async () => {
     const { t, s } = await setup();
     const dump = await host.admin.exportScope(staff, t, s);
-    const target = host as unknown as Record<string, unknown>;
-    target.projectJudged = () => Promise.reject(new Error('projection unavailable'));
+    const view = host as unknown as { scopeStub(id: ScopeId): Record<string, unknown> };
+    const original = view.scopeStub;
+    view.scopeStub = (id: ScopeId) =>
+      new Proxy(original.call(host, id), {
+        get: (target, prop) =>
+          prop === 'applyJudgedProjectionReply' ? () => Promise.reject(new Error('projection unavailable')) : Reflect.get(target, prop),
+      });
     const between = (n: number) => {
       const restore = after(host, 'loadProjectionFor', async () => {
         restore();
@@ -277,13 +282,19 @@ describe('a control-plane-full restore projects the directory’s current permis
       const imported = between(2);
       expect((await failure(host.importScope(staff, { tenantId: t, scopeId: fresh, vertical: 'cpr' }, dump)))?.message).toBe('projection unavailable');
       imported();
+      const onto = between(3);
+      expect((await failure(host.importScope(staff, { tenantId: t, scopeId: s, vertical: 'cpr' }, dump)))?.message).toBe('projection unavailable');
+      onto();
     } finally {
-      delete target.projectJudged;
+      view.scopeStub = original;
     }
     const audit = await host.admin.auditLog(staff, { tenantId: t });
     expect(audit.filter((r) => r.action === 'restoreScope').at(-1)?.after).toMatchObject({ reprojected: 'failed' });
     expect(audit.filter((r) => r.scopeId === fresh).map((r) => r.action)).not.toContain('importScope');
     expect((await host.admin.getScopeRecord(staff, t, fresh)) ?? null).toBeNull();
+    // The existing scope's rows were replaced by the committed load, so that is on the record.
+    expect(audit.filter((r) => r.action === 'importScope' && r.scopeId === s).at(-1)?.after).toMatchObject({ reprojected: 'failed' });
+    expect((await host.admin.getScopeRecord(staff, t, s))?.status).toBe('active');
   });
 
   it('a role made system-held between the read and the load is judged against the dump’s seat when re-projected, and refused', async () => {
@@ -304,7 +315,9 @@ describe('a control-plane-full restore projects the directory’s current permis
       restore();
     }
     expect(errorCodeOf(refused)).toBe('forbidden');
-    expect(refused?.message).toMatch(/role 'staffer' is refused by the reserved-key rule/);
+    expect(refused?.message).toMatch(/^restore refused: role 'staffer' is refused by the reserved-key rule/);
+    expect(refused?.message).toMatch(/take the dump's seats in that role back, or define the role person-held again \(K-55\)$/);
+    expect(refused?.message).not.toContain(alice);
     // The scope stays on the set the load judged: the dump's seat under a person's role.
     expect((await permissionState(s)).roles.find((r) => r.role_key === 'staffer')).toMatchObject({ holder: 'person' });
     const audit = (await host.admin.auditLog(staff, { tenantId: t })).filter((r) => r.action === 'restoreScope');

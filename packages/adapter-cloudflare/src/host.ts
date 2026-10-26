@@ -991,7 +991,8 @@ interface ControlPlaneStub {
   setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
     expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
-  deleteScopeDirectory(scopeId: string): Promise<void>;
+  /** #2555: `onlyWhile` removes the scope only if still in that status, judged in the DO's unit. */
+  deleteScopeDirectory(scopeId: string, onlyWhile?: 'provisioning'): Promise<boolean | void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   moveChannel(from: string | null, history: ChannelHistoryRow, audit: AdminEntry): Promise<boolean>;
   listChannels(verticalSlug: string, page?: ListPage): Promise<ChannelRow[]>;
@@ -2711,9 +2712,19 @@ type Reprojected = true | 'refused' | 'failed';
 /** #2555: a control-plane-full load whose role set was refused in its unit (`loadProjected`), told apart by identity. */
 const loadRoleRefusals = new WeakSet<Error>();
 
-/** #2555: a load projection's directory state as one comparable text; its judge is not state. */
+/**
+ * #2555: what a refused second read tells staff. The load landed and judged the older set, and the
+ * next fan-out, which is not judged (K-55), would write the refused definition over the seats.
+ */
+const SECOND_READ_REMEDY =
+  "The load landed with the roles it judged, and holds only until the next fan-out: take the dump's seats in that role back, or define the role person-held again (K-55)";
+
+/**
+ * #2555: a load projection's directory state as one comparable text; its judge is not state. Each
+ * list is compared as a set: the directory reads some of them in no fixed order.
+ */
 function projectionDigest({ judge: _judge, ...state }: LoadProjection): string {
-  return JSON.stringify(state);
+  return JSON.stringify(Object.entries(state).map(([k, v]) => [k, Array.isArray(v) ? v.map((x) => JSON.stringify(x)).sort() : v]));
 }
 
 function assertCopyLineage(lineage: ScopeLineage): void {
@@ -5371,17 +5382,25 @@ export class CloudflareScopeHost implements ScopeHost {
         throw e;
       }
     }
-    await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
+    // The second read comes before the stores, so a scope taken down here has none of the dump's
+    // store rows either.
     if (projection) {
-      // A re-projection refused or failed is not activated, and goes as a refused import does.
-      const converged = await this.convergeLoadedProjection(input.tenantId, input.scopeId, input.vertical, projection);
+      const converged = await this.convergeLoadedProjection(input.tenantId, input.scopeId, input.vertical, projection, 'import');
+      reprojected = converged.reprojected;
       if ('error' in converged) {
-        await this.dropRefusedImport(actor, input.tenantId, input.scopeId, created);
+        // A scope this call created is not activated, and goes as a refused import does. One that
+        // existed has had its rows replaced by the committed load, so that is recorded first.
+        if (created) await this.dropRefusedImport(actor, input.tenantId, input.scopeId, created);
+        else await this.recordImport(actor, input, dump, reprojected);
         throw converged.error;
       }
-      reprojected = converged.reprojected;
     }
+    await this.importScopeStores(input.tenantId, input.scopeId, dump.stores);
     await this.admin.activateScope(actor, input.tenantId, input.scopeId);
+    await this.recordImport(actor, input, dump, reprojected);
+  }
+
+  private async recordImport(actor: PlatformActorId, input: ProvisionScopeInput, dump: ScopeDumpInput, reprojected: Reprojected | undefined): Promise<void> {
     await this.recordAdmin(
       actor,
       'importScope',
@@ -5431,7 +5450,7 @@ export class CloudflareScopeHost implements ScopeHost {
     );
     // The load has committed, so a re-projection refused or failed is recorded with the restore and
     // the switches still go back off below; it is thrown last, loud.
-    const converged = projection ? await this.convergeLoadedProjection(tenantId, scopeId, existing.vertical, projection) : {};
+    const converged = projection ? await this.convergeLoadedProjection(tenantId, scopeId, existing.vertical, projection, 'restore') : {};
     const reprojected = converged.reprojected;
     await this.recordAdmin(
       actor,
@@ -12337,8 +12356,10 @@ export class CloudflareScopeHost implements ScopeHost {
   private async dropRefusedImport(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, created: boolean): Promise<void> {
     if (!created) return;
     try {
+      // Judged again in the directory's own unit, so a concurrent call that activated it keeps it; the
+      // read before it is what an older directory, which ignores the condition, is held to.
       if ((await this.cp.getScopeRecord(tenantId, scopeId))?.status !== 'provisioning') return;
-      await this.cp.deleteScopeDirectory(scopeId);
+      await this.cp.deleteScopeDirectory(scopeId, 'provisioning');
     } catch (teardown) {
       await this.admin
         .recordOpsFailure({
@@ -12358,26 +12379,31 @@ export class CloudflareScopeHost implements ScopeHost {
    * #2555: the directory read again once the load has committed. A tenant-level write made between
    * the first read and the load fanned out before the load replaced it, so when the directory has
    * moved, the scope is projected once more, judged in its own unit against the seats the load
-   * brought (`projectJudged`): a role the directory redefined in the window, which its own door
-   * judged without those seats, is judged with them here. Once at most: a write after this read
-   * fans out to the scope itself. Answers `reprojected` (`true` when it re-projected), and the
+   * brought (`applyJudgedProjectionReply`): a role the directory redefined in the window, which its
+   * own door judged without those seats, is judged with them here. Once at most: a write after this
+   * read fans out to the scope itself. Answers `reprojected` (`true` when it re-projected), and the
    * error with `'refused'` or `'failed'` when the re-projection could not land, which leaves the
-   * scope on the set the load judged. Ordering projections by a per-tenant revision (#2595) would
-   * make the second read unnecessary.
+   * scope on the set the load judged until the next fan-out, which is not judged (K-55); the
+   * refusal says what staff do about it. Ordering projections by a per-tenant revision (#2595)
+   * would make the second read unnecessary.
    */
   private async convergeLoadedProjection(
     tenantId: TenantId,
     scopeId: ScopeId,
     vertical: string | null | undefined,
     loaded: LoadProjection,
+    verb: 'restore' | 'import',
   ): Promise<{ reprojected?: Reprojected; error?: unknown }> {
     try {
       const now = await this.loadProjectionFor(tenantId, vertical);
       if (!now || projectionDigest(now) === projectionDigest(loaded)) return {};
-      await this.projectJudged(tenantId, scopeId, now.roles, now.tuples, now.entitlements, undefined, now.identities, now.connectionKeys);
+      unwrapReply(await this.scopeStub(scopeId).applyJudgedProjectionReply(
+        this.roleJudge(), tenantId, now.roles, now.tuples, now.entitlements, undefined, now.identities, now.connectionKeys,
+      ));
       return { reprojected: true };
     } catch (error) {
-      return { reprojected: errorCodeOf(error) === 'forbidden' ? 'refused' : 'failed', error };
+      if (errorCodeOf(error) !== 'forbidden') return { reprojected: 'failed', error };
+      return { reprojected: 'refused', error: substratError('forbidden', `${verb} refused: ${(error as Error).message}. ${SECOND_READ_REMEDY}`) };
     }
   }
 

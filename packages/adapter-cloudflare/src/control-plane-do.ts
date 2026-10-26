@@ -4079,15 +4079,22 @@ export class ControlPlaneDO extends DurableObject {
    * Remove a reaped fork's directory presence: hostname bindings + the scope row
    * (preview-and-snapshots.md §9). The coordinator's deleteSnapshot calls this AFTER
    * wiping the scope DO's storage — the fork-only refusal lives there, not here.
+   * #2555: with `onlyWhile`, only a scope still in that status is removed, judged in the same unit,
+   * so a scope another call activated in between keeps its row; answers whether it was removed.
    */
-  deleteScopeDirectory(scopeId: string): void {
-    this.ctx.storage.transactionSync(() => {
+  deleteScopeDirectory(scopeId: string, onlyWhile?: 'provisioning'): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      if (onlyWhile) {
+        const row = this.sql.exec('SELECT status FROM scopes WHERE scope_id = ?', scopeId).toArray()[0] as { status: string } | undefined;
+        if (row?.status !== onlyWhile) return false;
+      }
       this.sql.exec('UPDATE peer_bindings SET invalidated = 1 WHERE target_scope_id = ?', scopeId);
       this.sql.exec('DELETE FROM hostnames WHERE scope_id = ?', scopeId);
       forgetSwitchesOf(this.kernelSql, scopeId);
       this.forgetLifecycleDeliveries('scope_id = ?', scopeId);
       forgetScopeStorage(doRedactionSql(this.sql), scopeId);
       this.sql.exec('DELETE FROM scopes WHERE scope_id = ?', scopeId);
+      return true;
     });
   }
 
