@@ -33,14 +33,14 @@ import type { MailInAddress, MailInRelayRequest } from '@substrat-run/contracts'
  * caller for every action, since an address delivers into the scope it names. Which operation and
  * key the address lands through is read from the manifest the scope runs, never from this call.
  */
-export interface MailInAddressRequest extends MailInRelayRequest {
+export type MailInAddressRequest = MailInRelayRequest & {
   /** The control plane's origin, injected into the vertical as `CONTROL_PLANE_URL`. */
   controlPlaneUrl: string;
   /** The `PLATFORM_SECRET` injected into this dispatch script. */
   platformSecret: string;
   /** `fetch` seam for tests; defaults to the runtime's, bound (see `lint:bound-fetch`). */
   fetchImpl?: typeof fetch;
-}
+};
 
 /** The relay refused, or could not be reached. Carries the status so a caller can map it. */
 export class MailInAddressError extends Error {

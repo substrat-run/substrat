@@ -24,6 +24,12 @@ import type { MailInStore } from './store.js';
  * tombstones its grant and deletes its state, the connect and revoke are in the admin log, and what
  * a leaked address can do is one grant, on one scope, readable in `connectionGrantsInScope`.
  *
+ * **An address is a subaddress.** Cloudflare Email Routing allows a catch-all rule on a zone's apex
+ * only; on a subdomain every rule names one literal address. So the receiving domain carries ONE
+ * rule, `mail@<domain>` → the control plane, with the zone's subaddressing on, and each scope's
+ * address is a `+tag` of it: `mail+<slug>-<token>@<domain>`. The tag is what is minted, and what
+ * `externalAccountRef` holds.
+ *
  * **What it may do is the vertical's declaration.** The operation and its key are read off the
  * manifest the scope RUNS (`connections: [{ provider: 'mail-in', … }]`), never taken from the
  * caller, so a scope cannot be made to receive mail into an operation its code did not name.
@@ -34,12 +40,14 @@ export const BINDING_KEY = `${STATE_PREFIX}address`;
 export const STATS_KEY = `${STATE_PREFIX}stats`;
 export const MESSAGE_PREFIX = `${STATE_PREFIX}msg:`;
 
+/** The literal address the receiving domain's one routing rule names; every address is a `+tag` of it. */
+export const MAIL_IN_BASE = 'mail';
 /** The random part of an address: 16 base32 characters, 80 bits. */
 const TOKEN_CHARS = 'abcdefghijklmnopqrstuvwxyz234567';
 const TOKEN_LENGTH = 16;
 /** The readable prefix of an address is the vertical's slug, cut to this. */
 const SLUG_PART_MAX = 24;
-/** What a local part the platform minted looks like. Anything else is not an address of ours. */
+/** What a tag the platform minted looks like. Anything else is not an address of ours. */
 export const LOCAL_PART = /^[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?-[a-z2-7]{16}$/;
 
 /** Why a request was refused, with the status a relay answers it with. */
@@ -109,6 +117,15 @@ export const EMPTY_STATS: MailInStats = {
   lastRejectReason: null,
 };
 
+/** One attachment's stored bytes, as the `attachment` change carries them. */
+export interface MailInUploaded {
+  id: string;
+  filename: string;
+  contentType: string;
+  size: number;
+  sha256: string;
+}
+
 /**
  * One accepted message, as its connection's state keeps it — never its bytes. The envelope sender
  * is kept only until delivery hands it to the scope; a delivered record is the dedupe key alone.
@@ -125,7 +142,12 @@ export interface MailInMessageEntry {
   lastError?: string;
   /** Set once the message change landed: the entity the operation answered, if any. */
   invoked?: { entity: { entityType: string; entityId: string } | null };
-  /** Attachment index → the attachment id it landed as. */
+  /**
+   * Attachment index → what its bytes were stored as, recorded before the `attachment` change is
+   * invoked, so a retry after a failed invoke tells the scope again rather than storing again.
+   */
+  uploaded?: Record<string, MailInUploaded>;
+  /** Attachment index → the attachment id it landed as: stored, and the scope told. */
   landed: Record<string, string>;
   deliveredAt?: string;
 }
@@ -139,7 +161,7 @@ function token(): string {
   return out;
 }
 
-/** `meridian-x7k…` from a vertical slug: its readable part, then the token. */
+/** `meridian-x7k…` from a vertical slug: its readable part, then the token. The address's `+tag`. */
 export function mintLocalPart(vertical: string): string {
   const slug =
     vertical
@@ -151,16 +173,20 @@ export function mintLocalPart(vertical: string): string {
   return `${slug}-${token()}`;
 }
 
+/** The address a minted tag is reached at. */
+export const addressOf = (tag: string, domain: string): string => `${MAIL_IN_BASE}+${tag}@${domain.toLowerCase()}`;
+
 /**
- * The local part a recipient address names, normalised: lowercased, with a `+tag` dropped. Null
- * for an address not at `domain`, or one whose local part is not one the platform mints.
+ * The minted tag a recipient address names, normalised: lowercased, with any further `+tag` a
+ * sender added dropped. Null for an address not at `domain`, not under {@link MAIL_IN_BASE}, or
+ * whose tag is not one the platform mints.
  */
 export function localPartOf(recipient: string, domain: string): string | null {
   const at = recipient.lastIndexOf('@');
   if (at <= 0) return null;
   if (recipient.slice(at + 1).toLowerCase() !== domain.toLowerCase()) return null;
-  const local = recipient.slice(0, at).toLowerCase().split('+')[0]!;
-  return LOCAL_PART.test(local) ? local : null;
+  const [base, tag] = recipient.slice(0, at).toLowerCase().split('+');
+  return base === MAIL_IN_BASE && tag !== undefined && LOCAL_PART.test(tag) ? tag : null;
 }
 
 export async function readBinding(host: Pick<ScopeHost, 'admin'>, id: ConnectionId): Promise<MailInBinding | undefined> {
@@ -187,20 +213,48 @@ export async function messageEntries(host: Pick<ScopeHost, 'admin'>, id: Connect
     .map((r) => ({ key: r.key, entry: r.value as MailInMessageEntry }));
 }
 
-/** The live mail-in connection holding this scope's address, with its binding. */
-async function liveAddress(
-  host: ScopeHost,
-  actor: PlatformActorId,
-  tenantId: TenantId,
-  scopeId: ScopeId,
-): Promise<{ connection: Connection; binding: MailInBinding } | undefined> {
-  const rows = await host.admin.listConnections(actor, { tenantId, provider: MAIL_IN_PROVIDER });
-  for (const connection of rows) {
+type LiveAddress = { connection: Connection; binding: MailInBinding };
+
+/**
+ * Every live mail-in connection bound to this scope, oldest first. One is the rule, but nothing
+ * locks the check-and-mint, so two requests at once can each mint one; whatever acts on a scope's
+ * address acts on all of them, and {@link settle} folds them back to one.
+ */
+async function liveAddresses(host: ScopeHost, actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<LiveAddress[]> {
+  const out: LiveAddress[] = [];
+  for (const connection of await host.admin.listConnections(actor, { tenantId, provider: MAIL_IN_PROVIDER })) {
     if (connection.revokedAt) continue;
     const binding = await readBinding(host, connection.id);
-    if (binding?.scopeId === scopeId) return { connection, binding };
+    if (binding?.scopeId === scopeId) out.push({ connection, binding });
   }
-  return undefined;
+  return out.sort((a, b) => a.connection.createdAt.localeCompare(b.connection.createdAt) || a.connection.id.localeCompare(b.connection.id));
+}
+
+/** The scope's address: the oldest live one. */
+async function liveAddress(host: ScopeHost, actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<LiveAddress | undefined> {
+  return (await liveAddresses(host, actor, tenantId, scopeId))[0];
+}
+
+/**
+ * Hand the pending mail of `from` to `to`, then revoke `from`: mail to it is refused from here on,
+ * and nothing it accepted is lost.
+ */
+async function retire(host: ScopeHost, actor: PlatformActorId, from: LiveAddress, to: Connection): Promise<void> {
+  for (const { key, entry } of await messageEntries(host, from.connection.id)) {
+    if (entry.status !== 'delivered') await host.admin.putConnectorState(to.id, key, entry);
+  }
+  await host.admin.revokeConnection(actor, from.connection.id);
+}
+
+/**
+ * After a mint, keep the scope's oldest live address and retire the rest, so two requests that
+ * raced to mint converge on one address — the one both of them answer.
+ */
+async function settle(host: ScopeHost, actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<LiveAddress> {
+  const [keep, ...extra] = await liveAddresses(host, actor, tenantId, scopeId);
+  if (!keep) throw new Error(`scope ${scopeId} has no live mail-in address after a mint`);
+  for (const other of extra) await retire(host, actor, other, keep.connection);
+  return keep;
 }
 
 async function view(host: ScopeHost, connection: Connection, binding: MailInBinding): Promise<MailInAddress> {
@@ -281,7 +335,7 @@ async function mint(
   input: { tenantId: TenantId; scopeId: ScopeId; vertical: string; landing: MailInLanding; allowlist: string[]; createdBy: string },
 ): Promise<{ connection: Connection; binding: MailInBinding }> {
   const local = mintLocalPart(input.vertical);
-  const address = `${local}@${deps.domain!.toLowerCase()}`;
+  const address = addressOf(local, deps.domain!);
   const id = connectionIdSchema.parse(ulid());
   await host.admin.createConnection(deps.actor, {
     id,
@@ -336,8 +390,9 @@ export async function requestMailInAddress(
     }
     return view(host, live.connection, live.binding);
   }
-  const minted = await mint(host, deps, { ...input, vertical, landing, allowlist: input.allowlist ?? [] });
-  return view(host, minted.connection, minted.binding);
+  await mint(host, deps, { ...input, vertical, landing, allowlist: input.allowlist ?? [] });
+  const kept = await settle(host, deps.actor, input.tenantId, input.scopeId);
+  return view(host, kept.connection, kept.binding);
 }
 
 /**
@@ -350,7 +405,8 @@ export async function rotateMailInAddress(
   deps: MailInAddressDeps,
   input: { tenantId: TenantId; scopeId: ScopeId; createdBy: string; allowlist?: string[] },
 ): Promise<MailInAddress> {
-  const live = await liveAddress(host, deps.actor, input.tenantId, input.scopeId);
+  const all = await liveAddresses(host, deps.actor, input.tenantId, input.scopeId);
+  const live = all[0];
   if (!live) throw new MailInError('this scope has no mail-in address to rotate', 404);
   const { vertical, landing } = await receivingScope(host, deps, input.tenantId, input.scopeId);
   const next = await mint(host, deps, {
@@ -361,27 +417,25 @@ export async function rotateMailInAddress(
     allowlist: input.allowlist ?? live.binding.allowlist,
     createdBy: input.createdBy,
   });
-  for (const { key, entry } of await messageEntries(host, live.connection.id)) {
-    if (entry.status !== 'delivered') await host.admin.putConnectorState(next.connection.id, key, entry);
-  }
-  await host.admin.revokeConnection(deps.actor, live.connection.id);
+  for (const old of all) await retire(host, deps.actor, old, next.connection);
   return view(host, next.connection, next.binding);
 }
 
 /**
- * Give the address up: mail to it is refused at SMTP time from now on, and what it accepted and had
- * not delivered is deleted with it. `false` when the scope had none.
+ * Give the address up — every live one the scope holds: mail to it is refused at SMTP time from now
+ * on, and what it accepted and had not delivered is deleted with it. `false` when the scope had none.
  */
 export async function revokeMailInAddress(
   host: ScopeHost,
   deps: Pick<MailInAddressDeps, 'actor' | 'store'>,
   input: { tenantId: TenantId; scopeId: ScopeId },
 ): Promise<boolean> {
-  const live = await liveAddress(host, deps.actor, input.tenantId, input.scopeId);
-  if (!live) return false;
-  for (const { entry } of await messageEntries(host, live.connection.id)) {
-    if (entry.status !== 'delivered') await deps.store.delete(entry.objectKey);
+  const all = await liveAddresses(host, deps.actor, input.tenantId, input.scopeId);
+  for (const live of all) {
+    for (const { entry } of await messageEntries(host, live.connection.id)) {
+      if (entry.status !== 'delivered') await deps.store.delete(entry.objectKey);
+    }
+    await host.admin.revokeConnection(deps.actor, live.connection.id);
   }
-  await host.admin.revokeConnection(deps.actor, live.connection.id);
-  return true;
+  return all.length > 0;
 }

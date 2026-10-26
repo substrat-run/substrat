@@ -24,9 +24,11 @@ import { messageEntries, readBinding, readStats } from './address.js';
 export {
   BINDING_KEY,
   LOCAL_PART,
+  MAIL_IN_BASE,
   MESSAGE_PREFIX,
   MailInError,
   STATS_KEY,
+  addressOf,
   listMailInAddresses,
   localPartOf,
   mailInAddressOf,

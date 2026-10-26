@@ -58,8 +58,12 @@
 		"PLATFORM_CONNECT_URL": "https://app.substrat.net",
 		"SCRIVE_BASE_URL": "https://scrive.com",
 		// Inbound mail (#2611): Email Routing is enabled on this subdomain ONLY — the apex
-		// keeps its own MX — with a catch-all rule sending every address to this worker's
-		// email() handler. Paired with MAIL_IN_BUCKET; either missing, no mail is received.
+		// keeps its own MX. A subdomain takes no catch-all rule (Cloudflare allows one on the
+		// apex only), so it carries ONE literal rule, `mail@<this domain>` → this worker's
+		// email() handler, with the zone's subaddressing on: every address is a
+		// `mail+<tag>@` subaddress of it. Set up by hand — wrangler's `addresses` is top-level
+		// and would claim the rule for both environments. Paired with MAIL_IN_BUCKET; either
+		// missing, no mail is received.
 		"MAIL_IN_DOMAIN": "in.substrat.run",
 		// The support desk the console embeds (ticket0). Paired with the
 		// SUPPORT_WIDGET_SECRET secret — that desk's verification secret — without which

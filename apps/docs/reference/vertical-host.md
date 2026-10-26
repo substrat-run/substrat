@@ -539,7 +539,7 @@ const address = await mailInAddress({
   createdBy: principal,              // required for everything but 'get'
   allowlist: ['me@example.com'],     // optional; replaces the list
 });
-// address?.address === 'docs-x7k2…@in.substrat.run', or null when the scope has none
+// address?.address === 'mail+docs-x7k2…@in.substrat.run', or null when the scope has none
 ```
 
 The same split as `requestConnectUrl`: the check in the operation, the call in the worker.

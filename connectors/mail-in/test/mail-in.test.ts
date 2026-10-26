@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAIL_IN_MAX_MESSAGE_BYTES,
   MAIL_IN_PROVIDER,
+  connectionId,
   mailInChange,
   moduleManifest,
   permissionKey,
@@ -18,17 +19,21 @@ import { assertAllowed, ulid, webCryptoSecretBox, type OperationHandler } from '
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { testOperations } from '@substrat-run/contract-tests';
 import {
+  BINDING_KEY,
   MAX_DELIVERY_ATTEMPTS,
   MailInError,
   SMTP_REFUSALS,
   acceptInboundMail,
+  addressOf,
   authVerdict,
   deliverInboundMail,
   headerFields,
   mailInAddressOf,
   memoryMailInStore,
   messageEntries,
+  mintLocalPart,
   probeMailInConnection,
+  readBinding,
   requestMailInAddress,
   revokeMailInAddress,
   rotateMailInAddress,
@@ -108,10 +113,10 @@ function mail(o: {
 
 const PDF = new TextEncoder().encode('%PDF-1.7 a supplier invoice, as bytes');
 
-async function world(opts: { landing?: MailInLanding | null; failTimes?: number } = {}) {
+async function world(opts: { landing?: MailInLanding | null; failTimes?: number; failAttachmentTimes?: number } = {}) {
   dir = mkdtempSync(join(tmpdir(), 'substrat-mail-in-'));
   const landed: MailInChange[] = [];
-  const fail = { times: opts.failTimes ?? 0 };
+  const fail = { times: opts.failTimes ?? 0, attachmentTimes: opts.failAttachmentTimes ?? 0 };
   const docsMod = {
     manifest: moduleManifest.parse({
       id: '@test/docs',
@@ -133,6 +138,10 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number 
         if (change.change === 'message' && fail.times > 0) {
           fail.times -= 1;
           throw new Error('the vertical could not take it this time');
+        }
+        if (change.change === 'attachment' && fail.attachmentTimes > 0) {
+          fail.attachmentTimes -= 1;
+          throw new Error('the vertical could not record the file this time');
         }
         landed.push(change);
         if (change.change === 'message') return { entity: { entityType: 'document', entityId: `doc-${change.messageId.slice(0, 12)}` } };
@@ -172,14 +181,26 @@ async function world(opts: { landing?: MailInLanding | null; failTimes?: number 
     clock.now = new Date(clock.now.getTime() + ms);
   };
   const files = async (entityId: string) => (await host.attachments(reader, t, s)).list({ entityType: 'document', entityId });
-  return { host, deps, actor, t, s, reader, store, landed, fail, request, send, advance, files };
+  const live = async () => (await host.admin.listConnections(actor, { tenantId: t, provider: MAIL_IN_PROVIDER })).filter((c) => !c.revokedAt);
+  /** A second live address on the scope, as two requests racing to mint leave one before they settle. */
+  const duplicate = async (of: { connectionId: string }) => {
+    const binding = (await readBinding(host, of.connectionId as never))!;
+    const local = mintLocalPart('docs');
+    const id = connectionId.parse(ulid());
+    const address = addressOf(local, DOMAIN);
+    await host.admin.createConnection(actor, { id, tenantId: t, vertical: 'docs', provider: MAIL_IN_PROVIDER, label: address, externalAccountRef: local, secret: { address }, createdBy: reader });
+    await host.admin.grantToConnection(actor, { connectionId: id, permission: RECEIVE, node: { tenantId: t, scopeId: s }, grantedBy: actor });
+    await host.admin.putConnectorState(id, BINDING_KEY, { ...binding, address });
+    return address;
+  };
+  return { host, deps, actor, t, s, reader, store, landed, fail, request, send, advance, files, live, duplicate };
 }
 
 describe('the address', () => {
   it('is minted once per scope, as its own connection holding the declared key on that scope', async () => {
     const w = await world();
     const first = await w.request();
-    expect(first.address).toMatch(/^docs-[a-z2-7]{16}@in\.example\.test$/);
+    expect(first.address).toMatch(/^mail\+docs-[a-z2-7]{16}@in\.example\.test$/);
     expect(first.operation).toBe('docs/receive-mail');
     const again = await w.request();
     expect(again.address).toBe(first.address);
@@ -190,6 +211,13 @@ describe('the address', () => {
     expect(conn!.createdBy).toBe(w.reader);
     const grants = await w.host.connectionGrantsInScope(w.t, w.s);
     expect(grants.filter((g) => g.connectionId === conn!.id).map((g) => g.permission)).toEqual([RECEIVE]);
+  });
+
+  it('is one address when two requests race to mint, and both answer it', async () => {
+    const w = await world();
+    const [a, b] = await Promise.all([w.request(), w.request()]);
+    expect(a.address).toBe(b.address);
+    expect(await w.live()).toHaveLength(1);
   });
 
   it('is refused for a vertical that declares no mail-in landing, and on a deployment with no domain', async () => {
@@ -218,6 +246,25 @@ describe('the address', () => {
     expect((await mailInAddressOf(w.host, w.actor, w.t, w.s))!.address).toBe(next.address);
   });
 
+  it('rotates and revokes every live address the scope holds, not only the first', async () => {
+    const w = await world();
+    const a = await w.request();
+    const extra = await w.duplicate(a);
+    expect(await w.send(extra, mail({ to: extra }))).toMatchObject({ accepted: true });
+
+    const next = await rotateMailInAddress(w.host, w.deps, { tenantId: w.t, scopeId: w.s, createdBy: w.reader });
+    expect((await w.live()).map((c) => c.id)).toEqual([next.connectionId]);
+    expect(next.stats.pending).toBe(1);
+    for (const old of [a.address, extra]) {
+      expect(await w.send(old, mail({ to: old, messageId: '<after-rotate@supplier.example>' }))).toMatchObject({ accepted: false, smtp: SMTP_REFUSALS.unknown });
+    }
+
+    const again = await w.duplicate(next);
+    expect(await revokeMailInAddress(w.host, w.deps, { tenantId: w.t, scopeId: w.s })).toBe(true);
+    expect(await w.live()).toHaveLength(0);
+    expect(await w.send(again, mail({ to: again, messageId: '<after-revoke@supplier.example>' }))).toMatchObject({ accepted: false, smtp: SMTP_REFUSALS.unknown });
+  });
+
   it('revokes: mail is refused from then on, and what was waiting is deleted', async () => {
     const w = await world();
     const a = await w.request();
@@ -236,12 +283,29 @@ describe('accepting at SMTP time', () => {
     const w = await world();
     await w.request();
     const raw = mail({});
-    for (const to of ['docs-aaaaaaaaaaaaaaaa@in.example.test', 'docs-abc@in.example.test', 'postmaster@in.example.test']) {
+    const a = await mailInAddressOf(w.host, w.actor, w.t, w.s);
+    const tag = a!.address.slice('mail+'.length, a!.address.indexOf('@'));
+    for (const to of [
+      'mail+docs-aaaaaaaaaaaaaaaa@in.example.test',
+      'mail+docs-abc@in.example.test',
+      'mail@in.example.test',
+      'postmaster@in.example.test',
+      // The minted tag, but not under the one address the routing rule names.
+      `${tag}@in.example.test`,
+      `other+${tag}@in.example.test`,
+    ]) {
       expect(await w.send(to, raw)).toMatchObject({ accepted: false, smtp: SMTP_REFUSALS.unknown, reason: 'unknown-address' });
     }
-    const a = await mailInAddressOf(w.host, w.actor, w.t, w.s);
     expect(await w.send(a!.address.replace('in.example.test', 'elsewhere.test'), raw)).toMatchObject({ accepted: false, smtp: SMTP_REFUSALS.unknown });
     expect(w.store.keys()).toHaveLength(0);
+  });
+
+  it('accepts its address in any case, and with a further +tag a sender added', async () => {
+    const w = await world();
+    const a = await w.request();
+    const [local, domain] = a.address.split('@');
+    expect(await w.send(`${local}+invoices@${domain}`, mail({ to: a.address }))).toMatchObject({ accepted: true });
+    expect(await w.send(a.address.toUpperCase(), mail({ to: a.address, messageId: '<upper@supplier.example>' }))).toMatchObject({ accepted: true });
   });
 
   it('refuses a message over the size cap before reading it', async () => {
@@ -387,6 +451,25 @@ describe('delivery', () => {
     expect((await sweepMailIn(w.host, w.deps, a.connectionId)).delivered).toBe(1);
     expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
     expect(await w.files(`doc-${accepted.messageId.slice(0, 12)}`)).toHaveLength(1);
+  });
+
+  it('stores an attachment once when its change fails, and tells the scope again on the retry', async () => {
+    const w = await world({ failAttachmentTimes: 2 });
+    const a = await w.request();
+    const accepted = await w.send(a.address, mail({ to: a.address, attachment: { filename: 'a.pdf', contentType: 'application/pdf', bytes: PDF } }));
+    if (!accepted.accepted) throw new Error('refused');
+    expect((await deliverInboundMail(w.host, w.deps, accepted.connectionId, accepted.messageId)).status).toBe('retrying');
+    for (let i = 0; i < 2; i++) {
+      w.advance(7 * 60 * 60 * 1000);
+      await sweepMailIn(w.host, w.deps, a.connectionId);
+    }
+    expect(w.landed.map((c) => c.change)).toEqual(['message', 'attachment']);
+    const stored = await w.files(`doc-${accepted.messageId.slice(0, 12)}`);
+    expect(stored).toHaveLength(1);
+    expect(w.landed[1]).toMatchObject({ change: 'attachment', attachment: { id: stored[0]!.id } });
+    const [entry] = await messageEntries(w.host, accepted.connectionId);
+    expect(entry!.entry).toMatchObject({ status: 'delivered', landed: { '0': stored[0]!.id } });
+    expect(entry!.entry.uploaded).toBeUndefined();
   });
 });
 

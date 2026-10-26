@@ -10,7 +10,7 @@ import { instant, scopeId, tenantId } from './ids.js';
  *
  * The platform receives on a subdomain of its own (`in.substrat.run`), through Cloudflare Email
  * Routing into the control plane, because a hosted vertical cannot bind an email route. An address
- * is a **capability**: `<slug>-<token>@<domain>`, minted for one scope, delivering into the one
+ * is a **capability**: `mail+<slug>-<token>@<domain>`, minted for one scope, delivering into the one
  * operation the vertical declares for it. It is backed by its own `mail-in` connection, so it is
  * revoked, rotated and audited the way every connection is, and delivery is the connection's door
  * (`getConnectorScope`, #97): the event actor is `{ connection }`, never the person who asked for
@@ -171,7 +171,12 @@ export const mailInRelayRequest = z.object({
   createdBy: z.string().min(1).optional(),
   allowlist: z.array(mailInAllowEntry).max(MAIL_IN_MAX_ALLOWLIST).optional(),
 });
-export type MailInRelayRequest = z.input<typeof mailInRelayRequest>;
+/**
+ * The request's type, narrowed to what the relay admits: `createdBy` may be left out of a `get` only.
+ * The schema stays one object so the relay answers a missing `createdBy` in its own words.
+ */
+export type MailInRelayRequest = Omit<z.input<typeof mailInRelayRequest>, 'action' | 'createdBy'> &
+  ({ action: 'get'; createdBy?: string } | { action: 'request' | 'rotate' | 'revoke'; createdBy: string });
 
 export const mailInRelayResult = z.object({ address: mailInAddress.nullable() });
 export type MailInRelayResult = z.infer<typeof mailInRelayResult>;

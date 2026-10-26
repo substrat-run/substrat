@@ -21,8 +21,10 @@ import type { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
  * deps the connector, the relay and the API share.
  *
  * Email Routing is enabled on the receiving subdomain only (`MAIL_IN_DOMAIN`, `in.substrat.run` in
- * production), with a catch-all rule sending every address to this worker. The apex keeps its own
- * MX: nothing here, and nothing a routing rule on the subdomain does, touches it.
+ * production). A subdomain cannot carry a catch-all rule, so it carries one literal rule,
+ * `mail@<domain>` → this worker, with subaddressing on; every address is a `mail+<tag>@`
+ * subaddress of it. The apex keeps its own MX: nothing here, and nothing a routing rule on the
+ * subdomain does, touches it.
  */
 
 /** The actor mail-in effects as — the address mint, its grant, its revoke. The admin log reads it as mail-in's. */

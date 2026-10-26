@@ -2,7 +2,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { MAIL_IN_PROVIDER, connectionId, platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
-import { BINDING_KEY, MESSAGE_PREFIX, SMTP_REFUSALS, mintLocalPart, type MailInBinding, type MailInMessageEntry } from '@substrat-run/connector-mail-in';
+import { BINDING_KEY, MESSAGE_PREFIX, SMTP_REFUSALS, addressOf, mintLocalPart, type MailInBinding, type MailInMessageEntry } from '@substrat-run/connector-mail-in';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import worker, { RelayGateway } from '../src/worker.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -79,7 +79,7 @@ describe('inbound mail on the control plane', () => {
     // An address as the connector mints one. The vertical has no deployment here, so delivery
     // cannot land: what this file holds is that the message is kept for the sweep to retry.
     const local = mintLocalPart(vertical);
-    address = `${local}@${env.MAIL_IN_DOMAIN}`;
+    address = addressOf(local, env.MAIL_IN_DOMAIN!);
     conn = connectionId.parse(ulid());
     await host.admin.createConnection(staff, {
       id: conn,
@@ -109,7 +109,7 @@ describe('inbound mail on the control plane', () => {
   });
 
   it('refuses an unknown address at SMTP time, and an address of another domain', async () => {
-    expect((await deliver(`docs-aaaaaaaaaaaaaaaa@${env.MAIL_IN_DOMAIN}`, raw('u1'))).rejected).toBe(SMTP_REFUSALS.unknown);
+    expect((await deliver(`mail+docs-aaaaaaaaaaaaaaaa@${env.MAIL_IN_DOMAIN}`, raw('u1'))).rejected).toBe(SMTP_REFUSALS.unknown);
     expect((await deliver(address.replace(env.MAIL_IN_DOMAIN!, 'substrat.run'), raw('u2'))).rejected).toBe(SMTP_REFUSALS.unknown);
   });
 
@@ -136,9 +136,9 @@ describe('inbound mail on the control plane', () => {
     const other = connectionId.parse(ulid());
     const local = mintLocalPart(vertical);
     await host.admin.createConnection(staff, { id: other, tenantId: t, vertical, provider: MAIL_IN_PROVIDER, label: 'x', externalAccountRef: local, secret: { address: 'x' } });
-    await host.admin.putConnectorState(other, BINDING_KEY, { address: `${local}@${env.MAIL_IN_DOMAIN}`, scopeId: s, tenantId: t, vertical, operation: 'a/b', permission: 'a:b', allowlist: [], createdAt: new Date().toISOString(), createdBy: 'p' });
+    await host.admin.putConnectorState(other, BINDING_KEY, { address: addressOf(local, env.MAIL_IN_DOMAIN!), scopeId: s, tenantId: t, vertical, operation: 'a/b', permission: 'a:b', allowlist: [], createdAt: new Date().toISOString(), createdBy: 'p' });
     await host.admin.revokeConnection(staff, other);
-    expect((await deliver(`${local}@${env.MAIL_IN_DOMAIN}`, raw('rv'))).rejected).toBe(SMTP_REFUSALS.unknown);
+    expect((await deliver(addressOf(local, env.MAIL_IN_DOMAIN!), raw('rv'))).rejected).toBe(SMTP_REFUSALS.unknown);
   });
 
   describe('the address relay', () => {

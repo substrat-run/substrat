@@ -12,9 +12,9 @@ was made for.
 |---|---|
 | **Provider** | the platform itself — Cloudflare Email Routing on `in.substrat.run` |
 | **Category** | Mail, inbound |
-| **Status** | **Built**; receiving on `in.substrat.run` starts once Email Routing is switched on for that subdomain |
+| **Status** | **Built**; receiving on `in.substrat.run` starts once Email Routing is switched on for that subdomain, with one rule for `mail@in.substrat.run` and subaddressing on |
 | **Package** | `@substrat-run/connector-mail-in` (runs on the platform; you install nothing) |
-| **Address** | `<app>-<random>@in.substrat.run`, one per scope, rotatable and revocable |
+| **Address** | `mail+<app>-<random>@in.substrat.run`, one per scope, rotatable and revocable |
 | **Lands** | through your declared operation, as the address's own connection |
 
 ## Declaring where mail lands

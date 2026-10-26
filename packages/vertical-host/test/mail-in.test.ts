@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts';
-import { MailInAddressError, mailInAddress } from '../src/index.js';
+import { MailInAddressError, mailInAddress, type MailInAddressRequest } from '../src/index.js';
 
 /**
  * The harness half of a scope's mail-in address (#2611). It decides nothing — the operation
@@ -16,7 +16,7 @@ describe('mailInAddress — the harness effects, the operation decides', () => {
     scopeId: '01J0000000000000000000APPA',
   };
   const address = {
-    address: 'docs-abcdefghijklmnop@in.example',
+    address: 'mail+docs-abcdefghijklmnop@in.example',
     connectionId: '01J0000000000000000000C0NN',
     tenantId: access.tenantId,
     scopeId: access.scopeId,
@@ -50,6 +50,13 @@ describe('mailInAddress — the harness effects, the operation decides', () => {
     const s = seam(200, { address: null });
     expect(await mailInAddress({ ...access, action: 'get', fetchImpl: s.fetchImpl })).toBeNull();
     expect(s.sent()).toEqual({ tenantId: access.tenantId, scopeId: access.scopeId, action: 'get' });
+  });
+
+  it('needs createdBy for every action but get, in the type as the relay does at run time', () => {
+    const read: MailInAddressRequest = { ...access, action: 'get' };
+    // @ts-expect-error — a mutating action names the principal whose check authorized it
+    const revoke: MailInAddressRequest = { ...access, action: 'revoke' };
+    expect([read.action, revoke.action]).toEqual(['get', 'revoke']);
   });
 
   it("keeps the platform's refusal and its status", async () => {

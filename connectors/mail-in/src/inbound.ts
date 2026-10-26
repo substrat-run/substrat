@@ -21,6 +21,7 @@ import {
   readBinding,
   type MailInBinding,
   type MailInMessageEntry,
+  type MailInUploaded,
 } from './address.js';
 import {
   allowed,
@@ -233,7 +234,8 @@ export async function deliverInboundMail(
   if (!stored || stored.status !== 'pending') return { status: 'skipped', why: stored ? stored.status : 'unknown message' };
   const binding = await readBinding(host, connectionId);
   if (!binding) return { status: 'skipped', why: 'the address has no binding' };
-  const entry: MailInMessageEntry = { ...stored, landed: { ...stored.landed } };
+  const uploads: Record<string, MailInUploaded> = { ...stored.uploaded };
+  const entry: MailInMessageEntry = { ...stored, uploaded: uploads, landed: { ...stored.landed } };
   const save = () => host.admin.putConnectorState(connectionId, key, entry);
   try {
     const raw = await deps.store.get(entry.objectKey);
@@ -283,25 +285,23 @@ export async function deliverInboundMail(
       for (const [index, file] of files.entries()) {
         if (index >= MAIL_IN_MAX_ATTACHMENTS) break;
         if (entry.landed[String(index)]) continue;
-        attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
-        const record = await attachments.upload({
-          entity,
-          filename: file.filename ?? `attachment-${index + 1}`,
-          contentType: file.mimeType || 'application/octet-stream',
-          visibility: 'internal',
-          body: connectorUploadBody(bytesOf(file.content)),
-        });
-        await scope.invoke(
-          binding.operation,
-          mailInChange.parse({
-            change: 'attachment',
-            connectionId,
-            messageId,
-            index,
-            attachment: { id: record.id, filename: record.filename, contentType: record.contentType, size: record.size, sha256: record.sha256 },
-          }),
-        );
-        entry.landed[String(index)] = record.id;
+        // Two steps, each saved: the bytes are stored once, and a failed invoke retries the invoke.
+        let uploaded = uploads[String(index)];
+        if (!uploaded) {
+          attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
+          const record = await attachments.upload({
+            entity,
+            filename: file.filename ?? `attachment-${index + 1}`,
+            contentType: file.mimeType || 'application/octet-stream',
+            visibility: 'internal',
+            body: connectorUploadBody(bytesOf(file.content)),
+          });
+          uploaded = { id: record.id, filename: record.filename, contentType: record.contentType, size: record.size, sha256: record.sha256 };
+          uploads[String(index)] = uploaded;
+          await save();
+        }
+        await scope.invoke(binding.operation, mailInChange.parse({ change: 'attachment', connectionId, messageId, index, attachment: uploaded }));
+        entry.landed[String(index)] = uploaded.id;
         await save();
       }
     }
@@ -309,6 +309,7 @@ export async function deliverInboundMail(
     entry.deliveredAt = instant.parse(nowOf(deps).toISOString());
     delete entry.lastError;
     delete entry.envelopeFrom;
+    delete entry.uploaded;
     await save();
     // The bytes now live in the scope, as the vertical chose to keep them; the platform keeps none.
     await deps.store.delete(entry.objectKey);
