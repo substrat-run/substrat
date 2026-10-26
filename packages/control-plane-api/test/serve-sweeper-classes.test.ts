@@ -96,7 +96,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
   };
   // #2339: a DO class is part of the migration digest the platform derives, so a promote across
   // a class change acknowledges it against the review the migrations read shows.
-  const promote = async (slug: string, versionId: string, migrationChange = false) => {
+  const promote = async (slug: string, versionId: string, migrationChange = false, status = 200) => {
     let acknowledge: object | undefined;
     if (migrationChange) {
       const base = (await host.admin.listChannels(staff, slug)).find((ch) => ch.channel === 'prod')?.versionId;
@@ -111,7 +111,8 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
       headers: { ...auth, 'content-type': 'application/json' },
       body: JSON.stringify({ versionId, acknowledge }),
     });
-    expect(res.status, await res.clone().text()).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(status);
+    return res;
   };
   /** The last PUT to the serving script, and the serving record after it. */
   const served = async (slug: string) => {
@@ -157,5 +158,30 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
     const back = await served(slug);
     expect(back.meta['migrations']).toBeUndefined();
     expect(back.record).toMatchObject({ doClasses: [...BASE, 'NotesDO'], migrationTag: 'v2', versionId: v1.id });
+  });
+
+  // #2577: the record is diffed from the serving state read before the upload, so it lands only
+  // while the row still holds that state.
+  it('refuses to record a serve when another serve landed during its upload, and keeps the other serve\'s classes and tag', async () => {
+    stubCloudflare();
+    const v1 = await push('0.4.0');
+    const slug = v1.verticalSlug;
+    await promote(slug, v1.id);
+    const before = await host.admin.verticalServing(staff, slug);
+    const v2 = await push('0.5.0');
+    const grown = await push('0.6.0', [{ type: 'durable_object_namespace', name: 'EXTRA', class_name: 'ExtraDO' }]);
+    const landed = { ref: before!.ref, versionId: grown.id, doClasses: [...before!.doClasses, 'ExtraDO'], migrationTag: 'v9' };
+    // The other serve lands while this one's upload to the serving script is in flight.
+    const upload = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (init?.method === 'PUT' && String(url).endsWith(`/scripts/${encodeURIComponent(before!.ref)}`)) {
+        vi.mocked(fetch).mockImplementation(upload);
+        await host.admin.setVerticalServing(staff, slug, landed);
+      }
+      return upload(url, init);
+    });
+    const res = await promote(slug, v2.id, false, 502);
+    expect(await res.text()).toContain('the in-place serve failed');
+    expect(await host.admin.verticalServing(staff, slug)).toEqual(landed);
   });
 });

@@ -915,6 +915,35 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         });
       });
 
+      // #2577: a serve of v2 (adding a class) and a re-serve of v1 bring the ref and version back over
+      // a grown class set and tag; a serve diffed from the state before them must not record over it.
+      it('setVerticalServing refuses a serve computed from a class set and tag that moved under the same ref and version', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const slug = await newVertical(host, staff);
+          const [first, second] = [await publish(host, staff, slug), await publish(host, staff, slug)];
+          const ref = 'serving-a';
+          const grow = (tag: string) =>
+            `UPDATE verticals SET serving_do_classes = '["ScopeDO","Added"]', serving_migration_tag = '${tag}' WHERE slug = '${slug}'`;
+          await host.admin.setVerticalServing(staff, slug, { ref, versionId: first, doClasses: ['ScopeDO'], migrationTag: 'v1' });
+          const serveFrom = async (from: Awaited<ReturnType<typeof host.admin.verticalServing>>) =>
+            host.admin.setVerticalServing(staff, slug, { ref, versionId: second, doClasses: from!.doClasses, migrationTag: from!.migrationTag }, from);
+          // Moved after the caller read it (before its upload), and after the host read it.
+          const stale = await host.admin.verticalServing(staff, slug);
+          await fixture.directorySql(grow('v2'));
+          expect(errorCodeOf(await refusalOf(serveFrom(stale)))).toBe('precondition_failed');
+          fixture.interleave(grow('v3'));
+          expect(errorCodeOf(await refusalOf(serveFrom(await host.admin.verticalServing(staff, slug))))).toBe('precondition_failed');
+          expect(await host.admin.verticalServing(staff, slug))
+            .toEqual({ ref, versionId: first, doClasses: ['ScopeDO', 'Added'], migrationTag: 'v3' });
+          // Read again, the serve lands.
+          await serveFrom(await host.admin.verticalServing(staff, slug));
+          expect(await host.admin.verticalServing(staff, slug))
+            .toEqual({ ref, versionId: second, doClasses: ['ScopeDO', 'Added'], migrationTag: 'v3' });
+          expect((await host.admin.auditLog(staff, { action: ['setVerticalServing'] }))
+            .filter((r) => (r.after as { vertical: string }).vertical === slug)).toHaveLength(2);
+        });
+      });
+
       // #2526: the org and the connection a grant names are judged in the unit that writes it.
       it.each(['grantToOrg', 'addMember'] as const)('%s refuses an org deleted since it was read, and writes nothing', async (action) => {
         await withFixture(async (fixture, host, staff) => {
