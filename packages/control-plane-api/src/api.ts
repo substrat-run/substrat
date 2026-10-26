@@ -162,7 +162,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
-import { bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
+import { ENGINE_ENTITLEMENT_KEYS, bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
@@ -8174,14 +8174,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * would. Read through the configured host: a check audits nothing.
    */
   /**
-   * The refusal for REGISTERING a vertical whose bare slug is a plan SKU an existing tenant-provisioner
-   * declares (#2388): the manager's key must not change meaning under a later registration. Only a
-   * new slug is judged; the sentence names no other vertical.
+   * The refusal for REGISTERING a vertical whose bare slug is a plan SKU a manager declares (#2388),
+   * so the manager's key does not change meaning under a later registration. A manager is a row that
+   * holds the tenant-provisioner capability or declares `provisions` (the capability is granted after
+   * the first push). Its own slug and the engine keys are always declarable, so they reserve nothing.
+   * Only a new slug is judged; the sentence names no other vertical.
    */
   const slugClaimsSku = async (actor: PlatformActorId, slug: string): Promise<string | undefined> => {
     const all = await host.admin.listVerticals(actor);
     if (all.some((v) => v.slug === slug)) return undefined;
-    return all.some((v) => v.tenantProvisioner && v.entitlements?.includes(bareSlug(slug)))
+    const name = bareSlug(slug);
+    return all.some(
+      (v) =>
+        (v.tenantProvisioner || v.provisions?.length) &&
+        bareSlug(v.slug) !== name &&
+        !ENGINE_ENTITLEMENT_KEYS.includes(name) &&
+        v.entitlements?.includes(name),
+    )
       ? `'${bareSlug(slug)}' is not available as a vertical name`
       : undefined;
   };

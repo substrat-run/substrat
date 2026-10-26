@@ -325,6 +325,8 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(installEntitlements('acme/helpdesk', undefined, [])).toEqual(['helpdesk']);
     // A DECLARED set is taken as given: the catalog reduces it to what the vertical may declare (#2388).
     expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['crm-eff', 'absence'])).toEqual(['crm-eff', 'absence']);
+    // A slug that spells a platform key requests nothing, as the grant paths refuse it (#2388).
+    expect(installEntitlements('acme/builder')).toEqual([]);
     // Degenerate slugs never yield an empty key — an empty grant is the #443 failure.
     expect(installEntitlements('helpdesk/')).toEqual(['helpdesk/']);
   });

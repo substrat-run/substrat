@@ -5641,6 +5641,19 @@ describe('control-plane API — deploy', () => {
     expect((await push('flows-2', form(manifest()))).status).toBe(201);
   });
 
+  it('reserves the SKUs of a manager that only declares provisions, but not its own slug or an engine key (#2388)', async () => {
+    await host.admin.registerVertical(staff, {
+      slug: 'pre-console',
+      name: 'Pre',
+      source: 'cli',
+      entitlements: ['pre-console', 'invoicing', 'vault'],
+      provisions: ['managed'],
+    });
+    expect((await push('vault', form(manifest()))).status).toBe(422);
+    // Always declarable by their holders, so they must not block a name.
+    expect((await push('invoicing', form(manifest()))).status).toBe(201);
+  });
+
   it('400s when the entry module is not among the uploaded files', async () => {
     const res = await push('fsm', form(manifest({ entry: 'missing.js' })));
     expect(res.status).toBe(400);

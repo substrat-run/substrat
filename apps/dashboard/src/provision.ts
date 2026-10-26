@@ -21,6 +21,7 @@ import {
   type ScopeId,
   type TenantId,
   bareSlug,
+  declarableEntitlementKey,
 } from '@substrat-run/contracts';
 import { bindExportBreakRefusal, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
@@ -202,7 +203,8 @@ export function installEntitlements(
   ...declared: Array<readonly string[] | undefined>
 ): string[] {
   for (const set of declared) if (set && set.length > 0) return [...set];
-  return [bareSlug(verticalSlug)];
+  // The slug fallback is judged like any declared key, so a reserved slug requests nothing (as the grant paths).
+  return declarableEntitlementKey(verticalSlug, bareSlug(verticalSlug)) ? [bareSlug(verticalSlug)] : [];
 }
 
 
