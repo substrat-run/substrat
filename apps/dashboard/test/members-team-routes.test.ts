@@ -213,6 +213,28 @@ const routesOf = (t: TenantId, id = ulid()) =>
   ] as const;
 
 describe('members & invites under /api/teams/:teamId (#2170)', () => {
+  it('/api/me heals a pre-roster team before returning the caller’s role', async () => {
+    const legacy = await provisionDashboard(host, {
+      tenantId: tenantId.parse('01KY54SRTR' + ulid().slice(10)),
+      scopeId: scopeId.parse(ulid()),
+      owner: principalId.parse(ulid()),
+      slug: 'legacy',
+      name: 'Legacy',
+    });
+    await host.admin.linkIdentity(staff, {
+      provider: PROVIDER, externalId: 'sub-owner', principal: legacy.principal,
+      tenantId: legacy.tenantId, scopeId: legacy.scopeId,
+    });
+    signIn('sub-owner', 'owner@legacy.test');
+    const scope = await host.getScope(legacy.principal, legacy.tenantId, legacy.scopeId);
+    expect(await scope.invoke('dashboard/my-role', {})).toBeNull();
+
+    const res = await req('GET', '/api/me');
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(((await res.json()) as { roleKey: string }).roleKey).toBe('owner');
+    expect(await scope.invoke('dashboard/my-role', {})).toBe('owner');
+  });
+
   it('/api/me reads the caller’s own dashboard/my-role, independent of the roster page', async () => {
     const t = await team('sub-owner');
     await join_(t, 'sub-viewer', 'viewer');
