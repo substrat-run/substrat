@@ -182,7 +182,7 @@ describe('streamed attachment open (cloudflare host)', () => {
     expect(opened!.contentType).toBe('application/pdf');
     expect(await read(knownLengthStream(opened!.body))).toEqual({ ok: true, size: 8 * MiB, sha256: record.sha256 });
     expect(flow.gets).toBe(1);
-  }, 30_000);
+  });
 
   it('a refused read touches the bucket zero times', async () => {
     const w = await world(realBucket);
@@ -209,7 +209,7 @@ describe('streamed attachment open (cloudflare host)', () => {
     const sent = await read(knownLengthStream((await att.openStream(record.id))!.body));
     expect(sent.ok).toBe(false);
     expect(sent.size).toBeLessThan(4 * MiB);
-  }, 30_000);
+  });
 
   it('real R2: an object that is not the recorded size is refused before a byte is handed on', async () => {
     const w = await world(realBucket);

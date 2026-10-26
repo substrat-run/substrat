@@ -782,7 +782,7 @@ describe('#1706 — the peer switch is moved in the serving deployment, and audi
  * the state came from (#1834's door). So the peer is refused from the first call after the
  * rewind, before any reconcile has re-asserted the record, until the switch is applied again.
  */
-describe('#2029 — a PITR rewind to before a peer switch admits nothing until the switch is back', { timeout: 20_000 }, () => {
+describe('#2029 — a PITR rewind to before a peer switch admits nothing until the switch is back', () => {
   beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
 
   const READ = permissionKey.parse('peer:read');
@@ -938,7 +938,7 @@ describe('#2029 — a PITR rewind to before a peer switch admits nothing until t
  * Each delegation can be held, which places the interleavings; the control plane's namespace can be
  * held at the record write, which places the one where the OLDER call writes its record last.
  */
-describe('#2045 — overlapping switch calls end with the record and the scope agreeing', { timeout: 20_000 }, () => {
+describe('#2045 — overlapping switch calls end with the record and the scope agreeing', () => {
   beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
   const staff = platformActorId.parse(ulid());
   const SCHED = moduleId.parse('@test/sched');

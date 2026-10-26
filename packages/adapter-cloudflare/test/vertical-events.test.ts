@@ -1087,7 +1087,7 @@ describe('adapter-cloudflare (workerd): the served-here gate reads a provisioned
  * the consumer's grants back live; the rewind holds the consumer, and the read goes through its
  * door: held, it answers every key missing, so the edge pauses and nothing leaves.
  */
-describe('#2029 — a producer rewound past its consumer’s switch releases nothing until the switch is back', { timeout: 20_000 }, () => {
+describe('#2029 — a producer rewound past its consumer’s switch releases nothing until the switch is back', () => {
   const crm = deployment(env.CRM_SCOPE, crmExportMod, CRM_OWNER);
   const t = tenantId.parse(ulid());
   const read = { consumer: BOARD_VERTICAL, after: null, wants: [{ type: 'crm.customer-created', schemaVersion: 1 }], limit: 10 };

@@ -1004,7 +1004,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     expect(next).not.toBeNull();
   });
 
-  it('sends nothing to a socket whose session ends while its pass is still deciding', { timeout: 20_000 }, async () => {
+  it('sends nothing to a socket whose session ends while its pass is still deciding', async () => {
     // One socket per pass, so the only await between the pass's first look at the clock
     // and the send is this socket's own held root check — the window under test.
     const passWithHeldCheck = async (expiresAt: string) => {
@@ -1035,7 +1035,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
 
   // -- a write that lands between a decision and its send (#938, Codex #2077 r4) -------
 
-  it('decides again once the store has written, and sends nothing past a revoke that landed after the allow', { timeout: 20_000 }, async () => {
+  it('decides again once the store has written, and sends nothing past a revoke that landed after the allow', async () => {
     /** `reader`'s grant on the cabinet, tombstoned or restored through the scope's own handle. */
     const setReaderRevoked = (instance: unknown, revokedAt: string | null) =>
       (instance as { sql: SqlStorage }).sql.exec(
@@ -1086,7 +1086,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
     expect(revoked.calls).toBe(2);
   });
 
-  it('decides again once a grant it relied on lapses mid-pass, though the socket is current', { timeout: 30_000 }, async () => {
+  it('decides again once a grant it relied on lapses mid-pass, though the socket is current', async () => {
     /** `stranger`'s grant on the cabinet, ending at `expiresAt`; tombstoned after the case. */
     const pass = async (expiresAt: string) => {
       await host.admin.grant(staff, {
@@ -1312,7 +1312,7 @@ describe('live reads: a root checked against the directory (#938, Codex #2077 r5
     }
   };
 
-  it('asks the directory again for every socket, and a revoke there after the first allow reaches the next', { timeout: 20_000 }, async () => {
+  it('asks the directory again for every socket, and a revoke there after the first allow reaches the next', async () => {
     // The twin: nothing changes in the directory, both sockets hear the row — each from
     // its own check, because a remote authority's verdict is never remembered.
     const quiet = await pass(false);

@@ -4421,8 +4421,8 @@ describe('#1742 — the CP-full seat and restore switch off in their own unit', 
  * `rewindToBookmark` runs, and so does the restart it causes; the rewound bytes are a dump from
  * before the switch, written into the restarted object with no host code in between.
  */
-// Every rewind waits `SWITCH_HOLD_SETTLE_MS` before it rewinds, so these outlast vitest's 5 s default.
-describe('#1819 — a PITR rewind to before the switch runs nothing until the switch is back', { timeout: 20_000 }, () => {
+// Every rewind waits `SWITCH_HOLD_SETTLE_MS` before it rewinds, so these are slow by design.
+describe('#1819 — a PITR rewind to before the switch runs nothing until the switch is back', () => {
   const SCHED = moduleId.parse('@test/sched');
   const t = tenantId.parse(ulid());
   const owner = principalId.parse(ulid());
@@ -4778,7 +4778,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     });
     expect(briefPasses).toBe(0);
     // JOB_ADMISSION_MISS_MAX claims, each held 0.85 × RACE_LEASE_MS: ~8.5 s of deliberate waiting.
-  }, 20_000);
+  });
 
   it('#2034: twin — a BEGIN resets the admission misses', async () => {
     const s = await newScope();
@@ -5752,7 +5752,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
  * rewind (`admin.rewindScope`, `localApply`) holds, and the platform's own lever and
  * reconcile release it here.
  */
-describe('#1819 — the co-located rewind holds, and the CP-full switch releases it', { timeout: 20_000 }, () => {
+describe('#1819 — the co-located rewind holds, and the CP-full switch releases it', () => {
   const staff = platformActorId.parse(ulid());
   const SCHED = moduleId.parse('@test/sched');
   const host = new CloudflareScopeHost({
@@ -7981,7 +7981,7 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
  * receipt, the copy markers a carry and a kept copy leave, and the fence a PITR rewind writes
  * before it arms (emulated, `pitr-emulation.ts`).
  */
-describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000 }, () => {
+describe('#2314 — the orphan sweep on a CP-less deployment', () => {
   const t = tenantId.parse(ulid());
   const other = tenantId.parse(ulid());
   const owner = principalId.parse(ulid());
@@ -8273,7 +8273,7 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
  * a vertical deployment's), and every file read as an orphan. These are the reviewer's case and
  * its neighbours, kept as regressions.
  */
-describe('#2314 r1 — a co-located host judges only a scope it holds, live', { timeout: 20_000 }, () => {
+describe('#2314 r1 — a co-located host judges only a scope it holds, live', () => {
   const t = tenantId.parse(ulid());
   const staff = platformActorId.parse(ulid());
   const alice = principalId.parse(ulid());

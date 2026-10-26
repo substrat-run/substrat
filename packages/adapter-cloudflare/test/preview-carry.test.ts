@@ -449,7 +449,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await dir.admin.getScopeRecord(staff, t, prod))?.verticalVersionId).toBe(version.v2);
       expect(bodiesIn(await hostOf.get(stable)!.exportScopeLocal(clean.body.scopeId))).toEqual([]);
     }
-  }, 30_000);
+  });
 
   it('the fleet repair heals legacy-pinned previews on real namespaces and leaves installs and forks alone (#1724)', async () => {
     const stable = stableDeploymentRefFor(slug);
@@ -534,7 +534,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     const retried = await repairPass();
     expect(retried.repaired.map((r) => r.scopeId)).toContain(c.body.scopeId);
     expect(await served(c.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: ['c was adopted'] });
-  }, 30_000);
+  });
 
   describe('the copy a carry leaves behind is wiped, and no interleaving loses the data (#1722)', () => {
     const fresh = async (tag: string, ...bodies: string[]) => {
@@ -589,7 +589,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
       expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
         .every((copy) => copy.state === 'done')).toBe(true);
-    }, 20_000);
+    });
     it('retries a failed source wipe from the ledger', async () => {
       const p = await fresh('retry-wipe', 'kept until retry');
       const neighbor = await fresh('retry-neighbor', 'must survive');
@@ -605,7 +605,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(neighbor.scopeId))).toEqual(['must survive']);
       expect((await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: p.scopeId }))
         .find((copy) => copy.scriptRef === refOf.get(version.v1) && copy.role === 'source')?.state).toBe('done');
-    }, 20_000);
+    });
     it('does not destroy the subject key until every script copy confirms redaction', async () => {
       const p = await fresh('erase-pending', 'copy before erasure');
       hooks.wipe = async (ref, sid) => {
@@ -641,7 +641,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await api.request(path, { method: 'POST', headers: auth })).status).toBe(200);
       expect(reached.sort()).toEqual([refOf.get(version.v1)!, refOf.get(version.v2)!].sort());
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
-    }, 20_000);
+    });
     it('erasure waits for a carry held after its source recheck', async () => {
       const p = await fresh('erase-race');
       const subject = ulid();
@@ -702,7 +702,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const redacted = (await hostFor('v2').exportScopeLocal(p.scopeId)).find((tb) => tb.name === '_substrat_outbox')!;
       expect(redacted.rows.find((r) => r[redacted.columns.indexOf('id')] === eventId)?.[redacted.columns.indexOf('payload')])
         .toBeFalsy();
-    }, 20_000);
+    });
     it('does not reap a preview while a carry can still restore its destination', async () => {
       const p = await fresh('reap-unbound-race', 'keep until move settles');
       const held = holdFirst((ref, sid) => ref === refOf.get(version.v2) && sid === p.scopeId);
@@ -724,7 +724,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       });
       expect(reaped.status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
-    }, 20_000);
+    });
     // Crash recovery (#1722): a carry killed with its move still pending. The hold is never
     // released in the first case, which is the crash; erasure and reap answer retry-later until
     // the sweep settles the move after its lease ran out, and then they land.
@@ -760,7 +760,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(p.scopeId))).toEqual([]);
-    }, 20_000);
+    });
     it('a carry that crashed after its restore is swept, and its late bind is refused', async () => {
       const p = await fresh('crash-before-bind', 'kept');
       const subject = ulid();
@@ -789,7 +789,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await dir.admin.openSubjectPayloads(staff, t, p.scopeId, [{ subjectId: subject, sealed: sealed! }])).toEqual([null]);
       expect((await api.request(reap, { method: 'DELETE', headers: auth })).status).toBe(200);
       expect(await dir.admin.getScopeRecord(staff, t, p.scopeId)).toBeUndefined();
-    }, 20_000);
+    });
     // The destination's own store enforces the move's lease (#1722): a restore that outlived it is
     // refused inside the load's transaction, so nothing lands after a sweep, a reap or an erasure.
     it('a restore inside its fence lands; one past it is refused and writes nothing', async () => {
@@ -834,7 +834,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       held.release();
       expect((await moving).status).toBe(412);
       expect(bodiesIn(await hostFor('v2').exportScopeLocal(p.scopeId))).toEqual([]);
-    }, 20_000);
+    });
     // Review r1: the bind confirms the carry's source `retained`, and only the tail promotes it,
     // after checking the destination was not overtaken. A sweep in between must not wipe it.
     it('a sweep between the bind and the overtaken-destination check leaves the source alone', async () => {
@@ -2167,7 +2167,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         if (dryRun) expect(reads).toEqual([]);
       }
       expect(await ledgerOf(pinned)).toEqual([]);
-    }, 30_000);
+    });
   });
 
   describe('a scope that takes many pages forks and carries the same way (#2450)', () => {
