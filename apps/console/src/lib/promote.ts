@@ -29,8 +29,7 @@ export function exportBreakAckNeeded(impact: ImpactState): boolean {
 
 /**
  * #2333: the acknowledgement a promote sends — what was ticked, bound to the review it was ticked
- * against when there is one. A review still loading (or failed) sends none, and the registry then
- * refuses a permission or migration acknowledgement rather than take it unbound.
+ * against when there is one. The dialog waits for a binding whenever a digest changed.
  */
 export function boundAcknowledgement(ack: PromotionAcknowledgement, review: ReviewState): PromotionAcknowledgement {
   return review.kind === 'ready' && review.binding ? { ...ack, review: review.binding } : ack;
