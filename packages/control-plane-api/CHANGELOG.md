@@ -1,5 +1,42 @@
 # @substrat-run/control-plane-api
 
+## 0.163.0
+
+### Minor Changes
+
+- 1a5f2e5: A manager vertical's `provision-tenant` and `set-entitlements` intents act only on a tenant its own tenant provisioned (#2564, #412 invariant 2).
+
+  - **The check.** The tenant the payload names must carry the manager's tenant as `provisionedByTenant`. `provision-tenant` checks right after its idempotent create: a new id is created and stamped as before, and a retry of the manager's own tenant passes. An existing tenant stamped by anyone else stops before any grant, scope or instance write. `set-entitlements` checks before it reads the scope.
+  - **The refusal** is `failed`, attributed `permission_denied` to the platform, with one fixed sentence that names no tenant: `the payload's tenant was not provisioned by this vertical's tenant`. For `set-entitlements` the answer is the same for a foreign tenant and a missing one. For `provision-tenant` a free id is created, and an existing tenant the manager does not own is refused.
+  - **Behaviour change.** A tenant with no stamp is refused too: one created through the console, or one a manager provisioned before the stamp was recorded (#503). A manager that re-entitles or retries such a tenant now settles that intent `failed`. Staff still manage those tenants from the console, and every tenant a manager provisions from now on is stamped and stays its own.
+
+- 2eedfee: Wire signing: the nonce store for signed calls pinned to a scope (RFC wire-signing §4, follow-on 5). A signed call that changes state and names its tenant and scope is accepted once; the same envelope sent again is refused as `replay`.
+
+  - **kernel.** `WIRE_NONCE_DDL`: two spine tables in every scope's own storage, `_substrat_wire_nonces` (`nonce` primary key, `until_s` integer Unix seconds, indexed) and `_substrat_wire_nonce_count` (one row). `claimWireNonceIn` is the one claim both adapters make: in one transaction it purges up to `WIRE_NONCE_PURGE_BATCH` (64) rows whose window has passed, answers `false` for a claim after `until` or a nonce already held, `'full'` at `WIRE_NONCE_CAP` (180 000 live nonces), and `true` once it has recorded the nonce. `isWireNonceTable` and `isWireNonceWrite` mark the store as store-local. `WIRE_NONCE_FULL` is the cap's sentence.
+  - **adapter-sqlite and adapter-cloudflare.** Both build the tables in `KERNEL_DDL` and expose `claimWireNonceLocal(tenantId, scopeId, nonce, until)`. The answer is `true` or `false`, and the store at its cap throws. On the hosted adapter the claim is a new ScopeDO method, `claimWireNonce`. It runs on the bookkeeping path, so it advances no write revision a carry fences on. On both adapters no dump carries the tables and no load takes them from one, so a load, restore, wipe or delete leaves the store empty, and a rewind leaves it as it was at the bookmark. There is no provisioned check: the call that provisions a scope spends its nonce there too.
+  - **control-plane-api.** The platform's entry fills the verifier's nonce seam through the scope host the vertical registered with `mountPlatformSurface` (`platform-entry/nonce-store.ts`, `nonceStoreOf`). The seam now takes the tenant beside the scope. A bundle that registers no host, or a host from before the store, stays the `no-nonce-store` fault. A store that throws or is at its cap is the `nonce-store` fault, a 503 in every state. The readiness report adds a standing blocker on `signed-only` for the nonce store, which no record can show yet. The entry is re-emitted.
+  - **contracts.** `WIRE_FAULTS` gains `unscoped`: a call that keeps nonces and names no scope, which no version's store can hold, is counted apart from a version with no store. The list only grows.
+  - **contract-tests.** `wireNonceContractSuite`, run on both adapters.
+  - **Version skew.** A version built before the store answers as it did: the `no-nonce-store` fault, handed on in `dual`. A call with no envelope never reaches the store. Under `signed-only`, a version without the store answers every scoped call that changes state with the fault, which is why the readiness report blocks on it.
+
+### Patch Changes
+
+- 60eb041: A promote judges a listed vertical's prod in the unit that moves the channel (#2565).
+
+  - **The listing's rule, at promote.** `promoteVersion` refuses (`conflict`) to make an auto-admitted version a listed vertical's prod, with the sentence `setVerticalListed` refuses an auto-admitted prod with, now worded for both: `… a staff admit must vouch for it before it can be prod of a listed vertical`. A staff admit of that version lifts it, so rolling a listed vertical back to an older auto-admitted version now needs that admit first. Re-promoting the version prod already names is not refused while nothing else serves; if a different version serves (a failed serve), the retry would change what runs and is judged. Nothing already serving changes.
+  - **`unlistedOnly`.** `promoteVersion` takes an optional `{ unlistedOnly }`, refusing (`forbidden`) any promote of a listed vertical. The control plane's promote route passes it for a builder, and keeps its own listed check, so a builder still meets the 403 before any other gate.
+  - **Both read in the unit.** The vertical's `listed` and the version's admission note are read in the compare-and-set that moves the pointer, so a listing that lands while a promote is judged is seen.
+  - **Version skew (adapter-cloudflare).** The ControlPlaneDO's `moveChannel` is replaced by `promoteChannel`, called through `reply`. A coordinator meeting an older DO is refused (`not a replied directory method: promoteChannel`), and an older coordinator finds no `moveChannel` on the new DO. Both write nothing.
+  - **kernel.** `autoAdmittedProdRefusal` and `listedPromoteRefusal`, the two sentences.
+  - **contract-tests.** The promote cases on both adapters.
+
+- Updated dependencies [ad35e20]
+- Updated dependencies [60eb041]
+- Updated dependencies [2eedfee]
+  - @substrat-run/kernel@0.163.0
+  - @substrat-run/contracts@0.163.0
+  - @substrat-run/control-plane-client@0.3.14
+
 ## 0.162.0
 
 ### Minor Changes

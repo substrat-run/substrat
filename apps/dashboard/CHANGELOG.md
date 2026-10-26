@@ -1,5 +1,30 @@
 # @substrat-run/dashboard
 
+## 0.46.0
+
+### Minor Changes
+
+- a22b1e3: Ask reads everything the person asking can read (#2283). Every declared GET route of the dashboard is now a tool, called through the route's own handler as the caller, so the assistant has exactly the person's access: the team's apps and activity, members and invites, the audit log, domains, observability metrics, traffic, logs and requests, deployments, releases, failures and previews, findings and rules, plus each app's process map and a finding's evidence. Only reads: a test pins that no write route is offered. Tool outputs are redacted where they are free text (a member's address in the roster is kept, an address inside a log line is not), cut to fit the protocol's bound with `truncated: true`, and a question may take up to six model calls. vertical-host: a run's steps now report each tool call that failed (`toolErrors`), so a host can show why.
+
+### Patch Changes
+
+- Updated dependencies [a22b1e3]
+- Updated dependencies [ad35e20]
+- Updated dependencies [6d1f0c7]
+- Updated dependencies [1a5f2e5]
+- Updated dependencies [60eb041]
+- Updated dependencies [4301004]
+- Updated dependencies [2eedfee]
+  - @substrat-run/vertical-host@0.163.0
+  - @substrat-run/kernel@0.163.0
+  - @substrat-run/adapter-cloudflare@0.163.0
+  - @substrat-run/control-plane-api@0.163.0
+  - @substrat-run/contracts@0.163.0
+  - @substrat-run/connector-fortnox@0.4.65
+  - @substrat-run/engine-invites@0.9.40
+  - @substrat-run/engine-protocol@0.13.48
+  - @substrat-run/control-plane-client@0.3.14
+
 ## 0.45.2
 
 ### Patch Changes
