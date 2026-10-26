@@ -1058,8 +1058,9 @@ export async function exportAppData(
  * (§8's write half — how a locally-built world lands on a hosted app). The safety
  * copy comes FIRST: restore is the one dashboard action that destroys data, so the
  * pre-restore state must survive as a fork the user can back out to (its id is in
- * the returned record and on the activity trail). `snapshotApp` also carries the
- * authorization — same authority, checked before any effect.
+ * the returned record and on the activity trail). The restore's own authorization
+ * (a team owner's or admin's, #2573) is asked before the fork, so a refused caller
+ * leaves no copy and no row behind.
  */
 export async function restoreAppData(
   host: ScopeHost,
@@ -1074,6 +1075,8 @@ export async function restoreAppData(
     sourceScopeId?: ScopeId;
   },
 ): Promise<{ restored: ScopeId; tables: number; safetyCopyId: string }> {
+  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
+  await scope.invoke('dashboard/authorize-restore', {});
   const safety = await snapshotApp(host, {
     node: input.node,
     appScopeId: input.appScopeId,
@@ -1081,7 +1084,6 @@ export async function restoreAppData(
     appHostname: input.appHostname,
     controlPlane: input.controlPlane,
   });
-  const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
   await scope.invoke('dashboard/restore-app-data', {
     appScopeId: input.appScopeId,
     detail: `${input.tables.length} tables; safety copy ${safety.id}`,
