@@ -156,7 +156,7 @@ describe('streamed attachment upload (cloudflare host, real R2)', () => {
     expect(streamed.size).toBe(buffered.size);
     const opened = await att.open(streamed.id);
     expect(opened!.body.byteLength).toBe(CHUNKS * MiB);
-  }, 30_000);
+  });
 
   it('a stream carrying more than it declared lands no object and no row', async () => {
     const { host, t, s, editor } = await world();

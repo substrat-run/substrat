@@ -728,13 +728,25 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
     await platform().admin.createTenant(actor, { id: t, slug: `walk-${t.toLowerCase()}`, name: 'Walk' });
     // A whole pass's worth of scopes whose deployment never answers, all created (and so ordered by
     // id) ahead of the healthy one.
-    for (let i = 0; i < TENANT_UNRECORDED_PER_PASS; i++) {
-      const s = scopeId.parse(ulid());
-      unreachable.add(s);
-      await platform().provisionScope(actor, { tenantId: t, scopeId: s, vertical: 'todo' });
-      await platform().admin.activateScope(actor, t, s);
-    }
-    const install = [...unreachable][0] as ScopeId;
+    // One is provisioned through the host; the rest are copies of its directory row, written in
+    // one pass, since a deployment that never answers needs nothing but the row.
+    const install = scopeId.parse(ulid());
+    unreachable.add(install);
+    await platform().provisionScope(actor, { tenantId: t, scopeId: install, vertical: 'todo' });
+    await platform().admin.activateScope(actor, t, install);
+    const siblings = Array.from({ length: TENANT_UNRECORDED_PER_PASS - 1 }, () => scopeId.parse(ulid()));
+    for (const s of siblings) unreachable.add(s);
+    await runInDurableObject(env.CONTROL_PLANE.get(directory.idFromName('')), (_i, state) => {
+      const sql = state.storage.sql;
+      const [row] = sql.exec('SELECT * FROM scopes WHERE scope_id = ?', install).toArray();
+      const columns = Object.keys(row!);
+      for (const s of siblings) {
+        sql.exec(
+          `INSERT INTO scopes (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+          ...columns.map((c) => (c === 'scope_id' ? s : c === 'slug' ? s.toLowerCase() : (row![c] as string | number | null))),
+        );
+      }
+    });
     const copy = scopeId.parse(ulid());
     await platform().provisionScope(actor, { tenantId: t, scopeId: copy, vertical: 'todo', kind: 'preview', forkedFrom: install });
     await platform().admin.activateScope(actor, t, copy);
@@ -763,9 +775,8 @@ describe('the tenant-record walk rotates past deployments that never answer (#20
     await platform().healLifecycles(actor);
     expect(asked.length - before).toBe(TENANT_UNRECORDED_PER_PASS);
     expect(asked.filter((s) => s === copy)).toHaveLength(1);
-    // A full slice is the point of the case: fifty provisions and three passes of about fifty
-    // deliveries each, against the real directory. Under a loaded full suite that outruns the
-    // default 5 s, though it takes under a second alone.
+    // A full slice is the point of the case: three passes of about fifty deliveries each,
+    // against the real directory.
   }, 60_000);
 
   /** The directory's delivery bookkeeping for `s`: its tenant-record asks and its delivery receipts. */

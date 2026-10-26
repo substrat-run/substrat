@@ -773,6 +773,29 @@ attachmentTextContractSuite('adapter-sqlite', async (options = {}) => {
         db.close();
       }
     },
+    plantIndexedAttachments: async (tenant, scope, rows) => {
+      const db = new Database(join(dir, `${tenant}__${scope}.sqlite`));
+      const at = '2026-10-01T00:00:00.000Z';
+      try {
+        const attachment = db.prepare(
+          `INSERT INTO _substrat_attachments (id, entity_type, entity_id, filename, content_type, size, sha256, visibility, created_by, created_at)
+         VALUES (?, 'item', ?, ?, 'text/plain', ?, ?, 'internal', 'planted', ?)`,
+        );
+        const text = db.prepare(
+          `INSERT INTO _substrat_search__attachment_text (attachment_id, status, extractor, body, body_bytes, truncated, updated_at)
+         VALUES (?, 'indexed', 'text', ?, ?, 0, ?)`,
+        );
+        db.transaction(() => {
+          for (const r of rows) {
+            const bytes = new TextEncoder().encode(r.text).length;
+            attachment.run(r.id, r.entityId, r.filename, bytes, '0'.repeat(64), at);
+            text.run(r.id, r.text, bytes, at);
+          }
+        })();
+      } finally {
+        db.close();
+      }
+    },
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
