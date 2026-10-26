@@ -1994,10 +1994,13 @@ export async function runPlatformSweep(
     const everyMinutes = options.sweepEveryMinutes?.[c.provider];
     if (everyMinutes) {
       try {
-        const [last] = await host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, limit: 1 });
-        // A skipped row means no provider poll took place. Cadence skips write no row, so the
-        // most recent real attempt remains the clock even when a later pass repairs a landing.
-        if (last && last.outcome !== 'skipped' && Date.now() - Date.parse(last.at) < everyMinutes * 60_000) {
+        const [ok, failed] = await Promise.all([
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'ok', limit: 1 }),
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'failed', limit: 1 }),
+        ]);
+        // Ignore skipped rows: they can follow a real poll without spending provider calls.
+        const lastAttempt = Math.max(...[ok[0], failed[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)));
+        if (Date.now() - lastAttempt < everyMinutes * 60_000) {
           report.connectionsSkipped += 1;
           return;
         }
