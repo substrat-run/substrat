@@ -169,7 +169,7 @@ const EVENT_DRAIN_BATCH = 200;
 export interface PlatformSweepOptions {
   /**
    * The durable sweep record (#1232): called once per unit outcome — each
-   * connection swept/skipped/failed, each schedule run — with the signals stamp
+   * connection polled/skipped/failed (a cadence wait writes nothing), each schedule run — with the signals stamp
    * the frame can honestly carry. UNSET ⇒ the pass records nothing, exactly as
    * before the seam existed. Sync fire-and-forget: a recorder that throws must
    * never sink the pass, so callers hand in a closure that swallows its own
@@ -1999,7 +1999,7 @@ export async function runPlatformSweep(
           host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'failed', limit: 1 }),
         ]);
         // Ignore skipped rows: they can follow a real poll without spending provider calls.
-        const lastAttempt = Math.max(...[ok[0], failed[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)));
+        const lastAttempt = Math.max(0, ...[ok[0], failed[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)));
         if (Date.now() - lastAttempt < everyMinutes * 60_000) {
           report.connectionsSkipped += 1;
           return;

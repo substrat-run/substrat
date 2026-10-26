@@ -124,7 +124,7 @@ cannot stand in for it.
 
 ## What a sweep reports
 
-Each pass writes one row per connection, shown in Health › Connections:
+Each poll writes one row per connection, shown in Health › Connections:
 
 - **ok** — every bound scope synced, or was unchanged.
 - **skipped** — the connection has no binding, so nothing was polled.
@@ -254,5 +254,5 @@ moved to a status added last week.
   10,514. The two-hour interval is the next quarter-hour multiple with room for some pagination.
   More facilities, pages, or bindings can still exceed the allowance; a per-binding interval is
   not built.
-- **No incremental sync.** The whole window is re-read every pass because the API offers no
+- **No incremental sync.** The whole window is re-read every poll because the API offers no
   "changed since" filter. `updated_at` is on each row but cannot be filtered on.
