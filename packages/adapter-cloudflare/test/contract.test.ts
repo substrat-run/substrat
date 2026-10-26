@@ -314,7 +314,8 @@ describe('#2528: vertical directory writes across a coordinator/DO version skew'
       const slug = await registered(reader);
       const version = await published(reader, slug);
       const admitted = await published(reader, slug);
-      await reader.admin.admitVersion(staff, admitted);
+      // Another actor, so its row is not the one the assertion below counts, even in the same millisecond.
+      await reader.admin.admitVersion(platformActorId.parse(ulid()), admitted);
       const since = new Date().toISOString();
       // #2565: the promote's channel move, which judges the vertical's listing in its unit.
       await expect(host.admin.promoteVersion(staff, slug, 'prod', admitted)).rejects.toThrow('not a replied directory method: promoteChannel');
