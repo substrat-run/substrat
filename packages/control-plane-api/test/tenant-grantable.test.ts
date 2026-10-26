@@ -39,6 +39,9 @@ describe('a tenant credential grants only what an install would (#2388)', () => 
     await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
     // Listed, so the tenant can see it; it declares a key that is another vertical's.
     await host.admin.registerVertical(staff, { slug: 'helpdesk', name: 'Helpdesk', source: 'builtin', entitlements: ['crm'], listed: true });
+    // A listed manager: its plan SKU is grantable, a key that is a registered vertical's slug is not.
+    await host.admin.registerVertical(staff, { slug: 'console', name: 'Console', source: 'builtin', entitlements: ['flows', 'helpdesk'], listed: true });
+    await host.admin.setVerticalTenantProvisioner(staff, 'console', true);
     asTenant = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(SECRET, { tenantId: t }), 'content-type': 'application/json' };
   });
   afterAll(async () => {
@@ -47,6 +50,13 @@ describe('a tenant credential grants only what an install would (#2388)', () => 
   });
 
   const grant = (key: string) => app.request(`/tenants/${t}/entitlements/${key}`, { method: 'PUT', headers: asTenant, body: '{}' });
+
+  it('shows the install catalog only what an install may grant: a manager keeps its plan SKU', async () => {
+    const res = await app.request(`/verticals?visibleTo=${t}`, { headers: asTenant });
+    const { entries: rows } = (await res.json()) as { entries: { slug: string; entitlements?: string[] }[] };
+    expect(Object.fromEntries(rows.map((r) => [r.slug, r.entitlements]))).toMatchObject({ helpdesk: [], console: ['flows'] });
+    expect((await grant('flows')).status).toBe(200);
+  });
 
   it('refuses the foreign key a pre-rule row declares and grants the slug the install falls back to', async () => {
     expect((await grant('crm')).status).toBe(403);

@@ -5632,6 +5632,15 @@ describe('control-plane API — deploy', () => {
     expect(ok.status).toBe(201);
   });
 
+  it("refuses to register a vertical named for a plan SKU a tenant-provisioner declares, and takes any other name (#2388)", async () => {
+    await host.admin.registerVertical(staff, { slug: 'sku-console', name: 'Console', source: 'cli', entitlements: ['flows'] });
+    await host.admin.setVerticalTenantProvisioner(staff, 'sku-console', true);
+    const res = await push('flows', form(manifest()));
+    expect(res.status).toBe(422);
+    expect(await res.text()).toMatch(/'flows' is not available as a vertical name/);
+    expect((await push('flows-2', form(manifest()))).status).toBe(201);
+  });
+
   it('400s when the entry module is not among the uploaded files', async () => {
     const res = await push('fsm', form(manifest({ entry: 'missing.js' })));
     expect(res.status).toBe(400);

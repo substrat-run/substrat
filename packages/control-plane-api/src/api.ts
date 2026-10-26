@@ -8173,6 +8173,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * (`installEntitlements`), checked here so a credential cannot grant what no install
    * would. Read through the configured host: a check audits nothing.
    */
+  /**
+   * The refusal for REGISTERING a vertical whose bare slug is a plan SKU an existing tenant-provisioner
+   * declares (#2388): the manager's key must not change meaning under a later registration. Only a
+   * new slug is judged; the sentence names no other vertical.
+   */
+  const slugClaimsSku = async (actor: PlatformActorId, slug: string): Promise<string | undefined> => {
+    const all = await host.admin.listVerticals(actor);
+    if (all.some((v) => v.slug === slug)) return undefined;
+    return all.some((v) => v.tenantProvisioner && v.entitlements?.includes(bareSlug(slug)))
+      ? `'${bareSlug(slug)}' is not available as a vertical name`
+      : undefined;
+  };
+
+  /** The declared keys of a registry row that an install may grant: a manager's include plan SKUs. */
+  const grantableOf = (v: { slug: string; entitlements?: string[]; tenantProvisioner?: boolean }, slugs: string[]): string[] =>
+    grantableEntitlements(v.slug, v.entitlements ?? [], v.tenantProvisioner ? slugs : undefined);
+
   const tenantGrantable = async (p: Principal, key: string): Promise<boolean> => {
     const pin = confinedTenant(p);
     if (pin === null) return true;
@@ -8182,7 +8199,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return visible.some((v) => {
       // The install's own derivation (`installEntitlements`): the declared keys the vertical may
       // declare, else its bare slug.
-      const grantable = grantableEntitlements(v.slug, v.entitlements ?? [], v.tenantProvisioner ? slugs : undefined);
+      const grantable = grantableOf(v, slugs);
       return (grantable.length > 0 ? grantable : declarableEntitlementKey(v.slug, bareSlug(v.slug), v.tenantProvisioner ? slugs : undefined) ? [bareSlug(v.slug)] : []).includes(key);
     });
   };
@@ -8268,7 +8285,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               (ownerTenant === undefined || v.ownerTenant === ownerTenant) &&
               (visibleTo === undefined || v.listed || v.ownerTenant === visibleTo),
           );
-    return c.json(pageSlice(visible, page, (v) => v.slug));
+    // The install catalog (`visibleTo`) carries what an install may grant, not what a row declared
+    // before the namespace rule (#2388), so the dashboard's install and the grant paths agree.
+    const slugs = visibleTo === undefined || p.kind === 'builder' ? [] : all.map((v) => bareSlug(v.slug));
+    const rows =
+      visibleTo === undefined || p.kind === 'builder'
+        ? visible
+        : visible.map((v) => (v.entitlements ? { ...v, entitlements: grantableOf(v, slugs) } : v));
+    return c.json(pageSlice(rows, page, (v) => v.slug));
   });
 
   // -- the service→dimensions resolver (#1231's last item) -----------------------
@@ -8378,6 +8402,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (owner !== undefined && owner !== p.tenantId) return refuse(c, 'forbidden', 'forbidden');
       input.ownerTenant = p.tenantId;
     }
+    const claimed = await slugClaimsSku(c.get('actor'), input.slug);
+    if (claimed) return refuseStatus(c, 422, claimed);
     // #2388: the same declaration rule as a push, for any principal that is not staff.
     if (p.kind !== 'staff') {
       const foreignKey = entitlementNamespaceRefusal(
@@ -9605,6 +9631,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       manifest.provisions?.length ? await verticalSlugsOf(c.get('actor')) : undefined,
     );
     if (foreignKey) return refuseStatus(c, 422, foreignKey);
+    const claimed = await slugClaimsSku(c.get('actor'), slug);
+    if (claimed) return refuseStatus(c, 422, claimed);
 
     // The static-asset half of the §4 sandbox contract (self-serve-deploy.md §4.1). The
     // bytes are inert — no code, no authority — so they are ACCEPTED; the content-address

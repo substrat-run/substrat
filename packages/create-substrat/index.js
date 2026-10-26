@@ -70,7 +70,7 @@ function usage() {
 function toPackageName(dir) {
   const name = basename(resolve(dir))
     .toLowerCase()
-    .replace(/[^a-z0-9-~]+/g, '-')
+    .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^[-_.]+|[-_.]+$/g, '');
   return name || 'substrat-vertical';
 }

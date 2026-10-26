@@ -21,7 +21,6 @@ import {
   type ScopeId,
   type TenantId,
   bareSlug,
-  grantableEntitlements,
 } from '@substrat-run/contracts';
 import { bindExportBreakRefusal, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
@@ -194,17 +193,15 @@ export async function provisionDashboard(
  * enforcement, then denies every gated operation. De-prefixing is retroactive: it repairs
  * already-pushed verticals on their next install without a re-push.
  *
- * A vertical's key is its bare slug (#2388): a declared set keeps only the keys the vertical may
- * declare — its own and the engines' — so a row pushed before the rule grants nothing foreign.
+ * A declared set is taken as given (#2388): the caller has already reduced it to what the vertical
+ * may declare. The shared plane's catalog does that for a pushed vertical (a manager's plan SKUs
+ * included), and `installSpecFor` does it for the deployment's own registry.
  */
 export function installEntitlements(
   verticalSlug: string,
   ...declared: Array<readonly string[] | undefined>
 ): string[] {
-  for (const set of declared) {
-    const grantable = set ? grantableEntitlements(verticalSlug, set) : [];
-    if (grantable.length > 0) return grantable;
-  }
+  for (const set of declared) if (set && set.length > 0) return [...set];
   return [bareSlug(verticalSlug)];
 }
 
