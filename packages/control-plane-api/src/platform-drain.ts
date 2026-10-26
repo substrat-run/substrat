@@ -47,6 +47,7 @@ import {
   sweepRunsPayload,
   neutralUpstreamMarkers,
   withoutUpstreamReference,
+  grantableEntitlements,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
@@ -966,7 +967,8 @@ async function admitManager(
       },
     };
   }
-  const declared = registered.entitlements ?? [];
+  // #2388: only keys the manager may declare, so a row pushed before the rule grants nothing foreign.
+  const declared = grantableEntitlements(ctx.vertical, registered.entitlements ?? [], registered.provisions);
   for (const key of requestedKeys) {
     if (!declared.includes(key)) {
       return {

@@ -1,0 +1,38 @@
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import {
+  ENGINE_ENTITLEMENT_KEYS,
+  entitlementNamespaceRefusal,
+  grantableEntitlements,
+} from '../src/entitlement-namespace.js';
+
+describe('entitlement key namespace (#2388)', () => {
+  it('accepts a vertical own key (workspace prefix stripped), an engine key, and a provisioned vertical key', () => {
+    expect(entitlementNamespaceRefusal('t-abc/helpdesk', ['helpdesk', 'protocol'])).toBeUndefined();
+    expect(entitlementNamespaceRefusal('manager', ['flows'], ['flows'])).toBeUndefined();
+  });
+
+  it("refuses another vertical's key, naming the key and the vertical's own namespace", () => {
+    expect(entitlementNamespaceRefusal('helpdesk', ['helpdesk', 'crm'])).toMatch(
+      /^entitlement 'crm' is not declarable by 'helpdesk'/,
+    );
+  });
+
+  it('refuses a platform key, even for a vertical whose slug spells it', () => {
+    expect(entitlementNamespaceRefusal('acme/builder', ['builder'])).toMatch(/^entitlement 'builder' /);
+    expect(entitlementNamespaceRefusal('helpdesk', ['dashboard'])).toMatch(/^entitlement 'dashboard' /);
+  });
+
+  it('keeps only declarable keys of a row pushed before the rule', () => {
+    expect(grantableEntitlements('helpdesk', ['crm', 'helpdesk', 'builder'])).toEqual(['helpdesk']);
+  });
+
+  it('lists every engine key the engines declare', () => {
+    const enginesDir = fileURLToPath(new URL('../../../engines/', import.meta.url));
+    const declared = readdirSync(enginesDir)
+      .filter((name) => existsSync(`${enginesDir}${name}/src/index.ts`))
+      .map((name) => /entitlementKey:\s*'([^']+)'/.exec(readFileSync(`${enginesDir}${name}/src/index.ts`, 'utf8'))?.[1]);
+    expect(declared.filter(Boolean).sort()).toEqual([...ENGINE_ENTITLEMENT_KEYS].sort());
+  });
+});

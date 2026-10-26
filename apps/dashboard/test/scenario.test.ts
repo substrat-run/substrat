@@ -323,12 +323,11 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // strict, then every gated operation denies.
     expect(installEntitlements('t-0wv2mwk4j5/crm-eff')).toEqual(['crm-eff']);
     expect(installEntitlements('acme/helpdesk', undefined, [])).toEqual(['helpdesk']);
-    // A DECLARED set is authoritative and passes through untouched — that is the escape
-    // hatch for a vertical whose entitlementKey diverges from its slug.
-    expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['acme', 'absence'])).toEqual([
-      'acme',
-      'absence',
-    ]);
+    // A DECLARED set passes through only for keys the vertical may declare (#2388): its own
+    // bare slug and the engines'. A foreign key (a row pushed before the rule) is ignored.
+    expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['crm-eff', 'absence'])).toEqual(['crm-eff', 'absence']);
+    expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['acme', 'absence'])).toEqual(['absence']);
+    expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['acme'])).toEqual(['crm-eff']);
     // Degenerate slugs never yield an empty key — an empty grant is the #443 failure.
     expect(installEntitlements('helpdesk/')).toEqual(['helpdesk/']);
   });

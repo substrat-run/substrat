@@ -162,6 +162,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
+import { declarableEntitlementKey, entitlementNamespaceRefusal } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
@@ -8172,10 +8173,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pin = confinedTenant(p);
     if (pin === null) return true;
     const visible = (await host.admin.listVerticals(p.actor)).filter((v) => v.ownerTenant === pin || v.listed);
-    return visible.some((v) =>
-      v.entitlements && v.entitlements.length > 0
-        ? v.entitlements.includes(key)
-        : (v.slug.split('/').pop() || v.slug) === key,
+    return visible.some(
+      (v) =>
+        declarableEntitlementKey(v.slug, key, v.tenantProvisioner ? v.provisions : []) &&
+        (v.entitlements && v.entitlements.length > 0 ? v.entitlements.includes(key) : (v.slug.split('/').pop() || v.slug) === key),
     );
   };
 
@@ -9576,6 +9577,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!modules.some((m) => m.name === manifest.entry)) {
       return refuse(c, 'validation_failed', `entry module '${manifest.entry}' is not among the uploaded files`);
     }
+
+    // #2388: a new version declares only keys its vertical may (its own, the engines', and those of
+    // the verticals it provisions). The capability is granted after a first push, so the declaration
+    // is judged here and honoured by the grant paths only for a tenant-provisioner. Earlier versions
+    // are not re-judged.
+    const foreignKey = entitlementNamespaceRefusal(slug, manifest.entitlements ?? [], manifest.provisions);
+    if (foreignKey) return refuseStatus(c, 422, foreignKey);
 
     // The static-asset half of the §4 sandbox contract (self-serve-deploy.md §4.1). The
     // bytes are inert — no code, no authority — so they are ACCEPTED; the content-address

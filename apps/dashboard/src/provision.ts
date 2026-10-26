@@ -20,6 +20,7 @@ import {
   type ScopeDumpTable,
   type ScopeId,
   type TenantId,
+  grantableEntitlements,
 } from '@substrat-run/contracts';
 import { bindExportBreakRefusal, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { invitesModule } from '@substrat-run/engine-invites';
@@ -192,16 +193,18 @@ export async function provisionDashboard(
  * enforcement, then denies every gated operation. De-prefixing is retroactive: it repairs
  * already-pushed verticals on their next install without a re-push.
  *
- * This fixes the CONVENTION-following case (key === bare slug). A vertical whose
- * `entitlementKey` diverges from its slug still has to declare `substrat.entitlements` in
- * package.json — the manifest never reaches the control plane, so no derivation can guess
- * it. The denial message names both sides so that case diagnoses itself.
+ * A vertical's key is its bare slug (#2388): a declared set keeps only the keys the vertical may
+ * declare — its own and the engines' — so a row pushed before the rule grants nothing foreign.
  */
 export function installEntitlements(
   verticalSlug: string,
   ...declared: Array<readonly string[] | undefined>
 ): string[] {
-  for (const set of declared) if (set && set.length > 0) return [...set];
+  // #2388: a declared key the vertical may not declare (a row pushed before the rule) is ignored.
+  for (const set of declared) {
+    const grantable = set ? grantableEntitlements(verticalSlug, set) : [];
+    if (grantable.length > 0) return grantable;
+  }
   return [bareSlug(verticalSlug)];
 }
 

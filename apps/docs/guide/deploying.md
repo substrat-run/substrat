@@ -168,7 +168,9 @@ renders when someone installs your vertical, no catalog edit needed:
   own SKU flag plus any engine you compose, e.g. `["helpdesk", "workorder"]`). **Absent, the
   platform derives your slug** — so a vertical whose module gates on
   `entitlementKey: '<slug>'` (the convention) installs entitled to itself out of the box.
-  Declare the list explicitly the moment you gate on anything else.
+  Declare the list explicitly the moment you gate on anything else. A push is refused if the
+  list holds a key that is not yours: only your own slug, the engines' keys and the slugs of
+  the verticals you `provisions` are declarable, and the platform's (`dashboard`, `builder`) never.
 - `ownerGrants` — the permissions the installing owner holds inside the fresh scope on day
   one.
 - `envSpec` / `surfaces` — the install form's config fields and your declared UI surfaces.

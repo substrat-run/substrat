@@ -409,7 +409,7 @@ describe('hosted provision and reconcile paths re-assert the schedule switch (#1
     await host.admin.createTenant(staff, { id: managerTenant, slug: `mgr-${suffix}`, name: 'Manager' });
     // The manager's own tenant (#2564), so its set-entitlements drain below may reconcile it.
     await host.admin.createTenant(staff, { id: t, slug: `sw-${suffix}`, name: 'Switch', provisionedByTenant: managerTenant });
-    await host.admin.registerVertical(staff, { slug: MANAGER, name: 'Manager', source: 'builtin', entitlements: ['tick'] });
+    await host.admin.registerVertical(staff, { slug: MANAGER, name: 'Manager', source: 'builtin', entitlements: ['tick'], provisions: [VERT, 'tick'] });
     await host.admin.setVerticalTenantProvisioner(staff, MANAGER, true);
     await host.provisionScope(staff, { tenantId: managerTenant, scopeId: managerScope, vertical: MANAGER });
     await host.admin.activateScope(staff, managerTenant, managerScope);

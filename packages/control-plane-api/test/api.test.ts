@@ -5621,6 +5621,17 @@ describe('control-plane API — deploy', () => {
     expect(res.status).toBe(403);
   });
 
+  it("refuses a push declaring another vertical's entitlement key before anything is uploaded, and takes its own and an engine's (#2388)", async () => {
+    const before = deployed.length;
+    const res = await push('fsm-keys', form(manifest({ entitlements: ['fsm-keys', 'crm'] })));
+    expect(res.status).toBe(422);
+    expect(await res.text()).toMatch(/entitlement 'crm' is not declarable by 'fsm-keys'/);
+    expect(deployed).toHaveLength(before);
+    expect((await host.admin.listVerticals(staff)).map((v) => v.slug)).not.toContain('fsm-keys');
+    const ok = await push('fsm-keys', form(manifest({ entitlements: ['fsm-keys', 'protocol'] })));
+    expect(ok.status).toBe(201);
+  });
+
   it('400s when the entry module is not among the uploaded files', async () => {
     const res = await push('fsm', form(manifest({ entry: 'missing.js' })));
     expect(res.status).toBe(400);
