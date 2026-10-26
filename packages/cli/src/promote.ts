@@ -113,7 +113,7 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
         ? `\n  (${parsed.exportBreaksUnavailable}; re-run with --ack-export-break to promote anyway)`
         : '';
     const message = failureMessage('promote failed', e.status, body);
-    // A review that moved under the acknowledgement, or a migration acknowledgement sent with none
+    // A review that moved under the acknowledgement, or an acknowledgement sent with none
     // (#2333), is answered like a digest refusal: by the diffs as they stand now, and their token.
     const review = promoteReviewReasonIn(parsed);
     if (!message.includes(NEEDS_ACK) && review === undefined) throw new Error(message + listing);

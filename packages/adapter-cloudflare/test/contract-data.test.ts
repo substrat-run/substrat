@@ -102,15 +102,6 @@ import {
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from './test-host.js';
-
-async function reviewFor(host: CloudflareScopeHost, staff: ReturnType<typeof platformActorId.parse>, slug: string, incoming: string) {
-  const base = (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId ?? null;
-  const side = async (id: string) => ({
-    ...(await host.admin.getVersion(staff, id, slug))!,
-    migrations: await host.admin.versionMigrations(staff, slug, id),
-  });
-  return { base, digest: await promoteReviewDigest(base ? await side(base) : null, await side(incoming)) };
-}
 import type { DoReply } from '../src/do-reply.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import {
@@ -121,6 +112,15 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { refuseAdminRows, refuseSwitchRecord } from './contract-support.js';
+
+async function reviewFor(host: CloudflareScopeHost, staff: ReturnType<typeof platformActorId.parse>, slug: string, incoming: string) {
+  const base = (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId ?? null;
+  const side = async (id: string) => ({
+    ...(await host.admin.getVersion(staff, id, slug))!,
+    migrations: await host.admin.versionMigrations(staff, slug, id),
+  });
+  return { base, digest: await promoteReviewDigest(base ? await side(base) : null, await side(incoming)) };
+}
 
 // Absorb the inter-file DO reload before any suite's first directory call
 // (see do-warmup.ts) — file-level, so it runs before every suite below.

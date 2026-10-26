@@ -649,7 +649,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       await api.promoteVersion(vertical.slug, promote.channel, promote.versionId, boundAcknowledgement(ack, review));
     } catch (e) {
       // #2333: the review these boxes were ticked against is no longer what the promote would apply
-      // (or a migration acknowledgement went without one). Reload what the channel points at, which
+      // (or an acknowledgement went without one). Reload what the channel points at, which
       // re-reads the review in this same dialog, and ask again from scratch.
       if (promoteReviewReasonIn((e as { body?: unknown }).body) !== undefined) {
         setAck({});

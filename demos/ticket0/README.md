@@ -384,7 +384,8 @@ on the node host.
 
 ```sh
 substrat push                       # bundles the worker, builds app/ + widget.js as assets
-substrat promote ticket0 --channel prod --version <id> --ack-permissions --ack-migrations --review <token>
+substrat promote ticket0 --channel prod --version <id>  # read the refused diff and its review token
+substrat promote ticket0 --channel prod --version <id> --ack-permissions --ack-migrations --review <token>  # if refused
 substrat hostnames bind ticket0 --surface app
 ```
 

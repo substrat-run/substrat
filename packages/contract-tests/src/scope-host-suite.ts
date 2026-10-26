@@ -7795,23 +7795,15 @@ export function scopeHostContractSuite(
         expect(await prodOf(slug)).toBe(c);
       });
 
-      it('an unbound acknowledgement is refused for either changed surface', async () => {
+      it('a permission change needs a bound review', async () => {
         const { slug, put } = await fresh();
-        const c = await put('pA', 'gC', [MIGRATION({ c: 'gone' })]);
-        const unbound = await refusal(host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true }));
+        const p = await put('pP', 'gA', []);
+        const unbound = await refusal(host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true }));
         expect(unbound.kind).toBe('unbound');
         expect(unbound.message).toBe('Acknowledging a permission or migration change requires a review. Upgrade the Substrat CLI to version 0.45.0 or later, read the current promote review, and retry with --review.');
-        const p = await put('pP', 'gA', []);
-        const permissionOnly = await refusal(host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true }));
-        expect(permissionOnly.kind).toBe('unbound');
-        expect(permissionOnly.message).toBe(unbound.message);
         expect(await prodOf(slug)).not.toBe(p);
         await host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true, review: await reviewOf(slug, p) });
         expect(await prodOf(slug)).toBe(p);
-        // And a migrationChange the gate does not consume needs no binding either.
-        const q = await put('pP', 'gA', []);
-        await host.admin.promoteVersion(staff, slug, 'prod', q, { migrationChange: true });
-        expect(await prodOf(slug)).toBe(q);
       });
 
       it('the digest is over the stored declarations, and the binding is recorded', async () => {

@@ -81,11 +81,10 @@ describe('assertPromoteReviewCurrent (#2333)', () => {
     expect(await run({ migrationChange: true, review: { base: 'v1', digest: '0'.repeat(64) } })).toBe('stale');
   });
 
-  it('refuses consumed acknowledgements without a binding, and accepts a bound permission change', async () => {
+  it('refuses consumed acknowledgements without a binding', async () => {
     expect(await run({ migrationChange: true })).toBe('unbound');
     expect(await run({ migrationChange: true }, 'v1', false)).toBe('passed');
     expect(await run({ permissionChange: true }, 'v1', false, true)).toBe('unbound');
-    expect(await run({ permissionChange: true, review: { base: 'v1', digest: await promoteReviewDigest(base, incoming) } }, 'v1', false, true)).toBe('passed');
     expect(await run({})).toBe('passed');
   });
 
