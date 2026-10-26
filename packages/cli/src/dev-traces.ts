@@ -25,10 +25,17 @@ export class LocalTraceStore {
 
   write(trace: RequestTrace): void {
     mkdirSync(this.dir, { recursive: true });
-    const name = `${Date.now().toString().padStart(13, '0')}-${process.pid}-${randomUUID()}.json`;
+    const name = `${Date.now().toString().padStart(13, '0')}-${process.hrtime.bigint().toString().padStart(20, '0')}-${process.pid}-${randomUUID()}.json`;
     const target = join(this.dir, name);
     const temporary = join(this.dir, `.${name}.tmp`);
-    const data = JSON.stringify(trace);
+    let data = JSON.stringify(trace);
+    if (Buffer.byteLength(data) > this.maxBytes) {
+      // One verbose request still gets a record. Its head survives and the omitted steps
+      // are explicit, so the buffer never grows past its byte budget for one request.
+      data = JSON.stringify({ ...trace, steps: [], capture: {
+        ...trace.capture, stepsDropped: trace.capture.stepsDropped + trace.steps.length,
+      } });
+    }
     if (Buffer.byteLength(data) > this.maxBytes) return;
     try {
       writeFileSync(temporary, data);
@@ -54,7 +61,7 @@ export class LocalTraceStore {
         const parsed = requestTrace.safeParse(JSON.parse(readFileSync(join(this.dir, name), 'utf8')));
         if (parsed.success) traces.push(parsed.data);
       } catch (error) {
-        if (!missing(error)) throw error;
+        if (!missing(error) && !(error instanceof SyntaxError)) throw error;
       }
     }
     return traces;
