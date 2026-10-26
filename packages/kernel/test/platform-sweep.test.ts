@@ -963,6 +963,23 @@ describe('runPlatformSweep', () => {
     expect(recorded).toHaveLength(1);
   });
 
+  it('does not poll when the cadence ledger cannot be read', async () => {
+    const id = cid();
+    const host = fakeHost({
+      connections: [{ id, provider: 'planima', revokedAt: null }],
+      sweepRuns: async () => { throw new Error('directory unavailable'); },
+    });
+    let polls = 0;
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { planima: async () => { polls += 1; } },
+      sweepEveryMinutes: { planima: 120 },
+    });
+    expect(polls).toBe(0);
+    expect(report.errors).toContainEqual({ kind: 'sweep', id, error: 'cannot read connector cadence: directory unavailable' });
+  });
+
   it("hands a sweeper a fetch that converts a sized body before the injected fetch sees it (#2498)", async () => {
     const seen: unknown[] = [];
     const injected = (async (_url: string, init?: { body?: unknown }) => {
