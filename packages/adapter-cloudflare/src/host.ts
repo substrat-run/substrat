@@ -488,6 +488,9 @@ import {
   assertPromoteReviewCurrent,
   promoteRaceRefusal,
   servingRaceRefusal,
+  migratesFrom,
+  servedFromRow,
+  type ServedFrom,
   rebindRaceRefusal,
   type ExpectedServing,
   type ReviewedVersion,
@@ -983,7 +986,7 @@ interface ControlPlaneStub {
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
     audit: AdminEntry,
-    expected?: { ref: string | null; versionId: string | null },
+    expected?: ServedFrom,
   ): Promise<boolean>;
   recordWireAuth(row: DeploymentWireAuth, audit: AdminEntry): Promise<boolean>;
   listWireAuth(filter: DeploymentWireAuthFilter): Promise<DeploymentWireAuth[]>;
@@ -8901,10 +8904,12 @@ export class CloudflareScopeHost implements ScopeHost {
           migrationTag: r.serving_migration_tag,
         });
       },
-      setVerticalServing: async (actor, verticalSlug: string, state) => {
+      setVerticalServing: async (actor, verticalSlug: string, state, expected) => {
         const parsed = verticalServingState.parse(state);
         const r = await this.cp.readVertical(verticalSlug);
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
+        // #2577: the caller's upload diffed its DO-class migration from `expected`'s class set and tag.
+        if (expected !== undefined && !migratesFrom(r, expected)) throw servingRaceRefusal(verticalSlug);
         // #2178: every install on the serving script runs the new version from this moment.
         if (r.serving_version_id) {
           const incoming = await this.cp.readVersion(parsed.versionId);
@@ -8917,8 +8922,9 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
-        // #2528: a compare-and-set on the serving ref and version the gate above judged, across
-        // awaits another serve can run in. The DO fills the row's `before` from the state it moves.
+        // #2528/#2577: a compare-and-set on the serving state the gate above judged, its class set
+        // and tag included, across awaits another serve can run in. The DO fills the row's `before`
+        // from the state it moves.
         const moved = await this.directory('setVerticalServing', verticalSlug, {
           ref: parsed.ref,
           versionId: parsed.versionId,
@@ -8930,7 +8936,7 @@ export class CloudflareScopeHost implements ScopeHost {
           { tenantId: null },
           null,
           { vertical: verticalSlug, ref: parsed.ref, versionId: parsed.versionId },
-        ), { ref: r.serving_ref ?? null, versionId: r.serving_version_id ?? null });
+        ), servedFromRow(r));
         if (!moved) throw servingRaceRefusal(verticalSlug);
       },
       versionManifest: async (actor, verticalSlug: string, versionId: string) => {

@@ -413,14 +413,37 @@ rows of the scope rebinds a private promote makes after it. The same transaction
 row's `before` records and what the write's guards judge (an unknown vertical or version, a rejected
 or already admitted version, the bound scopes that block a delete, an auto-admitted prod version
 that blocks listing, whether a publish self-admits), so the row and the guard see the state the
-write saw. A serving write is a compare-and-set on the serving ref and version its #2178 gate
-judged: one that lost the race is refused `precondition_failed` and writes nothing to the
-directory. Nothing retries it. Its caller (the control-plane serve) has already uploaded the
-serving script by then and passes the refusal up, so the script runs that serve's code while the
-row names the other serve's until a serve lands again; before the compare-and-set the last writer
-won instead. The compare-and-set holds only the host method's own read, not the serving state the
-caller read before its upload, which is where its DO classes and migration tag come from. The scope-level writes follow the
-same rule (preview-and-snapshots.md).
+write saw. A serving write is a compare-and-set on the serving state its #2178 gate judged: the
+ref and version, and the DO class set and migration tag the next upload diffs against (#2577), since
+a serve of a version that adds a class and a re-serve of the old one bring the ref and version back
+over a grown class set. The control-plane serve also passes the state it read BEFORE its upload as
+`expected`, and a row whose class set or tag no longer matches it is refused before the gate: those
+two are where the upload's class delta and `old_tag` came from. Its ref and version are not
+compared. A serve recorded during the upload that moved only those left the upload's migration
+right, so the record lands over it as it did before #2577, and the last writer wins what the row
+names. Either refusal is `precondition_failed` and writes nothing to the directory. Nothing retries
+it. The serve has already uploaded the serving script, so the script runs the refused serve's code
+while the row names the other serve's, until a serve lands again. The promote answers that the serve
+failed and to promote again, except when the refused upload itself added a class. The runtime's tag
+is then already past the row's, a re-serve diffed from the row names an `old_tag` the runtime
+refuses, and the promote says that promoting again cannot land until the record is repaired by hand.
+That is the one interleave nothing after the upload can resolve: two overlapping serves that both
+change the class set. Only serialising serves (a lease on the serving row across the upload) would,
+and that is not built.
+
+The class set and tag joined the DO's `expected` (the host's own read, which the in-unit write
+compares) as optional fields, under the same method name, because the coordinator and the
+ControlPlaneDO can briefly run each other's previous release:
+
+| coordinator ╲ DO | before #2577 | from #2577 |
+|---|---|---|
+| **before #2577** | ref and version compared | ref and version compared (the fields it omits are not) |
+| **from #2577** | ref and version compared: the class set and tag go unchecked for the rollout window | all four compared |
+
+A new name that an older DO refuses would fail closed instead, but only after the upload had
+landed, which leaves the script ahead of the row: the state the compare-and-set exists to prevent.
+Comparing the ref and version alone for that window is never weaker than before #2577. The
+scope-level writes follow the same rule (preview-and-snapshots.md).
 
 The role, grant and org writes at a **tenant node** do too (#2526): `defineRole`, and `assignRole`,
 `grant`, `grantToOrg`, `grantToSystem` and `grantToConnection` with no scope, plus `createOrg` and

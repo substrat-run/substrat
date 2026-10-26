@@ -196,7 +196,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     clean(text);
     const said = JSON.parse(text) as { detail: string; reference: string };
     expect(said.detail).toBe(
-      `promoted, but the in-place serve failed — scopes still run the previous code; promote again to retry (reference ${said.reference})`,
+      `promoted, but the in-place serve failed — promote again to retry (reference ${said.reference})`,
     );
     // The headers carry nothing of it either.
     clean(JSON.stringify([...res.headers.entries()]));

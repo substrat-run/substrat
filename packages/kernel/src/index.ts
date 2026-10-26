@@ -1029,6 +1029,10 @@ export {
   SERVES_NOW_CONDITION,
   SERVES_NOW_PREDICATE,
   servesNowParams,
+  migratesFrom,
+  servedFromRow,
+  servesAsFrom,
+  type ServedFrom,
   type ExpectedServing,
   type ReviewedVersion,
 } from './promote-review.js';

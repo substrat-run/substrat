@@ -2880,11 +2880,21 @@ export interface HostAdmin {
    * and the DO-class/migration-tag base the NEXT upload diffs against. Written only
    * AFTER the upload succeeded — a failed serve leaves `servingVersionId` trailing
    * the prod channel, which is the visible, retryable state. Audited.
+   *
+   * A compare-and-set (#2528): the write lands only if the row still holds the serving state this
+   * method read, its ref, version, class set and migration tag, judged in the unit that writes.
+   * `expected` (#2577) is the state the caller computed its upload from (`verticalServing`'s answer
+   * before the upload, null for nothing served); a row whose class set or tag differs from it is
+   * refused before the gate, so the record never names a migration base diffed from one that is
+   * gone. Its ref and version are not compared: a serve recorded meanwhile that moved only those
+   * left the upload's migration right, and the record lands over it as it did before. Either
+   * refusal is `precondition_failed` (`servingRaceRefusal`) and writes nothing.
    */
   setVerticalServing(
     actor: PlatformActorId,
     verticalSlug: string,
     state: VerticalServingState,
+    expected?: VerticalServingState | null,
   ): Promise<void>;
   /**
    * The pushed DeployManifest (JSON) of one version — what a serve rebuilds upload
