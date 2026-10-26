@@ -104,6 +104,20 @@ test('the fixture parses: sections, entries and edges', () => {
   assert.deepEqual(doc.snapshots.get('tsx@4.23.1').deps, [{ name: 'fsevents', version: '2.3.3' }]);
 });
 
+test('a deprecated block scalar keeps its odd-indented content in package text', () => {
+  const stanza = `  workers-ai-provider@4.0.1:
+    resolution: {integrity: sha512-provider}
+    deprecated: |-
+      Deprecated. Use createAI from agents/models/ai-sdk, or
+       ai-search-provider for AI Search: https://developers.cloudflare.com/agents/models/ai-sdk/
+    peerDependencies:
+      '@ai-sdk/provider': ^4.0.0`;
+  const doc = parseLockfile(edit(base, '  zod@4.4.3:\n    resolution', `${stanza}\n\n  zod@4.4.3:\n    resolution`));
+  assert.equal(doc.packages.get('workers-ai-provider@4.0.1').raw, stanza);
+  assert.ok(doc.packages.has('zod@4.4.3'));
+  assert.deepEqual(doc.snapshots.get('tsx@4.23.1').deps, [{ name: 'fsevents', version: '2.3.3' }]);
+});
+
 test('an identical lockfile attributes nothing', () => {
   assert.deepEqual(lockfileScope(base, base), { importers: [] });
 });

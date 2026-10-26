@@ -84,13 +84,28 @@ export function parseLockfile(text) {
   const entries = { importers: new Map(), packages: new Map(), snapshots: new Map() };
   let section = null;
   let entry = null; // { raw: string[], deps: Map, group }
+  let blockIndent = null;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const n = i + 1;
-    if (line === '---' || line.startsWith('--- ')) throw new Error(`line ${n}: multi-document lockfile`);
-    if (line.trim() === '') continue;
+    if (line.trim() === '') {
+      if (blockIndent !== null) {
+        sections.get(section).push(line);
+        if (entry !== null) entry.raw.push(line);
+      }
+      continue;
+    }
     const indent = line.length - line.trimStart().length;
+    // Scalar content is free text; the next nonblank line at the key's depth closes it.
+    if (blockIndent !== null && indent > blockIndent) {
+      sections.get(section).push(line);
+      if (entry !== null) entry.raw.push(line);
+      continue;
+    }
+    blockIndent = null;
+    if (line === '---' || line.startsWith('--- ')) throw new Error(`line ${n}: multi-document lockfile`);
     if (indent % 2 !== 0) throw new Error(`line ${n}: odd indentation`);
+    if (/^.*?: [|>](?:[+-][1-9]?|[1-9][+-]?|)$/.test(line)) blockIndent = indent;
     if (indent === 0) {
       const { key } = splitKey(line, n);
       if (sections.has(key)) throw new Error(`line ${n}: section ${key} twice`);
