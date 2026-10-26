@@ -160,15 +160,16 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
     expect(back.record).toMatchObject({ doClasses: [...BASE, 'NotesDO'], migrationTag: 'v2', versionId: v1.id });
   });
 
-  // #2577: the record is diffed from the serving state read before the upload, so it lands only
-  // while the row still holds that state.
-  it('refuses to record a serve when another serve landed during its upload, and keeps the other serve\'s classes and tag', async () => {
+  // #2577: the record's class set and tag are diffed from the serving state read before the upload,
+  // so it lands only while the row still holds them. Both serves add a class here, so the refused
+  // one's migration already rode its upload, and promoting again cannot land.
+  it('refuses to record a serve when another serve changed the classes during its upload, and keeps the other serve\'s classes and tag', async () => {
     stubCloudflare();
     const v1 = await push('0.4.0');
     const slug = v1.verticalSlug;
     await promote(slug, v1.id);
     const before = await host.admin.verticalServing(staff, slug);
-    const v2 = await push('0.5.0');
+    const v2 = await push('0.5.0', [{ type: 'durable_object_namespace', name: 'NOTES', class_name: 'NotesDO' }]);
     const grown = await push('0.6.0', [{ type: 'durable_object_namespace', name: 'EXTRA', class_name: 'ExtraDO' }]);
     const landed = { ref: before!.ref, versionId: grown.id, doClasses: [...before!.doClasses, 'ExtraDO'], migrationTag: 'v9' };
     // The other serve lands while this one's upload to the serving script is in flight.
@@ -180,8 +181,9 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
       }
       return upload(url, init);
     });
-    const res = await promote(slug, v2.id, false, 502);
-    expect(await res.text()).toContain('the in-place serve failed');
+    const said = await (await promote(slug, v2.id, true, 502)).json() as { detail: string };
+    expect(said.detail).toContain('promoting again cannot land until the record is repaired');
+    expect(said.detail).not.toContain('promote again to retry');
     expect(await host.admin.verticalServing(staff, slug)).toEqual(landed);
   });
 });

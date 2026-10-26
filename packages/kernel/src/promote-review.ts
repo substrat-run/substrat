@@ -338,14 +338,23 @@ export const servedFromRow = (r: ServingColumns): Required<ServedFrom> => ({
   migrationTag: r.serving_migration_tag ?? null,
 });
 
-/** A `verticalServing` answer as the state a serve computed from: null is nothing served. */
-export const servedFromState = (s: VerticalServingState | null): Required<ServedFrom> =>
-  s ?? { ref: null, versionId: null, doClasses: [], migrationTag: null };
+const sameClasses = (a: string[], b: string[]): boolean => JSON.stringify(a) === JSON.stringify(b);
 
 /** Whether the row still holds every field of `from` that is given. Read and judged in the unit that writes. */
 export function servesAsFrom(r: ServingColumns, from: ServedFrom): boolean {
   const now = servedFromRow(r);
   return now.ref === from.ref && now.versionId === from.versionId &&
-    (from.doClasses === undefined || JSON.stringify(now.doClasses) === JSON.stringify(from.doClasses)) &&
+    (from.doClasses === undefined || sameClasses(now.doClasses, from.doClasses)) &&
     (from.migrationTag === undefined || now.migrationTag === from.migrationTag);
+}
+
+/**
+ * #2577: whether the row still holds the class set and tag an upload diffed its DO-class migration
+ * from (`verticalServing` read before the upload; null: nothing served). Only those two: a serve
+ * recorded meanwhile that changed neither leaves the upload's migration right, and its ref and
+ * version are the #2178 gate's and the compare-and-set's to judge.
+ */
+export function migratesFrom(r: ServingColumns, s: VerticalServingState | null): boolean {
+  const now = servedFromRow(r);
+  return sameClasses(now.doClasses, s?.doClasses ?? []) && now.migrationTag === (s?.migrationTag ?? null);
 }

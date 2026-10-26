@@ -816,6 +816,22 @@ class ExportBreakRefused extends ControlPlaneError {
 }
 
 /**
+ * #2577: a serve whose upload carried a DO-class migration, refused its record because another serve
+ * changed the serving row's class set or tag during the upload. The runtime's migration tag is now
+ * past the record's, so a re-serve diffed from the record names an `old_tag` the runtime refuses:
+ * promoting again cannot land, and the record needs repair.
+ */
+class ServeRecordBehindScript extends ControlPlaneError {
+  constructor(slug: string) {
+    super(
+      409,
+      `the serving record of '${slug}' changed while this serve's upload added a Durable Object class, so the ` +
+        "record's migration tag is behind the serving script's (#2577)",
+    );
+  }
+}
+
+/**
  * A carry whose source store kept changing between its export and its bind (#1722, Codex #2008
  * r12): every re-carry from a fresh export found the source changed again before it could bind.
  * Nothing was bound and the destination's copy was dropped, so the caller retries the bind. Typed,
@@ -8952,9 +8968,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
     await recordWireUpload(admin, actor, versionId, wire);
     const addedClasses = serving ? doClasses.some((cls) => !serving.doClasses.includes(cls)) : false;
-    // #2577: `serving` is what the upload was diffed from, so the record lands only while the row
-    // still holds it. A serve that landed in between is refused (`precondition_failed`) and nothing
-    // retries it: the script already runs this upload, and promoting again serves from what is now.
+    // #2577: `serving`'s class set and tag are what the upload's migration was diffed from, so the
+    // record lands only while the row still holds them; a serve that moved only the ref and version
+    // meanwhile is recorded over, as before. A refusal is not retried: the script already runs this
+    // upload. When a migration rode it, the runtime's tag is past the record's and a retry cannot land.
+    const migrated = !serving || addedClasses;
     await admin.setVerticalServing(actor, slug, {
       ref,
       versionId,
@@ -8967,7 +8985,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ? nextMigrationTag(serving.migrationTag)
           : serving.migrationTag
         : 'v1',
-    }, serving);
+    }, serving).catch((e: unknown) => {
+      throw migrated && errorCodeOf(e) === 'precondition_failed' ? new ServeRecordBehindScript(slug) : e;
+    });
   };
 
   /**
@@ -9293,8 +9313,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // The serve, the adopt and the backfill reach every install of the vertical, whoever's, so
         // what failed is withheld from a confined caller (#2540), and the tenant the backstop would
         // have filed it under reads only the sentence.
+        // #2577: a serve refused after its upload already runs the new code, so neither says which code runs.
         const sentence = (reference: string) =>
-          `promoted, but the in-place serve failed — scopes still run the previous code; promote again to retry (reference ${reference})`;
+          e instanceof ServeRecordBehindScript
+            ? `promoted, but the in-place serve failed — another serve changed the serving record while this one ` +
+              `added a Durable Object class, so promoting again cannot land until the record is repaired (reference ${reference})`
+            : `promoted, but the in-place serve failed — promote again to retry (reference ${reference})`;
         const withheld = withheldFailure(
           c,
           {

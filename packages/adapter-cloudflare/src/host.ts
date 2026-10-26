@@ -488,9 +488,8 @@ import {
   assertPromoteReviewCurrent,
   promoteRaceRefusal,
   servingRaceRefusal,
+  migratesFrom,
   servedFromRow,
-  servedFromState,
-  servesAsFrom,
   type ServedFrom,
   rebindRaceRefusal,
   type ExpectedServing,
@@ -8909,8 +8908,8 @@ export class CloudflareScopeHost implements ScopeHost {
         const parsed = verticalServingState.parse(state);
         const r = await this.cp.readVertical(verticalSlug);
         if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
-        // #2577: the caller's upload was diffed from `expected`, so the gate judges only that state.
-        if (expected !== undefined && !servesAsFrom(r, servedFromState(expected))) throw servingRaceRefusal(verticalSlug);
+        // #2577: the caller's upload diffed its DO-class migration from `expected`'s class set and tag.
+        if (expected !== undefined && !migratesFrom(r, expected)) throw servingRaceRefusal(verticalSlug);
         // #2178: every install on the serving script runs the new version from this moment.
         if (r.serving_version_id) {
           const incoming = await this.cp.readVersion(parsed.versionId);
