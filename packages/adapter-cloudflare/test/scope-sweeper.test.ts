@@ -31,7 +31,7 @@ import {
  * alarm driving `drainDue`/`runDueSchedules` over a ROSTER — the scopes a
  * hosted vertical learns at `/internal/provision` — with no directory anywhere.
  * The pass's halves have their own tests (the CP-less schedule suite in
- * contract.test.ts; kernel's drain tests); what these tests own is the roster +
+ * contract-switch.test.ts; kernel's drain tests); what these tests own is the roster +
  * loop contract:
  *
  *   - `noteScope` registers a scope AND arms the alarm (the loop starts)
@@ -233,7 +233,7 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
 
   it('the SCHED module is the one the roster pass drives', async () => {
     // Pin the module id the suite provisions against — a rename would silently
-    // decouple this file from the CP-less schedule suite in contract.test.ts.
+    // decouple this file from the CP-less schedule suite in contract-switch.test.ts.
     expect(host().registeredSchedules()).toEqual([
       { moduleId: SCHED, schedules: scheduleMod.manifest.schedules },
     ]);

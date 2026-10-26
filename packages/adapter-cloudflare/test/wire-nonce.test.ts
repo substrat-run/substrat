@@ -2,7 +2,7 @@
  * RFC wire-signing §4 on the scope's own object: the nonce store is in storage, so it survives an
  * eviction; a claim is bookkeeping, so it advances no write revision a carry fences on; and a store
  * at its cap fails the claim across the RPC. The behaviour both adapters share is
- * `wireNonceContractSuite`, in contract.test.ts.
+ * `wireNonceContractSuite`, in contract-data.test.ts.
  */
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';

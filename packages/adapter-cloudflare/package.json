@@ -29,8 +29,11 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run && vitest run -c vitest.supplied-sweeper.config.ts",
-    "test:contract": "vitest run test/contract.test.ts",
-    "test:rest": "vitest run --exclude test/contract.test.ts && vitest run -c vitest.supplied-sweeper.config.ts",
+    "test:contract-hosts": "vitest run test/contract-hosts.test.ts",
+    "test:contract-switch": "vitest run test/contract-switch.test.ts",
+    "test:contract-data": "vitest run test/contract-data.test.ts",
+    "test:rest-1": "vitest run --exclude test/contract-hosts.test.ts --exclude test/contract-switch.test.ts --exclude test/contract-data.test.ts --shard=1/2",
+    "test:rest-2": "vitest run --exclude test/contract-hosts.test.ts --exclude test/contract-switch.test.ts --exclude test/contract-data.test.ts --shard=2/2 && vitest run -c vitest.supplied-sweeper.config.ts",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {

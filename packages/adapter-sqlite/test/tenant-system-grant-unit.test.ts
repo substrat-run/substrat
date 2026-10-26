@@ -14,7 +14,7 @@
  *
  * ADAPTER-SPECIFIC, like `job-store-turn.test.ts`: the property is about one shared
  * `better-sqlite3` connection, and the Durable Object has its own proof
- * (`adapter-cloudflare/test/contract.test.ts`, "#1743 — an OFF landing between…").
+ * (`adapter-cloudflare/test/contract-data.test.ts`, "#1743 — an OFF landing between…").
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
