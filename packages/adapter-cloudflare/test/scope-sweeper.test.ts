@@ -246,7 +246,7 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
  * It used to fire. The rewind is EMULATED (`pitr-emulation.ts`: workerd has no PITR); the
  * DO's own `rewindToBookmark` and the restart it causes are real.
  */
-describe('#1819 — the deployment sweep after a rewind to before the switch', { timeout: 20_000 }, () => {
+describe('#1819 — the deployment sweep after a rewind to before the switch', () => {
   const SCHED = moduleId.parse('@test/sched');
   const READ = permissionKey.parse('perm:read');
   const t = tenantId.parse(ulid());
@@ -400,8 +400,7 @@ describe('#1713 — the deployment sweep skips a scope its lifecycle holds, then
     expect(await ticksOn(held)).toBe(1);
     await sweeperStub().forgetScope(held);
     await sweeperStub().forgetScope(live);
-    // Two full sweeps plus two provisions in workerd: ~4.3 s on CI before #2029, one past 5 s after.
-  }, 15_000);
+  });
 
   it('a held tenant is skipped the same way', async () => {
     const s = await seat();
