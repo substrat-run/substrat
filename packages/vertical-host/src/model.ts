@@ -94,6 +94,8 @@ export interface ModelRunStep {
   readonly text: string;
   readonly toolCalls: ReadonlyArray<{ readonly callId: string; readonly tool: string; readonly input: unknown }>;
   readonly toolResults: ReadonlyArray<{ readonly callId: string; readonly tool: string; readonly output: unknown }>;
+  /** A call whose `execute` threw, or whose arguments did not parse: the model is shown the error and goes on. */
+  readonly toolErrors: ReadonlyArray<{ readonly callId: string; readonly tool: string; readonly message: string }>;
 }
 
 /** The ceiling on `maxSteps`: a run that needs more is a loop the host should be driving. */
@@ -311,6 +313,9 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
       text: st.text,
       toolCalls: st.toolCalls.map((c) => ({ callId: c.toolCallId, tool: c.toolName, input: c.input })),
       toolResults: st.toolResults.map((r) => ({ callId: r.toolCallId, tool: r.toolName, output: r.output })),
+      toolErrors: st.content
+        .filter((c): c is Extract<typeof c, { type: 'tool-error' }> => c.type === 'tool-error')
+        .map((c) => ({ callId: c.toolCallId, tool: c.toolName, message: c.error instanceof Error ? c.error.message : String(c.error) })),
     }));
     return { text: result.text, finishReason: result.finishReason, label: resolved.label, line, steps };
   };

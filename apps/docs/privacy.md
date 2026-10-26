@@ -48,12 +48,15 @@ team through our [support desk](/guide/support).
 
 The dashboard can explain a finding, write a note under a process map, and answer
 questions about your team's apps (**Ask**). These run only when someone in your team
-asks for them. To answer, we send the model a limited set of operational facts from
-your team's apps: finding and failure counts, error codes, timestamps, versions, the
-names of apps and lifecycle states, and up to a few error messages. Error messages
-are redacted first: we remove what looks like a key, a token, a password, the
-credentials in a URL, an email address, or a phone number. We do not send tenant,
-scope, or person identifiers. The model runs on Cloudflare Workers AI, on Cloudflare's
+asks for them, and they read only what that person can already see in the dashboard.
+To answer, the model is sent what the dashboard shows about your team: its apps,
+findings, failures, traffic, logs, deployments, audit trail, and members, including
+members' email addresses and the platform's identifiers for the team, its apps, and
+its people. Free text from your apps (log lines and error messages) is redacted
+first: we remove what looks like a key, a token, a password, the credentials in a URL,
+an email address, or a phone number. An explanation or a process-map note is written
+from a narrower set: counts, codes, timestamps, versions, names of apps and states, and
+a few redacted error messages. The model runs on Cloudflare Workers AI, on Cloudflare's
 network. Cloudflare does not use these inputs or outputs to train models, and does not
 retain them once the answer is returned ([Workers AI data usage](https://developers.cloudflare.com/workers-ai/platform/data-usage/)).
 The text the model writes is stored in your team's dashboard data for 90 days, together

@@ -49,8 +49,8 @@ import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer, type ProcessPeriod } from './process-map.js';
-import { createModelHost, type ModelHost } from '@substrat-run/vertical-host/model';
-import { ASK_FINDINGS_MAX, ASK_MAX_STEPS, ASK_SYSTEM, REFUSED, answeredTurn, appRow as appRowForAsk, askSummary, endedTurn, findingRow } from './ask.js';
+import { createModelHost, type ModelHost, type ModelTool } from '@substrat-run/vertical-host/model';
+import { ASK_MAX_STEPS, ASK_SYSTEM, REFUSED, answeredTurn, askSummary, endedTurn, exposedReads, fitToolOutput, shapeForModel, toolNameOf } from './ask.js';
 import {
   DEFAULT_EXPLANATION_MODEL,
   EXPLANATION_SENT,
@@ -5248,47 +5248,49 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
   // `offAnswer` above has already refused a deployment that writes nothing; this narrows the type.
   if ('off' in ex) throw new HTTPException(409, { message: 'AI explanations are not turned on for this deployment' });
 
-  /** Run a read as the caller; a refused gate is an answer the model passes on, not a failure. */
-  const asCaller = async <T,>(read: () => Promise<T>): Promise<T | typeof REFUSED> => {
+  /**
+   * Run a read as the caller. A refused gate is an answer the model passes on; any other 4xx
+   * (an app id that is not this team's, a malformed argument) is an answer too, so the model can
+   * correct itself instead of the turn failing. Shaped and fitted for the model either way.
+   */
+  const asCaller = async (read: () => Promise<unknown>): Promise<unknown> => {
     try {
-      return await read();
+      return fitToolOutput(shapeForModel(await read()));
     } catch (e) {
       if (errorCodeOf(e) === 'permission_denied' || (e instanceof HTTPException && e.status === 403)) return REFUSED;
+      if (e instanceof HTTPException && e.status >= 400 && e.status < 500) return { error: e.message };
+      const status = isSubstratError(e) ? e.status : 0;
+      if (status >= 400 && status < 500) return { error: (e as Error).message };
       throw e;
     }
   };
-  const tools = {
-    list_apps: {
-      description: 'List the apps installed in this team: name, the vertical it runs, and whether it is active.',
-      input: z.object({}),
-      execute: () => asCaller(async () => ({ apps: (await allApps(dash)).map(appRowForAsk) })),
-    },
-    list_findings: {
-      description:
-        'List the team’s findings: problems the platform noticed recurring in its apps. Each has an id to pass to finding_evidence.',
-      input: z.object({
-        status: z.enum(['open', 'acked', 'resolved', 'suppressed']).optional(),
-        limit: z.number().int().min(1).max(ASK_FINDINGS_MAX).optional(),
+  // Every declared read, through the route's own handler: the person's access, exactly (#2283).
+  const handlers = routeHandlers as unknown as Record<string, (ctx: TeamContext, input: unknown) => Promise<unknown>>;
+  const tools: Record<string, ModelTool<any>> = {}; // eslint-disable-line @typescript-eslint/no-explicit-any -- each tool parses its own input
+  for (const [name, decl] of exposedReads(dashboardRoutes)) {
+    tools[toolNameOf(name)] = {
+      description: decl.summary,
+      // A route with no input takes none; the SDK parses the model's arguments with this before `execute`.
+      input: 'input' in decl ? decl.input : z.object({}),
+      execute: (input: unknown) => asCaller(() => handlers[name]!(ctx, input)),
+    };
+  }
+  // Two reads no route answers in this shape: a finding's redacted evidence (#1749's facts), and
+  // an app's process map as counts, which the map's own route answers cookie-scoped.
+  tools.finding_evidence = {
+    description: 'Read one finding’s evidence: its failure records (who refused, status codes, redacted messages) or sweep runs, and its likely cause.',
+    input: z.object({ id: z.string().min(1).max(64) }),
+    execute: ({ id }: { id: string }) => asCaller(async () => (await findingFactsIn(await findingsPlane(ctx, 'read'), id, {})).facts),
+  };
+  tools.process_map = {
+    description: 'One app’s process map: a declared lifecycle replayed over a period, as counts per state and move, against the period before. Takes the app’s scopeId.',
+    input: z.object({ scopeId: z.string().min(1), entity: z.string().min(1).max(128).optional(), period: z.enum(['24h', '7d', '30d']).optional() }),
+    execute: ({ scopeId, entity, period }: { scopeId: string; entity?: string; period?: ProcessPeriod }) =>
+      asCaller(async () => {
+        const { answer } = await processMapIn(dash, teamPlane(ctx), scopeId, period ?? '7d', entity);
+        if (!answer.current || !answer.entity) return { processes: answer.processes, unavailable: answer.unavailable ?? 'no counts' };
+        return { processes: answer.processes, ...processFacts(answer.entity, answer.period, answer.current, answer.previous) };
       }),
-      execute: ({ status, limit }: { status?: 'open' | 'acked' | 'resolved' | 'suppressed'; limit?: number }) =>
-        asCaller(async () => {
-          const page = await (await findingsPlane(ctx, 'read')).listFindings({ status: status ?? 'open', limit: limit ?? 10 });
-          return page === null ? { findings: [], available: false } : { findings: page.entries.map(findingRow), more: page.nextCursor !== null };
-        }),
-    },
-    finding_evidence: {
-      description: 'Read one finding’s evidence: its failure records (who refused, status codes, redacted messages) or sweep runs, and its likely cause.',
-      input: z.object({ id: z.string().min(1).max(64) }),
-      execute: ({ id }: { id: string }) =>
-        asCaller(async () => {
-          try {
-            return (await findingFactsIn(await findingsPlane(ctx, 'read'), id, {})).facts;
-          } catch (e) {
-            if (e instanceof HTTPException && e.status === 404) return { notFound: id };
-            throw e;
-          }
-        }),
-    },
   };
 
   let run;

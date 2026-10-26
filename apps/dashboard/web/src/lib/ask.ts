@@ -28,14 +28,22 @@ export interface AskTurn {
   error: string | null;
 }
 
-/** What a tool output says, in the reader's words. Refusals are shown as such. */
+/** A read's name as the reader says it: `list_team_audit` → "team audit", `finding_evidence` → "finding evidence". */
+export function readName(tool: string): string {
+  return tool.replace(/^(list|get)_/, '').replace(/_/g, ' ');
+}
+
+/**
+ * What one read returned, in the reader's words: "Read members (3)", "Read team audit (20+)"
+ * when the list was cut, "Could not read findings: not part of your role" for a refusal.
+ */
 export function lookLabel(tool: string, output: unknown): string {
-  const out = (output ?? {}) as { findings?: unknown[]; apps?: unknown[]; refused?: string; notFound?: string };
-  if (out.refused) return `Could not read ${tool === 'list_apps' ? 'apps' : 'findings'}: not part of your role`;
-  if (tool === 'list_findings') return `Looked at ${out.findings?.length ?? 0} findings`;
-  if (tool === 'finding_evidence') return out.notFound ? 'Looked for a finding that does not exist' : 'Read one finding’s evidence';
-  if (tool === 'list_apps') return `Looked at ${out.apps?.length ?? 0} apps`;
-  return `Used ${tool}`;
+  const out = (output ?? {}) as { entries?: unknown[]; items?: unknown[]; truncated?: boolean; refused?: string; error?: string };
+  const name = readName(tool);
+  if (out.refused) return `Could not read ${name}: not part of your role`;
+  if (out.error) return `Could not read ${name}: ${out.error}`;
+  const list = out.entries ?? out.items;
+  return Array.isArray(list) ? `Read ${name} (${list.length}${out.truncated ? '+' : ''})` : `Read ${name}`;
 }
 
 /** Fold one response's events into the turn they describe. */
@@ -53,7 +61,7 @@ export function foldTurn(raw: readonly unknown[]): AskTurn {
         turn.looks.push({ tool: e.tool, label: lookLabel(e.tool, e.output) });
         break;
       case 'tool-error':
-        turn.looks.push({ tool: e.tool, label: `${e.tool} failed` });
+        turn.looks.push({ tool: e.tool, label: `Could not read ${readName(e.tool)}` });
         break;
       case 'text-delta':
         turn.answer += e.delta;
@@ -105,7 +113,7 @@ export function mockAsk(): (input: { messages: Array<{ role: 'user' | 'assistant
       { t: 'turn-start', v: 1 },
       { t: 'step-start', step: 'look-1' },
       { t: 'tool-input', callId: 'c1', tool: 'list_findings', input: { status: 'open' } },
-      { t: 'tool-output', callId: 'c1', tool: 'list_findings', output: { findings: [{}, {}], more: false } },
+      { t: 'tool-output', callId: 'c1', tool: 'list_findings', output: { available: true, entries: [{}, {}], nextCursor: null, cut: false } },
       { t: 'step-end', step: 'look-1' },
       { t: 'text-start', pid: 'answer' },
       {

@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, scopeId, tenantId, type EmittedModel, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
+import { orgId, platformActorId, principalId, scopeId, tenantId, type EmittedModel, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
 import { manualClock, ulid, type ManualClock, type OperationHandler } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { EXPLANATION_LIMITS } from '../src/module.js';
+import { ASK_MAX_STEPS, ASK_UNEXPOSED, exposedReads, toolNameOf } from '../src/ask.js';
+import { dashboardRoutes } from '../src/routes.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
@@ -54,7 +56,7 @@ vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
 // Named through a variable: `tsconfig.json` excludes `src/worker.ts` (findings-role-gate.test.ts says why).
 const workerModule = '../src/worker.js';
 const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
-  default: { request(path: string, init: RequestInit, env: unknown): Response | Promise<Response> };
+  default: { request(path: string, init: RequestInit, env: unknown, executionCtx?: unknown): Response | Promise<Response> };
 };
 
 const PROVIDER = 'authhero';
@@ -192,7 +194,12 @@ describe('AI-written text in the dashboard (#1749)', () => {
     };
   });
 
+  /** What a route handed `waitUntil` (the list-apps reconcile passes), settled before the host closes. */
+  const background: Promise<unknown>[] = [];
+  const executionCtx = { waitUntil: (p: Promise<unknown>) => void background.push(p), passThroughOnException: () => undefined };
+
   afterEach(async () => {
+    await Promise.allSettled(background.splice(0));
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -206,6 +213,7 @@ describe('AI-written text in the dashboard (#1749)', () => {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
       env,
+      executionCtx as never,
     );
   const ok = async (res: Response | Promise<Response>): Promise<View> => {
     const r = await res;
@@ -263,18 +271,51 @@ describe('AI-written text in the dashboard (#1749)', () => {
       expect(evs.find((e) => e.t === 'text-delta')).toMatchObject({ delta: 'Uploads keep failing: a supplier refuses them with 503.' });
       expect(evs.find((e) => e.t === 'data-provenance')).toMatchObject({ sources: 2, model: expect.stringContaining('llama') });
       expect(evs.at(-1)).toMatchObject({ t: 'turn-finish', reason: 'done' });
-      const listed = evs.filter((e) => e.t === 'tool-output')[0]!.output as { findings: Array<Record<string, unknown>> };
-      expect(listed.findings.map((x) => x.id)).toEqual([f.id]);
+      // The route's own answer, as the Findings page reads it.
+      const listed = evs.filter((e) => e.t === 'tool-output')[0]!.output as { entries: Array<Record<string, unknown>> };
+      expect(listed.entries.map((x) => x.id)).toEqual([f.id]);
 
       // The second model call saw the list; the third saw the redacted evidence and nothing more.
       expect(sentOn(2)).toContain(f.id);
       expect(sentOn(3)).toContain('upstream refused Bearer [secret] for [email]');
+      // Free text from the apps' own errors stays redacted; the platform's record ids do reach the
+      // model (an app's scope id is how it asks about that app), as the privacy policy says.
       const all = JSON.stringify(modelCalls);
-      for (const id of [tenant, dashScope, appScope, people.viewer]) expect(all).not.toContain(id);
       expect(all).not.toContain('ops@acme.example');
+      expect(sentOn(2)).toContain(appScope);
 
       // One unit of budget for the question, however many steps it took.
       expect((await ok(as('viewer', 'GET', '/explanations'))).budget!.person.used).toBe(1);
+    });
+
+    it('every declared read is a tool, and nothing that writes is', async () => {
+      script({ response: 'Ok.' });
+      await events(ask('viewer', [{ role: 'user', text: 'What can you read?' }]));
+      const offered = ((modelCalls[0]!.inputs as { tools: Array<{ function: { name: string } }> }).tools ?? []).map((t) => t.function.name).sort();
+      const reads = exposedReads(dashboardRoutes).map(([name]) => toolNameOf(name));
+      expect(offered).toEqual([...reads, 'finding_evidence', 'process_map'].sort());
+      // Not one route that writes, and not the AI's own records.
+      const writes = Object.entries(dashboardRoutes).filter(([, d]) => d.http.method !== 'GET').map(([name]) => toolNameOf(name));
+      for (const w of writes) expect(offered).not.toContain(w);
+      for (const r of Object.keys(ASK_UNEXPOSED)) expect(offered).not.toContain(toolNameOf(r));
+      // The team, observability, deployments and findings are all reachable.
+      for (const t of ['list_members', 'list_team_audit', 'observability_logs', 'app_requests', 'list_deployments', 'list_findings']) expect(offered).toContain(t);
+    });
+
+    it('reads the team’s roster with the members’ addresses, as the Team page shows them', async () => {
+      const owner = await host.getScope(people.owner, tenant, dashScope);
+      const org = orgId.parse(ulid());
+      await host.admin.createOrg(staff, { id: org, tenantId: tenant, slug: 'explain-org', name: 'Explain' });
+      await owner.invoke('dashboard/init-team', { orgId: org, ownerEmail: 'owner@acme.test' });
+      await owner.invoke('dashboard/invite-member', { email: 'jane@acme.test', roleKey: 'viewer' });
+      script(
+        { response: '', tool_calls: [{ id: 'call_1', name: 'list_members', arguments: {} }] },
+        { response: 'Jane is invited as a viewer.' },
+      );
+      const evs = await events(ask('viewer', [{ role: 'user', text: 'Who is on the team?' }]));
+      const roster = evs.find((e) => e.t === 'tool-output')!.output as { entries: Array<{ email: string; role_key: string; status: string }> };
+      expect(roster.entries).toEqual(expect.arrayContaining([expect.objectContaining({ email: 'jane@acme.test', role_key: 'viewer', status: 'invited' })]));
+      expect(sentOn(2)).toContain('jane@acme.test');
     });
 
     it('carries the conversation so far to the model', async () => {
@@ -305,10 +346,14 @@ describe('AI-written text in the dashboard (#1749)', () => {
         `/api/teams/${tenant}/assistant/ask`,
         { method: 'POST', headers: { cookie: 'sb_session=sub-reader', 'content-type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', text: 'What is failing?' }] }) },
         env,
+        executionCtx as never,
       );
       const evs = await events(res);
       const outputs = evs.filter((e) => e.t === 'tool-output').map((e) => e.output);
-      expect(outputs).toEqual([{ refused: expect.stringContaining('not part of your role') }, { apps: [{ name: 'Desk', vertical: SLUG, status: 'provisioning' }] }]);
+      expect(outputs).toMatchObject([
+        { refused: expect.stringContaining('not part of your role') },
+        { entries: [expect.objectContaining({ name: 'Desk', vertical_slug: SLUG, status: 'provisioning' })] },
+      ]);
       expect(JSON.stringify(modelCalls)).not.toContain('deploy.upload');
     });
 
@@ -342,7 +387,7 @@ describe('AI-written text in the dashboard (#1749)', () => {
     it('a model that keeps calling tools is stopped after its steps', async () => {
       script(...Array.from({ length: 10 }, (_, i) => ({ response: '', tool_calls: [{ id: `call_${i}`, name: 'list_apps', arguments: {} }] })));
       await ask('viewer', [{ role: 'user', text: 'Loop.' }]);
-      expect(modelCalls).toHaveLength(4);
+      expect(modelCalls).toHaveLength(ASK_MAX_STEPS);
     });
 
     it('refuses a conversation that does not end with a question, before anything runs', async () => {
