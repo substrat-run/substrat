@@ -309,6 +309,12 @@ does not hold does not resolve.
 The event envelope's origin fields are not parameters. See
 [Events & audit](/concepts/events).
 
+### A signed platform call is accepted once
+
+Each scope keeps the nonces of the signed platform calls it accepted, so the same call sent
+again is refused. That record belongs to the store, not to the scope's data: a dump, a copy or
+a restore never carries it, and module code never sees it.
+
 ## In-scope functions vs registered operations
 
 Engines expose their logic at two altitudes:

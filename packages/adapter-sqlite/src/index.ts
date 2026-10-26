@@ -813,6 +813,10 @@ import {
   planExportBatch,
   withheldNote,
   type ExportRow,
+  WIRE_NONCE_DDL,
+  WIRE_NONCE_FULL,
+  claimWireNonceIn,
+  isWireNonceTable,
   JOB_RUN_DDL,
   JOB_RUN_DUE_AT,
   jobRunListLimit,
@@ -1463,6 +1467,10 @@ const KERNEL_DDL = `
   -- only) and its watermark per producer, plus the producer-side (type, id) outbox index the
   -- export read seeks on. Shared with the DO adapter from @substrat-run/kernel.
   ${VERTICAL_EVENTS_DDL}
+  -- RFC wire-signing §4: the nonces of signed calls this scope accepted, and their count.
+  -- Store-local, never dumped. Shared with the DO adapter from @substrat-run/kernel, where the
+  -- column comments are (its time is integer seconds, the envelope's own unit).
+  ${WIRE_NONCE_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -4629,7 +4637,9 @@ export class SqliteScopeHost implements ScopeHost {
       // A dump written before indexes were excluded may still carry them; skip those
       // too rather than failing a restore over data that is about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
-      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
+      // The wire nonce store is this store's own (RFC wire-signing §4): a dump that carries it is not
+      // replayed, so a load starts it empty, as it starts a vertical's search index.
+      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()) && !isWireNonceTable(t.name));
       // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
       // not keep at all; they are skipped by name, and any other unknown spine table is refused.
       const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
@@ -6266,6 +6276,22 @@ export class SqliteScopeHost implements ScopeHost {
 
   async redrainCountLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
     return redrainCountOf(this.heldReadDb(scopeId), drainedBefore);
+  }
+
+  /**
+   * RFC wire-signing §4: spend a signed call's nonce in this scope's own store, the hosted
+   * object's `claimWireNonce` here: `true` once, `false` for a nonce already spent or a claim after
+   * `until`, and a throw when the store is at its cap (after its purge committed). Judged against
+   * this host's clock. No provisioned check, as on the hosted object: the call that provisions a
+   * scope spends its nonce there too.
+   */
+  async claimWireNonceLocal(tenantId: TenantId, scopeId: ScopeId, nonce: string, until: number): Promise<boolean> {
+    const rt = this.runtime(tenantId, scopeId);
+    const answer = await rt.actor.enqueue(() =>
+      rt.db.transaction(() => claimWireNonceIn(switchSqlOf(rt.db), nonce, until, Math.floor(Date.parse(this.clock()) / 1000)))(),
+    );
+    if (answer === 'full') throw substratError('unavailable', WIRE_NONCE_FULL);
+    return answer;
   }
 
   /**
@@ -11819,6 +11845,9 @@ export class SqliteScopeHost implements ScopeHost {
         // reason: its shadow tables cannot be replayed (the DO host rejects the name
         // outright), and it is recomputable — `loadDump` rebuilds it from the content
         // tables it just loaded. A dump carries the rows, never the index over them.
+        //
+        // The wire nonce store is dropped as well (RFC wire-signing §4): it describes calls this
+        // store accepted, not the scope's data, so a load builds it empty.
         const defs = (
           db
             .prepare(
@@ -11827,7 +11856,7 @@ export class SqliteScopeHost implements ScopeHost {
                 ORDER BY name`,
             )
             .all() as { name: string; sql: string }[]
-        ).filter(({ name }) => !isSearchIndexTable(name));
+        ).filter(({ name }) => !isSearchIndexTable(name) && !isWireNonceTable(name));
         const tables: ScopeDumpTable[] = defs.map(({ name, sql }) => {
           // `.raw(true)` gives positional rows; cells stay as-is (blobs are Buffers, not
           // nulled as in a UI read) so the dump is byte-faithful. The name is from the live

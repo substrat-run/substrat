@@ -558,8 +558,8 @@ describe('the control plane’s envelopes, judged by the entry’s verifier', ()
     } as never);
     expect(d.lines).toEqual([expect.objectContaining({ outcome: 'signed-accepted', legacy: 'valid', tenantId: T, scopeId: S })]);
     expect(claimed).toEqual([S]);
-    // Its twin: with no store yet (every version until follow-on 5) the same call is the counted
-    // fault, and in dual it is still served on its legacy credential.
+    // Its twin: on a version with no store (one built before follow-on 5) the same call is the
+    // counted fault, and in dual it is still served on its legacy credential.
     const noStore = deployment(deploymentEnv('dual'));
     const ack = await new VerticalClient({ fetch: signed(noStore.fetch), platformSecret: SECRET }).provisionInstance({
       tenantId: T,

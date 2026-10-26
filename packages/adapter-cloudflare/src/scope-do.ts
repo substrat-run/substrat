@@ -197,6 +197,12 @@ import {
   ATTACHMENT_CONDEMNED_DDL,
   ATTACHMENT_SWEEP_LICENCE_DDL,
   ATTACHMENT_SWEEP_LICENCE_TABLE,
+  WIRE_NONCE_DDL,
+  WIRE_NONCE_FULL,
+  claimWireNonceIn,
+  isWireNonceTable,
+  isWireNonceWrite,
+  type WireNonceClaim,
   clearOrphanSweepLicence,
   condemnLicensedOrphanAttachments,
   consumeOrphanSweepLicence,
@@ -987,6 +993,10 @@ const KERNEL_DDL = `
   -- #119: the kernel's authorization for one archive/trash move, read by the derived update
   -- trigger. Shared with the other adapter from @substrat-run/kernel; the comments are there.
   ${ENTITY_STATE_MOVES_DDL}
+  -- RFC wire-signing §4: the nonces of signed calls this scope accepted, and their count.
+  -- Store-local: never dumped, written on the bookkeeping path. Shared with the pure adapter
+  -- from @substrat-run/kernel, where the column comments are.
+  ${WIRE_NONCE_DDL}
 `;
 
 /**
@@ -1206,11 +1216,11 @@ class WriteRevision {
       const write = this.isWrite(query);
       if (write) this.written++;
       if (this.keeping && write) {
-        // Bookkeeping takes the copy-marker insert and the lifecycle delivery (#1713) and nothing
-        // else: any other write here would be one the revision never saw, which is the hole this
+        // Bookkeeping takes the copy-marker insert, the lifecycle delivery (#1713) and the wire
+        // nonce claim's own statements (RFC wire-signing §4) and nothing else: any other write here would be one the revision never saw, which is the hole this
         // class exists to close.
-        if (!isCopyMarkInsert(query) && !isLifecycleWrite(query)) {
-          throw substratError('internal', `the bookkeeping path takes only the copy-marker insert and the lifecycle delivery (#1722, #1713), not: ${query.slice(0, 80)}`);
+        if (!isCopyMarkInsert(query) && !isLifecycleWrite(query) && !isWireNonceWrite(query)) {
+          throw substratError('internal', `the bookkeeping path takes only the copy-marker insert, the lifecycle delivery and the wire nonce claim (#1722, #1713), not: ${query.slice(0, 80)}`);
         }
         return raw.exec(query, ...bindings);
       }
@@ -1235,8 +1245,9 @@ class WriteRevision {
    * r10). That only ever restricts what the store may run and changes no data, so it advances no
    * write revision: a backfill that marks a carry's source between its export and its wipe must
    * not read as a write the carry did not copy (that would keep the copy for nothing). Enforced,
-   * not trusted: any write in here but the marker insert (`isCopyMarkInsert`) or the lifecycle
-   * delivery (`isLifecycleWrite`, #1713) throws. Clearing a
+   * not trusted: any write in here but the marker insert (`isCopyMarkInsert`), the lifecycle
+   * delivery (`isLifecycleWrite`, #1713) or a wire nonce claim (`isWireNonceWrite`, RFC
+   * wire-signing §4: a nonce describes a call this store accepted, not its data) throws. Clearing a
    * marker is NOT bookkeeping (r11): it loosens the store, so it is a write a carry fences on.
    */
   bookkeeping<T>(run: () => T): T {
@@ -6720,6 +6731,26 @@ export function defineScopeDO(
     }
 
     /**
+     * RFC wire-signing §4: spend a signed call's nonce in this scope's own store, the claim the
+     * platform's entry makes through the vertical's host (`claimWireNonceLocal`) after every other
+     * check of the envelope has passed. `true` once per nonce; `false` for one already spent, or a
+     * claim after `until`. A store at its cap throws, after its purge committed, which the entry
+     * answers as the store's failure. In storage, so it survives an eviction. Bookkeeping, like the
+     * copy marker: a nonce describes a call this store accepted, not its data, so it advances no
+     * write revision a carry fences on, and no dump carries it.
+     */
+    claimWireNonce(nonce: string, until: number): boolean {
+      let answer!: WireNonceClaim;
+      this.revision.transactionSync(() => {
+        answer = this.revision.bookkeeping(() =>
+          claimWireNonceIn(this.switchSql(), nonce, until, Math.floor(Date.now() / 1000)),
+        );
+      });
+      if (answer === 'full') throw new Error(WIRE_NONCE_FULL);
+      return answer;
+    }
+
+    /**
      * Clear a mistaken copy classification (#2005, `clearCopyMarker`); a load's events mark stays,
      * so copied work still never runs here (#2009). A
      * clear is a write like any other (Codex #2008 r11), never bookkeeping: it lets the store run
@@ -7251,7 +7282,8 @@ export function defineScopeDO(
      * The tables a dump carries, by name. The derived search index (#827) is excluded: its shadow
      * tables cannot be replayed — this host answers "object name reserved for internal use" — and
      * it is recomputable, so `importDump` rebuilds it from the loaded rows. A dump carries the rows,
-     * never the index over them. A staged load's own tables (#2450) are this store's, not its data.
+     * never the index over them. A staged load's own tables (#2450) are this store's, not its data,
+     * and so is the wire nonce store (RFC wire-signing §4): a load builds it empty.
      */
     private dumpTableDefs(): { name: string; sql: string }[] {
       return (
@@ -7263,7 +7295,7 @@ export function defineScopeDO(
               ORDER BY name`,
           )
           .toArray() as unknown as { name: string; sql: string }[]
-      ).filter(({ name }) => !isSearchIndexTable(name));
+      ).filter(({ name }) => !isSearchIndexTable(name) && !isWireNonceTable(name));
     }
 
     /**
@@ -7596,8 +7628,10 @@ export function defineScopeDO(
       // rather than failing a restore over data about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
       // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
+      // The wire nonce store is this store's own (RFC wire-signing §4): never replayed, so a load
+      // starts it empty.
       const replayable = tables
-        .filter((t) => !isSearchIndexTable(t.name.toLowerCase()))
+        .filter((t) => !isSearchIndexTable(t.name.toLowerCase()) && !isWireNonceTable(t.name))
         .map((t) => (loadDropsRowsOf(t.name, destScopeId, sourceScopeId) ? { ...t, rows: () => [] } : t));
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE

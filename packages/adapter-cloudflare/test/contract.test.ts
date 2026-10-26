@@ -74,6 +74,7 @@ import {
   roleStateContractSuite,
   restoreRoleContractSuite,
   sizeReadsContractSuite,
+  wireNonceContractSuite,
   introspectionReadsContractSuite,
   introspectionReadsOf,
   introspectionReadCalls,
@@ -897,6 +898,16 @@ sizeReadsContractSuite('adapter-cloudflare', async () => {
     databaseSizeLocal: (s) => host.databaseSizeLocal(s),
     attachmentSizeLocal: (s) => host.attachmentSizeLocal(s),
     storeHoldsNothing: async (_t, s) => scopeObjectHoldsNothing(s),
+    cleanup: async () => host.close(),
+  };
+});
+
+// RFC wire-signing §4: the nonce store, the same on both adapters.
+wireNonceContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  return {
+    host,
+    claimWireNonceLocal: (t, s, n, u) => host.claimWireNonceLocal(t, s, n, u),
     cleanup: async () => host.close(),
   };
 });

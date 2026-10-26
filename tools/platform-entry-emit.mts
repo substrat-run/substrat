@@ -36,6 +36,8 @@ const SOURCE = 'packages/vertical-host/src/invocation-log.ts';
 /** The wire-signing verifier (RFC wire-signing §5), wrapped around the stamp. */
 const GATE_SOURCE = 'packages/control-plane-api/platform-entry/wire-gate.ts';
 const ROUTED_NODE_SOURCE = 'packages/vertical-host/src/routed-node.ts';
+/** Where the verifier spends a nonce (RFC wire-signing §4): the host the vertical registered. */
+const NONCE_STORE_SOURCE = 'packages/control-plane-api/platform-entry/nonce-store.ts';
 const PLACEHOLDER = '__SUBSTRAT_VERTICAL_ENTRY__';
 const SWEEPER_SOURCE = 'packages/adapter-cloudflare/src/scope-sweeper-do.ts';
 const SWEEP_HOST_SOURCE = 'packages/vertical-host/src/scope-sweep-host.ts';
@@ -89,6 +91,8 @@ const js = await bundle(
     `import { withInvocationLog } from './${SOURCE}';`,
     `import { readRoutedNode } from './${ROUTED_NODE_SOURCE}';`,
     `import { withWireGate } from './${GATE_SOURCE}';`,
+    `import { nonceStoreOf } from './${NONCE_STORE_SOURCE}';`,
+    `import { registeredScopeSweepHost } from './${SWEEP_HOST_SOURCE}';`,
     `import * as vertical from '${PLACEHOLDER}';`,
     `export * from '${PLACEHOLDER}';`,
     // The same two answers every vertical gives \`readRoutedNode\`: the router's secret, which
@@ -103,6 +107,10 @@ const js = await bundle(
     `    routedNode: (headers, env) => readRoutedNode(headers, { expectedSecret: routerSecret(env), allowUnsigned: allowUnsigned(env) }),`,
     `    routerSecret,`,
     `    platformSecret: (env) => env.PLATFORM_SECRET,`,
+    // RFC wire-signing §4: a call that changes state spends its nonce in its scope's own object,
+    // through the host the vertical registered for the sweeper. None registered, or a host from
+    // before the store, is this version's static no-nonce-store fault.
+    `    nonceCache: nonceStoreOf(registeredScopeSweepHost),`,
     `  },`,
     `);`,
   ].join('\n'),

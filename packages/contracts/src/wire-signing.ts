@@ -795,10 +795,12 @@ export type WireOutcome = (typeof WIRE_OUTCOMES)[number];
 
 /**
  * Which of the deployment's own faults a `fault` was: its key lists could not be loaded, it has
- * no nonce store for a call that needs one, its nonce store threw or did not answer in time, or
- * the verifier threw for any other reason.
+ * no nonce store for a call that needs one, its nonce store threw or did not answer in time (or
+ * was at its cap), the verifier threw for any other reason, or a call that keeps nonces named no
+ * scope to spend one in (`unscoped`, RFC §4: no store can hold its nonce, whatever the version).
+ * Append only: a reader that meets a kind it does not know counts it as a fault all the same.
  */
-export const WIRE_FAULTS = ['keys', 'no-nonce-store', 'nonce-store', 'verifier'] as const;
+export const WIRE_FAULTS = ['keys', 'no-nonce-store', 'nonce-store', 'verifier', 'unscoped'] as const;
 export type WireFault = (typeof WIRE_FAULTS)[number];
 
 /** The legacy credential beside the envelope: present and valid, present and not, or not sent. */

@@ -270,10 +270,12 @@ describe('the readiness report', () => {
     expect(r.first.confirmation).toMatchObject({ status: 'confirmed' });
     expect(r.scripts.map((s) => [s.deploymentRef, s.status, s.state, s.confirmed])).toEqual(v.scripts.map((s) => [s, 'verifies', 'dual', true]));
     expect([r.signedOnly, r.withdrawal]).toEqual([[], []]);
-    // The standing blockers of signed-only: every unsigned route by method, path and reason, and the counters.
+    // The standing blockers of signed-only: every unsigned route by method, path and reason, the
+    // counters, and the nonce store no record can show yet (RFC §4).
     expect(r.fleetWide((p) => p.blockers.signedOnly).map((b) => b.reason)).toEqual([
       ...WIRE_UNSIGNED_ROUTES.map((u) => `${u.method} ${u.path}: ${u.reason}`),
       R.counters,
+      R.nonceStore,
     ]);
     expect(r.fleetWide((p) => p.blockers.signedOnly)[0]!.reason).toMatch(/^POST \/internal\/connector-attachment-stream: /);
     expect(r.fleetWide((p) => p.blockers.credentialWithdrawal).map((b) => b.reason)).toEqual([R.notSignedOnly, R.upChannel, R.perDeployment]);
@@ -500,7 +502,7 @@ describe('the readiness report', () => {
     expect(one.scripts.map((s) => s.deploymentRef).sort()).toEqual([...a.scripts, ...b.scripts].sort());
     expect(one.pages.at(-1)!.next).toBeNull();
     // The standing blockers ride every page.
-    for (const p of one.pages) expect(p.blockers.signedOnly.filter((x) => x.kind === 'standing').length).toBe(WIRE_UNSIGNED_ROUTES.length + 1);
+    for (const p of one.pages) expect(p.blockers.signedOnly.filter((x) => x.kind === 'standing').length).toBe(WIRE_UNSIGNED_ROUTES.length + 2);
   });
 
   it('a key drop’s since is refused missing, unreadable or in the future, with its fixed sentence; staff only, never a service token', async () => {

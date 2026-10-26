@@ -37,6 +37,7 @@ import {
   roleStateContractSuite,
   restoreRoleContractSuite,
   sizeReadsContractSuite,
+  wireNonceContractSuite,
   introspectionReadsContractSuite,
   introspectionReadsOf,
   scheduleContractSuite,
@@ -359,6 +360,20 @@ sizeReadsContractSuite('adapter-sqlite', async () => {
     databaseSizeLocal: (s) => host.databaseSizeLocal(s),
     attachmentSizeLocal: (s) => host.attachmentSizeLocal(s),
     storeHoldsNothing: async (t, s) => !existsSync(join(dir, `${t}__${s}.sqlite`)),
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// RFC wire-signing §4: the nonce store, the same on both adapters.
+wireNonceContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-wire-nonce-'));
+  const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    claimWireNonceLocal: (t, s, n, u) => host.claimWireNonceLocal(t, s, n, u),
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
