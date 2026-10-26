@@ -993,7 +993,9 @@ function CliPushPanel() {
  */
 function GitImportCard({ teamId, git, error, onPick, onSelectAccount }: { teamId: string; git: GitReposResult | null; error: boolean; onPick: (repo: { fullName: string; branch: string; account?: string }) => void; onSelectAccount: (account: string) => void }) {
   const [filter, setFilter] = useState('');
-  const connect = () => void connectGithub(teamId);
+  // A refused connect (no permission, GitHub not configured here) is said in the card, not swallowed.
+  const [connectError, setConnectError] = useState<string>();
+  const connect = () => void connectGithub(teamId).catch((e: Error) => setConnectError(e.message));
   const repos = git?.repos ?? [];
   const shown = filter.trim() ? repos.filter((r) => r.fullName.toLowerCase().includes(filter.toLowerCase())) : repos;
 
@@ -1020,6 +1022,7 @@ function GitImportCard({ teamId, git, error, onPick, onSelectAccount }: { teamId
         )}
       </div>
 
+      {connectError && <div style={{ padding: '12px 16px 0', fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{connectError}</div>}
       {error ? (
         <div style={{ padding: '20px 16px', fontSize: 12.5, color: 'var(--status-danger-fg)' }}>Couldn’t load repositories — try again.</div>
       ) : git === null ? (
@@ -1199,7 +1202,7 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
               The GitHub App is missing write access on this repository (an older installation). Re-approve the App's updated
               permissions on GitHub, or{' '}
               <a href="#" onClick={(e) => { e.preventDefault(); setManual(true); }}>set it up manually</a>.{' '}
-              <a href="#" onClick={(e) => { e.preventDefault(); void connectGithub(teamId); }}>Review the App's access</a>
+              <a href="#" onClick={(e) => { e.preventDefault(); void connectGithub(teamId).catch((err: Error) => setError(err.message)); }}>Review the App's access</a>
             </div>
           )}
           {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
