@@ -102,6 +102,8 @@ beforeAll(() => {
     },
   ];
   mf = new Miniflare({ workers: [...pair('install'), ...pair('copy')] });
+  // Boot workerd here, not inside the first case, which would carry the whole cold start.
+  return mf.ready.then(() => undefined);
 });
 afterAll(async () => {
   await mf?.dispose();
