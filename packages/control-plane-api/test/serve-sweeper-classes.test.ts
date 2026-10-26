@@ -35,7 +35,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
   /** The metadata of every script PUT, in order. */
   const puts: { url: string; meta: Record<string, any> }[] = [];
 
-  beforeAll(() => {
+  beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-serve-sweeper-'));
     host = new SqliteScopeHost({ dir });
     app = createControlPlaneApi({
@@ -46,6 +46,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
         { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
       ],
     });
+    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'sweep-serve', name: 'sweep-serve' });
   });
   afterAll(async () => {
     await host.close();
@@ -123,7 +124,6 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
 
   it('records SweeperDO with the first serve; no later upload re-declares it, and a new class still moves the tag', async () => {
     stubCloudflare();
-    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'sweep-serve', name: 'sweep-serve' });
     const v1 = await push('0.1.0');
     const slug = v1.verticalSlug;
     const BASE = ['ScopeDO', 'ConfigDO', 'SweeperDO'];
@@ -169,7 +169,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
     const slug = v1.verticalSlug;
     await promote(slug, v1.id);
     const before = await host.admin.verticalServing(staff, slug);
-    const v2 = await push('0.5.0', [{ type: 'durable_object_namespace', name: 'NOTES', class_name: 'NotesDO' }]);
+    const v2 = await push('0.5.0', [{ type: 'durable_object_namespace', name: 'JOURNAL', class_name: 'JournalDO' }]);
     const grown = await push('0.6.0', [{ type: 'durable_object_namespace', name: 'EXTRA', class_name: 'ExtraDO' }]);
     const landed = { ref: before!.ref, versionId: grown.id, doClasses: [...before!.doClasses, 'ExtraDO'], migrationTag: 'v9' };
     // The other serve lands while this one's upload to the serving script is in flight.
@@ -181,9 +181,9 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
       }
       return upload(url, init);
     });
-    const said = await (await promote(slug, v2.id, true, 502)).json() as { detail: string };
-    expect(said.detail).toContain('promoting again cannot land until the record is repaired');
-    expect(said.detail).not.toContain('promote again to retry');
+    const said = await (await promote(slug, v2.id, true, 502)).json() as { error: string };
+    expect(said.error).toContain('promoting again cannot land until the record is repaired');
+    expect(said.error).not.toContain('promote again to retry');
     expect(await host.admin.verticalServing(staff, slug)).toEqual(landed);
   });
 });
