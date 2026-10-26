@@ -905,7 +905,6 @@ interface ControlPlaneStub {
   dumpTenantTuples(
     tenantId: string,
   ): Promise<{ subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[]>;
-  readHostname(hostname: string): Promise<HostnameRow | undefined>;
   readRoute(hostname: string): Promise<RouteRow | undefined>;
   /** #1706: "vertical Y in tenant T", by the kernel's one rule — see `HostAdmin.resolveVerticalInstance`. */
   resolveVerticalInstance(tenantId: string, vertical: string): Promise<VerticalResolution>;
@@ -916,12 +915,12 @@ interface ControlPlaneStub {
     { ok: true; changed: boolean; previous: string | null } |
     { ok: false; code: 'not_found'; message: string }
   >;
-  demoteCanonical(scopeId: string, surface: string): Promise<void>;
-  upsertHostname(h: {
-    hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
+  /** #2526: the guard, the demotion, the bind and its row, one unit; called through `reply`. */
+  bindHostnameInDirectory(h: {
+    hostname: string; tenantId: string; scopeId: string;
     surface: string; region: string | null; canonical: boolean; createdAt: string;
-  }): Promise<void>;
-  setHostnameStatus(hostname: string, status: string, note: string | null): Promise<void>;
+  }, audit: AdminEntry): Promise<void>;
+  setHostnameStatus(hostname: string, status: string, note: string | null, audit?: AdminEntry): Promise<boolean>;
   setHostnameIssuance(
     hostname: string,
     fields: {
@@ -930,8 +929,9 @@ interface ControlPlaneStub {
       customHostnameId?: string | null;
       validationRecords: string | null;
     },
-  ): Promise<void>;
-  deleteHostname(hostname: string, owner?: { tenantId: string; scopeId: string }): Promise<{ tenant_id: string; scope_id: string; status: string } | null>;
+    audit?: AdminEntry,
+  ): Promise<boolean>;
+  deleteHostname(hostname: string, owner?: { tenantId: string; scopeId: string }, audit?: AdminEntry): Promise<{ tenant_id: string; scope_id: string; status: string } | null>;
   listHostnames(
     filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): Promise<HostnameRow[]>;
@@ -1030,8 +1030,9 @@ interface ControlPlaneStub {
     key: string,
     input: { expiresAt?: string | null; quota?: number | null; plan?: string | null },
     actor: string,
+    audit?: AdminEntry,
   ): Promise<{ changed: boolean; before: EntitlementRow | null; after: EntitlementRow }>;
-  revokeEntitlement(tenantId: string, key: string): Promise<EntitlementRow | null>;
+  revokeEntitlement(tenantId: string, key: string, audit?: AdminEntry): Promise<EntitlementRow | null>;
   tenantHoldsEntitlement(tenantId: string, key: string): Promise<boolean>;
   listEntitlements(tenantId: string): Promise<EntitlementRow[]>;
   /** The three projections §5's meters fold from (#38); narrowed when a tenant is given. */
@@ -8332,100 +8333,41 @@ export class CloudflareScopeHost implements ScopeHost {
 
       bindHostname: async (actor, input: BindHostnameInput) => {
         const parsed = bindHostnameInput.parse(input);
-        const scope = await this.cp.getScopeRecord(parsed.tenantId, parsed.scopeId);
-        if (!scope) {
-          throw substratError('not_found', `unknown scope ${parsed.scopeId} in tenant ${parsed.tenantId}`);
-        }
-        const existing = await this.cp.readHostname(parsed.hostname);
-        // The holder's own status decides whether the name is reclaimable. Read it from
-        // the scope record rather than joining it onto the hostname read: the router
-        // shares that read's shape, and a scope status it can see is an invitation to
-        // re-check suspension there (route-resolver's `readRoute` deliberately has none).
-        const holder =
-          existing && existing.scope_id !== parsed.scopeId
-            ? await this.cp.getScopeRecord(existing.tenant_id, existing.scope_id)
-            : undefined;
-        const holderReleased = holder?.status === 'archived' || holder?.status === 'reaped';
-        if (existing && existing.scope_id !== parsed.scopeId && !holderReleased) {
-          // A hostname routes to exactly one place; silently rebinding would move
-          // another tenant's traffic. Exception: the holder is ARCHIVED or REAPED (a
-          // deleted app, storage since wiped) — it has released the name, so the rebind
-          // reclaims it.
-          throw substratError('conflict', `hostname '${parsed.hostname}' is already bound to another scope`);
-        }
-        // Exactly one canonical per (scope, surface).
-        if (parsed.canonical) await this.cp.demoteCanonical(parsed.scopeId, parsed.surface);
-        await this.cp.upsertHostname({
+        // #2526: the scope, the holder whose status decides whether the name is reclaimable
+        // (archived or reaped released it), the canonical's demotion, the bind and its row are one
+        // ControlPlaneDO unit; the row's vertical is the scope's as that unit read it.
+        await this.directory('bindHostnameInDirectory', {
           hostname: parsed.hostname,
           tenantId: parsed.tenantId,
           scopeId: parsed.scopeId,
-          verticalSlug: scope.vertical,
           surface: parsed.surface,
           region: parsed.region,
           canonical: parsed.canonical,
           createdAt: new Date().toISOString(),
-        });
-        await this.recordAdmin(
-          actor,
-          'bindHostname',
-          { tenantId: parsed.tenantId, scopeId: parsed.scopeId, vertical: scope.vertical },
-          null,
-          parsed,
-        );
+        }, this.adminEntry(actor, 'bindHostname', { tenantId: parsed.tenantId, scopeId: parsed.scopeId }, null, parsed));
       },
+      // #2526: the three below read their row in the unit that writes it (refusing an unbound name
+      // `not_found`, judging the no-op, filling the row's target and `before`), so the template
+      // carries no tenant or scope of its own.
       setHostnameStatus: async (actor, raw: string, status, note?: string) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = await this.cp.readHostname(hostname);
-        if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
-        if (row.status === status) return; // idempotent, unaudited
-        await this.cp.setHostnameStatus(hostname, status, note ?? null);
-        await this.recordAdmin(
-          actor,
-          'setHostnameStatus',
-          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
-          { status: row.status },
-          { status, note: note ?? null },
-        );
+        await this.directory('setHostnameStatus', hostname, status, note ?? null,
+          this.adminEntry(actor, 'setHostnameStatus', { tenantId: null }, null, { status, note: note ?? null }));
       },
       setHostnameIssuance: async (actor, raw, fields) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = await this.cp.readHostname(hostname);
-        if (!row) throw substratError('not_found', `unknown hostname '${hostname}'`);
-        // A poll that finds nothing changed (same status, same records, id already set)
-        // is not an event — skip the write and the audit entry, so the reconcile sweep
-        // does not flood the admin log with no-op rows every interval.
-        const recordsJson = JSON.stringify(fields.validationRecords);
-        const idUnchanged =
-          fields.customHostnameId === undefined || fields.customHostnameId === row.custom_hostname_id;
-        if (row.status === fields.status && (row.validation_records ?? '[]') === recordsJson && idUnchanged) {
-          return;
-        }
-        await this.cp.setHostnameIssuance(hostname, {
+        await this.directory('setHostnameIssuance', hostname, {
           status: fields.status,
           note: fields.note ?? null,
           customHostnameId: fields.customHostnameId,
-          validationRecords: fields.validationRecords.length ? recordsJson : null,
-        });
-        await this.recordAdmin(
-          actor,
-          'setHostnameIssuance',
-          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
-          { status: row.status },
-          { status: fields.status, note: fields.note ?? null },
-        );
+          validationRecords: fields.validationRecords.length ? JSON.stringify(fields.validationRecords) : null,
+        }, this.adminEntry(actor, 'setHostnameIssuance', { tenantId: null }, null, { status: fields.status, note: fields.note ?? null }));
       },
       unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
         // The row the delete removed, so an owner is judged by the delete itself (#2285).
-        const row = await this.cp.deleteHostname(hostname, owner);
-        if (!row) return; // idempotent, and a no-op is not audited
-        await this.recordAdmin(
-          actor,
-          'unbindHostname',
-          { tenantId: row.tenant_id as TenantId, scopeId: row.scope_id as ScopeId },
-          { hostname, status: row.status },
-          null,
-        );
+        await this.directory('deleteHostname', hostname, owner,
+          this.adminEntry(actor, 'unbindHostname', { tenantId: null }, null, null));
       },
       listHostnames: async (actor, filter) => {
         const rows = await this.cp.listHostnames({
@@ -10079,42 +10021,22 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       grantEntitlement: async (actor, tenantId, entitlementKey, plan?) => {
         const input = entitlementGrantInput.parse(plan ?? {});
-        const result = await this.cp.grantEntitlement(tenantId, entitlementKey, input, actor);
+        // #2526: the held grant (the row's `before`, and the no-op judgement), the upsert and the
+        // row are one ControlPlaneDO unit, which fills `before` and `after`.
+        const result = await this.directory('grantEntitlement', tenantId, entitlementKey, input, actor,
+          this.adminEntry(actor, 'grantEntitlement', { tenantId }, null, null));
         if (!result.changed) return; // idempotent — an unchanged grant is not audited
-        await this.recordAdmin(
-          actor,
-          'grantEntitlement',
-          { tenantId },
-          result.before
-            ? {
-                entitlementKey,
-                expiresAt: result.before.expires_at,
-                quota: result.before.quota,
-                plan: result.before.plan,
-              }
-            : null,
-          {
-            entitlementKey,
-            expiresAt: result.after.expires_at,
-            quota: result.after.quota,
-            plan: result.after.plan,
-          },
-        );
         // #304: an entitlement change is a tenant-level write, so it fans out into the
         // tenant's projected scopes — the invalidation half of the OQ5 answer. A no-op
-        // unless scope-local projection is on; the reconcile sweep repairs any drop.
+        // unless scope-local projection is on; the reconcile sweep repairs any drop. It runs
+        // after the grant and its row have committed.
         await this.fanOut(tenantId);
       },
       revokeEntitlement: async (actor, tenantId, entitlementKey) => {
-        const removed = await this.cp.revokeEntitlement(tenantId, entitlementKey);
+        // #2526: the delete and its row, `before` the grant it removed, are one unit.
+        const removed = await this.directory('revokeEntitlement', tenantId, entitlementKey,
+          this.adminEntry(actor, 'revokeEntitlement', { tenantId }, null, null));
         if (!removed) return; // nothing held, nothing changed
-        await this.recordAdmin(
-          actor,
-          'revokeEntitlement',
-          { tenantId },
-          { entitlementKey, expiresAt: removed.expires_at, quota: removed.quota, plan: removed.plan },
-          null,
-        );
         // The revoke must reach the projected scopes so a running vertical stops honouring
         // the entitlement — a dropped fan-out here would leave it enforcing a stale grant.
         await this.fanOut(tenantId);

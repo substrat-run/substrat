@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   connectionId, errorCodeOf, moduleId, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId,
-  type AdminAction, type OrgId, type PlatformActorId, type TenantId,
+  type AdminAction, type OrgId, type PlatformActorId, type ScopeId, type TenantId,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { heldMigrations } from './held-migrations.js';
@@ -95,6 +95,37 @@ const newConnection = async (host: ScopeHost, staff: PlatformActorId, t: TenantI
   await host.admin.createConnection(staff, { id, tenantId: t, vertical, provider, label: 'Audit connection', secret: { accessToken: 'tok' } });
   return { id, provider };
 };
+
+/** #2526: a provisioned scope in tenant `t`, with a lowercase hostname of its own to bind. */
+const newScope = async (host: ScopeHost, staff: PlatformActorId, t: TenantId) => {
+  const s = scopeId.parse(ulid());
+  await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: await newVertical(host, staff) });
+  return s;
+};
+
+const hostnameOf = () => `audit-${ulid().toLowerCase()}.example.com`;
+
+/**
+ * #2526: a hostname bound to scope `s` of tenant `t`, `pending` as a bind leaves it. Bound by an
+ * actor of its own, so its row is never one a case counts as the call's.
+ */
+const bound = async (host: ScopeHost, t: TenantId, s: ScopeId, canonical = false): Promise<string> => {
+  const hostname = hostnameOf();
+  await host.admin.bindHostname(platformActorId.parse(ulid()), { hostname, tenantId: t, scopeId: s, surface: 'app', region: null, canonical });
+  return hostname;
+};
+
+/** #2526: a scope's hostnames as `[hostname, canonical]`, in name order. */
+const scopeHostnames = async (host: ScopeHost, staff: PlatformActorId, s: ScopeId) =>
+  (await host.admin.listHostnames(staff, { scopeId: s })).map((h) => [h.hostname, h.canonical]).sort();
+
+const hostnameStatus = async (host: ScopeHost, staff: PlatformActorId, s: ScopeId, hostname: string) =>
+  (await host.admin.listHostnames(staff, { scopeId: s })).find((h) => h.hostname === hostname)?.status ?? null;
+
+const RECORDS = [{ type: 'txt' as const, name: '_cf-custom-hostname', value: 'dcv-token', status: null }];
+
+const entitlementsOf = async (host: ScopeHost, staff: PlatformActorId, t: TenantId) =>
+  (await host.admin.listEntitlements(staff, t)).map((e) => [e.entitlementKey, e.plan]);
 
 /** One vertical flag flipped by staff: the case is the same shape for each. */
 const flagCase = (
@@ -434,6 +465,97 @@ const CASES: DirectoryCase[] = [
       };
     },
   },
+  // #2526: the hostname and entitlement writes.
+  {
+    action: 'bindHostname',
+    write: { table: 'hostnames', verb: 'INSERT' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      const s = await newScope(host, staff, t);
+      // The surface's canonical already: the new canonical demotes it in the same unit, so a
+      // refused bind leaves it canonical, whichever write is refused.
+      const first = await bound(host, t, s, true);
+      const hostname = hostnameOf();
+      return {
+        call: () => host.admin.bindHostname(staff, { hostname, tenantId: t, scopeId: s, surface: 'app', region: null, canonical: true }),
+        state: () => scopeHostnames(host, staff, s),
+        changed: [[first, false], [hostname, true]].sort(),
+        row: { before: null, after: expect.objectContaining({ hostname, tenantId: t, scopeId: s, surface: 'app', canonical: true }) },
+      };
+    },
+  },
+  {
+    action: 'setHostnameStatus',
+    write: { table: 'hostnames', verb: 'UPDATE' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      const s = await newScope(host, staff, t);
+      const hostname = await bound(host, t, s);
+      return {
+        call: () => host.admin.setHostnameStatus(staff, hostname, 'active'),
+        state: () => hostnameStatus(host, staff, s, hostname),
+        changed: 'active',
+        row: { before: { status: 'pending' }, after: { status: 'active', note: null } },
+      };
+    },
+  },
+  {
+    action: 'setHostnameIssuance',
+    write: { table: 'hostnames', verb: 'UPDATE' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      const s = await newScope(host, staff, t);
+      const hostname = await bound(host, t, s);
+      return {
+        call: () => host.admin.setHostnameIssuance(staff, hostname, { status: 'verifying', customHostnameId: 'cf-audit', validationRecords: RECORDS }),
+        state: () => hostnameStatus(host, staff, s, hostname),
+        changed: 'verifying',
+        row: { before: { status: 'pending' }, after: { status: 'verifying', note: null } },
+      };
+    },
+  },
+  {
+    action: 'unbindHostname',
+    write: { table: 'hostnames', verb: 'DELETE' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      const s = await newScope(host, staff, t);
+      const hostname = await bound(host, t, s);
+      return {
+        call: () => host.admin.unbindHostname(staff, hostname),
+        state: () => scopeHostnames(host, staff, s),
+        changed: [],
+        row: { before: { hostname, status: 'pending' }, after: null },
+      };
+    },
+  },
+  {
+    action: 'grantEntitlement',
+    write: { table: '_substrat_entitlements', verb: 'INSERT' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      return {
+        call: () => host.admin.grantEntitlement(staff, t, 'audit-entitlement', { plan: 'pro' }),
+        state: () => entitlementsOf(host, staff, t),
+        changed: [['audit-entitlement', 'pro']],
+        row: { before: null, after: { entitlementKey: 'audit-entitlement', expiresAt: null, quota: null, plan: 'pro' } },
+      };
+    },
+  },
+  {
+    action: 'revokeEntitlement',
+    write: { table: '_substrat_entitlements', verb: 'DELETE' },
+    arrange: async (host, staff) => {
+      const t = await newTenant(host, staff);
+      await host.admin.grantEntitlement(staff, t, 'audit-entitlement', { plan: 'pro' });
+      return {
+        call: () => host.admin.revokeEntitlement(staff, t, 'audit-entitlement'),
+        state: () => entitlementsOf(host, staff, t),
+        changed: [],
+        row: { before: { entitlementKey: 'audit-entitlement', expiresAt: null, quota: null, plan: 'pro' }, after: null },
+      };
+    },
+  },
 ];
 
 /**
@@ -455,7 +577,9 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
       try {
         const { call, state, changed, row } = await c.arrange(host, staff, fixture);
         const since = new Date().toISOString();
-        const rows = () => host.admin.auditLog(staff, { action: [c.action], since });
+        // The call's own rows: an arrangement that made the same action as another actor, in the
+        // same millisecond as `since`, is not one of them.
+        const rows = async () => (await host.admin.auditLog(staff, { action: [c.action], since })).filter((r) => r.actor === staff);
         const before = await state();
         expect(before).not.toEqual(changed);
         await fixture.directorySql(trigger.create);
@@ -552,7 +676,9 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
         throw new Error('expected the call to be refused');
       };
       const rowsSince = async (host: ScopeHost, staff: PlatformActorId, action: AdminAction, since: string) =>
-        (await host.admin.auditLog(staff, { action: [action], since })).map((r) => ({ before: r.before, after: r.after }));
+        (await host.admin.auditLog(staff, { action: [action], since }))
+          .filter((r) => r.actor === staff)
+          .map((r) => ({ before: r.before, after: r.after }));
       /** A private vertical (tenant-owned, not listed), whose versions self-admit. */
       const privateVertical = async (host: ScopeHost, staff: PlatformActorId) => {
         const owner = await newTenant(host, staff);
@@ -806,6 +932,113 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
           expect((await host.admin.getTenant(staff, t))?.name).toBe('Last');
           expect((await host.admin.auditLog(staff, { tenantId: t, action: ['setTenantName'] })).map((r) => [r.before, r.after]))
             .toEqual([[{ name: 'Middle' }, { name: 'After' }]]);
+        });
+      });
+
+      // #2526: the hostname and entitlement writes judge their guard, their no-op and their row's
+      // `before` in the unit that writes. A no-op writes nothing and records nothing; each is
+      // paired with the change beside it that does record.
+      /** A hostname row as another caller would write it, for an interleave. */
+      const hostnameInsert = (hostname: string, t: TenantId, s: ScopeId) =>
+        `INSERT INTO hostnames (hostname, tenant_id, scope_id, vertical_slug, surface, region, status, status_note, canonical,
+           created_at, custom_hostname_id, validation_records)
+         VALUES ('${hostname}', '${t}', '${s}', NULL, 'app', NULL, 'pending', NULL, 0, '2026-10-25T00:00:00.000Z', NULL, NULL)`;
+
+      it('bindHostname refuses a name another live scope bound since it was read, demoting nothing', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          const [mine, theirs] = [await newScope(host, staff, t), await newScope(host, staff, t)];
+          const canonical = await bound(host, t, mine, true);
+          const hostname = hostnameOf();
+          const since = new Date().toISOString();
+          fixture.interleave(hostnameInsert(hostname, t, theirs));
+          const refused = await refusalOf(host.admin.bindHostname(staff,
+            { hostname, tenantId: t, scopeId: mine, surface: 'app', region: null, canonical: true }));
+          expect(errorCodeOf(refused)).toBe('conflict');
+          expect(refused.message).toBe(`hostname '${hostname}' is already bound to another scope`);
+          expect(await scopeHostnames(host, staff, mine)).toEqual([[canonical, true]]);
+          expect(await scopeHostnames(host, staff, theirs)).toEqual([[hostname, false]]);
+          expect(await rowsSince(host, staff, 'bindHostname', since)).toEqual([]);
+        });
+      });
+
+      it('and reclaims a name whose holder was archived since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          const [mine, theirs] = [await newScope(host, staff, t), await newScope(host, staff, t)];
+          const hostname = await bound(host, t, theirs);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE scopes SET status = 'archived' WHERE scope_id = '${theirs}'`);
+          await host.admin.bindHostname(staff, { hostname, tenantId: t, scopeId: mine, surface: 'app', region: null, canonical: false });
+          expect(await scopeHostnames(host, staff, mine)).toEqual([[hostname, false]]);
+          expect((await rowsSince(host, staff, 'bindHostname', since)).map((r) => (r.after as { scopeId: string }).scopeId)).toEqual([mine]);
+        });
+      });
+
+      it('setHostnameStatus records nothing for a status set since it was read, and the status its unit read otherwise', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          const s = await newScope(host, staff, t);
+          const hostname = await bound(host, t, s);
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE hostnames SET status = 'active' WHERE hostname = '${hostname}'`);
+          await host.admin.setHostnameStatus(staff, hostname, 'active');
+          expect(await rowsSince(host, staff, 'setHostnameStatus', since)).toEqual([]);
+          fixture.interleave(`UPDATE hostnames SET status = 'failed' WHERE hostname = '${hostname}'`);
+          await host.admin.setHostnameStatus(staff, hostname, 'active');
+          expect(await hostnameStatus(host, staff, s, hostname)).toBe('active');
+          expect(await rowsSince(host, staff, 'setHostnameStatus', since))
+            .toEqual([{ before: { status: 'failed' }, after: { status: 'active', note: null } }]);
+        });
+      });
+
+      it('setHostnameIssuance records nothing for a poll that finds what another write already stored, and one row for a poll that changes it', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          const s = await newScope(host, staff, t);
+          const hostname = await bound(host, t, s);
+          const poll = { status: 'verifying' as const, customHostnameId: 'cf-audit', validationRecords: RECORDS };
+          const since = new Date().toISOString();
+          fixture.interleave(`UPDATE hostnames SET status = 'verifying', custom_hostname_id = 'cf-audit',
+            validation_records = '${JSON.stringify(RECORDS)}' WHERE hostname = '${hostname}'`);
+          await host.admin.setHostnameIssuance(staff, hostname, poll);
+          expect(await rowsSince(host, staff, 'setHostnameIssuance', since)).toEqual([]);
+          // Its twin: a poll that resolves it records one row, `before` the status the unit read.
+          await host.admin.setHostnameIssuance(staff, hostname, { status: 'active', validationRecords: [] });
+          expect(await hostnameStatus(host, staff, s, hostname)).toBe('active');
+          expect(await rowsSince(host, staff, 'setHostnameIssuance', since))
+            .toEqual([{ before: { status: 'verifying' }, after: { status: 'active', note: null } }]);
+        });
+      });
+
+      it('grantEntitlement records nothing for a grant another write already made, and the grant its unit read as before otherwise', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          const held = (plan: string) => `INSERT OR REPLACE INTO _substrat_entitlements
+            (tenant_id, entitlement_key, expires_at, quota, plan, granted_at, granted_by)
+            VALUES ('${t}', 'audit-entitlement', NULL, NULL, '${plan}', '2026-10-25T00:00:00.000Z', 'interleaved')`;
+          const since = new Date().toISOString();
+          fixture.interleave(held('pro'));
+          await host.admin.grantEntitlement(staff, t, 'audit-entitlement', { plan: 'pro' });
+          expect(await rowsSince(host, staff, 'grantEntitlement', since)).toEqual([]);
+          fixture.interleave(held('trial'));
+          await host.admin.grantEntitlement(staff, t, 'audit-entitlement', { plan: 'pro' });
+          expect(await entitlementsOf(host, staff, t)).toEqual([['audit-entitlement', 'pro']]);
+          expect(await rowsSince(host, staff, 'grantEntitlement', since)).toEqual([{
+            before: { entitlementKey: 'audit-entitlement', expiresAt: null, quota: null, plan: 'trial' },
+            after: { entitlementKey: 'audit-entitlement', expiresAt: null, quota: null, plan: 'pro' },
+          }]);
+        });
+      });
+
+      it('revokeEntitlement records nothing for a grant revoked since it was read', async () => {
+        await withFixture(async (fixture, host, staff) => {
+          const t = await newTenant(host, staff);
+          await host.admin.grantEntitlement(staff, t, 'audit-entitlement', { plan: 'pro' });
+          const since = new Date().toISOString();
+          fixture.interleave(`DELETE FROM _substrat_entitlements WHERE tenant_id = '${t}' AND entitlement_key = 'audit-entitlement'`);
+          await host.admin.revokeEntitlement(staff, t, 'audit-entitlement');
+          expect(await rowsSince(host, staff, 'revokeEntitlement', since)).toEqual([]);
         });
       });
     });

@@ -8997,6 +8997,8 @@ export function scopeHostContractSuite(
       // Idempotent: unbinding an unknown hostname is a no-op, not an error — a
       // cleanup pass can re-run over a partial failure.
       await expect(host.admin.unbindHostname(staff, 'eu.example.com')).resolves.toBeUndefined();
+      // …and records nothing (#2526): still the one row.
+      expect((await host.admin.auditLog(staff, { scopeId: s1, action: ['unbindHostname'] }))).toHaveLength(1);
 
       // The released name is immediately reclaimable by another scope.
       await host.admin.bindHostname(staff, {

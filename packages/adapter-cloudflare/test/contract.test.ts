@@ -434,6 +434,99 @@ describe('#2526: role, grant and org writes across a coordinator/DO version skew
 });
 
 /**
+ * #2526: the hostname and entitlement writes, across the same skew. None of their DO methods was
+ * a replied one before, so a trailing row is safe: an old coordinator calls them directly without
+ * it and gets the bare write it always did (and the widened answers, which it ignores); the new
+ * coordinator calls them through `reply`, which an old DO refuses, writing nothing.
+ */
+describe('#2526: hostname and entitlement writes across a coordinator/DO version skew', () => {
+  const staff = platformActorId.parse(ulid());
+  const cpStub = () => env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+    demoteCanonical(scopeId: string, surface: string): Promise<void>;
+    upsertHostname(h: Record<string, unknown>): Promise<void>;
+    setHostnameStatus(hostname: string, status: string, note: string | null): Promise<boolean>;
+    setHostnameIssuance(hostname: string, fields: Record<string, unknown>): Promise<boolean>;
+    deleteHostname(hostname: string): Promise<{ status: string } | null>;
+    grantEntitlement(tenantId: string, key: string, input: Record<string, unknown>, actor: string): Promise<{ changed: boolean }>;
+    revokeEntitlement(tenantId: string, key: string): Promise<{ plan: string | null } | null>;
+  };
+  const newHost = (controlPlane = env.CONTROL_PLANE) => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  const ACTIONS = ['bindHostname', 'setHostnameStatus', 'setHostnameIssuance', 'unbindHostname', 'grantEntitlement', 'revokeEntitlement'] as const;
+  const world = async (host: CloudflareScopeHost) => {
+    const t = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `skew-${ulid().toLowerCase()}`, name: 'Skew' });
+    const slug = `skew-${ulid().toLowerCase()}`;
+    await host.admin.registerVertical(staff, { slug, name: 'Skew', source: 'builtin' });
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: slug });
+    return { t, s, slug };
+  };
+  const nameOf = () => `skew-${ulid().toLowerCase()}.example.com`;
+
+  it('an old coordinator\'s direct calls still write, without a row of their own', async () => {
+    const host = newHost();
+    try {
+      const cp = cpStub();
+      const { t, s, slug } = await world(host);
+      const hostname = nameOf();
+      const since = new Date().toISOString();
+      await cp.demoteCanonical(s, 'app');
+      await cp.upsertHostname({ hostname, tenantId: t, scopeId: s, verticalSlug: slug, surface: 'app', region: null, canonical: true, createdAt: since });
+      await expect(cp.setHostnameStatus(hostname, 'verifying', null)).resolves.toBe(true);
+      await expect(cp.setHostnameIssuance(hostname, { status: 'active', note: null, validationRecords: null })).resolves.toBe(true);
+      expect((await host.admin.listHostnames(staff, { scopeId: s })).map((h) => [h.hostname, h.status])).toEqual([[hostname, 'active']]);
+      await expect(cp.deleteHostname(hostname)).resolves.toMatchObject({ status: 'active' });
+      await expect(cp.grantEntitlement(t, 'skew-entitlement', { plan: 'pro' }, staff)).resolves.toMatchObject({ changed: true });
+      expect((await host.admin.listEntitlements(staff, t)).map((e) => e.plan)).toEqual(['pro']);
+      await expect(cp.revokeEntitlement(t, 'skew-entitlement')).resolves.toMatchObject({ plan: 'pro' });
+      expect(await host.admin.listHostnames(staff, { scopeId: s })).toEqual([]);
+      expect(await host.admin.listEntitlements(staff, t)).toEqual([]);
+      // The old coordinator records its own rows; the DO wrote none for it.
+      expect(await host.admin.auditLog(staff, { since, action: [...ACTIONS] })).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
+
+  const NEW_REPLIED = ['bindHostnameInDirectory', 'setHostnameStatus', 'setHostnameIssuance', 'deleteHostname', 'grantEntitlement', 'revokeEntitlement'];
+  const oldDo = () => interceptedControlPlane(async (args, method) => {
+    if (method !== 'reply' || !NEW_REPLIED.includes(args[0] as string)) return;
+    return { answer: { failure: toWireFailure(new Error(`not a replied directory method: ${String(args[0])}`)) } };
+  });
+
+  it('a new coordinator against an old DO fails closed, naming the method, and writes nothing', async () => {
+    const reader = newHost();
+    const host = newHost(oldDo());
+    try {
+      const { t, s } = await world(reader);
+      const held = nameOf();
+      // Arranged by an actor of its own, so the refused calls' rows are exactly staff's.
+      const setup = platformActorId.parse(ulid());
+      await reader.admin.bindHostname(setup, { hostname: held, tenantId: t, scopeId: s, surface: 'app', region: null, canonical: true });
+      await reader.admin.grantEntitlement(setup, t, 'held', { plan: 'pro' });
+      const since = new Date().toISOString();
+      const refused: [Promise<unknown>, string][] = [
+        [host.admin.bindHostname(staff, { hostname: nameOf(), tenantId: t, scopeId: s, surface: 'app', region: null, canonical: true }), 'bindHostnameInDirectory'],
+        [host.admin.setHostnameStatus(staff, held, 'active'), 'setHostnameStatus'],
+        [host.admin.setHostnameIssuance(staff, held, { status: 'verifying', validationRecords: [] }), 'setHostnameIssuance'],
+        [host.admin.unbindHostname(staff, held), 'deleteHostname'],
+        [host.admin.grantEntitlement(staff, t, 'other', { plan: 'pro' }), 'grantEntitlement'],
+        [host.admin.revokeEntitlement(staff, t, 'held'), 'revokeEntitlement'],
+      ];
+      for (const [call, method] of refused) await expect(call).rejects.toThrow(`not a replied directory method: ${method}`);
+      expect((await reader.admin.listHostnames(staff, { scopeId: s })).map((h) => [h.hostname, h.status, h.canonical]))
+        .toEqual([[held, 'pending', true]]);
+      expect((await reader.admin.listEntitlements(staff, t)).map((e) => e.entitlementKey)).toEqual(['held']);
+      expect((await reader.admin.auditLog(staff, { since, action: [...ACTIONS] })).filter((r) => r.actor === staff)).toEqual([]);
+    } finally {
+      await host.close();
+      await reader.close();
+    }
+  });
+});
+
+/**
  * #2526: `grantToConnection` at a scope node writes its directory record and admin row as one unit,
  * then delivers the tuple to the deployment serving the scope. A refused delivery fails the call
  * and leaves the record and its row; the reconcile's re-seat from the record (that deployment's

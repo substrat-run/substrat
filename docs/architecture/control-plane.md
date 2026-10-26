@@ -448,6 +448,29 @@ fails safe (less access, never access with no row). On the Cloudflare adapter th
 re-seats the tuple from the record. **The SQLite adapter has no re-seat from the record**: nothing
 there reads it but `listConnectionGrants`, so only a re-grant delivers the tuple.
 
+The hostname and entitlement writes do too (#2526): `bindHostname`, `setHostnameStatus`,
+`setHostnameIssuance`, `unbindHostname`, `grantEntitlement` and `revokeEntitlement`. Each reads its
+row, judges its guard and its no-op, writes, and records its admin row in one directory
+transaction, and the row's target and `before` come from that read. `bindHostname`'s unit holds the
+scope check, the name's current holder (a name another live scope holds is refused `conflict`; one
+whose holder was archived or reaped is reclaimed), the demotion of the surface's old canonical,
+and the bind, so a refused bind leaves the old canonical where it was.
+
+These six do not follow the upsert rule above. Each one **judges** whether it changes anything,
+and when it does not, it writes nothing and records no row: a status the name already holds, an
+issuance poll that finds the same status, records and id (the reconcile sweep polls on an
+interval and must not add a row each time), an entitlement grant whose merged expiry, quota and
+plan equal the held ones, a revoke of an entitlement not held, and an unbind of a name not bound
+(or, with an owner, bound to another scope).
+The judgement is made in the unit, so a write another caller made in
+between is what it compares against. `bindHostname` makes no such judgement: a re-bind resets the
+name's issuance state, so it always records a row.
+
+On the Cloudflare adapter a changed entitlement still fans out to the tenant's scopes after the
+commit. A scope that refuses it rejects the call with `conflict` while the change and its row
+stand. A retry changes nothing, so it does not fan out again: `reconcileTenantProjection`
+converges that scope.
+
 The remaining HostAdmin writes still record their row as a separate step.
 
 Same argument as K-4, and the reason the kernel is trusted at all: a surface that can act
@@ -540,16 +563,20 @@ the directory, still record it as a separate step ([#1292](https://github.com/su
 group of verbs at a time, onto one helper per adapter (`writeAndAudit` in the `ControlPlaneDO`,
 `directoryWriteAndAudit` in adapter-sqlite), which writes a directory mutation and its
 `_substrat_admin_log` row in one transaction. Already on it: the scope directory writes
-(preview-and-snapshots.md), the tenant and vertical registry writes, and the role, grant and org
-writes at a tenant node, all listed in §4.4 above. A new directory verb uses the helper.
+(preview-and-snapshots.md), the tenant and vertical registry writes, the role, grant and org
+writes at a tenant node, and the hostname and entitlement writes, all listed in §4.4 above.
+`reapTenant` clears the tenant's entitlements, among its other directory rows, in the same unit as
+its status flip and its row. A new directory verb uses the helper.
 
 The writes still recording their row as a separate step, after the mutation, are:
 
 - **Directory writes not moved yet** (the later groups of #2526). Among them are
   `registerIdentityPool`, `unlinkIdentity`, `pruneAccessLog` and `recordStoreDriverRelease`
   (`uploadStoreDriverRelease`), and the rollout's begin and finish (`rollOutStoreDriver`,
-  `rollBackStoreDriver`). The issue lists the rest: hostnames, entitlements, impersonation,
-  identity links, connections and the access-log drain.
+  `rollBackStoreDriver`). The issue lists the rest: impersonation, identity links, connections
+  and the access-log drain.
+- **`deleteSnapshot`**, which removes a preview's directory rows, its hostname bindings included,
+  and records its row after.
 - **Rows written by a call of their own.** `recordStoreDriverRebuildRun` (`rebuildStoreDriver`)
   and `recordWireWalk` (`walkWireAuth`) write only the row; the state the row describes was
   written by the caller's earlier calls (a rebuild's claim and advance, a walk's
