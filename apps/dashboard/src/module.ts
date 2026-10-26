@@ -1836,6 +1836,7 @@ export const DASHBOARD_PERMISSIONS = [
   DASHBOARD_PERM.manageIntegrations,
   DASHBOARD_PERM.readFindings,
   DASHBOARD_PERM.manageFindings,
+  DASHBOARD_PERM.restoreAppData,
 ] as const;
 
 export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
