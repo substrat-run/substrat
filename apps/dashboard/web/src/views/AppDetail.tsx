@@ -146,6 +146,7 @@ export function AppDetail({
   authServers = [],
   teamApps = [],
   canRestore,
+  canRewind,
 }: {
   /** The team the tab is on — hostname calls name it in their URL (#2170). */
   teamId: string;
@@ -159,6 +160,8 @@ export function AppDetail({
   teamApps?: readonly string[];
   /** #2573: whether to draw Import — a team owner's or admin's act. A hint; the server refuses. */
   canRestore: boolean;
+  /** Whether to draw Back out; the server checks dashboard:provision-app. */
+  canRewind: boolean;
 }) {
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
@@ -245,7 +248,7 @@ export function AppDetail({
           canRestore={canRestore}
         />
       )}
-      {main === 'deployments' && <Deployments teamId={teamId} app={app} />}
+      {main === 'deployments' && <Deployments teamId={teamId} app={app} canRewind={canRewind} />}
       {main === 'settings' && (
         <Settings
           teamId={teamId}
@@ -755,7 +758,7 @@ function Timeline({ items }: { items: Array<{ dot: TimelineDot; body: React.Reac
 /** Versions read while looking for the newest admitted push, before the look is given up. */
 const ADMITTED_SEARCH_CAP = 200;
 
-export function Deployments({ teamId, app }: { teamId: string; app: AppRow }) {
+export function Deployments({ teamId, app, canRewind }: { teamId: string; app: AppRow; canRewind: boolean }) {
   const [dep, setDep] = useState<AppDeployments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -1059,7 +1062,7 @@ export function Deployments({ teamId, app }: { teamId: string; app: AppRow }) {
               If the update went wrong you can rewind to just before it — every change since is discarded.
             </span>
             <div style={{ flex: 1 }} />
-            <Button onClick={() => doRewind(fresh)} disabled={updating}>Back out</Button>
+            {canRewind && <Button onClick={() => doRewind(fresh)} disabled={updating}>Back out</Button>}
           </div>
         );
       })()}

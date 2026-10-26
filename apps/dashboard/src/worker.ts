@@ -2876,6 +2876,7 @@ app.post('/api/apps/:scopeId/rewind', async (c) => {
   const appRow = await appByScopeId(dash, c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z.object({ bookmark: z.string().min(1) }).parse(await c.req.json());
+  await dash.invoke('dashboard/authorize-rewind', {});
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(await cp.rewindScope(scopeId.parse(appRow.app_scope_id), body.bookmark));
 });

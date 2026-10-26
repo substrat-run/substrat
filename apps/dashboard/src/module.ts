@@ -795,6 +795,7 @@ const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
  * after the fork, naming the copy, and asks the same key again.
  */
 const authorizeRestoreOp = checkOnly(DASHBOARD_PERM.restoreAppData);
+const authorizeRewindOp = checkOnly(DASHBOARD_PERM.provisionApp);
 
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
 
@@ -1927,6 +1928,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     permission: DASHBOARD_PERM.restoreAppData,
     output: ok,
   },
+  'dashboard/authorize-rewind': {
+    summary: 'Answer whether the caller may rewind an app to a migration bookmark',
+    permission: DASHBOARD_PERM.provisionApp,
+    output: ok,
+  },
   'dashboard/mark-app-failed': {
     summary: 'Mark an app’s install failed',
     permission: DASHBOARD_PERM.provisionApp,
@@ -2176,6 +2182,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/authorize-findings-read': authorizeFindingsReadOp,
     'dashboard/authorize-findings-change': authorizeFindingsChangeOp,
     'dashboard/authorize-restore': authorizeRestoreOp,
+    'dashboard/authorize-rewind': authorizeRewindOp,
     'dashboard/mark-app-failed': markAppFailedOp,
     'dashboard/record-install-step': recordInstallStepOp,
     'dashboard/install-steps': installStepsOp,

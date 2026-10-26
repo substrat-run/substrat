@@ -948,7 +948,9 @@ export function App() {
   }
   // A hint for what to draw, never the gate: the dashboard's own scope refuses. A roster not loaded
   // yet draws the controls, so a slow read never hides one.
-  const isTeamAdmin = ['owner', 'admin'].includes(members.find((m) => m.principal === me.principal)?.role_key ?? 'owner');
+  const teamRole = members.find((m) => m.principal === me.principal)?.role_key ?? 'owner';
+  const isTeamAdmin = ['owner', 'admin'].includes(teamRole);
+  const canRewind = ['owner', 'admin', 'member'].includes(teamRole);
 
   return (
     <DashShell
@@ -997,6 +999,7 @@ export function App() {
           authServers={authServers}
           teamApps={apps.map((a) => a.app_scope_id)}
           canRestore={isTeamAdmin}
+          canRewind={canRewind}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight — or older pages are still being
