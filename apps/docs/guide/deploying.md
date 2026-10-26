@@ -552,11 +552,9 @@ box ticked against the old review carries over. The digest you send is only ever
 read as the diff. Two promotes racing from the same version cannot both land: the pointer moves
 only if it still names the version they were judged against, so the second is refused the same way.
 
-The compatibility rule: a `--ack-migrations` without a token is refused when the migration digest
-moved — it is the acknowledgement that lets a migration, and any data loss it declares, reach live
-data — and the refusal says to upgrade to a CLI release whose `substrat promote` supports `--review`. A `--ack-permissions` without a
-token is still honoured, so an older CLI keeps promoting where no migration changes; a token, when
-sent, covers the permission diff too.
+An acknowledgement of a changed permission or migration digest needs a `--review` token. A CLI
+older than 0.45.0 that sends a bare acknowledgement is refused with an instruction to upgrade,
+read the current review, and retry with the token.
 
 The staff gate returns only when you **widen the audience**: `substrat publish <slug>` lists the
 vertical on the marketplace, and from then on its pushes land pending and its prod promotion is a

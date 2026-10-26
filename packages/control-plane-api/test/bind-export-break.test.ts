@@ -626,7 +626,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
       ] as const) {
         const next = await push(pin, manifest(version, false, migration));
         listScopes.mockClear();
-        const res = await promote(slug, next.id, 'migrationChange' in acknowledge ? { ...acknowledge, review: await reviewFor(slug, next.id) } : acknowledge);
+        const res = await promote(slug, next.id, { ...acknowledge, review: await reviewFor(slug, next.id) });
         expect(res.status).toBe(200);
         expect(backfillRan()).toBe(true);
         for (const s of [onServing, legacy]) {
@@ -708,7 +708,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     const listScopes = vi.spyOn(host.admin, 'listScopes');
     let res: Response;
     try {
-      res = await promote(slug, next.id, { permissionChange: true });
+      res = await promote(slug, next.id, { permissionChange: true, review: await reviewFor(slug, next.id) });
       expect(listScopes.mock.calls.some(([, f]) => f?.vertical === slug && Array.isArray(f.status) && f.status.includes('provisioning'))).toBe(true);
     } finally {
       listScopes.mockRestore();
@@ -739,7 +739,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     await expect(host.admin.promotionImpact(staff, slug, 'prod', next.id)).resolves.toEqual([]);
     expect((await impact(next.id)).map((b) => b.scopeId)).toEqual([deskScope]);
     // Promoted acknowledged, the listing it answers with is the same one.
-    const res = await promote(slug, next.id, { permissionChange: true, exportBreak: true });
+    const res = await promote(slug, next.id, { permissionChange: true, exportBreak: true, review: await reviewFor(slug, next.id) });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { exportBreaks?: { affected: { scopeId: string }[] } }).exportBreaks?.affected.map((b) => b.scopeId)).toEqual([
       deskScope,
@@ -753,7 +753,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
     const { slug, deskScope, desk2Scope, next } = await laggingWorld({ gateBreak: true });
     // The gate alone breaks one app (desk2 loses TYPE2); the lagging install's adopt breaks another.
     expect((await host.admin.promotionImpact(staff, slug, 'prod', next.id)).map((b) => b.scopeId)).toEqual([desk2Scope]);
-    const res = await promote(slug, next.id, { permissionChange: true });
+    const res = await promote(slug, next.id, { permissionChange: true, review: await reviewFor(slug, next.id) });
     expect(res.status).toBe(409);
     const said = (await res.json()) as { error: string; exportBreaks: { affected: { scopeId: string }[] } };
     expect(said.exportBreaks.affected.map((b) => b.scopeId).sort()).toEqual([deskScope, desk2Scope!].sort());

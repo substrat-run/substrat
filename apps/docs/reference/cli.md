@@ -424,8 +424,8 @@ to or over it always asks for `--ack-migrations`.
 
 The refusal also prints a `--review <token>`: the review those diffs are, bound to the version prod
 pointed at when they were read. Re-run with it. If prod moved since, the promote is refused as
-stale and the current diffs are printed with a new token. `--ack-migrations` without a token is
-refused when the migrations changed (`--ack-permissions` alone is still honoured); see
+stale and the current diffs are printed with a new token. An acknowledgement of a changed
+permission or migration digest without a token is refused; CLI 0.45.0 or later supplies the token. See
 [An acknowledgement answers one review](/guide/deploying#acknowledgement-answers-one-review).
 
 For a non-production environment — test, canary, a PR preview — you do **not** promote a second

@@ -121,12 +121,16 @@ describe('a promote judges its roles against the scopes it moves (#2446)', () =>
     expect(res.status).toBeLessThan(300);
     return (await res.json()) as { id: string; verticalSlug: string };
   };
-  const promote = (slug: string, versionId: string, via = app, extra: object = {}, headers: Record<string, string> = auth) =>
-    via.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
+  const promote = async (slug: string, versionId: string, via = app, extra: object = {}, headers: Record<string, string> = auth) => {
+    const base = await prodOf(slug);
+    const read = await app.request(`/verticals/${encodeURIComponent(slug)}/versions/${versionId}/migrations${base ? `?base=${base}` : ''}`, { headers: auth });
+    const { review } = await read.json();
+    return via.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ versionId, acknowledge: { permissionChange: true, ...extra } }),
+      body: JSON.stringify({ versionId, acknowledge: { permissionChange: true, review, ...extra } }),
     });
+  };
   const prodOf = async (slug: string) => (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId;
   const servedOf = async (slug: string) => (await host.admin.verticalServing(staff, slug))?.versionId;
 

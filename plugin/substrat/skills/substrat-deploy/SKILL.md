@@ -97,7 +97,7 @@ Then **stop and hand it over**. Give the exact command for them to run, and let 
 it:
 
 ```sh
-substrat promote <slug> --version <versionId> --ack-permissions   # and/or --ack-migrations
+substrat promote <slug> --version <versionId> --ack-permissions --review <token>   # and/or --ack-migrations
 ```
 
 If they reply "yes, go ahead" without having read the diff you printed, that is not an

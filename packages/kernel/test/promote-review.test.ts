@@ -66,8 +66,8 @@ describe('promoteReviewDigest (#2333)', () => {
 
 describe('assertPromoteReviewCurrent (#2333)', () => {
   const read = async () => ({ base, incoming });
-  const run = (ack: Parameters<typeof assertPromoteReviewCurrent>[0]['ack'], baseId: string | null = 'v1', migrationsChange = true) =>
-    assertPromoteReviewCurrent({ ack, channel: 'prod', baseId, migrationsChange, read }).then(
+  const run = (ack: Parameters<typeof assertPromoteReviewCurrent>[0]['ack'], baseId: string | null = 'v1', migrationsChange = true, permissionsChange = false) =>
+    assertPromoteReviewCurrent({ ack, channel: 'prod', baseId, migrationsChange, permissionsChange, read }).then(
       () => 'passed',
       (e: unknown) => promoteReviewRefusalOf(e) ?? e,
     );
@@ -81,17 +81,18 @@ describe('assertPromoteReviewCurrent (#2333)', () => {
     expect(await run({ migrationChange: true, review: { base: 'v1', digest: '0'.repeat(64) } })).toBe('stale');
   });
 
-  it('refuses a consumed migration acknowledgement without a binding, and nothing else', async () => {
+  it('refuses consumed acknowledgements without a binding, and accepts a bound permission change', async () => {
     expect(await run({ migrationChange: true })).toBe('unbound');
     expect(await run({ migrationChange: true }, 'v1', false)).toBe('passed');
-    expect(await run({ permissionChange: true })).toBe('passed');
+    expect(await run({ permissionChange: true }, 'v1', false, true)).toBe('unbound');
+    expect(await run({ permissionChange: true, review: { base: 'v1', digest: await promoteReviewDigest(base, incoming) } }, 'v1', false, true)).toBe('passed');
     expect(await run({})).toBe('passed');
   });
 
   it('names the two bases on one line, a publisher\u2019s control characters made visible', async () => {
     const digest = await promoteReviewDigest(base, incoming);
     const err = await assertPromoteReviewCurrent({
-      ack: { review: { base: 'v1\n+ forged\u202e', digest } }, channel: 'prod', baseId: 'v2\u001b[31m', migrationsChange: false, read: async () => ({ base, incoming }),
+      ack: { review: { base: 'v1\n+ forged\u202e', digest } }, channel: 'prod', baseId: 'v2\u001b[31m', migrationsChange: false, permissionsChange: false, read: async () => ({ base, incoming }),
     }).then(() => null, (e: Error) => e);
     expect(err?.message).not.toMatch(/[\n\u001b\u202e]/);
     expect(err?.message).toContain('<U+202E>');
@@ -99,7 +100,7 @@ describe('assertPromoteReviewCurrent (#2333)', () => {
 
   it('reads nothing when no binding was sent', async () => {
     let reads = 0;
-    await assertPromoteReviewCurrent({ ack: { permissionChange: true }, channel: 'prod', baseId: 'v1', migrationsChange: false, read: async () => (reads++, { base, incoming }) });
+    await assertPromoteReviewCurrent({ ack: { permissionChange: true }, channel: 'prod', baseId: 'v1', migrationsChange: false, permissionsChange: false, read: async () => (reads++, { base, incoming }) });
     expect(reads).toBe(0);
   });
 

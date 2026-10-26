@@ -97,13 +97,6 @@ export async function rebindReviewDigest(
 }
 
 /**
- * Where the unbound refusal sends a person, by what the release does rather than its number: the
- * number is the release tooling's to assign, and a version named here before it is cut can name
- * one that does not carry `--review`.
- */
-const PROMOTE_REVIEW_DOCS = 'https://substrat.net/guide/deploying#acknowledgement-answers-one-review';
-
-/**
  * The refusal for a promote that lost a race (#2333): the channel moved to another version after
  * this promote's gates and review binding were judged against it. Its acknowledgements answered a
  * diff that is no longer the one it would apply, so it is refused as stale whether bound or not.
@@ -160,9 +153,8 @@ export function promoteReviewRefusalOf(err: unknown): 'stale' | 'unbound' | null
  *
  * - A binding is always checked, whatever it acknowledges: the base it names must be the
  *   channel's, and the digest must be the one the stored rows give now.
- * - Without one, a `migrationChange` the gate is about to consume is refused: that is the
- *   acknowledgement that lets a migration — and any data loss it declares — reach live data.
- *   A permission-only acknowledgement without one is still honoured (an older client's).
+ * - Without one, a permission or migration acknowledgement the gate is about to consume is
+ *   refused.
  *
  * The refusals carry neither the current base's digest nor anything to retry with: a client
  * that wants to proceed reads the review again, and reading is what shows its person the diff
@@ -172,19 +164,19 @@ export async function assertPromoteReviewCurrent(opts: {
   ack: PromotionAcknowledgement;
   channel: string;
   baseId: string | null;
+  /** The permission digest moved, so the gate consumes `permissionChange`. */
+  permissionsChange: boolean;
   /** The migration digest moved, so the gate consumes `migrationChange`. */
   migrationsChange: boolean;
   read: () => Promise<{ base: ReviewedVersion | null; incoming: ReviewedVersion }>;
 }): Promise<void> {
   const review: PromotionReviewBinding | undefined = opts.ack.review;
   if (review === undefined) {
-    if (opts.migrationsChange && opts.ack.migrationChange) {
+    if ((opts.permissionsChange && opts.ack.permissionChange) || (opts.migrationsChange && opts.ack.migrationChange)) {
       throw substratError(
         'precondition_failed',
-        `acknowledging a migration change needs the review it answers: send acknowledge.review (the base and ` +
-          `digest the migrations read returned beside the diff that was shown). From the command line, upgrade ` +
-          `to a CLI release whose 'substrat promote' supports --review, and run it without --ack-migrations: it ` +
-          `prints the migrations and the --review token to acknowledge them with (${PROMOTE_REVIEW_DOCS})`,
+        'Acknowledging a permission or migration change requires a review. Upgrade the Substrat CLI to version ' +
+          '0.45.0 or later, read the current promote review, and retry with --review.',
         { reason: PROMOTE_REVIEW_REASONS.unbound },
       );
     }
