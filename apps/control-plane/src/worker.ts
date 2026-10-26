@@ -2500,7 +2500,8 @@ export default {
       // directory's connections, opens each with the coordinator-held secret box, polls
       // the provider, and writes back through the vertical's /internal/connector-*
       // surface (the host's connectorDelegation). A connection whose secret cannot be
-      // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly into report.errors.
+      // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly: its row says so under a
+      // reference, and the text is staff's ledger row under it (`recordFailure` below).
       sweepers: connectorSweepersFor(env),
       // #2316: each live connection is granted and bound from the landings its vertical's running
       // version declares, before it is swept — so a company approved through a connect link lands
@@ -2512,6 +2513,14 @@ export default {
       // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
       // never sink the pass it is recording (the ops-failure recorder's shape).
       recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
+      // #2316: a failed connection sweep's own text, staff's row under the reference its sweep row
+      // names; the digest lists it from the ledger. Fire-and-forget, as the row above — but this
+      // row is the text's only copy, so a write that fails leaves the reference in the tail. The
+      // reference and the write's own error only: the text can carry a provider's answer.
+      recordFailure: (entry) =>
+        void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch((err: unknown) =>
+          console.error('sweep-failure record failed', { reference: entry.reference, error: err instanceof Error ? err.message : String(err) }),
+        ),
       drainRetries: false,
       deleteSnapshotFn: (tenantId, scopeId) => reapExpiredSnapshot({
         host,
