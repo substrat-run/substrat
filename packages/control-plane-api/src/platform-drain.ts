@@ -944,7 +944,7 @@ async function admitManager(
   ctx: PlatformRequestContext,
   requestedKeys: string[],
   targetVertical?: string,
-): Promise<{ declared: string[] } | { refusal: PlatformRequestOutcome }> {
+): Promise<{ declared: string[]; revocable: string[] } | { refusal: PlatformRequestOutcome }> {
   const registered = (await deps.host.admin.listVerticals(deps.actor)).find(
     (v) => v.slug === ctx.vertical,
   );
@@ -979,7 +979,8 @@ async function admitManager(
       };
     }
   }
-  return { declared };
+  // A revoke widens nothing, so a key declared before the rule can still be taken back.
+  return { declared, revocable: registered.entitlements ?? [] };
 }
 
 /**
@@ -1260,7 +1261,7 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
     let step = 'reconciling its entitlements';
     try {
       const target = new Map(payload.entitlements.map((e) => [e.key, e.plan]));
-      for (const key of admitted.declared) {
+      for (const key of admitted.revocable) {
         if (target.has(key)) {
           await admin.grantEntitlement(actor, tenantId, key, { plan: target.get(key) });
         } else {

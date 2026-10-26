@@ -241,9 +241,10 @@ test('decide: a package that reads a changed file off disk joins the selection',
     // pnpm's selector, stubbed: it answers what it is asked for.
     selectChanged: (extra) => ((asked = extra), extra.map((name) => ({ name, dir: 'apps/console' }))),
   });
-  assert.deepEqual(asked, ['@substrat-run/console']);
-  assert.deepEqual(r.selected, [{ name: '@substrat-run/console', dir: 'apps/console' }]);
-  assert.deepEqual(r.readers, ['@substrat-run/console']);
+  const readers = ['@substrat-run/console', '@substrat-run/contracts'];
+  assert.deepEqual(asked, readers);
+  assert.deepEqual(r.selected, readers.map((name) => ({ name, dir: 'apps/console' })));
+  assert.deepEqual(r.readers, readers);
   assert.deepEqual(r.lockfileImporters, []);
 });
 test('decide: a wrangler config selects contracts, the router source selects the adapter', () => {
@@ -281,14 +282,14 @@ test('CHANGED_NAMES: a file moved out of an engine is listed where it left, too'
     git('commit', '-qm', 'move');
     const files = git(...CHANGED_NAMES, 'HEAD~1', 'HEAD').split('\n').filter(Boolean).sort();
     assert.deepEqual(files, ['engines/x/src/index.ts', 'engines/x/src/manifest.ts']);
-    assert.deepEqual(readersOf(files), ['@substrat-run/console']);
+    assert.deepEqual(readersOf(files), ['@substrat-run/console', '@substrat-run/contracts']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-test('readersOf: an engine manifest selects the console, nothing else an engine holds does', () => {
-  assert.deepEqual(readersOf(['engines/notifications/src/index.ts']), ['@substrat-run/console']);
-  assert.deepEqual(readersOf(['engines/a/src/index.ts', 'engines/b/src/index.ts']), ['@substrat-run/console']);
+test('readersOf: an engine manifest selects the console and contracts, nothing else an engine holds does', () => {
+  assert.deepEqual(readersOf(['engines/notifications/src/index.ts']), ['@substrat-run/console', '@substrat-run/contracts']);
+  assert.deepEqual(readersOf(['engines/a/src/index.ts', 'engines/b/src/index.ts']), ['@substrat-run/console', '@substrat-run/contracts']);
   assert.deepEqual(readersOf(['engines/notifications/src/send.ts', 'engines/notifications/test/index.ts']), []);
   assert.deepEqual(readersOf(['apps/console/src/index.ts']), []);
 });

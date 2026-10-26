@@ -162,7 +162,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
-import { declarableEntitlementKey, entitlementNamespaceRefusal } from '@substrat-run/contracts';
+import { bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
@@ -8173,11 +8173,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pin = confinedTenant(p);
     if (pin === null) return true;
     const visible = (await host.admin.listVerticals(p.actor)).filter((v) => v.ownerTenant === pin || v.listed);
-    return visible.some(
-      (v) =>
-        declarableEntitlementKey(v.slug, key, v.tenantProvisioner ? v.provisions : []) &&
-        (v.entitlements && v.entitlements.length > 0 ? v.entitlements.includes(key) : (v.slug.split('/').pop() || v.slug) === key),
-    );
+    return visible.some((v) => {
+      // The install's own derivation (`installEntitlements`): the declared keys the vertical may
+      // declare, else its bare slug.
+      const grantable = grantableEntitlements(v.slug, v.entitlements ?? [], v.tenantProvisioner ? v.provisions : []);
+      return (grantable.length > 0 ? grantable : declarableEntitlementKey(v.slug, bareSlug(v.slug)) ? [bareSlug(v.slug)] : []).includes(key);
+    });
   };
 
   const notReadable = async (p: Principal, slug: string): Promise<boolean> => {
@@ -8370,6 +8371,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const owner = await ownerOf(p.actor, input.slug);
       if (owner !== undefined && owner !== p.tenantId) return refuse(c, 'forbidden', 'forbidden');
       input.ownerTenant = p.tenantId;
+    }
+    // #2388: the same declaration rule as a push, for any principal that is not staff.
+    if (p.kind !== 'staff') {
+      const foreignKey = entitlementNamespaceRefusal(input.slug, input.entitlements ?? [], input.provisions);
+      if (foreignKey) return refuseStatus(c, 422, foreignKey);
     }
     await c.var.admin.registerVertical(c.get('actor'), input);
     // Idempotent on the slug (a conflicting re-register throws below the seam), so

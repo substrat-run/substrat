@@ -20,6 +20,7 @@ import {
   type ScopeDumpTable,
   type ScopeId,
   type TenantId,
+  bareSlug,
   grantableEntitlements,
 } from '@substrat-run/contracts';
 import { bindExportBreakRefusal, ulid, type ScopeHost } from '@substrat-run/kernel';
@@ -207,10 +208,6 @@ export function installEntitlements(
   return [bareSlug(verticalSlug)];
 }
 
-/** The entitlement-key-legal tail of a possibly workspace-prefixed registry slug. */
-function bareSlug(verticalSlug: string): string {
-  return verticalSlug.split('/').pop() || verticalSlug;
-}
 
 /**
  * Create an app — provision a new scope running `verticalSlug` **in the caller's

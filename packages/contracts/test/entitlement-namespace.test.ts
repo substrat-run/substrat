@@ -32,7 +32,11 @@ describe('entitlement key namespace (#2388)', () => {
     const enginesDir = fileURLToPath(new URL('../../../engines/', import.meta.url));
     const declared = readdirSync(enginesDir)
       .filter((name) => existsSync(`${enginesDir}${name}/src/index.ts`))
-      .map((name) => /entitlementKey:\s*'([^']+)'/.exec(readFileSync(`${enginesDir}${name}/src/index.ts`, 'utf8'))?.[1]);
-    expect(declared.filter(Boolean).sort()).toEqual([...ENGINE_ENTITLEMENT_KEYS].sort());
+      .map((name) => {
+        const keys = [...readFileSync(`${enginesDir}${name}/src/index.ts`, 'utf8').matchAll(/entitlementKey:\s*'([^']+)'/g)];
+        expect(keys, `engines/${name} declares exactly one entitlementKey literal`).toHaveLength(1);
+        return keys[0]![1];
+      });
+    expect(declared.sort()).toEqual([...ENGINE_ENTITLEMENT_KEYS].sort());
   });
 });

@@ -28,7 +28,8 @@ export const ENGINE_ENTITLEMENT_KEYS: readonly string[] = [
 /** Keys only staff or the platform grant: the dashboard's own SKU and the builder studio's. */
 export const PLATFORM_ENTITLEMENT_KEYS: readonly string[] = ['dashboard', 'builder'];
 
-const bareSlug = (slug: string): string => slug.split('/').pop() || slug;
+/** The key-legal tail of a possibly workspace-prefixed registry slug (`<tenant>/name` → `name`). */
+export const bareSlug = (slug: string): string => slug.split('/').pop() || slug;
 
 /** Whether the vertical `slug` may declare `key`, and so whether an install may grant it from that declaration. */
 export function declarableEntitlementKey(slug: string, key: string, provisions: readonly string[] = []): boolean {
