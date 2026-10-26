@@ -24,8 +24,12 @@ export async function dev(options: DevOptions = {}): Promise<number> {
 
   // Give the script and its subprocesses one group. A dev script commonly runs through
   // pnpm -> concurrently -> tsx watch; signaling pnpm alone leaves the watcher alive.
-  const grouped = process.platform !== 'win32';
-  const child = spawn('pnpm', ['run', 'dev'], { cwd: project, env, stdio: 'inherit', detached: grouped, shell: process.platform === 'win32' });
+  const windows = process.platform === 'win32';
+  const grouped = !windows;
+  // The Windows shell sees only this fixed command; project paths stay in cwd and env.
+  const child = spawn(windows ? 'pnpm run dev' : 'pnpm', windows ? [] : ['run', 'dev'], {
+    cwd: project, env, stdio: 'inherit', detached: grouped, shell: windows,
+  });
   const forward = (signal: NodeJS.Signals) => {
     try {
       if (grouped && child.pid) process.kill(-child.pid, signal);
