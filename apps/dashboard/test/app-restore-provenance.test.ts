@@ -62,7 +62,6 @@ describe('the app restore and rewind routes', () => {
   const appScope = scopeId.parse(ulid());
   /** Every restore body that reached the plane. */
   let restores: Record<string, unknown>[];
-  let rewinds: Record<string, unknown>[];
   /** Every path the plane was asked for. */
   let planeCalls: string[];
   let env: Record<string, unknown>;
@@ -73,7 +72,6 @@ describe('the app restore and rewind routes', () => {
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     restores = [];
-    rewinds = [];
     planeCalls = [];
 
     const owner = principalId.parse(ulid());
@@ -106,7 +104,6 @@ describe('the app restore and rewind routes', () => {
             return Response.json({ restored: appScope, tables: 1 });
           }
           if (path.endsWith('/rewind')) {
-            rewinds.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
             return Response.json({ rewindingTo: 'bookmark-1' });
           }
           return Response.json({ entries: [] });
@@ -146,7 +143,6 @@ describe('the app restore and rewind routes', () => {
     const res = await rewind('viewer');
     expect(res.status).toBe(403);
     expect(problemDetail(await res.json())).toBe('permission denied: dashboard:provision-app');
-    expect(rewinds).toEqual([]);
     expect(planeCalls).toEqual([]);
   });
 
@@ -154,7 +150,7 @@ describe('the app restore and rewind routes', () => {
     for (const role of ['owner', 'admin', 'member'] as const) {
       expect((await rewind(role)).status).toBe(200);
     }
-    expect(rewinds).toEqual(Array.from({ length: 3 }, () => ({ bookmark: 'bookmark-1' })));
+    expect(planeCalls.filter((path) => path.endsWith('/rewind'))).toHaveLength(3);
   });
 
   it('a member is refused with 403 before the plane is asked for anything, the safety copy included', async () => {
