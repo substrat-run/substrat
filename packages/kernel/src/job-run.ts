@@ -1,5 +1,7 @@
 import { dataSubjectId, substratError, type DataSubjectId, type ModuleId } from '@substrat-run/contracts';
-import { assertRowLimit, backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy, type ScopeStub } from './scope-host.js';
+import { backoffAt, resolveRetryPolicy, type ExecutorRetryPolicy } from './connector-transport.js';
+import { assertRowLimit } from './retention.js';
+import type { ScopeStub } from './scope-host.js';
 import { ulid } from './ulid.js';
 
 /**

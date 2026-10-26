@@ -3,7 +3,8 @@ import { platformActorId, scopeId, tenantId, type ScopeId } from '@substrat-run/
 import { manualClock } from '../src/clock.js';
 import { runPlatformSweep, STORAGE_SAMPLE_BATCH, StorageReadUnsupported, type PlatformSweepOptions } from '../src/platform-sweep.js';
 import { STORAGE_GAUGE_PRUNE_BATCH, type ScopeStorageAttempt, type ScopeStorageReadingInput } from '../src/storage-gauge.js';
-import type { FetchLike, ScopeHost } from '../src/scope-host.js';
+import type { FetchLike } from '../src/connector-transport.js';
+import type { ScopeHost } from '../src/scope-host.js';
 
 /**
  * The storage-gauge phase (#1524), with fakes. What makes it safe to run on every pass is that

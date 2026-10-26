@@ -24,7 +24,8 @@ import {
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
 import type { ConnectorSweeper, CrossVerticalReach, PlatformRequestDrain, PlatformSweepOptions } from '../src/platform-sweep.js';
-import type { FetchLike, MigrateScopeOutcome, ScheduleRunReport, ScopeHost, SweepRunInput } from '../src/scope-host.js';
+import type { FetchLike } from '../src/connector-transport.js';
+import type { MigrateScopeOutcome, ScheduleRunReport, ScopeHost, SweepRunInput } from '../src/scope-host.js';
 
 /**
  * The orchestration, with fakes — that the pass enumerates, drains, dispatches by

@@ -1,6 +1,6 @@
 import { utcDay } from '@substrat-run/contracts';
 import type { RedactionSql } from './subject-redaction.js';
-import { assertRowLimit, boundedRetentionDelete } from './scope-host.js';
+import { assertRowLimit, boundedRetentionDelete } from './retention.js';
 
 /**
  * How long the platform keeps its billing rollups (#2501): the compact per-(tenant, vertical)

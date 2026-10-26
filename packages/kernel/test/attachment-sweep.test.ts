@@ -28,7 +28,8 @@ import {
   orphanSweepVersionRefusal,
   type OrphanSweepScope,
 } from '../src/attachment-sweep.js';
-import { attachmentBlobKey, type ScopedSql, type SqlValue, type TenantBlobStore } from '../src/scope-host.js';
+import { attachmentBlobKey, type TenantBlobStore } from '../src/attachment-bytes.js';
+import type { ScopedSql, SqlValue } from '../src/scope-host.js';
 import { ulidFloor } from '../src/ulid.js';
 
 const DAY = 86_400_000;
