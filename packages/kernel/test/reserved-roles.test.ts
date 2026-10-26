@@ -15,6 +15,7 @@ import {
   reservedRoleRefusal,
   reservedRoleSetRefusal,
   reservedRoleSetRefusedRole,
+  loadedRoleSetRefusedRole,
   inUnitRoleRefusal,
   reservedShapeRefusal,
   dumpRoleRefusal,
@@ -293,6 +294,35 @@ describe('reservedRoleSetRefusedRole and the in-unit sentence (#2531 part C)', (
     expect(inUnitRoleRefusal('staff')).toBe(
       "role 'staff' is refused by the reserved-key rule, judged against the roles and seats this scope holds as the write lands (K-55); nothing was written",
     );
+  });
+});
+
+describe('loadedRoleSetRefusedRole: the directory set judged against a load’s stored state (#2555 PR 2)', () => {
+  const host = { reserved: new Set(['a:run']), declared: new Set(['a:run', 'a:use']) };
+  const runner = { key: 'runner', permissions: ['a:run'], holder: 'system' as const };
+  const person = { key: 'runner', permissions: ['a:use'], holder: 'person' as const };
+
+  it('refuses a seated stored person’s role the directory now defines system-held, as the whole-set walk does', () => {
+    const stored = { roles: [person], seated: new Set(['runner']) };
+    const refused = loadedRoleSetRefusedRole([runner], host, stored);
+    expect(refused).toEqual(reservedRoleSetRefusedRole([runner], host, stored));
+    expect(refused?.key).toBe('runner');
+  });
+
+  it('twin: the same set with no seat in the role is admitted', () => {
+    expect(loadedRoleSetRefusedRole([runner], host, { roles: [person], seated: new Set() })).toBeNull();
+  });
+
+  it('asks only about roles the state seats, stores or keeps a tombstone of; the whole set stays their context', () => {
+    // A person's role holding a reserved key: the whole-set walk refuses it wherever it is asked.
+    const odd = { key: 'odd', permissions: ['a:run'] };
+    const empty = { roles: [], seated: new Set<string>() };
+    expect(reservedRoleSetRefusedRole([odd], host, empty)?.key).toBe('odd');
+    expect(loadedRoleSetRefusedRole([odd], host, empty)).toBeNull();
+    // Twins: stored, seated or tombstoned, the same role is asked about, and refused.
+    expect(loadedRoleSetRefusedRole([odd], host, { roles: [{ key: 'odd', permissions: ['a:use'] }], seated: new Set() })?.key).toBe('odd');
+    expect(loadedRoleSetRefusedRole([odd], host, { roles: [], seated: new Set(['odd']) })?.key).toBe('odd');
+    expect(loadedRoleSetRefusedRole([odd], host, { roles: [], seated: new Set(), dropped: [{ key: 'odd', permissions: ['a:use'] }] })?.key).toBe('odd');
   });
 });
 

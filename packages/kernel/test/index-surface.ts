@@ -480,6 +480,8 @@ export const INDEX_VALUE_EXPORTS = [
   'loadDirectoryDump',
   // #2450: a staged load drops a copy's capability rows by table name, never holding them as an array.
   'loadDropsRowsOf',
+  // #2555: the directory's role set a load projects, judged against the state it has just loaded.
+  'loadedRoleSetRefusedRole',
   'manualClock',
   'mapDenialRow',
   'mapDenialSummaryBuckets',

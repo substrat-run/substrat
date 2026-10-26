@@ -113,6 +113,8 @@ export const ALLOWED = {
     "the ScopeDO's write of the role set and seats its caller sends: judged in this unit when the caller passes `judge` (`refuseRoleSetInUnit`: the CP-less provision, repair and restore, #2531); a directory fan-out passes none and is not re-judged (#2447, K-55). Every caller is matched and listed on its own",
   'packages/adapter-cloudflare/src/host.ts#projectJudged':
     'the judged projection (`applyJudgedProjectionReply`): the ScopeDO judges the role set inside the unit that writes it (#2531), after the callers\' own first check',
+  'packages/adapter-cloudflare/src/host.ts#convergeLoadedProjection':
+    "a control-plane-full load's second read (`applyJudgedProjectionReply`): the ScopeDO judges the directory's role set inside the unit that writes it, against the seats the load brought (#2555)",
   'packages/adapter-cloudflare/src/host.ts#restoreScopeLocal':
     "a load's role repair (`importDumpJudged`), judged by the ScopeDO on the seats the dump brings, in the load's own transaction (#2531)",
   'packages/adapter-cloudflare/src/host.ts#restoreStagedScopeLocal':

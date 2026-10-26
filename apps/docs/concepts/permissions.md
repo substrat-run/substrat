@@ -167,6 +167,34 @@ definition of the role. The host throws `forbidden`; the control plane's restore
 that dump is trusted input: its provenance is the staff caller's. What is judged is how the
 tenant's roles apply to it now.
 
+On Cloudflare, where the control plane projects permissions into its scopes, a staff restore or
+import also lands with the directory's **current** permission state. As its last step, inside the
+load's own transaction, it writes what a fan-out sends: the tenant's roles, its tenant-level grants
+and memberships (connection grants included), its entitlements and identity links, and the
+vertical's connection keys. Anything the directory has revoked since the backup was taken stays
+revoked, without waiting for the next fan-out. The scope's own seats are the dump's, and nothing
+revokes them. The role set is judged there, against the seats the dump has just brought, so the
+roles that land are the roles that were judged. A refusal leaves every row of the scope as it was.
+An import that cannot finish takes down the scope it created, never activated, and only that one:
+its directory record is removed, so a retry with the same scope id imports. An import pointed at an
+existing scope is never taken down. Refused in the load, it leaves that scope as it was. Failing
+after the load (in the second read, below), it has replaced the scope's rows, and that is recorded
+before it fails, as a restore is. If that removal fails, the refusal still stands, staff see an
+ops-failure row, and the scope stays in `provisioning` for staff to reap. The removed scope's
+storage is left for the retry to replace. Until then it holds the tenant's projected permission
+state (identity links and connection keys included), and a later tenant deletion does not reach it.
+The scope keeps its own reader and enforcement settings through the load,
+never the dump's, and the projection then moves them exactly as a fan-out would. The end state is
+the scope's old state followed by one fan-out. Where scopes are not projected, only those settings
+are kept. The directory is read once more after the load, and if it changed in between, the scope
+is projected again, once, judged against the seats the load brought. A role redefined in that
+window which those seats refuse is refused there. The restore is still recorded, then fails, and
+the scope stays on the set the load judged, but only until the next fan-out, which is not judged
+and writes the refused definition over those seats. So act on such a refusal: take the restored
+seats in that role back, or define the role person-held again. The refusal says so. A preview's snapshot is not projected: it
+is a same-instant copy, and the fan-out keeps its source current. The pure SQLite host keeps this
+state in its directory and no scope holds a copy of it, so nothing changes there.
+
 On a deployment with no control plane (#2531), the role set a provision, a reconcile or a
 restore's role repair writes is judged again **inside the unit that writes it**, against the roles,
 tombstones and seats the scope holds as the write lands. The first check, before anything is
@@ -191,9 +219,11 @@ the load as before. The directory's fan-out of a tenant's stored roles is still 
 
 Not covered yet:
 
-- on Cloudflare, a staff restore or import reads the directory's roles before the scope loads the
-  dump, so a role defined in between is not judged against the dump. An import for a tenant with
-  no live scope is judged without the scope class's reserved keys (the seat rule still holds);
+- on Cloudflare, a staff restore or import reads the directory's state before the scope loads the
+  dump. What the load writes is judged in its unit, but a directory write in between is caught by
+  the second read after the load rather than inside it (#2595 would order projections instead). An
+  import for a tenant with no live scope is judged without the scope class's reserved keys (the
+  seat rule still holds);
 - on Cloudflare, a scope archived straight from provisioning whose record shows no migration
   applied is not read (reading would create its storage), so a definition that scope could decide
   is refused, naming it. The migration count is not proof the scope was never used: a vertical
