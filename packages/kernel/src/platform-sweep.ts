@@ -169,7 +169,7 @@ const EVENT_DRAIN_BATCH = 200;
 export interface PlatformSweepOptions {
   /**
    * The durable sweep record (#1232): called once per unit outcome — each
-   * connection swept/skipped/failed, each schedule run — with the signals stamp
+   * connection polled/skipped/failed (a cadence wait writes nothing), each schedule run — with the signals stamp
    * the frame can honestly carry. UNSET ⇒ the pass records nothing, exactly as
    * before the seam existed. Sync fire-and-forget: a recorder that throws must
    * never sink the pass, so callers hand in a closure that swallows its own
@@ -182,6 +182,8 @@ export interface PlatformSweepOptions {
   fetch: FetchLike;
   /** provider slug → its reconcile sweeper. A connection whose provider is absent is skipped. */
   sweepers: Record<string, ConnectorSweeper>;
+  /** Provider poll interval in minutes. Absent providers poll on every pass. */
+  sweepEveryMinutes?: Record<string, number>;
   /**
    * #2316: grant and bind each live connection from the landings its vertical's running version
    * declares, before it is swept. UNSET skips the step, and a connection is swept on whatever
@@ -520,7 +522,7 @@ export interface PlatformSweepReport {
   drainTotals: ExecutorDrainReport;
   /** Connections a sweeper ran for. */
   connectionsSwept: number;
-  /** Connections skipped — revoked, or their provider has no registered sweeper. */
+  /** Connections skipped — revoked, without a sweeper, or not yet due. */
   connectionsSkipped: number;
   /**
    * #2316: what the landing step granted and bound from declarations, summed over connections, or
@@ -2010,6 +2012,29 @@ export async function runPlatformSweep(
     };
     const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
     const scoped = (fs: readonly { scopeId: string; error: string }[]) => fs.map((f) => `scope ${f.scopeId}: ${f.error}`);
+    const everyMinutes = options.sweepEveryMinutes?.[c.provider];
+    if (everyMinutes) {
+      try {
+        const [ok, failed] = await Promise.all([
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'ok', limit: 1 }),
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'failed', limit: 1 }),
+        ]);
+        // Ignore skipped rows and future-dated receipts: neither proves a poll inside this interval.
+        const now = Date.now();
+        const lastAttempt = Math.max(0, ...[ok[0], failed[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
+        if (now - lastAttempt < everyMinutes * 60_000) {
+          if (landingFailed.length > 0) fail(landingSaid, scoped(landingFailed));
+          report.connectionsSkipped += 1;
+          return;
+        }
+      } catch (err) {
+        // Without the ledger's clock, do not risk spending the provider's daily allowance.
+        if (landingFailed.length > 0) fail(landingSaid, scoped(landingFailed));
+        report.errors.push({ kind: 'sweep', id: c.id, error: `cannot read connector cadence: ${message(err)}` });
+        report.connectionsSkipped += 1;
+        return;
+      }
+    }
     let result: unknown;
     try {
       // #2498: a sized stream body the connector sends reaches the injected fetch converted.

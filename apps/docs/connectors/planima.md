@@ -124,13 +124,17 @@ cannot stand in for it.
 
 ## What a sweep reports
 
-Each pass writes one row per connection, shown in Health › Connections:
+Each poll writes one row per connection, shown in Health › Connections:
 
 - **ok** — every bound scope synced, or was unchanged.
 - **skipped** — the connection has no binding, so nothing was polled.
 - **failed** — a scope could not be landed in (the landing operation refused, the key was missing,
   Planima answered with an error), or a declared landing could not be granted or bound. The row
   names each scope and why.
+
+The platform checks landings on every quarter-hour pass. Planima is polled only when its two-hour
+interval is due; a pass waiting for that interval writes no new row, leaving the last poll outcome
+visible.
 
 ## The credential
 
@@ -243,9 +247,12 @@ moved to a status added last week.
   `project_id` and their category *name*, which is enough for a consumer to group by; the
   catalogue reads would cost three more requests per pass against a tight budget for data that
   changes rarely.
-- **One cadence for every connection.** The platform pass runs every quarter hour. Planima allows
-  10,000 calls per token per day, and one pass costs at least `1 + 3 × facilities`, so a token
-  syncing more than about 34 facilities runs out of budget before the day does. A per-provider or
-  per-binding interval is not built yet.
-- **No incremental sync.** The whole window is re-read every pass because the API offers no
+- **No per-binding interval.** The platform pass runs every quarter hour, but Planima polls each
+  connection no more than once every two hours. For a token with 250 facilities and one binding,
+  each poll needs at least `1 + 3 × 250 = 751` calls. Twelve polls per day use at least 9,012 of
+  the 10,000-call daily allowance; a 105-minute interval could run 14 polls and use at least
+  10,514. The two-hour interval is the next quarter-hour multiple with room for some pagination.
+  More facilities, pages, or bindings can still exceed the allowance; a per-binding interval is
+  not built.
+- **No incremental sync.** The whole window is re-read every poll because the API offers no
   "changed since" filter. `updated_at` is on each row but cannot be filtered on.

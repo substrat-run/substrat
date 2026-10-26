@@ -10,6 +10,7 @@ import {
   connectionInspectorsFor,
   connectorGrantsFor,
   connectorSweepersFor,
+  connectorSweepEveryMinutesFor,
 } from '../src/connectors.js';
 
 /**
@@ -33,6 +34,7 @@ describe('connector registry', () => {
     expect(Object.keys(connectionInspectorsFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorSweepersFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorGrantsFor()).sort()).toEqual([...providers].sort());
+    expect(connectorSweepEveryMinutesFor()).toEqual({ planima: 120 });
     // A provider that is not registered is absent everywhere — the inspection route
     // 501s honestly rather than the plane pretending it operates it.
     expect(connectionInspectorsFor(ENV)['docusign']).toBeUndefined();
