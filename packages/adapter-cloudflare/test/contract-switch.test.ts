@@ -2524,12 +2524,20 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     return s;
   };
 
-  it('the next pass after the rewind fires nothing, and neither does any pass before the re-assert', async () => {
+  it('every pass stays off until re-assert; OFF clears the hold and ON resumes the schedules', async () => {
     const s = await rewoundPastTheSwitch();
     expect(await heldOn(s)).toEqual([SCHED]);
     for (let i = 0; i < 3; i++) {
       expect(await pass(s)).toMatchObject({ fired: 0, skipped: 2, failed: 0, errors: [], switchedOff: true });
     }
+    // `/internal/system-switch`'s far end, which the platform's re-assert lands on.
+    expect(await off(s)).toEqual({ held: true, changed: true, permissions: ['sched:tick'], deniesTenantGrants: true });
+    expect(await heldOn(s)).toEqual([]);
+    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
+    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
+    // And the lever still works: ON brings the schedules back.
+    await host.systemSwitchLocal(s, SCHED, 'on');
+    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
   it('twin: nothing recorded off — the rewind holds nothing, and the next pass fires', async () => {
@@ -2607,7 +2615,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   const startTick = (s: ScopeId) => jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'tick', instance: 'one', payload: {} });
   const runOf = async (s: ScopeId, id: string) => (await host.jobRuns(t, s)).find((r) => r.id === id);
 
-  it('#1834: a job run of a held module is refused at the system door and kept, and runs once the switch is back', async () => {
+  it('a job run of a held module is refused at the system door and kept, and runs once the switch is back', async () => {
     let runId = '';
     const s = await rewoundPastTheSwitch(true, async (sc) => (runId = (await startTick(sc)).id));
     expect(await heldOn(s)).toEqual([SCHED]);
@@ -2642,7 +2650,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * #1834 review: a waiting run must not take the turn of one behind it. The due order is by id, so
    * an older held run would head every drive; its deferral makes it ineligible for `JOB_DEFER_MS`.
    */
-  it('#1834: an older held run does not starve a later run, even one run per drive', async () => {
+  it('an older held run does not starve a later run, even one run per drive', async () => {
     let heldId = '';
     const s = await rewoundPastTheSwitch(true, async (sc) => (heldId = (await startTick(sc)).id));
     const later = await jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance: 'later', payload: {} });
@@ -2663,7 +2671,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * run becomes due. The moved one is skipped and runs on the next drive; the newly due one is not
    * lost, the next drive runs it; nothing runs twice.
    */
-  it('#1834: a drive acts on its one snapshot, claiming each run before it runs it', async () => {
+  it('a drive acts on its one snapshot, claiming each run before it runs it', async () => {
     const s = await newScope();
     const start = (instance: string) =>
       jobDeployment().startJobRun(t, s, { moduleId: SCHED, job: 'idle', instance, payload: {} });
@@ -2904,7 +2912,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
   });
 
   /** #2028 review: the due order is served by its own index on the DO's SQLite, with no sort step. */
-  it('#1834: the due read seeks _substrat_job_runs_due_at and sorts nothing', async () => {
+  it('the due read seeks _substrat_job_runs_due_at and sorts nothing', async () => {
     const s = await newScope();
     const plan = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_instance, state) =>
       state.storage.sql
@@ -2928,7 +2936,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * of it: that pass counts, as any failure does — raw, or as the step wrapper the driver gave it.
    */
   for (const inStep of [false, true]) {
-    it(`#1834: a door refusal kept and thrown again on a later pass is an ordinary failure there${inStep ? ' (from a step)' : ''}`, async () => {
+    it(`a door refusal kept and thrown again on a later pass is an ordinary failure there${inStep ? ' (from a step)' : ''}`, async () => {
       hoarded = null;
       let runId = '';
       const h = jobDeployment(); // ONE host for every pass: its marks are what a stale throw would reuse
@@ -2947,7 +2955,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     });
   }
 
-  it('#1834 twin: nothing recorded off — the rewound job run passes the door and completes', async () => {
+  it('twin: nothing recorded off — the rewound job run passes the door and completes', async () => {
     let runId = '';
     const s = await rewoundPastTheSwitch(false, async (sc) => (runId = (await startTick(sc)).id));
     expect(await jobDeployment().runDueJobs(t, s)).toMatchObject({ attempted: 1, completed: 1, errors: [] });
@@ -2961,7 +2969,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * pin is what stops it: the rewound scope is a new instance, so the call is refused as moved,
    * gated again, and that gate sees the hold. No clock is involved.
    */
-  it('#1834: a system door opened before the rewind refuses a call that lands after it', async () => {
+  it('a system door opened before the rewind refuses a call that lands after it', async () => {
     const s = await newScope();
     const atBookmark = await host.exportScopeLocal(s);
     const door = await host.getSystemScope(SCHED, t, s); // gated now: on, not held
@@ -2977,7 +2985,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await ticksIn(s)).toBe(0);
   });
 
-  it('#1834 twin: nothing recorded off — the same door re-gates the restarted scope and the call runs', async () => {
+  it('twin: nothing recorded off — the same door re-gates the restarted scope and the call runs', async () => {
     const s = await newScope();
     const atBookmark = await host.exportScopeLocal(s);
     const door = await host.getSystemScope(SCHED, t, s);
@@ -2988,7 +2996,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await ticksIn(s)).toBe(1);
   });
 
-  it("#1834: a module's attachment open goes through the same door, and a held module's is refused", async () => {
+  it("a module's attachment open goes through the same door, and a held module's is refused", async () => {
     // A bucket is resolved before any open; none is read, since nothing here gets that far.
     const h = new CloudflareScopeHost({
       scope: env.SCOPE,
@@ -3005,7 +3013,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await (await h.getSystemAttachments(SCHED, t, free)).open('no-such-attachment')).toBeNull();
   });
 
-  it('#1834: a scope that keeps restarting under the door fails closed after a bounded number of gates', async () => {
+  it('a scope that keeps restarting under the door fails closed after a bounded number of gates', async () => {
     const s = await newScope();
     const moving = countingScopes(env.SCOPE);
     const h = deployment(moving.ns);
@@ -3033,7 +3041,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * for a call carrying the instance a door's gate read — so a new host path that reached the DO
    * with a module and no door would be refused here, whatever the host-side types allowed.
    */
-  it('#1834: a system-subject call that reaches the DO without the door is refused; with the pin it runs', async () => {
+  it('a system-subject call that reaches the DO without the door is refused; with the pin it runs', async () => {
     const s = await newScope();
     const raw = env.SCOPE.get(env.SCOPE.idFromName(s)) as unknown as {
       invoke(...args: unknown[]): Promise<{ failure?: { message: string; code?: string } }>;
@@ -3061,7 +3069,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * text. An operation failing with the very words of the old refusal reaches its caller as itself,
    * after ONE invocation: no re-gate, no re-invoke, no `unavailable` in its place.
    */
-  it("#1834: an operation's error that reads like a moved pin is its own failure, after one invocation", async () => {
+  it("an operation's error that reads like a moved pin is its own failure, after one invocation", async () => {
     const s = await newScope();
     const counting = countingScopes(env.SCOPE);
     const door = await deployment(counting.ns).getSystemScope(SCHED, t, s);
@@ -3090,18 +3098,6 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     }).catch(() => undefined);
     expect(await heldOn(s)).toEqual([SCHED]);
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
-  });
-
-  it("the re-assert clears the hold: OFF is back in the scope's own storage, and still nothing fires", async () => {
-    const s = await rewoundPastTheSwitch();
-    // `/internal/system-switch`'s far end, which the platform's re-assert lands on.
-    expect(await off(s)).toEqual({ held: true, changed: true, permissions: ['sched:tick'], deniesTenantGrants: true });
-    expect(await heldOn(s)).toEqual([]);
-    expect(await host.systemGrantsStatusLocal(s)).toEqual([{ moduleId: SCHED, schedules: 'off' }]);
-    expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
-    // And the lever still works: ON brings the schedules back.
-    await host.systemSwitchLocal(s, SCHED, 'on');
-    expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
   it("an operator's ON clears the hold: the module fires on the next pass", async () => {
@@ -3185,7 +3181,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     return { s, atBookmark };
   };
 
-  it('#1839: an OFF during the settle joins the pending claim at once, and after the rewind lands the pass fires nothing', async () => {
+  it('an OFF during the settle joins the pending claim at once, and after the rewind lands the pass fires nothing', async () => {
     const { s, atBookmark } = await settlingScope();
     await armRewind(env.SCOPE, s);
     const r = gatedRewind(s);
@@ -3205,7 +3201,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await pass(s)).toMatchObject({ fired: 0, switchedOff: true });
   });
 
-  it('#1839: an OFF on the doomed instance joins the armed claim; the first move on the restored storage releases it', async () => {
+  it('an OFF on the doomed instance joins the armed claim; the first move on the restored storage releases it', async () => {
     const { s, atBookmark } = await settlingScope();
     await armRewind(env.SCOPE, s, { holdAbort: true });
     await host.rewindScopeLocal(s, 'bm', { force: true });
@@ -3219,7 +3215,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await claimsOn(s)).toEqual([]);
   });
 
-  it('#1839: an OFF the move rule never sees (a reconcile carrying the list, in its own unit) is claimed by the re-read after the settle', async () => {
+  it('an OFF the move rule never sees (a reconcile carrying the list, in its own unit) is claimed by the re-read after the settle', async () => {
     const { s, atBookmark } = await settlingScope();
     await armRewind(env.SCOPE, s);
     const r = gatedRewind(s);
@@ -3237,7 +3233,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * #1839 review: the OFF was queued behind a rewind's capture, and the rewind wrote its claim
    * while the move ran. S0 predates that claim; the join re-reads after the move and finds it.
    */
-  it('#1839: an OFF joins a claim written while it was queued: the join re-reads the claims after the move', async () => {
+  it('an OFF joins a claim written while it was queued: the join re-reads the claims after the move', async () => {
     const s = await newScope();
     onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
     const counting = countingScopes(env.SCOPE);
@@ -3251,7 +3247,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * (its rewind refused) between the OFF's claims read and its join; a row created for it would
    * hold SCHED with no rewind behind it.
    */
-  it('#1839: an OFF does not join a claim dropped while it moved, so no orphan row holds the module', async () => {
+  it('an OFF does not join a claim dropped while it moved, so no orphan row holds the module', async () => {
     const s = await newScope();
     onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
     await claim(s, [EARLIER], 'refused-mid-move');
@@ -3267,7 +3263,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * joined row is a full settle old, on the hold object's clock, so that snapshot is too old by
    * then and is read again. Without the wait the rewind arms right after the join.
    */
-  it('#1839: the rewind waits until the joined row is a settle old, so a pass whose snapshot predates it re-reads', async () => {
+  it('the rewind waits until the joined row is a settle old, so a pass whose snapshot predates it re-reads', async () => {
     const { s, atBookmark } = await settlingScope();
     const sweeper = countingScopes(env.SCOPE);
     const swept = deployment(sweeper.ns);
@@ -3288,7 +3284,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(sweeper.holdReads).toBe(2);
   });
 
-  it('#1839 twin: a rewind with no late OFF asks the age once and does not wait again', async () => {
+  it('twin: a rewind with no late OFF asks the age once and does not wait again', async () => {
     const { s, atBookmark } = await settlingScope();
     const rewinder = countingScopes(env.SCOPE);
     await armRewind(env.SCOPE, s);
@@ -3301,7 +3297,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * #1839 review: the re-check after the settle can fail (here the age read). Nothing was asked to
    * arm yet, so the rewind drops its own claim, keeps any other, and throws.
    */
-  it("#1839: a failed re-check drops this rewind's claim, arms nothing, and throws", async () => {
+  it("a failed re-check drops this rewind's claim, arms nothing, and throws", async () => {
     const { s } = await settlingScope();
     const rewinder = countingScopes(env.SCOPE);
     rewinder.failAgeReads = true;
@@ -3318,7 +3314,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * capture reads them.
    */
   it(
-    '#1839: the wait is bounded: a claim that keeps getting younger is refused after the extra waits, and a retry holds',
+    'the wait is bounded: a claim that keeps getting younger is refused after the extra waits, and a retry holds',
     { timeout: 45_000 },
     async () => {
       const { s, atBookmark } = await settlingScope();
@@ -3356,7 +3352,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
    * module back from that stale read. The ON tombstones the module after its move, and a claim
    * whose token predates the tombstone skips it.
    */
-  it("#1839: an ON between the re-check's status read and its claim write wins: the stale read claims nothing", async () => {
+  it("an ON between the re-check's status read and its claim write wins: the stale read claims nothing", async () => {
     const s = await newScope();
     onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
     const atBookmark = await host.exportScopeLocal(s);
@@ -3373,7 +3369,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
-  it('#1839: the same for the capture: an ON between its status read and its claim write is not claimed', async () => {
+  it("an ON between the capture's status read and its claim write is not claimed", async () => {
     const s = await newScope();
     onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
     const atBookmark = await host.exportScopeLocal(s);
@@ -3389,7 +3385,7 @@ describe('#1819 — a PITR rewind to before the switch runs nothing until the sw
     expect(await pass(s)).toMatchObject({ fired: 2, failed: 0 });
   });
 
-  it('#1839 twin: the tombstone refuses only a read that predates it, and an OFF after the ON still joins', async () => {
+  it('twin: the tombstone refuses only a read that predates it, and an OFF after the ON still joins', async () => {
     const s = await newScope();
     onTestFinished(() => holdsStub().switchHoldRelease(s, null, null));
     await claim(s, [EARLIER], 'a-rewind');
