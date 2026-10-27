@@ -131,6 +131,18 @@ The subject is also the **only** tag slot, and that is a boundary, stated twice:
   turn id) and doubles as a free lookup handle, but its contract is idempotency —
   nothing more is promised of it.
 
+### Recorded use case: metered allowance ([#329](https://github.com/substrat-run/substrat/issues/329))
+
+A recurring membership may grant a fixed quantity of room time per period; bookings
+consume it, and usage beyond the grant is priced as overage by the vertical. The shipped
+metering ledger already records idempotent usage and freezes closed periods, but it has
+no grant, covered-usage or overage calculation. This is scope-local customer usage, not
+the operator's platform entitlement. The allowance remains vertical code: one use case
+does not meet [D-27's extraction gate](../decisions/D-027-placement-spectrum-pinned-6.md),
+and the engine's unit, period bounds and pricing boundaries above still apply. This is
+also one subscription-shaped data point for [commerce gaps §4.6](../strategy/commerce-gaps.md#46-subscriptions--deliberately-not-analysed),
+not a reason to design a subscription engine. No engine work is scheduled.
+
 ## 1. Surface
 
 **The operations, in-scope functions, permissions and events live in one place, and it is

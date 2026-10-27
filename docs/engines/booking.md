@@ -280,3 +280,11 @@ transition should not produce two events; a vertical wanting match vocabulary em
 3. **Buffer/turnaround time** between reservations (cleaning, next customer) — engine
    concept or vertical padding of the interval? Leaning vertical.
 4. Whether `no_show` belongs in the engine at all, or is a vertical state over `completed`.
+
+**Recorded use case for question 3 ([#327](https://github.com/substrat-run/substrat/issues/327)).**
+Room turnaround can make a resource physically unavailable after the booked interval.
+Padding that interval in vertical code would also lengthen the stored reservation, its
+events and `availability()` output, so readers would need to recover the booked end.
+Buffer policy can vary by resource and time, as allowed durations do (§4.1). Whether
+turnaround belongs in the allocation invariant (§2) or in vertical policy remains an
+open decision; no engine change is scheduled.
