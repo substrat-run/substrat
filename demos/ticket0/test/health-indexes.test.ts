@@ -76,9 +76,11 @@ function populate() {
     (id, conversation_id, author_kind, visibility, body_text, created_at)
     VALUES (?, ?, ?, ?, 'Fixture', ?)`);
   db.transaction(() => {
-    for (let i = 0; i < 2000; i++) {
+    // Ten recent conversations fill both 10-row health reads; older rows span every
+    // state, reply kind, merge and waiting-candidate path. Plans match the large desk.
+    for (let i = 0; i < 50; i++) {
       const id = `c${String(i).padStart(4, '0')}`;
-      const at = i < 1800 ? old : recent;
+      const at = i < 40 ? old : recent;
       conversation.run(id, ['new', 'open', 'snoozed', 'resolved', 'closed'][i % 5], at, at, i % 17 === 0 ? 'c0001' : null);
       for (let j = 0; j < 10; j++) {
         // Drafts with a desk reply, drafts with only contact replies, and drafts
@@ -194,11 +196,11 @@ it('preserves every populated pre-0015 row and every production read result acro
     WHERE (m.author_kind = 'contact') != (m.author_contact_id IS NOT NULL)
        OR (m.author_contact_id IS NOT NULL AND m.author_contact_id != c.contact_id)`).get()).toEqual({ n: 0 });
   expect(db.prepare(`SELECT COUNT(*) AS n FROM ticket0_messages WHERE author_contact_id IS NOT NULL`).get())
-    .toEqual({ n: 15000 });
+    .toEqual({ n: 370 });
   expect(keptResults(results(), beforeResults)).toEqual(beforeResults);
-  expect(db.prepare(queries.counts.sql).get(...queries.counts.args)).toEqual({ turns: 2000, failed: 100, drafted: 100 });
-  expect(db.prepare(queries.waitingTotal.sql).get()).toEqual({ n: 500 });
-  expect(db.prepare(queries.reap.sql).all(...queries.reap.args)).toHaveLength(169);
+  expect(db.prepare(queries.counts.sql).get(...queries.counts.args)).toEqual({ turns: 100, failed: 5, drafted: 5 });
+  expect(db.prepare(queries.waitingTotal.sql).get()).toEqual({ n: 12 });
+  expect(db.prepare(queries.reap.sql).all(...queries.reap.args)).toHaveLength(4);
   expect(db.prepare(queries.recent.sql).all(...queries.recent.args)).toHaveLength(10);
   expect(db.prepare(queries.waiting.sql).all(...queries.waiting.args)).toHaveLength(10);
 });
