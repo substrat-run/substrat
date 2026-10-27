@@ -235,7 +235,8 @@ export async function beginLogin(
 /**
  * Complete login: verify state against the flow cookie, exchange the code for
  * tokens, verify the ID token (signature via JWKS, plus issuer/audience/nonce),
- * and return the user + a signed session cookie value.
+ * and return the user + a signed session cookie value. The optional UserInfo
+ * deadline defaults to USERINFO_TIMEOUT_MS.
  */
 export async function completeLogin(
   baseEnv: OidcEnv,

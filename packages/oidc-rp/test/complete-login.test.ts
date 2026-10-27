@@ -209,21 +209,18 @@ describe('what it refuses, and what it merely shrugs at', () => {
     });
   }
 
-  it(
-    'stands the login up when the endpoint accepts the connection and never answers',
-    async () => {
-      idTokenClaims = { sub: 'u-1' };
-      userInfo = 'never answers';
+  it('stands the login up when the endpoint accepts the connection and never answers', async () => {
+    idTokenClaims = { sub: 'u-1' };
+    userInfo = 'never answers';
 
-      // The real abort signal proves a stalled endpoint cannot hang login. A short
-      // deadline keeps this test fast while production keeps its five-second ceiling.
-      expect(USERINFO_TIMEOUT_MS).toBe(5_000);
-      const { user } = await login({ userInfoTimeoutMs: 200 });
+    // The real abort signal proves a stalled endpoint cannot hang login. A short
+    // deadline keeps this test fast while production keeps its five-second ceiling.
+    expect(USERINFO_TIMEOUT_MS).toBe(5_000);
+    const { user } = await login({ userInfoTimeoutMs: 200 });
 
-      expect(user).toEqual({ id: 'u-1', email: undefined, name: undefined });
-      expect(userInfoRequests).toEqual([{ authorization: 'Bearer at-1', deadline: true }]);
-    },
-  );
+    expect(user).toEqual({ id: 'u-1', email: undefined, name: undefined });
+    expect(userInfoRequests).toEqual([{ authorization: 'Bearer at-1', deadline: true }]);
+  });
 });
 
 /**
