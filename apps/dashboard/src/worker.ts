@@ -3021,10 +3021,16 @@ app.post('/api/apps/:scopeId/restore', async (c) => {
  * DELETE removes one key. The app must be the caller's own, and managing config is the
  * same authority as managing the app. PUT also attempts live delivery to the running scope.
  */
-async function getAppEnvIn({ c, host, node }: TeamContext, appScopeId: string) {
+async function appEnvTarget({ host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  return { dash, appRow };
+}
+
+async function getAppEnvIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+  const { dash, appRow } = await appEnvTarget(ctx, appScopeId);
   // The env-spec comes from the REGISTRY (a vertical declares it in its manifest; the
   // registry carries it), so a pushed builder vertical works the same as a builtin. A
   // pushed vertical registers on the SHARED plane, not this deployment's registry —
@@ -3042,10 +3048,9 @@ async function getAppEnvIn({ c, host, node }: TeamContext, appScopeId: string) {
   return { spec, values };
 }
 
-async function setAppEnvIn({ c, host, node }: TeamContext, appScopeId: string, entries: Array<{ key: string; value: string; secret?: boolean }>) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function setAppEnvIn(ctx: TeamContext, appScopeId: string, entries: Array<{ key: string; value: string; secret?: boolean }>) {
+  const { c, node } = ctx;
+  const { dash, appRow } = await appEnvTarget(ctx, appScopeId);
   if (entries.length === 0) return { saved: 0, delivered: false };
   const saved = await dash.invoke<{ saved: number }>('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries });
   // DELIVER to the running app scope (vertical-auth-detach.md §2.2), not just author:
@@ -3079,10 +3084,8 @@ async function setAppEnvIn({ c, host, node }: TeamContext, appScopeId: string, e
   return { ...saved, delivered, ...(note ? { note } : {}) };
 }
 
-async function deleteAppEnvIn({ host, node }: TeamContext, appScopeId: string, key: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function deleteAppEnvIn(ctx: TeamContext, appScopeId: string, key: string) {
+  const { dash, appRow } = await appEnvTarget(ctx, appScopeId);
   await dash.invoke('dashboard/delete-app-env', { appScopeId: appRow.app_scope_id, key });
   return { deleted: key };
 }
