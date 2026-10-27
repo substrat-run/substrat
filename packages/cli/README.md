@@ -42,6 +42,15 @@ The newest 256 requests, up to 8 MiB total, are retained. SQL parameter values a
 request and response bodies are not recorded. `--no-trace` runs the same script without
 the trace preload.
 
+The trace records SQL statement text, duration and row counts. When source maps are
+available, error stacks point at the original source. **Not recorded, and why:** bound
+SQL parameters can contain personal data or credentials, so the local file store omits
+them. Revisit that decision if a concrete debugging case needs values and a safe,
+explicit opt-in can be designed. Event steps name the type and entity but do not claim
+`from → to` lifecycle moves: the trace omits event payloads, and a checked transition
+can still roll back. Revisit this when the local reader can derive committed moves from
+event history and the declared lifecycle without guessing.
+
 ## Documentation
 
 **https://substrat.net/guide/deploying** — authentication, the push/promote model, channels,

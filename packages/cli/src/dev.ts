@@ -18,7 +18,9 @@ export async function dev(options: DevOptions = {}): Promise<number> {
     const preload = new URL('./dev-preload.js', import.meta.url).href;
     const source = `try{await import(${JSON.stringify(preload)})}catch(error){if(!process.env.SUBSTRAT_DEV_TRACE_WARNED){process.env.SUBSTRAT_DEV_TRACE_WARNED='1';process.stderr.write('warning: local request traces unavailable: '+String(error)+'\\n')}}`;
     const option = `--import=data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
-    env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${option}` : option;
+    // Error stacks captured by the local trace should point at authored TypeScript when
+    // the project's compiled JavaScript ships source maps.
+    env.NODE_OPTIONS = [env.NODE_OPTIONS, '--enable-source-maps', option].filter(Boolean).join(' ');
     env.SUBSTRAT_DEV_TRACE_DIR = project;
   }
 
