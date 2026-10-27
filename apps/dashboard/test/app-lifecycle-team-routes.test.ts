@@ -41,7 +41,11 @@ const version = ulid();
 let dir: string;
 let host: SqliteScopeHost;
 let planeCalls: string[];
+let restoreBodies: unknown[];
 let env: Record<string, unknown>;
+const store = { binding: 'GRAPH', driver: 'counter', tables: [{
+  name: 'held', ddl: 'CREATE TABLE held (id TEXT)', columns: ['id'], rows: [['saved']],
+}] };
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'substrat-app-lifecycle-team-'));
@@ -65,6 +69,7 @@ beforeAll(async () => {
     });
   }
   planeCalls = [];
+  restoreBodies = [];
   env = {
     SCOPE: {}, CONTROL_PLANE: {}, SESSION_SECRET: 'test-session-secret', CP_SERVICE_TOKEN: 'test-service-token',
     CONTROL_PLANE_SVC: { fetch: async (url: string | URL | Request, init?: RequestInit) => {
@@ -77,9 +82,12 @@ beforeAll(async () => {
       }
       if (path.endsWith('/bookmarks')) return Response.json([{ bookmark: 'before', takenAt: '2026-10-01T00:00:00Z', pending: [] }]);
       if (path.endsWith('/migrations')) return Response.json([]);
-      if (path.endsWith('/export')) return Response.json({ tenantId: team[0], scopeId: appScope[0], capturedAt: '2026-10-01T00:00:00Z', masked: true, tables: [] });
+      if (path.endsWith('/export')) return Response.json({ tenantId: team[0], scopeId: appScope[0], capturedAt: '2026-10-01T00:00:00Z', masked: true, tables: [{ name: 't', ddl: 'CREATE TABLE t (x)', columns: ['x'], rows: [] }], stores: [store] });
       if (path.endsWith('/snapshots')) return Response.json({ id: scopeId.parse(ulid()) }, { status: 201 });
-      if (path.endsWith('/restore')) return Response.json({ restored: appScope[0], tables: 1 });
+      if (path.endsWith('/restore')) {
+        restoreBodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ restored: appScope[0], tables: 1 });
+      }
       if (path.endsWith('/rewind')) return Response.json({ rewindingTo: 'before' });
       if (path.endsWith('/version')) return Response.json({});
       if (path.includes('/binding-impact')) return Response.json({ affected: [] });
@@ -95,7 +103,7 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-beforeEach(() => { planeCalls.length = 0; });
+beforeEach(() => { planeCalls.length = 0; restoreBodies.length = 0; });
 
 const send = (as: 'owner' | 'admin' | 'member' | 'viewer', method: string, path: string, body?: unknown) => app.request(path, {
   method,
@@ -103,6 +111,17 @@ const send = (as: 'owner' | 'admin' | 'member' | 'viewer', method: string, path:
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 }, env);
 const path = (suffix: string) => `/api/teams/${team[0]}/apps/${appScope[0]}/${suffix}`;
+
+it('keeps a dump store through export and restore route parsing', async () => {
+  const exported = await send('owner', 'GET', path('export'));
+  expect(exported.status).toBe(200);
+  const dump = await exported.json() as { tables: unknown[]; stores: unknown[] };
+  expect(dump.stores).toEqual([store]);
+  const restored = await send('owner', 'POST', path('restore'), { tables: dump.tables, stores: dump.stores });
+  expect(restored.status).toBe(200);
+  expect(restoreBodies).toHaveLength(1);
+  expect(restoreBodies[0]).toMatchObject({ stores: [store] });
+});
 
 it('keeps lifecycle reads and writes on the path team after another tab switches the cookie', async () => {
   expect((await send('owner', 'GET', path('bookmarks'))).status).toBe(200);

@@ -218,6 +218,8 @@ function tsType(schema: unknown, ctx: PrintContext): string {
       return 'unknown';
     case 'null':
       return 'null';
+    case 'never':
+      return 'never';
     case 'literal': {
       const values = def.values ?? [];
       if (values.length === 0) return fail(`${ctx.where}: a literal with no values`);

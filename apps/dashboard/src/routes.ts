@@ -40,7 +40,7 @@ import {
   permissionRegistry,
   previewAuth,
   REBIND_REVIEW_REASONS,
-  scopeDumpTable,
+  scopeDump,
   promotionAcknowledgement,
   versionOrigin,
   verticalSlug,
@@ -707,12 +707,14 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/export-installed-app': {
     summary: 'Export this app’s data as a dump',
     input: z.object({ scopeId: z.string().min(1) }),
-    output: z.object({ tenantId: z.string(), scopeId: z.string(), capturedAt: z.string(), masked: z.boolean(), tables: z.array(scopeDumpTable) }),
+    output: scopeDump.extend({ masked: z.boolean() }),
     http: { method: 'GET', path: '/apps/{scopeId}/export' },
   },
   'dashboard/restore-installed-app': {
     summary: 'Replace this app’s data from an uploaded dump after making a safety copy',
-    input: z.object({ scopeId: z.string().min(1), tables: z.array(scopeDumpTable).min(1), sourceScopeId: z.unknown().optional() }),
+    input: scopeDump.pick({ tables: true, stores: true }).extend({
+      scopeId: z.string().min(1), tables: scopeDump.shape.tables.min(1), sourceScopeId: z.unknown().optional(),
+    }),
     output: z.object({ restored: z.string(), tables: z.number().int(), safetyCopyId: z.string() }),
     http: { method: 'POST', path: '/apps/{scopeId}/restore' },
   },

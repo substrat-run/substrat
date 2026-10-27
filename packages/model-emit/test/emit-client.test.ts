@@ -24,6 +24,7 @@ describe('printing a schema', () => {
     expect(tsTypeOf(z.boolean())).toBe('boolean');
     expect(tsTypeOf(z.bigint())).toBe('bigint');
     expect(tsTypeOf(z.unknown())).toBe('unknown');
+    expect(tsTypeOf(z.object({ kind: z.never().optional() }))).toBe('{ kind?: never }');
   });
 
   it('ignores refinements — a checked string is still a string', () => {

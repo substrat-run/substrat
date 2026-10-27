@@ -857,6 +857,12 @@ export interface DumpTable {
   rows: unknown[][];
 }
 
+export interface DumpStore {
+  binding: string;
+  driver: string;
+  tables: DumpTable[];
+}
+
 /** An app's data as a dump the CLI also accepts. */
 export interface AppDataDump {
   tenantId: string;
@@ -865,6 +871,7 @@ export interface AppDataDump {
   /** True when PII columns arrived redacted (always, in connected mode). */
   masked: boolean;
   tables: DumpTable[];
+  stores: DumpStore[];
 }
 
 /** What an import did, including the fork to back out to. */

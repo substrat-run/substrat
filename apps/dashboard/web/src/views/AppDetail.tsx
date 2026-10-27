@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { ApiError as TeamApiError } from '../lib/api.generated';
-import { api, teamApi, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
+import { api, teamApi, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type DumpStore, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
 import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, RESERVED_KEY_MARK, reservationNote, roleHolderNote } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
@@ -2128,7 +2128,7 @@ function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
 function ExportImport({ teamId, app, canRestore }: { teamId: string; app: AppRow; canRestore: boolean }) {
   const [exporting, setExporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
-  const [pending, setPending] = useState<{ name: string; tables: DumpTable[]; rows: number } | null>(null);
+  const [pending, setPending] = useState<{ name: string; tables: DumpTable[]; stores: DumpStore[]; rows: number } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -2164,12 +2164,12 @@ function ExportImport({ teamId, app, canRestore }: { teamId: string; app: AppRow
     setNote(null);
     if (!file) return;
     try {
-      const parsed = JSON.parse(await file.text()) as { tables?: DumpTable[] };
+      const parsed = JSON.parse(await file.text()) as { tables?: DumpTable[]; stores?: DumpStore[] };
       if (!Array.isArray(parsed.tables) || parsed.tables.length === 0) {
         throw new Error(`${file.name} is not a scope dump (no tables) — expected a .dump.json export`);
       }
       const rows = parsed.tables.reduce((n, t) => n + (Array.isArray(t.rows) ? t.rows.length : 0), 0);
-      setPending({ name: file.name, tables: parsed.tables, rows });
+      setPending({ name: file.name, tables: parsed.tables, stores: parsed.stores ?? [], rows });
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -2185,7 +2185,7 @@ function ExportImport({ teamId, app, canRestore }: { teamId: string; app: AppRow
       if (DEV_MOCK) {
         setNote('Import is not available in the preview.');
       } else {
-        const r = await teamApi(teamId).restoreInstalledApp({ scopeId: app.app_scope_id, tables: pending.tables });
+        const r = await teamApi(teamId).restoreInstalledApp({ scopeId: app.app_scope_id, tables: pending.tables, stores: pending.stores });
         setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as preview ${shortId(r.safetyCopyId)} in the Previews tab.`);
       }
       setPending(null);

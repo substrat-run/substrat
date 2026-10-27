@@ -492,7 +492,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/export` — `dashboard/export-installed-app`
    */
-  exportInstalledApp(input: { scopeId: string }): Promise<{ tenantId: string; scopeId: string; capturedAt: string; masked: boolean; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[] }>;
+  exportInstalledApp(input: { scopeId: string }): Promise<{ tenantId: string; scopeId: string; capturedAt: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; stores?: { binding: string; driver: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; kind?: never }[]; masked: boolean }>;
 
   /**
    * One app's declared environment and its stored values; secrets are write-only
@@ -786,7 +786,7 @@ export interface DashboardClient {
    *
    * `POST /apps/{scopeId}/restore` — `dashboard/restore-installed-app`
    */
-  restoreInstalledApp(input: { scopeId: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; sourceScopeId?: unknown }): Promise<{ restored: string; tables: number; safetyCopyId: string }>;
+  restoreInstalledApp(input: { tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; stores?: { binding: string; driver: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; kind?: never }[]; scopeId: string; sourceScopeId?: unknown }): Promise<{ restored: string; tables: number; safetyCopyId: string }>;
 
   /**
    * Finish the install of an app stuck provisioning, in place (409 unless it is)

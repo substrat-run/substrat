@@ -18,6 +18,7 @@ import {
   type RoleDefinition,
   type ScopeDump,
   type ScopeDumpTable,
+  type ScopeStoreDump,
   type ScopeId,
   type TenantId,
   bareSlug,
@@ -1070,6 +1071,7 @@ export async function restoreAppData(
     node: DashboardNode;
     appScopeId: ScopeId;
     tables: ScopeDumpTable[];
+    stores?: ScopeStoreDump[];
     /** The app's bound hostname — gives the safety copy a preview URL. */
     appHostname?: string | null;
     controlPlane?: TenantNarrowedControlPlane;
@@ -1094,6 +1096,7 @@ export async function restoreAppData(
     await input.controlPlane.restoreScope(
       input.appScopeId,
       input.tables,
+      input.stores ?? [],
       input.sourceScopeId ? { sourceScopeId: input.sourceScopeId } : undefined,
     );
   } else {
@@ -1111,7 +1114,7 @@ export async function restoreAppData(
       capturedAt: new Date().toISOString(),
       // boundary-lint-end R6
       tables: input.tables,
-      stores: [],
+      stores: input.stores ?? [],
     }, input.sourceScopeId ? { sourceScopeId: input.sourceScopeId } : undefined);
   }
   return { restored: input.appScopeId, tables: input.tables.length, safetyCopyId: safety.id };

@@ -57,8 +57,8 @@ interface Def {
 }
 const defOf = (schema: unknown) => (schema as { _zod: { def: Def } })._zod.def;
 
-/** A schema that admits any value of its type: nothing closed below it. */
-const OPEN_LEAVES = new Set(['string', 'number', 'boolean', 'unknown', 'null']);
+/** Leaf schemas with no closed vocabulary below them (including the empty `never` type). */
+const OPEN_LEAVES = new Set(['string', 'number', 'boolean', 'unknown', 'null', 'never']);
 
 /**
  * Every closed vocabulary reachable in `schema`, by path (`[]` an array element, `{}` a record's
