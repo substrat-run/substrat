@@ -30,6 +30,7 @@ import {
 import { Page } from '../components/layout';
 import { card, HonestyBanner, MonoTag, PageTitle, Pill, type PillKind , SweepStrip } from '../components/ui';
 import { relativeTime, untilTime } from '../lib/format';
+import { ApiError as TeamApiError } from '../lib/api.generated';
 
 /**
  * Integrations (dashboard-ui.md §4.8) — the connection store, tenant-facing. Two
@@ -306,7 +307,7 @@ function IntegrationDetail({
         setActivity(v as unknown as ConnectionActivityView);
         setHealth(v.connection as ConnectionView); // read in that same request
       })
-      .catch((e) => alive && setActivityErr(e instanceof ApiError ? e.message : String(e)));
+      .catch((e) => alive && setActivityErr(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
     };
@@ -325,7 +326,7 @@ function IntegrationDetail({
         if (result.connection) setHealth(result.connection as ConnectionView);
       }
     } catch (e) {
-      setProbeErr(e instanceof ApiError ? e.message : String(e));
+      setProbeErr(e instanceof Error ? e.message : String(e));
     }
     setProbing(false);
   };
@@ -669,12 +670,14 @@ function ConnectDialog({
       // dialog stays open with what was typed and says which field to look at. The old
       // behaviour (store, close, call it Connected) is what let a bad key sit until the
       // first signing request failed.
-      if (e instanceof ApiError && e.status === 422) setRefusal({ message: e.message, probe: e.probe });
+      if (e instanceof TeamApiError && e.status === 422) {
+        setRefusal({ message: e.message, probe: (e.body as { probe?: ConnectionProbeView } | null)?.probe });
+      }
       // A 503 is the platform saying it cannot store credentials on this deployment
       // (#603) — the key may be perfect. Saying so beats "Couldn’t save — 500", which
       // is what this used to be and reads as "your credential is bad".
-      else if (e instanceof ApiError && e.status === 503) setUnavailable(e.message);
-      else setErr(e instanceof ApiError ? e.message : String(e));
+      else if (e instanceof TeamApiError && e.status === 503) setUnavailable(e.message);
+      else setErr(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };
