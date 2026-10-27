@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/engine-assistant
 
-11 operations · 0 narrowed checks · assessed node-only
+12 operations · 0 narrowed checks · assessed node-only
 
 ## 1. Kernel-enforced properties
 
@@ -47,7 +47,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 11 | `assistant/acquire-run`, `assistant/append-events`, `assistant/claim-execution`, `assistant/close-thread`, `assistant/create-thread`, `assistant/get-thread`, `assistant/list-threads`, `assistant/read-events`, `assistant/release-run`, `assistant/resolve-approval`, `assistant/send-message` |
+| Node-level check | 12 | `assistant/acquire-run`, `assistant/append-events`, `assistant/authorize-file-upload`, `assistant/claim-execution`, `assistant/close-thread`, `assistant/create-thread`, `assistant/get-thread`, `assistant/list-threads`, `assistant/read-events`, `assistant/release-run`, `assistant/resolve-approval`, `assistant/send-message` |
 | Per-entity proof walk (`narrows`) | 0 | — |
 
 ## 4. Not covered by this artifact

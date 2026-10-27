@@ -1072,7 +1072,6 @@ export interface AppIntegration {
   connections: ConnectionView[];
 }
 
-/** `GET /api/apps/:scope/integrations` */
 export interface AppIntegrationsView {
   providers: AppIntegration[];
 }
@@ -1128,7 +1127,7 @@ export interface ConnectionFact {
 }
 
 /**
- * `POST /api/apps/:scope/integrations/:provider/verify` — what the provider said when
+ * An app provider verification — what the provider said when
  * asked to accept this credential. `ok: false` is an answer, not a failure: the
  * provider's own words are the whole value ("This feature is disabled" and "invalid
  * credentials" send an operator to different places).
@@ -1208,7 +1207,7 @@ export interface UnreadableIntentView {
 }
 
 /**
- * `GET /api/apps/:scope/integrations/:provider/activity` — activity, plus the grants the
+ * An app provider activity response — activity, plus the grants the
  * connection holds and the masked credential.
  *
  * Two dials, two different questions. `source` is `ledger` (what this platform sent) or
@@ -1656,11 +1655,6 @@ async function observabilityLogsRead(
   return { events: body, incomplete: logsIncompleteOf(headers) };
 }
 
-/** One provider's routes on one app, or one connection's when a fleet row is addressed. */
-const integrationPath = (scopeId: string, provider: string, connectionId?: string) =>
-  `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}` +
-  (connectionId ? `/connections/${encodeURIComponent(connectionId)}` : '');
-
 export const api = {
   /** `null` when there is no session (the worker answers 401); onboarding when teamless. */
   me: async (): Promise<MeResult | null> => {
@@ -1791,49 +1785,6 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tables }),
     }),
-  /** The app's declared providers + live connections (Settings → Integrations). */
-  appIntegrations: (scopeId: string) => call<AppIntegrationsView>(`/apps/${encodeURIComponent(scopeId)}/integrations`),
-  /**
-   * Connect or rotate a provider credential (#605). The platform checks it with the
-   * provider BEFORE storing: a refused credential answers 422 and nothing is written, so
-   * a bad rotation can never replace a working credential. On success `probe` carries the
-   * account it verified as — absent when the provider could not be reached, which is
-   * stored-but-unverified, not verified.
-   */
-  connectIntegration: (scopeId: string, provider: string, input: { secret: Record<string, string>; label?: string }) =>
-    call<{ connectionId: string; created: boolean; probe?: ConnectionProbeView }>(
-      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`,
-      { method: 'POST', body: JSON.stringify(input) },
-    ),
-  /**
-   * Ask the provider whether the stored credential works, and whose account it is.
-   * `connectionId` addresses one row of a fleet; without it the route picks the
-   * provider's single connection.
-   */
-  verifyIntegration: (scopeId: string, provider: string, connectionId?: string) =>
-    call<ConnectionProbeView & { connection?: ConnectionView }>(`${integrationPath(scopeId, provider, connectionId)}/verify`, {
-      method: 'POST',
-    }),
-  /** What the connection has done (or what the provider holds), plus grants and the masked credential. */
-  integrationActivity: (
-    scopeId: string,
-    provider: string,
-    opts: { live?: boolean; source?: 'ledger' | 'provider'; connectionId?: string } = {},
-  ) => {
-    const q = new URLSearchParams();
-    if (opts.live) q.set('live', '1');
-    if (opts.source === 'provider') q.set('source', 'provider');
-    const qs = q.toString();
-    return call<ConnectionActivityView>(
-      `${integrationPath(scopeId, provider, opts.connectionId)}/activity${qs ? `?${qs}` : ''}`,
-    );
-  },
-  /**
-   * Disconnect a provider (terminal — reconnecting creates a new connection). Without
-   * `connectionId` the server refuses (409) when several accounts are connected.
-   */
-  disconnectIntegration: (scopeId: string, provider: string, connectionId?: string) =>
-    call<void>(integrationPath(scopeId, provider, connectionId), { method: 'DELETE' }),
   /**
    * Mint a consent-round connect link (#1220). The `url` in the answer is both the
    * Connect button's destination (navigate to it now) and the copyable link for a

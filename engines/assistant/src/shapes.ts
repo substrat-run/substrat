@@ -7,7 +7,7 @@
  * `entities.ts`. A caller never sees a row.
  */
 import { z } from '@substrat-run/contracts';
-import { assistantStreamBody, assistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
+import { ASSISTANT_MESSAGE_FILES_MAX, assistantStreamBody, assistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
 
 /**
  * The longest an event body may serialise to, in UTF-8 bytes: the Durable Object row limit
@@ -86,7 +86,6 @@ export const sendMessageInput = z.object({
   // the engine's, and is what a message in a wide script meets first.
   text: z
     .string()
-    .min(1)
     .max(32_000)
     .superRefine((text, ctx) => {
       const bytes = utf8Length(JSON.stringify(text));
@@ -96,9 +95,19 @@ export const sendMessageInput = z.object({
           message: `the message is ${bytes} bytes; a message may be at most ${MAX_MESSAGE_BYTES} bytes — send it in shorter parts`,
         });
       }
-    }),
+    })
+    .default(''),
+  /** IDs of files already uploaded to THIS thread. Metadata is resolved by the engine. */
+  attachmentIds: z.array(z.string().min(1).max(64)).min(1).max(ASSISTANT_MESSAGE_FILES_MAX).optional(),
+}).superRefine((input, ctx) => {
+  if (!input.text.length && !input.attachmentIds?.length) {
+    ctx.addIssue({ code: 'custom', message: 'send text or at least one file' });
+  }
+  if (input.attachmentIds && new Set(input.attachmentIds).size !== input.attachmentIds.length) {
+    ctx.addIssue({ code: 'custom', path: ['attachmentIds'], message: 'a file may appear only once in a message' });
+  }
 });
-export type SendMessageInput = z.infer<typeof sendMessageInput>;
+export type SendMessageInput = z.input<typeof sendMessageInput>;
 export const sentMessage = z.object({ firstSeq: z.number().int().positive(), lastSeq: z.number().int().positive() });
 export type SentMessage = z.infer<typeof sentMessage>;
 

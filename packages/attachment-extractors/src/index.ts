@@ -82,6 +82,10 @@ import {
   type InflateBudget,
 } from './shared.js';
 import { pdfExtract } from './pdf.js';
+import { delimitedSheet, workbook, type Spreadsheet } from './tabular.js';
+
+export { SPREADSHEET_LIMITS, type Spreadsheet, type SpreadsheetSheet } from './tabular.js';
+export { MalformedInput, ExtractionBoundExceeded, ExtractionAborted } from './shared.js';
 
 export { PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfTables } from './pdf.js';
 
@@ -101,6 +105,43 @@ export const DEFAULT_EXTRACTOR_BOUNDS: ExtractorBounds = {
   maxInputBytes: 32 * 1024 * 1024,
   maxInflatedBytes: 16 * 1024 * 1024,
 };
+
+/**
+ * Read an uploaded CSV/TSV/XLSX for a host's import or diff tool. Unlike the search
+ * extractor this retains coordinates and numeric values. Limits REFUSE the file,
+ * never silently truncate an import. Dates/numbers retain their stored spelling;
+ * formulas are never evaluated and `formulaCells` warns about cached results.
+ */
+export async function readSpreadsheet(input: {
+  body: Uint8Array;
+  filename: string;
+  contentType: string;
+  signal?: ExtractionSignal;
+  /** Defaults to comma (CSV) or tab (TSV); semicolon is explicit for regional CSV. */
+  delimiter?: ',' | ';' | '\t';
+}): Promise<Spreadsheet> {
+  if (input.body.byteLength > 10 * 1024 * 1024) throw new ExtractionBoundExceeded('the spreadsheet exceeds 10 MiB');
+  const pace = new Pace(input.signal ?? { aborted: false });
+  if (acceptsBy((type) => type === XLSX, ['xlsx'])(input.contentType, input.filename)) {
+    const entries = await zipEntries(input.body, pace);
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+    if (byName.size !== entries.length) throw new MalformedInput('duplicate workbook archive parts');
+    const budget: InflateBudget = { remaining: DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes };
+    return workbook(async (name) => {
+      const entry = byName.get(name);
+      if (!entry) {
+        if (name === 'xl/sharedStrings.xml') return '';
+        throw new MalformedInput('missing workbook archive part');
+      }
+      return readEntryText(input.body, entry, budget, pace, true);
+    }, pace, (text) => decodeXmlEntities(text, pace));
+  }
+  const { type, charset } = parseContentType(input.contentType);
+  const tsv = acceptsBy((t) => t === 'text/tab-separated-values', ['tsv'])(type, input.filename);
+  const csv = acceptsBy((t) => t === 'text/csv' || t === 'application/csv', ['csv'])(type, input.filename);
+  if (!tsv && !csv) throw new MalformedInput('expected a CSV, TSV or XLSX spreadsheet');
+  return delimitedSheet(await decodeText(input.body, charset, pace, true), input.delimiter ?? (tsv ? '\t' : ','), pace);
+}
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -134,15 +175,32 @@ function acceptsBy(types: (type: string) => boolean, extensions: readonly string
   };
 }
 
+/** Strict import decoding turns invalid bytes (including a truncated flush) into an input refusal. */
+function textDecoder(label: string, strict: boolean): Decoder {
+  const decoder = new TextDecoder(label, { fatal: strict });
+  if (!strict) return decoder;
+  return {
+    decode(input, options) {
+      try {
+        return decoder.decode(input, options);
+      } catch (error) {
+        if (error instanceof TypeError) throw new MalformedInput('spreadsheet text is not valid in its encoding');
+        throw error;
+      }
+    },
+  };
+}
+
 /** Decode bytes as text: a UTF-16 BOM wins, then a declared charset, then UTF-8. */
-async function decodeText(bytes: Uint8Array, charset: string | null, pace: Pace): Promise<string> {
+async function decodeText(bytes: Uint8Array, charset: string | null, pace: Pace, strict = false): Promise<string> {
   let label = charset ?? 'utf-8';
   if (bytes[0] === 0xff && bytes[1] === 0xfe) label = 'utf-16le';
   else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = 'utf-16be';
   let decoder: Decoder;
   try {
-    decoder = new TextDecoder(label);
+    decoder = textDecoder(label, strict);
   } catch {
+    if (strict) throw new MalformedInput('unsupported spreadsheet text encoding');
     // An unknown label is the client's typo, not a reason to index nothing.
     decoder = new TextDecoder('utf-8');
   }
@@ -192,6 +250,47 @@ const NAMED_ENTITIES: Record<string, string> = (() => {
  * (only leading zeros make one) that straddles an edge is left as written.
  */
 const ENTITY_SPAN = 32;
+
+/** Import XML is strict; HTML/search decoding below deliberately remains tolerant. */
+async function decodeXmlEntities(text: string, pace: Pace): Promise<string> {
+  const out: string[] = [];
+  let at = 0;
+  for (;;) {
+    const amp = await pace.find(text, '&', at);
+    if (amp < 0) { out.push(text.slice(at)); break; }
+    out.push(text.slice(at, amp));
+    if (text[amp + 1] !== '#') {
+      // The five predefined XML names are at most four characters long.
+      const match = /^(amp|lt|gt|quot|apos);/.exec(text.slice(amp + 1, amp + 7));
+      if (!match) throw new MalformedInput('unknown or malformed XML entity reference');
+      out.push(XML_ENTITIES[match[1]!]!);
+      at = amp + 1 + match[0].length;
+      continue;
+    }
+    const hex = text[amp + 2] === 'x';
+    const start = amp + (hex ? 3 : 2);
+    let code = 0;
+    let digits = 0;
+    const end = await pace.scan(text, start, (c) => {
+      if (c === 59) return true;
+      const digit = c >= 48 && c <= 57 ? c - 48
+        : hex && c >= 65 && c <= 70 ? c - 55
+        : hex && c >= 97 && c <= 102 ? c - 87 : -1;
+      if (digit < 0) throw new MalformedInput('malformed XML character reference');
+      code = code * (hex ? 16 : 10) + digit;
+      if (code > 0x10ffff) throw new MalformedInput('invalid XML character reference');
+      digits++;
+      return false;
+    });
+    if (end < 0 || !digits || !(code === 9 || code === 10 || code === 13
+      || code >= 0x20 && code <= 0xd7ff || code >= 0xe000 && code <= 0xfffd || code >= 0x10000)) {
+      throw new MalformedInput('invalid XML character reference');
+    }
+    out.push(String.fromCodePoint(code));
+    at = end + 1;
+  }
+  return out.join('');
+}
 
 /**
  * `&amp;` `&#228;` `&#xE4;` → characters, a window at a time. An unknown name is left as
@@ -837,6 +936,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
 
 interface ZipEntry {
   readonly name: string;
+  readonly nameBytes: Uint8Array;
   readonly method: number;
   readonly flags: number;
   readonly compressedSize: number;
@@ -879,28 +979,31 @@ async function zipEntries(zip: Uint8Array, pace: Pace): Promise<ZipEntry[]> {
     throw new MalformedInput('zip64 archives are not read');
   }
   if (count > MAX_ZIP_ENTRIES) throw new ExtractionBoundExceeded(`the archive lists more than ${MAX_ZIP_ENTRIES} entries`);
-  if (cdOffset + cdSize > zip.length) throw new MalformedInput('the zip central directory is out of range');
+  const cdEnd = cdOffset + cdSize;
+  if (cdEnd > eocd) throw new MalformedInput('the zip central directory is out of range');
   const names = new TextDecoder('utf-8');
   const entries: ZipEntry[] = [];
   let p = cdOffset;
   for (let n = 0; n < count; n += 1) {
     await pace.turn();
-    if (p + 46 > zip.length || view.getUint32(p, true) !== 0x02014b50) {
+    if (p + 46 > cdEnd || view.getUint32(p, true) !== 0x02014b50) {
       throw new MalformedInput('the zip central directory is damaged');
     }
     const nameLength = view.getUint16(p + 28, true);
     const extraLength = view.getUint16(p + 30, true);
     const commentLength = view.getUint16(p + 32, true);
-    if (p + 46 + nameLength > zip.length) throw new MalformedInput('the zip central directory is damaged');
+    const span = 46 + nameLength + extraLength + commentLength;
+    if (p + span > cdEnd) throw new MalformedInput('the zip central directory is damaged');
+    const nameBytes = zip.subarray(p + 46, p + 46 + nameLength);
     entries.push({
-      name: nameLength > MAX_ENTRY_NAME ? '' : names.decode(zip.subarray(p + 46, p + 46 + nameLength)),
+      name: nameLength > MAX_ENTRY_NAME ? '' : names.decode(nameBytes),
+      nameBytes,
       flags: view.getUint16(p + 8, true),
       method: view.getUint16(p + 10, true),
       compressedSize: view.getUint32(p + 20, true),
       uncompressedSize: view.getUint32(p + 24, true),
       localHeaderOffset: view.getUint32(p + 42, true),
     });
-    const span = 46 + nameLength + extraLength + commentLength;
     pace.charge(span);
     p += span;
   }
@@ -913,23 +1016,30 @@ async function zipEntries(zip: Uint8Array, pace: Pace): Promise<ZipEntry[]> {
  * The count is of what the inflater actually produces (`inflateChunks`), and a throw past the
  * budget cancels the stream.
  */
-async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget, pace: Pace): Promise<string> {
+async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget, pace: Pace, strict = false): Promise<string> {
   if (entry.flags & 0x1) throw new MalformedInput('the archive is encrypted');
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   const at = entry.localHeaderOffset;
   if (at + 30 > zip.length || view.getUint32(at, true) !== 0x04034b50) {
     throw new MalformedInput('a zip entry header is damaged');
   }
-  const start = at + 30 + view.getUint16(at + 26, true) + view.getUint16(at + 28, true);
+  const localNameLength = view.getUint16(at + 26, true);
+  const start = at + 30 + localNameLength + view.getUint16(at + 28, true);
   const end = start + entry.compressedSize;
   if (end > zip.length) throw new MalformedInput('a zip entry is out of range');
+  if (localNameLength !== entry.nameBytes.length
+    || view.getUint16(at + 6, true) !== entry.flags
+    || view.getUint16(at + 8, true) !== entry.method
+    || entry.nameBytes.some((byte, i) => byte !== zip[at + 30 + i])) {
+    throw new MalformedInput('the local and central zip headers disagree');
+  }
   const raw = zip.subarray(start, end);
   // The declared size is a cheap early refusal and nothing more — the counter below is the
   // guard, because a bomb is precisely an entry whose header lies.
   if (entry.uncompressedSize > budget.remaining) {
     throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
   }
-  const decoder = new TextDecoder('utf-8');
+  const decoder = textDecoder('utf-8', strict);
   const text: string[] = [];
   if (entry.method === 0) {
     budget.remaining -= raw.length;

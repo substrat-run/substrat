@@ -22,6 +22,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/install-app status': OWN_APP_ROW,
   'dashboard/retry-app status': OWN_APP_ROW,
   'dashboard/resume-app status': OWN_APP_ROW,
+  'dashboard/get-app-integrations providers[].connectFlow': 'the worker advertises only the redirect flow it can serve on this deployment',
   'dashboard/get-app-install-steps [].status': 'an install step the dashboard scope records itself',
   'dashboard/list-app-events entries[].kind': 'the dashboard scope’s own event kinds (`APP_EVENT_KINDS`, held to its CHECK)',
   'dashboard/get-app-auth auth.mode': 'the dashboard scope’s own stored auth shape',

@@ -57,6 +57,24 @@ and its invariants and never talks to a model.
    to the thread's owner, so the same erasure redacts its payload; and none carries text, tool
    data, a digest or the owner's id to begin with.
 
+## Uploaded files
+
+Messages may carry up to five references to CSV, TSV or XLSX files uploaded to the same
+thread, with or without text. The engine records immutable file metadata and checks the
+association before starting a turn. Bytes live in the platform attachment store, outside the
+chat log. The host-facing `/files` entry point authorizes uploads as the owner of an open
+thread and reads as owner or auditor; direct attachment access requires the system-held run
+key. The host supplies authenticated routes and UI.
+
+`readSpreadsheet` in `attachment-extractors` provides structured rows for host import/diff
+tools. Mapping columns, comparing with current entities and proposing mutations belong to
+those tools; mutations still use existing permissions and bound approvals. See the engine
+README for composition, limits and formula/date handling.
+
+Uploaded blobs are outside subject erasure: a host must purge files for the subject's threads
+with `purgeAssistantThreadFiles` before shredding the subject, while uploads are stopped.
+The engine's declared erasure covers its own rows and file references, not attachment bytes.
+
 ## Permissions
 
 | Key | Held by | Grants |

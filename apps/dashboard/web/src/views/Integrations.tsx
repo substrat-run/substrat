@@ -2,9 +2,11 @@ import { Fragment, useEffect, useState } from 'react';
 import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
 import {
   api,
+  teamApi,
   ApiError,
   type AccountIntegration,
   type AppIntegration,
+  type AppIntegrationsView,
   type AppRow,
   type CertificateView,
   type ConnectionActivityView,
@@ -28,6 +30,7 @@ import {
 import { Page } from '../components/layout';
 import { card, HonestyBanner, MonoTag, PageTitle, Pill, type PillKind , SweepStrip } from '../components/ui';
 import { relativeTime, untilTime } from '../lib/format';
+import { ApiError as TeamApiError } from '../lib/api.generated';
 
 /**
  * Integrations (dashboard-ui.md §4.8) — the connection store, tenant-facing. Two
@@ -255,12 +258,14 @@ export function IntentLedger({
  *   the ledger's view and the provider's view are different facts.
  */
 function IntegrationDetail({
+  teamId,
   provider,
   scopeId,
   connection,
   onRotate,
   onClose,
 }: {
+  teamId: string;
   provider: { provider: string; name: string; monogram: string; description: string };
   /** The app whose vertical owns the connection — the routes are per-app by design. */
   scopeId: string;
@@ -294,19 +299,19 @@ function IntegrationDetail({
     let alive = true;
     setActivity(null);
     setActivityErr(null);
-    api
+    teamApi(teamId)
       // By id: in a fleet the provider's routes would otherwise answer for another company.
-      .integrationActivity(scopeId, provider.provider, { live, source, connectionId: connection.id })
+      .getAppConnectionActivity({ scopeId, provider: provider.provider, connectionId: connection.id, ...(live ? { live: '1' } : {}), source })
       .then((v) => {
         if (!alive) return;
-        setActivity(v);
-        setHealth(v.connection); // read in that same request
+        setActivity(v as unknown as ConnectionActivityView);
+        setHealth(v.connection as ConnectionView); // read in that same request
       })
-      .catch((e) => alive && setActivityErr(e instanceof ApiError ? e.message : String(e)));
+      .catch((e) => alive && setActivityErr(e instanceof Error ? e.message : String(e)));
     return () => {
       alive = false;
     };
-  }, [scopeId, provider.provider, connection.id, live, source]);
+  }, [teamId, scopeId, provider.provider, connection.id, live, source]);
 
   const verify = async () => {
     if (probing) return;
@@ -315,13 +320,13 @@ function IntegrationDetail({
     try {
       if (DEV_MOCK) setProbe(MOCK_CONNECTION_PROBE);
       else {
-        const result = await api.verifyIntegration(scopeId, provider.provider, connection.id);
-        setProbe(result);
+        const result = await teamApi(teamId).verifyAppConnection({ scopeId, provider: provider.provider, connectionId: connection.id });
+        setProbe(result as ConnectionProbeView);
         // The probe just wrote health; show what it wrote, not what we loaded before it.
-        if (result.connection) setHealth(result.connection);
+        if (result.connection) setHealth(result.connection as ConnectionView);
       }
     } catch (e) {
-      setProbeErr(e instanceof ApiError ? e.message : String(e));
+      setProbeErr(e instanceof Error ? e.message : String(e));
     }
     setProbing(false);
   };
@@ -544,6 +549,7 @@ function IntegrationDetail({
  * rotation. A bureau mails one link per client, which is why the copy says so.
  */
 function ConnectDialog({
+  teamId,
   provider,
   rotate,
   scopeId,
@@ -551,6 +557,7 @@ function ConnectDialog({
   onDone,
   onClose,
 }: {
+  teamId: string;
   provider: {
     provider: string;
     name: string;
@@ -656,19 +663,21 @@ function ConnectDialog({
           return v ? [[f.key, v]] : [];
         }),
       );
-      await api.connectIntegration(target, provider.provider, { secret });
+      await teamApi(teamId).connectAppIntegration({ scopeId: target, provider: provider.provider, secret });
       onDone();
     } catch (e) {
       // A 422 is the provider itself refusing the credential — nothing was stored, so the
       // dialog stays open with what was typed and says which field to look at. The old
       // behaviour (store, close, call it Connected) is what let a bad key sit until the
       // first signing request failed.
-      if (e instanceof ApiError && e.status === 422) setRefusal({ message: e.message, probe: e.probe });
+      if (e instanceof TeamApiError && e.status === 422) {
+        setRefusal({ message: e.message, probe: (e.body as { probe?: ConnectionProbeView } | null)?.probe });
+      }
       // A 503 is the platform saying it cannot store credentials on this deployment
       // (#603) — the key may be perfect. Saying so beats "Couldn’t save — 500", which
       // is what this used to be and reads as "your credential is bad".
-      else if (e instanceof ApiError && e.status === 503) setUnavailable(e.message);
-      else setErr(e instanceof ApiError ? e.message : String(e));
+      else if (e instanceof TeamApiError && e.status === 503) setUnavailable(e.message);
+      else setErr(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };
@@ -876,7 +885,7 @@ function FleetRows({
 }
 
 /** The per-app Settings → Integrations tab. */
-export function AppIntegrations({ app }: { app: AppRow }) {
+export function AppIntegrations({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<AppIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ provider: AppIntegration; rotate: boolean } | null>(null);
@@ -897,14 +906,14 @@ export function AppIntegrations({ app }: { app: AppRow }) {
     let live = true;
     setView(null);
     setErr(null);
-    api
-      .appIntegrations(app.app_scope_id)
-      .then((v) => live && setView(v.providers))
+    teamApi(teamId)
+      .getAppIntegrations({ scopeId: app.app_scope_id })
+      .then((v) => live && setView((v as unknown as AppIntegrationsView).providers))
       .catch((e) => live && setErr(e instanceof ApiError ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, nonce]);
+  }, [teamId, app.app_scope_id, nonce]);
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load integrations — {err}</div>;
   if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading integrations…</div>;
@@ -913,11 +922,9 @@ export function AppIntegrations({ app }: { app: AppRow }) {
     if (!disconnect || busy) return;
     setBusy(true);
     try {
-      await api.disconnectIntegration(
-        app.app_scope_id,
-        disconnect.provider.provider,
-        disconnect.addressed ? disconnect.connection.id : undefined,
-      );
+      const input = { scopeId: app.app_scope_id, provider: disconnect.provider.provider };
+      if (disconnect.addressed) await teamApi(teamId).disconnectAppConnection({ ...input, connectionId: disconnect.connection.id });
+      else await teamApi(teamId).disconnectAppIntegration(input);
     } catch {
       // The refetch below shows the surviving state either way.
     }
@@ -1026,6 +1033,7 @@ export function AppIntegrations({ app }: { app: AppRow }) {
 
       {dialog && (
         <ConnectDialog
+          teamId={teamId}
           scopeId={app.app_scope_id}
           provider={dialog.provider}
           rotate={dialog.rotate}
@@ -1039,6 +1047,7 @@ export function AppIntegrations({ app }: { app: AppRow }) {
 
       {detail && (
         <IntegrationDetail
+          teamId={teamId}
           provider={detail.provider}
           scopeId={app.app_scope_id}
           connection={detail.connection}
@@ -1082,7 +1091,7 @@ export function AppIntegrations({ app }: { app: AppRow }) {
 }
 
 /** The account-level Integrations page: every provider, every connection, every app that can connect one. */
-export function Integrations() {
+export function Integrations({ teamId }: { teamId: string }) {
   const [view, setView] = useState<AccountIntegration[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dialog, setDialog] = useState<AccountIntegration | null>(null);
@@ -1185,6 +1194,7 @@ export function Integrations() {
 
       {detail && (
         <IntegrationDetail
+          teamId={teamId}
           provider={detail.provider}
           scopeId={detail.scopeId}
           connection={detail.connection}
@@ -1201,6 +1211,7 @@ export function Integrations() {
 
       {dialog && (
         <ConnectDialog
+          teamId={teamId}
           provider={dialog}
           rotate={false}
           pickTarget={dialog.connectTargets}
