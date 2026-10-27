@@ -4,7 +4,7 @@ import {
   verifyConnectState,
   ConnectStateError,
   type ConnectStateClaim,
-} from '../src/index.js';
+} from '../src/connect-state.js';
 
 const SECRET = 'platform-secret-value-32-bytes-min';
 const claim = (over: Partial<ConnectStateClaim> = {}): ConnectStateClaim => ({
