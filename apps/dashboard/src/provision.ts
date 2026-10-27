@@ -756,6 +756,10 @@ export async function updateApp(
 ): Promise<UpdateAppResult> {
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
 
+  // A no-op still needs the app-management permission. Ask before any control-plane read;
+  // the recording `dashboard/update-app` operation below remains the gate for a real move.
+  await scope.invoke('dashboard/authorize-scope-change', {});
+
   // Resolve the vertical's current prod version and the scope's currently-bound one,
   // plus the version labels (id → "0.0.12") for a readable audit line.
   let prodVersionId: string | undefined;

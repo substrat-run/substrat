@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, principalId, problemDetail, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
@@ -95,6 +95,8 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+beforeEach(() => { planeCalls.length = 0; });
+
 const send = (as: 'owner' | 'admin' | 'member' | 'viewer', method: string, path: string, body?: unknown) => app.request(path, {
   method,
   headers: { cookie: `sb_session=${as}; sb_team=${team[1]}`, 'content-type': 'application/json' },
@@ -132,6 +134,8 @@ it('refuses a viewer bind before asking the plane for impact or binding', async 
   expect(response.status).toBe(403);
   expect(problemDetail(await response.json())).toBe('permission denied: dashboard:provision-app');
   expect(planeCalls).toHaveLength(before);
+  // The same person is an admin in the cookie team: that role applies only to its own path.
+  expect((await send('viewer', 'POST', `/api/teams/${team[1]}/apps/${appScope[1]}/bind`, { versionId: version })).status).toBe(200);
 });
 
 it('refuses a viewer update even when the app already runs prod', async () => {
@@ -140,6 +144,7 @@ it('refuses a viewer update even when the app already runs prod', async () => {
   expect(response.status).toBe(403);
   expect(problemDetail(await response.json())).toBe('permission denied: dashboard:provision-app');
   expect(planeCalls).toHaveLength(before);
+  expect((await send('viewer', 'POST', `/api/teams/${team[1]}/apps/${appScope[1]}/update`, {})).status).toBe(200);
 });
 
 it('keeps the rewind and restore gates in the path team', async () => {

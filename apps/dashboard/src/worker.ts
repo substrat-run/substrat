@@ -2757,10 +2757,12 @@ async function updateInstalledAppIn(ctx: TeamContext, appScopeId: string, body: 
   });
 }
 
-/** Pin one app to an admitted version. */
+/** Pin one app to an admitted version, after the path team's app-management check. */
 async function bindInstalledAppIn(ctx: TeamContext, appScopeId: string, body: { versionId: string; snapshot?: boolean; acknowledge?: BindAcknowledgement }) {
   const { c, node } = ctx;
-  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const { dash, appRow } = await teamAppTarget(ctx, appScopeId);
+  // Check the same app-management permission as Update before asking the plane anything.
+  await dash.invoke('dashboard/authorize-scope-change', {});
   const target = scopeId.parse(appRow.app_scope_id);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   if (!body.acknowledge?.exportBreak) {
