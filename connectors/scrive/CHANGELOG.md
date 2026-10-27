@@ -1,5 +1,20 @@
 # @substrat-run/connector-scrive
 
+## 0.14.70
+
+### Patch Changes
+
+- 57ecdda: A dispatch that fails after `createDocument` (a failed `setfile`, including a streamed integrity refusal, `update` or `start`) now trashes and deletes the draft it created, best-effort, instead of leaving it at Scrive for every retry to orphan (#2589). A failed cleanup never replaces the original error. Adds `ScriveApi.trash` and `ScriveApi.delete`.
+- Updated dependencies [170078f]
+- Updated dependencies [3225234]
+- Updated dependencies [0e2bc1c]
+- Updated dependencies [0b19237]
+- Updated dependencies [2ade7ea]
+- Updated dependencies [af79679]
+- Updated dependencies [1e5a5af]
+  - @substrat-run/contracts@0.164.0
+  - @substrat-run/kernel@0.164.0
+
 ## 0.14.69
 
 ### Patch Changes

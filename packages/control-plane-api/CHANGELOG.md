@@ -1,5 +1,38 @@
 # @substrat-run/control-plane-api
 
+## 0.164.0
+
+### Minor Changes
+
+- 170078f: A vertical declares only entitlement keys inside its own namespace (#2388): its bare slug and the keys the platform publishes for engines; a tenant-provisioner manager (one declaring `provisions`) may also declare plan SKUs that are not another vertical's slug. A push declaring any other key is refused with a 422, and a platform-granted key (`dashboard`, `builder`) is declarable by none. The install and grant paths read a registry row through the same rule, so a vertical pushed earlier grants nothing foreign while its published versions keep loading. `@substrat-run/contracts` exports `bareSlug`, `declarableEntitlementKey`, `grantableEntitlements`, `entitlementNamespaceRefusal`, `ENGINE_ENTITLEMENT_KEYS` and `PLATFORM_ENTITLEMENT_KEYS`. `npm create substrat` now gates the scaffold on its project name, which is the slug it is pushed under, instead of a fixed `bikeshop`.
+
+  The control plane must deploy before the dashboard: the dashboard's install reads the grantable keys from the control plane's install catalog and no longer filters a pushed vertical's declared set itself.
+
+- 0b19237: Promoting a version whose permission or migration digest changed now requires the review binding alongside its acknowledgement. A client that sends a bare acknowledgement receives `precondition_failed` with an instruction to upgrade to CLI 0.45.0 or later and retry with the current review. The review gate is shared by both scope hosts; no CLI floor or version negotiation is added.
+- 1e5a5af: Vertical-defined connectors (D-64, proposed). A vertical can define its own connector, named `<namespace>.<name>`, and ship it with `substrat push`. The platform keeps the credential, the bindings, the connector's state and the sweep schedule, and runs the provider code in the vertical's own worker through the router, so the vertical's declared `outbound` hosts bound it. vertical-host: `defineConnectors`, `declareConnectorEvents` and `runConnectorCall` under `@substrat-run/vertical-host/connectors`; `mountPlatformSurface({ connectors })` serves `/internal/connector-probe` and `/internal/connector-call`. kernel: `ConnectionContext`, `ScopedConnectionContext` and `ConnectorRefusal`, the capability a connector is handed instead of `HostAdmin`; the connector and landing passes take `sweeperFor` / `binderFor` fallbacks. contracts: `connectionProvider` accepts one dot; the declaration, call and binding schemas; `deployManifest.connectors`, `permissionRegistry.connectors` and `pushedConnectorProblems`; the wire gate admits the router on the two connector paths. control-plane-api: the vertical connector sweeper, binder, inspector and dispatch handler, and the push routes refuse a connector grant the registry does not declare or reserves. cli: `substrat.connectors` is read, validated and pushed, and a connector's standing grants join the permission registry and its digest. router: the `ConnectorCalls` entrypoint. control-plane: the `CONNECTOR_CALLS` binding and the fallbacks at every connector lookup. dashboard: an app offers the connectors its vertical declares.
+
+### Patch Changes
+
+- 2ade7ea: A serve records its serving state only while the row still holds the state its upload was computed from (#2577).
+
+  - **`expected`.** `HostAdmin.setVerticalServing` takes an optional trailing `expected`, the serving state the caller read before its upload (null: nothing served). A row whose DO class set or migration tag no longer matches it is refused `precondition_failed` (`servingRaceRefusal`) before the #2178 gate, and nothing is written: those two are what the upload's migration was diffed from. Its ref and version are not compared, so a serve recorded meanwhile that moved only those is recorded over, as before. The control-plane serve passes what it read before uploading, so a serve that changed the class set during another serve's upload is no longer overwritten by a record diffed from the state before it.
+  - **The class set and tag in the compare-and-set.** The compare-and-set on the host's own read now holds the DO class set and migration tag as well as the serving ref and version. A serve of a version that adds a class and a re-serve of the old version bring the ref and version back over a grown class set, and a record diffed from before them named classes and a tag the script no longer had, so the next upload re-declared a live class under a tag the runtime refuses.
+  - **No retry.** As before, a refused serve has already uploaded the serving script. The promote answers that the in-place serve failed and to promote again, no longer adding that scopes still run the previous code, which is false after the upload. When the refused serve's own upload added a class, the runtime's tag is already past the record's and a retry cannot land: the promote says so instead (`promoting again cannot land until the record is repaired`). Two overlapping serves that both change the class set end there; only serialising serves would avoid it.
+  - **Version skew (adapter-cloudflare).** The ControlPlaneDO's `setVerticalServing` keeps its name. Its `expected` gains optional `doClasses` and `migrationTag`: a coordinator from before sends the ref and version alone and gets the compare-and-set it had, and a DO from before ignores the two fields, so for the rollout window the class set and tag go unchecked and nothing is weaker than before. A new method name would have failed closed only after the upload had landed.
+  - **kernel.** `migratesFrom` (the `expected` check) and `servesAsFrom` / `servedFromRow` (the compare-and-set in the unit that writes), run by both adapters.
+  - **contract-tests.** The case on both adapters.
+
+- Updated dependencies [170078f]
+- Updated dependencies [3225234]
+- Updated dependencies [0e2bc1c]
+- Updated dependencies [0b19237]
+- Updated dependencies [2ade7ea]
+- Updated dependencies [af79679]
+- Updated dependencies [1e5a5af]
+  - @substrat-run/contracts@0.164.0
+  - @substrat-run/kernel@0.164.0
+  - @substrat-run/control-plane-client@0.3.15
+
 ## 0.163.0
 
 ### Minor Changes

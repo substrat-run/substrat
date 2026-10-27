@@ -1,5 +1,42 @@
 # @substrat-run/dashboard
 
+## 0.47.0
+
+### Minor Changes
+
+- 83ef508: GitHub import acts on the team the page is showing (#2170). Connecting GitHub, the repo and branch pickers and one-click CI setup now name their team in the request (`/api/teams/:teamId/github/…`) instead of reading the selected-team cookie, which every tab shares. Before, a tab on one team whose cookie another tab had moved could connect GitHub to the other team and wire a repo's CI to push into it. The install callback takes its team from the state it signed when the connect began, and returns the tab to that team. The old cookie routes (`/api/github/connect`, `repos`, `branches`, `setup-ci`) are removed; connect now answers the install URL as JSON and the page navigates to it. The dashboard assistant is not given the GitHub reads.
+- a15d314: Importing data into an app (Data › Export & import) is now for a team owner or admin. **Team
+  members lose the ability to restore an app from a file**: they keep Export, and an Import from them
+  is refused with a 403 before the safety copy is taken. A restore replaces the app's data and its
+  permission state, so it is an admin power, held through a new key, `dashboard:restore-app-data`.
+  Existing teams' owner and admin roles get the key on their first request after the deploy, before
+  that request runs, so an admin's first Import already succeeds.
+- eda7370: Rewinding an app to a migration bookmark now requires `dashboard:provision-app`. A viewer's
+  rewind request is refused with 403, and the Deployments tab hides Back out for viewers.
+  Owners, admins, and members retain rewind access.
+- 1e5a5af: Vertical-defined connectors (D-64, proposed). A vertical can define its own connector, named `<namespace>.<name>`, and ship it with `substrat push`. The platform keeps the credential, the bindings, the connector's state and the sweep schedule, and runs the provider code in the vertical's own worker through the router, so the vertical's declared `outbound` hosts bound it. vertical-host: `defineConnectors`, `declareConnectorEvents` and `runConnectorCall` under `@substrat-run/vertical-host/connectors`; `mountPlatformSurface({ connectors })` serves `/internal/connector-probe` and `/internal/connector-call`. kernel: `ConnectionContext`, `ScopedConnectionContext` and `ConnectorRefusal`, the capability a connector is handed instead of `HostAdmin`; the connector and landing passes take `sweeperFor` / `binderFor` fallbacks. contracts: `connectionProvider` accepts one dot; the declaration, call and binding schemas; `deployManifest.connectors`, `permissionRegistry.connectors` and `pushedConnectorProblems`; the wire gate admits the router on the two connector paths. control-plane-api: the vertical connector sweeper, binder, inspector and dispatch handler, and the push routes refuse a connector grant the registry does not declare or reserves. cli: `substrat.connectors` is read, validated and pushed, and a connector's standing grants join the permission registry and its digest. router: the `ConnectorCalls` entrypoint. control-plane: the `CONNECTOR_CALLS` binding and the fallbacks at every connector lookup. dashboard: an app offers the connectors its vertical declares.
+
+### Patch Changes
+
+- c764a92: Ask reads tighter (#2283, review of #2598). A tool's answer now goes through its route's published output schema, as the HTTP route sends it, so a field a handler returns and the route does not declare never reaches the model. Identifiers the model hands back (ids, cursors) pass unredacted, so a second page is reachable; only roster and audit fields keep an email address whole, and an app's end user's address is redacted. A cut list drops its page's cursor instead of keeping one that skips what was cut, a list nested in a one-item list is cut instead of being replaced by a preview, and the preview is bounded in bytes on a whole character. A read that fails on the platform's side tells the model, and the person, a fixed sentence; its own message is logged, not shown. The ⌘K panel counts a bare list, and no longer reads a record that carries an `error` field as a failed read.
+- Updated dependencies [170078f]
+- Updated dependencies [3225234]
+- Updated dependencies [0e2bc1c]
+- Updated dependencies [0b19237]
+- Updated dependencies [2ade7ea]
+- Updated dependencies [af79679]
+- Updated dependencies [a3160e2]
+- Updated dependencies [1e5a5af]
+  - @substrat-run/contracts@0.164.0
+  - @substrat-run/control-plane-api@0.164.0
+  - @substrat-run/vertical-host@0.164.0
+  - @substrat-run/kernel@0.164.0
+  - @substrat-run/adapter-cloudflare@0.164.0
+  - @substrat-run/connector-fortnox@0.4.66
+  - @substrat-run/engine-invites@0.9.41
+  - @substrat-run/engine-protocol@0.13.49
+  - @substrat-run/control-plane-client@0.3.15
+
 ## 0.46.0
 
 ### Minor Changes
