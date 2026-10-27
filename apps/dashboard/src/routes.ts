@@ -589,6 +589,11 @@ export const previewDomainRow = z.object({
   validationRecords: z.array(z.object({ type: z.string(), name: z.string(), value: z.string(), status: z.string().nullish() })).optional(),
 });
 
+const appReleaseSide = z.object({
+  versionId: z.string(), version: z.string().nullable(), requests: z.number().nullable(),
+  errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable(),
+});
+
 export const dashboardRoutes = defineRoutes({
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {
@@ -687,10 +692,8 @@ export const dashboardRoutes = defineRoutes({
     summary: 'Compare this app’s running version with the current prod version',
     input: z.object({ scopeId: z.string().min(1) }),
     output: z.object({
-      running: z.object({ versionId: z.string(), version: z.string().nullable(), requests: z.number().nullable(),
-        errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable() }).nullable(),
-      update: z.object({ versionId: z.string(), version: z.string().nullable(), requests: z.number().nullable(),
-        errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable() }).nullable(),
+      running: appReleaseSide.nullable(),
+      update: appReleaseSide.nullable(),
       metricsAvailable: z.boolean(), owned: z.boolean(),
     }),
     http: { method: 'GET', path: '/apps/{scopeId}/release-comparison' },
