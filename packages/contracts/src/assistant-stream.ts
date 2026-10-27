@@ -109,6 +109,17 @@ export type TurnFinishReason = z.infer<typeof turnFinishReason>;
 
 const text = z.object({ pid: partId });
 
+/** Files travel through blob storage; a message keeps only their immutable identity. */
+export const ASSISTANT_MESSAGE_FILES_MAX = 5;
+export const assistantMessageFile = z.object({
+  id: z.string().min(1).max(64),
+  filename: z.string().min(1).max(512),
+  contentType: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type AssistantMessageFile = z.infer<typeof assistantMessageFile>;
+
 /**
  * Every event a producer can emit, without its `id`. Discriminated on `t`. Strict: a
  * producer and the record parse with this; a client reads with `readAssistantStreamEvent`.
@@ -117,7 +128,11 @@ export const assistantStreamBody = z.discriminatedUnion('t', [
   // The user's side of a turn, and the start of the turn it opens. `v` is the
   // `ASSISTANT_STREAM_VERSION` the producer speaks, so a client can tell a stream it cannot
   // read from one it can.
-  z.object({ t: z.literal('user-message'), text: z.string().max(32_000) }),
+  z.object({
+    t: z.literal('user-message'),
+    text: z.string().max(32_000),
+    files: z.array(assistantMessageFile).min(1).max(ASSISTANT_MESSAGE_FILES_MAX).optional(),
+  }),
   z.object({ t: z.literal('turn-start'), v: z.number().int().positive() }),
   // Rest. `awaiting-approval` ends the run, not the turn: an approval resumes it.
   z.object({ t: z.literal('turn-finish'), reason: turnFinishReason }),
