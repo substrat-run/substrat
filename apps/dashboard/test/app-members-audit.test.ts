@@ -66,6 +66,7 @@ describe('a member change whose outcome row is lost reaches the dashboard as a s
   const tenant = tenantId.parse(ulid());
   const dashScope = scopeId.parse(ulid());
   const appScope = scopeId.parse(ulid());
+  const appPath = `/api/teams/${tenant}/apps/${appScope}/members`;
   const member = principalId.parse(ulid());
   let env: Record<string, unknown>;
 
@@ -143,25 +144,25 @@ describe('a member change whose outcome row is lost reaches the dashboard as a s
 
   it('the invite answers 201 with its accept link and the warning; the role change and removal answer success too', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const invited = await call(`/api/apps/${appScope}/members`, { roleKey: 'agent' });
+    const invited = await call(appPath, { roleKey: 'agent' });
     expect(invited.status).toBe(201);
     const link = (await invited.json()) as { acceptUrl: string; auditWarning: string; operationId: string };
     expect(link.acceptUrl).toBe('https://desk.example/?invite=once');
     expect(link.auditWarning).toMatch(/the invite completed, but its outcome could not be written/);
     expect(link.operationId).toEqual(expect.any(String));
 
-    const moved = await call(`/api/apps/${appScope}/members/${member}/role`, { from: 'agent', to: 'lead' });
+    const moved = await call(`${appPath}/${member}/role`, { from: 'agent', to: 'lead' });
     expect(moved.status).toBe(200);
     expect(((await moved.json()) as { auditWarning: string }).auditWarning).toMatch(/the role change completed/);
 
-    const removed = await call(`/api/apps/${appScope}/members/${member}/remove`, {});
+    const removed = await call(`${appPath}/${member}/remove`, {});
     expect(removed.status).toBe(200);
     expect(await removed.json()).toMatchObject({ revoked: ['agent'], auditWarning: expect.stringMatching(/the removal completed/) });
   });
 
   it('twin: with the log writable the same invite answers 201 with no warning', async () => {
     plane.attributed = SqliteScopeHost.prototype.attributed;
-    const invited = await call(`/api/apps/${appScope}/members`, { roleKey: 'agent' });
+    const invited = await call(appPath, { roleKey: 'agent' });
     expect(invited.status).toBe(201);
     const link = (await invited.json()) as Record<string, unknown>;
     expect(link.acceptUrl).toBe('https://desk.example/?invite=once');

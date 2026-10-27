@@ -1367,14 +1367,14 @@ export interface AppAuthRecord {
   updatedAt: string;
 }
 
-/** `GET /api/apps/:scope/auth` — `auth: null` ⇒ the vertical's builtin sign-in. */
+/** The stored identity choice; `auth: null` means the vertical's builtin sign-in. */
 export interface AppAuthView {
   auth: AppAuthRecord | null;
   /** The redirect URL to register at an external issuer; null while no hostname is bound. */
   callbackUrl: string | null;
 }
 
-/** `PUT /api/apps/:scope/auth` — saved always; `delivered` says whether the running app got it. */
+/** The save result; `delivered` says whether the running app got it. */
 export interface AppAuthUpdateResult {
   delivered: boolean;
   note?: string;
@@ -1790,32 +1790,6 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tables }),
     }),
-  /** The app's env-spec + current values (secrets masked). */
-  /** The app's owner seat (#925) — 501 in embedded mode, where no vertical runs. */
-  appOwnerSeat: (scopeId: string) => call<OwnerSeatView>(`/apps/${encodeURIComponent(scopeId)}/owner-seat`),
-  /** Mint a claim link for an unclaimed owner seat (#925). */
-  appOwnerClaim: (scopeId: string) =>
-    call<OwnerClaimLinkView>(`/apps/${encodeURIComponent(scopeId)}/owner-claim`, { method: 'POST' }),
-  /** The app's members (#1150) — 501 when the app declares no member roles. */
-  appMembers: (scopeId: string) => call<AppMembersView>(`/apps/${encodeURIComponent(scopeId)}/members`),
-  /** Invite a member; bounded in the app by what the signed-in person holds there. */
-  appInviteMember: (scopeId: string, input: { roleKey: string; email?: string }) =>
-    call<MemberInviteView>(`/apps/${encodeURIComponent(scopeId)}/members`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    }),
-  appChangeMemberRole: (scopeId: string, principal: string, input: { from: string; to: string }) =>
-    call<AuditedAnswerView>(`/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/role`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    }),
-  appRemoveMember: (scopeId: string, principal: string) =>
-    call<{ revoked: string[]; unbound: number; inviteWithdrawn: boolean } & AuditedAnswerView>(
-      `/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/remove`,
-      { method: 'POST' },
-    ),
   /** The app's declared providers + live connections (Settings → Integrations). */
   appIntegrations: (scopeId: string) => call<AppIntegrationsView>(`/apps/${encodeURIComponent(scopeId)}/integrations`),
   /**
@@ -1882,14 +1856,6 @@ export const api = {
     ),
   /** The account-level integrations overview: all providers, connections, and connectable apps. */
   integrations: () => call<AccountIntegrationsView>('/integrations'),
-  /** The app's Identity choice (secret redacted) + its OIDC callback URL. */
-  appAuth: (scopeId: string) => call<AppAuthView>(`/apps/${encodeURIComponent(scopeId)}/auth`),
-  /** Update the Identity choice; a blank clientSecret keeps the stored one. */
-  setAppAuth: (scopeId: string, choice: AppAuthChoice) =>
-    call<AppAuthUpdateResult>(`/apps/${encodeURIComponent(scopeId)}/auth`, {
-      method: 'PUT',
-      body: JSON.stringify(choice),
-    }),
   // -- observability (design/observability.md §5, view 2) -------------------
   // Metrics/logs for THIS team's pushed verticals only — the worker narrows by
   // owned deployment refs. 501 = the platform has no observability backend.
