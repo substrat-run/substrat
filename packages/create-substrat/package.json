@@ -36,7 +36,7 @@
     "access": "public"
   },
   "scripts": {
-    "test": "node --test windows.test.mjs",
+    "test": "node --test windows.test.mjs scaffold.test.mjs",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   }
 }

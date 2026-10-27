@@ -17,7 +17,8 @@
  * happen. The template's whole job is to prove that a project installing from **npm**,
  * with published version ranges and no workspace links, works. A workspace-linked
  * template passes while every real scaffold fails — the failure mode we just had, in a
- * new costume. So this installs from the registry, like a user.
+ * new costume. So this installs from the registry, like a user. A second, fresh
+ * scaffold also installs with the current pnpm major (#2629).
  *
  * ## Why there is no `pull_request` trigger
  *
@@ -283,7 +284,25 @@ async function main() {
       if (!r.ok) failed = true;
     }
 
-    // 4. The verdict, and — when red — the surface that moved.
+    // 4. npm leaves node_modules behind, so pnpm needs its own first-install project.
+    //    @latest follows the current major; the weekly run catches a changed policy.
+    log('\n## pnpm install (fresh scaffold, current major)\n');
+    const pnpmDir = join(parent, 'scaffold-pnpm');
+    const pnpmCreated = FROM === 'registry'
+      ? run('npm', ['exec', '--yes', `--package=create-substrat@${VERSION}`, '--', 'create-substrat', pnpmDir], process.cwd())
+      : run('node', [join(PKG_DIR, 'index.js'), pnpmDir], process.cwd());
+    log(pnpmCreated.output.trimEnd());
+    const pnpmInstall = pnpmCreated.ok
+      ? run('npx', ['--yes', 'pnpm@latest', 'install'], pnpmDir)
+      : { ok: false, status: pnpmCreated.status, output: 'A fresh scaffold could not be created.' };
+    log(pnpmInstall.output.trimEnd());
+    results.push({ name: 'pnpm install', ...pnpmInstall });
+    if (!pnpmInstall.ok) {
+      log(`\nFAIL  pnpm install exited ${pnpmInstall.status}; fresh scaffold: ${pnpmDir}`);
+      failed = true;
+    }
+
+    // 5. The verdict, and — when red — the surface that moved.
     const rows = resolvedVersions(dir);
     log('\n## verdict\n');
     for (const r of results) log(`  ${r.ok ? 'pass' : 'FAIL'}  ${r.name}`);
@@ -293,7 +312,7 @@ async function main() {
       summarise([
         '### Scaffold check — green',
         '',
-        `\`create-substrat@${VERSION}\` scaffolds, installs from npm, and passes all three gates.`,
+        `\`create-substrat@${VERSION}\` scaffolds, installs with npm and pnpm, and passes all gates.`,
       ]);
       return true;
     }
@@ -349,7 +368,7 @@ async function main() {
     summarise([
       '### Scaffold check — red',
       '',
-      `\`create-substrat@${VERSION}\` scaffolds and installs, but does not pass its own gates.`,
+      `\`create-substrat@${VERSION}\` did not pass every scaffold gate.`,
       '',
       ...results.map((r) => `- ${r.ok ? '✅' : '❌'} \`${r.name}\``),
       '',
