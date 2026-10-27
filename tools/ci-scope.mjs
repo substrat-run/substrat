@@ -265,11 +265,10 @@ export function lockfileScope(baseText, headText) {
 
 // ── Shards ──────────────────────────────────────────────────────────────────
 //
-// Seconds each unit's tests took in a full CI run on main (2026-10-26, run 40293206559: vitest's
-// Duration, summed over a package's configs). The adapter-cloudflare parts are that run's two
-// timings apportioned: the contract suites (504 s, one file then) by how long each part took on
-// its own, the rest (590 s) by its files' times. Only a weight: a unit missing here gets DEFAULT_WEIGHT and still lands in a shard, and
-// a stale number costs balance, never coverage. The parts are pinned to different shards so they
+// Mean seconds per unit from the last three complete CI runs on main (2026-10-27, runs
+// 40468656804, 40468899951, 40469400866): vitest's Duration, summed over a package's
+// configs before averaging. A unit missing here gets DEFAULT_WEIGHT and still lands in a shard;
+// a stale weight costs balance, never coverage. The parts are pinned to different shards so they
 // never queue behind one another.
 //
 // A unit is a package's `test` script, or — for a package listed in PARTS — one of the
@@ -298,19 +297,19 @@ export const PINNED = {
 };
 
 export const WEIGHTS = {
-  'packages/adapter-cloudflare#test:contract-hosts': 250, 'packages/adapter-cloudflare#test:contract-switch': 150,
-  'packages/adapter-cloudflare#test:contract-data': 100, 'packages/adapter-cloudflare#test:rest-1': 315,
-  'packages/adapter-cloudflare#test:rest-2': 275,
-  'demos/ticket0': 309, 'apps/control-plane': 169, 'packages/control-plane-api': 118, 'demos/auth-server': 96,
-  'packages/adapter-sqlite': 81, 'apps/dashboard': 80, 'packages/kernel': 76, 'packages/cli': 56,
-  'demos/meridian': 50, 'demos/manyfold': 44, 'packages/attachment-extractors': 43, 'apps/dashboard/web': 32,
-  'packages/vertical-host': 22, 'engines/notifications': 21, 'demos/todo': 15, 'packages/builder-workspace': 14,
-  'connectors/microsoft365': 14, 'engines/booking': 13, 'packages/vertical-auth': 12, 'packages/contracts': 11,
-  'demos/tock': 11, 'engines/invites': 10, 'connectors/scrive': 10, 'spikes/k3s-sharding': 10, 'demos/shop': 9,
-  'engines/protocol': 9, 'apps/console': 8, 'apps/builder': 8, 'demos/handlebar': 8, 'engines/workorder': 8,
-  'engines/invoicing': 7, 'engines/assistant': 6, 'engines/absence': 6, 'apps/router': 5, 'engines/metering': 5,
-  'packages/oidc-rp': 5, 'connectors/fortnox': 4, 'connectors/planima': 4, 'packages/model-emit': 4,
-  'apps/vertical-egress': 4,
+  'packages/adapter-cloudflare#test:contract-hosts': 360, 'packages/adapter-cloudflare#test:contract-switch': 285,
+  'packages/adapter-cloudflare#test:contract-data': 165, 'packages/adapter-cloudflare#test:rest-1': 437,
+  'packages/adapter-cloudflare#test:rest-2': 363,
+  'demos/ticket0': 223, 'apps/control-plane': 126, 'packages/control-plane-api': 69, 'demos/auth-server': 102,
+  'packages/adapter-sqlite': 87, 'apps/dashboard': 63, 'packages/kernel': 60, 'packages/cli': 73,
+  'demos/meridian': 46, 'demos/manyfold': 58, 'packages/attachment-extractors': 57, 'apps/dashboard/web': 25,
+  'packages/vertical-host': 35, 'engines/notifications': 17, 'demos/todo': 12, 'packages/builder-workspace': 22,
+  'connectors/microsoft365': 17, 'engines/booking': 6, 'packages/vertical-auth': 6, 'packages/contracts': 13,
+  'demos/tock': 17, 'engines/invites': 5, 'connectors/scrive': 11, 'spikes/k3s-sharding': 15, 'demos/shop': 12,
+  'engines/protocol': 12, 'apps/console': 9, 'apps/builder': 9, 'demos/handlebar': 6, 'engines/workorder': 11,
+  'engines/invoicing': 8, 'engines/assistant': 8, 'engines/absence': 8, 'apps/router': 6, 'engines/metering': 5,
+  'packages/oidc-rp': 6, 'connectors/fortnox': 4, 'connectors/planima': 6, 'packages/model-emit': 3,
+  'apps/vertical-egress': 6,
 };
 export const DEFAULT_WEIGHT = 3;
 
