@@ -418,6 +418,13 @@ export interface DashboardClient {
   connectorCalls(input: { hours?: string; since?: string; until?: string }): Promise<{ available: boolean; buckets: { provider: string; start: string; bucketMinutes: number; calls: number; errors: number; ok: number; class4xx: number; class5xx: number; timeouts: number; failed: number; durationP50: number; durationP95: number }[] }>;
 
   /**
+   * Create an archive fork of this app's data, with optional expiry
+   *
+   * `POST /apps/{scopeId}/snapshots` — `dashboard/create-app-snapshot`
+   */
+  createAppSnapshot(input: { scopeId: string; ttlDays?: number }): Promise<{ id: string; expiresAt: string | null; url: string | null }>;
+
+  /**
    * Suppress with a rule: a scope plus an expiry, audited by the plane
    *
    * `POST /findings/rules` — `dashboard/create-finding-rule`
@@ -437,6 +444,13 @@ export interface DashboardClient {
    * `DELETE /apps/{scopeId}/env/{key}` — `dashboard/delete-app-env`
    */
   deleteAppEnv(input: { scopeId: string; key: string }): Promise<{ deleted: string }>;
+
+  /**
+   * Delete one archive fork belonging to this app
+   *
+   * `DELETE /apps/{scopeId}/snapshots/{snapshotId}` — `dashboard/delete-app-snapshot`
+   */
+  deleteAppSnapshot(input: { scopeId: string; snapshotId: string }): Promise<{ deleted: string }>;
 
   /**
    * Remove a vertical from the registry (refused for a published vertical, and while any scope still runs it)
@@ -563,6 +577,13 @@ export interface DashboardClient {
    * `GET /apps/{scopeId}/hostnames` — `dashboard/list-app-hostnames`
    */
   listAppHostnames(input: { scopeId: string }): Promise<{ bindings: ({ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] })[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
+
+  /**
+   * The archive forks of one of this team's apps, newest first
+   *
+   * `GET /apps/{scopeId}/snapshots` — `dashboard/list-app-snapshots`
+   */
+  listAppSnapshots(input: { scopeId: string }): Promise<({ id: string; kind: string; forkedFrom: string | null; forkedAt: string | null; expiresAt: string | null; verticalVersionId: string | null; createdAt: string; url: string | null })[]>;
 
   /**
    * One page of this team's apps, newest first
@@ -920,12 +941,16 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/github/connect", "POST", undefined, undefined),
     connectorCalls: (input: Args) =>
       send("/observability/connector-calls", "GET", undefined, input),
+    createAppSnapshot: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/snapshots`, "POST", omit(input, ["scopeId"]), undefined),
     createFindingRule: (input: Args) =>
       send("/findings/rules", "POST", input, undefined),
     createPreview: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews`, "POST", omit(input, ["slug"]), undefined),
     deleteAppEnv: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/env/${encodeURIComponent(String(input.key))}`, "DELETE", undefined, omit(input, ["scopeId","key"])),
+    deleteAppSnapshot: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/snapshots/${encodeURIComponent(String(input.snapshotId))}`, "DELETE", undefined, omit(input, ["scopeId","snapshotId"])),
     deleteDeployment: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}`, "DELETE", undefined, omit(input, ["slug"])),
     deletePreview: (input: Args) =>
@@ -962,6 +987,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/events`, "GET", undefined, omit(input, ["scopeId"])),
     listAppHostnames: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppSnapshots: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/snapshots`, "GET", undefined, omit(input, ["scopeId"])),
     listApps: (input: Args) =>
       send("/apps", "GET", undefined, input),
     listBoundScopes: (input: Args) =>

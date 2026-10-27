@@ -1998,14 +1998,14 @@ function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
       return;
     }
     let live = true;
-    api
-      .appSnapshots(app.app_scope_id)
+    teamApi(teamId)
+      .listAppSnapshots({ scopeId: app.app_scope_id })
       .then((s) => live && setSnaps(s))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, nonce]);
+  }, [teamId, app.app_scope_id, nonce]);
 
   const doCreate = async () => {
     setCreating(true);
@@ -2015,7 +2015,7 @@ function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
         setNote('Preview created (mock).');
       } else {
         const days = Number(ttl);
-        await api.createSnapshot(app.app_scope_id, days > 0 ? { ttlDays: days } : {});
+        await teamApi(teamId).createAppSnapshot({ scopeId: app.app_scope_id, ...(days > 0 ? { ttlDays: days } : {}) });
         setNote('Preview created.');
         setNonce((n) => n + 1);
       }
@@ -2031,7 +2031,7 @@ function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
     setNote(null);
     try {
       if (!DEV_MOCK) {
-        await api.deleteSnapshot(app.app_scope_id, id);
+        await teamApi(teamId).deleteAppSnapshot({ scopeId: app.app_scope_id, snapshotId: id });
         setNonce((n) => n + 1);
       }
     } catch (e) {

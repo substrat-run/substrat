@@ -1781,21 +1781,6 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ bookmark }),
     }),
-  /** The app's snapshots (test copies), newest first. */
-  appSnapshots: (scopeId: string) =>
-    call<SnapshotRow[]>(`/apps/${encodeURIComponent(scopeId)}/snapshots`),
-  /** Create a test copy; ttlDays omitted = kept until deleted. */
-  createSnapshot: (scopeId: string, opts?: { ttlDays?: number }) =>
-    call<{ id: string; expiresAt: string | null }>(`/apps/${encodeURIComponent(scopeId)}/snapshots`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(opts ?? {}),
-    }),
-  deleteSnapshot: (scopeId: string, snapshotId: string) =>
-    call<{ deleted: string }>(
-      `/apps/${encodeURIComponent(scopeId)}/snapshots/${encodeURIComponent(snapshotId)}`,
-      { method: 'DELETE' },
-    ),
   /** The app's data as a downloadable dump (PII-masked in connected mode). */
   exportAppData: (scopeId: string) => call<AppDataDump>(`/apps/${encodeURIComponent(scopeId)}/export`),
   /** Replace the app's data with an uploaded dump; a safety copy is forked first. */
