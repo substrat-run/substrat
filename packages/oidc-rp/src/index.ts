@@ -235,13 +235,15 @@ export async function beginLogin(
 /**
  * Complete login: verify state against the flow cookie, exchange the code for
  * tokens, verify the ID token (signature via JWKS, plus issuer/audience/nonce),
- * and return the user + a signed session cookie value.
+ * and return the user + a signed session cookie value. The optional UserInfo
+ * deadline defaults to USERINFO_TIMEOUT_MS.
  */
 export async function completeLogin(
   baseEnv: OidcEnv,
   origin: string,
   url: URL,
   flowCookie: string | undefined,
+  options: { userInfoTimeoutMs?: number } = {},
 ): Promise<{ user: SessionUser; session: string; returnTo?: string; idToken: string }> {
   const oauthError = url.searchParams.get('error');
   if (oauthError) throw new Error(`authorization error: ${oauthError}`);
@@ -306,7 +308,7 @@ export async function completeLogin(
   });
   if (payload.nonce !== flow.n) throw new Error('nonce mismatch');
 
-  const user = await withUserInfo(d, userFromClaims(payload), tokens.access_token);
+  const user = await withUserInfo(d, userFromClaims(payload), tokens.access_token, options.userInfoTimeoutMs ?? USERINFO_TIMEOUT_MS);
   const session = await mintSession(env, user);
   // The verified ID token travels back out so the caller can keep it for logout. It is
   // returned rather than stored here because this function is stateless — the CLI login
@@ -368,6 +370,7 @@ async function withUserInfo(
   d: Discovery,
   user: SessionUser,
   accessToken: string | undefined,
+  timeoutMs: number,
 ): Promise<SessionUser> {
   if (user.email !== undefined && user.name !== undefined) return user;
   if (!d.userinfo_endpoint || !accessToken) return user;
@@ -380,7 +383,7 @@ async function withUserInfo(
     const res = await fetch(d.userinfo_endpoint, {
       redirect: 'manual',
       headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
-      signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return user;
     claims = (await res.json()) as typeof claims;

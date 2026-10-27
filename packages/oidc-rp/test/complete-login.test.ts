@@ -118,7 +118,7 @@ afterEach(() => vi.unstubAllGlobals());
  * and nonce under test are the ones the library itself produced — the nonce rides to the
  * stub through a spare form field so the signed ID token can echo it back.
  */
-async function login(): Promise<Awaited<ReturnType<typeof completeLogin>>> {
+async function login(options: { userInfoTimeoutMs?: number } = {}): Promise<Awaited<ReturnType<typeof completeLogin>>> {
   const { location, flow } = await beginLogin(env, APP);
   const authorize = new URL(location);
   const state = authorize.searchParams.get('state')!;
@@ -132,7 +132,7 @@ async function login(): Promise<Awaited<ReturnType<typeof completeLogin>>> {
     return original(input as RequestInfo, { ...init, body });
   }) as typeof fetch);
   const callback = new URL(`${APP}/api/auth/callback?code=c-1&state=${state}`);
-  return completeLogin(env, APP, callback, flow);
+  return completeLogin(env, APP, callback, flow, options);
 }
 
 describe('the profile claims OIDC Core §5.4 routes to UserInfo', () => {
@@ -209,22 +209,18 @@ describe('what it refuses, and what it merely shrugs at', () => {
     });
   }
 
-  it(
-    'stands the login up when the endpoint accepts the connection and never answers',
-    async () => {
-      idTokenClaims = { sub: 'u-1' };
-      userInfo = 'never answers';
+  it('stands the login up when the endpoint accepts the connection and never answers', async () => {
+    idTokenClaims = { sub: 'u-1' };
+    userInfo = 'never answers';
 
-      // Real time, because the deadline is a real one: this is the case where an
-      // unbounded fetch would hang the callback instead of degrading, so the test waits
-      // for the actual signal rather than asserting one was merely attached.
-      const { user } = await login();
+    // The real abort signal proves a stalled endpoint cannot hang login. A short
+    // deadline keeps this test fast while production keeps its five-second ceiling.
+    expect(USERINFO_TIMEOUT_MS).toBe(5_000);
+    const { user } = await login({ userInfoTimeoutMs: 200 });
 
-      expect(user).toEqual({ id: 'u-1', email: undefined, name: undefined });
-      expect(userInfoRequests).toEqual([{ authorization: 'Bearer at-1', deadline: true }]);
-    },
-    USERINFO_TIMEOUT_MS + 5_000,
-  );
+    expect(user).toEqual({ id: 'u-1', email: undefined, name: undefined });
+    expect(userInfoRequests).toEqual([{ authorization: 'Bearer at-1', deadline: true }]);
+  });
 });
 
 /**
