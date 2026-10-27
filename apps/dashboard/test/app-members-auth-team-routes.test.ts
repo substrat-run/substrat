@@ -124,3 +124,50 @@ it('keeps app owner, roster and auth reads on the path team when another tab swi
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+it('refuses an app owner claim to a viewer before minting a link, while an owner can mint', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-app-owner-claim-'));
+  const host = new SqliteScopeHost({ dir });
+  shared.host = host;
+  try {
+    for (const module of MODULES) host.registerModule(module);
+    const staff = platformActorId.parse(ulid());
+    const team = tenantId.parse(ulid());
+    const dashboardScope = scopeId.parse(ulid());
+    const appScope = scopeId.parse(ulid());
+    const owner = principalId.parse(ulid());
+    const viewer = principalId.parse(ulid());
+    const node = await provisionDashboard(host, { tenantId: team, scopeId: dashboardScope, owner, slug: 'team', name: 'Team' });
+    await host.admin.registerIdentityPool(staff, { provider: 'authhero', topology: 'central', tenantId: null });
+    await host.admin.assignRole(staff, { principalId: viewer, roleKey: 'viewer', node: { tenantId: team, scopeId: null } });
+    await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'sub-owner', principal: owner, tenantId: team, scopeId: dashboardScope });
+    await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'sub-viewer', principal: viewer, tenantId: team, scopeId: dashboardScope });
+    await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/provision-app', {
+      appScopeId: appScope, verticalSlug: 'acme/widgets', name: 'App',
+    });
+    const minted: string[] = [];
+    const env = {
+      SCOPE: {}, CONTROL_PLANE: {}, SESSION_SECRET: 'test-session-secret', CP_SERVICE_TOKEN: 'test-service-token',
+      CONTROL_PLANE_SVC: { fetch: async (url: string | URL | Request) => {
+        const path = new URL(String(url)).pathname;
+        if (path === '/api/tenant-tokens') return Response.json({ token: 'tenant-token' });
+        if (path.endsWith('/owner-claim')) {
+          minted.push(path);
+          return Response.json({ claimUrl: 'https://app.example/?claim=once', expiresAt: '2026-11-01T00:00:00Z' }, { status: 201 });
+        }
+        return Response.json({ detail: 'unavailable' }, { status: 501 });
+      } },
+    };
+    const claim = (sub: string) => app.request(`/api/teams/${team}/apps/${appScope}/owner-claim`, {
+      method: 'POST', headers: { cookie: `sb_session=${sub}; sb_team=${team}` },
+    }, env);
+
+    expect((await claim('sub-viewer')).status).toBe(403);
+    expect(minted).toHaveLength(0);
+    expect((await claim('sub-owner')).status).toBe(201);
+    expect(minted).toHaveLength(1);
+  } finally {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

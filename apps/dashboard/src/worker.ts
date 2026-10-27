@@ -4125,6 +4125,8 @@ async function appOwnerSeatIn({ c, host, node }: TeamContext, appScopeId: string
 async function appOwnerClaimIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), appScopeId);
+  // A claim link can seat an owner, so minting it uses the existing owner/admin gate.
+  await dash.invoke('dashboard/authorize-restore', {});
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return cp.mintOwnerClaim(scope);
 }

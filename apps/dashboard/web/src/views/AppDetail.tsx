@@ -238,7 +238,7 @@ export function AppDetail({
         onChange={onTab}
       />
 
-      {main === 'overview' && <Overview teamId={teamId} app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} />}
+      {main === 'overview' && <Overview teamId={teamId} app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} canClaimOwnerSeat={canRestore} />}
       {main === 'data' && (
         <Data
           teamId={teamId}
@@ -289,7 +289,7 @@ function KV({ label, children, last }: { label: string; children: React.ReactNod
  * confidently contradict the card under it. `onClaimed` is how this card asks for the
  * re-read a freshly minted link makes necessary.
  */
-function OwnerSeatCard({ teamId, scopeId, seat, onClaimed }: { teamId: string; scopeId: string; seat: OwnerSeatView | null | undefined; onClaimed: (forScope: string) => void }) {
+function OwnerSeatCard({ teamId, scopeId, seat, onClaimed, canClaim }: { teamId: string; scopeId: string; seat: OwnerSeatView | null | undefined; onClaimed: (forScope: string) => void; canClaim: boolean }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
   const [claim, setClaim] = useState<OwnerClaimLinkView | null>(null);
   const [claimErr, setClaimErr] = useState<string | null>(null);
@@ -304,7 +304,7 @@ function OwnerSeatCard({ teamId, scopeId, seat, onClaimed }: { teamId: string; s
   }, [scopeId]);
 
   const mintClaimLink = async () => {
-    if (DEV_MOCK || minting) return;
+    if (DEV_MOCK || minting || !canClaim) return;
     const forScope = scopeId;
     setMinting(true);
     setClaimErr(null);
@@ -343,8 +343,9 @@ function OwnerSeatCard({ teamId, scopeId, seat, onClaimed }: { teamId: string; s
             <Pill kind={seat.firstSignIn?.open ? 'warning' : 'info'} pulse={seat.firstSignIn?.open}>unclaimed</Pill>
             <span style={{ color: 'var(--text-secondary)' }}>
               {seat.firstSignIn?.open
-                ? `Nobody has signed in yet. Until ${seat.firstSignIn.until ? untilTime(seat.firstSignIn.until) : 'the window closes'}, the first person to sign in at its address becomes the owner — open it now, or mint a claim link that only its holder can use.`
-                : 'Nobody has signed in yet, and the first-sign-in window has closed — a plain sign-in no longer claims it. Mint a claim link and open it (or send it to the person who should own this instance).'}
+                ? `Nobody has signed in yet. Until ${seat.firstSignIn.until ? untilTime(seat.firstSignIn.until) : 'the window closes'}, the first person to sign in at its address becomes the owner.`
+                : 'Nobody has signed in yet, and the first-sign-in window has closed — a plain sign-in no longer claims it.'}
+              {' '}{canClaim ? 'An owner or admin can mint a claim link.' : 'Ask a team owner or admin for a claim link.'}
             </span>
           </div>
           {claim ? (
@@ -357,14 +358,14 @@ function OwnerSeatCard({ teamId, scopeId, seat, onClaimed }: { teamId: string; s
                 Valid {untilTime(claim.expiresAt)}; shown once and stored nowhere — mint again if it is lost, which also retires this one.
               </div>
             </div>
-          ) : (
+          ) : canClaim ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <Button size="sm" onClick={mintClaimLink} disabled={minting}>{minting ? 'Minting…' : seat.claimLink ? 'Mint a new claim link' : 'Get claim link'}</Button>
               {seat.claimLink && (
                 <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>A claim link is already out, valid {untilTime(seat.claimLink.expiresAt)}; minting again retires it.</span>
               )}
             </div>
-          )}
+          ) : null}
           {claimErr && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{claimErr}</div>}
         </>
       )}
@@ -381,7 +382,7 @@ function OwnerSeatCard({ teamId, scopeId, seat, onClaimed }: { teamId: string; s
  * `versionId` is the version the environment runs: a seat its code does not keep is
  * remembered against it rather than asked for (and 501'd) on every render (#1345).
  */
-function ScopeOwnerSeat({ teamId, scopeId, versionId, active }: { teamId: string; scopeId: string; versionId: string | null; active: boolean }) {
+function ScopeOwnerSeat({ teamId, scopeId, versionId, active, canClaim }: { teamId: string; scopeId: string; versionId: string | null; active: boolean; canClaim: boolean }) {
   const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
   // A generation rather than the scope alone: the read is keyed by VERSION too, so an
   // environment rebound to a new version re-runs this effect without the scope ever
@@ -412,10 +413,10 @@ function ScopeOwnerSeat({ teamId, scopeId, versionId, active }: { teamId: string
     read(scopeId);
   }, [teamId, scopeId, versionId, active]);
 
-  return <OwnerSeatCard teamId={teamId} scopeId={scopeId} seat={seat} onClaimed={read} />;
+  return <OwnerSeatCard teamId={teamId} scopeId={scopeId} seat={seat} onClaimed={read} canClaim={canClaim} />;
 }
 
-function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls }: { teamId: string; app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
+function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, canClaimOwnerSeat }: { teamId: string; app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[]; canClaimOwnerSeat: boolean }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
   const metrics24 = useTenantMetrics(teamId, app.app_scope_id);
   const schedules = useAppSchedules(app.app_scope_id);
@@ -606,7 +607,7 @@ function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls }: {
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
-        <OwnerSeatCard key={app.app_scope_id} teamId={teamId} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} />
+        <OwnerSeatCard key={app.app_scope_id} teamId={teamId} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} canClaim={canClaimOwnerSeat} />
         <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />
         {provisionResult && (
@@ -1655,7 +1656,7 @@ const MOCK_TEST_ENV_HOSTS: AppHostnamesView = {
   ],
 };
 
-function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
+function TestEnvironment({ teamId, app, canClaimOwnerSeat }: { teamId: string; app: AppRow; canClaimOwnerSeat: boolean }) {
   const [dep, setDep] = useState<Deployment | null>(null);
   const [envs, setEnvs] = useState<VerticalPreview[] | null>(null);
   const [hostView, setHostView] = useState<AppHostnamesView | null>(null);
@@ -1889,7 +1890,7 @@ function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
               {TEST_ENVIRONMENT_CREATION_COPY} For a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, the owner seat below mints a claim link.
               An older environment may still serve production code through an existing serving pin; its bound version alone does not verify the running code.
             </HonestyBanner>
-            <ScopeOwnerSeat key={env.scopeId} teamId={teamId} scopeId={env.scopeId} versionId={env.versionId ?? null} active={!!env.url} />
+            <ScopeOwnerSeat key={env.scopeId} teamId={teamId} scopeId={env.scopeId} versionId={env.versionId ?? null} active={!!env.url} canClaim={canClaimOwnerSeat} />
 
             {customDomains.length > 0 && (
               <div style={{ ...card, overflow: 'hidden' }}>
@@ -1983,7 +1984,7 @@ function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
  * and it expires unless kept; the banner says so in words. ("Snapshot" stays the
  * backend word for the data artifact; the user-facing instance is a preview.)
  */
-function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
+function Previews({ teamId, app, canClaimOwnerSeat }: { teamId: string; app: AppRow; canClaimOwnerSeat: boolean }) {
   const [snaps, setSnaps] = useState<SnapshotRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -2111,7 +2112,7 @@ function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <TestEnvironment teamId={teamId} app={app} />
+      <TestEnvironment teamId={teamId} app={app} canClaimOwnerSeat={canClaimOwnerSeat} />
       {snapshotSection}
     </div>
   );
@@ -3135,7 +3136,7 @@ export function Data({ teamId, app, section, onSection, canRestore }: { teamId: 
           <Model app={app} />
         </div>
       )}
-      {section === 'previews' && <Previews teamId={teamId} app={app} />}
+      {section === 'previews' && <Previews teamId={teamId} app={app} canClaimOwnerSeat={canRestore} />}
       {section === 'export' && <ExportImport app={app} canRestore={canRestore} />}
     </div>
   );
