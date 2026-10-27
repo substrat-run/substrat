@@ -84,6 +84,9 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 
 ## Commands
 
+New PRs do not add `.changeset/*.md` files. Describe published-package impact in the PR;
+maintainers write the release notes when releasing.
+
 - `pnpm install` · `pnpm build` · `pnpm typecheck` · `pnpm test` (builds first) — the root
   scripts, not `pnpm -r …` directly, **in a local checkout**: they exclude
   `.builder/projects/**`, the gitignored builder-studio scratch projects that are also
@@ -741,8 +744,8 @@ anything it cannot rank → major — and a changeset naming the vertical with a
 vertical no changeset names is a warning carrying the computed bump, since most demo artifact
 changes are a platform regeneration. A reviewed exception is `<!-- bump-override: <package>
 <level> — <reason> -->` in that changeset, printed in CI; a malformed one is red. Engines and the
-`fixed` group are not judged: their surface is more than an artifact carries, so their changesets
-stay hand-written (#760)),
+`fixed` group are not judged: their surface is more than an artifact carries, so maintainers
+judge their release bumps by hand (#760)),
 `lint:skills` (`tools/skill-paths.mjs`: a repo-rooted path a skill cites in code — a bare
 `demos/todo/src/module.ts`, or the `tools/…` inside a command — exists, spelled the way the
 tree spells it. `.claude/skills/*` and `plugin/substrat/skills/*` are both read; a
