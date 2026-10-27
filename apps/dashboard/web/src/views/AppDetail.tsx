@@ -1887,7 +1887,7 @@ function TestEnvironment({ teamId, app, canClaimOwnerSeat }: { teamId: string; a
               )}
             </div>
             <HonestyBanner>
-              {TEST_ENVIRONMENT_CREATION_COPY} For a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, the owner seat below mints a claim link.
+              {TEST_ENVIRONMENT_CREATION_COPY} For a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, a team owner or admin can mint a claim link below.
               An older environment may still serve production code through an existing serving pin; its bound version alone does not verify the running code.
             </HonestyBanner>
             <ScopeOwnerSeat key={env.scopeId} teamId={teamId} scopeId={env.scopeId} versionId={env.versionId ?? null} active={!!env.url} canClaim={canClaimOwnerSeat} />

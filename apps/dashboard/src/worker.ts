@@ -4120,7 +4120,7 @@ async function appOwnerSeatIn({ c, host, node }: TeamContext, appScopeId: string
 /**
  * Mint a claim link for the app's unclaimed owner seat (#925) — what the installer uses once
  * the first-sign-in window has closed. Shown once; never stored here or on the platform.
- * Authorized exactly like every other app-scoped route: the app must be the caller's own.
+ * The app must be the path team's own, and the caller must hold its owner/admin dashboard role.
  */
 async function appOwnerClaimIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
