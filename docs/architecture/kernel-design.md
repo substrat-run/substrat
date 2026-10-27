@@ -43,6 +43,20 @@ case 1 forces extraction); the integrations hub beyond its contract stub; billin
 the AI gateway; spec-registry tooling (§5.6 defers it); anything only a second vertical
 would consume.
 
+### Retained kernel helpers (#1978)
+
+- **`renderTemplate` stays in `module-log.ts`.** Its only source caller is the kernel's
+  `moduleLogLine`, which renders the message for `ctx.log`; the dashboard mentions the
+  placeholder grammar in a comment but does not call the helper. Moving it to an app
+  would make kernel logging depend on that app. Revisit when message rendering leaves
+  `moduleLogLine` or another package becomes the owner of the log-line grammar.
+- **`isUpgradeRequest` stays in `live-read.ts`.** The Cloudflare adapter and
+  `vertical-host` both use it to recognize the live-read handshake. Moving it into
+  `vertical-host` would make the adapter depend on a higher layer; moving it into a
+  neutral package would change the kernel's published surface. Revisit if one shared
+  caller remains, or a reviewed live-read contract change gives the handshake a new
+  neutral home.
+
 ## 2. System topology
 
 ```mermaid
