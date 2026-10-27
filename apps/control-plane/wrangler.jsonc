@@ -173,7 +173,19 @@
 	"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals" }],
 	// #1544: the platform's social sign-in relay (apps/social-relay). Reached by binding rather
 	// than over the public hostname, so its platform-gated registration never leaves Cloudflare.
-	"services": [{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay" }],
+	//
+	// CONNECTOR_CALLS: the router's `ConnectorCalls` entrypoint (vertical-connectors.md §6.3). A
+	// vertical-defined connector runs in its vertical's deployment, and only the router dispatches
+	// with the version's `outbound` policy, so the control plane calls through it rather than
+	// `DISPATCH.get(ref)`. Deploy order: the router must already export `ConnectorCalls` when
+	// this binds to it, and CI deploys the control plane FIRST (release.yml, ci.yml). On an
+	// existing environment the router script exists, and a call before the router's own redeploy
+	// fails (the connection's sweep row and the intent's journal say so); a FRESH environment has
+	// no `substrat-router` yet, so deploy the router once before the control plane there.
+	"services": [
+		{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay" },
+		{ "binding": "CONNECTOR_CALLS", "service": "substrat-router", "entrypoint": "ConnectorCalls" }
+	],
 	// Cloudflare Email Service — the email RELAY (#303). The control plane is the ONE worker
 	// that holds an outbound-mail credential: a hosted vertical cannot bind `send_email` (a WfP
 	// dispatch script has no such binding, and the §4 sandbox refuses it), so a vertical granted
@@ -335,7 +347,10 @@
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test
 			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
-			"services": [{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay-test" }], // differs
+			"services": [
+				{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay-test" },
+				{ "binding": "CONNECTOR_CALLS", "service": "substrat-router-test", "entrypoint": "ConnectorCalls" }
+			], // differs
 				"send_email": [{ "name": "EMAIL" }], // relay binding (#303); a named env inherits no bindings
 			// #1691: TEST's own dataset — test calls stay out of prod's connector charts.
 			"analytics_engine_datasets": [{ "binding": "CONNECTOR_ANALYTICS", "dataset": "substrat_connector_calls_test" }], // differs

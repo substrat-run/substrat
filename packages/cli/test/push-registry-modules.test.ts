@@ -17,3 +17,27 @@ describe.runIf(built)('push carries its loaded module permission declarations (#
     ]);
   });
 });
+
+describe.runIf(built)("push carries a vertical's connectors (vertical-connectors.md §7.1)", () => {
+  const DECL = {
+    provider: 'acme.docbox',
+    label: 'docbox',
+    description: 'A document box.',
+    fields: [{ key: 'password', label: 'Password', secret: true }],
+    grants: ['helpdesk:read'],
+    events: [],
+    sweeps: true,
+    binds: false,
+    dispatches: false,
+  };
+
+  it('sends the declarations, and their standing grants in the registry the digest covers', () => {
+    const without = pushed(vertical([{ id: 'helpdesk' }]));
+    expect(without).not.toHaveProperty('connectors');
+    expect(without.registry).not.toHaveProperty('connectors');
+    const manifest = pushed(vertical([{ id: 'helpdesk' }], undefined, { connectors: [DECL] }));
+    expect(manifest.connectors).toEqual([DECL]);
+    expect(manifest.registry.connectors).toEqual([{ provider: 'acme.docbox', grants: ['helpdesk:read'] }]);
+    expect(manifest.digests.permission).not.toBe(without.digests.permission);
+  });
+});

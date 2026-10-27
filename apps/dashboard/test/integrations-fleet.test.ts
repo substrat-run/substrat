@@ -53,6 +53,21 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 };
 
 const VERTICAL = 'acme/books';
+/** A connector this app's vertical declares (vertical-connectors.md §7.2), and nothing `requires`. */
+const DOC_CONNECTOR = {
+  provider: 'acme.docbox',
+  label: 'docbox archive',
+  description: 'Files signed documents into the archive.',
+  fields: [
+    { key: 'apiKey', label: 'API key', secret: true },
+    { key: 'archive', label: 'Archive id', secret: false, placeholder: 'arc-123' },
+  ],
+  grants: ['books:file-document'],
+  events: [],
+  sweeps: true,
+  binds: false,
+  dispatches: false,
+};
 const staff = platformActorId.parse(ulid());
 
 interface Row {
@@ -82,6 +97,10 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   let verified: string[];
   // What the plane's intent journal answers; the default `[]` is a clean journal.
   let intents: unknown[];
+  // What the connect door sent the plane's upsert (vertical-connectors.md §7.2).
+  let upserts: Record<string, unknown>[];
+  // What this vertical's latest push declares; a test empties it to model a push that dropped one.
+  let declared: (typeof DOC_CONNECTOR)[];
   let env: Record<string, unknown>;
 
   const row = (over: Partial<Row>): Row => ({
@@ -109,6 +128,8 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     revoked = [];
     verified = [];
     intents = [];
+    upserts = [];
+    declared = [DOC_CONNECTOR];
 
     const owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'bureau', name: 'Bureau' });
@@ -147,9 +168,20 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           if (path === '/verticals') {
             return Response.json({
-              entries: [{ slug: VERTICAL, name: 'Books', source: 'registry', ownerTenant: null, requires: ['fortnox'] }],
+              entries: [
+                { slug: VERTICAL, name: 'Books', source: 'registry', ownerTenant: null, listed: true, requires: ['fortnox'], connectors: declared },
+                // Another vertical's own connector: not a door on this app.
+                {
+                  slug: 'acme/other', name: 'Other', source: 'registry', ownerTenant: null, listed: true,
+                  connectors: [{ ...DOC_CONNECTOR, provider: 'acme.other', label: 'Other archive' }],
+                },
+              ],
               nextCursor: null,
             });
+          }
+          if (path === `/tenants/${tenant}/connections` && method === 'POST') {
+            upserts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+            return Response.json({ connectionId: ulid(), created: true, granted: [] });
           }
           if (path === `/tenants/${tenant}/connections` && method === 'GET') {
             const vertical = u.searchParams.get('vertical');
@@ -301,5 +333,89 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     const anon = await app.request(`/api/apps/${appScope}/integrations/fortnox/connections/${id}`, { method: 'DELETE' }, env);
     expect(anon.status).toBe(401);
     expect(revoked).toEqual([]);
+  });
+
+  // Vertical-defined connectors (vertical-connectors.md §7.2): declared on the vertical's
+  // registry record, offered on its apps' panel only, stored with the declaration's grants.
+  it('offers the connector the vertical declares, with its form, beside the first-party ones', async () => {
+    const body = (await (await req('')).json()) as {
+      providers: { provider: string; name: string; monogram: string; required: boolean; fields: unknown[]; connectFlow: unknown }[];
+    };
+    expect(body.providers.map((p) => p.provider)).toEqual(['fortnox', 'acme.docbox', 'scrive']);
+    expect(body.providers.find((p) => p.provider === 'acme.docbox')).toMatchObject({
+      name: 'docbox archive',
+      monogram: 'DO',
+      required: true,
+      connectFlow: null,
+      fields: DOC_CONNECTOR.fields,
+    });
+  });
+
+  it('connecting the declared connector stores the parsed secret with the declared grants', async () => {
+    const res = await app.request(
+      `/api/apps/${appScope}/integrations/acme.docbox`,
+      {
+        method: 'POST',
+        headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+        body: JSON.stringify({ secret: { apiKey: ' k-1 ', archive: 'arc-9', stray: 'dropped' } }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(upserts).toEqual([
+      expect.objectContaining({
+        scopeId: appScope,
+        provider: 'acme.docbox',
+        secret: { apiKey: 'k-1', archive: 'arc-9' },
+        grants: ['books:file-document'],
+      }),
+    ]);
+  });
+
+  it('a provider another vertical declares is no door on this app — 404, nothing stored', async () => {
+    const post = await app.request(
+      `/api/apps/${appScope}/integrations/acme.other`,
+      {
+        method: 'POST',
+        headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+        body: JSON.stringify({ secret: { apiKey: 'k', archive: 'a' } }),
+      },
+      env,
+    );
+    expect(post.status).toBe(404);
+    expect((await req('/acme.other', 'DELETE')).status).toBe(404);
+    expect((await req('/acme.other/verify', 'POST')).status).toBe(404);
+    expect(upserts).toEqual([]);
+  });
+
+  it('a live connection outlives the declaration: still listed, formless, and revocable', async () => {
+    const live = row({ provider: 'acme.docbox', label: 'Docbox' });
+    // Another vertical's connection to a provider of the same shape — still not this app's.
+    const foreign = row({ vertical: 'acme/other', provider: 'acme.other', label: 'Other archive' });
+    rows.push(live, foreign);
+    declared = [];
+    const body = (await (await req('')).json()) as {
+      providers: { provider: string; required: boolean; fields: unknown[]; connection: { id: string } | null }[];
+    };
+    expect(body.providers.find((p) => p.provider === 'acme.docbox')).toMatchObject({
+      required: false,
+      fields: [],
+      connection: { id: live.id },
+    });
+    expect(body.providers.some((p) => p.provider === 'acme.other')).toBe(false);
+    // Connecting and verifying still need a declaration; withdrawing never does.
+    expect((await req('/acme.docbox/verify', 'POST')).status).toBe(404);
+    expect((await req(`/acme.other/connections/${foreign.id}`, 'DELETE')).status).toBe(404);
+    expect((await req('/acme.other', 'DELETE')).status).toBe(404);
+    expect((await req('/acme.docbox', 'DELETE')).status).toBe(204);
+    expect(revoked).toEqual([live.id]);
+  });
+
+  it('the addressed revoke reaches an undeclared connection of this vertical too', async () => {
+    const live = row({ provider: 'acme.docbox', label: 'Docbox' });
+    rows.push(live);
+    declared = [];
+    expect((await req(`/acme.docbox/connections/${live.id}`, 'DELETE')).status).toBe(204);
+    expect(revoked).toEqual([live.id]);
   });
 });

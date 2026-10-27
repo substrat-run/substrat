@@ -1,4 +1,4 @@
-import { z } from '@substrat-run/contracts';
+import { isVerticalConnectorProvider, z } from '@substrat-run/contracts';
 
 /**
  * The options a poll connector's scope binding takes, by provider, without the operation and key
@@ -11,6 +11,9 @@ import { z } from '@substrat-run/contracts';
  * with a typo'd key does not bind with a default the vertical never meant.
  */
 export function connectionBindingOptions(provider: string) {
+  // A vertical-defined provider's options are its own connector's to validate, at bind
+  // (vertical-connectors.md §6.1); the stored binding bounds their count.
+  if (isVerticalConnectorProvider(provider)) return z.object({}).catchall(z.unknown());
   switch (provider) {
     case 'planima':
       return z

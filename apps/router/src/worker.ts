@@ -22,6 +22,12 @@ import {
   type RouteResolver,
 } from '@substrat-run/adapter-cloudflare/routing';
 import {
+  CONNECTOR_CALL_PATH,
+  CONNECTOR_PROBE_PATH,
+  connectorCallRequest,
+  connectorCallTarget,
+  type ConnectorCallRequest,
+  type ConnectorCallTransportResult,
   decodeInvocationRecord,
   EXPORTED_EVENTS_HEADER,
   FIELD_COVERAGE_HEADER,
@@ -867,3 +873,155 @@ const STATUS_BY_CODE: Record<string, number> = {
   forbidden: 403,
   unavailable: 503,
 };
+
+/**
+ * Place ONE connector call (vertical-connectors.md §6.3): the control plane's call into a
+ * vertical's connector code, dispatched here because only this worker's `DISPATCH` carries an
+ * outbound policy to the egress worker. The control plane could reach the same deployment through
+ * its own dispatch binding, and the connector would then reach any host.
+ *
+ * Like `handlePeerCall`, it lives here so the node tests reach it; `src/connector-calls.ts` is the
+ * three-line `WorkerEntrypoint` around it.
+ */
+export async function handleConnectorCall(
+  env: Env,
+  rawTarget: unknown,
+  rawRequest: unknown,
+): Promise<ConnectorCallTransportResult> {
+  const secret = env.PLATFORM_SECRET;
+  if (!secret) {
+    // Without it the vertical's `/internal` gate refuses every call; fail here, and say why.
+    console.error('router: PLATFORM_SECRET is not configured — refusing every connector call');
+    return { status: 503, body: { error: 'this router is not configured for connector calls' } };
+  }
+  if (!env.DISPATCH) {
+    console.error('router: DISPATCH is not bound — refusing every connector call');
+    return { status: 503, body: { error: 'this router cannot dispatch connector calls' } };
+  }
+  const parsedTarget = connectorCallTarget.safeParse(rawTarget);
+  if (!parsedTarget.success) return refusedShape('target', parsedTarget.error.issues);
+  const parsedRequest = connectorCallRequest.safeParse(rawRequest);
+  if (!parsedRequest.success) return refusedShape('request', parsedRequest.error.issues);
+  const target = parsedTarget.data;
+  const request = parsedRequest.data;
+
+  // The control plane is the only caller (the entrypoint is reachable through its service binding
+  // alone), so this is not a trust boundary. It is still refused rather than trusted: a target and a
+  // request that disagree on the tenant or the scope would hand one tenant's credential, or one
+  // scope's binding, to code dispatched under another's policy, and nothing downstream would notice.
+  const incoherent = incoherenceOf(target, request);
+  if (incoherent) return { status: 400, body: { error: `connector call refused: ${incoherent}` } };
+
+  const policy: OutboundPolicy = {
+    slug: target.slug,
+    tenant: target.tenantId,
+    hosts: target.hosts,
+    // A probe (probe, probe-candidate) serves no scope. `scope` is a string on the
+    // policy, and egress reads an empty one as "no identity": a peer call or a store call from it is
+    // refused, and a relay call carries no caller. Nothing it could name would be truer.
+    scope: target.scopeId ?? '',
+    // A connector makes no peer calls. `[]`, not `null`: `null` is a pre-#1706 version, unenforced.
+    calls: [],
+    stores: null,
+    depth: 0,
+    primary: true,
+  };
+  const deployment = env.DISPATCH.get(target.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
+  const body = JSON.stringify(request);
+  // A probe is connection-level and changes nothing in the vertical, so it has its own path, which
+  // the wire gate holds to no nonce; every scoped role takes the call path and keeps them.
+  const path = isProbe(request) ? CONNECTOR_PROBE_PATH : CONNECTOR_CALL_PATH;
+  // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.
+  const unsigned = (): Request =>
+    new Request(`https://vertical${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [PLATFORM_SECRET_HEADER]: secret,
+        'x-substrat-vertical': target.slug,
+      },
+      body,
+    });
+  const signer = routerSignerOf(env);
+  const call = async (): Promise<Request> => {
+    if (!signer) return unsigned();
+    const result = await signer(unsigned(), {
+      iss: 'router',
+      kind: 'call',
+      aud: target.deploymentRef,
+      // The envelope carries a tenant and a scope together or neither, so a probe names neither (the
+      // tenant still travels in the signed body); a scoped role always has both, checked above.
+      ...(isProbe(request) ? {} : { tenantId: target.tenantId, scopeId: target.scopeId }),
+      vertical: target.slug,
+    });
+    console.log(JSON.stringify({
+      router: 'wire-sign',
+      kind: 'call',
+      aud: target.deploymentRef,
+      outcome: result.outcome,
+      ...(result.outcome === 'failed' ? { reason: result.reason } : {}),
+    }));
+    return sent(result, 'call', target.deploymentRef);
+  };
+  // The one retry `handlePeerCall` takes: `Worker not found` is raised by the dispatch before the
+  // vertical's code runs, so nothing happened to repeat. Any other failure is not retried — a sweep
+  // that reached the vertical may have landed rows.
+  let response: Response;
+  try {
+    response = await deployment.fetch(await call());
+  } catch (e) {
+    if (!isTransientDispatchFailure(e)) throw e;
+    try {
+      response = await deployment.fetch(await call());
+    } catch (retryError) {
+      if (!isTransientDispatchFailure(retryError)) throw retryError;
+      console.error(`router: connector call target '${target.slug}' not found on retry (deployment ${target.deploymentRef})`);
+      return {
+        status: 503,
+        body: { error: `the deployment of '${target.slug}' did not answer — usually a deploy still propagating. Nothing ran; retry.` },
+      };
+    }
+  }
+  const answered: unknown = await response.json().catch(() => null);
+  return { status: response.status, body: answered };
+}
+
+/** A malformed target or request: where, never the values (a request carries a credential). */
+function refusedShape(what: 'target' | 'request', issues: readonly { path: PropertyKey[]; message: string }[]): ConnectorCallTransportResult {
+  const detail = issues
+    .slice(0, 5)
+    .map((issue) => `${issue.path.map(String).join('.') || '(root)'}: ${issue.message}`)
+    .join('; ');
+  return { status: 400, body: { error: `connector call refused: the ${what} is malformed (${detail})` } };
+}
+
+/** Why a target and a request do not describe the same call, or null when they do. */
+function incoherenceOf(
+  target: { slug: string; tenantId: string; scopeId: string | null },
+  request: ConnectorCallRequest,
+): string | null {
+  if ('connection' in request) {
+    if (request.connection.tenantId !== target.tenantId) return 'the connection belongs to another tenant than the target';
+    if (request.connection.vertical !== target.slug) return 'the connection belongs to another vertical than the target';
+  }
+  // One shape per role: a probe names no scope, and every other role names exactly the target's.
+  if (isProbe(request)) {
+    return target.scopeId === null ? null : `a ${request.role} call is connection-level, and its target names a scope`;
+  }
+  if (target.scopeId === null) return `a ${request.role} call is scoped, and its target names no scope`;
+  const scoped =
+    request.role === 'sweep' ? [request.binding.scopeId]
+    : request.role === 'bind' ? [request.scopeId]
+    : [request.scopeId, ...(request.binding ? [request.binding.scopeId] : [])];
+  if (scoped.some((scope) => scope !== target.scopeId)) {
+    return `a ${request.role} call names another scope than the target`;
+  }
+  return null;
+}
+
+/** The connection-level roles, which serve no scope and change nothing in the vertical. */
+function isProbe(
+  request: ConnectorCallRequest,
+): request is Extract<ConnectorCallRequest, { role: 'probe' | 'probe-candidate' }> {
+  return request.role === 'probe' || request.role === 'probe-candidate';
+}

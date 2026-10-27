@@ -47,11 +47,15 @@ import {
   type SizedByteStream,
   isSizedByteStream,
   knownLengthInit,
+  globalFetch,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
+import { isVerticalConnectors, runConnectorCall, type VerticalConnectors } from './connectors.js';
 import {
   z,
+  CONNECTOR_CALL_PATH,
+  CONNECTOR_PROBE_PATH,
   PROBLEM_CONTENT_TYPE,
   scopeLineage,
   type ScopeLineage,
@@ -1335,6 +1339,11 @@ export interface PlatformSurfaceDeps<Env> {
    * older callers omit it, so hooks that need it should handle that case. Optional.
    */
   onDeleteScope?: (env: Env, scopeId: ScopeId, tenantId?: TenantId) => Promise<void>;
+  /**
+   * The vertical's own connectors (`defineConnectors`, `@substrat-run/vertical-host/connectors`),
+   * served at `/internal/connector-call`. Omit ⇒ that route answers 501.
+   */
+  connectors?: VerticalConnectors;
 
   /**
    * Extra error mapping, tried BEFORE the default envelope. Return a `{status, message}`
@@ -1361,6 +1370,9 @@ export function mountPlatformSurface<Env extends object>(
   // (`scope-sweep-host.ts`). Registered on every mount, since nothing at mount time can tell
   // a hosted script from a local one, and a registration nobody reads costs nothing.
   registerScopeSweepHost(deps.hostFor as (env: never) => unknown);
+  if (deps.connectors !== undefined && !isVerticalConnectors(deps.connectors)) {
+    throw new Error('mountPlatformSurface: connectors must be the value defineConnectors returns');
+  }
 
   // ── ONE gate for the entire surface (replaces the per-route copy-pasted try/catch) ──
   // The status `onError` below answers a throw with — and the peer route's line with it (#2192).
@@ -2201,6 +2213,26 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.connectionGrantsInScope) return refuseStatus(c, 501, 'this deployment cannot read connector grants — redeploy it');
     return c.json(z.array(projectedConnectionGrant).parse(await host.connectionGrantsInScope(body.tenantId, body.scopeId)));
   });
+
+  // A vertical-defined connector (vertical-connectors.md §6.3): the platform's call carries the
+  // connection, its opened credential and its state; the answer carries the state writes.
+  // The probes take their own path (no scope, no nonce); each path serves only its own roles.
+  for (const [path, roles] of [
+    [CONNECTOR_PROBE_PATH, ['probe', 'probe-candidate']],
+    [CONNECTOR_CALL_PATH, ['bind', 'sweep', 'dispatch']],
+  ] as const) {
+    app.post(path, async (c) => {
+      const { connectors } = deps;
+      if (!connectors) return refuseStatus(c, 501, 'this deployment declares no connectors — redeploy it with connectors mounted');
+      const answer = await runConnectorCall(await c.req.json(), {
+        connectors,
+        host: deps.hostFor(c.env),
+        fetch: globalFetch,
+        allowed: { roles, path },
+      });
+      return externalJson(c, answer);
+    });
+  }
 
   app.post('/internal/connector-grant', async (c) => {
     const body = connectorGrantBody.parse(await c.req.json());

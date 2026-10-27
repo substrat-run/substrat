@@ -48,6 +48,9 @@ import {
   assertDeclaredScopeStores,
   storeNamesOfBindings,
   manifestStoresOf,
+  pushedConnectorProblems,
+  verticalConnectorDeclarations,
+  type VerticalConnectorDeclaration,
 } from '@substrat-run/contracts';
 import {
   lint,
@@ -378,6 +381,35 @@ export interface DeclaredSurface {
   readonly declaresAttachments: boolean;
   /** What the data-loss check replays (#2321) — see `checkMigrationDataLoss`. */
   readonly replay: ReplayInputs;
+  /** The `substrat.connectors` entry's declarations (vertical-connectors.md §5.1), validated —
+   *  undefined when the vertical declares none, so the manifest field stays absent. */
+  readonly connectors: VerticalConnectorDeclaration[] | undefined;
+}
+
+/**
+ * Bundle `contents` — an ES module whose imports resolve from `dir` — with every package left
+ * external, write it INTO `dir` so Node resolves those imports (@substrat-run/*, and any node
+ * addon a node-ful entry pulls) from the vertical's own node_modules, import it, and remove it.
+ * The unique name avoids the ESM import cache across pushes.
+ */
+async function importBundledAsData<T>(dir: string, stem: string, contents: string): Promise<T> {
+  const out = join(dir, `.substrat.${stem}.${Date.now()}.mjs`);
+  try {
+    await build({
+      stdin: { contents, resolveDir: resolve(dir), sourcefile: `substrat-${stem}.mjs`, loader: 'js' },
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      packages: 'external',
+      outfile: out,
+      logLevel: 'silent',
+    });
+    // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
+    // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
+    return (await import(/* @vite-ignore */ pathToFileURL(out).href)) as T;
+  } finally {
+    rmSync(out, { force: true });
+  }
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -391,7 +423,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
     );
   }
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
-    substrat?: { permissions?: string; ownerGrants?: unknown };
+    substrat?: { permissions?: string; ownerGrants?: unknown; connectors?: unknown };
   };
   const entry = pkg.substrat?.permissions;
   if (!entry) {
@@ -408,136 +440,205 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
   if (!existsSync(entryPath)) {
     throw new Error(`substrat.permissions points at "${entry}", which does not exist under ${dir}.`);
   }
-  // Written INTO the vertical dir so Node resolves the externalised imports (@substrat-run/*,
-  // and any node addon a node-ful entry pulls) from the vertical's own node_modules. Removed
-  // immediately after import. The unique name avoids the ESM import cache across pushes.
-  const out = join(dir, `.substrat.permissions.${Date.now()}.mjs`);
+  let mod: {
+    permissions?: PermissionsInput;
+    envSpec?: unknown;
+    __substratKernel?: { moduleMigrations?: unknown } | null;
+    __substratSpine?: () => Promise<unknown>;
+    __substratKernelUrl?: string | null;
+  };
   try {
-    let mod: {
-      permissions?: PermissionsInput;
-      envSpec?: unknown;
-      __substratKernel?: { moduleMigrations?: unknown } | null;
-      __substratSpine?: () => Promise<unknown>;
-      __substratKernelUrl?: string | null;
-    };
-    try {
-      await build({
-        // The entry, plus the vertical's OWN kernel (#1677), imported where the vertical
-        // resolves it: `packages: 'external'` keeps the specifier, so it loads from the
-        // vertical's node_modules. Optional — a vertical with none still reads as data.
-        // Both absolute: a CI job names the dir relatively (`substrat push demos/ticket0`), and
-        // a relative path written as an import specifier is a BARE one — `packages: 'external'`
-        // then keeps `demos/…` as a package named `demos`, which Node cannot find. `join` also
-        // strips a leading `./`, so spelling the dir `./demos/…` would not have saved it.
-        stdin: {
-          contents:
-            `export * from ${JSON.stringify(resolve(entryPath))};\n` +
-            `export const __substratKernel = await import('@substrat-run/kernel').catch(() => null);\n` +
-            // The spine the data-loss replay builds first (#2321), from the vertical's own
-            // adapter-sqlite — imported only when a replay runs, since it loads a native driver.
-            `export const __substratSpine = () => import('@substrat-run/adapter-sqlite').then((m) => m.SCOPE_SPINE_DDL, () => undefined);\n` +
-            // Where that kernel resolves, for the replay's own process to import (#2321).
-            `export const __substratKernelUrl = (() => { try { return import.meta.resolve('@substrat-run/kernel'); } catch { return null; } })();\n`,
-          resolveDir: resolve(dir),
-          sourcefile: 'substrat-surface.mjs',
-          loader: 'js',
-        },
-        bundle: true,
-        platform: 'node',
-        format: 'esm',
-        packages: 'external',
-        outfile: out,
-        logLevel: 'silent',
-      });
-      // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
-      // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
-      mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as typeof mod;
-    } catch (e) {
-      // The third silent-until-deploy failure (#1205): the entry exists and exports the right
-      // name, but cannot be read OUTSIDE the vertical's runtime — a worker-only import, a
-      // `node:*` on a path the bundler follows, an import-time side effect wanting a live host.
-      // Named as that, rather than as a bare esbuild/ESM stack, because the remedy is specific:
-      // `definePermissions(...)` returns a plain object, so the module holding it must stay
-      // importable as data.
-      throw new Error(
-        `substrat.permissions points at "${entry}", which could not be bundled and imported as data — ` +
-          `the declared surface must be readable without a live host (no worker-only imports on the ` +
-          `path it pulls in, no import-time side effects).\n${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
-    if (!mod.permissions) {
-      throw new Error(
-        `${entry} exports no \`permissions\`. Export ` +
-          `\`const permissions = definePermissions({ modules, roles, entityGrants })\`.`,
-      );
-    }
-    let spec: EnvVarSpec[] | undefined;
-    if (mod.envSpec !== undefined) {
-      if (!Array.isArray(mod.envSpec)) {
-        throw new Error(`${entry} exports \`envSpec\`, but it is not an array of env-var specs.`);
-      }
-      try {
-        spec = mod.envSpec.map((e) => envVarSpec.parse(e));
-      } catch (e) {
-        throw new Error(
-          `${entry} exports an \`envSpec\` that is not a valid env-var spec list.\n` +
-            `${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-    }
-    // #2430: a key a module declares `holder: 'system'` in a role a person can hold, an entity grant
-    // shape or an owner grant (a module's, or this package's `substrat.ownerGrants`, which an install
-    // grants its owner), refused before anything uploads, in `lint:permissions`' own words. The
-    // registry build below refuses most of it too; this is the message that names the remedy.
-    const reserved = reservedKeysOf(mod.permissions.modules);
-    const offences = reservedKeyOffences(
-      {
-        roles: mod.permissions.roles,
-        grants: mod.permissions.entityGrants ?? [],
-        personGrants: ownerGrantSets(mod.permissions.modules, ownerGrants.grants),
-      },
-      reserved,
+    // The entry, plus the vertical's OWN kernel (#1677), imported where the vertical
+    // resolves it: `packages: 'external'` keeps the specifier, so it loads from the
+    // vertical's node_modules. Optional — a vertical with none still reads as data.
+    // Both absolute: a CI job names the dir relatively (`substrat push demos/ticket0`), and
+    // a relative path written as an import specifier is a BARE one — `packages: 'external'`
+    // then keeps `demos/…` as a package named `demos`, which Node cannot find. `join` also
+    // strips a leading `./`, so spelling the dir `./demos/…` would not have saved it.
+    // The specifiers are the VERTICAL's packages, resolved from its node_modules, never the CLI's
+    // own dependencies; spelled through `q` so `lint:deps`, which reads text, does not count them.
+    const q = JSON.stringify;
+    mod = await importBundledAsData<typeof mod>(
+      dir,
+      'permissions',
+      `export * from ${q(resolve(entryPath))};\n` +
+        `export const __substratKernel = await import(${q('@substrat-run/kernel')}).catch(() => null);\n` +
+        // The spine the data-loss replay builds first (#2321), from the vertical's own
+        // adapter-sqlite — imported only when a replay runs, since it loads a native driver.
+        `export const __substratSpine = () => import(${q('@substrat-run/adapter-sqlite')}).then((m) => m.SCOPE_SPINE_DDL, () => undefined);\n` +
+        // Where that kernel resolves, for the replay's own process to import (#2321).
+        `export const __substratKernelUrl = (() => { try { return import.meta.resolve(${q('@substrat-run/kernel')}); } catch { return null; } })();\n`,
     );
-    if (offences.length > 0) throw new Error(reservedKeyMessage(basename(resolve(dir)), entry, offences, reserved));
-    // #1234: the declared half of a declared-vs-observed finding — what the modules say
-    // they emit and consume, which exists nowhere off their manifests.
-    const declaredEvents = flattenDeclaredEvents(mod.permissions);
-    return {
-      registry: buildPermissionRegistry(mod.permissions),
-      modules: mod.permissions.modules.map(({ manifest }) => ({
-        id: manifest.id,
-        permissions: manifest.permissions.map(({ key, description, holder }) => ({
-          key, description, ...(holder ? { holder } : {}),
-        })),
-        ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
-      })),
-      envSpec: spec,
-      // #1232: the same import that yields the permission surface already holds every
-      // module manifest — the schedules ride out of it with zero extra reads.
-      schedules: flattenDeclaredSchedules(mod.permissions),
-      freshness: flattenDeclaredFreshness(mod.permissions),
-      declaredEvents: declaredEvents.events,
-      declaredEventsTruncated: declaredEvents.truncated,
-      declaresAttachments: declaresAttachmentTargets(mod.permissions.modules.map((m) => m.manifest)),
-      migrations: flattenDeclaredMigrations(
-        mod.permissions,
-        typeof mod.__substratKernel?.moduleMigrations === 'function'
-          ? (mod.__substratKernel.moduleMigrations as ModuleMigrationsFn)
-          : undefined,
-      ),
-      replay: {
-        kernel: mod.__substratKernel ?? null,
-        kernelUrl: typeof mod.__substratKernelUrl === 'string' ? mod.__substratKernelUrl : null,
-        modules: mod.permissions.modules,
-        spineDdl: async () => {
-          const ddl = await mod.__substratSpine?.();
-          return typeof ddl === 'string' ? ddl : undefined;
-        },
-      },
-    };
-  } finally {
-    rmSync(out, { force: true });
+  } catch (e) {
+    // The third silent-until-deploy failure (#1205): the entry exists and exports the right
+    // name, but cannot be read OUTSIDE the vertical's runtime — a worker-only import, a
+    // `node:*` on a path the bundler follows, an import-time side effect wanting a live host.
+    // Named as that, rather than as a bare esbuild/ESM stack, because the remedy is specific:
+    // `definePermissions(...)` returns a plain object, so the module holding it must stay
+    // importable as data.
+    throw new Error(
+      `substrat.permissions points at "${entry}", which could not be bundled and imported as data — ` +
+        `the declared surface must be readable without a live host (no worker-only imports on the ` +
+        `path it pulls in, no import-time side effects).\n${e instanceof Error ? e.message : String(e)}`,
+    );
   }
+  if (!mod.permissions) {
+    throw new Error(
+      `${entry} exports no \`permissions\`. Export ` +
+        `\`const permissions = definePermissions({ modules, roles, entityGrants })\`.`,
+    );
+  }
+  let spec: EnvVarSpec[] | undefined;
+  if (mod.envSpec !== undefined) {
+    if (!Array.isArray(mod.envSpec)) {
+      throw new Error(`${entry} exports \`envSpec\`, but it is not an array of env-var specs.`);
+    }
+    try {
+      spec = mod.envSpec.map((e) => envVarSpec.parse(e));
+    } catch (e) {
+      throw new Error(
+        `${entry} exports an \`envSpec\` that is not a valid env-var spec list.\n` +
+          `${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  // #2430: a key a module declares `holder: 'system'` in a role a person can hold, an entity grant
+  // shape or an owner grant (a module's, or this package's `substrat.ownerGrants`, which an install
+  // grants its owner), refused before anything uploads, in `lint:permissions`' own words. The
+  // registry build below refuses most of it too; this is the message that names the remedy.
+  const reserved = reservedKeysOf(mod.permissions.modules);
+  const offences = reservedKeyOffences(
+    {
+      roles: mod.permissions.roles,
+      grants: mod.permissions.entityGrants ?? [],
+      personGrants: ownerGrantSets(mod.permissions.modules, ownerGrants.grants),
+    },
+    reserved,
+  );
+  if (offences.length > 0) throw new Error(reservedKeyMessage(basename(resolve(dir)), entry, offences, reserved));
+  // #1234: the declared half of a declared-vs-observed finding — what the modules say
+  // they emit and consume, which exists nowhere off their manifests.
+  const declaredEvents = flattenDeclaredEvents(mod.permissions);
+  const connectors = await readDeclaredConnectors(dir, pkg.substrat?.connectors);
+  const registry = buildPermissionRegistry(mod.permissions);
+  if (connectors) {
+    // The standing grants join the registry, so widening them moves the permission digest the
+    // promote checkpoint acknowledges. Sorted like the rest of the registry, so the digest is a
+    // function of content. Absent when there are none: a digest must not move for a vertical
+    // without connectors.
+    registry.connectors = connectors
+      .map((c) => ({ provider: c.provider, grants: [...c.grants].sort() }))
+      .sort((a, b) => a.provider.localeCompare(b.provider));
+    assertConnectorsAdmissible(basename(resolve(dir)), pkg.substrat?.connectors as string, connectors, registry, mod.permissions);
+  }
+  return {
+    registry,
+    modules: mod.permissions.modules.map(({ manifest }) => ({
+      id: manifest.id,
+      permissions: manifest.permissions.map(({ key, description, holder }) => ({
+        key, description, ...(holder ? { holder } : {}),
+      })),
+      ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
+    })),
+    envSpec: spec,
+    // #1232: the same import that yields the permission surface already holds every
+    // module manifest — the schedules ride out of it with zero extra reads.
+    schedules: flattenDeclaredSchedules(mod.permissions),
+    freshness: flattenDeclaredFreshness(mod.permissions),
+    declaredEvents: declaredEvents.events,
+    declaredEventsTruncated: declaredEvents.truncated,
+    declaresAttachments: declaresAttachmentTargets(mod.permissions.modules.map((m) => m.manifest)),
+    migrations: flattenDeclaredMigrations(
+      mod.permissions,
+      typeof mod.__substratKernel?.moduleMigrations === 'function'
+        ? (mod.__substratKernel.moduleMigrations as ModuleMigrationsFn)
+        : undefined,
+    ),
+    replay: {
+      kernel: mod.__substratKernel ?? null,
+      kernelUrl: typeof mod.__substratKernelUrl === 'string' ? mod.__substratKernelUrl : null,
+      modules: mod.permissions.modules,
+      spineDdl: async () => {
+        const ddl = await mod.__substratSpine?.();
+        return typeof ddl === 'string' ? ddl : undefined;
+      },
+    },
+    connectors,
+  };
+}
+
+/**
+ * The vertical's connectors (vertical-connectors.md §5.1): `substrat.connectors` names a module
+ * exporting `connectors`, a `defineConnectors(...)` value whose `declarations()` is the static half
+ * a push carries. Imported as data the way the permission entry is. Undefined when the package
+ * names no such module or its declarations are empty.
+ */
+async function readDeclaredConnectors(dir: string, entry: unknown): Promise<VerticalConnectorDeclaration[] | undefined> {
+  if (entry === undefined) return undefined;
+  if (typeof entry !== 'string' || entry.length === 0) {
+    throw new Error(
+      `${basename(resolve(dir))}/package.json declares \`substrat.connectors\` as ${JSON.stringify(entry)}, ` +
+        `not a path. Point it at the module that exports \`connectors = defineConnectors(...)\`.`,
+    );
+  }
+  const entryPath = join(dir, entry);
+  if (!existsSync(entryPath)) throw new Error(`substrat.connectors points at "${entry}", which does not exist under ${dir}.`);
+  let mod: { connectors?: { declarations?: unknown } };
+  try {
+    mod = await importBundledAsData<typeof mod>(dir, 'connectors', `export * from ${JSON.stringify(resolve(entryPath))};\n`);
+  } catch (e) {
+    throw new Error(
+      `substrat.connectors points at "${entry}", which could not be bundled and imported as data — ` +
+        `the connectors module must be importable without a live host (no worker-only imports on the ` +
+        `path it pulls in, no import-time side effects).\n${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  const declarations = mod.connectors?.declarations;
+  if (typeof declarations !== 'function') {
+    throw new Error(
+      `${entry} exports no \`connectors\` with a \`declarations()\`. Export ` +
+        `\`const connectors = defineConnectors({ … })\` from @substrat-run/vertical-host/connectors.`,
+    );
+  }
+  let raw: unknown;
+  try {
+    raw = (declarations as () => unknown).call(mod.connectors);
+  } catch (e) {
+    throw new Error(`${entry}: \`connectors.declarations()\` threw.\n${e instanceof Error ? e.message : String(e)}`);
+  }
+  const parsed = verticalConnectorDeclarations.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `  - ${i.path.length ? `${i.path.join('.')}: ` : ''}${i.message}`);
+    throw new Error(`${entry} declares connectors a push cannot carry:\n${issues.join('\n')}`);
+  }
+  return parsed.data.length > 0 ? parsed.data : undefined;
+}
+
+/**
+ * vertical-connectors.md §7.1, the refusals the static half allows: a standing grant the registry
+ * does not declare or reserves to a system principal (`pushedConnectorProblems`, the check the
+ * control plane repeats), and a routed event type no module of the vertical declares it emits.
+ */
+function assertConnectorsAdmissible(
+  vertical: string,
+  entry: string,
+  connectors: readonly VerticalConnectorDeclaration[],
+  registry: PermissionRegistry,
+  permissions: PermissionsInput,
+): void {
+  const emitted = new Set(permissions.modules.flatMap((m) => (m.manifest.events?.emits ?? []).map((e) => e.type as string)));
+  const problems = [
+    ...pushedConnectorProblems({ connectors, registry }),
+    ...connectors.flatMap((c) =>
+      c.events.filter((t) => !emitted.has(t)).map((t) => `connector ${c.provider} routes ${t}, which no module of ${vertical} declares it emits`),
+    ),
+  ];
+  if (problems.length === 0) return;
+  throw new Error(
+    `${vertical}: ${entry} declares connectors a push cannot carry:\n${problems.map((p) => `  - ${p}`).join('\n')}\n` +
+      `Remedy: a standing grant must be a key a module declares and does not reserve (\`holder: 'system'\`); ` +
+      `a routed event must be one a module's manifest lists under \`events.emits\`.`,
+  );
 }
 
 /** The declared permission surface alone — `deriveDeclaredSurface` for the callers that
@@ -698,6 +799,13 @@ export function formatPermissionSurface(surface: PermissionSurface, label?: stri
     lines.push('', 'connection landings:');
     for (const l of registry.connections) {
       lines.push(`  ${l.provider}: ${l.operation} holding ${l.permission}`);
+    }
+  }
+  // A vertical-defined connector's standing grants, which the digest also covers.
+  if (registry.connectors?.length) {
+    lines.push('', 'connector standing grants:');
+    for (const c of registry.connectors) {
+      lines.push(`  ${c.provider}: ${c.grants.length ? c.grants.join(', ') : '(none)'}`);
     }
   }
   if (surface.envSpec) {
@@ -1789,6 +1897,7 @@ export async function push(
     migrations,
     declaresAttachments,
     replay,
+    connectors,
   } = await deriveDeclaredSurface(opts.dir);
   // #2321: the vertical's migrations, replayed against a populated in-memory scope through its own
   // kernel's data-loss fence — before anything is uploaded, so a migration that would close every
@@ -1941,6 +2050,10 @@ export async function push(
     // `[]` when undeclared, because absence means "pre-#1706 push" (unenforced) and a
     // new-CLI push must not read as that. Enforcement input, versioned with the code.
     calls: opts.calls ?? [],
+    // The vertical's connector declarations (vertical-connectors.md §5.1), absent when none, so a
+    // vertical without connectors pushes the manifest it did before. Their standing grants are
+    // also in `registry.connectors`, which the permission digest covers.
+    ...(connectors ? { connectors } : {}),
     // The declared permission surface travels with the bundle (D-39/D-41): keys+descriptions,
     // role templates, entity-grant shapes. Required — its content hash is digests.permission.
     registry,

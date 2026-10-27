@@ -7,7 +7,9 @@ Substrat allowed to talk to the outside world.
 Connectors are **host code, never module code.** A vertical cannot call an external API: the
 [boundary lint](/concepts/modules) bans `fetch` outright, and there is nowhere for a vertical to
 keep a credential. That prohibition is the whole point — it means "this tenant's Scrive
-account" lives in one audited place, and a vertical sees only the capability, never the secret.
+account" lives in one audited place, and a vertical's modules see only the capability, never the
+secret. The one exception is a connector an app [defines for itself](/connectors/your-own): its
+code runs in the app's own worker and is handed the credential the tenant connected for that app.
 
 ## Where a connector sits
 
@@ -109,6 +111,9 @@ needs may not exist yet.
 | [Fortnox](/connectors/fortnox) | Accounting | **Live-verified** (`0.x`) — poll-only, reads bookkeeping as SIE4; client-credentials auth, so no refresh token to rotate. The live run corrected the export charset (PC8/CP437, not latin1) | Fortnox (Swedish accounting) |
 | [Planima](/connectors/planima) | Facility maintenance | **Built, not yet live-verified** (`0.x`) — poll-only and read-only, reads a maintenance plan and its costed actions; one static API token, so nothing to rotate. Every claim still rests on the published OpenAPI document and a mock that shares its reading | Planima (Swedish maintenance planning) |
 | [Inbound mail](/connectors/mail-in) | Mail, inbound | **Built** — a scope's address on `in.substrat.run`, delivered through the operation the app declares, attachments stored as files; refused at SMTP time when unknown, revoked or off its allowlist | the platform (Cloudflare Email Routing) |
+
+A provider that is not on this list does not have to wait for it: your app can
+[define its own connector](/connectors/your-own) and ship it with `substrat push`.
 
 Categories, as they will fill in (from the master plan's build list):
 

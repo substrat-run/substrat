@@ -18,7 +18,7 @@ export {
   confinedTenant,
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
-export type { ConnectionCandidatePrepare, ConnectionCandidatePreparer } from './connection-relay.js';
+export type { ConnectionCandidateContext, ConnectionCandidatePrepare, ConnectionCandidatePreparer, ConnectionCandidateProbe, VerticalConnectorDeclarationOf } from './connection-relay.js';
 export { signConnectState, verifyConnectState, ConnectStateError } from './connect-state.js';
 export type { ConnectStateClaim } from './connect-state.js';
 export { relayConnectUrl, ConnectUrlRelayError } from './connect-url.js';
@@ -361,3 +361,12 @@ export type { ObservabilityWindow, ObservabilityWindowInput } from './observabil
 
 // #2316: the binding options a provider takes — the staff door and the connector pass validate with it.
 export { connectionBindingOptions } from './connection-binding-options.js';
+export {
+  resolveVerticalConnectorTarget,
+  verticalConnectorBinder,
+  verticalConnectorDispatchHandler,
+  verticalConnectorInspector,
+  verticalConnectorReadsOf,
+  verticalConnectorSweeper,
+} from './vertical-connectors.js';
+export type { VerticalConnectorDeps, VerticalConnectorReads, VerticalConnectorTarget } from './vertical-connectors.js';

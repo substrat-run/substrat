@@ -7,6 +7,7 @@ import {
   type PlatformActorId,
   type ScopeId,
   type TenantId,
+  type VerticalConnectorDeclaration,
 } from '@substrat-run/contracts';
 
 /**
@@ -204,6 +205,59 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     certificate: true,
   },
 };
+
+/**
+ * The door a vertical-defined connector gets (vertical-connectors.md §7.2): its declaration, read
+ * off the vertical's registry record, as the same `ProviderSpec` a first-party provider has. No
+ * consent round, mail sending, certificate or account key — those are first-party only (§9).
+ */
+export function verticalConnectorSpec(d: VerticalConnectorDeclaration): ProviderSpec {
+  return {
+    provider: d.provider,
+    name: d.label,
+    description: d.description,
+    monogram: d.monogram ?? d.label.slice(0, 2).toUpperCase(),
+    fields: d.fields.map((f) => ({
+      key: f.key,
+      label: f.label,
+      secret: f.secret,
+      ...(f.placeholder !== undefined ? { placeholder: f.placeholder } : {}),
+      ...(f.optional ? { optional: true as const } : {}),
+    })),
+    grants: [...d.grants],
+  };
+}
+
+/**
+ * Every provider one vertical's apps offer: the first-party `PROVIDERS` its `requires` names, then
+ * each connector it declares. Declaring a connector is requiring it, so it needs no `requires`
+ * entry — and since only the declaring vertical's record carries it, a provider another vertical
+ * declares is not in this list.
+ */
+export function providerSpecsFor(record: {
+  requires?: readonly string[];
+  connectors?: readonly VerticalConnectorDeclaration[];
+}): ProviderSpec[] {
+  const firstParty = (record.requires ?? []).filter((r) => Object.hasOwn(PROVIDERS, r)).map((r) => PROVIDERS[r]!);
+  return [...firstParty, ...(record.connectors ?? []).map(verticalConnectorSpec)];
+}
+
+/**
+ * The row a live vertical-defined connection keeps after the vertical's latest push stopped
+ * declaring it. The running version may still be using the credential, so the tenant must still
+ * be able to see and withdraw it — but there is no declaration left to connect or verify against,
+ * hence no form.
+ */
+export function undeclaredConnectorSpec(provider: string): ProviderSpec {
+  return {
+    provider,
+    name: provider,
+    description: 'No longer declared by this app’s vertical. Disconnect it here to withdraw the credential.',
+    monogram: provider.slice(0, 2).toUpperCase(),
+    fields: [],
+    grants: [],
+  };
+}
 
 /** Parse + validate a credential body against the provider's declared fields. */
 export function parseProviderSecret(spec: ProviderSpec, raw: unknown): Record<string, string> {

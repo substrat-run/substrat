@@ -48,7 +48,7 @@ export function vertical(
   modules: ModuleSpec[],
   stores: { binding: string; class: string }[] = STORES,
   /** `needs`: further `runtimeNeeds` fields, beside `entry` and `stores`. */
-  opts: { kernel?: boolean; adapterSqlite?: boolean; needs?: Record<string, unknown> } = {},
+  opts: { kernel?: boolean; adapterSqlite?: boolean; needs?: Record<string, unknown>; connectors?: unknown[] } = {},
 ): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'substrat-cli-migrations-')));
   writeFileSync(
@@ -56,7 +56,11 @@ export function vertical(
     JSON.stringify({
       name: '@acme/helpdesk',
       version: '1.0.0',
-      substrat: { permissions: 'perms.mjs', runtimeNeeds: { entry: 'src/worker.ts', stores, ...opts.needs } },
+      substrat: {
+        permissions: 'perms.mjs',
+        runtimeNeeds: { entry: 'src/worker.ts', stores, ...opts.needs },
+        ...(opts.connectors ? { connectors: 'connectors.mjs' } : {}),
+      },
     }),
   );
   mkdirSync(join(dir, 'src'), { recursive: true });
@@ -82,6 +86,9 @@ export function vertical(
     symlinkSync(workspaceAdapterSqlite, join(dir, 'node_modules', '@substrat-run', 'adapter-sqlite'), 'junction');
   }
   writeFileSync(join(dir, 'perms.mjs'), `export const permissions = ${JSON.stringify({ modules: entries, roles: [] })};\n`);
+  if (opts.connectors) {
+    writeFileSync(join(dir, 'connectors.mjs'), `export const connectors = { declarations: () => (${JSON.stringify(opts.connectors)}) };\n`);
+  }
   return dir;
 }
 

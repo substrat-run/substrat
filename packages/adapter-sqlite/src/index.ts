@@ -34,9 +34,11 @@ import {
   assertNoBindingShapeBreak,
   importsOfManifestJson,
   connectionLandingsOfManifestJson,
+  connectorsOfManifestJson,
   type ExportBreak,
   type ManifestImports,
   type ManifestConnectionLandings,
+  type ManifestConnectors,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -5658,6 +5660,13 @@ export class SqliteScopeHost implements ScopeHost {
     return connectionLandingsOfManifestJson(manifest);
   }
 
+  /** What one version of `slug` declares about vertical-defined connectors (vertical-connectors.md §6.4); `not_found` for a version it does not know. */
+  async versionConnectors(slug: string, versionId: string): Promise<ManifestConnectors> {
+    const manifest = this.manifestJsonOf(versionId, slug);
+    if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+    return connectorsOfManifestJson(manifest);
+  }
+
   /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */
   private exportBreaksBetween(
     actor: PlatformActorId,
@@ -10153,6 +10162,8 @@ export class SqliteScopeHost implements ScopeHost {
         if (parsed.ownerGrants) installSpec.ownerGrants = parsed.ownerGrants;
         if (parsed.provides) installSpec.provides = parsed.provides;
         if (parsed.requires) installSpec.requires = parsed.requires;
+        // The declared vertical-defined connectors (vertical-connectors.md §7.2), the dashboard's door.
+        if (parsed.connectors) installSpec.connectors = parsed.connectors;
         if (parsed.provisions) installSpec.provisions = parsed.provisions;
         if (parsed.sendsEmail) installSpec.sendsEmail = parsed.sendsEmail;
         // Where the scope lifecycle is held (#1713) — read by the lifecycle delivery's targets.

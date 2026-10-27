@@ -3,6 +3,7 @@ import { instant, permissionKey, tenantId, verticalSlug } from './ids.js';
 import { envVarSpec, capability, lifecycleHold } from './manifest.js';
 import { declaredSurface } from './routing.js';
 import { platformScriptCollision, platformScriptRefusal } from './script-names.js';
+import { verticalConnectorDeclarations } from './vertical-connector.js';
 
 /**
  * The vertical + version registry (#31 step 1; D-33's milestone one).
@@ -74,6 +75,12 @@ export const vertical = z.object({
   ownerGrants: z.array(permissionKey).optional(),
   provides: z.array(capability).optional(),
   requires: z.array(capability).optional(),
+  /**
+   * The vertical-defined connectors its latest push declared (vertical-connectors.md §7.2), as
+   * `requires` is carried: what the dashboard renders a credential form from. The platform RUNS a
+   * connector from the running version's stored manifest, never from this. Optional and additive.
+   */
+  connectors: verticalConnectorDeclarations.optional(),
   /**
    * The surfaces the vertical declares it serves (K-26 multi-surface; labels only —
    * nothing platform-side branches on them). Rides the same install_spec bag as the
@@ -188,7 +195,7 @@ export const verticalServingState = z.object({
 export type VerticalServingState = z.infer<typeof verticalServingState>;
 
 export const registerVerticalInput = vertical
-  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, provisions: true, sendsEmail: true, lifecycle: true, surfaces: true, listed: true })
+  .pick({ slug: true, name: true, source: true, envSpec: true, entitlements: true, ownerGrants: true, provides: true, requires: true, connectors: true, provisions: true, sendsEmail: true, lifecycle: true, surfaces: true, listed: true })
   .extend({
   /**
    * #1923: a slug that would deploy under one of the platform's own script names is refused

@@ -1,6 +1,7 @@
 import { drainedEvent, instant, substratError } from '@substrat-run/contracts';
 import type {
   AccessLogEntry,
+  Connection,
   ConnectionId,
   MigrationProgress,
   MigrationStraggler,
@@ -50,7 +51,7 @@ import { isPrimaryScope, runningVersionOf, servingPointersFor } from './scope-id
 import { mapBounded, message } from './map-bounded.js';
 import { runningImportsOf } from './export-break.js';
 import { ORPHAN_SWEEP_DRY_RUN_WINDOW_MS, type OrphanSweepReport } from './attachment-sweep.js';
-import { LandingPass, type ConnectionLandingOptionsInput } from './connection-landings.js';
+import { LandingPass, binderOf, type ConnectionLandingOptionsInput } from './connection-landings.js';
 
 // #2314: the one record of deleted keys when the admin log could not take it.
 declare const console: { error(message: string): void };
@@ -184,6 +185,12 @@ export interface PlatformSweepOptions {
   sweepers: Record<string, ConnectorSweeper>;
   /** Provider poll interval in minutes. Absent providers poll on every pass. */
   sweepEveryMinutes?: Record<string, number>;
+  /**
+   * The sweeper for a connection `sweepers` has no entry for (a vertical-defined provider, whose
+   * sweeper is built per connection). Asked only when the record has none; absent, such a
+   * connection is skipped, as before.
+   */
+  sweeperFor?: (connection: Connection) => ConnectorSweeper | undefined;
   /**
    * #2316: grant and bind each live connection from the landings its vertical's running version
    * declares, before it is swept. UNSET skips the step, and a connection is swept on whatever
@@ -1972,7 +1979,7 @@ export async function runPlatformSweep(
       report.connectionsSkipped += 1;
       return;
     }
-    const sweeper = options.sweepers[c.provider];
+    const sweeper = options.sweepers[c.provider] ?? options.sweeperFor?.(c);
     if (!sweeper) {
       report.connectionsSkipped += 1;
       // Recorded, unlike the revoked case: "bound but no sweeper registered" is a
@@ -2044,7 +2051,7 @@ export async function runPlatformSweep(
       fail([...landingSaid, 'the sweep did not complete'], [...scoped(landingFailed), message(err)]);
       return;
     }
-    const answer = options.connectionLandings?.binders[c.provider] ? connectorSweepAnswerOf(result) : null;
+    const answer = options.connectionLandings && binderOf(options.connectionLandings, c) ? connectorSweepAnswerOf(result) : null;
     report.connectionsSwept += 1;
     // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
     // landing the platform could not seat, fails the row; a poll that found nothing to poll is

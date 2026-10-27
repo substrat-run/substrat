@@ -15,12 +15,21 @@ const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 export const connectionId = z.string().regex(ULID).brand<'ConnectionId'>();
 export type ConnectionId = z.infer<typeof connectionId>;
 
-/** Vertical vocabulary, like `scope.vertical`: 'scrive', 'fortnox', 'visma'. */
+/**
+ * Vertical vocabulary, like `scope.vertical`: 'scrive', 'fortnox', 'visma'.
+ *
+ * At most ONE dot, which marks a vertical-defined provider: `<namespace>.<name>`, both halves
+ * plain slugs (`acme.docbox`). First-party slugs never contain a dot, so the two can never collide
+ * (docs/architecture/vertical-connectors.md §4).
+ */
 export const connectionProvider = z
   .string()
   .min(1)
   .max(64)
-  .regex(/^[a-z0-9][a-z0-9-]*$/, 'provider is a lowercase slug');
+  .regex(
+    /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)?$/,
+    'provider is a lowercase slug, or `<namespace>.<name>` for a vertical-defined one',
+  );
 
 export const connectionStatus = z.enum([
   /** Usable. */
