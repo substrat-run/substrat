@@ -17,4 +17,4 @@ Federation solves team-scale deployment we don't have and costs theming/versioni
 
 ## Decided ([#1671](https://github.com/substrat-run/substrat/issues/1671))
 
-The web-component slot is a build-time island, not a runtime extension SDK. [K-56](K-056-a-runtime-installed-extension-acts-only-as-a-capability-the-vertical-mints-for-it.md) leaves a runtime-installed extension's bridge to its vertical and fixes its authority as a narrowed capability. Revisit a platform bridge when a second vertical needs user-installable extensions, the platform renders third-party UI, or a bridge review finds session passing.
+The web-component slot is a build-time island, not a runtime extension SDK. [K-56](../decisions/K-056-a-runtime-installed-extension-acts-only-as-a-capability-the-vertical-mints-for-it.md) leaves a runtime-installed extension's bridge to its vertical and fixes its authority as a narrowed capability. Revisit a platform bridge when a second vertical needs user-installable extensions, the platform renders third-party UI, or a bridge review finds session passing.
