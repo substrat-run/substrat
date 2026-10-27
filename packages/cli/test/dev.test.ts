@@ -111,8 +111,14 @@ describe('substrat dev', () => {
       server.listen(0, '127.0.0.1', () => writeFileSync(process.env.READY, String(server.address().port)));
     `);
 
-    const child = spawn(process.execPath, [cli, 'dev', dir], {
-      env: { ...process.env, READY: ready }, stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    // child.kill('SIGINT') forcibly terminates a Windows process without running its
+    // signal handlers. Deliver the event over IPC to exercise dev's real forwarding
+    // path, then disconnect so IPC itself does not keep the CLI alive.
+    const interrupt = 'data:text/javascript,' + encodeURIComponent(
+      "process.on('message', () => { process.disconnect(); process.emit('SIGINT'); });",
+    );
+    const child = spawn(process.execPath, ['--import', interrupt, cli, 'dev', dir], {
+      env: { ...process.env, READY: ready }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], detached: true,
     });
     children.push(child);
     let output = '';
@@ -137,9 +143,7 @@ describe('substrat dev', () => {
       expect(output).toContain('requires member; caller has viewer');
     }, { timeout: 2_000, interval: 20 });
     const stopped = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => child.once('exit', (code, signal) => resolve([code, signal])));
-    if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-    } else child.kill('SIGINT');
+    child.send('interrupt');
     await stopped;
     await expect(fetch(`http://127.0.0.1:${port}/allowed`, { signal: AbortSignal.timeout(500) })).rejects.toThrow();
   }, 15_000);

@@ -1,5 +1,5 @@
 /** Transparent local dev-script wrapper with an optional request-trace preload. */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { constants } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -33,7 +33,13 @@ export async function dev(options: DevOptions = {}): Promise<number> {
   });
   const forward = (signal: NodeJS.Signals) => {
     try {
-      if (grouped && child.pid) process.kill(-child.pid, signal);
+      if (windows && child.pid) {
+        // Killing cmd.exe alone leaves pnpm's watcher and server alive. Windows has
+        // no POSIX process-group signals, so stop the whole tree before returning.
+        execFileSync('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], {
+          stdio: 'ignore', windowsHide: true,
+        });
+      } else if (grouped && child.pid) process.kill(-child.pid, signal);
       else child.kill(signal);
     } catch {
       /* the dev script already exited */

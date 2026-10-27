@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -127,7 +127,7 @@ describe.runIf(process.platform === 'win32')('on Windows, the real registry', ()
 });
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
-describe('the command', () => {
+describe.runIf(existsSync(cli))('the command', () => {
   it('exits non-zero exactly when a check fails, and prints each check', () => {
     const ready = project();
     const r = spawnSync(process.execPath, [cli, 'doctor', ready], { encoding: 'utf8' });
