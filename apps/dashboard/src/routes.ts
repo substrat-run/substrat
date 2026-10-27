@@ -23,6 +23,9 @@ import {
   bindAcknowledgement,
   channelHistoryEntry,
   channelName,
+  connectionActivity,
+  connectionCredentialField,
+  connectionProbe,
   defineRoutes,
   dnsRecord,
   envVarSpec,
@@ -64,6 +67,41 @@ const pageInput = {
 /** `{ entries, nextCursor }` — null once the keyset walk is over (contracts `pagination.ts`). */
 const pageOutput = <T extends z.ZodTypeAny>(entry: T) =>
   z.object({ entries: z.array(entry), nextCursor: z.string().nullable() });
+
+const integrationConnection = z.object({
+  id: z.string(),
+  label: z.string(),
+  status: z.string(),
+  externalAccountRef: z.string().nullable(),
+  expiresAt: z.string().nullable(),
+  lastOkAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+  lastErrorAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+const integrationProbeBody = connectionProbe.extend({ refused: z.boolean().optional() });
+const integrationProbe = integrationProbeBody.extend({ connection: integrationConnection.optional() });
+const integrationActivity = connectionActivity.extend({
+  source: z.string(),
+  grants: z.array(z.string()),
+  credential: z.array(connectionCredentialField),
+  certificate: z.object({
+    pem: z.string(), thumbprint: z.string(), notAfter: z.string(),
+    next: z.object({ pem: z.string(), thumbprint: z.string(), notAfter: z.string() }).optional(),
+  }).nullable(),
+  connection: integrationConnection,
+  sweepRuns: z.array(z.object({
+    id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable(),
+  })),
+  intents: z.array(z.object({
+    id: z.string(), status: z.string(), attempts: z.number(), lastError: z.string().nullable(),
+    failure: z.object({ origin: z.string(), code: z.string().nullable(), permission: z.string().nullable() }).nullable(),
+    requestedAt: z.string(), settledAt: z.string().nullable(), eventType: z.string(),
+  })),
+  unreadableIntents: z.array(z.object({
+    id: z.string().nullable(), status: z.string().nullable(), requestedAt: z.string().nullable(), decodeError: z.string(),
+  })),
+});
 
 /*
  * VERSION SKEW (#2170, #2401). The control plane ships separately from the dashboard, so a plane
@@ -774,6 +812,67 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), key: z.string().min(1) }),
     output: z.object({ deleted: z.string() }),
     http: { method: 'DELETE', path: '/apps/{scopeId}/env/{key}' },
+  },
+
+  // -- app integrations (#2170) ----------------------------------------------
+  'dashboard/get-app-integrations': {
+    summary: "One app's declared providers and live connection metadata",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({ providers: z.array(z.object({
+      provider: z.string(), name: z.string(), description: z.string(), monogram: z.string(),
+      fields: z.array(z.object({
+        key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
+        optional: z.boolean().optional(), toggle: z.boolean().optional(),
+      })),
+      connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), required: z.boolean(),
+      connection: integrationConnection.nullable(), connections: z.array(integrationConnection),
+    })) }),
+    http: { method: 'GET', path: '/apps/{scopeId}/integrations' },
+  },
+  'dashboard/connect-app-integration': {
+    summary: 'Connect or rotate one provider credential for an app',
+    input: z.object({
+      scopeId: z.string().min(1), provider: z.string().min(1),
+      secret: z.record(z.string(), z.string()).optional(), label: z.string().optional(),
+    }),
+    output: z.object({ connectionId: z.string(), created: z.boolean(), probe: integrationProbeBody.optional() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}' },
+  },
+  'dashboard/disconnect-app-integration': {
+    summary: 'Revoke the sole live connection for an app provider',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1) }),
+    output: z.object({ disconnected: z.string() }),
+    http: { method: 'DELETE', path: '/apps/{scopeId}/integrations/{provider}' },
+  },
+  'dashboard/disconnect-app-connection': {
+    summary: 'Revoke one addressed live connection for an app provider',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1) }),
+    output: z.object({ disconnected: z.string() }),
+    http: { method: 'DELETE', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}' },
+  },
+  'dashboard/verify-app-integration': {
+    summary: 'Verify the current connection against its provider',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1) }),
+    output: integrationProbe,
+    http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/verify' },
+  },
+  'dashboard/verify-app-connection': {
+    summary: 'Verify one addressed connection against its provider',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1) }),
+    output: integrationProbe,
+    http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify' },
+  },
+  'dashboard/get-app-integration-activity': {
+    summary: 'Read the current connection activity and masked credential fields',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), live: z.string().optional(), source: z.string().optional() }),
+    output: integrationActivity,
+    http: { method: 'GET', path: '/apps/{scopeId}/integrations/{provider}/activity' },
+  },
+  'dashboard/get-app-connection-activity': {
+    summary: 'Read one addressed connection activity and masked credential fields',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1), live: z.string().optional(), source: z.string().optional() }),
+    output: integrationActivity,
+    http: { method: 'GET', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/activity' },
   },
 
   // -- domains (#2170) --------------------------------------------------------

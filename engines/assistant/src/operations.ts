@@ -80,10 +80,17 @@ export const assistantOperations = defineOperations(assistantEntities, ASSISTANT
   },
 
   'assistant/send-message': {
-    summary: 'Say something in a thread, which begins a turn',
+    summary: 'Send text or uploaded files in a thread, which begins a turn',
     permission: 'assistant:use',
     input: sendMessageInput,
     output: sentMessage,
+  },
+
+  'assistant/authorize-file-upload': {
+    summary: 'Authorize a host to upload a file to the caller’s own open thread',
+    permission: 'assistant:use',
+    input: threadIdInput,
+    output: thread,
   },
 
   'assistant/resolve-approval': {

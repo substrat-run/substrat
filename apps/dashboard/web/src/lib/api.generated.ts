@@ -411,6 +411,13 @@ export interface DashboardClient {
   businessVolumes(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ window: { since: string; until: string }; bucketMinutes: number; rows: { scopeId: string; entityType: string; state: string; terminal: boolean; fromInitial: boolean; operations: string[]; today: number; yesterday: number; buckets: { start: string; count: number }[] }[]; apps: ({ scopeId: string; unavailable: "no-version" | "no-moves" | "not-yet-available" | null })[] }>;
 
   /**
+   * Connect or rotate one provider credential for an app
+   *
+   * `POST /apps/{scopeId}/integrations/{provider}` — `dashboard/connect-app-integration`
+   */
+  connectAppIntegration(input: { scopeId: string; provider: string; secret?: Record<string, string>; label?: string }): Promise<{ connectionId: string; created: boolean; probe?: { ok: boolean; refused?: boolean; accountRef: string | null; accountLabel: string | null; facts?: { label: string; value: string }[]; error: string | null } }>;
+
+  /**
    * Begin connecting a GitHub account to this team: the App's install URL, carrying a state signed for this team and caller
    *
    * `POST /github/connect` — `dashboard/connect-github`
@@ -481,6 +488,20 @@ export interface DashboardClient {
   deleteTeam(input: { confirm: string }): Promise<{ deleted: true }>;
 
   /**
+   * Revoke one addressed live connection for an app provider
+   *
+   * `DELETE /apps/{scopeId}/integrations/{provider}/connections/{connectionId}` — `dashboard/disconnect-app-connection`
+   */
+  disconnectAppConnection(input: { scopeId: string; provider: string; connectionId: string }): Promise<{ disconnected: string }>;
+
+  /**
+   * Revoke the sole live connection for an app provider
+   *
+   * `DELETE /apps/{scopeId}/integrations/{provider}` — `dashboard/disconnect-app-integration`
+   */
+  disconnectAppIntegration(input: { scopeId: string; provider: string }): Promise<{ disconnected: string }>;
+
+  /**
    * Whether this deployment writes AI text, and the caller’s budget for today
    *
    * `GET /explanations` — `dashboard/explanations-status`
@@ -495,6 +516,13 @@ export interface DashboardClient {
   exportInstalledApp(input: { scopeId: string }): Promise<{ tenantId: string; scopeId: string; capturedAt: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; stores?: { binding: string; driver: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; kind?: never }[]; masked: boolean }>;
 
   /**
+   * Read one addressed connection activity and masked credential fields
+   *
+   * `GET /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/activity` — `dashboard/get-app-connection-activity`
+   */
+  getAppConnectionActivity(input: { scopeId: string; provider: string; connectionId: string; live?: string; source?: string }): Promise<{ source: string; entries: ({ key: string; title: string; reference: string | null; status: string; at: string | null; facts?: { label: string; value: string }[] })[]; live: boolean; grants: string[]; credential: { key: string; label: string; value: string; masked: boolean }[]; certificate: { pem: string; thumbprint: string; notAfter: string; next?: { pem: string; thumbprint: string; notAfter: string } } | null; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string }; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[]; intents: ({ id: string; status: string; attempts: number; lastError: string | null; failure: { origin: string; code: string | null; permission: string | null } | null; requestedAt: string; settledAt: string | null; eventType: string })[]; unreadableIntents: ({ id: string | null; status: string | null; requestedAt: string | null; decodeError: string })[] }>;
+
+  /**
    * One app's declared environment and its stored values; secrets are write-only
    *
    * `GET /apps/{scopeId}/env` — `dashboard/get-app-env`
@@ -507,6 +535,20 @@ export interface DashboardClient {
    * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
    */
   getAppInstallSteps(input: { scopeId: string }): Promise<InstallStep[]>;
+
+  /**
+   * Read the current connection activity and masked credential fields
+   *
+   * `GET /apps/{scopeId}/integrations/{provider}/activity` — `dashboard/get-app-integration-activity`
+   */
+  getAppIntegrationActivity(input: { scopeId: string; provider: string; live?: string; source?: string }): Promise<{ source: string; entries: ({ key: string; title: string; reference: string | null; status: string; at: string | null; facts?: { label: string; value: string }[] })[]; live: boolean; grants: string[]; credential: { key: string; label: string; value: string; masked: boolean }[]; certificate: { pem: string; thumbprint: string; notAfter: string; next?: { pem: string; thumbprint: string; notAfter: string } } | null; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string }; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[]; intents: ({ id: string; status: string; attempts: number; lastError: string | null; failure: { origin: string; code: string | null; permission: string | null } | null; requestedAt: string; settledAt: string | null; eventType: string })[]; unreadableIntents: ({ id: string | null; status: string | null; requestedAt: string | null; decodeError: string })[] }>;
+
+  /**
+   * One app's declared providers and live connection metadata
+   *
+   * `GET /apps/{scopeId}/integrations` — `dashboard/get-app-integrations`
+   */
+  getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[] })[] }>;
 
   /**
    * Compare this app’s running version with the current prod version
@@ -887,6 +929,20 @@ export interface DashboardClient {
   updateInstalledApp(input: { scopeId: string; snapshot?: boolean; acknowledge?: { exportBreak?: boolean } }): Promise<{ updated: boolean; version: string | null; previousVersion: string | null }>;
 
   /**
+   * Verify one addressed connection against its provider
+   *
+   * `POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify` — `dashboard/verify-app-connection`
+   */
+  verifyAppConnection(input: { scopeId: string; provider: string; connectionId: string }): Promise<{ ok: boolean; refused?: boolean; accountRef: string | null; accountLabel: string | null; facts?: { label: string; value: string }[]; error: string | null; connection?: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } }>;
+
+  /**
+   * Verify the current connection against its provider
+   *
+   * `POST /apps/{scopeId}/integrations/{provider}/verify` — `dashboard/verify-app-integration`
+   */
+  verifyAppIntegration(input: { scopeId: string; provider: string }): Promise<{ ok: boolean; refused?: boolean; accountRef: string | null; accountLabel: string | null; facts?: { label: string; value: string }[]; error: string | null; connection?: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } }>;
+
+  /**
    * Re-poll a custom domain's issuance ("check again")
    *
    * `POST /domains/{hostname}/verify` — `dashboard/verify-domain`
@@ -995,6 +1051,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
     businessVolumes: (input: Args) =>
       send("/observability/business-volumes", "GET", undefined, input),
+    connectAppIntegration: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}`, "POST", omit(input, ["scopeId","provider"]), undefined),
     connectGithub: () =>
       send("/github/connect", "POST", undefined, undefined),
     connectorCalls: (input: Args) =>
@@ -1015,14 +1073,24 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}`, "DELETE", undefined, omit(input, ["slug","tag"])),
     deleteTeam: (input: Args) =>
       send("/delete", "POST", input, undefined),
+    disconnectAppConnection: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}`, "DELETE", undefined, omit(input, ["scopeId","provider","connectionId"])),
+    disconnectAppIntegration: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}`, "DELETE", undefined, omit(input, ["scopeId","provider"])),
     explanationsStatus: (input: Args) =>
       send("/explanations", "GET", undefined, input),
     exportInstalledApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/export`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppConnectionActivity: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/activity`, "GET", undefined, omit(input, ["scopeId","provider","connectionId"])),
     getAppEnv: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "GET", undefined, omit(input, ["scopeId"])),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppIntegrationActivity: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/activity`, "GET", undefined, omit(input, ["scopeId","provider"])),
+    getAppIntegrations: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations`, "GET", undefined, omit(input, ["scopeId"])),
     getAppReleaseComparison: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/release-comparison`, "GET", undefined, omit(input, ["scopeId"])),
     getDeploymentReleases: (input: Args) =>
@@ -1131,6 +1199,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/observability/tenant-metrics-series", "GET", undefined, input),
     updateInstalledApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/update`, "POST", omit(input, ["scopeId"]), undefined),
+    verifyAppConnection: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/verify`, "POST", omit(input, ["scopeId","provider","connectionId"]), undefined),
+    verifyAppIntegration: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/verify`, "POST", omit(input, ["scopeId","provider"]), undefined),
     verifyDomain: (input: Args) =>
       send(`/domains/${encodeURIComponent(String(input.hostname))}/verify`, "POST", omit(input, ["hostname"]), undefined),
     writeFindingExplanation: (input: Args) =>

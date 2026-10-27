@@ -1050,7 +1050,7 @@ export function App() {
       ) : route.section === 'domains' ? (
         <Domains teamId={me.currentTeamId} />
       ) : route.section === 'integrations' ? (
-        <Integrations />
+        <Integrations teamId={me.currentTeamId} />
       ) : route.section === 'billing' ? (
         <Billing />
       ) : route.section === 'audit' ? (
