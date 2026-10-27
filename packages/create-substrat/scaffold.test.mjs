@@ -12,7 +12,7 @@ test('scaffold emits the pnpm build policy', () => {
   try {
     execFileSync(process.execPath, [fileURLToPath(new URL('./index.js', import.meta.url)), project]);
     assert.equal(
-      readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8'),
+      readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8').replace(/\r\n/g, '\n'),
       'allowBuilds:\n  esbuild: false\n  workerd: false\n',
     );
   } finally {
