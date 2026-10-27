@@ -6,8 +6,8 @@ description: Parked observability, data, compliance and architecture ideas, with
 
 # Observability, data, compliance and architecture ideas
 
-These are ideas to revisit when their stated trigger occurs, not a delivery schedule. The
-linked issues and design documents retain the detailed questions and acceptance criteria.
+These entries preserve ideas until their stated triggers provide a reason to plan the work.
+The linked issues and design documents retain the detailed questions and acceptance criteria.
 
 ### [#1692 — Staff lake query page](https://github.com/substrat-run/substrat/issues/1692)
 
