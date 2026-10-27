@@ -85,17 +85,18 @@ describe('objectRef (#1856)', () => {
     const alphabet = ['a', 'Z', '0', '_', '-', ':', ' ', '\t', '\n', '\u00a0', 'é', 'É', '.', '/'];
     let checked = 0;
     let added = 0;
+    const failures: string[] = [];
     const visit = (s: string) => {
       checked++;
       const was = before(s);
       const is = after(s);
-      if (was) expect(is, JSON.stringify(s)).toBe(true);
+      if (was && !is) failures.push(`${JSON.stringify(s)}: accepted before, refused now`);
       if (is && !was) {
         added++;
         const colon = s.indexOf(':');
         const lowered = s.slice(0, colon).toLowerCase() + s.slice(colon);
-        expect(before(lowered), JSON.stringify(s)).toBe(true);
-        expect(s.slice(0, colon), JSON.stringify(s)).toMatch(/[A-Z]/);
+        if (!before(lowered)) failures.push(`${JSON.stringify(s)}: lower-case namespace was refused before`);
+        if (!/[A-Z]/.test(s.slice(0, colon))) failures.push(`${JSON.stringify(s)}: no upper-case namespace letter`);
       }
     };
     const walk = (prefix: string, depth: number) => {
@@ -104,6 +105,7 @@ describe('objectRef (#1856)', () => {
       for (const c of alphabet) walk(prefix + c, depth - 1);
     };
     walk('', 4);
+    expect(failures).toEqual([]);
     expect(checked).toBeGreaterThan(alphabet.length ** 4);
     // The sweep has to reach the case it is about, or it proves nothing.
     expect(added).toBeGreaterThan(0);

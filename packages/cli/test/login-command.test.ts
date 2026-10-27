@@ -135,12 +135,13 @@ describe('substrat login without a TTY', () => {
     expect(r.stdout).toContain('SUBSTRAT_TENANT');
   });
 
-  it("several workspaces, no --workspace: keeps an earlier default only when it is this account's", () => {
+  it("several workspaces, no --workspace: keeps this account's earlier default", () => {
     const own = login(['--cp', 'https://cp.example/api'], [tenantA, tenantB], { defaultTenant: 'tenant-b' });
     expect(own.status, out(own)).toBe(0);
     expect(own.config).toMatchObject({ bearerToken: 'session-token', defaultTenant: 'tenant-b' });
+  });
 
-    rmSync(join(home, '.substrat'), { recursive: true, force: true });
+  it("several workspaces, no --workspace: clears another account's earlier default", () => {
     const foreign = login(['--cp', 'https://cp.example/api'], [tenantA, tenantB], { defaultTenant: 'other-co' });
     expect(foreign.status, out(foreign)).toBe(0);
     expect(foreign.config).toMatchObject({ bearerToken: 'session-token' });
