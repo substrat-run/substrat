@@ -72,7 +72,8 @@ describe('substrat dev', () => {
       }
     `);
 
-    expect(await dev({ dir })).toBe(0);
+    const child = spawnSync(process.execPath, [cli, 'dev', dir], { encoding: 'utf8', timeout: 10_000 });
+    expect(child.status).toBe(0);
     const [trace] = new LocalTraceStore(join(dir, '.data', 'substrat-traces')).traces();
     const error = trace?.steps.find((step) => step.type === 'error');
     expect(error?.type === 'error' ? error.stack : undefined).toContain('source.ts:1:1');

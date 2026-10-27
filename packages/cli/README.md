@@ -51,6 +51,13 @@ explicit opt-in can be designed. Event steps name the type and entity but do not
 can still roll back. Revisit this when the local reader can derive committed moves from
 event history and the declared lifecycle without guessing.
 
+Local HTTP measurement (macOS arm64, Node 22.22.3; four runs of 100 warmup and
+400 sequential requests through the same `invocationLog` fixture with a check and
+SQL step): median latency was 0.20–0.36 ms with `--no-trace` and 1.66–1.97 ms with
+tracing, about 1.5 ms extra. The p95 ranges were 0.32–2.75 ms and 2.21–7.94 ms;
+the median meets the few-millisecond target, while p95 varied under machine load
+and is not separately proven to stay within it.
+
 ## Documentation
 
 **https://substrat.net/guide/deploying** — authentication, the push/promote model, channels,
