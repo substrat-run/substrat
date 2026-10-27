@@ -3163,7 +3163,7 @@ function Settings({ teamId, app, section, onSection, onDeleted, authServers }: {
       {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} authServers={authServers} />}
       {section === 'environment' && <EnvVars teamId={teamId} app={app} />}
       {section === 'domains' && <AppDomains teamId={teamId} app={app} />}
-      {section === 'integrations' && <AppIntegrations app={app} />}
+      {section === 'integrations' && <AppIntegrations teamId={teamId} app={app} />}
       {section === 'members' && <AppMembers app={app} />}
       {section === 'permissions' && <><EmailSenderPermission key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} /><AppPermissions app={app} /></>}
     </div>

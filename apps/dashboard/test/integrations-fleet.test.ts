@@ -99,6 +99,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   let intents: unknown[];
   // What the connect door sent the plane's upsert (vertical-connectors.md §7.2).
   let upserts: Record<string, unknown>[];
+  let planeCalls: string[];
   // What this vertical's latest push declares; a test empties it to model a push that dropped one.
   let declared: (typeof DOC_CONNECTOR)[];
   let env: Record<string, unknown>;
@@ -129,6 +130,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     verified = [];
     intents = [];
     upserts = [];
+    planeCalls = [];
     declared = [DOC_CONNECTOR];
 
     const owner = principalId.parse(ulid());
@@ -164,6 +166,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '');
+          planeCalls.push(path);
           const method = init?.method ?? 'GET';
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           if (path === '/verticals') {
@@ -219,7 +222,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   });
 
   const req = (path: string, method = 'GET') =>
-    app.request(`/api/apps/${appScope}/integrations${path}`, { method, headers: { cookie: 'sb_session=sub-owner' } }, env);
+    app.request(`/api/teams/${tenant}/apps/${appScope}/integrations${path}`, { method, headers: { cookie: 'sb_session=sub-owner' } }, env);
 
   const byLabel = (label: string) => rows.find((r) => r.label === label)!;
 
@@ -231,12 +234,63 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     await host.admin.linkIdentity(staff, {
       provider: 'authhero', externalId: 'sub-owner', principal: otherOwner, tenantId: otherTeam, scopeId: otherScope,
     });
+    const otherApp = scopeId.parse(ulid());
+    const otherDash = await host.getScope(otherOwner, otherTeam, otherScope);
+    await otherDash.invoke('dashboard/provision-app', { appScopeId: otherApp, verticalSlug: VERTICAL, name: 'Other App' });
 
     const response = await app.request(`/api/teams/${tenant}/apps/${appScope}/integrations`, {
       headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
     }, env);
     expect(response.status).toBe(200);
-    expect((await response.json()) as { providers: { provider: string }[] }).toMatchObject({ providers: [{ provider: 'fortnox' }] });
+    const body = (await response.json()) as { providers: { provider: string }[] };
+    expect(body.providers.map((p) => p.provider)).toEqual(['fortnox', 'acme.docbox', 'scrive']);
+    expect((await app.request(`/api/teams/${tenant}/apps/${otherApp}/integrations`, {
+      headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
+    }, env)).status).toBe(404);
+
+    const outside = tenantId.parse(ulid());
+    const base = `/api/teams/${outside}/apps/${appScope}/integrations`;
+    const before = planeCalls.length;
+    for (const [path, method] of [
+      ['', 'GET'], ['/acme.docbox', 'POST'], ['/fortnox', 'DELETE'],
+      [`/fortnox/connections/${byLabel('Alfa AB').id}`, 'DELETE'],
+      ['/fortnox/verify', 'POST'], ['/fortnox/activity', 'GET'],
+    ] as const) {
+      expect((await app.request(`${base}${path}`, { method, headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+    }
+    expect(planeCalls).toHaveLength(before);
+    for (const [path, method] of [
+      ['', 'GET'], ['/acme.docbox', 'POST'], ['/fortnox', 'DELETE'],
+      [`/fortnox/connections/${byLabel('Alfa AB').id}`, 'DELETE'],
+      ['/fortnox/verify', 'POST'], [`/fortnox/connections/${byLabel('Alfa AB').id}/verify`, 'POST'],
+      ['/fortnox/activity', 'GET'], [`/fortnox/connections/${byLabel('Alfa AB').id}/activity`, 'GET'],
+    ] as const) {
+      expect((await app.request(`/api/apps/${appScope}/integrations${path}`, {
+        method, headers: { cookie: 'sb_session=sub-owner' },
+      }, env)).status).toBe(404);
+    }
+  });
+
+  it('keeps connect, disconnect and verify gated by the path team scope', async () => {
+    const viewer = principalId.parse(ulid());
+    await host.admin.assignRole(staff, { principalId: viewer, roleKey: 'viewer', node: { tenantId: tenant, scopeId: null } });
+    await host.admin.linkIdentity(staff, {
+      provider: 'authhero', externalId: 'sub-viewer', principal: viewer, tenantId: tenant, scopeId: dashScope,
+    });
+    const base = `/api/teams/${tenant}/apps/${appScope}/integrations`;
+    const send = (path: string, method: string, body?: unknown) => app.request(`${base}${path}`, {
+      method,
+      headers: { cookie: 'sb_session=sub-viewer', 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, env);
+    expect((await send('/acme.docbox', 'POST', { secret: { apiKey: 'key', archive: 'archive' } })).status).toBe(403);
+    expect((await send('/scrive', 'DELETE')).status).toBe(403);
+    expect((await send(`/fortnox/connections/${byLabel('Alfa AB').id}`, 'DELETE')).status).toBe(403);
+    expect((await send('/fortnox/verify', 'POST')).status).toBe(403);
+    expect((await send(`/fortnox/connections/${byLabel('Alfa AB').id}/verify`, 'POST')).status).toBe(403);
+    expect(upserts).toEqual([]);
+    expect(revoked).toEqual([]);
+    expect(verified).toEqual([]);
   });
 
   it('lists every live company of the fleet, newest first, and says the provider is multi-account', async () => {
@@ -257,7 +311,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
 
   it('disconnects exactly the addressed company and leaves the rest of the fleet', async () => {
     const beta = byLabel('Beta AB');
-    expect((await req(`/fortnox/connections/${beta.id}`, 'DELETE')).status).toBe(204);
+    expect((await req(`/fortnox/connections/${beta.id}`, 'DELETE')).status).toBe(200);
     expect(revoked).toEqual([beta.id]);
     const body = (await (await req('')).json()) as { providers: { provider: string; connections: { label: string }[] }[] };
     expect(body.providers.find((p) => p.provider === 'fortnox')!.connections.map((c) => c.label)).toEqual([
@@ -346,7 +400,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
 
   it('every addressed route needs a signed-in member of the team', async () => {
     const id = byLabel('Alfa AB').id;
-    const anon = await app.request(`/api/apps/${appScope}/integrations/fortnox/connections/${id}`, { method: 'DELETE' }, env);
+    const anon = await app.request(`/api/teams/${tenant}/apps/${appScope}/integrations/fortnox/connections/${id}`, { method: 'DELETE' }, env);
     expect(anon.status).toBe(401);
     expect(revoked).toEqual([]);
   });
@@ -369,7 +423,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
 
   it('connecting the declared connector stores the parsed secret with the declared grants', async () => {
     const res = await app.request(
-      `/api/apps/${appScope}/integrations/acme.docbox`,
+      `/api/teams/${tenant}/apps/${appScope}/integrations/acme.docbox`,
       {
         method: 'POST',
         headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
@@ -390,7 +444,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
 
   it('a provider another vertical declares is no door on this app — 404, nothing stored', async () => {
     const post = await app.request(
-      `/api/apps/${appScope}/integrations/acme.other`,
+      `/api/teams/${tenant}/apps/${appScope}/integrations/acme.other`,
       {
         method: 'POST',
         headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
@@ -423,7 +477,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     expect((await req('/acme.docbox/verify', 'POST')).status).toBe(404);
     expect((await req(`/acme.other/connections/${foreign.id}`, 'DELETE')).status).toBe(404);
     expect((await req('/acme.other', 'DELETE')).status).toBe(404);
-    expect((await req('/acme.docbox', 'DELETE')).status).toBe(204);
+    expect((await req('/acme.docbox', 'DELETE')).status).toBe(200);
     expect(revoked).toEqual([live.id]);
   });
 
@@ -431,7 +485,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     const live = row({ provider: 'acme.docbox', label: 'Docbox' });
     rows.push(live);
     declared = [];
-    expect((await req(`/acme.docbox/connections/${live.id}`, 'DELETE')).status).toBe(204);
+    expect((await req(`/acme.docbox/connections/${live.id}`, 'DELETE')).status).toBe(200);
     expect(revoked).toEqual([live.id]);
   });
 });

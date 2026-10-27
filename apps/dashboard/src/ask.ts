@@ -152,6 +152,9 @@ export function askSummary(steps: readonly AskStep[]): string {
  * model's text as if it were the dashboard's.
  */
 export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
+  'dashboard/get-app-integrations': 'connection metadata was not an assistant tool before this route moved',
+  'dashboard/get-app-integration-activity': 'connection activity was not an assistant tool before this route moved',
+  'dashboard/get-app-connection-activity': 'connection activity was not an assistant tool before this route moved',
   'dashboard/list-app-snapshots': 'app preview copies were not an assistant tool before this route moved',
   'dashboard/get-app-env': 'configuration values were not an assistant tool before this route moved',
   'dashboard/explanations-status': 'the AI features’ own switch and budget',

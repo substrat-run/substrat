@@ -3165,12 +3165,9 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
  * app — a connector dispatch with no live connection settles pending and retries, so
  * connecting later heals every queued delivery.
  */
-app.get('/api/apps/:scopeId/integrations', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function getAppIntegrationsIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const declared =
     (await providerSpecsBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
@@ -3184,7 +3181,7 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
     if (Object.hasOwn(PROVIDERS, r.provider)) specs.push(PROVIDERS[r.provider]!);
     else if (isVerticalConnectorProvider(r.provider)) specs.push(undeclaredConnectorSpec(r.provider));
   }
-  return c.json({
+  return {
     providers: specs.map((spec) => {
       const p = spec.provider;
       const live = liveConnectionFor(rows, p);
@@ -3197,8 +3194,8 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
         connections: liveConnectionsFor(rows, p).map(connectionView),
       };
     }),
-  });
-});
+  };
+}
 
 /**
  * Connect (or rotate — same act, same row) a provider for this app. Authorization is
@@ -3207,16 +3204,12 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
  * connection is attributed to that principal. The credential then rides ONE call to the
  * store that seals it — never a scope row, an event, or a log line.
  */
-app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function connectAppIntegrationIn({ c, host, node }: TeamContext, appScopeId: string, provider: string, body: { secret?: unknown; label?: string }) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const spec = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, c.req.param('provider'));
+  const spec = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, provider);
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
-  const body = (await c.req.json().catch(() => ({}))) as { secret?: unknown; label?: string };
   let secret: Record<string, string>;
   try {
     secret = parseProviderSecret(spec, body.secret);
@@ -3247,18 +3240,18 @@ app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
     // nothing was written. Pass the provider's own words through with the 422 so the
     // dialog can say what is wrong with the key instead of "couldn't save".
     if (e instanceof ControlPlaneError && e.status === 422) {
-      return c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, 422);
+      throw new HTTPException(422, { res: c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, 422) });
     }
     throw e;
   }
-  return c.json({
+  return {
     connectionId: result.connectionId,
     created: result.created,
     // Present when the provider accepted the credential — what turns the console's
     // "Connected" from "a row exists" into "verified as this account".
     ...('probe' in result && result.probe ? { probe: result.probe } : {}),
-  });
-});
+  };
+}
 
 /**
  * The provider a revoke door may act on, with the caller's permission proven and this app's
@@ -3286,14 +3279,11 @@ async function revocableProvider(
 }
 
 /** Disconnect — revoke is terminal: the sealed secret is deleted and the grants tombstone. */
-app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function disconnectAppIntegrationIn({ c, host, node }: TeamContext, appScopeId: string, provider: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const { spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, c.req.param('provider'));
+  const { spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, provider);
   // Revoking picks a row to DESTROY, so with an account-keyed fleet (Fortnox: one
   // connection per client company) this door refuses rather than guess which company.
   const live = liveConnectionsFor(rows, spec.provider);
@@ -3305,19 +3295,19 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   if (!live[0]) throw new HTTPException(404, { message: 'not connected' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   await cp.revokeConnection(live[0].id);
-  return c.body(null, 204);
-});
+  return { disconnected: live[0].id };
+}
 
 /**
  * Disconnect ONE connection of a fleet (#1267 follow-up) — the door the un-addressed route
  * above refuses to guess for. The id only selects among this app's own live rows for this
  * provider (`inspectableConnection`), so it can never reach another vertical's connection.
  */
-app.delete('/api/apps/:scopeId/integrations/:provider/connections/:connectionId', async (c) => {
-  const { connectionId, cp } = await inspectableConnection(c, { revoke: true });
+async function disconnectAppConnectionIn(ctx: TeamContext, appScopeId: string, provider: string, wantedId: string) {
+  const { connectionId, cp } = await inspectableConnection(ctx, appScopeId, provider, wantedId, { revoke: true });
   await cp.revokeConnection(connectionId);
-  return c.body(null, 204);
-});
+  return { disconnected: connectionId };
+}
 
 /**
  * Resolve one app's live connection for a provider, with the caller's own permission
@@ -3334,7 +3324,10 @@ app.delete('/api/apps/:scopeId/integrations/:provider/connections/:connectionId'
  * keeps one answer to "who may look at this integration".
  */
 async function inspectableConnection(
-  c: Context<{ Bindings: Env }>,
+  { c, host, node }: TeamContext,
+  appScopeId: string,
+  provider: string,
+  wantedId?: string,
   /** A revoke may address a dotted provider its vertical no longer declares (`revocableProvider`). */
   opts: { revoke?: true } = {},
 ): Promise<{
@@ -3346,28 +3339,24 @@ async function inspectableConnection(
   /** Re-read the SAME row — after a probe has rewritten its health. */
   reread: () => Promise<Connection | undefined>;
 }> {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   let spec: ProviderSpec;
   let rows: Connection[];
   if (opts.revoke) {
-    ({ spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, c.req.param('provider') ?? ''));
+    ({ spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, provider));
   } else {
-    const declared = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, c.req.param('provider') ?? '');
+    const declared = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, provider);
     if (!declared) throw new HTTPException(404, { message: 'unknown provider' });
     spec = declared;
     await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
     rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
   }
-  const wanted = c.req.param('connectionId');
   const live =
-    wanted === undefined
+    wantedId === undefined
       ? liveConnectionFor(rows, spec.provider)
-      : liveConnectionsFor(rows, spec.provider).find((r) => r.id === wanted);
+      : liveConnectionsFor(rows, spec.provider).find((r) => r.id === wantedId);
   if (!live) throw new HTTPException(404, { message: 'not connected' });
   // Inspection runs on the plane: it is the only place the sealed secret can be opened,
   // and only the connector's own projection is safe to serve (the raw ledger row is
@@ -3386,8 +3375,8 @@ async function inspectableConnection(
  * the provider said. A rejected key is a 200 with `ok: false`, because the provider
  * answering "no" is a successful verification.
  */
-async function verifyRoute(c: Context<{ Bindings: Env }>) {
-  const { connectionId, cp, reread } = await inspectableConnection(c);
+async function verifyAppIntegrationIn(ctx: TeamContext, appScopeId: string, provider: string, wantedId?: string) {
+  const { connectionId, cp, reread } = await inspectableConnection(ctx, appScopeId, provider, wantedId);
   const probe = await cp.verifyConnection(connectionId);
   // Re-read the row AFTER the probe. The probe rides the sanctioned fetch, so it just
   // wrote health — a success clears `last_error` and lifts the row out of `error`. Without
@@ -3395,10 +3384,8 @@ async function verifyRoute(c: Context<{ Bindings: Env }>) {
   // the very same call just resolved, which is what a console must never do. By id: in a
   // fleet, "the provider's connection" is another company's row.
   const live = await reread();
-  return c.json({ ...probe, ...(live ? { connection: connectionView(live) } : {}) });
+  return { ...probe, ...(live ? { connection: connectionView(live) } : {}) };
 }
-app.post('/api/apps/:scopeId/integrations/:provider/verify', verifyRoute);
-app.post('/api/apps/:scopeId/integrations/:provider/connections/:connectionId/verify', verifyRoute);
 
 /**
  * What this integration has done, and what it is allowed to do (#605): the connector's
@@ -3406,12 +3393,10 @@ app.post('/api/apps/:scopeId/integrations/:provider/connections/:connectionId/ve
  * provider token could invoke exactly these". `?live=1` also asks the provider for
  * current state; the answer reports whether it got it.
  */
-async function activityRoute(c: Context<{ Bindings: Env }>) {
-  const { connectionId, cp, connection, spec } = await inspectableConnection(c);
-  const scopeId = c.req.param('scopeId')!;
-  const source = c.req.query('source') === 'provider' ? ('provider' as const) : ('ledger' as const);
+async function getAppIntegrationActivityIn(ctx: TeamContext, appScopeId: string, provider: string, wantedId?: string, live = false, source: 'provider' | 'ledger' = 'ledger') {
+  const { connectionId, cp, connection, spec } = await inspectableConnection(ctx, appScopeId, provider, wantedId);
   const [activity, grants, credential, intents, sweepRuns, certificate] = await Promise.all([
-    cp.connectionActivity(connectionId, { live: c.req.query('live') === '1', source }),
+    cp.connectionActivity(connectionId, { live, source }),
     // Best-effort, all of them: a plane too old to serve grants, the credential view or the
     // intent journal must not cost the activity itself.
     cp.listConnectionGrants().catch(() => []),
@@ -3419,7 +3404,7 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
     // #618: the platform's own record of every delivery it ran for this provider, whose
     // `lastError` is the provider's FULL refusal. The ledger above says a dispatch happened;
     // this says what became of it, which is the half a builder could not read at all.
-    cp.scopeIntents(scopeId, { kind: `connector:${spec.provider}`, limit: 20 }).catch((): PlatformRequestEntry[] => []),
+    cp.scopeIntents(appScopeId, { kind: `connector:${spec.provider}`, limit: 20 }).catch((): PlatformRequestEntry[] => []),
     // #1232: the recent-runs strip — the platform's own answer to "when was this
     // connection last swept, and how did it go". listSweepRuns already tolerates a
     // plane predating the route.
@@ -3427,7 +3412,7 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
     // #2100: only for a provider whose door says it can sign in with a generated certificate.
     spec.certificate ? cp.connectionCertificate(connectionId) : Promise.resolve(null),
   ]);
-  return c.json({
+  return {
     ...activity,
     grants: grants.filter((g) => g.connectionId === connectionId).map((g) => g.permission),
     // Identifiers whole, secrets masked by the connector — never a usable credential.
@@ -3470,10 +3455,8 @@ async function activityRoute(c: Context<{ Bindings: Env }>) {
       requestedAt: r.requestedAt,
       decodeError: r.decodeError,
     })),
-  });
+  };
 }
-app.get('/api/apps/:scopeId/integrations/:provider/activity', activityRoute);
-app.get('/api/apps/:scopeId/integrations/:provider/connections/:connectionId/activity', activityRoute);
 
 /**
  * The account-level Integrations page (dashboard-ui.md §4.8): every known provider, the
@@ -5928,6 +5911,21 @@ const routeHandlers = {
   'dashboard/get-app-env': async (ctx, { scopeId: app }) => getAppEnvIn(ctx, app),
   'dashboard/set-app-env': async (ctx, { scopeId: app, entries }) => setAppEnvIn(ctx, app, entries ?? []),
   'dashboard/delete-app-env': async (ctx, { scopeId: app, key }) => deleteAppEnvIn(ctx, app, key),
+  'dashboard/get-app-integrations': async (ctx, { scopeId: app }) => getAppIntegrationsIn(ctx, app),
+  'dashboard/connect-app-integration': async (ctx, { scopeId: app, provider, secret, label }) =>
+    connectAppIntegrationIn(ctx, app, provider, { secret, label }),
+  'dashboard/disconnect-app-integration': async (ctx, { scopeId: app, provider }) =>
+    disconnectAppIntegrationIn(ctx, app, provider),
+  'dashboard/disconnect-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>
+    disconnectAppConnectionIn(ctx, app, provider, id),
+  'dashboard/verify-app-integration': async (ctx, { scopeId: app, provider }) =>
+    verifyAppIntegrationIn(ctx, app, provider),
+  'dashboard/verify-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>
+    verifyAppIntegrationIn(ctx, app, provider, id),
+  'dashboard/get-app-integration-activity': async (ctx, { scopeId: app, provider, live, source }) =>
+    getAppIntegrationActivityIn(ctx, app, provider, undefined, live === '1', source === 'provider' ? 'provider' : 'ledger'),
+  'dashboard/get-app-connection-activity': async (ctx, { scopeId: app, provider, connectionId: id, live, source }) =>
+    getAppIntegrationActivityIn(ctx, app, provider, id, live === '1', source === 'provider' ? 'provider' : 'ledger'),
   'dashboard/list-domains': async (ctx, page) => listDomainsIn(ctx, listPageQuery.parse(page)),
   'dashboard/add-domain': async (ctx, body) => addDomainIn(ctx, body),
   'dashboard/verify-domain': async ({ c, node }, { hostname }) =>
