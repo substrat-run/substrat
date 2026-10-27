@@ -1,5 +1,34 @@
 # @substrat-run/cli
 
+## 0.50.0
+
+### Minor Changes
+
+- 97865c6: The CLI works on Windows.
+
+  - **`substrat push` builds with your project's own wrangler, and wrangler must be installed in the project.** The push used to run `npx wrangler`, which failed on Windows with `spawnSync npx ENOENT` before it built anything. Where a project had no wrangler, `npx` also silently downloaded the newest one, so a deploy's bundle depended on the day it was built. The push now resolves `wrangler` from the vertical's `node_modules` (or a parent's, for a workspace) and runs it with Node, with no shell. Paths with spaces or non-ASCII letters reach it intact on every OS. **A project without wrangler is refused with the command to add it** (`npm install --save-dev wrangler`). `npm create substrat` now adds it to a new project, together with `@cloudflare/workers-types` 5, which current wrangler requires. The build line names the version it used: `building Worker with wrangler 4.x …`. Your build command (`runtimeNeeds.build`, or `build.command`) still finds the tools your project installs, such as `vite` or `tsc`: the project's `node_modules/.bin` comes first on its PATH, as it did under `npx`, also when the CLI is installed globally. Wrangler 4 needs Node 22 or later. Yarn Plug'n'Play projects need `nodeLinker: node-modules`.
+  - **`substrat login` opens the whole sign-in URL on Windows.** It went through `cmd /c start`, which cut the URL at its first `&`, and the sign-in page answered "bad cli request". It now opens the URL directly. On a machine with no browser opener (a headless Linux box without `xdg-open`), login no longer crashes; it prints the URL to visit.
+  - **`substrat login` works without a terminal** (a coding agent, piped input, CI, Git Bash in its own mintty window). It used to wait for an answer that could never come, then exit 0 having saved nothing. Without a terminal it now asks nothing. The control-plane URL is `--cp`, else the one you used before, else `https://console.substrat.net/api`. With several workspaces it saves your session without picking a default and tells you how to pick one. A sign-in that completed in the browser is always saved.
+  - **New: `substrat doctor [dir]`** checks that this machine and project can push: Node 22 or later, wrangler installed in the project, and, on Windows, long paths turned on. It exits 1 when a check fails. **`substrat doctor --fix`** turns Windows long paths on: Windows asks you to allow it once, and the CLI reads the setting back before it says it worked. A project's `node_modules` holds files deeper than Windows' old 260-character limit, and many programs stop there until the setting is on.
+  - **`npm create substrat` offers to turn Windows long paths on** when they are off: one question, then Windows' own permission prompt. Without a terminal (a coding agent) it asks nothing and prints the `doctor --fix` command instead.
+  - **Ctrl+C at any CLI question stops the command** with exit code 130. It is never read as an answer, so a `push` asked whether to pin its workspace does not go on to upload.
+  - **New: `substrat login --workspace <slug>`** sets the default workspace (slug or id) without asking. An unknown one still saves the session, lists your workspaces and exits non-zero.
+  - **`substrat changeset` and `substrat plan` work when the project is reached through a Windows short path** (`C:\Users\ABCDEF~1\…`). They used to fail with `cannot list ../../…`, because git names the checkout by its long path.
+  - File paths the CLI prints are written with forward slashes on every OS (`src/worker.ts:12`). This covers the undeclared-outbound-host report, the Node-builtin import chain `push` refuses, and `store-driver`'s refusals.
+
+- 14c21ed: `substrat dev` runs a vertical's existing dev script and records completed local requests through the already declared trace sink (#2358). A bounded file buffer keeps the newest 256 requests within 8 MiB; each request also prints a compact line with its id, outcome and permission decision. `--no-trace` runs the script unchanged.
+- 1e5a5af: Vertical-defined connectors (D-64, proposed). A vertical can define its own connector, named `<namespace>.<name>`, and ship it with `substrat push`. The platform keeps the credential, the bindings, the connector's state and the sweep schedule, and runs the provider code in the vertical's own worker through the router, so the vertical's declared `outbound` hosts bound it. vertical-host: `defineConnectors`, `declareConnectorEvents` and `runConnectorCall` under `@substrat-run/vertical-host/connectors`; `mountPlatformSurface({ connectors })` serves `/internal/connector-probe` and `/internal/connector-call`. kernel: `ConnectionContext`, `ScopedConnectionContext` and `ConnectorRefusal`, the capability a connector is handed instead of `HostAdmin`; the connector and landing passes take `sweeperFor` / `binderFor` fallbacks. contracts: `connectionProvider` accepts one dot; the declaration, call and binding schemas; `deployManifest.connectors`, `permissionRegistry.connectors` and `pushedConnectorProblems`; the wire gate admits the router on the two connector paths. control-plane-api: the vertical connector sweeper, binder, inspector and dispatch handler, and the push routes refuse a connector grant the registry does not declare or reserves. cli: `substrat.connectors` is read, validated and pushed, and a connector's standing grants join the permission registry and its digest. router: the `ConnectorCalls` entrypoint. control-plane: the `CONNECTOR_CALLS` binding and the fallbacks at every connector lookup. dashboard: an app offers the connectors its vertical declares.
+
+### Patch Changes
+
+- Updated dependencies [170078f]
+- Updated dependencies [3225234]
+- Updated dependencies [0b19237]
+- Updated dependencies [1e5a5af]
+  - @substrat-run/contracts@0.164.0
+  - @substrat-run/control-plane-client@0.3.15
+  - @substrat-run/model-view@0.6.11
+
 ## 0.49.7
 
 ### Patch Changes

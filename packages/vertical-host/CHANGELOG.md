@@ -1,5 +1,25 @@
 # @substrat-run/vertical-host
 
+## 0.164.0
+
+### Minor Changes
+
+- 3225234: Inbound mail (#2611). A scope can have an address on the platform's receiving subdomain (`in.substrat.run`) that mail is forwarded to, and each message lands through the operation its vertical declares (`connections: [{ provider: 'mail-in', operation, permission }]`), with attachment bytes stored on the entity that operation answers. Each address is its own `mail-in` connection: granted the declared key on its one scope, rotatable (mail in flight moves to the new address) and revocable, and the actor of everything a delivery writes. Unknown or revoked addresses, messages over 25 MiB and senders off an address's allowlist are refused at SMTP time; an allowlisted sender must be proven by DMARC/DKIM for `From:` or SPF for the envelope, read from the receiving MX's own stamp only. Accepted mail is stored before the SMTP answer, deduplicated on `Message-ID`, delivered straight away and retried by the connector pass, and dead-lettered after eight attempts. contracts: `mailInChange`, `mailInMessageAnswer`, `mailInAddress`, the relay shapes and limits. vertical-host: `mailInAddress` asks for, reads, rotates or revokes the scope's address from the vertical's worker (a proven caller is required).
+- 1e5a5af: Vertical-defined connectors (D-64, proposed). A vertical can define its own connector, named `<namespace>.<name>`, and ship it with `substrat push`. The platform keeps the credential, the bindings, the connector's state and the sweep schedule, and runs the provider code in the vertical's own worker through the router, so the vertical's declared `outbound` hosts bound it. vertical-host: `defineConnectors`, `declareConnectorEvents` and `runConnectorCall` under `@substrat-run/vertical-host/connectors`; `mountPlatformSurface({ connectors })` serves `/internal/connector-probe` and `/internal/connector-call`. kernel: `ConnectionContext`, `ScopedConnectionContext` and `ConnectorRefusal`, the capability a connector is handed instead of `HostAdmin`; the connector and landing passes take `sweeperFor` / `binderFor` fallbacks. contracts: `connectionProvider` accepts one dot; the declaration, call and binding schemas; `deployManifest.connectors`, `permissionRegistry.connectors` and `pushedConnectorProblems`; the wire gate admits the router on the two connector paths. control-plane-api: the vertical connector sweeper, binder, inspector and dispatch handler, and the push routes refuse a connector grant the registry does not declare or reserves. cli: `substrat.connectors` is read, validated and pushed, and a connector's standing grants join the permission registry and its digest. router: the `ConnectorCalls` entrypoint. control-plane: the `CONNECTOR_CALLS` binding and the fallbacks at every connector lookup. dashboard: an app offers the connectors its vertical declares.
+
+### Patch Changes
+
+- Updated dependencies [170078f]
+- Updated dependencies [3225234]
+- Updated dependencies [0e2bc1c]
+- Updated dependencies [0b19237]
+- Updated dependencies [2ade7ea]
+- Updated dependencies [af79679]
+- Updated dependencies [1e5a5af]
+  - @substrat-run/contracts@0.164.0
+  - @substrat-run/kernel@0.164.0
+  - @substrat-run/model-providers@0.5.54
+
 ## 0.163.0
 
 ### Patch Changes

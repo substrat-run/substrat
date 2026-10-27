@@ -1,5 +1,28 @@
 # @substrat-run/dashboard-web
 
+## 0.20.0
+
+### Minor Changes
+
+- a15d314: Importing data into an app (Data › Export & import) is now for a team owner or admin. **Team
+  members lose the ability to restore an app from a file**: they keep Export, and an Import from them
+  is refused with a 403 before the safety copy is taken. A restore replaces the app's data and its
+  permission state, so it is an admin power, held through a new key, `dashboard:restore-app-data`.
+  Existing teams' owner and admin roles get the key on their first request after the deploy, before
+  that request runs, so an admin's first Import already succeeds.
+- eda7370: Rewinding an app to a migration bookmark now requires `dashboard:provision-app`. A viewer's
+  rewind request is refused with 403, and the Deployments tab hides Back out for viewers.
+  Owners, admins, and members retain rewind access.
+
+### Patch Changes
+
+- Updated dependencies [170078f]
+- Updated dependencies [3225234]
+- Updated dependencies [0b19237]
+- Updated dependencies [1e5a5af]
+  - @substrat-run/contracts@0.164.0
+  - @substrat-run/model-view@0.6.11
+
 ## 0.19.6
 
 ### Patch Changes
