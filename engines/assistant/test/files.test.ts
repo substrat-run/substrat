@@ -54,6 +54,7 @@ describe('assistant files through the host broker and real attachment storage', 
 
   it('audit permits file reads, while uploading still requires the owner of an open thread', async () => {
     const { owner, auditor, storage, files, thread } = await world();
+    expect(await owner.stub.invoke<Thread>('assistant/authorize-file-upload', { threadId: thread.id })).toMatchObject({ id: thread.id, status: 'open' });
     const file = await files.upload({ threadId: thread.id, ...csv });
     const audit = assistantFiles(auditor.stub, storage);
     expect((await audit.open(thread.id, file.id)).body).toEqual(csv.body);

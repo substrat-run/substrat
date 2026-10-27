@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { readSpreadsheet, SPREADSHEET_LIMITS } from '../src/index.js';
-import { zip } from './zip.js';
+import { MalformedInput, readSpreadsheet, SPREADSHEET_LIMITS, textExtractor } from '../src/index.js';
+import { zip, type Part } from './zip.js';
 
 const enc = (text: string) => new TextEncoder().encode(text);
 const csv = (text: string, delimiter?: ',' | ';' | '\t') => readSpreadsheet({
   body: enc(text), filename: 'input.csv', contentType: 'text/csv', delimiter,
 });
-const xlsx = async (sheet: string, extra: { name: string; data: Uint8Array }[] = []) => readSpreadsheet({
+const xlsx = async (sheet: string, extra: Part[] = []) => readSpreadsheet({
   filename: 'input.xlsx', contentType: 'application/octet-stream', body: await zip([
     { name: 'xl/workbook.xml', data: enc('<workbook xmlns:r="urn:relationships"><sheets><sheet name="Items &amp; amounts" sheetId="1" r:id="r1"/></sheets></workbook>') },
     { name: 'xl/_rels/workbook.xml.rels', data: enc('<Relationships><Relationship Id="r1" Type="urn:office/worksheet" Target="worksheets/data.xml"/></Relationships>') },
@@ -51,8 +51,20 @@ describe('structured spreadsheet input for imports and comparisons', () => {
       '<!DOCTYPE x [<!ENTITY y "z">]>',
     ]) await expect(xlsx(sheet)).rejects.toThrow();
     await expect(readSpreadsheet({ body: enc('a,b'), filename: 'data.xls', contentType: 'application/vnd.ms-excel' })).rejects.toThrow();
-    await expect(readSpreadsheet({ body: new Uint8Array([0xff]), filename: 'data.csv', contentType: 'text/csv' })).rejects.toThrow();
-    await expect(readSpreadsheet({ body: enc('a,b'), filename: 'data.csv', contentType: 'text/csv; charset=unknown' })).rejects.toThrow();
+    await expect(readSpreadsheet({ body: enc('a,b'), filename: 'data.csv', contentType: 'text/csv; charset=unknown' })).rejects.toThrow(MalformedInput);
+  });
+
+  it('reports invalid bytes and incomplete character flushes as malformed CSV and XLSX input', async () => {
+    for (const bytes of [[0xff], [0xc3]]) {
+      const body = new Uint8Array(bytes);
+      await expect(readSpreadsheet({ body, filename: 'data.csv', contentType: 'text/csv' })).rejects.toThrow(MalformedInput);
+      expect(await textExtractor().extract({
+        body, filename: 'data.csv', contentType: 'text/csv', maxTextBytes: 1024, signal: { aborted: false },
+      })).toEqual({ text: '\ufffd', truncated: false });
+      for (const method of [0, 8]) {
+        await expect(xlsx('', [{ name: 'xl/sharedStrings.xml', data: body, method }])).rejects.toThrow(MalformedInput);
+      }
+    }
   });
 
   it('bounds expanded shared-string output and honors cancellation', async () => {

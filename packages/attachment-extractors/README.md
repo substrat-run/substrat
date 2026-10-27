@@ -63,6 +63,11 @@ string text is bounded too. It never returns a silently truncated import. Pass a
 signal for the host's time budget; errors carry content-free reasons. The host still applies
 domain validation and permissions before importing any row.
 
+Hosts can catch the exported `MalformedInput`, `ExtractionBoundExceeded` and
+`ExtractionAborted` errors to distinguish invalid file data, size limits and cancellation.
+Invalid byte sequences and incomplete characters at the end of a strict spreadsheet decode
+are `MalformedInput`; the search extractors retain their existing tolerant decoding.
+
 The HTML extractor **never indexes text the HTML parser keeps out of the rendered document**:
 comments, `script`, `style`, the other elements whose content a browser does not render, and
 `template` content. Where it does not model how a browser parses, it **under-indexes** rather

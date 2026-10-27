@@ -85,6 +85,7 @@ import { pdfExtract } from './pdf.js';
 import { delimitedSheet, workbook, type Spreadsheet } from './tabular.js';
 
 export { SPREADSHEET_LIMITS, type Spreadsheet, type SpreadsheetSheet } from './tabular.js';
+export { MalformedInput, ExtractionBoundExceeded, ExtractionAborted } from './shared.js';
 
 export { PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfTables } from './pdf.js';
 
@@ -174,6 +175,22 @@ function acceptsBy(types: (type: string) => boolean, extensions: readonly string
   };
 }
 
+/** Strict import decoding turns invalid bytes (including a truncated flush) into an input refusal. */
+function textDecoder(label: string, strict: boolean): Decoder {
+  const decoder = new TextDecoder(label, { fatal: strict });
+  if (!strict) return decoder;
+  return {
+    decode(input, options) {
+      try {
+        return decoder.decode(input, options);
+      } catch (error) {
+        if (error instanceof TypeError) throw new MalformedInput('spreadsheet text is not valid in its encoding');
+        throw error;
+      }
+    },
+  };
+}
+
 /** Decode bytes as text: a UTF-16 BOM wins, then a declared charset, then UTF-8. */
 async function decodeText(bytes: Uint8Array, charset: string | null, pace: Pace, strict = false): Promise<string> {
   let label = charset ?? 'utf-8';
@@ -181,7 +198,7 @@ async function decodeText(bytes: Uint8Array, charset: string | null, pace: Pace,
   else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = 'utf-16be';
   let decoder: Decoder;
   try {
-    decoder = new TextDecoder(label, { fatal: strict });
+    decoder = textDecoder(label, strict);
   } catch {
     if (strict) throw new MalformedInput('unsupported spreadsheet text encoding');
     // An unknown label is the client's typo, not a reason to index nothing.
@@ -970,7 +987,7 @@ async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBu
   if (entry.uncompressedSize > budget.remaining) {
     throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
   }
-  const decoder = new TextDecoder('utf-8', { fatal: strict });
+  const decoder = textDecoder('utf-8', strict);
   const text: string[] = [];
   if (entry.method === 0) {
     budget.remaining -= raw.length;
