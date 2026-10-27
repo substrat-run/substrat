@@ -56,6 +56,29 @@ describe('substrat dev', () => {
     expect(result.stderr.match(/warning: local request traces unavailable:/g)).toHaveLength(1);
   });
 
+  it('stores a source-mapped error stack from a traced dev child', () => {
+    const dir = temp();
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'node capture.cjs' } }));
+    writeFileSync(join(dir, 'boom.cjs'), 'throw new Error("mapped failure");\n//# sourceMappingURL=boom.cjs.map\n');
+    writeFileSync(join(dir, 'boom.cjs.map'), JSON.stringify({
+      version: 3, file: 'boom.cjs', sources: ['source.ts'], sourcesContent: ['throw new Error("mapped failure");'],
+      names: [], mappings: 'AAAA',
+    }));
+    writeFileSync(join(dir, 'capture.cjs'), `
+      const sink = globalThis[Symbol.for('substrat.trace-sink')];
+      try { require('./boom.cjs'); } catch (error) {
+        sink.step('mapped-request', { type: 'error', atMs: 0, code: null, message: error.message, stack: error.stack });
+        sink.end('mapped-request');
+      }
+    `);
+
+    const child = spawnSync(process.execPath, [cli, 'dev', dir], { encoding: 'utf8', timeout: 10_000 });
+    expect(child.status).toBe(0);
+    const [trace] = new LocalTraceStore(join(dir, '.data', 'substrat-traces')).traces();
+    const error = trace?.steps.find((step) => step.type === 'error');
+    expect(error).toMatchObject({ type: 'error', stack: expect.stringContaining('source.ts:1:1') });
+  });
+
   it('preloads through concurrently and tsx watch, then records allowed and denied HTTP calls', async () => {
     // One process launch tests the real inheritance chain; the adapter's own trace suite
     // separately proves that its permission checker supplies these check steps.
