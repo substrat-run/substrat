@@ -276,8 +276,8 @@ async function main() {
       if (!r.ok) failed = true;
     }
 
-    // npm leaves node_modules behind, so pnpm needs its own first-install project.
-    // @latest follows the current major; the weekly run catches a changed policy.
+    // 4. npm leaves node_modules behind, so pnpm needs its own first-install project.
+    //    @latest follows the current major; the weekly run catches a changed policy.
     log('\n## pnpm install (fresh scaffold, current major)\n');
     const pnpmDir = join(parent, 'scaffold-pnpm');
     const pnpmCreated = scaffold(pnpmDir);
@@ -292,7 +292,7 @@ async function main() {
       failed = true;
     }
 
-    // 4. The verdict, and — when red — the surface that moved.
+    // 5. The verdict, and — when red — the surface that moved.
     const rows = resolvedVersions(dir);
     log('\n## verdict\n');
     for (const r of results) log(`  ${r.ok ? 'pass' : 'FAIL'}  ${r.name}`);
