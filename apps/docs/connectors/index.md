@@ -7,7 +7,9 @@ Substrat allowed to talk to the outside world.
 Connectors are **host code, never module code.** A vertical cannot call an external API: the
 [boundary lint](/concepts/modules) bans `fetch` outright, and there is nowhere for a vertical to
 keep a credential. That prohibition is the whole point — it means "this tenant's Scrive
-account" lives in one audited place, and a vertical sees only the capability, never the secret.
+account" lives in one audited place, and a vertical's modules see only the capability, never the
+secret. The one exception is a connector an app [defines for itself](/connectors/your-own): its
+code runs in the app's own worker and is handed the credential the tenant connected for that app.
 
 ## Where a connector sits
 

@@ -297,7 +297,8 @@ The dashboard reads a vertical's declared connectors off its registry record (th
 `requires` already is) and renders the credential form from `fields`. A vertical that declares a
 connector requires it; nothing else lists it. Connecting is refused unless the **serving** version
 declares the provider, and the standing grants are that version's declaration's — never the latest
-push's and never the caller's. A live connection whose provider no declaration names any more stays
+push's and never the caller's — applied when the connection is created or its credential updated. A
+promote does not revisit existing connections (standing-grant healing, §9). A live connection whose provider no declaration names any more stays
 listed and revocable: a tenant can always withdraw a credential. `lint:connector-grants` keeps
 checking the first-party pairs, and refuses a dotted slug among them; the vertical-defined ones are
 checked at push.

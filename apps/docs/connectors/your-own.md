@@ -53,7 +53,9 @@ export const connectors = defineConnectors({
     async sweep(ctx) {
       const since = (await ctx.state.get('cursor')) as string | undefined;
       const docs = await listNewerThan(ctx.fetch, ctx.secret, since);
-      for (const doc of docs) await ctx.land(doc);          // your landing operation, as the connection
+      // Land each by the provider's own id: if a later landing fails, the cursor below is not saved,
+      // and the next sweep lands these again — so the operation must treat a repeat as a no-op.
+      for (const doc of docs) await ctx.land({ providerId: doc.id, ...doc });
       if (docs.length) await ctx.state.put('cursor', docs.at(-1)!.modifiedAt);
       return { landed: docs.length };
     },
@@ -108,7 +110,9 @@ declareConnectorEvents(host, connectors);   // beside host.registerModule(...)
 ```
 
 The event becomes a platform request; the platform opens the connection and calls `dispatch` with
-it. Delivery is **at least once**, so key what you do on the event id.
+it. Delivery is **at least once**, so key what you do on the event id. A routed event needs exactly
+one live connection for the provider in that tenant: with none, or with two, the platform cannot
+choose one, and the event is retried until the attempt ceiling.
 
 ## What the context gives you
 
@@ -123,7 +127,14 @@ it. Delivery is **at least once**, so key what you do on the event id.
 
 State comes in with each call and goes back with the answer. It is written **only when the call
 succeeds**, so a cursor never moves past work that did not land. It is capped at 512 KiB and 2,000
-keys per call — a document box of a few hundred items fits; a whole drive does not.
+keys, on each call's writes and on the total kept — a call that would cross either applies nothing
+and fails, so delete keys you no longer need. A document box of a few hundred items fits; a whole
+drive does not.
+
+Two limits to design around. The writes of a successful call are applied one key at a time, so a
+platform fault partway through can leave some applied while the call is reported failed and run
+again — never rely on two keys changing together. And a sweep and a dispatch on the same scope each
+work from their own copy, so a key both of them write is last-writer-wins: give each its own keys.
 
 Throw `ConnectorRefusal` for a failure retrying cannot fix (a revoked password): a dispatch then
 fails for good and a probe answers `refused`. Any other throw is retried.
@@ -137,9 +148,11 @@ fails for good and a probe answers `refused`. Any other throw is retried.
 - routes an event no module of your app emits.
 
 A tenant can connect a provider only once the version your app **serves** declares it, and the
-connection's standing grants are that version's — a push that widens them takes effect when it is
-promoted, not before. A connection stays listed and revocable on the dashboard even after a later
-version stops declaring its provider.
+connection is granted that version's standing grants when it is created or its credential is
+updated. A push that widens them reaches new connections only once it is promoted. Promoting does
+**not** revisit existing connections yet: a grant you add stays absent, and a grant you remove stays
+held, on a connection made before the promote, until the tenant reconnects it. A connection stays
+listed and revocable on the dashboard even after a later version stops declaring its provider.
 
 A connector's standing grants are part of your app's permission registry, so changing them moves
 the permission digest a promotion asks you to acknowledge.
