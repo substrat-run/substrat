@@ -56,7 +56,7 @@ describe('substrat dev', () => {
     expect(result.stderr.match(/warning: local request traces unavailable:/g)).toHaveLength(1);
   });
 
-  it('stores a source-mapped error stack from a traced dev child', async () => {
+  it('stores a source-mapped error stack from a traced dev child', () => {
     const dir = temp();
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'node capture.cjs' } }));
     writeFileSync(join(dir, 'boom.cjs'), 'throw new Error("mapped failure");\n//# sourceMappingURL=boom.cjs.map\n');
@@ -76,7 +76,7 @@ describe('substrat dev', () => {
     expect(child.status).toBe(0);
     const [trace] = new LocalTraceStore(join(dir, '.data', 'substrat-traces')).traces();
     const error = trace?.steps.find((step) => step.type === 'error');
-    expect(error?.type === 'error' ? error.stack : undefined).toContain('source.ts:1:1');
+    expect(error).toMatchObject({ type: 'error', stack: expect.stringContaining('source.ts:1:1') });
   });
 
   it('preloads through concurrently and tsx watch, then records allowed and denied HTTP calls', async () => {
