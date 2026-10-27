@@ -99,6 +99,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   let intents: unknown[];
   // What the connect door sent the plane's upsert (vertical-connectors.md §7.2).
   let upserts: Record<string, unknown>[];
+  let refuseUpsert: boolean;
   let planeCalls: string[];
   // What this vertical's latest push declares; a test empties it to model a push that dropped one.
   let declared: (typeof DOC_CONNECTOR)[];
@@ -130,6 +131,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     verified = [];
     intents = [];
     upserts = [];
+    refuseUpsert = false;
     planeCalls = [];
     declared = [DOC_CONNECTOR];
 
@@ -184,6 +186,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
           }
           if (path === `/tenants/${tenant}/connections` && method === 'POST') {
             upserts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+            if (refuseUpsert) return Response.json({ detail: 'Provider refused the credential', probe: { ok: false, refused: true, accountRef: null, accountLabel: null, facts: [], error: 'Invalid credential' } }, { status: 422 });
             return Response.json({ connectionId: ulid(), created: true, granted: [] });
           }
           if (path === `/tenants/${tenant}/connections` && method === 'GET') {
@@ -440,6 +443,17 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
         grants: ['books:file-document'],
       }),
     ]);
+  });
+
+  it('keeps a provider refusal on connect as a 422 with its probe', async () => {
+    refuseUpsert = true;
+    const res = await app.request(`/api/teams/${tenant}/apps/${appScope}/integrations/acme.docbox`, {
+      method: 'POST',
+      headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: { apiKey: 'bad', archive: 'archive' } }),
+    }, env);
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: 'Provider refused the credential', probe: { ok: false, refused: true, error: 'Invalid credential' } });
   });
 
   it('a provider another vertical declares is no door on this app — 404, nothing stored', async () => {

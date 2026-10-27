@@ -3158,6 +3158,13 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
   multiAccount: spec.accountRefField !== undefined,
 });
 
+async function appIntegrationTarget({ host, node }: TeamContext, appScopeId: string) {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const appRow = await appByScopeId(dash, appScopeId);
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  return { dash, appRow };
+}
+
 /**
  * One app's integrations (the Settings → Integrations tab, dashboard-ui.md §4.8): the
  * providers its vertical declares, each with its live connection or the
@@ -3165,10 +3172,9 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
  * app — a connector dispatch with no live connection settles pending and retries, so
  * connecting later heals every queued delivery.
  */
-async function getAppIntegrationsIn({ c, host, node }: TeamContext, appScopeId: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function getAppIntegrationsIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+  const { appRow } = await appIntegrationTarget(ctx, appScopeId);
   const declared =
     (await providerSpecsBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
   const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
@@ -3204,10 +3210,20 @@ async function getAppIntegrationsIn({ c, host, node }: TeamContext, appScopeId: 
  * connection is attributed to that principal. The credential then rides ONE call to the
  * store that seals it — never a scope row, an event, or a log line.
  */
-async function connectAppIntegrationIn({ c, host, node }: TeamContext, appScopeId: string, provider: string, body: { secret?: unknown; label?: string }) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+class IntegrationConnectRefused extends Error {
+  constructor(message: string, readonly probe?: unknown) {
+    super(message);
+  }
+}
+
+async function connectAppIntegrationIn(
+  ctx: TeamContext,
+  appScopeId: string,
+  provider: string,
+  body: { secret?: unknown; label?: string },
+) {
+  const { c, host, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
   const spec = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, provider);
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   let secret: Record<string, string>;
@@ -3240,7 +3256,7 @@ async function connectAppIntegrationIn({ c, host, node }: TeamContext, appScopeI
     // nothing was written. Pass the provider's own words through with the 422 so the
     // dialog can say what is wrong with the key instead of "couldn't save".
     if (e instanceof ControlPlaneError && e.status === 422) {
-      throw new HTTPException(422, { res: c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, 422) });
+      throw new IntegrationConnectRefused(e.message, e.probe);
     }
     throw e;
   }
@@ -3279,10 +3295,9 @@ async function revocableProvider(
 }
 
 /** Disconnect — revoke is terminal: the sealed secret is deleted and the grants tombstone. */
-async function disconnectAppIntegrationIn({ c, host, node }: TeamContext, appScopeId: string, provider: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function disconnectAppIntegrationIn(ctx: TeamContext, appScopeId: string, provider: string) {
+  const { c, host, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
   const { spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, provider);
   // Revoking picks a row to DESTROY, so with an account-keyed fleet (Fortnox: one
   // connection per client company) this door refuses rather than guess which company.
@@ -3324,7 +3339,7 @@ async function disconnectAppConnectionIn(ctx: TeamContext, appScopeId: string, p
  * keeps one answer to "who may look at this integration".
  */
 async function inspectableConnection(
-  { c, host, node }: TeamContext,
+  ctx: TeamContext,
   appScopeId: string,
   provider: string,
   wantedId?: string,
@@ -3339,9 +3354,8 @@ async function inspectableConnection(
   /** Re-read the SAME row — after a probe has rewritten its health. */
   reread: () => Promise<Connection | undefined>;
 }> {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const { c, host, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
   let spec: ProviderSpec;
   let rows: Connection[];
   if (opts.revoke) {
@@ -3393,7 +3407,14 @@ async function verifyAppIntegrationIn(ctx: TeamContext, appScopeId: string, prov
  * provider token could invoke exactly these". `?live=1` also asks the provider for
  * current state; the answer reports whether it got it.
  */
-async function getAppIntegrationActivityIn(ctx: TeamContext, appScopeId: string, provider: string, wantedId?: string, live = false, source: 'provider' | 'ledger' = 'ledger') {
+async function getAppIntegrationActivityIn(
+  ctx: TeamContext,
+  appScopeId: string,
+  provider: string,
+  wantedId?: string,
+  live = false,
+  source: 'provider' | 'ledger' = 'ledger',
+) {
   const { connectionId, cp, connection, spec } = await inspectableConnection(ctx, appScopeId, provider, wantedId);
   const [activity, grants, credential, intents, sweepRuns, certificate] = await Promise.all([
     cp.connectionActivity(connectionId, { live, source }),
@@ -6261,6 +6282,9 @@ const problem = (c: Context, status: number, detail?: string): Response =>
 
 app.onError((err, c) => {
   const m = err instanceof Error ? err.message : String(err);
+  if (err instanceof IntegrationConnectRefused) {
+    return c.json({ error: m, ...(err.probe ? { probe: err.probe } : {}) }, 422);
+  }
   // This deployment cannot seal a credential (#603) — the local (no control-plane) store
   // path; the plane's own refusal arrives as a ControlPlaneError 503 below. Either way it
   // is a deployment fact, not the caller's mistake, so it must not land in the `: 400`

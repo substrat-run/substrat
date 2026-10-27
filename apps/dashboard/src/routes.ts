@@ -67,26 +67,38 @@ const pageOutput = <T extends z.ZodTypeAny>(entry: T) =>
   z.object({ entries: z.array(entry), nextCursor: z.string().nullable() });
 
 const integrationConnection = z.object({
-  id: z.string(), label: z.string(), status: z.string(), externalAccountRef: z.string().nullable(),
-  expiresAt: z.string().nullable(), lastOkAt: z.string().nullable(), lastError: z.string().nullable(),
-  lastErrorAt: z.string().nullable(), createdAt: z.string(),
+  id: z.string(),
+  label: z.string(),
+  status: z.string(),
+  externalAccountRef: z.string().nullable(),
+  expiresAt: z.string().nullable(),
+  lastOkAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+  lastErrorAt: z.string().nullable(),
+  createdAt: z.string(),
 });
-const integrationProbe = connectionProbe.extend({ connection: integrationConnection.optional() });
+const integrationProbeBody = connectionProbe.extend({ refused: z.boolean().optional() });
+const integrationProbe = integrationProbeBody.extend({ connection: integrationConnection.optional() });
 const integrationActivity = connectionActivity.extend({
   source: z.string(),
-  grants: z.array(z.string()), credential: z.array(connectionCredentialField),
+  grants: z.array(z.string()),
+  credential: z.array(connectionCredentialField),
   certificate: z.object({
     pem: z.string(), thumbprint: z.string(), notAfter: z.string(),
     next: z.object({ pem: z.string(), thumbprint: z.string(), notAfter: z.string() }).optional(),
   }).nullable(),
   connection: integrationConnection,
-  sweepRuns: z.array(z.object({ id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable() })),
+  sweepRuns: z.array(z.object({
+    id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable(),
+  })),
   intents: z.array(z.object({
     id: z.string(), status: z.string(), attempts: z.number(), lastError: z.string().nullable(),
     failure: z.object({ origin: z.string(), code: z.string().nullable(), permission: z.string().nullable() }).nullable(),
     requestedAt: z.string(), settledAt: z.string().nullable(), eventType: z.string(),
   })),
-  unreadableIntents: z.array(z.object({ id: z.string().nullable(), status: z.string().nullable(), requestedAt: z.string().nullable(), decodeError: z.string() })),
+  unreadableIntents: z.array(z.object({
+    id: z.string().nullable(), status: z.string().nullable(), requestedAt: z.string().nullable(), decodeError: z.string(),
+  })),
 });
 
 /*
@@ -742,7 +754,10 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1) }),
     output: z.object({ providers: z.array(z.object({
       provider: z.string(), name: z.string(), description: z.string(), monogram: z.string(),
-      fields: z.array(z.object({ key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(), optional: z.boolean().optional(), toggle: z.boolean().optional() })),
+      fields: z.array(z.object({
+        key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
+        optional: z.boolean().optional(), toggle: z.boolean().optional(),
+      })),
       connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), required: z.boolean(),
       connection: integrationConnection.nullable(), connections: z.array(integrationConnection),
     })) }),
@@ -750,8 +765,11 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/connect-app-integration': {
     summary: 'Connect or rotate one provider credential for an app',
-    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), secret: z.record(z.string(), z.string()).optional(), label: z.string().optional() }),
-    output: z.object({ connectionId: z.string(), created: z.boolean(), probe: connectionProbe.optional() }),
+    input: z.object({
+      scopeId: z.string().min(1), provider: z.string().min(1),
+      secret: z.record(z.string(), z.string()).optional(), label: z.string().optional(),
+    }),
+    output: z.object({ connectionId: z.string(), created: z.boolean(), probe: integrationProbeBody.optional() }),
     http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}' },
   },
   'dashboard/disconnect-app-integration': {

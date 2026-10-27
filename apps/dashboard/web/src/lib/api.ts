@@ -1810,7 +1810,6 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/remove`,
       { method: 'POST' },
     ),
-  /** The app's declared providers + live connections (Settings → Integrations). */
   /**
    * Mint a consent-round connect link (#1220). The `url` in the answer is both the
    * Connect button's destination (navigate to it now) and the copyable link for a
