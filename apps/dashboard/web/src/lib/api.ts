@@ -958,7 +958,8 @@ export interface AppEnvValue {
 
 /** The app's owner seat (#925) as the platform relays it from the app's own identity directory. */
 export interface OwnerSeatView {
-  state: 'claimed' | 'unclaimed' | 'unknown';
+  /** The deployed vertical may return a state this dashboard does not yet recognize. */
+  state: string;
   owner: string | null;
   firstSignIn: { open: boolean; until: string | null } | null;
   claimLink: { expiresAt: string } | null;
@@ -983,7 +984,7 @@ export interface AppMembersView {
     email: string | null;
     createdAt: number;
     /** Where the invite's link stands (#1686); null for an older invite, absent from an older vertical. */
-    link?: { state: 'open' | 'used' | 'revoked' | 'expired'; reason: 'holdings-changed' | null } | null;
+    link?: { state: string; reason: string | null } | null;
   }[];
 }
 

@@ -359,7 +359,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/members` — `dashboard/app-members`
    */
-  appMembers(input: { scopeId: string }): Promise<{ roles: string[]; members: ({ principal: string; roles: string[]; logins: number; email: string | null; owner: boolean })[]; invites: ({ principal: string; roleKey: string; roles: string[]; email: string | null; createdAt: number; link?: { state: "open" | "used" | "revoked" | "expired"; reason: "holdings-changed" | null } | null })[] }>;
+  appMembers(input: { scopeId: string }): Promise<{ roles: string[]; members: ({ principal: string; roles: string[]; logins: number; email: string | null; owner: boolean })[]; invites: ({ principal: string; roleKey: string; roles: string[]; email: string | null; createdAt: number; link?: { state: string; reason: string | null } | null })[] }>;
 
   /**
    * One traffic summary row per installed app for this team's Apps table
@@ -394,7 +394,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/owner-seat` — `dashboard/app-owner-seat`
    */
-  appOwnerSeat(input: { scopeId: string }): Promise<{ state: "claimed" | "unclaimed" | "unknown"; owner: string | null; firstSignIn: { open: boolean; until: string | null } | null; claimLink: { expiresAt: string } | null }>;
+  appOwnerSeat(input: { scopeId: string }): Promise<{ state: string; owner: string | null; firstSignIn: { open: boolean; until: string | null } | null; claimLink: { expiresAt: string } | null }>;
 
   /**
    * Remove an app member as the signed-in caller

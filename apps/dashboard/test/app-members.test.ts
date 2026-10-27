@@ -62,6 +62,7 @@ describe('the app members routes (#1150)', () => {
   const appPath = `/api/teams/${tenant}/apps/${appScope}/members`;
   const member = principalId.parse(ulid());
   let owner: ReturnType<typeof principalId.parse>;
+  let viewer: ReturnType<typeof principalId.parse>;
   let asks: { path: string; method: string; body: unknown }[];
   let mints: unknown[];
   let refuse: { status: number; error: string } | null;
@@ -76,9 +77,12 @@ describe('the app members routes (#1150)', () => {
     mints = [];
     refuse = null;
     owner = principalId.parse(ulid());
+    viewer = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'members', name: 'Members' });
     await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
     await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-owner', principal: owner, tenantId: tenant, scopeId: dashScope });
+    await host.admin.assignRole(staff, { principalId: viewer, roleKey: 'viewer', node: { tenantId: tenant, scopeId: null } });
+    await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-viewer', principal: viewer, tenantId: tenant, scopeId: dashScope });
     const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
     await dash.invoke('dashboard/provision-app', { appScopeId: appScope, verticalSlug: 'acme/desk', name: 'Desk' });
     env = {
@@ -115,10 +119,10 @@ describe('the app members routes (#1150)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const call = (path: string, method = 'GET', body?: unknown) =>
+  const call = (path: string, method = 'GET', body?: unknown, sub = 'sub-owner') =>
     app.request(path, {
       method,
-      headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+      headers: { cookie: `sb_session=${sub}`, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }, env);
 
@@ -140,11 +144,12 @@ describe('the app members routes (#1150)', () => {
     for (const m of mints) expect(m).toEqual({ tenantId: tenant, principal: owner });
   });
 
-  it('relays the app’s refusal as given', async () => {
-    refuse = { status: 403, error: "you cannot invite at 'lead': you do not hold perm:use" };
-    const res = await call(appPath, 'POST', { roleKey: 'lead' });
+  it('relays the app’s role refusal to a viewer as given', async () => {
+    refuse = { status: 403, error: "you cannot change this role: you do not hold perm:use" };
+    const res = await call(`${appPath}/${member}/role`, 'POST', { from: 'agent', to: 'lead' }, 'sub-viewer');
     expect(res.status).toBe(403);
     expect(await res.text()).toMatch(/do not hold perm:use/);
+    expect(mints).toContainEqual({ tenantId: tenant, principal: viewer });
   });
 
   it('refuses another team’s app, and a malformed change, before asking the plane', async () => {

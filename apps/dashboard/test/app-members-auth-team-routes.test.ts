@@ -63,7 +63,8 @@ it('keeps app owner, roster and auth reads on the path team when another tab swi
     const env = {
       SCOPE: {}, CONTROL_PLANE: {}, SESSION_SECRET: 'test-session-secret', CP_SERVICE_TOKEN: 'test-service-token',
       CONTROL_PLANE_SVC: { fetch: async (url: string | URL | Request, init?: RequestInit) => {
-        const path = new URL(String(url)).pathname;
+        const requestUrl = new URL(String(url));
+        const path = requestUrl.pathname;
         planeCalls.push(path);
         if (path === '/api/tenant-tokens') return Response.json({ token: 'tenant-token' });
         if (path === '/api/scopes') return Response.json({ entries: [], nextCursor: null });
@@ -73,7 +74,10 @@ it('keeps app owner, roster and auth reads on the path team when another tab swi
         if (path.endsWith('/members')) return Response.json({ principal: principalId.parse(ulid()), roleKey: 'member', email: null, acceptUrl: 'https://app.example/?invite=once' }, { status: 201 });
         if (path.endsWith('/role')) return Response.json({ principal: path.split('/').at(-2), from: 'member', to: 'admin' });
         if (path.endsWith('/remove')) return Response.json({ revoked: ['member'], unbound: 1, inviteWithdrawn: false });
-        if (path.endsWith('/hostnames')) return Response.json([]);
+        if (path === '/api/hostnames') return Response.json(requestUrl.searchParams.get('scopeId') === apps[0]
+          ? [{ hostname: 'app.example', surface: 'app', status: 'active', statusNote: null, canonical: true, createdAt: '2026-10-01T00:00:00Z', validationRecords: [] }]
+          : []);
+        if (path.endsWith('/configure')) return Response.json({});
         return Response.json({ detail: 'unavailable' }, { status: 501 });
       } },
     };
@@ -87,6 +91,10 @@ it('keeps app owner, roster and auth reads on the path team when another tab swi
     expect((await send('GET', `${path}/owner-seat`)).status).toBe(200);
     expect((await send('GET', `${path}/members`)).status).toBe(200);
     expect((await send('GET', `${path}/auth`)).status).toBe(200);
+    const choice = { source: 'external', issuer: 'https://issuer.example', clientId: 'client' };
+    expect((await send('PUT', `${path}/auth`, { choice })).status).toBe(200);
+    expect(await (await send('GET', `${path}/auth`)).json()).toMatchObject({ auth: { issuer: choice.issuer, clientId: choice.clientId } });
+    expect(await (await send('GET', `/api/teams/${teams[1]}/apps/${apps[1]}/auth`)).json()).toMatchObject({ auth: null });
     expect((await send('POST', `${path}/owner-claim`)).status).toBe(201);
     expect((await send('POST', `${path}/members`, { roleKey: 'member' })).status).toBe(201);
     const member = principalId.parse(ulid());

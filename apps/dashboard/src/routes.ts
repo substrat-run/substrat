@@ -46,6 +46,7 @@ import {
   principalId,
   previewAuth,
   REBIND_REVIEW_REASONS,
+  scopeMemberInvite,
   scopeMembers,
   promotionAcknowledgement,
   versionOrigin,
@@ -665,7 +666,7 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/app-owner-seat': {
     summary: "The owner seat of one of this team's app scopes",
     input: z.object({ scopeId: z.string().min(1) }),
-    output: ownerSeat,
+    output: ownerSeat.extend({ state: z.string() }),
     http: { method: 'GET', path: '/apps/{scopeId}/owner-seat' },
   },
   'dashboard/app-owner-claim': {
@@ -678,7 +679,9 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/app-members': {
     summary: "The members, roles and open invites in one app scope",
     input: z.object({ scopeId: z.string().min(1) }),
-    output: scopeMembers,
+    output: scopeMembers.extend({ invites: z.array(scopeMemberInvite.extend({
+      link: z.object({ state: z.string(), reason: z.string().nullable() }).nullable().optional(),
+    })) }),
     http: { method: 'GET', path: '/apps/{scopeId}/members' },
   },
   'dashboard/app-invite-member': {

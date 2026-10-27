@@ -332,10 +332,10 @@ function OwnerSeatCard({ teamId, scopeId, seat, onClaimed, canClaim }: { teamId:
           <Pill kind="success">claimed</Pill>
           <span style={{ color: 'var(--text-secondary)' }}>Someone has signed in as this instance's owner.</span>
         </div>
-      ) : seat.state === 'unknown' ? (
+      ) : seat.state !== 'unclaimed' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
           <Pill kind="neutral">unknown</Pill>
-          <span style={{ color: 'var(--text-secondary)' }}>This app's deployment keeps no record of an owner seat for this instance.</span>
+          <span style={{ color: 'var(--text-secondary)' }}>This app's owner-seat status is unavailable here.</span>
         </div>
       ) : (
         <>
