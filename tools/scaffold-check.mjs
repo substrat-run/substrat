@@ -91,12 +91,6 @@ function run(cmd, argv, cwd) {
   return { ok: r.status === 0, status: r.status, output };
 }
 
-function scaffold(dir) {
-  return FROM === 'registry'
-    ? run('npm', ['exec', '--yes', `--package=create-substrat@${VERSION}`, '--', 'create-substrat', dir], process.cwd())
-    : run('node', [join(PKG_DIR, 'index.js'), dir], process.cwd());
-}
-
 function log(line = '') {
   process.stdout.write(`${line}\n`);
 }
@@ -210,26 +204,40 @@ async function main() {
     //    PUBLISHED one, and pinning the exact version doubles as proof the release
     //    actually landed rather than trusting `@latest` to have caught up.
     log(`# scaffold-check — create-substrat@${VERSION} (--from=${FROM})\n`);
-    if (FROM === 'registry' && !(await waitForPublish(VERSION))) {
-      log(`FAIL  create-substrat@${VERSION} is not on the registry.`);
-      log('');
-      log('      The checkout says that version; npm does not have it. This is a');
-      log('      release that did not publish, not a broken scaffold — check the');
-      log('      publish step in release.yml before looking at the template.');
-      summarise([
-        '### Scaffold check — release did not publish',
-        '',
-        `\`create-substrat@${VERSION}\` is in the checkout but not on the registry.`,
-      ]);
-      failed = true;
-      return false;
-    }
-    const created = scaffold(dir);
-    log(created.output.trimEnd());
-    if (!created.ok) {
-      log(`\nFAIL  the ${FROM === 'registry' ? 'published' : 'local'} scaffolder exited ${created.status}.`);
-      failed = true;
-      return false;
+    if (FROM === 'registry') {
+      if (!(await waitForPublish(VERSION))) {
+        log(`FAIL  create-substrat@${VERSION} is not on the registry.`);
+        log('');
+        log('      The checkout says that version; npm does not have it. This is a');
+        log('      release that did not publish, not a broken scaffold — check the');
+        log('      publish step in release.yml before looking at the template.');
+        summarise([
+          '### Scaffold check — release did not publish',
+          '',
+          `\`create-substrat@${VERSION}\` is in the checkout but not on the registry.`,
+        ]);
+        failed = true;
+        return false;
+      }
+      const r = run(
+        'npm',
+        ['exec', '--yes', `--package=create-substrat@${VERSION}`, '--', 'create-substrat', dir],
+        process.cwd(),
+      );
+      log(r.output.trimEnd());
+      if (!r.ok) {
+        log(`\nFAIL  the published scaffolder exited ${r.status}.`);
+        failed = true;
+        return false;
+      }
+    } else {
+      const r = run('node', [join(PKG_DIR, 'index.js'), dir], process.cwd());
+      log(r.output.trimEnd());
+      if (!r.ok) {
+        log(`\nFAIL  the local scaffolder exited ${r.status}.`);
+        failed = true;
+        return false;
+      }
     }
 
     // 2. Install from the registry, with no workspace links — which also proves the
@@ -280,7 +288,9 @@ async function main() {
     //    @latest follows the current major; the weekly run catches a changed policy.
     log('\n## pnpm install (fresh scaffold, current major)\n');
     const pnpmDir = join(parent, 'scaffold-pnpm');
-    const pnpmCreated = scaffold(pnpmDir);
+    const pnpmCreated = FROM === 'registry'
+      ? run('npm', ['exec', '--yes', `--package=create-substrat@${VERSION}`, '--', 'create-substrat', pnpmDir], process.cwd())
+      : run('node', [join(PKG_DIR, 'index.js'), pnpmDir], process.cwd());
     log(pnpmCreated.output.trimEnd());
     const pnpmInstall = pnpmCreated.ok
       ? run('npx', ['--yes', 'pnpm@latest', 'install'], pnpmDir)
