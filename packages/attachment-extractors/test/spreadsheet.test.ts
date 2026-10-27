@@ -6,14 +6,15 @@ const enc = (text: string) => new TextEncoder().encode(text);
 const csv = (text: string, delimiter?: ',' | ';' | '\t') => readSpreadsheet({
   body: enc(text), filename: 'input.csv', contentType: 'text/csv', delimiter,
 });
-const xlsx = async (sheet: string, extra: Part[] = []) => readSpreadsheet({
-  filename: 'input.xlsx', contentType: 'application/octet-stream', body: await zip([
-    { name: 'xl/workbook.xml', data: enc('<workbook xmlns:r="urn:relationships"><sheets><sheet name="Items &amp; amounts" sheetId="1" r:id="r1"/></sheets></workbook>') },
-    { name: 'xl/_rels/workbook.xml.rels', data: enc('<Relationships><Relationship Id="r1" Type="urn:office/worksheet" Target="worksheets/data.xml"/></Relationships>') },
-    { name: 'xl/worksheets/data.xml', data: enc(`<worksheet><sheetData>${sheet}</sheetData></worksheet>`) },
-    ...extra,
-  ]),
-});
+const prolog = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+const xlsxBytes = (sheet: string, extra: Part[] = []) => zip([
+  { name: 'xl/workbook.xml', data: enc(`${prolog}<workbook xmlns:r="urn:relationships"><sheets><sheet name="Items &amp; amounts" sheetId="1" r:id="r1"/></sheets></workbook>`) },
+  { name: 'xl/_rels/workbook.xml.rels', data: enc(`${prolog}<Relationships><Relationship Id="r1" Type="urn:office/worksheet" Target="worksheets/data.xml"/></Relationships>`) },
+  { name: 'xl/worksheets/data.xml', data: enc(`${prolog}<worksheet><sheetData>${sheet}</sheetData></worksheet>`) },
+  ...extra,
+]);
+const readXlsx = (body: Uint8Array) => readSpreadsheet({ filename: 'input.xlsx', contentType: 'application/octet-stream', body });
+const xlsx = async (sheet: string, extra: Part[] = []) => readXlsx(await xlsxBytes(sheet, extra));
 
 describe('structured spreadsheet input for imports and comparisons', () => {
   it('CSV preserves identifiers, decimal spelling, quoted separators, quotes, newlines and empty cells', async () => {
@@ -27,7 +28,7 @@ describe('structured spreadsheet input for imports and comparisons', () => {
     expect(tsv.sheets[0]!.rows[1]!.cells).toEqual(['001', '2']);
   });
 
-  it('XLSX follows workbook relationships, resolves shared strings and preserves sparse coordinates, numbers and formula caches', async () => {
+  it('XLSX accepts standard XML prologs, follows relationships and preserves strings, coordinates, numbers and formula caches', async () => {
     const parsed = await xlsx(
       '<row r="2"><c r="A2" t="s"><v>0</v></c><c r="C2"><v>12.50</v></c><c r="D2" t="b"><v>1</v></c></row>' +
       '<row r="4"><c r="A4" t="inlineStr"><is><t>001</t></is></c><c r="B4"><f>C2*2</f><v>25</v></c><c r="C4"><f>1+1</f></c></row>',
@@ -37,6 +38,43 @@ describe('structured spreadsheet input for imports and comparisons', () => {
       { number: 2, cells: ['Part A & B', null, '12.50', 'true'] },
       { number: 4, cells: ['001', '25', null] },
     ] }], formulaCells: 2 });
+  });
+
+  it('refuses multiple XML roots and text outside a root, including after a self-closing root', async () => {
+    for (const xml of ['<sst/><sst/>', '<sst></sst><sst/>', 'text<sst/>', '<sst/>text', '   ']) {
+      await expect(xlsx('', [{ name: 'xl/sharedStrings.xml', data: enc(xml) }])).rejects.toThrow(MalformedInput);
+    }
+  });
+
+  it('strictly decodes XML entities for imports and preserves escaped literal references', async () => {
+    const inline = (text: string) => `<row><c t="inlineStr"><is><t>${text}</t></is></c></row>`;
+    const parsed = await xlsx(inline('&lt;&gt;&apos;&quot;&amp;&#228;&#x1F600;&amp;bogus;'));
+    expect(parsed.sheets[0]!.rows[0]!.cells).toEqual(['<>\'"&ä😀&bogus;']);
+    for (const text of ['&bogus;', '&toString;', '&amp', '&#;', '&#0;', '&#xD800;', '&#x110000;']) {
+      await expect(xlsx(inline(text))).rejects.toThrow(MalformedInput);
+    }
+  });
+
+  it('refuses a local ZIP header whose name, flags or compression method disagrees with the directory', async () => {
+    const original = await xlsxBytes('');
+    for (const offset of [30, 6, 8]) {
+      const corrupt = original.slice();
+      // The fixture writer puts xl/workbook.xml first, with a local header at byte zero.
+      corrupt[offset] = corrupt[offset]! ^ 1;
+      await expect(readXlsx(corrupt)).rejects.toThrow('local and central zip headers disagree');
+    }
+  });
+
+  it('refuses unused ZIP directory records whose extra or comment bytes extend past the directory', async () => {
+    const unused = 'unused';
+    const original = await xlsxBytes('', [{ name: unused, data: enc('unused') }]);
+    // Last central record, followed by the writer's 22-byte, comment-free EOCD.
+    const last = original.length - 22 - 46 - unused.length;
+    for (const [field, size] of [[30, 1], [32, 0xffff]] as const) {
+      const corrupt = original.slice();
+      new DataView(corrupt.buffer).setUint16(last + field, size, true);
+      await expect(readXlsx(corrupt)).rejects.toThrow(MalformedInput);
+    }
   });
 
   it('refuses malformed input and limits instead of returning a partial import', async () => {

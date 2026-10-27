@@ -134,7 +134,7 @@ export async function readSpreadsheet(input: {
         throw new MalformedInput('missing workbook archive part');
       }
       return readEntryText(input.body, entry, budget, pace, true);
-    }, pace, (text) => decodeEntities(text, XML_ENTITIES, pace));
+    }, pace, (text) => decodeXmlEntities(text, pace));
   }
   const { type, charset } = parseContentType(input.contentType);
   const tsv = acceptsBy((t) => t === 'text/tab-separated-values', ['tsv'])(type, input.filename);
@@ -250,6 +250,47 @@ const NAMED_ENTITIES: Record<string, string> = (() => {
  * (only leading zeros make one) that straddles an edge is left as written.
  */
 const ENTITY_SPAN = 32;
+
+/** Import XML is strict; HTML/search decoding below deliberately remains tolerant. */
+async function decodeXmlEntities(text: string, pace: Pace): Promise<string> {
+  const out: string[] = [];
+  let at = 0;
+  for (;;) {
+    const amp = await pace.find(text, '&', at);
+    if (amp < 0) { out.push(text.slice(at)); break; }
+    out.push(text.slice(at, amp));
+    if (text[amp + 1] !== '#') {
+      // The five predefined XML names are at most four characters long.
+      const match = /^(amp|lt|gt|quot|apos);/.exec(text.slice(amp + 1, amp + 7));
+      if (!match) throw new MalformedInput('unknown or malformed XML entity reference');
+      out.push(XML_ENTITIES[match[1]!]!);
+      at = amp + 1 + match[0].length;
+      continue;
+    }
+    const hex = text[amp + 2] === 'x';
+    const start = amp + (hex ? 3 : 2);
+    let code = 0;
+    let digits = 0;
+    const end = await pace.scan(text, start, (c) => {
+      if (c === 59) return true;
+      const digit = c >= 48 && c <= 57 ? c - 48
+        : hex && c >= 65 && c <= 70 ? c - 55
+        : hex && c >= 97 && c <= 102 ? c - 87 : -1;
+      if (digit < 0) throw new MalformedInput('malformed XML character reference');
+      code = code * (hex ? 16 : 10) + digit;
+      if (code > 0x10ffff) throw new MalformedInput('invalid XML character reference');
+      digits++;
+      return false;
+    });
+    if (end < 0 || !digits || !(code === 9 || code === 10 || code === 13
+      || code >= 0x20 && code <= 0xd7ff || code >= 0xe000 && code <= 0xfffd || code >= 0x10000)) {
+      throw new MalformedInput('invalid XML character reference');
+    }
+    out.push(String.fromCodePoint(code));
+    at = end + 1;
+  }
+  return out.join('');
+}
 
 /**
  * `&amp;` `&#228;` `&#xE4;` → characters, a window at a time. An unknown name is left as
@@ -895,6 +936,7 @@ async function htmlText(html: string, pace: Pace): Promise<string> {
 
 interface ZipEntry {
   readonly name: string;
+  readonly nameBytes: Uint8Array;
   readonly method: number;
   readonly flags: number;
   readonly compressedSize: number;
@@ -937,28 +979,31 @@ async function zipEntries(zip: Uint8Array, pace: Pace): Promise<ZipEntry[]> {
     throw new MalformedInput('zip64 archives are not read');
   }
   if (count > MAX_ZIP_ENTRIES) throw new ExtractionBoundExceeded(`the archive lists more than ${MAX_ZIP_ENTRIES} entries`);
-  if (cdOffset + cdSize > zip.length) throw new MalformedInput('the zip central directory is out of range');
+  const cdEnd = cdOffset + cdSize;
+  if (cdEnd > eocd) throw new MalformedInput('the zip central directory is out of range');
   const names = new TextDecoder('utf-8');
   const entries: ZipEntry[] = [];
   let p = cdOffset;
   for (let n = 0; n < count; n += 1) {
     await pace.turn();
-    if (p + 46 > zip.length || view.getUint32(p, true) !== 0x02014b50) {
+    if (p + 46 > cdEnd || view.getUint32(p, true) !== 0x02014b50) {
       throw new MalformedInput('the zip central directory is damaged');
     }
     const nameLength = view.getUint16(p + 28, true);
     const extraLength = view.getUint16(p + 30, true);
     const commentLength = view.getUint16(p + 32, true);
-    if (p + 46 + nameLength > zip.length) throw new MalformedInput('the zip central directory is damaged');
+    const span = 46 + nameLength + extraLength + commentLength;
+    if (p + span > cdEnd) throw new MalformedInput('the zip central directory is damaged');
+    const nameBytes = zip.subarray(p + 46, p + 46 + nameLength);
     entries.push({
-      name: nameLength > MAX_ENTRY_NAME ? '' : names.decode(zip.subarray(p + 46, p + 46 + nameLength)),
+      name: nameLength > MAX_ENTRY_NAME ? '' : names.decode(nameBytes),
+      nameBytes,
       flags: view.getUint16(p + 8, true),
       method: view.getUint16(p + 10, true),
       compressedSize: view.getUint32(p + 20, true),
       uncompressedSize: view.getUint32(p + 24, true),
       localHeaderOffset: view.getUint32(p + 42, true),
     });
-    const span = 46 + nameLength + extraLength + commentLength;
     pace.charge(span);
     p += span;
   }
@@ -978,9 +1023,16 @@ async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBu
   if (at + 30 > zip.length || view.getUint32(at, true) !== 0x04034b50) {
     throw new MalformedInput('a zip entry header is damaged');
   }
-  const start = at + 30 + view.getUint16(at + 26, true) + view.getUint16(at + 28, true);
+  const localNameLength = view.getUint16(at + 26, true);
+  const start = at + 30 + localNameLength + view.getUint16(at + 28, true);
   const end = start + entry.compressedSize;
   if (end > zip.length) throw new MalformedInput('a zip entry is out of range');
+  if (localNameLength !== entry.nameBytes.length
+    || view.getUint16(at + 6, true) !== entry.flags
+    || view.getUint16(at + 8, true) !== entry.method
+    || entry.nameBytes.some((byte, i) => byte !== zip[at + 30 + i])) {
+    throw new MalformedInput('the local and central zip headers disagree');
+  }
   const raw = zip.subarray(start, end);
   // The declared size is a cheap early refusal and nothing more — the counter below is the
   // guard, because a bomb is precisely an entry whose header lies.

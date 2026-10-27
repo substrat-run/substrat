@@ -54,7 +54,8 @@ retains numeric cells, resolves shared strings and workbook worksheet relationsh
 uses cached formula results without evaluating them. `formulaCells > 0` warns a tool that
 those values may be stale or absent. XLSX display styles, date serials, merged cells and
 formulas are not interpreted. An error cell refuses the workbook. `.xls`, macros, external
-worksheet relationships and XML declarations are unsupported.
+worksheet relationships and DTD/entity declarations are unsupported. Standard [XML prologs](https://www.w3.org/TR/xml/#sec-prolog-dtd)
+(`<?xml version="1.0" ...?>`) are accepted.
 
 It refuses files over 10 MiB, inflated XML over 16 MiB, and workbooks exceeding
 `SPREADSHEET_LIMITS`: 32 sheets, 10,000 stored rows, 256 columns, 100,000 cells (including

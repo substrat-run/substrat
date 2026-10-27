@@ -76,13 +76,20 @@ type Attributes = Record<string, string>;
 type XmlVisitor = { tag(name: string, attrs: Attributes, closing: boolean): void; text(text: string): void };
 type Decode = (text: string) => Promise<string>;
 
-/** A forward-only XML scan; declarations/entities are refused, depth and attributes bounded. */
-async function xml(xml: string, pace: Pace, decode: Decode, visitor: XmlVisitor): Promise<void> {
+/** A forward-only XML scan; DTD/entity declarations are refused, depth and attributes bounded. */
+async function xml(xml: string, pace: Pace, decode: Decode, visitor: XmlVisitor, optional = false): Promise<void> {
   const stack: string[] = [];
+  let rootSeen = false;
   for (let at = 0; at < xml.length;) {
     const lt = await pace.find(xml, '<', at);
     const end = lt < 0 ? xml.length : lt;
-    if (end > at) visitor.text(await decode(xml.slice(at, end)));
+    if (end > at) {
+      const text = xml.slice(at, end);
+      if (!stack.length && await pace.scan(text, 0, (c) => c !== 32 && c !== 9 && c !== 10 && c !== 13) >= 0) {
+        throw new MalformedInput('text outside the spreadsheet XML root');
+      }
+      if (stack.length) visitor.text(await decode(text));
+    }
     if (lt < 0) break;
     at = lt + 1;
     if (xml.startsWith('!--', at) || xml.startsWith('?', at)) {
@@ -93,7 +100,7 @@ async function xml(xml: string, pace: Pace, decode: Decode, visitor: XmlVisitor)
       at = close + marker.length;
       continue;
     }
-    if (xml[at] === '!') throw new MalformedInput('spreadsheet XML declarations are unsupported');
+    if (xml[at] === '!') throw new MalformedInput('spreadsheet DTD and entity declarations are unsupported');
     let quote = 0;
     const gt = await pace.scan(xml, at, (c) => {
       if (quote) { if (c === quote) quote = 0; return false; }
@@ -129,6 +136,10 @@ async function xml(xml: string, pace: Pace, decode: Decode, visitor: XmlVisitor)
       if (stack.pop() !== qualified) throw new MalformedInput('mismatched spreadsheet XML tags');
       visitor.tag(name, attrs, true);
     } else {
+      if (!stack.length) {
+        if (rootSeen) throw new MalformedInput('spreadsheet XML has more than one root element');
+        rootSeen = true;
+      }
       visitor.tag(name, attrs, false);
       if (selfClosing) visitor.tag(name, attrs, true);
       else {
@@ -139,6 +150,7 @@ async function xml(xml: string, pace: Pace, decode: Decode, visitor: XmlVisitor)
     at = gt + 1;
   }
   if (stack.length) throw new MalformedInput('unclosed spreadsheet XML elements');
+  if (!rootSeen && !(optional && xml.length === 0)) throw new MalformedInput('spreadsheet XML has no root element');
 }
 
 /** Resolves only workbook-local worksheet parts; external references never get fetched. */
@@ -187,7 +199,7 @@ export async function workbook(
       }
     },
     text(text) { if (shared !== undefined && inText && !phonetic) shared = cellSize(shared + text); },
-  });
+  }, true);
   const result: Spreadsheet = { sheets: [], formulaCells: 0 };
   let totalRows = 0;
   let totalCells = 0;
