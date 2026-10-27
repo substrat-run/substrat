@@ -20,6 +20,7 @@
  */
 import {
   adminLogEntry,
+  bindAcknowledgement,
   channelHistoryEntry,
   channelName,
   defineRoutes,
@@ -39,6 +40,7 @@ import {
   permissionRegistry,
   previewAuth,
   REBIND_REVIEW_REASONS,
+  scopeDumpTable,
   promotionAcknowledgement,
   versionOrigin,
   verticalSlug,
@@ -651,6 +653,65 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1) }),
     output: appRow,
     http: { method: 'POST', path: '/apps/{scopeId}/resume' },
+  },
+
+  // -- app version and data lifecycle (#2170) -------------------------------
+  'dashboard/update-installed-app': {
+    summary: 'Move this app to the current prod version of its vertical',
+    input: z.object({ scopeId: z.string().min(1), snapshot: z.boolean().optional(), acknowledge: bindAcknowledgement.optional() }),
+    output: z.object({ updated: z.boolean(), version: z.string().nullable(), previousVersion: z.string().nullable() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/update' },
+  },
+  'dashboard/bind-installed-app': {
+    summary: 'Pin this app to a specific admitted vertical version',
+    input: z.object({ scopeId: z.string().min(1), versionId: z.string().min(1), snapshot: z.boolean().optional(), acknowledge: bindAcknowledgement.optional() }),
+    output: z.object({ bound: z.literal(true) }),
+    http: { method: 'POST', path: '/apps/{scopeId}/bind' },
+  },
+  'dashboard/list-app-bookmarks': {
+    summary: 'The pre-migration rewind points for this app',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.array(z.object({ bookmark: z.string(), takenAt: z.string(), pending: z.array(z.string()) })),
+    http: { method: 'GET', path: '/apps/{scopeId}/bookmarks' },
+  },
+  'dashboard/list-app-migrations': {
+    summary: 'The schema migrations this app has applied',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({ available: z.boolean(), migrations: z.array(z.object({
+      moduleId: z.string(), version: z.string(), appliedAt: z.string().nullable(),
+      durationMs: z.number().nullable(), rowsChanged: z.number().nullable(),
+    })) }),
+    http: { method: 'GET', path: '/apps/{scopeId}/migrations' },
+  },
+  'dashboard/get-app-release-comparison': {
+    summary: 'Compare this app’s running version with the current prod version',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({
+      running: z.object({ versionId: z.string(), version: z.string().nullable(), requests: z.number().nullable(),
+        errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable() }).nullable(),
+      update: z.object({ versionId: z.string(), version: z.string().nullable(), requests: z.number().nullable(),
+        errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable() }).nullable(),
+      metricsAvailable: z.boolean(), owned: z.boolean(),
+    }),
+    http: { method: 'GET', path: '/apps/{scopeId}/release-comparison' },
+  },
+  'dashboard/rewind-app': {
+    summary: 'Rewind this app to a pre-migration bookmark',
+    input: z.object({ scopeId: z.string().min(1), bookmark: z.string().min(1) }),
+    output: z.object({ rewindingTo: z.string() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/rewind' },
+  },
+  'dashboard/export-installed-app': {
+    summary: 'Export this app’s data as a dump',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({ tenantId: z.string(), scopeId: z.string(), capturedAt: z.string(), masked: z.boolean(), tables: z.array(scopeDumpTable) }),
+    http: { method: 'GET', path: '/apps/{scopeId}/export' },
+  },
+  'dashboard/restore-installed-app': {
+    summary: 'Replace this app’s data from an uploaded dump after making a safety copy',
+    input: z.object({ scopeId: z.string().min(1), tables: z.array(scopeDumpTable).min(1), sourceScopeId: z.unknown().optional() }),
+    output: z.object({ restored: z.string(), tables: z.number().int(), safetyCopyId: z.string() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/restore' },
   },
 
   // -- app previews (#2170) --------------------------------------------------

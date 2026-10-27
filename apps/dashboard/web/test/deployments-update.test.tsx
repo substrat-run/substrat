@@ -11,6 +11,9 @@ const client = vi.hoisted(() => ({
   getDeploymentReleases: vi.fn(),
   listChannelHistory: vi.fn(),
   getPromotionReview: vi.fn(),
+  listAppBookmarks: vi.fn(),
+  getAppReleaseComparison: vi.fn(),
+  listAppMigrations: vi.fn(),
 }));
 vi.mock('../src/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/lib/api')>()),
@@ -45,13 +48,13 @@ describe('Deployments tab — the Update action', () => {
     root = createRoot(container);
     // Every secondary read fails: the Update action must not depend on any of them.
     const refuse = () => Promise.reject(new Error('not served'));
-    vi.spyOn(api, 'appBookmarks').mockImplementation(refuse);
+    client.listAppBookmarks.mockImplementation(refuse);
     client.getDeploymentReleases.mockImplementation(refuse);
     client.listChannelHistory.mockImplementation(refuse);
-    vi.spyOn(api, 'releaseComparison').mockImplementation(refuse);
+    client.getAppReleaseComparison.mockImplementation(refuse);
     vi.spyOn(api, 'appPermissions').mockImplementation(refuse);
     vi.spyOn(api, 'appModel').mockImplementation(refuse);
-    vi.spyOn(api, 'appMigrations').mockImplementation(refuse);
+    client.listAppMigrations.mockImplementation(refuse);
     client.getPromotionReview.mockImplementation(refuse);
   });
   afterEach(() => {
@@ -60,9 +63,9 @@ describe('Deployments tab — the Update action', () => {
     vi.restoreAllMocks();
   });
 
-  const render = async (dep: AppDeployments) => {
+  const render = async (dep: AppDeployments, canManageApp = true) => {
     vi.spyOn(api, 'appDeployments').mockResolvedValue(dep);
-    await act(async () => root.render(<Deployments teamId="T1" app={app} canRewind />));
+    await act(async () => root.render(<Deployments teamId="T1" app={app} canManageApp={canManageApp} />));
   };
   const updateButtons = () => [...container.querySelectorAll('button')].filter((b) => /^Update (this app|to latest)$/.test(b.textContent ?? ''));
   const comparisonHeader = () => [...container.querySelectorAll('span')].find((s) => s.textContent === 'Release comparison')!.parentElement!;
@@ -73,6 +76,12 @@ describe('Deployments tab — the Update action', () => {
     expect(updateButtons()).toHaveLength(1);
     expect(updateButtons()[0]!.textContent).toBe('Update this app');
     expect(comparisonHeader().contains(updateButtons()[0]!)).toBe(true);
+  });
+
+  it('hides Update and Bind for a viewer', async () => {
+    await render({ ...MOCK_APP_DEPLOYMENTS, versions: MOCK_APP_DEPLOYMENTS.versions.filter((v) => v.id !== V400) }, false);
+    expect(updateButtons()).toHaveLength(0);
+    expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Bind')).toBe(false);
   });
 
   it('(b) update with prod beyond the loaded page: the button is in the Running bar', async () => {
@@ -113,7 +122,7 @@ describe('Deployments tab — the Update action', () => {
 
     it('walks older pages until an admitted version is found, then offers the promotion', async () => {
       const spy = vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => Promise.resolve(o?.cursor === 'c1' ? page2 : page1));
-      await act(async () => root.render(<Deployments teamId="T1" app={app} canRewind />));
+      await act(async () => root.render(<Deployments teamId="T1" app={app} canManageApp />));
       expect(spy).toHaveBeenCalledTimes(2);
       const header = comparisonHeader();
       expect(header.textContent).toContain('0.4.0-beta.7');
@@ -122,7 +131,7 @@ describe('Deployments tab — the Update action', () => {
 
     it('when the look fails, says it does not know rather than claiming the latest', async () => {
       vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => (o?.cursor === 'c1' ? Promise.reject(new Error('down')) : Promise.resolve(page1)));
-      await act(async () => root.render(<Deployments teamId="T1" app={app} canRewind />));
+      await act(async () => root.render(<Deployments teamId="T1" app={app} canManageApp />));
       expect(container.textContent).toContain('Could not check whether a newer version is waiting for prod.');
       expect(container.textContent).not.toContain('Running the latest version');
       expect(updateButtons()).toHaveLength(0);

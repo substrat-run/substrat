@@ -857,7 +857,7 @@ export interface DumpTable {
   rows: unknown[][];
 }
 
-/** `GET /api/apps/:id/export` — the app's data as a dump the CLI also accepts. */
+/** An app's data as a dump the CLI also accepts. */
 export interface AppDataDump {
   tenantId: string;
   scopeId: string;
@@ -867,7 +867,7 @@ export interface AppDataDump {
   tables: DumpTable[];
 }
 
-/** `POST /api/apps/:id/restore` — what the import did, incl. the fork to back out to. */
+/** What an import did, including the fork to back out to. */
 export interface RestoreResult {
   restored: string;
   tables: number;
@@ -1760,36 +1760,6 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sql }),
     }),
-  /** Move the app to its vertical's current prod version (rebind the scope). No-op if already current. */
-  updateApp: (scopeId: string, opts?: { snapshot?: boolean; ackExportBreak?: boolean }) =>
-    call<UpdateResult>(`/apps/${encodeURIComponent(scopeId)}/update`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        snapshot: opts?.snapshot ?? false,
-        ...(opts?.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
-      }),
-    }),
-  /** The app's pre-migration rewind points (#286), newest first. */
-  appBookmarks: (scopeId: string) =>
-    call<MigrationBookmark[]>(`/apps/${encodeURIComponent(scopeId)}/bookmarks`),
-  /** Rewind the app to a pre-migration bookmark (#286's backout) — schema AND data;
-   *  every write since the bookmark is discarded. Refused past the 24h window. */
-  rewindApp: (scopeId: string, bookmark: string) =>
-    call<{ rewindingTo: string }>(`/apps/${encodeURIComponent(scopeId)}/rewind`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ bookmark }),
-    }),
-  /** The app's data as a downloadable dump (PII-masked in connected mode). */
-  exportAppData: (scopeId: string) => call<AppDataDump>(`/apps/${encodeURIComponent(scopeId)}/export`),
-  /** Replace the app's data with an uploaded dump; a safety copy is forked first. */
-  restoreAppData: (scopeId: string, tables: DumpTable[]) =>
-    call<RestoreResult>(`/apps/${encodeURIComponent(scopeId)}/restore`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ tables }),
-    }),
   /** The app's env-spec + current values (secrets masked). */
   /** The app's owner seat (#925) — 501 in embedded mode, where no vertical runs. */
   appOwnerSeat: (scopeId: string) => call<OwnerSeatView>(`/apps/${encodeURIComponent(scopeId)}/owner-seat`),
@@ -1962,9 +1932,6 @@ export const api = {
     call<WorkflowPreview>(
       `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
     ),
-  /** Running vs the version an update would move to (#1236) — the last question before Update. */
-  releaseComparison: (scopeId: string) =>
-    call<ReleaseComparison>(`/apps/${encodeURIComponent(scopeId)}/release-comparison`),
 
   /**
    * The same series for ONE installed app (#1447) — tenant grain, so the answer is this
@@ -1989,9 +1956,6 @@ export const api = {
   appOverlays: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
     call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?${new URLSearchParams({ hours: String(hours), ...window })}`),
 
-  /** When this app's migrations actually ran (#1236) — its schema history. */
-  appMigrations: (scopeId: string) =>
-    call<AppMigrationsView>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
 
   /**
    * One record's event history (#1235) — payload, authorization chain, impersonation, PII class.
@@ -2072,18 +2036,6 @@ export const api = {
   appFieldReads: (scopeId: string, hours: number) =>
     call<FieldReadsView>(`/apps/${encodeURIComponent(scopeId)}/field-reads?hours=${hours}`),
 
-  // -- per-scope rollout + builder previews (#509) --------------------------
-  /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),
-   *  vs `updateApp` which always rebinds to wherever prod points. `snapshot` forks first. */
-  bindAppVersion: (scopeId: string, versionId: string, opts?: { snapshot?: boolean; ackExportBreak?: boolean }) =>
-    call<void>(`/apps/${encodeURIComponent(scopeId)}/bind`, {
-      method: 'POST',
-      body: JSON.stringify({
-        versionId,
-        ...(opts?.snapshot ? { snapshot: true } : {}),
-        ...(opts?.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
-      }),
-    }),
 };
 
 /**

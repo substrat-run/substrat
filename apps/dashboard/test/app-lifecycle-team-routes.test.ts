@@ -54,9 +54,12 @@ beforeAll(async () => {
     const owner = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: id, scopeId: dashboardScope, owner, slug: `team-${i}`, name: `Team ${i}` });
     await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'owner', principal: owner, tenantId: id, scopeId: dashboardScope });
-    const viewer = principalId.parse(ulid());
-    await host.admin.assignRole(staff, { principalId: viewer, roleKey: 'viewer', node: { tenantId: id, scopeId: null } });
-    await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'viewer', principal: viewer, tenantId: id, scopeId: dashboardScope });
+    for (const role of ['admin', 'member', 'viewer'] as const) {
+      const principal = principalId.parse(ulid());
+      const roleKey = role === 'viewer' && i === 1 ? 'admin' : role;
+      await host.admin.assignRole(staff, { principalId: principal, roleKey, node: { tenantId: id, scopeId: null } });
+      await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: role, principal, tenantId: id, scopeId: dashboardScope });
+    }
     await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/provision-app', {
       appScopeId: appScope[i]!, verticalSlug: 'acme/widgets', name: `App ${i}`,
     });
@@ -92,7 +95,7 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-const send = (as: 'owner' | 'viewer', method: string, path: string, body?: unknown) => app.request(path, {
+const send = (as: 'owner' | 'admin' | 'member' | 'viewer', method: string, path: string, body?: unknown) => app.request(path, {
   method,
   headers: { cookie: `sb_session=${as}; sb_team=${team[1]}`, 'content-type': 'application/json' },
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -136,5 +139,25 @@ it('refuses a viewer update even when the app already runs prod', async () => {
   const response = await send('viewer', 'POST', path('update'), {});
   expect(response.status).toBe(403);
   expect(problemDetail(await response.json())).toBe('permission denied: dashboard:provision-app');
-  expect(planeCalls.slice(before).every((call) => !call.includes('/version') && !call.includes('/binding-impact'))).toBe(true);
+  expect(planeCalls).toHaveLength(before);
+});
+
+it('keeps the rewind and restore gates in the path team', async () => {
+  const before = planeCalls.length;
+  const rewind = await send('viewer', 'POST', path('rewind'), { bookmark: 'before' });
+  expect(rewind.status).toBe(403);
+  expect(problemDetail(await rewind.json())).toBe('permission denied: dashboard:provision-app');
+  const restore = await send('viewer', 'POST', path('restore'), {
+    tables: [{ name: 't', ddl: 'CREATE TABLE t (x)', columns: ['x'], rows: [] }],
+  });
+  expect(restore.status).toBe(403);
+  expect(problemDetail(await restore.json())).toBe('permission denied: dashboard:restore-app-data');
+  expect(planeCalls).toHaveLength(before);
+});
+
+it('lets app managers update and bind through the path team', async () => {
+  for (const as of ['admin', 'member'] as const) {
+    expect((await send(as, 'POST', path('update'), {})).status).toBe(200);
+    expect((await send(as, 'POST', path('bind'), { versionId: version })).status).toBe(200);
+  }
 });

@@ -26,6 +26,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/list-app-events entries[].kind': 'the dashboard scope’s own event kinds (`APP_EVENT_KINDS`, held to its CHECK)',
   'dashboard/list-members entries[].status': 'the dashboard module’s own roster projection',
   'dashboard/remove-app removed': ACK,
+  'dashboard/bind-installed-app bound': ACK,
   'dashboard/revoke-invite revoked': ACK,
   'dashboard/leave-team left': ACK,
   'dashboard/delete-team deleted': ACK,

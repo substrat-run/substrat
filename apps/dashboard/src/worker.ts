@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type BindAcknowledgement, type ScopeDumpTable, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -128,7 +128,7 @@ const teamCookieOpts = (origin: string) => ({
 // what this DO runs and what `PERMISSIONS.md` documents can no longer drift. A
 // customer's app is its own deployment reached through the control plane; the
 // verticals an app can run are never bundled here (#978, D-33).
-export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
+export const ScopeDO: ReturnType<typeof defineScopeDO> = defineScopeDO(MODULES, {}, { permissions });
 export { ControlPlaneDO };
 
 const STAFF = platformActorId.parse('01JZ000000000000000000DAS1');
@@ -843,7 +843,6 @@ async function oidcProviderSlugsFor(
 // #1756: what an Update or a Bind may acknowledge — the plane refuses a version that drops an
 // export another app in this tenant imports, unless this says it was read. Strict, as the plane's
 // own is: a digest acknowledgement means nothing on a bind, and is refused rather than dropped.
-const bindAckBody = bindAcknowledgement.optional();
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -1802,38 +1801,6 @@ async function processMapIn(
 }
 
 /**
- * The per-version comparison (#1236): how the version this app RUNS behaves
- * beside the one an update would move it to — the last question before pressing
- * Update, answered from the same version-stamped 24h traffic the release ledger
- * reads. `update: null` = already on prod's head; unavailable metrics render as
- * unknown, never zero (the ledger's rule, for the ledger's reason).
- */
-app.get('/api/apps/:scopeId/release-comparison', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const scope = scopeId.parse(appRow.app_scope_id);
-  const slug = appRow.vertical_slug;
-  // `mine` decides ownership exactly as the Deployments tab does: an app installed
-  // from another team's vertical has no visible traffic, and the authority signals
-  // that with an EMPTY list rather than a throw — so `.catch()` never sees it and
-  // the comparison would read "not visible" as "zero". Ownership is resolved here,
-  // and the derivation is told, so unknown stays unknown.
-  const [deployment, boundVersionId, mine] = await Promise.all([
-    verticalDeploymentFromCp(cp, slug),
-    cp.boundVersionId(scope),
-    cp.listVerticals(),
-  ]);
-  const owned = mine.some((v) => v.slug === slug);
-  const metrics = owned ? await cp.observabilityMetrics(24, slug).catch(() => null) : null;
-  return c.json(deriveReleaseComparison(versionPair(deployment, boundVersionId), metrics, { owned }));
-});
-
-/**
  * What the RUNNING version of an app declares — its schedules and freshness expectations,
  * resolved exactly as the Model tab resolves the version: the bound one, else the prod
  * head. Shared by the schedules panel and the chart overlays so the two agree on which
@@ -2472,88 +2439,6 @@ app.post('/api/apps/:scopeId/query', async (c) => {
 });
 
 /**
- * Move an installed app to its vertical's current prod version — the rebind that
- * promotion alone doesn't do (an app stays pinned to its install-time version). Idempotent:
- * a no-op when already current. Authorized in the caller's own dashboard scope; the app
- * must be theirs.
- */
-app.post('/api/apps/:scopeId/update', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  // `snapshot` = fork-before-promote (§4): snapshot the data first when the update
-  // crosses a migration boundary. Body is optional — a bare POST updates as before.
-  // `acknowledge.exportBreak` (#1756): update even though prod drops an export another app in
-  // this tenant imports — the plane refuses it otherwise, and the refusal says so.
-  const body = z
-    .object({ snapshot: z.boolean().optional(), acknowledge: bindAckBody })
-    .parse(await c.req.json().catch(() => ({})));
-  const result = await updateApp(host, {
-    node,
-    appScopeId: scopeId.parse(appRow.app_scope_id),
-    verticalSlug: appRow.vertical_slug,
-    snapshot: body.snapshot,
-    acknowledge: body.acknowledge,
-    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
-  });
-  return c.json(result);
-});
-
-/**
- * Pin THIS app's scope to a specific admitted version of its vertical — the per-scope
- * rollout primitive (#509 (c)). `update` rebinds to wherever `prod` points; this binds an
- * arbitrary version, which is what a canary (tenant A ahead of the fleet) or a long-lived
- * test environment (rebound to head-of-main each merge) needs. Ownership is the same
- * list-apps check as update; the control plane refuses a cross-vertical or a non-admitted
- * version below the seam (a preview scope is the one carve-out, #513). `snapshot` forks the
- * data before a migration-crossing bind — the rollback point.
- */
-app.post('/api/apps/:scopeId/bind', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = z
-    .object({ versionId: z.string().min(1), snapshot: z.boolean().optional(), acknowledge: bindAckBody })
-    .parse(await c.req.json());
-  const target = scopeId.parse(appRow.app_scope_id);
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  // #1756: the apps this bind would break, asked first so the refusal names them.
-  if (!body.acknowledge?.exportBreak) {
-    const breaks = await cp.bindingImpact(target, body.versionId);
-    if (breaks.length > 0) throw new ExportBreakRefused(breaks);
-  }
-  try {
-    await cp.bindScopeVersion(target, body.versionId, { snapshot: body.snapshot, acknowledge: body.acknowledge });
-    return c.body(null, 204);
-  } catch (e) {
-    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
-    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind version' });
-  }
-});
-
-/**
- * #286: the PITR bookmarks an app recorded before its migration passes — the rewind
- * points the Deployments tab offers for a backout. Same ownership check as every
- * per-app route; connected-plane only (PITR is a Durable-Object-plane mechanism).
- */
-/**
- * One app's schema history (#1236): when each of its migrations actually ran.
- * The instants come from `_substrat_migrations.applied_at`, which the platform
- * has written since the table shipped and nothing read — every reader wanted
- * the frontier, so "when did my schema change" had no answer until now.
- *
- * Deliberately a LIST, not markers on the traffic chart: a migration applies to
- * one scope, while traffic is measured per script and a script serves many
- * scopes — so a per-scope line on a fleet-wide axis would be a drawn claim the
- * telemetry cannot support.
- */
-/**
  * Field coverage (#1321): which of the running version's declared fields is any
  * operation even capable of returning, and which are also erasable — a retention
  * argument rather than mere cleanup.
@@ -2853,106 +2738,108 @@ app.get('/api/apps/:scopeId/field-reads', async (c) => {
   }
 });
 
-app.get('/api/apps/:scopeId/migrations', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  // Availability rides the response rather than being inferred from emptiness by
-  // the client: `migrations: []` is a valid registration, so an empty list is a
-  // fact about the APP, while `available: false` is a fact about the READ.
-  const migrations = await cp.appliedMigrations(scopeId.parse(appRow.app_scope_id));
-  return c.json({ available: migrations !== null, migrations: migrations ?? [] });
-});
-
-app.get('/api/apps/:scopeId/bookmarks', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cp.migrationBookmarks(scopeId.parse(appRow.app_scope_id)));
-});
-
-/**
- * #286's backout: rewind an app to a pre-migration bookmark — schema AND data,
- * discarding every write since the bookmark. Deliberately loud in its contract:
- * the scope DO refuses a bookmark older than 24h, and the UI carries the caveat.
- * Audited on the control plane below the seam.
- */
-app.post('/api/apps/:scopeId/rewind', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = z.object({ bookmark: z.string().min(1) }).parse(await c.req.json());
-  await dash.invoke('dashboard/authorize-rewind', {});
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cp.rewindScope(scopeId.parse(appRow.app_scope_id), body.bookmark));
-});
-
-/**
- * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
- * `scope pull`/`scope restore`). GET hands back the app's data as a dump the CLI
- * and the Import button both accept; connected mode arrives MASKED from the CP
- * (this surface has no break-glass). POST loads an uploaded dump into the app,
- * replacing its data wholesale — the helper forks a safety copy first, so the
- * response names the fork to back out to. GET is the authority of managing the app;
- * POST is a team owner's or admin's (`dashboard:restore-app-data`, #2573).
- */
-app.get('/api/apps/:scopeId/export', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const dump = await exportAppData(host, {
-    node,
-    appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
-  });
-  return c.json(dump);
-});
-
-app.post('/api/apps/:scopeId/restore', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  // The upload is a pulled export or a local `.dump.json`. Any tenantId/scopeId in the file
-  // are provenance, never authority. The file's own scopeId, when it is one, rides along as a
-  // hint for the grant re-point only (#1869); anything else there is ignored, as before.
-  const body = z
-    .object({ tables: z.array(scopeDumpTable).min(1), scopeId: z.unknown().optional() })
-    .parse(await c.req.json());
-  const fileScope = scopeId.safeParse(body.scopeId);
-  const result = await restoreAppData(host, {
-    node,
-    appScopeId: scopeId.parse(appRow.app_scope_id),
-    tables: body.tables,
-    ...(fileScope.success ? { sourceScopeId: fileScope.data } : {}),
-    appHostname: appRow.hostname,
-    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
-  });
-  return c.json(result);
-});
-
 /** Look up an app only in the team named by the request path. */
 async function teamAppTarget({ host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   return { dash, appRow };
+}
+
+/** Move to prod, optionally snapshotting before a migration-crossing rebind. */
+async function updateInstalledAppIn(ctx: TeamContext, appScopeId: string, body: { snapshot?: boolean; acknowledge?: BindAcknowledgement }) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  return updateApp(host, {
+    node, appScopeId: scopeId.parse(appRow.app_scope_id), verticalSlug: appRow.vertical_slug,
+    snapshot: body.snapshot, acknowledge: body.acknowledge,
+    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
+  });
+}
+
+/** Pin one app to an admitted version. */
+async function bindInstalledAppIn(ctx: TeamContext, appScopeId: string, body: { versionId: string; snapshot?: boolean; acknowledge?: BindAcknowledgement }) {
+  const { c, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const target = scopeId.parse(appRow.app_scope_id);
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  if (!body.acknowledge?.exportBreak) {
+    const breaks = await cp.bindingImpact(target, body.versionId);
+    if (breaks.length > 0) throw new ExportBreakRefused(breaks);
+  }
+  try {
+    await cp.bindScopeVersion(target, body.versionId, { snapshot: body.snapshot, acknowledge: body.acknowledge });
+    return { bound: true as const };
+  } catch (e) {
+    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind version' });
+  }
+}
+
+/** Compare running and prod using version-stamped traffic; unavailable stays unknown. */
+async function appReleaseComparisonIn(ctx: TeamContext, appScopeId: string) {
+  const { c, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  const slug = appRow.vertical_slug;
+  // A vertical owned by another team has no visible metrics. Resolve ownership explicitly:
+  // an empty metrics list could also mean zero traffic.
+  const [deployment, boundVersionId, mine] = await Promise.all([
+    verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scopeId.parse(appRow.app_scope_id)), cp.listVerticals(),
+  ]);
+  const owned = mine.some((v) => v.slug === slug);
+  const metrics = owned ? await cp.observabilityMetrics(24, slug).catch(() => null) : null;
+  return deriveReleaseComparison(versionPair(deployment, boundVersionId), metrics, { owned });
+}
+
+/** Applied schema history is one app's history, not a fleet traffic marker. */
+async function appMigrationsIn(ctx: TeamContext, appScopeId: string) {
+  const { c, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const migrations = await controlPlaneFor(c.env, node.tenantId, node.principal)
+    .appliedMigrations(scopeId.parse(appRow.app_scope_id));
+  // Empty is a valid history; unavailable is a fact about the read.
+  return { available: migrations !== null, migrations: migrations ?? [] };
+}
+
+async function appBookmarksIn(ctx: TeamContext, appScopeId: string) {
+  const { c, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  return controlPlaneFor(c.env, node.tenantId, node.principal)
+    .migrationBookmarks(scopeId.parse(appRow.app_scope_id));
+}
+
+/** Rewind schema and data to a fresh bookmark; the plane enforces the age limit. */
+async function rewindAppIn(ctx: TeamContext, appScopeId: string, bookmark: string) {
+  const { c, node } = ctx;
+  const { dash, appRow } = await teamAppTarget(ctx, appScopeId);
+  await dash.invoke('dashboard/authorize-rewind', {});
+  return controlPlaneFor(c.env, node.tenantId, node.principal)
+    .rewindScope(scopeId.parse(appRow.app_scope_id), bookmark);
+}
+
+/** The connected export is masked by the plane after the dashboard-scope gate. */
+async function exportInstalledAppIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  return exportAppData(host, {
+    node, appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
+  });
+}
+
+/** The helper checks restore permission before its safety copy and data replacement. */
+async function restoreInstalledAppIn(ctx: TeamContext, appScopeId: string, tables: ScopeDumpTable[], sourceScopeId: unknown) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  // The uploaded file's source id is provenance for grant re-pointing, never the target.
+  const fileScope = scopeId.safeParse(sourceScopeId);
+  return restoreAppData(host, {
+    node, appScopeId: scopeId.parse(appRow.app_scope_id), tables,
+    ...(fileScope.success ? { sourceScopeId: fileScope.data } : {}),
+    appHostname: appRow.hostname,
+    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
+  });
 }
 
 /**
@@ -5922,6 +5809,14 @@ const routeHandlers = {
   },
   'dashboard/retry-app': async (ctx, { scopeId: failed }) => retryAppIn(ctx, failed),
   'dashboard/resume-app': async (ctx, { scopeId: stuck }) => resumeAppIn(ctx, stuck),
+  'dashboard/update-installed-app': async (ctx, { scopeId: app, ...body }) => updateInstalledAppIn(ctx, app, body),
+  'dashboard/bind-installed-app': async (ctx, { scopeId: app, ...body }) => bindInstalledAppIn(ctx, app, body),
+  'dashboard/list-app-bookmarks': async (ctx, { scopeId: app }) => appBookmarksIn(ctx, app),
+  'dashboard/list-app-migrations': async (ctx, { scopeId: app }) => appMigrationsIn(ctx, app),
+  'dashboard/get-app-release-comparison': async (ctx, { scopeId: app }) => appReleaseComparisonIn(ctx, app),
+  'dashboard/rewind-app': async (ctx, { scopeId: app, bookmark }) => rewindAppIn(ctx, app, bookmark),
+  'dashboard/export-installed-app': async (ctx, { scopeId: app }) => exportInstalledAppIn(ctx, app),
+  'dashboard/restore-installed-app': async (ctx, { scopeId: app, tables, sourceScopeId }) => restoreInstalledAppIn(ctx, app, tables, sourceScopeId),
   'dashboard/list-app-snapshots': async (ctx, { scopeId: app }) => listAppSnapshotsIn(ctx, app),
   'dashboard/create-app-snapshot': async (ctx, { scopeId: app, ttlDays }) => createAppSnapshotIn(ctx, app, ttlDays),
   'dashboard/delete-app-snapshot': async (ctx, { scopeId: app, snapshotId }) => deleteAppSnapshotIn(ctx, app, snapshotId),

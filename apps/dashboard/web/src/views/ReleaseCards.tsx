@@ -151,15 +151,15 @@ export function ReleaseComparisonCard({
     let live = true;
     // Unkeyed on the app, so clear before refetching: last app's numbers must not linger.
     setCmp(null);
-    api
-      .releaseComparison(app.app_scope_id)
+    teamApi(teamId)
+      .getAppReleaseComparison({ scopeId: app.app_scope_id })
       // Tolerated to nothing: a worker or plane predating the route costs the traffic line, not the card.
       .then((r) => live && setCmp(r))
       .catch(() => live && setCmp(null));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, running?.id, targetId]);
+  }, [teamId, app.app_scope_id, running?.id, targetId]);
 
   useEffect(() => {
     setPerms(null);
@@ -410,7 +410,7 @@ const SCHEMA_COLS = 'minmax(0, 1fr) 60px 70px 128px';
  * platform recording one — and reads as "before we recorded", never as unknown
  * noise. Older migrations have no cost stamp, so those cells read "—".
  */
-export function SchemaHistoryCard({ app }: { app: AppRow }) {
+export function SchemaHistoryCard({ teamId, app }: { teamId: string; app: AppRow }) {
   // Availability comes from the SERVER, never inferred from emptiness here: a
   // module may register `migrations: []`, so an empty list is a fact about the app,
   // while `available: false` is a fact about the read (a deployment that does not
@@ -425,15 +425,15 @@ export function SchemaHistoryCard({ app }: { app: AppRow }) {
     // effect with last app's rows still mounted — and a schema history attributed to
     // the wrong app is worse than an empty card for the moment the request is in flight.
     setView(null);
-    api
-      .appMigrations(app.app_scope_id)
+    teamApi(teamId)
+      .listAppMigrations({ scopeId: app.app_scope_id })
       .then((r) => live && setView(r))
       // A worker predating the route: the card cannot say anything true, so it says nothing.
       .catch(() => live && setView(null));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
 
   if (view === null) return null;
   const shown = view.migrations.slice(0, 8);

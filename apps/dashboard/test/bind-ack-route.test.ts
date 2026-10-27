@@ -139,7 +139,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
   // apps, and an Error carrying both, as `ApiError` does.
   const post = async (path: string, body: object): Promise<unknown> => {
     const res = await app.request(
-      `/api${path}`,
+      `/api/teams/${tenant}${path}`,
       { method: 'POST', headers: { 'content-type': 'application/json', cookie: `sb_session=${OWNER_SUB}` }, body: JSON.stringify(body) },
       env,
     );
@@ -169,7 +169,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
 
   it('the refusal carries the request id it was answered under (#2192), and nothing else beside the apps', async () => {
     const res = await app.request(
-      `/api/apps/${appScope}/update`,
+      `/api/teams/${tenant}/apps/${appScope}/update`,
       { method: 'POST', headers: { 'content-type': 'application/json', cookie: `sb_session=${OWNER_SUB}` }, body: '{}' },
       env,
     );
@@ -186,7 +186,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
       (on) => post(`/apps/${appScope}/bind`, { versionId: v.dropping, ...ack(on) }),
       (_refusal, apps) => (shown.push([...apps]), true),
     );
-    expect(r).toBeUndefined();
+    expect(r).toEqual({ bound: true });
     expect(shown).toHaveLength(1);
     expect(shown[0]).toMatchObject([{ vertical: CONSUMER, type: TYPE, schemaVersion: 1, incoming: null }]);
     expect(await boundTo()).toBe(v.dropping);

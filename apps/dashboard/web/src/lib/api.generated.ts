@@ -390,6 +390,13 @@ export interface DashboardClient {
   ask(input: { messages: ({ role: "user" | "assistant"; text: string })[] }): Promise<{ events: Record<string, unknown>[] }>;
 
   /**
+   * Pin this app to a specific admitted vertical version
+   *
+   * `POST /apps/{scopeId}/bind` — `dashboard/bind-installed-app`
+   */
+  bindInstalledApp(input: { scopeId: string; versionId: string; snapshot?: boolean; acknowledge?: { exportBreak?: boolean } }): Promise<{ bound: true }>;
+
+  /**
    * Attach a custom domain to a preview's scope: what makes a pinned preview a long-lived test environment
    *
    * `POST /deployments/{slug}/previews/{tag}/domain` — `dashboard/bind-preview-domain`
@@ -481,6 +488,13 @@ export interface DashboardClient {
   explanationsStatus(input: Record<string, never>): Promise<ExplanationView>;
 
   /**
+   * Export this app’s data as a dump
+   *
+   * `GET /apps/{scopeId}/export` — `dashboard/export-installed-app`
+   */
+  exportInstalledApp(input: { scopeId: string }): Promise<{ tenantId: string; scopeId: string; capturedAt: string; masked: boolean; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[] }>;
+
+  /**
    * One app's declared environment and its stored values; secrets are write-only
    *
    * `GET /apps/{scopeId}/env` — `dashboard/get-app-env`
@@ -493,6 +507,13 @@ export interface DashboardClient {
    * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
    */
   getAppInstallSteps(input: { scopeId: string }): Promise<InstallStep[]>;
+
+  /**
+   * Compare this app’s running version with the current prod version
+   *
+   * `GET /apps/{scopeId}/release-comparison` — `dashboard/get-app-release-comparison`
+   */
+  getAppReleaseComparison(input: { scopeId: string }): Promise<{ running: { versionId: string; version: string | null; requests: number | null; errors: number | null; cpuTimeP50: number | null; cpuTimeP99: number | null } | null; update: { versionId: string; version: string | null; requests: number | null; errors: number | null; cpuTimeP50: number | null; cpuTimeP99: number | null } | null; metricsAvailable: boolean; owned: boolean }>;
 
   /**
    * A vertical's release ledger: each version against its go-live, adoption and health
@@ -565,6 +586,13 @@ export interface DashboardClient {
   listAppAudit(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
 
   /**
+   * The pre-migration rewind points for this app
+   *
+   * `GET /apps/{scopeId}/bookmarks` — `dashboard/list-app-bookmarks`
+   */
+  listAppBookmarks(input: { scopeId: string }): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+
+  /**
    * One page of an app's lifecycle trail (Activity panel), newest first
    *
    * `GET /apps/{scopeId}/events` — `dashboard/list-app-events`
@@ -577,6 +605,13 @@ export interface DashboardClient {
    * `GET /apps/{scopeId}/hostnames` — `dashboard/list-app-hostnames`
    */
   listAppHostnames(input: { scopeId: string }): Promise<{ bindings: ({ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] })[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
+
+  /**
+   * The schema migrations this app has applied
+   *
+   * `GET /apps/{scopeId}/migrations` — `dashboard/list-app-migrations`
+   */
+  listAppMigrations(input: { scopeId: string }): Promise<{ available: boolean; migrations: ({ moduleId: string; version: string; appliedAt: string | null; durationMs: number | null; rowsChanged: number | null })[] }>;
 
   /**
    * The archive forks of one of this team's apps, newest first
@@ -747,6 +782,13 @@ export interface DashboardClient {
   resendInvite(input: { invitationId: string }): Promise<{ invitationId: string; acceptUrl: string; emailDelivered: boolean }>;
 
   /**
+   * Replace this app’s data from an uploaded dump after making a safety copy
+   *
+   * `POST /apps/{scopeId}/restore` — `dashboard/restore-installed-app`
+   */
+  restoreInstalledApp(input: { scopeId: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; sourceScopeId?: unknown }): Promise<{ restored: string; tables: number; safetyCopyId: string }>;
+
+  /**
    * Finish the install of an app stuck provisioning, in place (409 unless it is)
    *
    * `POST /apps/{scopeId}/resume` — `dashboard/resume-app`
@@ -789,6 +831,13 @@ export interface DashboardClient {
   revokeInvite(input: { invitationId: string }): Promise<{ revoked: true }>;
 
   /**
+   * Rewind this app to a pre-migration bookmark
+   *
+   * `POST /apps/{scopeId}/rewind` — `dashboard/rewind-app`
+   */
+  rewindApp(input: { scopeId: string; bookmark: string }): Promise<{ rewindingTo: string }>;
+
+  /**
    * Enable or disable email sending across all installations of this team’s vertical
    *
    * `POST /apps/{scopeId}/email-sender` — `dashboard/set-app-email-sender`
@@ -829,6 +878,13 @@ export interface DashboardClient {
    * `GET /observability/tenant-metrics-series` — `dashboard/tenant-metrics-series`
    */
   tenantMetricsSeries(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ scopeId: string; start: string; bucketMinutes: number; requests: number; errors: number; class2xx?: number; class3xx?: number; class4xx?: number; durationP50: number; durationP95?: number }[]>;
+
+  /**
+   * Move this app to the current prod version of its vertical
+   *
+   * `POST /apps/{scopeId}/update` — `dashboard/update-installed-app`
+   */
+  updateInstalledApp(input: { scopeId: string; snapshot?: boolean; acknowledge?: { exportBreak?: boolean } }): Promise<{ updated: boolean; version: string | null; previousVersion: string | null }>;
 
   /**
    * Re-poll a custom domain's issuance ("check again")
@@ -933,6 +989,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/list`, "GET", undefined, omit(input, ["scopeId"])),
     ask: (input: Args) =>
       send("/assistant/ask", "POST", input, undefined),
+    bindInstalledApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/bind`, "POST", omit(input, ["scopeId"]), undefined),
     bindPreviewDomain: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
     businessVolumes: (input: Args) =>
@@ -959,10 +1017,14 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/delete", "POST", input, undefined),
     explanationsStatus: (input: Args) =>
       send("/explanations", "GET", undefined, input),
+    exportInstalledApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/export`, "GET", undefined, omit(input, ["scopeId"])),
     getAppEnv: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "GET", undefined, omit(input, ["scopeId"])),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppReleaseComparison: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/release-comparison`, "GET", undefined, omit(input, ["scopeId"])),
     getDeploymentReleases: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/releases`, "GET", undefined, omit(input, ["slug"])),
     getDeploymentTraffic: (input: Args) =>
@@ -983,10 +1045,14 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/leave", "POST", undefined, undefined),
     listAppAudit: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppBookmarks: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/bookmarks`, "GET", undefined, omit(input, ["scopeId"])),
     listAppEvents: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/events`, "GET", undefined, omit(input, ["scopeId"])),
     listAppHostnames: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppMigrations: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/migrations`, "GET", undefined, omit(input, ["scopeId"])),
     listAppSnapshots: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/snapshots`, "GET", undefined, omit(input, ["scopeId"])),
     listApps: (input: Args) =>
@@ -1035,6 +1101,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/members/${encodeURIComponent(String(input.memberId))}`, "DELETE", undefined, omit(input, ["memberId"])),
     resendInvite: (input: Args) =>
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}/resend`, "POST", omit(input, ["invitationId"]), undefined),
+    restoreInstalledApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/restore`, "POST", omit(input, ["scopeId"]), undefined),
     resumeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/resume`, "POST", omit(input, ["scopeId"]), undefined),
     retireScopes: (input: Args) =>
@@ -1047,6 +1115,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     revokeInvite: (input: Args) =>
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}`, "DELETE", undefined, omit(input, ["invitationId"])),
+    rewindApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/rewind`, "POST", omit(input, ["scopeId"]), undefined),
     setAppEmailSender: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "POST", omit(input, ["scopeId"]), undefined),
     setAppEnv: (input: Args) =>
@@ -1059,6 +1129,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/observability/traffic", "GET", undefined, input),
     tenantMetricsSeries: (input: Args) =>
       send("/observability/tenant-metrics-series", "GET", undefined, input),
+    updateInstalledApp: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/update`, "POST", omit(input, ["scopeId"]), undefined),
     verifyDomain: (input: Args) =>
       send(`/domains/${encodeURIComponent(String(input.hostname))}/verify`, "POST", omit(input, ["hostname"]), undefined),
     writeFindingExplanation: (input: Args) =>

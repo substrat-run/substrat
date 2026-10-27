@@ -146,7 +146,7 @@ export function AppDetail({
   authServers = [],
   teamApps = [],
   canRestore,
-  canRewind,
+  canManageApp,
 }: {
   /** The team the tab is on — hostname calls name it in their URL (#2170). */
   teamId: string;
@@ -160,8 +160,8 @@ export function AppDetail({
   teamApps?: readonly string[];
   /** #2573: whether to draw Import — a team owner's or admin's act. A hint; the server refuses. */
   canRestore: boolean;
-  /** Whether to draw Back out; the server checks dashboard:provision-app. */
-  canRewind: boolean;
+  /** Whether to draw version changes and Back out; the server checks dashboard:provision-app. */
+  canManageApp: boolean;
 }) {
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
@@ -248,7 +248,7 @@ export function AppDetail({
           canRestore={canRestore}
         />
       )}
-      {main === 'deployments' && <Deployments teamId={teamId} app={app} canRewind={canRewind} />}
+      {main === 'deployments' && <Deployments teamId={teamId} app={app} canManageApp={canManageApp} />}
       {main === 'settings' && (
         <Settings
           teamId={teamId}
@@ -758,7 +758,7 @@ function Timeline({ items }: { items: Array<{ dot: TimelineDot; body: React.Reac
 /** Versions read while looking for the newest admitted push, before the look is given up. */
 const ADMITTED_SEARCH_CAP = 200;
 
-export function Deployments({ teamId, app, canRewind }: { teamId: string; app: AppRow; canRewind: boolean }) {
+export function Deployments({ teamId, app, canManageApp }: { teamId: string; app: AppRow; canManageApp: boolean }) {
   const [dep, setDep] = useState<AppDeployments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -791,14 +791,14 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
-    api
-      .appBookmarks(app.app_scope_id)
+    teamApi(teamId)
+      .listAppBookmarks({ scopeId: app.app_scope_id })
       .then((b) => live && setBookmarks(b))
       .catch(() => undefined); // no bookmarks surface (embedded/dev) → simply no backout offer
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, nonce]);
+  }, [teamId, app.app_scope_id, nonce]);
 
   const ledger = useLedger(teamId, dep);
 
@@ -903,7 +903,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
     setNote(null);
     try {
       const r = await sendWithExportBreakAck(
-        (ackExportBreak) => api.updateApp(app.app_scope_id, { snapshot: snapFirst, ackExportBreak }),
+        (ackExportBreak) => teamApi(teamId).updateInstalledApp({ scopeId: app.app_scope_id, snapshot: snapFirst, ...(ackExportBreak ? { acknowledge: { exportBreak: true } } : {}) }),
         confirmExportBreak,
       );
       if (r === 'cancelled') {
@@ -936,7 +936,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
     setNote(null);
     try {
       const r = await sendWithExportBreakAck(
-        (ackExportBreak) => api.bindAppVersion(app.app_scope_id, v.id, { snapshot: snap, ackExportBreak }),
+        (ackExportBreak) => teamApi(teamId).bindInstalledApp({ scopeId: app.app_scope_id, versionId: v.id, snapshot: snap, ...(ackExportBreak ? { acknowledge: { exportBreak: true } } : {}) }),
         confirmExportBreak,
       );
       if (r === 'cancelled') {
@@ -964,7 +964,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
     setUpdating(true);
     setNote(null);
     try {
-      await api.rewindApp(app.app_scope_id, bookmark.bookmark);
+      await teamApi(teamId).rewindApp({ scopeId: app.app_scope_id, bookmark: bookmark.bookmark });
       setNote('Rewinding — the app restarts on its pre-migration data in a few seconds.');
       setBookmarks([]);
       setNonce((n) => n + 1);
@@ -1000,7 +1000,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
               <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
               Snapshot data first
             </label>
-            <Button onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update to latest'}</Button>
+            {canManageApp && <Button onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update to latest'}</Button>}
           </div>
         )}
       </div>
@@ -1021,7 +1021,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
                 <input type="checkbox" checked={snapFirst} onChange={(e) => setSnapFirst(e.target.checked)} />
                 Snapshot data first
               </label>
-              <Button size="sm" onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update this app'}</Button>
+              {canManageApp && <Button size="sm" onClick={doUpdate} disabled={updating}>{updating ? 'Updating…' : 'Update this app'}</Button>}
             </div>
           ) : target?.state === 'unpromoted' ? (
             // Promoting is a fleet move with its own permission and migration review, which
@@ -1062,7 +1062,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
               If the update went wrong you can rewind to just before it — every change since is discarded.
             </span>
             <div style={{ flex: 1 }} />
-            {canRewind && <Button onClick={() => doRewind(fresh)} disabled={updating}>Back out</Button>}
+            {canManageApp && <Button onClick={() => doRewind(fresh)} disabled={updating}>Back out</Button>}
           </div>
         );
       })()}
@@ -1075,7 +1075,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
       </HonestyBanner>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
         <ReleasesCard ledger={ledger} onPick={pickVersion} />
-        <SchemaHistoryCard app={app} />
+        <SchemaHistoryCard teamId={teamId} app={app} />
       </div>
       {dep.versions.length === 0 ? (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>No versions pushed to the registry yet.</div>
@@ -1107,7 +1107,7 @@ export function Deployments({ teamId, app, canRewind }: { teamId: string; app: A
                   <Button variant="ghost" size="sm" onClick={() => setOpenAssets(openAssets === v.id ? null : v.id)}>
                     {openAssets === v.id ? 'Hide assets' : 'Assets'}
                   </Button>
-                  {v.admission === 'admitted' && v.id !== dep.boundVersionId ? (
+                  {canManageApp && v.admission === 'admitted' && v.id !== dep.boundVersionId ? (
                     <Button variant="ghost" size="sm" disabled={updating} onClick={() => void doBind(v)}>Bind</Button>
                   ) : null}
                 </span>
@@ -2125,7 +2125,7 @@ function Previews({ teamId, app }: { teamId: string; app: AppRow }) {
  * the Previews tab). Import is a team owner's or admin's (#2573): a restore replaces
  * the app's permission state with the file's too.
  */
-function ExportImport({ app, canRestore }: { app: AppRow; canRestore: boolean }) {
+function ExportImport({ teamId, app, canRestore }: { teamId: string; app: AppRow; canRestore: boolean }) {
   const [exporting, setExporting] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [pending, setPending] = useState<{ name: string; tables: DumpTable[]; rows: number } | null>(null);
@@ -2140,7 +2140,7 @@ function ExportImport({ app, canRestore }: { app: AppRow; canRestore: boolean })
         setNote('Export is not available in the preview.');
         return;
       }
-      const dump = await api.exportAppData(app.app_scope_id);
+      const dump = await teamApi(teamId).exportInstalledApp({ scopeId: app.app_scope_id });
       const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -2185,7 +2185,7 @@ function ExportImport({ app, canRestore }: { app: AppRow; canRestore: boolean })
       if (DEV_MOCK) {
         setNote('Import is not available in the preview.');
       } else {
-        const r = await api.restoreAppData(app.app_scope_id, pending.tables);
+        const r = await teamApi(teamId).restoreInstalledApp({ scopeId: app.app_scope_id, tables: pending.tables });
         setNote(`Imported ${r.tables} tables — the app now serves the uploaded data. The previous data lives on as preview ${shortId(r.safetyCopyId)} in the Previews tab.`);
       }
       setPending(null);
@@ -3136,7 +3136,7 @@ export function Data({ teamId, app, section, onSection, canRestore }: { teamId: 
         </div>
       )}
       {section === 'previews' && <Previews teamId={teamId} app={app} />}
-      {section === 'export' && <ExportImport app={app} canRestore={canRestore} />}
+      {section === 'export' && <ExportImport teamId={teamId} app={app} canRestore={canRestore} />}
     </div>
   );
 }
