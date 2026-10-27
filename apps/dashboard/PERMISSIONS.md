@@ -63,6 +63,7 @@ shapes.
 | `dashboard/authorize-findings-change` | `dashboard:manage-findings` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-findings-read` | `dashboard:read-findings` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-restore` | `dashboard:restore-app-data` | the scope | `@substrat-run/dashboard` |
+| `dashboard/authorize-rewind` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/authorize-scope-change` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/begin-connection` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
 | `dashboard/bind-app-hostname` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
@@ -87,6 +88,7 @@ shapes.
 | `dashboard/mark-app-active` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/mark-app-failed` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/mint-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
+| `dashboard/my-role` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
 | `dashboard/preview-invite` | — none — | nothing: Runs before the caller is a member, so there is no role to check: the authority is the signed invite token the worker verifies before invoking, and it returns only that invitation’s own address, only while open | `@substrat-run/dashboard` |
 | `dashboard/provision-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `dashboard/reconcile-app-vertical` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |

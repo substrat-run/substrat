@@ -62,7 +62,7 @@ describe('Deployments tab — the Update action', () => {
 
   const render = async (dep: AppDeployments) => {
     vi.spyOn(api, 'appDeployments').mockResolvedValue(dep);
-    await act(async () => root.render(<Deployments teamId="T1" app={app} />));
+    await act(async () => root.render(<Deployments teamId="T1" app={app} canRewind />));
   };
   const updateButtons = () => [...container.querySelectorAll('button')].filter((b) => /^Update (this app|to latest)$/.test(b.textContent ?? ''));
   const comparisonHeader = () => [...container.querySelectorAll('span')].find((s) => s.textContent === 'Release comparison')!.parentElement!;
@@ -113,7 +113,7 @@ describe('Deployments tab — the Update action', () => {
 
     it('walks older pages until an admitted version is found, then offers the promotion', async () => {
       const spy = vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => Promise.resolve(o?.cursor === 'c1' ? page2 : page1));
-      await act(async () => root.render(<Deployments teamId="T1" app={app} />));
+      await act(async () => root.render(<Deployments teamId="T1" app={app} canRewind />));
       expect(spy).toHaveBeenCalledTimes(2);
       const header = comparisonHeader();
       expect(header.textContent).toContain('0.4.0-beta.7');
@@ -122,7 +122,7 @@ describe('Deployments tab — the Update action', () => {
 
     it('when the look fails, says it does not know rather than claiming the latest', async () => {
       vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => (o?.cursor === 'c1' ? Promise.reject(new Error('down')) : Promise.resolve(page1)));
-      await act(async () => root.render(<Deployments teamId="T1" app={app} />));
+      await act(async () => root.render(<Deployments teamId="T1" app={app} canRewind />));
       expect(container.textContent).toContain('Could not check whether a newer version is waiting for prod.');
       expect(container.textContent).not.toContain('Running the latest version');
       expect(updateButtons()).toHaveLength(0);

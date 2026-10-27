@@ -968,6 +968,17 @@ app.get('/api/me', async (c) => {
   const node = await resolveNode(host, STAFF, memo, memberships, getCookie(c, TEAM_COOKIE));
   rememberNode(memo, user.id, getCookie(c, TEAM_COOKIE), node, Date.now());
   if (!node) return problem(c, 401, 'unauthorized');
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  let roleKey = await dash.invoke<string | null>('dashboard/my-role', {});
+  if (roleKey === null) {
+    // Legacy teams can still have an empty roster at the first /api/me call. Use
+    // the same guarded heal as resolveAccount before the SPA stores this role hint.
+    const ownerEmail = identifyEmail(c.env, user).email;
+    if (ownerEmail) {
+      await ensureRosterSeeded(host, STAFF, node, ownerEmail);
+      roleKey = await dash.invoke<string | null>('dashboard/my-role', {});
+    }
+  }
   // Re-mirror this login's links into the shared plane's directory off the hot
   // path — the backfill for teams created before the mirror existed, and the
   // self-heal when a best-effort mirror was missed (see mirrorBuilderIdentity).
@@ -982,6 +993,7 @@ app.get('/api/me', async (c) => {
     name: user.name ?? null,
     teams: teamsOf(memberships),
     currentTeamId: node.tenantId,
+    roleKey,
   });
 });
 
@@ -2876,6 +2888,7 @@ app.post('/api/apps/:scopeId/rewind', async (c) => {
   const appRow = await appByScopeId(dash, c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z.object({ bookmark: z.string().min(1) }).parse(await c.req.json());
+  await dash.invoke('dashboard/authorize-rewind', {});
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(await cp.rewindScope(scopeId.parse(appRow.app_scope_id), body.bookmark));
 });

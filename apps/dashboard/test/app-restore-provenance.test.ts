@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { platformActorId, principalId, problemDetail, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, ROLES, provisionDashboard } from '../src/index.js';
 
@@ -13,6 +13,7 @@ import { MODULES, ROLES, provisionDashboard } from '../src/index.js';
  * `tenantId`/`scopeId` (which pick the keys that open sealed payloads) are unchanged by it.
  * And the route is a team owner's or admin's (#2573): a member, who manages the team's apps
  * otherwise, is refused before the plane is asked for anything, the safety copy included.
+ * Rewind uses the same check-only operation pattern, with the app-management permission.
  *
  * Driven through the WORKER, with the plane behind the service binding a recorder, the way
  * `app-requests.test.ts` drives it; the seams the worker cannot run in Node are replaced the
@@ -53,7 +54,7 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
 
-describe('the app restore route: who may upload (#2573), and the re-point hint (#1869)', () => {
+describe('the app restore and rewind routes', () => {
   let dir: string;
   let host: SqliteScopeHost;
   const tenant = tenantId.parse(ulid());
@@ -79,7 +80,7 @@ describe('the app restore route: who may upload (#2573), and the re-point hint (
     const link = (sub: string, principal: typeof owner) =>
       host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: sub, principal, tenantId: tenant, scopeId: dashScope });
     await link('sub-owner', owner);
-    for (const role of ['admin', 'member'] as const) {
+    for (const role of ['admin', 'member', 'viewer'] as const) {
       const p = principalId.parse(ulid());
       await host.admin.assignRole(staff, { principalId: p, roleKey: role, node: { tenantId: tenant, scopeId: null } });
       await link(`sub-${role}`, p);
@@ -102,6 +103,9 @@ describe('the app restore route: who may upload (#2573), and the re-point hint (
             restores.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
             return Response.json({ restored: appScope, tables: 1 });
           }
+          if (path.endsWith('/rewind')) {
+            return Response.json({ rewindingTo: 'bookmark-1' });
+          }
           return Response.json({ entries: [] });
         },
       },
@@ -123,6 +127,31 @@ describe('the app restore route: who may upload (#2573), and the re-point hint (
       },
       env,
     );
+
+  const rewind = (as: 'owner' | 'admin' | 'member' | 'viewer') =>
+    app.request(
+      `/api/apps/${appScope}/rewind`,
+      {
+        method: 'POST',
+        headers: { cookie: `sb_session=sub-${as}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ bookmark: 'bookmark-1' }),
+      },
+      env,
+    );
+
+  it('a viewer is refused rewind with 403 before any plane call', async () => {
+    const res = await rewind('viewer');
+    expect(res.status).toBe(403);
+    expect(problemDetail(await res.json())).toBe('permission denied: dashboard:provision-app');
+    expect(planeCalls).toEqual([]);
+  });
+
+  it('owner, admin, and member may rewind', async () => {
+    for (const role of ['owner', 'admin', 'member'] as const) {
+      expect((await rewind(role)).status).toBe(200);
+    }
+    expect(planeCalls.filter((path) => path.endsWith('/rewind'))).toHaveLength(3);
+  });
 
   it('a member is refused with 403 before the plane is asked for anything, the safety copy included', async () => {
     const res = await upload({}, 'member');

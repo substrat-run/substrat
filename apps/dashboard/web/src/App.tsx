@@ -946,9 +946,10 @@ export function App() {
   if (['audit', 'domains', 'team', 'integrations', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
-  // A hint for what to draw, never the gate: the dashboard's own scope refuses. A roster not loaded
-  // yet draws the controls, so a slow read never hides one.
-  const isTeamAdmin = ['owner', 'admin'].includes(members.find((m) => m.principal === me.principal)?.role_key ?? 'owner');
+  // Hints for what to draw, never the gate: /api/me reads the caller's own role,
+  // independent of the roster page shown on Team. The dashboard scope still refuses.
+  const isTeamAdmin = ['owner', 'admin'].includes(me.roleKey ?? '');
+  const canRewind = ['owner', 'admin', 'member'].includes(me.roleKey ?? '');
 
   return (
     <DashShell
@@ -997,6 +998,7 @@ export function App() {
           authServers={authServers}
           teamApps={apps.map((a) => a.app_scope_id)}
           canRestore={isTeamAdmin}
+          canRewind={canRewind}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight — or older pages are still being

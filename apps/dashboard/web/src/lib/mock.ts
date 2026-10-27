@@ -18,6 +18,7 @@ export const MOCK_ME: Me = {
   name: 'Dana',
   // Two teams so the switcher is exercised in dev-preview (one login, several teams).
   currentTeamId: '01J2Q8Z3V9K4W7X2M5N6P7TNT0' as Me['currentTeamId'],
+  roleKey: 'owner',
   teams: [
     { id: '01J2Q8Z3V9K4W7X2M5N6P7TNT0' as Me['tenant'], name: 'Acme', slug: 'acme' },
     { id: '01J2Q8Z3V9K4W7X2M5N6P7TNT1' as Me['tenant'], name: 'Northwind', slug: 'northwind' },

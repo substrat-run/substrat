@@ -103,7 +103,7 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     ] as const) {
       await call(own, name, { appScopeId: app, detail: 'detail' });
     }
-    for (const name of ['dashboard/authorize-scope-change', 'dashboard/authorize-findings-read', 'dashboard/authorize-findings-change', 'dashboard/authorize-restore'] as const) {
+    for (const name of ['dashboard/authorize-scope-change', 'dashboard/authorize-findings-read', 'dashboard/authorize-findings-change', 'dashboard/authorize-restore', 'dashboard/authorize-rewind'] as const) {
       await call(own, name);
     }
     await call(own, 'dashboard/provision-app', { appScopeId: stuck, verticalSlug: 'protocol', name: 'Two' });
@@ -130,6 +130,7 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     const org = orgId.parse(ulid());
     await host.admin.createOrg(staff, { id: org, tenantId: node.tenantId, slug: 'team', name: 'Acme' });
     await call(own, 'dashboard/init-team', { orgId: org, ownerEmail: 'owner@acme.test' });
+    expect(await call<string | null>(own, 'dashboard/my-role')).toBe('owner');
     const { invitationId } = await call<{ invitationId: string }>(own, 'dashboard/invite-member', { email: 'jane@acme.test', roleKey: 'member' });
     const jane = principalId.parse(ulid());
     const janeScope = await host.getScope(jane, node.tenantId, node.scopeId);

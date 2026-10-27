@@ -795,6 +795,7 @@ const authorizeFindingsChangeOp = checkOnly(DASHBOARD_PERM.manageFindings);
  * after the fork, naming the copy, and asks the same key again.
  */
 const authorizeRestoreOp = checkOnly(DASHBOARD_PERM.restoreAppData);
+const authorizeRewindOp = checkOnly(DASHBOARD_PERM.provisionApp);
 
 const resumeAppInput = z.object({ appScopeId: z.string().min(1) });
 
@@ -1392,6 +1393,15 @@ const listMembersOp: OperationHandler<PagedInput, Page<DashboardMemberRow>> = as
   return mapPage(page, (row) => joinedAs(ctx, row));
 };
 
+/** The caller's role without paging through the roster displayed on the Team page. */
+const myRoleOp: OperationHandler<undefined, string | null> = async (ctx) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.read));
+  return ctx.sql.query<{ role_key: string }>(
+    "SELECT role_key FROM dashboard_members WHERE principal = ? AND status IN ('active','joining')",
+    [ctx.principal],
+  )[0]?.role_key ?? null;
+};
+
 /**
  * A 'joining' row as it actually stands (#1184): the membership executor's journal for the
  * request its accept emitted. Read, never written back — a read must not mutate (#964).
@@ -1927,6 +1937,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     permission: DASHBOARD_PERM.restoreAppData,
     output: ok,
   },
+  'dashboard/authorize-rewind': {
+    summary: 'Answer whether the caller may rewind an app to a migration bookmark',
+    permission: DASHBOARD_PERM.provisionApp,
+    output: ok,
+  },
   'dashboard/mark-app-failed': {
     summary: 'Mark an app’s install failed',
     permission: DASHBOARD_PERM.provisionApp,
@@ -2101,6 +2116,11 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     // roster route serves one page at a time. No declared input: the host hands a paged read an empty page request.
     paged: { sortKey: 'id', order: 'desc' },
   },
+  'dashboard/my-role': {
+    summary: 'Read the caller’s role on this team',
+    permission: DASHBOARD_PERM.read,
+    output: z.string().nullable(),
+  },
   'dashboard/remove-member': {
     summary: 'Remove a member from the team',
     permission: DASHBOARD_PERM.manageMembers,
@@ -2176,6 +2196,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/authorize-findings-read': authorizeFindingsReadOp,
     'dashboard/authorize-findings-change': authorizeFindingsChangeOp,
     'dashboard/authorize-restore': authorizeRestoreOp,
+    'dashboard/authorize-rewind': authorizeRewindOp,
     'dashboard/mark-app-failed': markAppFailedOp,
     'dashboard/record-install-step': recordInstallStepOp,
     'dashboard/install-steps': installStepsOp,
@@ -2196,6 +2217,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/invite-link': inviteLinkOp,
     'dashboard/revoke-invite': revokeInviteOp,
     'dashboard/list-members': listMembersOp,
+    'dashboard/my-role': myRoleOp,
     'dashboard/remove-member': removeMemberOp,
     'dashboard/leave-self': leaveSelfOp,
     'dashboard/delete-team': deleteTeamOp,
