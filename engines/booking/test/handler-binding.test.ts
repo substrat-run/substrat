@@ -16,7 +16,7 @@
  * `BoundOperations`, which the binder produces, and boundary-lint R11 refuses the one
  * spelling a type cannot see — a cast of the whole map.
  */
-import { describe, expect, it } from 'vitest';
+import { handlerBindingSuite } from '@substrat-run/engine-test-kit/suites';
 import type { HandlerInput, HandlerOutput, OperationImpl } from '@substrat-run/contracts';
 import type { OperationContext } from '@substrat-run/kernel';
 
@@ -54,8 +54,4 @@ export const inputUndeclared: Handlers['booking/get'] = async (
   return declared<Out<'booking/get'>>();
 };
 
-describe('#959 engine-booking handler binding', () => {
-  it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(bookingModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(bookingOperations).sort());
-  });
-});
+handlerBindingSuite('booking', bookingModule, bookingOperations);
