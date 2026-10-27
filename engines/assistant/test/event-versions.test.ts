@@ -1,4 +1,3 @@
-/** Pinned shipped event versions; the suite checks the manifest and every emission. */
 import { expect } from 'vitest';
 import { eventVersionSuite } from '@substrat-run/engine-test-kit/suites';
 import { assistantEventVersions, emitAssistantEvent } from '../src/events.js';

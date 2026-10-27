@@ -1,4 +1,3 @@
-/** Pinned shipped event versions; the suite checks the manifest and every emission. */
 import { eventVersionSuite } from '@substrat-run/engine-test-kit/suites';
 import { invitesEventVersions, emitInvitesEvent } from '../src/events.js';
 import { invitesManifest } from '../src/index.js';
