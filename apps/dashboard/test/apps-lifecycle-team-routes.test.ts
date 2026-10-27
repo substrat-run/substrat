@@ -341,7 +341,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
     });
   });
 
-  it('the declared app writes include lifecycle, environment and email actions', () => {
+  it('the declared app writes include lifecycle, environment, preview and email actions', () => {
     expect(
       Object.entries(dashboardRoutes)
         .filter(([name, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps') && !name.includes('hostname'))
@@ -350,12 +350,14 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
     ).toEqual([
       'DELETE /apps/{id} dashboard/remove-app',
       'DELETE /apps/{scopeId}/env/{key} dashboard/delete-app-env',
+      'DELETE /apps/{scopeId}/snapshots/{snapshotId} dashboard/delete-app-snapshot',
       'POST /apps dashboard/install-app',
       'POST /apps/{scopeId}/email-sender dashboard/set-app-email-sender',
       // #1749: files an AI note in the team's scope; its team-from-path refusal is in explanations-route.test.ts.
       'POST /apps/{scopeId}/processes/note dashboard/write-process-note',
       'POST /apps/{scopeId}/resume dashboard/resume-app',
       'POST /apps/{scopeId}/retry dashboard/retry-app',
+      'POST /apps/{scopeId}/snapshots dashboard/create-app-snapshot',
       'PUT /apps/{scopeId}/env dashboard/set-app-env',
     ]);
   });
