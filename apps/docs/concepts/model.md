@@ -708,6 +708,13 @@ state is its lifecycle's. A row with children is never a derived delete, because
 your decision. There are no hooks around a derived handler: an operation that needs one more
 step than its shape is authored, and says why.
 
+**Decided ([#2163](https://github.com/substrat-run/substrat/issues/2163)):** declared
+`before`/`after` hooks remain deferred. The two parent-scoped
+lists that motivated them now derive without a hook, and the remaining authored create and
+list reasons in [#2162](https://github.com/substrat-run/substrat/pull/2162) did not describe
+one extra step. Revisit the recorded hook design when an `authored` reason does describe
+one extra step beside an otherwise correct derived body.
+
 `operationsFor` leaves a derived operation out of the map it requires. Handing it a handler is
 a compile error, and at load too if the map was cast.
 
