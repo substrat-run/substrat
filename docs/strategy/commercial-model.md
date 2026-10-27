@@ -258,6 +258,16 @@ tightly-admitted **much longer** than verticals; "installing" one provisions a p
 connection with OAuth/token entry, not a toggle; and first-party premium connectors carry
 *your* SLA when they break.
 
+> **Narrowed by [D-64](../decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) (proposed).**
+> The surface above is code running in the control plane with `HostAdmin`. A connector a vertical
+> defines for itself runs in that vertical's own worker and is handed one connection — one the tenant
+> connected for that vertical — so it can reach no other vertical's or tenant's credential, and its
+> worst case is what a vertical holding its own tenant's credential could already do. That tier needs
+> no admission. The caveat holds in full for the **listed**
+> tier, where a connector would hold other verticals' tenants' credentials: listing one stays
+> staff-reviewed, like listing a vertical (D-36). See
+> [vertical-connectors.md](../architecture/vertical-connectors.md) §8.
+
 ## 6. What may be metered — meter everything, bill the few
 
 The spine makes every invocation countable and per-tenant attributable — a real edge. But

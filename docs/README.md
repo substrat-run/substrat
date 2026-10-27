@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->121 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->122 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -162,6 +162,7 @@ How the platform works **today** — present tense. A document here may not open
 | [signature-contact-carrier.md](architecture/signature-contact-carrier.md) | `built` | Reaching a signatory without putting them in the spine. |
 | [sub-transactions.md](architecture/sub-transactions.md) | `built` | Sub-transactions at the engine seam: ctx.atomic. |
 | [vertical-auth-detach.md](architecture/vertical-auth-detach.md) | `built` | Pick your issuer at install. All four phases implemented. |
+| [vertical-connectors.md](architecture/vertical-connectors.md) | `building` | A vertical defines its own connector, ships it with substrat push, and the platform runs it in the vertical's worker. |
 
 ### `architecture/builder/`
 

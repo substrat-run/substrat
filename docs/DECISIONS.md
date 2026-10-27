@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-121 decisions · 63 plan · 58 kernel
+122 decisions · 64 plan · 58 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -29,7 +29,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-15](decisions/D-015-spec-first-contracts.md) | 2026-07-12 | plan | Spec-first contracts |  |
 | [D-16](decisions/D-016-identity-swappable-adapter-our-auth-platform-as-default.md) | 2026-07-12 | plan | Identity = swappable adapter (our auth platform as default) |  |
 | [D-17](decisions/D-017-document-product-s-engine-extracts-into-the-kernel.md) | 2026-07-12 | plan | Document product's engine extracts into the kernel |  |
-| [D-18](decisions/D-018-triage-rule.md) | 2026-07-12 | plan | Triage rule |  |
+| [D-18](decisions/D-018-triage-rule.md) | 2026-07-12 | plan | Triage rule <br>*amended by D-64* |  |
 | [D-19](decisions/D-019-engine-composition-star-topology.md) | 2026-07-12 | plan | Engine composition = star topology |  |
 | [D-20](decisions/D-020-platform-billing-entitlements-kernel.md) | 2026-07-12 | plan | Platform billing/entitlements = kernel |  |
 | [D-21](decisions/D-021-typescript-end-to-end.md) | 2026-07-12 | plan | TypeScript end-to-end |  |
@@ -133,3 +133,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-56](decisions/K-056-a-runtime-installed-extension-acts-only-as-a-capability-the-vertical-mints-for-it.md) | 2026-10-23 | kernel | A runtime-installed extension acts only as a capability the vertical mints for it | #1671, #1672 |
 | [K-57](decisions/K-057-a-semantic-index-is-scope-local-a-semantic-read-is-declared-eventual-an-external-index-only-as-a-store-driver.md) | 2026-10-23 | kernel | A semantic index is scope-local; a semantic read is declared eventual; an external index only as a scope-store driver | #1576 |
 | [K-58](decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md) | 2026-10-23 | kernel | A call from the platform to a vertical carries an Ed25519 envelope, a deployed vertical holds public keys only, and its calls up to the control plane give way to its outbox <br>*awaiting ratification* |  |
+| [D-64](decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) | 2026-10-26 | plan | A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection <br>*awaiting ratification* <br>*amends D-18* | #2614 |

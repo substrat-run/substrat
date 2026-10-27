@@ -16,7 +16,7 @@ import {
   type WireVerificationLine,
 } from '@substrat-run/contracts/wire-signing';
 import { readRoutedNode, withInvocationLog } from '@substrat-run/vertical-host';
-import worker, { handlePeerCall, type Env } from '../src/worker.js';
+import worker, { handleConnectorCall, handlePeerCall, type Env } from '../src/worker.js';
 
 /**
  * The router's wire signer (RFC wire-signing §5, §9 step 2): a route envelope on every dispatch
@@ -528,6 +528,26 @@ describe('the router’s envelopes, judged by the entry’s verifier', () => {
     expect([...handed.headers.keys()].filter((n) => n.startsWith('x-substrat-')).sort()).toEqual(
       ['x-substrat-parent-request-id', 'x-substrat-platform', 'x-substrat-vertical'],
     );
+  });
+
+  it('signed-only: a connector probe is accepted with no scope and no nonce, a sweep with its scope and a spent nonce', async () => {
+    const connection = { id: '01JZ00000000000000C0NNECT0', tenantId: T, vertical: 'fsm', provider: 'acme.docbox', externalAccountRef: null, expiresAt: null, secret: { k: 'v' } };
+    const binding = { scopeId: S, operation: 'docs/land', permission: 'documents:land', options: {}, declared: {}, boundAt: '2026-10-01T00:00:00.000Z' };
+    const claimed: string[] = [];
+    const d = deployment(deploymentEnv('signed-only'), { nonceCache: (_, scopeId) => ({ claim: () => (claimed.push(scopeId), true) }) });
+    captured();
+    const env = { PLATFORM_SECRET: CALL_SECRET, DISPATCH: d, ...ON() } as unknown as Env;
+    const target = { deploymentRef: REF, slug: 'fsm', tenantId: T, hosts: [] };
+    const probe = await handleConnectorCall(env, { ...target, scopeId: null }, { role: 'probe', provider: 'acme.docbox', connection, state: [] });
+    const sweep = await handleConnectorCall(env, { ...target, scopeId: S }, { role: 'sweep', provider: 'acme.docbox', connection, binding, state: [] });
+    expect([probe.status, sweep.status]).toEqual([200, 200]);
+    expect(d.lines).toEqual([
+      expect.objectContaining({ state: 'signed-only', outcome: 'signed-accepted' }),
+      expect.objectContaining({ state: 'signed-only', outcome: 'signed-accepted' }),
+    ]);
+    expect(d.handed.map((r) => new URL(r.url).pathname)).toEqual(['/internal/connector-probe', '/internal/connector-call']);
+    expect([claimsOf(d.seen()[0]!.request), claimsOf(d.seen()[1]!.request)].map((c) => [c.tenantId, c.scopeId])).toEqual([[null, null], [T, S]]);
+    expect(claimed).toEqual([S]);
   });
 
   it('rotation: a deployment listing the active and the standby key accepts the router signing with either', async () => {

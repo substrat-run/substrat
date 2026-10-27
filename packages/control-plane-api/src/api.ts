@@ -130,6 +130,7 @@ import {
   type StoreErasure,
   type StoreDriverRegistration,
   SOCIAL_RELAY_VERTICALS,
+  isVerticalConnectorProvider,
 } from '@substrat-run/contracts';
 import type {
   ScopeDumpTable,
@@ -217,7 +218,7 @@ import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type Prev
 import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
 import { reconcileConnectionGrants } from './connection-grants.js';
 import { reconcileOutcomeOf, reconcileThenReassert, reviewedEntityGrants, switchCarryFor } from './reconcile.js';
-import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare } from './connection-relay.js';
+import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePrepare, type ConnectionCandidateProbe, type VerticalConnectorDeclarationOf } from './connection-relay.js';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
 import { NON_PROBLEM_REFUSAL, coded, mapError, relayed, type ApiError } from './errors.js';
@@ -231,6 +232,7 @@ import {
   deployManifest,
   storedDeployManifest,
   pushedOwnerGrantProblems,
+  pushedConnectorProblems,
   pushedModuleRegistryProblems,
   pushedPermissionRegistry,
   deploymentRefFor,
@@ -660,6 +662,21 @@ export interface ControlPlaneApiOptions {
    * verify a Fortnox key yet" is a true statement; "your Fortnox key is fine" is not.
    */
   connectionInspectors?: Record<string, ConnectionInspector>;
+  /**
+   * The inspector for a vertical-defined provider (`<namespace>.<name>`, vertical-connectors.md
+   * §6.4), which `connectionInspectors` never names: built per (tenant, vertical), since its code
+   * runs in that vertical's deployment. Asked only for a dotted provider the record lacks. Absent,
+   * such a provider answers as an unregistered one does.
+   */
+  verticalConnectorInspector?: (
+    provider: string,
+    context: { tenantId: TenantId; vertical: string; scopeId: ScopeId | null },
+  ) => ConnectionInspector | undefined;
+  /**
+   * A vertical-defined provider's serving declaration, which the tenant connection route grants
+   * from (`VerticalConnectorDeclarationOf`). Absent, that route refuses a dotted provider.
+   */
+  verticalConnectorDeclaration?: VerticalConnectorDeclarationOf;
   /**
    * Where this platform's compute actually runs — the coordinates a staff surface needs
    * to hand an operator a link INTO the provider's own console (the right script, the
@@ -3069,7 +3086,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     try {
       return c.json(
-        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId }, { probeCandidate, prepareCandidate }),
+        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId }, {
+          probeCandidate,
+          prepareCandidate,
+          ...(options.verticalConnectorDeclaration ? { declarationOf: options.verticalConnectorDeclaration } : {}),
+        }),
       );
     } catch (err) {
       if (err instanceof ConnectionRelayError && err.status < 500) {
@@ -3190,12 +3211,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * has no secret left to probe with, so "revoked" is a 404 for these reads too.
    */
   /**
+   * The inspector for `provider`: the record's entry, else, for a vertical-defined provider, the one
+   * built for the vertical the connection belongs to (vertical-connectors.md §6.4).
+   */
+  const inspectorFor = (
+    provider: string,
+    context: { tenantId: TenantId; vertical: string; scopeId: ScopeId | null },
+  ): ConnectionInspector | undefined =>
+    options.connectionInspectors?.[provider] ??
+    (isVerticalConnectorProvider(provider) ? options.verticalConnectorInspector?.(provider, context) : undefined);
+  /** {@link inspectorFor} for a connection row, which names its own tenant and vertical. */
+  const inspectorOf = (row: Connection) => inspectorFor(row.provider, { tenantId: row.tenantId, vertical: row.vertical, scopeId: null });
+  /**
    * The connect-time gate (#605), as the relay consumes it: ask the provider about a
    * candidate credential, or answer `undefined` when this platform has no probe for it —
    * in which case the upsert behaves exactly as it always did, storing unverified.
    */
-  const probeCandidate = async (provider: string, secret: Record<string, string>) =>
-    options.connectionInspectors?.[provider]?.probeCandidate?.(secret);
+  const probeCandidate: ConnectionCandidateProbe = async (provider, secret, context) =>
+    inspectorFor(provider, context)?.probeCandidate?.(secret);
   /** #2100: the provider's own half of a credential, made before the probe sees it. */
   const prepareCandidate = (provider: string) => options.connectionInspectors?.[provider]?.prepareCandidate;
 
@@ -3212,7 +3245,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/connections/:id/bindings', async (c) => {
     const row = await inspectableConnection(c);
     if (!row) return refuse(c, 'not_found', 'unknown connection');
-    const read = options.connectionInspectors?.[row.provider]?.bindings;
+    const read = inspectorOf(row)?.bindings;
     if (!read) return refuseStatus(c, 501, `no scope binding registered for provider '${row.provider}'`);
     const bindings = await read(c.var.host, row);
     return c.json(await Promise.all(bindings.map(async (binding) => {
@@ -3231,7 +3264,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.put('/tenants/:tenantId/connections/:id/bindings/:scopeId', async (c) => {
     const row = await inspectableConnection(c);
     if (!row) return refuse(c, 'not_found', 'unknown connection');
-    const bind = options.connectionInspectors?.[row.provider]?.bindScope;
+    const bind = inspectorOf(row)?.bindScope;
     if (!bind) return refuseStatus(c, 501, `no scope binding registered for provider '${row.provider}'`);
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const target = await c.var.admin.getScopeRecord(c.get('actor'), row.tenantId, scopeId);
@@ -3281,7 +3314,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/tenants/:tenantId/connections/:id/verify', async (c) => {
     const row = await inspectableConnection(c);
     if (!row) return refuse(c, 'not_found', 'unknown connection');
-    const probe = options.connectionInspectors?.[row.provider]?.probe;
+    const probe = inspectorOf(row)?.probe;
     if (!probe) {
       return refuseStatus(c, 501, `no probe registered for provider '${row.provider}'`);
     }
@@ -3303,7 +3336,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/connections/:id/activity', async (c) => {
     const row = await inspectableConnection(c);
     if (!row) return refuse(c, 'not_found', 'unknown connection');
-    const activity = options.connectionInspectors?.[row.provider]?.activity;
+    const activity = inspectorOf(row)?.activity;
     if (!activity) {
       return refuseStatus(c, 501, `no activity view registered for provider '${row.provider}'`);
     }
@@ -3324,7 +3357,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/connections/:id/credential', async (c) => {
     const row = await inspectableConnection(c);
     if (!row) return refuse(c, 'not_found', 'unknown connection');
-    const credential = options.connectionInspectors?.[row.provider]?.credential;
+    const credential = inspectorOf(row)?.credential;
     if (!credential) {
       return refuseStatus(c, 501, `no credential view registered for provider '${row.provider}'`);
     }
@@ -3339,7 +3372,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/connections/:id/certificate', async (c) => {
     const row = await inspectableConnection(c);
     if (!row) return refuse(c, 'not_found', 'unknown connection');
-    const certificate = await options.connectionInspectors?.[row.provider]?.certificate?.(c.var.host, row);
+    const certificate = await inspectorOf(row)?.certificate?.(c.var.host, row);
     if (!certificate) return refuse(c, 'not_found', 'this connection signs in with no certificate');
     return c.json(connectionCertificate.parse(certificate));
   });
@@ -8497,6 +8530,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #2430: an owner grant is a person's, so it holds no key the registry reserves.
       const ownerGrants = pushedOwnerGrantProblems(checked.data);
       if (ownerGrants.length > 0) return refuseManifest({ path: ['ownerGrants'], message: ownerGrants.join('; ') });
+      const connectorProblems = pushedConnectorProblems(checked.data);
+      if (connectorProblems.length > 0) return refuseManifest({ path: ['connectors'], message: connectorProblems.join('; ') });
     }
     await c.var.admin.publishVersion(c.get('actor'), input);
     const version = await c.var.admin.getVersion(c.get('actor'), input.id, slug);
@@ -9478,6 +9513,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2430: an owner grant is a person's, so it holds no key the registry reserves.
     const ownerGrants = pushedOwnerGrantProblems(manifest);
     if (ownerGrants.length > 0) return refuse(c, 'validation_failed', `manifest ownerGrants: ${ownerGrants.join('; ')}`);
+    // vertical-connectors.md §7.1: a connector's standing grant is a declared, person-held key.
+    const connectorProblems = pushedConnectorProblems(manifest);
+    if (connectorProblems.length > 0) return refuse(c, 'validation_failed', `manifest connectors: ${connectorProblems.join('; ')}`);
 
     // §4 sandbox contract, before anything reaches the namespace.
     assertSandboxContract(manifest, options.storeDrivers);
@@ -9780,6 +9818,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...(manifest.entitlements ? { entitlements: manifest.entitlements } : {}),
       ...(manifest.provides ? { provides: manifest.provides } : {}),
       ...(manifest.requires ? { requires: manifest.requires } : {}),
+      // The declared vertical-defined connectors (vertical-connectors.md §7.2): what the dashboard's
+      // door renders. The proxy never reads this copy; it reads the running version's manifest.
+      ...(manifest.connectors ? { connectors: manifest.connectors } : {}),
       // The declared provisioner intent (#455) — a REQUEST the console reviews; the
       // tenant-provisioner grant itself is never touched by a push. Refreshes on every
       // re-push like the rest of the install spec, exactly because it grants nothing.

@@ -22,11 +22,13 @@ import {
   type ImportState,
   importsOfManifestJson,
   connectionLandingsOfManifestJson,
+  connectorsOfManifestJson,
   exportsOfManifestJson,
   assertNoBindingShapeBreak,
   type ExportBreak,
   type ManifestImports,
   type ManifestConnectionLandings,
+  type ManifestConnectors,
   importCursorMove,
   importCursorMoveAt,
   importCursorMoved,
@@ -8460,6 +8462,8 @@ export class CloudflareScopeHost implements ScopeHost {
         if (parsed.ownerGrants) installSpec.ownerGrants = parsed.ownerGrants;
         if (parsed.provides) installSpec.provides = parsed.provides;
         if (parsed.requires) installSpec.requires = parsed.requires;
+        // The declared vertical-defined connectors (vertical-connectors.md §7.2), the dashboard's door.
+        if (parsed.connectors) installSpec.connectors = parsed.connectors;
         // Declared provisioner intent (#455) — the request half of the tenant-provisioner
         // capability; the grant is its own column, never part of this refreshable bag.
         if (parsed.provisions) installSpec.provisions = parsed.provisions;
@@ -13208,6 +13212,19 @@ export class CloudflareScopeHost implements ScopeHost {
       throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
     }
     return connectionLandingsOfManifestJson(v.manifest_json);
+  }
+
+  /**
+   * What one pushed version declares about vertical-defined connectors (vertical-connectors.md
+   * §6.4), from its stored manifest: the connector proxy reads it for the running version on every
+   * call. Unaudited for the reason {@link versionImports} is.
+   */
+  async versionConnectors(verticalSlug: string, versionId: string): Promise<ManifestConnectors> {
+    const v = await this.cp.readVersion(versionId);
+    if (!v || v.vertical_slug !== verticalSlug) {
+      throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+    }
+    return connectorsOfManifestJson(v.manifest_json);
   }
 }
 

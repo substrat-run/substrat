@@ -70,7 +70,7 @@ import type {
 import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
-import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak } from '@substrat-run/contracts';
+import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak, type VerticalConnectorDeclaration } from '@substrat-run/contracts';
 import {
   ControlPlaneError,
   ControlPlaneTransport,
@@ -899,9 +899,9 @@ export class TenantNarrowedControlPlane {
    * same posture as `listVerticals` above, plus the public (`listed`) tier.
    */
   async listCatalog(): Promise<
-    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>
+    Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[]; connectors?: VerticalConnectorDeclaration[] }>
   > {
-    const all = await this.listAll<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>(
+    const all = await this.listAll<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[]; connectors?: VerticalConnectorDeclaration[] }>(
       // Same posture as `listVerticals`: ask for the slice, keep the filter.
       `/verticals?visibleTo=${encodeURIComponent(this.tenantId)}`,
     );
@@ -924,6 +924,9 @@ export class TenantNarrowedControlPlane {
         // resolves providers/requirers off the registry row, pushed or builtin alike.
         provides: v.provides,
         requires: v.requires,
+        // The connectors the latest push declared (vertical-connectors.md §7.2) — the
+        // Integrations tab renders their credential forms from these.
+        connectors: v.connectors,
       }));
   }
 

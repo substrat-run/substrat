@@ -44,6 +44,13 @@ export default defineConfig({
               status: 501,
               headers: { 'content-type': 'application/json' },
             }),
+          // The router's `ConnectorCalls` entrypoint, likewise separately deployed. The proxy that
+          // calls it is driven in control-plane-api's suite against a fake transport.
+          CONNECTOR_CALLS: () =>
+            new Response(JSON.stringify({ error: 'connector calls not available in tests' }), {
+              status: 501,
+              headers: { 'content-type': 'application/json' },
+            }),
         },
       },
       wrangler: { configPath: './wrangler.jsonc' },

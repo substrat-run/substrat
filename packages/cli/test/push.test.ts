@@ -15,6 +15,7 @@ import {
   RUNTIME_BASELINE,
   outboundHost,
   matchesOutboundHost,
+  type PermissionKey,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
 import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules,
@@ -954,6 +955,74 @@ export const permissions = {
     expect(json.registry.permissions.find((p) => p.key === 'run:drive')?.holder).toBe('system');
     expect(json.registry.permissions.find((p) => p.key === 'run:use')).not.toHaveProperty('holder');
     expect(json.registry.roles.find((r) => r.key === 'driver')?.holder).toBe('system');
+  });
+
+  /** A vertical with a connectors module (vertical-connectors.md §5.1) beside its permission entry. */
+  const CONNECTOR_SURFACE = `
+export const permissions = {
+  modules: [
+    { manifest: { id: '@acme/docs', events: { emits: [{ type: 'documents.files-requested' }] }, permissions: [
+      { key: 'documents:land', description: 'Land a document' },
+      { key: 'documents:sweep', description: 'Sweep the box', holder: 'system' },
+    ] } },
+  ],
+  roles: [],
+  entityGrants: [],
+};
+`;
+  const DECL = {
+    provider: 'acme.docbox',
+    label: 'docbox',
+    description: 'A document box.',
+    fields: [{ key: 'password', label: 'Password', secret: true }],
+    grants: ['documents:land'],
+    events: ['documents.files-requested'],
+    sweeps: true,
+    binds: false,
+    dispatches: true,
+  };
+  function verticalWithConnectors(declarations: unknown, source?: string): string {
+    const dir = verticalWith(CONNECTOR_SURFACE, { substrat: { permissions: 'perms.mjs', connectors: 'connectors.mjs' } });
+    writeFileSync(join(dir, 'connectors.mjs'), source ?? `export const connectors = { declarations: () => (${JSON.stringify(declarations)}) };\n`);
+    return dir;
+  }
+
+  it.runIf(built)("reads the connectors module's declarations, and their standing grants move the digest", async () => {
+    const r = runCheck(verticalWithConnectors([{ ...DECL, grants: [] }]), '--json');
+    expect(r.status, r.stderr).toBe(0);
+    const out = JSON.parse(r.stdout) as { registry: PermissionRegistry; digest: string };
+    // A connector with no grants still has its row, so adding one is a visible change.
+    expect(out.registry.connectors).toEqual([{ provider: 'acme.docbox', grants: [] }]);
+    const granted = { ...out.registry, connectors: [{ provider: 'acme.docbox', grants: ['documents:land' as PermissionKey] }] };
+    expect(await permissionDigest(granted)).not.toBe(out.digest);
+    expect(formatPermissionSurface({ registry: granted, digest: out.digest })).toContain('connector standing grants:\n  acme.docbox: documents:land');
+  });
+
+  it.runIf(built)('leaves a vertical without connectors with the registry and digest it had', () => {
+    const out = JSON.parse(runCheck(verticalWith(SURFACE), '--json').stdout) as { registry: PermissionRegistry; digest: string };
+    expect(out.registry).not.toHaveProperty('connectors');
+    // The digest this surface had before connectors existed: moving it would ask every existing
+    // vertical's next promote for an acknowledgement of a change that did not happen.
+    expect(out.digest).toBe('38da9c7041caae7dc7641df1b46ff78c');
+  });
+
+  it.runIf(built).each([
+    ['a grant no module declares', [{ ...DECL, grants: ['ghost:key'] }], /connector acme\.docbox → ghost:key: a standing grant the registry does not declare/],
+    ['a grant reserved to a system principal', [{ ...DECL, grants: ['documents:sweep'] }], /connector acme\.docbox → documents:sweep: .*reserved to a system principal/],
+    ['a routed event no module emits', [{ ...DECL, events: ['documents.ghost'] }], /connector acme\.docbox routes documents\.ghost, which no module of .+ declares it emits/],
+    ['a provider without a dot', [{ ...DECL, provider: 'docbox' }], /connectors\.mjs declares connectors a push cannot carry:\n {2}- 0\.provider: a vertical-defined provider is <namespace>\.<name>/],
+  ])('refuses %s, naming the connectors module', (_, declarations, message) => {
+    const r = runCheck(verticalWithConnectors(declarations));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(message);
+    expect(r.stderr).toContain('connectors.mjs');
+    expect(r.stdout).not.toMatch(/digest:/);
+  });
+
+  it.runIf(built)('refuses a connectors module that exports no `connectors` with `declarations()`', () => {
+    const r = runCheck(verticalWithConnectors(undefined, 'export const connectors = {};\n'));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/connectors\.mjs exports no `connectors` with a `declarations\(\)`/);
   });
 
   it.runIf(built)('refuses an entry that stops exporting `permissions`', () => {

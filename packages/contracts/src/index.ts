@@ -64,6 +64,8 @@ export * from './concurrency.js';
 export * from './idempotency.js';
 export * from './connections.js';
 export * from './connection-landing.js';
+export * from './vertical-connector.js';
+export * from './connector-call-target.js';
 export * from './connection-health.js';
 export * from './control-plane.js';
 export * from './lake.js';

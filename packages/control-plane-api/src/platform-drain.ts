@@ -218,6 +218,12 @@ export interface PlatformDrainOptions {
   skip?: ReadonlySet<string>;
   /** #2431: filled with the id of each intent this drain dispatches, for a later drain's `skip`. */
   attempted?: string[];
+  /**
+   * The handler for a kind `handlers` has no entry for (a vertical-defined provider's
+   * `connector:<namespace>.<name>`). Asked only when the record has none; absent, or answering
+   * nothing, the intent settles `failed` as an unknown kind, as before.
+   */
+  handlerFor?: (kind: string) => PlatformRequestHandler | undefined;
 }
 
 /**
@@ -389,7 +395,7 @@ export async function drainScopePlatformRequests(
       ? { id: platformRequestId.parse(request.id), kind: 'undecodable', attempts: 0 }
       : request;
     opts?.attempted?.push(id);
-    const handler = handlers[kind];
+    const handler = handlers[kind] ?? opts?.handlerFor?.(kind);
     let outcome: PlatformRequestOutcome;
     let inert = false;
     if (isUndecodablePlatformRequest(request)) {

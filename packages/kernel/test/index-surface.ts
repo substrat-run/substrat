@@ -52,6 +52,8 @@ export const INDEX_VALUE_EXPORTS = [
   'COPY_RESTORE_FENCE_LAPSED',
   'CROSS_VERTICAL_CONSUMERS_PER_PASS',
   'ConnectionSealingKeyUnavailableError',
+  // Vertical-defined connectors: the terminal failure a connector in a vertical's worker throws.
+  'ConnectorRefusal',
   'CrossVerticalRegistry',
   'CursorMismatch',
   'DEFAULT_ATTACHMENT_TEXT_BOUNDS',
@@ -433,6 +435,7 @@ export const INDEX_VALUE_EXPORTS = [
   'isActiveContentType',
   'isBindExportBreakRefusal',
   'isCheckedWithin',
+  'isConnectorRefusal',
   'isCopyLoad',
   'isCopyMarkInsert',
   'isDeliveryRefusal',

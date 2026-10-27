@@ -910,6 +910,51 @@ describe('runPlatformSweep', () => {
     expect(report.connectionsSkipped).toBe(2);
   });
 
+  it('asks sweeperFor and binderFor only for a provider the records lack, and reads that sweeper’s answer', async () => {
+    const vertical = cid();
+    const firstParty = cid();
+    const conns = [
+      { id: vertical, provider: 'acme.box', revokedAt: null, tenantId: T, vertical: 'acme/crm' },
+      { id: firstParty, provider: 'scrive', revokedAt: null, tenantId: T, vertical: 'acme/crm' },
+    ];
+    const asked: string[] = [];
+    const swept: string[] = [];
+    const recorded: SweepRunInput[] = [];
+    const answer = { found: 2, failed: [{ scopeId: 's1', error: 'the vertical answered 500' }] };
+    const options = {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { scrive: (async (_h, id) => void swept.push(`record ${id}`)) as ConnectorSweeper },
+      sweeperFor: (c: { id: string; provider: string }) => {
+        asked.push(c.provider);
+        return (async (_h, id) => {
+          swept.push(`fallback ${id}`);
+          return answer;
+        }) as ConnectorSweeper;
+      },
+      recordSweepRun: (e: SweepRunInput) => void recorded.push(e),
+    };
+    await runPlatformSweep(fakeHost({ connections: conns }), {
+      ...options,
+      connectionLandings: { read: async () => ({ kind: 'none' }), binders: {}, binderFor: (c) => (c.provider === 'acme.box' ? { list: async () => [], bind: async () => undefined } : undefined) },
+    });
+    expect(asked).toEqual(['acme.box']);
+    expect(swept.sort()).toEqual([`fallback ${vertical}`, `record ${firstParty}`].sort());
+    // The fallback binder makes the pass read the sweeper's answer, so the failed scope fails the row.
+    expect(recorded.find((r) => r.unit === vertical)).toMatchObject({ outcome: 'failed' });
+
+    // Without binderFor the same answer is not read (a dispatch connector's), and without sweeperFor
+    // the provider is skipped, as before the hooks.
+    recorded.length = 0;
+    await runPlatformSweep(fakeHost({ connections: conns }), { ...options, connectionLandings: { read: async () => ({ kind: 'none' }), binders: {} } });
+    expect(recorded.find((r) => r.unit === vertical)).toMatchObject({ outcome: 'ok' });
+    recorded.length = 0;
+    const { sweeperFor: _, ...withoutHook } = options;
+    const bare = await runPlatformSweep(fakeHost({ connections: conns }), withoutHook);
+    expect(bare.connectionsSkipped).toBe(1);
+    expect(recorded.find((r) => r.unit === vertical)).toMatchObject({ outcome: 'skipped' });
+  });
+
   it('polls a new connection, waits for its provider interval, then polls when due', async () => {
     const id = cid();
     let rows: { at: string; outcome: 'ok' | 'failed' | 'skipped' }[] = [];

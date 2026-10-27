@@ -13,6 +13,7 @@ import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 import { connectionLandingOptions } from './connection-landing.js';
 import { connectionProvider } from './connections.js';
+import { verticalConnectorDeclarations, verticalConnectorProvider, type VerticalConnectorDeclaration } from './vertical-connector.js';
 import {
   ownerGrantSets,
   reservedKeyLine,
@@ -1136,6 +1137,32 @@ export function connectionLandingsOfManifestJson(manifestJson: string | null | u
 }
 
 /**
+ * What a STORED manifest says about vertical-defined connectors (vertical-connectors.md §6.4), in
+ * `importsOfManifestJson`'s three answers. Read from the top-level `connectors`, not the registry.
+ * The connector proxy reads it for the RUNNING version, so a promote that drops a connector stops
+ * it at the next call; `unreadable` runs nothing.
+ */
+export type ManifestConnectors =
+  | { kind: 'none' }
+  | { kind: 'connectors'; rows: VerticalConnectorDeclaration[] }
+  | { kind: 'unreadable'; reason: string };
+
+export function connectorsOfManifestJson(manifestJson: string | null | undefined): ManifestConnectors {
+  if (!manifestJson) return { kind: 'none' };
+  let m: unknown;
+  try {
+    m = JSON.parse(manifestJson);
+  } catch {
+    return { kind: 'unreadable', reason: 'the stored manifest is not JSON' };
+  }
+  const connectors = (m as { connectors?: unknown } | null)?.connectors;
+  if (connectors === undefined || connectors === null) return { kind: 'none' };
+  const p = verticalConnectorDeclarations.safeParse(connectors);
+  if (!p.success) return { kind: 'unreadable', reason: "the manifest's connectors are malformed" };
+  return { kind: 'connectors', rows: p.data };
+}
+
+/**
  * #2178: the binding-shape gate over two STORED manifests — the version that runs now and the one
  * that would run instead — refused `precondition_failed` with {@link bindingShapeRefusal} when the
  * move strands people a link bound (`bindingShapeBreaks`). A manifest with no registry declares no
@@ -1547,6 +1574,16 @@ export const permissionRegistryConnection = z.object({
 });
 export type PermissionRegistryConnection = z.infer<typeof permissionRegistryConnection>;
 
+/**
+ * One vertical-defined connector and its connections' standing grants (vertical-connectors.md
+ * §7.1): authority handed to whoever holds the provider's credential, so it is in the digest a
+ * promote acknowledges. Every declared provider has a row, an empty `grants` included.
+ */
+export const permissionRegistryConnector = z
+  .object({ provider: verticalConnectorProvider, grants: z.array(permissionKey).max(16) })
+  .strict();
+export type PermissionRegistryConnector = z.infer<typeof permissionRegistryConnector>;
+
 export const permissionRegistry = z.object({
   permissions: z.array(permissionRegistryEntry),
   roles: z.array(roleDefinition),
@@ -1561,6 +1598,8 @@ export const permissionRegistry = z.object({
   imports: z.array(permissionRegistryImport).optional(),
   // #2316: connection landings. Optional and omitted when none, for the digest reason above.
   connections: z.array(permissionRegistryConnection).optional(),
+  // Vertical-defined connectors' standing grants. Optional and omitted when none, likewise.
+  connectors: z.array(permissionRegistryConnector).optional(),
 });
 export type PermissionRegistry = z.infer<typeof permissionRegistry>;
 
@@ -1594,6 +1633,18 @@ export const pushedPermissionRegistry = permissionRegistry
       else if (key.holder === 'system') ctx.addIssue({ code: 'custom', path: ['connections'], message: `${where}: lands holding ${l.permission}, which is reserved to a system principal` });
       if (providers.has(l.provider)) ctx.addIssue({ code: 'custom', path: ['connections'], message: `${where}: declared more than once` });
       providers.add(l.provider);
+    }
+    // A connector's standing grant is likewise declared and unreserved, one row per provider.
+    const connectors = new Set<string>();
+    for (const c of registry.connectors ?? []) {
+      const where = `connectors '${c.provider}'`;
+      for (const grant of c.grants) {
+        const key = keys.get(grant);
+        if (!key) ctx.addIssue({ code: 'custom', path: ['connectors'], message: `${where}: grants ${grant}, which the registry does not declare` });
+        else if (key.holder === 'system') ctx.addIssue({ code: 'custom', path: ['connectors'], message: `${where}: grants ${grant}, which is reserved to a system principal` });
+      }
+      if (connectors.has(c.provider)) ctx.addIssue({ code: 'custom', path: ['connectors'], message: `${where}: declared more than once` });
+      connectors.add(c.provider);
     }
   });
 
@@ -1629,6 +1680,52 @@ export function pushedOwnerGrantProblems(manifest: { ownerGrants?: readonly stri
     undefined,
     ownerGrantSets((manifest.modules ?? []).map((manifest) => ({ manifest })), manifest.ownerGrants),
   );
+}
+
+/**
+ * The deploy manifest's connector `grants` against its registry (vertical-connectors.md §7.1): a
+ * standing grant must be a key the registry declares, and one it does not reserve to a system
+ * principal, since a connection acts for the external provider holding its token. And the
+ * declarations must agree with `registry.connectors`, the copy the permission digest covers, so a
+ * grant cannot widen without the digest moving. A function beside {@link pushedOwnerGrantProblems},
+ * not a refinement, for the same reason as that one.
+ */
+export function pushedConnectorProblems(manifest: {
+  connectors?: readonly Pick<VerticalConnectorDeclaration, 'provider' | 'grants'>[];
+  registry?: Pick<PermissionRegistry, 'permissions' | 'connectors'>;
+}): string[] {
+  const connectors = manifest.connectors ?? [];
+  const registered = manifest.registry?.connectors ?? [];
+  if (connectors.length === 0 && registered.length === 0) return [];
+  const permissions = manifest.registry?.permissions ?? [];
+  const declared = new Set<string>(permissions.map((p) => p.key));
+  const problems: string[] = [];
+  const sameSet = (a: readonly string[], b: readonly string[]) => {
+    const x = new Set(a);
+    const y = new Set(b);
+    return x.size === y.size && [...x].every((k) => y.has(k));
+  };
+  for (const c of connectors) {
+    const row = registered.find((r) => r.provider === c.provider);
+    if (!row) problems.push(`connector ${c.provider}: absent from registry.connectors`);
+    else if (!sameSet(row.grants, c.grants)) problems.push(`connector ${c.provider}: its grants disagree with registry.connectors`);
+  }
+  for (const r of registered) {
+    if (!connectors.some((c) => c.provider === r.provider)) problems.push(`registry.connectors ${r.provider}: no connector declares it`);
+  }
+  for (const c of connectors) {
+    for (const key of c.grants) {
+      if (!declared.has(key)) problems.push(`connector ${c.provider} → ${key}: a standing grant the registry does not declare`);
+    }
+  }
+  return [
+    ...problems,
+    ...registryReservedKeyProblems(
+      { permissions, roles: [], entityGrants: [] },
+      undefined,
+      connectors.map((c) => ({ where: `connector ${c.provider}`, permissions: c.grants })),
+    ),
+  ];
 }
 
 /** Check the registry's key rows against the module declarations shipped beside it. */
@@ -2285,6 +2382,15 @@ export const deployManifest = z.object({
    *  permissions live and where the permission diff reviews them. `[]` = this vertical calls
    *  no sibling. ABSENT = a version pushed before #1706: unenforced until the next push. */
   calls: z.array(verticalSlug).max(32).optional(),
+  /** The vertical's DECLARED connectors (docs/architecture/vertical-connectors.md §5.1): the
+   *  static half of its `defineConnectors` entry — the credential form, the connection's standing
+   *  grants, the routed event types and which hooks it supplies. The platform resolves a
+   *  vertical-defined provider from the RUNNING version's stored manifest, so it is versioned
+   *  with the code. A push that declares none OMITS the field rather than sending `[]`, so a
+   *  vertical without connectors pushes exactly the manifest it did before the field existed.
+   *  ABSENT = a pre-feature CLI, or no connectors. Its grants are judged against `registry` by
+   *  {@link pushedConnectorProblems}, which the push routes call beside the parse. */
+  connectors: verticalConnectorDeclarations.optional(),
   /** DECLARED email-sender intent (#303): this vertical wants to send transactional mail
    *  (password-reset, verification, invites) — package.json `substrat.sendsEmail`. Outbound
    *  is a platform concern (deploy.ts §4 keeps `send_email` OUT of the sandbox allowlist and

@@ -20,6 +20,10 @@
     "./model": {
       "types": "./dist/model.d.ts",
       "default": "./dist/model.js"
+    },
+    "./connectors": {
+      "types": "./dist/connectors.d.ts",
+      "default": "./dist/connectors.js"
     }
   },
   "files": [

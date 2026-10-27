@@ -83,6 +83,12 @@ type EngineModule = { manifest: { id: string; permissions: readonly { key: strin
  */
 function wiringProblems(connectors: readonly Connector[], catalog: Catalog, engineModules: readonly EngineModule[]): string[] {
   const problems: string[] = [];
+  // vertical-connectors.md §4: a dot marks a vertical-defined provider, whose connections the
+  // platform routes to the vertical's own code. A first-party slug carrying one would take them.
+  const dotted = (where: string, provider: string) =>
+    `${provider}: ${where} names a dotted provider — a dot marks a vertical-defined provider; a first-party slug never carries one`;
+  for (const c of connectors) if (c.provider.includes('.')) problems.push(dotted('the connector registration', c.provider));
+  for (const provider of Object.keys(catalog)) if (provider.includes('.')) problems.push(dotted('the dashboard door', provider));
   // #2430: a key an engine reserves to a system principal, on a registration or on a door.
   const reserved = reservedKeysOf(engineModules);
   const reservedLine = (where: string, key: string) =>
@@ -182,6 +188,18 @@ function wiringProblems(connectors: readonly Connector[], catalog: Catalog, engi
   ) {
     fail(`connector wiring: the reserved-key check does not report what it must (self-test): ${JSON.stringify({ found, twin })}`, 2);
   }
+  // A registration and a door under a dotted slug are each refused; the same pair undotted is clean.
+  const named = (provider: string): Connector => ({ ...connector(['x:use']), provider }) as Connector;
+  const dottedFound = wiringProblems([named('acme.box')], { 'acme.box': { grants: ['x:use'] } }, [engine]);
+  const dottedTwin = wiringProblems([named('acme-box')], { 'acme-box': { grants: ['x:use'] } }, [engine]);
+  if (
+    dottedFound.length !== 2 ||
+    !dottedFound[0]!.startsWith('acme.box: the connector registration names a dotted provider') ||
+    !dottedFound[1]!.startsWith('acme.box: the dashboard door names a dotted provider') ||
+    dottedTwin.length !== 0
+  ) {
+    fail(`connector wiring: the dotted-provider check does not report what it must (self-test): ${JSON.stringify({ dottedFound, dottedTwin })}`, 2);
+  }
 }
 
 // Every engine's module registrations, read off its entry: an export carrying a manifest.
@@ -221,5 +239,5 @@ if (problems.length > 0) {
 console.log(
   `connector wiring: ${CONNECTORS.length} connector${CONNECTORS.length === 1 ? '' : 's'} checked ` +
     `— each has a door, a probe, every declared grant the door carries, the same answer on mail, ` +
-    `and no key reserved to a system principal`,
+    `no key reserved to a system principal, and no dotted (vertical-defined) slug`,
 );

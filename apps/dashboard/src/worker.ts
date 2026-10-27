@@ -22,7 +22,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
+import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
@@ -39,7 +39,7 @@ import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, re
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
-import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
+import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, providerSpecsFor, undeclaredConnectorSpec, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { declaredCallState, peerChoicesOf, targetScopeOf } from './peers.js';
 import { deriveFailureGroups } from './failure-groups.js';
@@ -2629,12 +2629,17 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scope = scopeId.parse(appRow.app_scope_id);
   const slug = appRow.vertical_slug;
-  const [deployment, boundVersionId] = await Promise.all([
+  const [deployment, boundVersionId, offered] = await Promise.all([
     verticalDeploymentFromCp(cp, slug),
     cp.boundVersionId(scope),
+    providerSpecsBySlug(host, c.env, node.tenantId, [slug]),
   ]);
   const { runningId } = versionPair(deployment, boundVersionId);
-  const knownProviders = Object.keys(PROVIDERS);
+  // A vertical-defined connector is required by being declared (vertical-connectors.md §7.2), so
+  // it joins both the known providers and the version's `requires`. Read off the registry record
+  // — the latest push — as the Integrations tab reads it, not off the running version.
+  const declaredConnectors = (offered.get(slug) ?? []).map((s) => s.provider).filter(isVerticalConnectorProvider);
+  const knownProviders = [...Object.keys(PROVIDERS), ...declaredConnectors];
   if (runningId === null) {
     return c.json({
       findings: deriveFlowFindings({
@@ -2741,7 +2746,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
   return c.json({
     findings: deriveFlowFindings({
       declaredEvents: flow.declaredEvents,
-      requires: flow.requires,
+      requires: [...flow.requires, ...declaredConnectors],
       knownProviders,
       observed,
       now,
@@ -2773,7 +2778,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       sweepWindowDays: connectionSweep.windowDays,
       declaredEvents: flow.declaredEvents,
       schedules: flow.schedules,
-      requires: flow.requires,
+      requires: [...flow.requires, ...declaredConnectors],
       knownProviders,
       connections,
       outbound: flow.outbound,
@@ -3082,31 +3087,55 @@ app.delete('/api/apps/:scopeId/env/:key', async (c) => {
 });
 
 /**
- * Which known providers each vertical DECLARES (`requires:` in its manifest, #427) — the
- * same three-step lookup ladder as the env-spec: local registry, the hardcoded catalog,
- * then the shared plane's catalog. Only slugs this dashboard has a `PROVIDERS` spec for
- * count — `oidc-issuer` and future capability bindings pass through untouched.
+ * The providers each vertical's apps offer (`providerSpecsFor`): the first-party ones its
+ * `requires:` names (#427), plus the connectors it declares (vertical-connectors.md §7.2) — read
+ * off the same record, through the same three-step ladder as the env-spec: local registry, the
+ * hardcoded catalog, then the shared plane's catalog. `oidc-issuer` and future capability
+ * bindings pass through untouched.
  */
-async function requiredProvidersBySlug(
+async function providerSpecsBySlug(
   host: ScopeHost,
   env: Env,
   tenantId: TenantId,
   slugs: string[],
-): Promise<Map<string, string[]>> {
+): Promise<Map<string, ProviderSpec[]>> {
   await ensureCatalogOnce(host);
   const registered = await host.admin.listVerticals(STAFF);
-  let remote: Array<{ slug: string; requires?: string[] }> | undefined;
-  const out = new Map<string, string[]>();
+  let remote: Array<{ slug: string; requires?: string[]; connectors?: VerticalConnectorDeclaration[] }> | undefined;
+  const out = new Map<string, ProviderSpec[]>();
   for (const slug of new Set(slugs)) {
-    let requires = registered.find((v) => v.slug === slug)?.requires ?? CATALOG[slug]?.requires;
-    if (!requires) {
+    const local = registered.find((v) => v.slug === slug);
+    let record: { requires?: string[]; connectors?: VerticalConnectorDeclaration[] } | undefined =
+      local && (local.requires !== undefined || local.connectors !== undefined)
+        ? local
+        : CATALOG[slug]?.requires
+          ? { requires: CATALOG[slug].requires }
+          : undefined;
+    if (!record) {
       const cp = controlPlaneFor(env, tenantId);
       remote ??= await cp.listCatalog();
-      requires = remote.find((v) => v.slug === slug)?.requires ?? [];
+      record = remote.find((v) => v.slug === slug) ?? {};
     }
-    out.set(slug, requires.filter((r) => PROVIDERS[r] !== undefined));
+    out.set(slug, providerSpecsFor(record));
   }
   return out;
+}
+
+/**
+ * The spec an app-level door at `:provider` serves. A first-party slug resolves from `PROVIDERS`
+ * with no read, exactly as it always has. A dotted one is a vertical-defined connector, and only
+ * the app's OWN vertical's declaration can answer for it — another vertical's provider is the same
+ * 404 as no provider at all.
+ */
+async function appProviderSpec(
+  host: ScopeHost,
+  env: Env,
+  tenantId: TenantId,
+  verticalSlug: string,
+  provider: string,
+): Promise<ProviderSpec | undefined> {
+  if (!isVerticalConnectorProvider(provider)) return Object.hasOwn(PROVIDERS, provider) ? PROVIDERS[provider] : undefined;
+  return (await providerSpecsBySlug(host, env, tenantId, [verticalSlug])).get(verticalSlug)?.find((s) => s.provider === provider);
 }
 
 /**
@@ -3164,21 +3193,25 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const appRow = await appByScopeId(dash, c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const required =
-    (await requiredProvidersBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
+  const declared =
+    (await providerSpecsBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
   const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
   // Declared providers first, then any live connection whose provider the vertical no
-  // longer declares (still real — it can be disconnected here).
-  const slugs = [...required];
+  // longer declares (still real — it can be disconnected here). A vertical-defined one has no
+  // declaration left to render a form from, so it is listed formless, for withdrawing only.
+  const specs = [...declared];
   for (const r of rows) {
-    if (r.status !== 'revoked' && PROVIDERS[r.provider] && !slugs.includes(r.provider)) slugs.push(r.provider);
+    if (r.status === 'revoked' || specs.some((s) => s.provider === r.provider)) continue;
+    if (Object.hasOwn(PROVIDERS, r.provider)) specs.push(PROVIDERS[r.provider]!);
+    else if (isVerticalConnectorProvider(r.provider)) specs.push(undeclaredConnectorSpec(r.provider));
   }
   return c.json({
-    providers: slugs.map((p) => {
+    providers: specs.map((spec) => {
+      const p = spec.provider;
       const live = liveConnectionFor(rows, p);
       return {
-        ...providerForm(PROVIDERS[p]!, c.env),
-        required: required.includes(p),
+        ...providerForm(spec, c.env),
+        required: declared.includes(spec),
         // The single-connection answer, kept for clients that predate the fleet.
         connection: live ? connectionView(live) : null,
         // Every live row, newest first — one per company for an account-keyed provider.
@@ -3202,7 +3235,7 @@ app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const appRow = await appByScopeId(dash, c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const spec = PROVIDERS[c.req.param('provider')];
+  const spec = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, c.req.param('provider'));
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   const body = (await c.req.json().catch(() => ({}))) as { secret?: unknown; label?: string };
   let secret: Record<string, string>;
@@ -3248,6 +3281,31 @@ app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
   });
 });
 
+/**
+ * The provider a revoke door may act on, with the caller's permission proven and this app's
+ * vertical's connections read. A declared provider resolves as `appProviderSpec` does. A dotted
+ * one the latest push no longer declares still resolves while THIS vertical holds a live
+ * connection to it: the running version may still be using the credential, and withdrawing a
+ * credential must never depend on what a later push declares. Another vertical's rows are not
+ * in `rows`, so its provider stays a 404 here.
+ */
+async function revocableProvider(
+  host: ScopeHost,
+  env: Env,
+  node: DashboardNode,
+  dash: Awaited<ReturnType<ScopeHost['getScope']>>,
+  verticalSlug: string,
+  provider: string,
+): Promise<{ spec: ProviderSpec; rows: Connection[] }> {
+  const declared = await appProviderSpec(host, env, node.tenantId, verticalSlug, provider);
+  if (!declared && !isVerticalConnectorProvider(provider)) throw new HTTPException(404, { message: 'unknown provider' });
+  await dash.invoke('dashboard/begin-connection', { provider });
+  const rows = await connectionsFor(env, node.tenantId, node.principal, verticalSlug);
+  const spec = declared ?? (liveConnectionsFor(rows, provider).length > 0 ? undeclaredConnectorSpec(provider) : undefined);
+  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
+  return { spec, rows };
+}
+
 /** Disconnect — revoke is terminal: the sealed secret is deleted and the grants tombstone. */
 app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const host = hostFor(c.env);
@@ -3256,10 +3314,7 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const appRow = await appByScopeId(dash, c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const spec = PROVIDERS[c.req.param('provider')];
-  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
-  await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
+  const { spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, c.req.param('provider'));
   // Revoking picks a row to DESTROY, so with an account-keyed fleet (Fortnox: one
   // connection per client company) this door refuses rather than guess which company.
   const live = liveConnectionsFor(rows, spec.provider);
@@ -3280,7 +3335,7 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
  * provider (`inspectableConnection`), so it can never reach another vertical's connection.
  */
 app.delete('/api/apps/:scopeId/integrations/:provider/connections/:connectionId', async (c) => {
-  const { connectionId, cp } = await inspectableConnection(c);
+  const { connectionId, cp } = await inspectableConnection(c, { revoke: true });
   await cp.revokeConnection(connectionId);
   return c.body(null, 204);
 });
@@ -3301,6 +3356,8 @@ app.delete('/api/apps/:scopeId/integrations/:provider/connections/:connectionId'
  */
 async function inspectableConnection(
   c: Context<{ Bindings: Env }>,
+  /** A revoke may address a dotted provider its vertical no longer declares (`revocableProvider`). */
+  opts: { revoke?: true } = {},
 ): Promise<{
   connectionId: string;
   cp: ReturnType<typeof controlPlaneFor>;
@@ -3316,10 +3373,17 @@ async function inspectableConnection(
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const appRow = await appByScopeId(dash, c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const spec = PROVIDERS[c.req.param('provider') ?? ''];
-  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
-  await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
+  let spec: ProviderSpec;
+  let rows: Connection[];
+  if (opts.revoke) {
+    ({ spec, rows } = await revocableProvider(host, c.env, node, dash, appRow.vertical_slug, c.req.param('provider') ?? ''));
+  } else {
+    const declared = await appProviderSpec(host, c.env, node.tenantId, appRow.vertical_slug, c.req.param('provider') ?? '');
+    if (!declared) throw new HTTPException(404, { message: 'unknown provider' });
+    spec = declared;
+    await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
+    rows = await connectionsFor(c.env, node.tenantId, node.principal, appRow.vertical_slug);
+  }
   const wanted = c.req.param('connectionId');
   const live =
     wanted === undefined
@@ -3445,7 +3509,7 @@ app.get('/api/integrations', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
-  const requiredBy = await requiredProvidersBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
+  const offeredBy = await providerSpecsBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
   const rows = await connectionsFor(c.env, node.tenantId, node.principal);
   // #1232: one bulk tenant-wide read for every row's strip — per-connection calls
   // would be N round trips. `since` a day back rather than a row cap, so with many
@@ -3460,9 +3524,12 @@ app.get('/api/integrations', async (c) => {
     sweepByConnection.set(r.connectionId, list);
   }
   return c.json({
+    // First-party only, deliberately: this view is per provider ACROSS apps, and a
+    // vertical-defined provider means nothing outside the one vertical that declares it.
+    // Its door is that app's own Integrations panel.
     providers: Object.values(PROVIDERS).map((spec) => {
       const targets = apps
-        .filter((a) => (requiredBy.get(a.vertical_slug) ?? []).includes(spec.provider))
+        .filter((a) => (offeredBy.get(a.vertical_slug) ?? []).some((s) => s.provider === spec.provider))
         .map((a) => ({
           scopeId: a.app_scope_id,
           name: a.name,

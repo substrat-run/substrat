@@ -713,6 +713,14 @@ const ROUTE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'route', issuers: Obj
 const CALL_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform'] as const) });
 const PEER_INVOKE_ENDPOINT: WireEndpoint = Object.freeze({ kind: 'call', issuers: Object.freeze(['platform', 'router'] as const) });
 
+/**
+ * The internal calls the router makes itself, so the router may sign them as well as the platform:
+ * the peer invocation, and the connector call and probe (vertical-connectors.md §6.3). Spelled out
+ * rather than imported from `vertical-connector.ts`, which would pull its schemas into every bundle
+ * of this module; `wire-signing.test.ts` pins them to `CONNECTOR_CALL_PATH`/`CONNECTOR_PROBE_PATH`.
+ */
+const ROUTER_CALLS: readonly string[] = Object.freeze(['/internal/vertical-invoke', '/internal/connector-call', '/internal/connector-probe']);
+
 /** Decode `path` with `decoder`, skipping any run of escapes it cannot decode: Hono's `tryDecode`. */
 function tryDecode(path: string, decoder: (text: string) => string): string {
   try {
@@ -743,21 +751,21 @@ const INTERNAL = /^\/internal(?:\/|$)/i;
 /**
  * Which envelope a deployment's endpoint accepts (RFC §3.4, check 3), by the request's path. The
  * internal surface vertical-host's `mountPlatformSurface` gates (`/internal/*`) takes calls from
- * the control plane, and its peer invocation (`/internal/vertical-invoke`) from the router too,
- * which makes those calls. Every other path is a routed request. A verifier judges by this, and a
+ * the control plane, and its peer invocation and connector calls ({@link ROUTER_CALLS}) from the
+ * router too, which makes those calls. Every other path is a routed request. A verifier judges by this, and a
  * signer signs what it says.
  *
  * The surface is matched on the path its router decodes (Hono's `getPath`: `decodeURI`, with `%25`
  * kept escaped), so the path is judged in every form a router could read it: as sent, decoded that
  * way, decoded fully, each with empty and dot segments collapsed, in any letter case. Any form under
- * `/internal` makes it a call: the stricter reading wins. Only the exact path the router sends a peer
- * invocation to admits the router.
+ * `/internal` makes it a call: the stricter reading wins. Only the exact paths the router sends its
+ * own calls to admit the router.
  */
 export function wireEndpoint(pathname: string): WireEndpoint {
   const routed = tryDecode(pathname.includes('%25') ? pathname.replace(/%25/g, '%2525') : pathname, decodeURI);
   const forms = [pathname, routed, tryDecode(pathname, decodeURIComponent)];
   if (!forms.some((form) => INTERNAL.test(form) || INTERNAL.test(collapsed(form)))) return ROUTE_ENDPOINT;
-  return pathname === '/internal/vertical-invoke' ? PEER_INVOKE_ENDPOINT : CALL_ENDPOINT;
+  return ROUTER_CALLS.includes(pathname) ? PEER_INVOKE_ENDPOINT : CALL_ENDPOINT;
 }
 
 /**
@@ -771,6 +779,10 @@ export const WIRE_REPLAY_FREE_CALLS: readonly string[] = Object.freeze([
   '/internal/lifecycle-flow',
   '/internal/operation-series',
   '/internal/connector-grants',
+  // A connector probe (vertical-connectors.md §6.3) reads no scope and writes nothing in the
+  // vertical: any state it changes comes back in the response for the platform to apply. It names
+  // no scope either, so there is no store a nonce could be kept in.
+  '/internal/connector-probe',
 ]);
 
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);

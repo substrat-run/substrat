@@ -149,6 +149,8 @@ export {
   recordConnectorCall,
   settleConnectionUse,
 } from './connector-calls.js';
+export type { ConnectionContext, ConnectorUploadInput, ScopedConnectionContext } from './connection-context.js';
+export { ConnectorRefusal, isConnectorRefusal } from './connection-context.js';
 export { requestEmail, settlePlatformRequestIn } from './email-intent.js';
 export type { OutcomeEventStamp, PlatformRequestSettle } from './email-intent.js';
 export type {

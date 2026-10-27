@@ -35,6 +35,8 @@ import {
   SWEEP_RUNS_KIND,
   SEND_EMAIL_KIND,
   connectorDispatchKind,
+  CONNECTOR_DISPATCH_KIND_PREFIX,
+  isVerticalConnectorProvider,
   STORE_DRIVERS,
   scopeStorePublicKeysFrom,
   type ReservedStoreOperation,
@@ -134,6 +136,13 @@ import {
   sessionPlatformAuth,
   UNSAFE_devPlatformActorAuth,
   drainScopePlatformRequests,
+  verticalConnectorBinder,
+  verticalConnectorDispatchHandler,
+  verticalConnectorInspector,
+  verticalConnectorSweeper,
+  resolveVerticalConnectorTarget,
+  verticalConnectorReadsOf,
+  type VerticalConnectorDeclarationOf,
   relayConnectionUpsert,
   ConnectionRelayError,
   relayConnectUrl,
@@ -219,6 +228,7 @@ import {
   connectionBindersFor,
   type ConnectorEnv,
 } from './connectors.js';
+import { verticalConnectorDepsFor, type ConnectorCallsBinding } from './vertical-connectors.js';
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
@@ -640,6 +650,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   SOCIAL_RELAY?: Fetcher;
   SOCIAL_RELAY_ORIGIN?: string;
+  /**
+   * The router's `ConnectorCalls` entrypoint (vertical-connectors.md §6.3): how a vertical-defined
+   * connector's code is called, in its vertical's deployment under that version's `outbound` hosts.
+   * Absent ⇒ every such call fails, naming this binding, and first-party connectors are unaffected.
+   */
+  CONNECTOR_CALLS?: ConnectorCallsBinding;
   /**
    * PKCS8 Ed25519 private key, base64url, for audience `platform` (#2287). The
    * store script holds only the public key. A vertical is not given this one.
@@ -1095,6 +1111,15 @@ function resolveVerticalVersionFor(
     if (!version?.deploymentRef) return undefined;
     return verticalClientAt(env, dispatch, version.deploymentRef, secret);
   };
+}
+
+/**
+ * The serving declaration a vertical-defined provider's connection is granted from — the version a
+ * candidate probe runs (scope `null`), whichever scope the upsert came through.
+ */
+function servingConnectorDeclaration(env: Env, actor: PlatformActorId): VerticalConnectorDeclarationOf {
+  return (provider, { tenantId, vertical }) =>
+    resolveVerticalConnectorTarget(verticalConnectorReadsOf(hostFor(env), actor), { tenantId, vertical, scopeId: null, provider });
 }
 
 // The actor a connected vertical acts as when it registers (a service, not staff).
@@ -2369,6 +2394,12 @@ async function drainOneScope(
       },
       // #2556: where a withheld transient failure finds the row an earlier pass filed.
       listFailures: (filter) => host.admin.listOpsFailures(SWEEP_ACTOR, filter),
+      // A vertical-defined provider's routed event (vertical-connectors.md §6.4), which no
+      // registration above names: dispatched into the drained scope's own deployment.
+      handlerFor: (kind) =>
+        kind.startsWith(CONNECTOR_DISPATCH_KIND_PREFIX) && isVerticalConnectorProvider(kind.slice(CONNECTOR_DISPATCH_KIND_PREFIX.length))
+          ? verticalConnectorDispatchHandler(verticalConnectorDepsFor(env, host, SWEEP_ACTOR))
+          : undefined,
       ...(opts?.skip?.length ? { skip: new Set(opts.skip) } : {}),
       attempted,
     },
@@ -2504,6 +2535,9 @@ export default {
       // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly: its row says so under a
       // reference, and the text is staff's ledger row under it (`recordFailure` below).
       sweepers: connectorSweepersFor(env),
+      // A vertical-defined provider (vertical-connectors.md §6.4) is swept, and bound below, by
+      // calling into its vertical: one call per bound scope, to that scope's own deployment.
+      sweeperFor: (c) => (isVerticalConnectorProvider(c.provider) ? verticalConnectorSweeper(verticalConnectorDepsFor(env, host, SWEEP_ACTOR), c) : undefined),
       sweepEveryMinutes: connectorSweepEveryMinutesFor(),
       // #2316: each live connection is granted and bound from the landings its vertical's running
       // version declares, before it is swept — so a company approved through a connect link lands
@@ -2511,6 +2545,7 @@ export default {
       connectionLandings: {
         read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
         binders: connectionBindersFor(env),
+        binderFor: (c) => (isVerticalConnectorProvider(c.provider) ? verticalConnectorBinder(verticalConnectorDepsFor(env, host, SWEEP_ACTOR)) : undefined),
       },
       // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
       // never sink the pass it is recording (the ops-failure recorder's shape).
@@ -3153,12 +3188,19 @@ export default {
           // #605: a vertical's own admin screen gets the same connect-time gate the
           // dashboard does — a credential Scrive refuses never reaches the store.
           {
-            probeCandidate: (provider, secret) =>
-              Promise.resolve(
-                connectionInspectorsFor(c.env)[provider]?.probeCandidate?.(secret),
-              ),
+            // A vertical-defined provider's candidate is probed by its vertical's own code.
+            probeCandidate: (provider, secret, context) => {
+              const inspector =
+                connectionInspectorsFor(c.env)[provider] ??
+                (isVerticalConnectorProvider(provider)
+                  ? verticalConnectorInspector(verticalConnectorDepsFor(c.env, hostFor(c.env), CONNECTION_RELAY_ACTOR), provider, context)
+                  : undefined);
+              return Promise.resolve(inspector?.probeCandidate?.(secret));
+            },
             // #2100: the provider's own half of the credential (a generated keypair).
             prepareCandidate: (provider) => connectionInspectorsFor(c.env)[provider]?.prepareCandidate,
+            // A vertical-defined provider's standing grants come from its serving declaration.
+            declarationOf: servingConnectorDeclaration(c.env, CONNECTION_RELAY_ACTOR),
           },
         );
         return c.json(result);
@@ -3413,6 +3455,10 @@ export default {
         // box, and the sanctioned egress. Keyed by provider, so `control-plane-api`
         // learns no Scrive vocabulary and an unwired provider 501s honestly.
         connectionInspectors: connectionInspectorsFor(env),
+        // vertical-connectors.md §6.4: a vertical-defined provider, answered by its vertical's code.
+        verticalConnectorInspector: (provider, context) =>
+          verticalConnectorInspector(verticalConnectorDepsFor(env, hostFor(env), SERVICE_ACTOR), provider, context),
+        verticalConnectorDeclaration: servingConnectorDeclaration(env, SERVICE_ACTOR),
         // Where the refs the console shows actually resolve, so staff get a link into the
         // Cloudflare dashboard instead of an id to hunt for. Account id + namespace only —
         // no credential — and absent when the account is not configured, which is the

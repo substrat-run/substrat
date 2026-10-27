@@ -10,4 +10,5 @@
 export { default } from './worker.js';
 export { PeerCalls } from './peer-calls.js';
 export { ScopeStoreCalls } from './store-calls-entry.js';
+export { ConnectorCalls } from './connector-calls.js';
 export type { Env } from './worker.js';

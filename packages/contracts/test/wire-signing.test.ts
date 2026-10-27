@@ -61,6 +61,7 @@ import {
 } from '../src/wire-signing.js';
 import { FIELD_COVERAGE_HEADER, PARENT_REQUEST_ID_HEADER } from '../src/invocation-record.js';
 import { wireAuthRecord } from '../src/control-plane.js';
+import { CONNECTOR_CALL_PATH, CONNECTOR_PROBE_PATH } from '../src/vertical-connector.js';
 
 interface Vector {
   readonly name: string;
@@ -1029,6 +1030,13 @@ describe('wireEndpoint: which envelope an endpoint accepts', () => {
     }
     expect(wireEndpoint('/internal/vertical-invoke')).toEqual({ kind: 'call', issuers: ['platform', 'router'] });
   });
+
+  it('admits the router on the connector call and probe paths, spelled as vertical-connector.ts names them', () => {
+    for (const path of [CONNECTOR_CALL_PATH, CONNECTOR_PROBE_PATH]) {
+      expect(wireEndpoint(path)).toEqual({ kind: 'call', issuers: ['platform', 'router'] });
+      expect(wireEndpoint(`${path}/`)).toEqual({ kind: 'call', issuers: ['platform'] });
+    }
+  });
 });
 
 describe('a call’s body given as a reader', () => {
@@ -1066,13 +1074,18 @@ describe('wireReplayOf: a call’s replay policy, as its endpoint states it', ()
 
   it('a call the table lists as changing nothing keeps no nonce', () => {
     for (const path of WIRE_REPLAY_FREE_CALLS) expect(wireReplayOf('POST', path)).toBe('none');
-    expect(WIRE_REPLAY_FREE_CALLS).toEqual(['/internal/query', '/internal/redrain-count', '/internal/lifecycle-flow', '/internal/operation-series', '/internal/connector-grants']);
+    expect(WIRE_REPLAY_FREE_CALLS).toEqual(['/internal/query', '/internal/redrain-count', '/internal/lifecycle-flow', '/internal/operation-series', '/internal/connector-grants', '/internal/connector-probe']);
   });
 
   it('every other call keeps nonces: an unlisted one, a new one, another spelling of a listed one', () => {
     for (const path of ['/internal/provision', '/internal/vertical-invoke', '/internal/brand-new-verb', '/internal/%71uery', '/internal/query/', '/INTERNAL/query']) {
       for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) expect(wireReplayOf(method, path)).toBe('nonce');
     }
+  });
+
+  it('a connector probe keeps no nonce; a scoped connector call keeps them', () => {
+    expect(wireReplayOf('POST', CONNECTOR_PROBE_PATH)).toBe('none');
+    expect(wireReplayOf('POST', CONNECTOR_CALL_PATH)).toBe('nonce');
   });
 });
 

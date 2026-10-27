@@ -76,6 +76,17 @@ export interface ConnectionLandingOptionsInput {
   read(verticalSlug: string, versionId: string): Promise<ManifestConnectionLandings>;
   /** provider slug → its binder. A provider with none is never bound by a declaration. */
   binders: Record<string, ConnectionBinder>;
+  /**
+   * The binder for a connection `binders` has no entry for (a vertical-defined provider, whose
+   * binder is built per connection). Asked only when the record has none; absent, such a
+   * connection is never bound, as before.
+   */
+  binderFor?: (connection: Connection) => ConnectionBinder | undefined;
+}
+
+/** The binder a connection is bound through: the record's entry, else `binderFor`'s. */
+export function binderOf(input: Pick<ConnectionLandingOptionsInput, 'binders' | 'binderFor'>, connection: Connection): ConnectionBinder | undefined {
+  return input.binders[connection.provider] ?? input.binderFor?.(connection);
 }
 
 /** What one connection's landing step did, folded into its sweep row and the pass report. */
@@ -120,7 +131,7 @@ export class LandingPass {
   /** Grant and bind what `connection`'s installs declare for its provider, and say what happened. */
   async apply(connection: Connection): Promise<LandingOutcome> {
     const out: LandingOutcome = { granted: [], bound: [], failed: [] };
-    const binder = this.input.binders[connection.provider];
+    const binder = binderOf(this.input, connection);
     if (!binder) return out;
     const targets = await this.targetsOf(connection.tenantId, connection.vertical);
     let existing: Awaited<ReturnType<ConnectionBinder['list']>> | undefined;

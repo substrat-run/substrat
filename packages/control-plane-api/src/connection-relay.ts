@@ -3,9 +3,13 @@ import {
   instant,
   connectionId,
   connectionRelayRequest,
+  isVerticalConnectorProvider,
   type ConnectionProbe,
   type ConnectionRelayResult,
   type PlatformActorId,
+  type ScopeId,
+  type TenantId,
+  type VerticalConnectorDeclaration,
 } from '@substrat-run/contracts';
 
 /**
@@ -66,7 +70,16 @@ export class ConnectionRelayError extends Error {
 export type ConnectionCandidateProbe = (
   provider: string,
   secret: Record<string, string>,
+  /** Who the credential is for, as this directory re-derived it: a vertical-defined provider's probe runs in that vertical. */
+  context: ConnectionCandidateContext,
 ) => Promise<ConnectionProbe | undefined>;
+
+/** The connection a candidate credential would become: its tenant, its vertical and the scope that asked. */
+export interface ConnectionCandidateContext {
+  tenantId: TenantId;
+  vertical: string;
+  scopeId: ScopeId | null;
+}
 
 /**
  * Finish a candidate credential on the platform side, before it is probed and stored (#2100).
@@ -93,6 +106,17 @@ export type ConnectionCandidatePrepare = (
  */
 export type ConnectionCandidatePreparer = (provider: string) => ConnectionCandidatePrepare | undefined;
 
+/**
+ * The declaration a vertical-defined provider's connection is held to (vertical-connectors.md
+ * §7.2): the one its vertical's SERVING version declares (the version a connection-level call and
+ * a candidate probe run), or why there is none. Its `grants` are the connection's standing grants,
+ * whatever the caller asks for.
+ */
+export type VerticalConnectorDeclarationOf = (
+  provider: string,
+  context: { tenantId: TenantId; vertical: string },
+) => Promise<{ declaration: Pick<VerticalConnectorDeclaration, 'grants'> } | { refused: string }>;
+
 /** What a preview or a fork is told when it asks to change a connection (#2005). */
 export const PREVIEW_CONNECTIONS_REFUSAL =
   "previews and forks cannot change a tenant's connections: this scope is a preview or a fork";
@@ -101,7 +125,12 @@ export async function relayConnectionUpsert(
   host: ScopeHost,
   actor: PlatformActorId,
   body: unknown,
-  options: { probeCandidate?: ConnectionCandidateProbe; prepareCandidate?: ConnectionCandidatePreparer } = {},
+  options: {
+    probeCandidate?: ConnectionCandidateProbe;
+    prepareCandidate?: ConnectionCandidatePreparer;
+    /** Required for a dotted provider: a host without it refuses one. */
+    declarationOf?: VerticalConnectorDeclarationOf;
+  } = {},
 ): Promise<ConnectionRelayResult> {
   const parsed = connectionRelayRequest.safeParse(body);
   if (!parsed.success) {
@@ -142,6 +171,19 @@ export async function relayConnectionUpsert(
   }
   const vertical = rec.vertical;
 
+  // A vertical-defined provider's standing grants are what its vertical's serving version declares,
+  // never what the caller sends (a dashboard door reads the latest push, which may not serve yet).
+  // Refused before the probe and the store when that version declares no such connector.
+  let grants = input.grants;
+  if (isVerticalConnectorProvider(input.provider)) {
+    if (!options.declarationOf) {
+      throw new ConnectionRelayError(`'${input.provider}' is a vertical-defined provider, and this deployment is not configured to run one`, 503);
+    }
+    const found = await options.declarationOf(input.provider, { tenantId: input.tenantId, vertical });
+    if ('refused' in found) throw new ConnectionRelayError(found.refused, 409);
+    grants = found.declaration.grants;
+  }
+
   // `listConnections` already excludes revoked rows; expired/errored rows are still the
   // live row for this key — rotation is what revives them. The account leg matches
   // exactly (absent matches absent): a multi-account provider's second account is a new
@@ -176,7 +218,7 @@ export async function relayConnectionUpsert(
 
   // Ask the provider before touching the store (#605). Deliberately here, ahead of every
   // write below: a refused rotation must leave the live credential exactly as it was.
-  const probe = await options.probeCandidate?.(input.provider, secret);
+  const probe = await options.probeCandidate?.(input.provider, secret, { tenantId: input.tenantId, vertical, scopeId: input.scopeId });
   if (probe && !probe.ok && probe.refused) {
     throw new ConnectionRelayError(
       probe.error ?? `${input.provider} refused these credentials`,
@@ -222,7 +264,7 @@ export async function relayConnectionUpsert(
     );
   }
 
-  for (const permission of input.grants) {
+  for (const permission of grants) {
     await host.admin.grantToConnection(actor, {
       connectionId: id,
       permission,
@@ -238,5 +280,5 @@ export async function relayConnectionUpsert(
   // provider records nothing: unverified must not look like failed.
   if (probe?.ok) await host.admin.recordConnectionUse(id, { ok: true });
 
-  return { connectionId: id, created, granted: input.grants, ...(probe ? { probe } : {}) };
+  return { connectionId: id, created, granted: grants, ...(probe ? { probe } : {}) };
 }

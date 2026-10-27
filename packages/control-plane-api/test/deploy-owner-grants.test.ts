@@ -37,7 +37,7 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  const push = async (manifest: { ownerGrants?: string[]; marked: boolean; modules?: unknown[]; omitRegistry?: boolean }) => {
+  const push = async (manifest: { ownerGrants?: string[]; marked: boolean; modules?: unknown[]; omitRegistry?: boolean; connectors?: unknown[]; registryConnectors?: unknown[] }, slugged?: (slug: string, tenant: string) => void) => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: { method?: string }) => {
@@ -46,7 +46,9 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
       }),
     );
     const slug = `owner-grants-${ulid().toLowerCase()}`;
-    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug, name: slug });
+    const tenant = tenantId.parse(ulid());
+    slugged?.(slug, tenant);
+    await host.admin.createTenant(staff, { id: tenant, slug, name: slug });
     const fd = new FormData();
     fd.set(
       'manifest',
@@ -64,9 +66,14 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
           ],
           roles: [],
           entityGrants: [],
+          // As the CLI sends it: each connector's standing grants join the registry.
+          ...(manifest.connectors
+            ? { connectors: manifest.registryConnectors ?? (manifest.connectors as { provider: string; grants: string[] }[]).map(({ provider, grants }) => ({ provider, grants })) }
+            : {}),
         } } : {}),
         ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
         ...(manifest.modules ? { modules: manifest.modules } : {}),
+        ...(manifest.connectors ? { connectors: manifest.connectors } : {}),
       }),
     );
     fd.set('tenant', slug);
@@ -129,5 +136,32 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
     });
     expect(uploads.length).toBe(before);
     expect((await push({ marked: true, modules })).status).toBe(201);
+  });
+
+  it('refuses a connector whose standing grant the registry does not declare, and registers a declared one (vertical-connectors.md §7.1)', async () => {
+    const connector = (grants: string[]) => ({
+      provider: 'acme.box', label: 'Box', description: 'A document box.', fields: [{ key: 'token', label: 'Token', secret: true }],
+      grants, events: [], sweeps: true, binds: false, dispatches: false,
+    });
+    const before = uploads.length;
+    // The registry's own parse holds its rows to its keys; what only this route can see is a
+    // connector the registry rows disagree with.
+    const bad = await push({ marked: true, connectors: [connector(['crm:nope'])], registryConnectors: [{ provider: 'acme.box', grants: ['crm:contact-read'] }] });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe(
+      'manifest connectors: connector acme.box: its grants disagree with registry.connectors; ' +
+        'connector acme.box → crm:nope: a standing grant the registry does not declare',
+    );
+    expect(uploads.length).toBe(before);
+
+    let slug = '';
+    let owner = '';
+    const good = await push({ marked: true, connectors: [connector(['crm:contact-read'])] }, (s, t) => ((slug = s), (owner = t)));
+    expect(good.status).toBe(201);
+    // Read back as the dashboard's install catalog reads it (`listCatalog`): the registry route.
+    const listed = await app.request(`/verticals?visibleTo=${owner}`, { headers: auth });
+    const { entries } = (await listed.json()) as { entries: { slug: string; connectors?: unknown }[] };
+    const registered = entries.find((v) => v.slug === `${slug}/crm`);
+    expect(registered?.connectors).toEqual([connector(['crm:contact-read'])]);
   });
 });
