@@ -2469,18 +2469,6 @@ describe('mountPlatformSurface — the schedule switch (#1666)', () => {
     expect((await post(host, { ...body, to: 'paused' })).status).toBe(400);
     expect(called).toBe(false);
   });
-
-  it('sits behind the platform-secret gate like the rest of the surface', async () => {
-    let called = false;
-    const host = fakeHost({
-      systemSwitchLocal: async () => {
-        called = true;
-        return { held: true, changed: true, permissions: [] };
-      },
-    });
-    expect((await post(host, body, { 'content-type': 'application/json' })).status).toBe(403);
-    expect(called).toBe(false);
-  });
 });
 
 /**
@@ -2545,18 +2533,6 @@ describe('mountPlatformSurface — the lifecycle delivery (#1713)', () => {
     expect((await post(host, { scopeId: SCOPE, lifecycle: bad })).status).toBe(400);
     expect(called).toBe(false);
   });
-
-  it('sits behind the platform-secret gate like the rest of the surface', async () => {
-    let called = false;
-    const host = fakeHost({
-      setLifecycleLocal: async () => {
-        called = true;
-        return { applied: true, changed: true, lifecycle } as never;
-      },
-    });
-    expect((await post(host, body, { 'content-type': 'application/json' })).status).toBe(403);
-    expect(called).toBe(false);
-  });
 });
 
 /**
@@ -2595,18 +2571,6 @@ describe('mountPlatformSurface — the schedule switch status read (#1674)', () 
     expect(res.status).toBe(501);
     expect(JSON.stringify(await res.json())).toMatch(/redeploy/);
   });
-
-  it('sits behind the platform-secret gate like the rest of the surface', async () => {
-    let called = false;
-    const host = fakeHost({
-      systemGrantsStatusLocal: async () => {
-        called = true;
-        return [];
-      },
-    });
-    expect((await get(host, SCOPE, {})).status).toBe(403);
-    expect(called).toBe(false);
-  });
 });
 
 /**
@@ -2628,10 +2592,6 @@ describe('mountPlatformSurface — the switch fence preflight (#2045)', () => {
     const res = await get(fakeHost());
     expect(res.status).toBe(501);
     expect(JSON.stringify(await res.json())).toMatch(/redeploy/);
-  });
-
-  it('sits behind the platform-secret gate like the rest of the surface', async () => {
-    expect((await get({ ...fakeHost(), switchFenced: true }, {})).status).toBe(403);
   });
 });
 
@@ -2673,17 +2633,43 @@ describe('mountPlatformSurface — the peer switch status read (#1706)', () => {
     expect(res.status).toBe(501);
     expect(JSON.stringify(await res.json())).toMatch(/redeploy/);
   });
+});
 
-  it('sits behind the platform-secret gate like the rest of the surface', async () => {
-    let called = false;
+describe('mountPlatformSurface — fail-closed route gates', () => {
+  it.each([
+    ['POST', '/internal/system-switch', { scopeId: SCOPE, moduleId: '@substrat-run/engine-absence', to: 'off' }],
+    ['POST', '/internal/lifecycle', { scopeId: SCOPE, lifecycle: { scope: 'suspended', tenant: 'active', at: '2026-10-01T00:00:00.000Z', revision: { epoch: 0, scope: 1, tenant: 0 } } }],
+    ['GET', `/internal/system-grants?scopeId=${SCOPE}`, undefined],
+    ['GET', `/internal/switch-fence?scopeId=${SCOPE}`, undefined],
+    ['GET', `/internal/peer-grants?scopeId=${SCOPE}`, undefined],
+  ] as const)('%s %s sits behind the platform-secret gate', async (method, path, body) => {
+    const called = vi.fn();
     const host = fakeHost({
-      peerGrantsStatusLocal: async () => {
-        called = true;
+      systemSwitchLocal: async () => {
+        called();
+        return { held: true, changed: true, permissions: [] };
+      },
+      setLifecycleLocal: async () => {
+        called();
+        return { applied: true, changed: true } as never;
+      },
+      systemGrantsStatusLocal: async () => {
+        called();
         return [];
       },
+      peerGrantsStatusLocal: async () => {
+        called();
+        return [];
+      },
+      switchFenced: true,
     });
-    expect((await get(host, SCOPE, {})).status).toBe(403);
-    expect(called).toBe(false);
+    const res = await appWith(host).request(path, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }, ENV);
+    expect(res.status).toBe(403);
+    expect(called).not.toHaveBeenCalled();
   });
 });
 
