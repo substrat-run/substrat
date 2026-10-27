@@ -1,7 +1,8 @@
 import { substratError, tokenizeSql } from '@substrat-run/contracts';
 import { moduleMigrations } from './module-migrations.js';
 import { assertNoSpineReference, assertNoSpineWrite } from './spine-guard.js';
-import { attachmentSha256, type SqlMigration } from './scope-host.js';
+import { attachmentSha256 } from './attachment-bytes.js';
+import type { SqlMigration } from './scope-host.js';
 
 // Declared locally so the kernel needs no platform type packages (§5.8), as `capability.ts` does.
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };

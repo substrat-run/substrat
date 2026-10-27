@@ -1,6 +1,6 @@
 import { substratError } from '@substrat-run/contracts';
-import type { ScopedSql, TenantBlobStore } from './scope-host.js';
-import { attachmentBlobKey } from './scope-host.js';
+import type { ScopedSql } from './scope-host.js';
+import { attachmentBlobKey, type TenantBlobStore } from './attachment-bytes.js';
 import { ulidTime } from './ulid.js';
 
 // Web-standard (Node, Workers, browsers); the kernel pulls in no platform lib typings.

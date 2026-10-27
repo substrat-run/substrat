@@ -8691,6 +8691,7 @@ export class CloudflareScopeHost implements ScopeHost {
           ack,
           channel,
           baseId: outgoing?.id ?? null,
+          permissionsChange: outgoing !== undefined && outgoing.permission_digest !== incoming.permission_digest,
           migrationsChange: outgoing !== undefined && outgoing.migration_digest !== incoming.migration_digest,
           read: async () => ({ base: outgoing ? await reviewed(outgoing) : null, incoming: await reviewed(incoming) }),
         });

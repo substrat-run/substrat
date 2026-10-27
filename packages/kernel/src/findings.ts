@@ -23,7 +23,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid } from './ulid.js';
 import type { RedactionSql } from './subject-redaction.js';
-import { assertRowLimit, boundedRetentionDelete, ISSUE_RETENTION_DAYS } from './scope-host.js';
+import { assertRowLimit, boundedRetentionDelete, ISSUE_RETENTION_DAYS } from './retention.js';
 
 /**
  * How long a finding outlives its last occurrence — the issue store's window, since a Recurring

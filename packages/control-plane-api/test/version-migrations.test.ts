@@ -272,7 +272,7 @@ describe('version migrations route (#1677)', () => {
     it('a promote between the read and the acknowledgement refuses it as stale, and a read again passes', async () => {
       const shown = bindingOf((await read(SLUG, e.c, as.tenantA, e.a)).text)!;
       // Someone promotes b meanwhile: prod's permission surface moves under the review.
-      await host.admin.promoteVersion(staff, SLUG, 'prod', e.b, { permissionChange: true });
+      await host.admin.promoteVersion(staff, SLUG, 'prod', e.b, { permissionChange: true, review: bindingOf((await read(SLUG, e.b, as.tenantA, e.a)).text)! });
       const stale = await promote(e.c, { permissionChange: true, migrationChange: true, review: shown }, as.tenantA);
       expect(stale.status).toBe(412);
       expect(await stale.json()).toEqual(expect.objectContaining({ reason: 'promote_review_stale' }));

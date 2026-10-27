@@ -215,6 +215,7 @@ import {
   mailSendersFor,
   connectFlowsFor,
   connectorSweepersFor,
+  connectorSweepEveryMinutesFor,
   connectionBindersFor,
   type ConnectorEnv,
 } from './connectors.js';
@@ -2503,6 +2504,7 @@ export default {
       // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly: its row says so under a
       // reference, and the text is staff's ledger row under it (`recordFailure` below).
       sweepers: connectorSweepersFor(env),
+      sweepEveryMinutes: connectorSweepEveryMinutesFor(),
       // #2316: each live connection is granted and bound from the landings its vertical's running
       // version declares, before it is swept — so a company approved through a connect link lands
       // without anyone running `substrat connection bind`.

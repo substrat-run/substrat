@@ -4577,10 +4577,22 @@ describe('control-plane API — vertical registry', () => {
     await json(`/verticals/fsm/versions/${v2}/admit`, 'POST');
     // v2's permission digest differs from v1 (the current prod version) → refused.
     expect((await json('/verticals/fsm/channels/prod/promote', 'POST', { versionId: v2 })).status).toBe(409);
-    // Acknowledged → promotes.
-    const ok = await json('/verticals/fsm/channels/prod/promote', 'POST', {
+    const unbound = await json('/verticals/fsm/channels/prod/promote', 'POST', {
       versionId: v2,
       acknowledge: { permissionChange: true },
+    });
+    expect(unbound.status).toBe(412);
+    expect(unbound.headers.get('content-type')).toContain('application/problem+json');
+    expect(await unbound.json()).toMatchObject({
+      code: 'precondition_failed',
+      reason: 'promote_review_unbound',
+      detail: 'Acknowledging a permission or migration change requires a review. Upgrade the Substrat CLI to version 0.45.0 or later, read the current promote review, and retry with --review.',
+    });
+    const reviewRead = await app.request(`/verticals/fsm/versions/${v2}/migrations?base=${v1}`, { headers: auth });
+    const { review } = await reviewRead.json();
+    const ok = await json('/verticals/fsm/channels/prod/promote', 'POST', {
+      versionId: v2,
+      acknowledge: { permissionChange: true, review },
     });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ channel: 'prod', versionId: v2 });

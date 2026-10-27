@@ -22,7 +22,7 @@
  */
 import type { ByteStream, ByteStreamReader } from './byte-stream.js';
 import type { ExtractionTimers } from './attachment-extractor.js';
-import type { ConnectorResponse, FetchLike } from './scope-host.js';
+import type { ConnectorResponse, FetchLike } from './connector-transport.js';
 
 /**
  * How long a streamed response body may go without a byte before it errors. 30 s, the default

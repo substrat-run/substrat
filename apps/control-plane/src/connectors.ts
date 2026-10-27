@@ -181,6 +181,8 @@ export interface ConnectorRegistration {
   dispatch?(env: ConnectorEnv): ConnectorHandler;
   /** The poll floor (#574): re-read the provider's truth and write it back. */
   sweep(env: ConnectorEnv): ConnectorSweeper;
+  /** Poll this provider's connections no more often than this many minutes; absent means every pass. */
+  readonly sweepEveryMinutes?: number;
   /**
    * #2316: this provider's bindings record the connection's `externalAccountRef`, because one
    * (tenant, vertical) holds a connection per external account and the sweep opens the credential
@@ -402,6 +404,10 @@ const FORTNOX: ConnectorRegistration = {
 const PLANIMA: ConnectorRegistration = {
   provider: 'planima',
   grants: PLANIMA_CONNECTION_GRANTS,
+  // 250 facilities need at least 751 reads. Twelve polls/day spend 9,012 of Planima's
+  // 10,000 daily calls; a 105-minute interval would spend more than the allowance.
+  // Two hours also leaves room for pagination and connect-time probes.
+  sweepEveryMinutes: 120,
   inspector: (env) => ({
     bindScope: (h, row, target) => bindPlanimaScope(h, { ...target, connectionId: row.id }),
     bindings: (h, row) => listPlanimaBindings(h, row.id),
@@ -510,6 +516,11 @@ export function connectionInspectorsFor(env: ConnectorEnv): Record<string, Conne
 /** The `{ provider → sweeper }` shape `runPlatformSweep` takes. */
 export function connectorSweepersFor(env: ConnectorEnv) {
   return Object.fromEntries(CONNECTORS.map((c) => [c.provider, c.sweep(env)]));
+}
+
+/** Provider poll intervals, from the same registrations as their sweepers. */
+export function connectorSweepEveryMinutesFor(): Record<string, number> {
+  return Object.fromEntries(CONNECTORS.flatMap((c) => c.sweepEveryMinutes ? [[c.provider, c.sweepEveryMinutes]] : []));
 }
 
 /**

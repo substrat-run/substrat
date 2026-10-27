@@ -24,7 +24,8 @@ import {
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
 import type { ConnectorSweeper, CrossVerticalReach, PlatformRequestDrain, PlatformSweepOptions } from '../src/platform-sweep.js';
-import type { FetchLike, MigrateScopeOutcome, ScheduleRunReport, ScopeHost, SweepRunInput } from '../src/scope-host.js';
+import type { FetchLike } from '../src/connector-transport.js';
+import type { MigrateScopeOutcome, ScheduleRunReport, ScopeHost, SweepRunInput } from '../src/scope-host.js';
 
 /**
  * The orchestration, with fakes — that the pass enumerates, drains, dispatches by
@@ -50,10 +51,12 @@ function fakeHost(opts: {
   scopes?: { id: ReturnType<typeof sid>; tenantId: typeof T }[];
   connections?: { id: ReturnType<typeof cid>; provider: string; revokedAt: string | null }[];
   drainDue?: ScopeHost['drainDue'];
+  sweepRuns?: (outcome?: 'ok' | 'failed' | 'skipped') => Promise<{ at: string; outcome: 'ok' | 'failed' | 'skipped' }[]>;
 }): ScopeHost {
   const admin = {
     listScopes: async () => (opts.scopes ?? []).map((s) => ({ ...s, status: 'active' })),
     listConnections: async () => opts.connections ?? [],
+    listSweepRuns: async (_actor: unknown, filter: { outcome?: 'ok' | 'failed' | 'skipped' }) => opts.sweepRuns?.(filter.outcome) ?? [],
   };
   return {
     admin,
@@ -905,6 +908,79 @@ describe('runPlatformSweep', () => {
     expect(swept).toEqual([live]);
     expect(report.connectionsSwept).toBe(1);
     expect(report.connectionsSkipped).toBe(2);
+  });
+
+  it('polls a new connection, waits for its provider interval, then polls when due', async () => {
+    const id = cid();
+    let rows: { at: string; outcome: 'ok' | 'failed' | 'skipped' }[] = [];
+    const host = fakeHost({ connections: [{ id, provider: 'planima', revokedAt: null }], sweepRuns: async (outcome) => rows.filter((r) => r.outcome === outcome) });
+    const recorded: SweepRunInput[] = [];
+    let polls = 0;
+    const pass = () => runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { planima: async () => { polls += 1; } },
+      sweepEveryMinutes: { planima: 120 },
+      recordSweepRun: (row) => void recorded.push(row),
+    });
+
+    await pass();
+    expect(polls).toBe(1);
+    rows = [
+      { at: new Date().toISOString(), outcome: 'skipped' },
+      { at: new Date(Date.now() - 15 * 60_000).toISOString(), outcome: 'ok' },
+    ];
+    const waiting = await pass();
+    expect(waiting.connectionsSkipped).toBe(1);
+    expect(polls).toBe(1);
+    expect(recorded).toHaveLength(1);
+
+    rows = [{ at: new Date(Date.now() - 121 * 60_000).toISOString(), outcome: 'ok' }];
+    await pass();
+    expect(polls).toBe(2);
+    expect(recorded).toHaveLength(2);
+    rows = [{ at: new Date(Date.now() + 121 * 60_000).toISOString(), outcome: 'ok' }];
+    await pass();
+    expect(polls).toBe(3);
+  });
+
+  it('waits the provider interval after a failed poll too', async () => {
+    const id = cid();
+    let rows: { at: string; outcome: 'ok' | 'failed' | 'skipped' }[] = [];
+    const host = fakeHost({ connections: [{ id, provider: 'planima', revokedAt: null }], sweepRuns: async (outcome) => rows.filter((r) => r.outcome === outcome) });
+    const recorded: SweepRunInput[] = [];
+    let polls = 0;
+    const pass = () => runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { planima: async () => { polls += 1; throw new Error('provider unavailable'); } },
+      sweepEveryMinutes: { planima: 120 },
+      recordSweepRun: (row) => void recorded.push(row),
+    });
+    await pass();
+    expect(recorded[0]?.outcome).toBe('failed');
+    rows = [{ at: new Date().toISOString(), outcome: 'failed' }];
+    const report = await pass();
+    expect(report.connectionsSkipped).toBe(1);
+    expect(polls).toBe(1);
+    expect(recorded).toHaveLength(1);
+  });
+
+  it('does not poll when the cadence ledger cannot be read', async () => {
+    const id = cid();
+    const host = fakeHost({
+      connections: [{ id, provider: 'planima', revokedAt: null }],
+      sweepRuns: async () => { throw new Error('directory unavailable'); },
+    });
+    let polls = 0;
+    const report = await runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { planima: async () => { polls += 1; } },
+      sweepEveryMinutes: { planima: 120 },
+    });
+    expect(polls).toBe(0);
+    expect(report.errors).toContainEqual({ kind: 'sweep', id, error: 'cannot read connector cadence: directory unavailable' });
   });
 
   it("hands a sweeper a fetch that converts a sized body before the injected fetch sees it (#2498)", async () => {

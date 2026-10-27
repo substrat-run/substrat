@@ -12,6 +12,7 @@ import {
   attachmentBlobKey,
   attachmentSweepFenceKey,
   dumpMetaValue,
+  promoteReviewDigest,
 } from '@substrat-run/kernel';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { warmControlPlane, warmSwitchHolds } from './do-warmup.js';
@@ -111,6 +112,15 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { refuseAdminRows, refuseSwitchRecord } from './contract-support.js';
+
+async function reviewFor(host: CloudflareScopeHost, staff: ReturnType<typeof platformActorId.parse>, slug: string, incoming: string) {
+  const base = (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId ?? null;
+  const side = async (id: string) => ({
+    ...(await host.admin.getVersion(staff, id, slug))!,
+    migrations: await host.admin.versionMigrations(staff, slug, id),
+  });
+  return { base, digest: await promoteReviewDigest(base ? await side(base) : null, await side(incoming)) };
+}
 
 // Absorb the inter-file DO reload before any suite's first directory call
 // (see do-warmup.ts) — file-level, so it runs before every suite below.
@@ -2157,9 +2167,9 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
     );
     // Nothing else: the retiring vertical republishing its shape, and the plain one adding a key, promote.
     const same = await publish(retiring.slug, [shape([], ['contact:read-own'])]);
-    await host.admin.promoteVersion(staff, retiring.slug, 'prod', same, ACKS);
+    await host.admin.promoteVersion(staff, retiring.slug, 'prod', same, { ...ACKS, review: await reviewFor(host, staff, retiring.slug, same) });
     const more = await publish(plain.slug, [shape(['contact:read-own', 'contact:other'])]);
-    await host.admin.promoteVersion(staff, plain.slug, 'prod', more, ACKS);
+    await host.admin.promoteVersion(staff, plain.slug, 'prod', more, { ...ACKS, review: await reviewFor(host, staff, plain.slug, more) });
 
     // The sweep, over the real directory (only these two installs listed), with a reconcile that
     // answers what a current vertical-host does: every retirement finished.
@@ -2188,7 +2198,7 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
     }
     // Converged: the next pass has nothing to do, and the drop passes.
     expect((await sweep()).provisionReconcile).toMatchObject({ behind: 0, reconciled: 0 });
-    await host.admin.promoteVersion(staff, retiring.slug, 'prod', dropped, ACKS);
+    await host.admin.promoteVersion(staff, retiring.slug, 'prod', dropped, { ...ACKS, review: await reviewFor(host, staff, retiring.slug, dropped) });
     await host.close();
   });
 });
@@ -2310,7 +2320,7 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
     }
     // Nothing else: adding a key promotes.
     const more = await publish(never.slug, [shape(['contact:read-own', 'contact:other'])]);
-    await host.admin.promoteVersion(staff, never.slug, 'prod', more, ACKS);
+    await host.admin.promoteVersion(staff, never.slug, 'prod', more, { ...ACKS, review: await reviewFor(host, staff, never.slug, more) });
     await host.admin.setVerticalServing(staff, never.slug, {
       ref: (await host.admin.getScopeRecord(staff, t, never.sc))!.servingRef!, versionId: more, doClasses: [], migrationTag: 'g',
     });
@@ -2339,7 +2349,7 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
     // Converged: the next pass has nothing to do.
     expect((await sweep()).provisionReconcile).toMatchObject({ behind: 0, reconciled: 0 });
     // The vertical that never bound moves freely; the one that did is held for `contact`, naming it.
-    await host.admin.promoteVersion(staff, never.slug, 'prod', neverDrop, ACKS);
+    await host.admin.promoteVersion(staff, never.slug, 'prod', neverDrop, { ...ACKS, review: await reviewFor(host, staff, never.slug, neverDrop) });
     const refused = await refusalOf(host.admin.promoteVersion(staff, bound.slug, 'prod', boundDrop, ACKS));
     expect(String(refused?.message)).toMatch(new RegExp(`that last reconciled ${bound.v}, where links have bound people to contact \\(one is ${bound.sc}\\)`));
     await host.close();

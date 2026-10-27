@@ -11,7 +11,8 @@ import {
   type RequestDayReadInput,
 } from '../src/request-rollup.js';
 import { BILLING_ROLLUP_RETENTION_MONTHS, billingRollupHorizon, utcDayMonthsBefore } from '../src/billing-retention.js';
-import type { FetchLike, ScopeHost } from '../src/scope-host.js';
+import type { FetchLike } from '../src/connector-transport.js';
+import type { ScopeHost } from '../src/scope-host.js';
 
 /**
  * The daily request rollup (#2501), with fakes: which days a pass reads, and what it does with a

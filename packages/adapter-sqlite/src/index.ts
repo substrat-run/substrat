@@ -10515,6 +10515,7 @@ export class SqliteScopeHost implements ScopeHost {
           ack,
           channel,
           baseId: outgoing?.id ?? null,
+          permissionsChange: outgoing !== undefined && outgoing.permissionDigest !== incoming.permissionDigest,
           migrationsChange: outgoing !== undefined && outgoing.migrationDigest !== incoming.migrationDigest,
           read: async () => ({ base: outgoing ? reviewed(outgoing) : null, incoming: reviewed(incoming) }),
         });

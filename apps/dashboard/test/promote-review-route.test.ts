@@ -194,7 +194,10 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
   const get = (sub: string | null, path: string) =>
     app.request(path, { method: 'GET', headers: sub ? { cookie: `sb_session=${sub}` } : {} }, env);
   const reviewPath = (versionId: string, slug = SLUG) => `/api/teams/${tenant}/deployments/${encodeURIComponent(slug)}/promote-review?versionId=${versionId}`;
-  const promoteTo = (id: string, ack?: SentAcks) => host.admin.promoteVersion(staff, SLUG, 'prod', id, ack);
+  const promoteTo = async (id: string, ack?: SentAcks) => {
+    const shown = ack && !ack.review ? (await (await get(subs.owner, reviewPath(id))).json()) as PromoteReviewWire : null;
+    return host.admin.promoteVersion(staff, SLUG, 'prod', id, ack && shown?.review ? { ...ack, review: shown.review } : ack);
+  };
   const prod = async () => (await host.admin.listChannels(staff, SLUG)).find((c) => c.channel === 'prod')?.versionId ?? null;
 
   describe('the route', () => {

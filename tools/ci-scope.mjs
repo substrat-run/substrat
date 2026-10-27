@@ -360,6 +360,17 @@ export function assertPartition(selection, shards) {
   }
 }
 
+// The CLI's push suite bundles these demos' permission surfaces. Their declared
+// dependencies must be built even when no demo test is selected; pnpm's `name...`
+// selector follows the edge from each demo to its engines.
+export const BUILD_READS = [
+  {
+    reader: '@substrat-run/cli',
+    packages: ['@substrat-run/demo-meridian', '@substrat-run/demo-ticket0'],
+    suite: 'packages/cli/test/push-attachment-store.test.ts',
+  },
+];
+
 /**
  * What a shard builds before it tests `names`: each of them, the workspace packages
  * nested under its directory (a demo's `app/`, `admin/`), and — through pnpm's `name...`
@@ -370,7 +381,8 @@ export function assertPartition(selection, shards) {
 export function buildNames(names, all) {
   const dirs = all.filter((p) => names.includes(p.name)).map((p) => `${p.dir}/`);
   const nested = all.filter((p) => dirs.some((d) => p.dir.startsWith(d))).map((p) => p.name);
-  return [...new Set([...names, ...nested])].sort();
+  const readByTests = BUILD_READS.filter((edge) => names.includes(edge.reader)).flatMap((edge) => edge.packages);
+  return [...new Set([...names, ...nested, ...readByTests])].sort();
 }
 
 /**

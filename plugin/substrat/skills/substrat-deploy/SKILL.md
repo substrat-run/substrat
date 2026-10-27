@@ -93,11 +93,12 @@ theater — it reproduces the exact failure Substrat exists to prevent.
 plainly what each does to existing rows, and that migrations are append-only forever once
 shipped, so this is the last cheap moment to change your mind.
 
-Then **stop and hand it over**. Give the exact command for them to run, and let them run
-it:
+Then **stop and hand it over**. Give the command to read the current review, then the command
+to acknowledge it with the token that refusal prints:
 
 ```sh
-substrat promote <slug> --version <versionId> --ack-permissions   # and/or --ack-migrations
+substrat promote <slug> --version <versionId>
+substrat promote <slug> --version <versionId> --ack-permissions --review <token>   # and/or --ack-migrations
 ```
 
 If they reply "yes, go ahead" without having read the diff you printed, that is not an
