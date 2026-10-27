@@ -67,7 +67,9 @@ it('keeps an open app Previews tab on its path team after another tab switches t
       forkedAt: '2026-10-01T00:00:00.000Z', expiresAt: null, verticalVersionId: null,
       createdAt: '2026-10-01T00:00:00.000Z',
     });
-    const snapshots = new Map([[apps[0], [record(apps[0])]], [apps[1], [record(apps[1])]], [otherApp, [record(otherApp)]]]);
+    const snapshots = new Map<string, ReturnType<typeof record>[]>([
+      [apps[0], [record(apps[0])]], [apps[1], [record(apps[1])]], [otherApp, [record(otherApp)]],
+    ]);
     const planeCalls: string[] = [];
     const env = {
       SCOPE: {}, CONTROL_PLANE: {}, SESSION_SECRET: 'test-session-secret', CP_SERVICE_TOKEN: 'test-service-token',
