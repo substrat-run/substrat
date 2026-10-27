@@ -38,6 +38,31 @@ extractors" a valid configuration, not a broken one.
 
 Nothing is OCR'd: a scanned PDF has no text layer and records `empty`.
 
+## Structured spreadsheets
+
+`readSpreadsheet({ body, filename, contentType, signal?, delimiter? })` is a host-facing
+reader for CSV, TSV and XLSX import/diff tools. It returns `{ sheets, formulaCells }`, where
+each sheet has a name and rows shaped `{ number, cells }`. Row numbers are one-based and
+preserve gaps; missing XLSX cells are `null`. Values stay strings so `001`, large identifiers
+and decimal spelling survive. Headers remain the first row; no header names or field mapping
+are guessed. Quoted CSV separators, doubled quotes, embedded newlines, BOMs and explicit
+charsets are supported. `delimiter: ';'` supports regional CSV; the default is comma for CSV
+and tab for TSV.
+
+This differs from the XLSX search extractor, which indexes words only. The structured reader
+retains numeric cells, resolves shared strings and workbook worksheet relationships, and
+uses cached formula results without evaluating them. `formulaCells > 0` warns a tool that
+those values may be stale or absent. XLSX display styles, date serials, merged cells and
+formulas are not interpreted. An error cell refuses the workbook. `.xls`, macros, external
+worksheet relationships and XML declarations are unsupported.
+
+It refuses files over 10 MiB, inflated XML over 16 MiB, and workbooks exceeding
+`SPREADSHEET_LIMITS`: 32 sheets, 10,000 stored rows, 256 columns, 100,000 cells (including
+sparse padding), 32,768 characters per cell or 2 Mi characters across cell values. Shared
+string text is bounded too. It never returns a silently truncated import. Pass an abort
+signal for the host's time budget; errors carry content-free reasons. The host still applies
+domain validation and permissions before importing any row.
+
 The HTML extractor **never indexes text the HTML parser keeps out of the rendered document**:
 comments, `script`, `style`, the other elements whose content a browser does not render, and
 `template` content. Where it does not model how a browser parses, it **under-indexes** rather

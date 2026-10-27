@@ -82,6 +82,9 @@ import {
   type InflateBudget,
 } from './shared.js';
 import { pdfExtract } from './pdf.js';
+import { delimitedSheet, workbook, type Spreadsheet } from './tabular.js';
+
+export { SPREADSHEET_LIMITS, type Spreadsheet, type SpreadsheetSheet } from './tabular.js';
 
 export { PDF_OBJECTS_MAX, PDF_STREAM_MAX, PDF_XREF_SECTIONS, pdfTables } from './pdf.js';
 
@@ -101,6 +104,43 @@ export const DEFAULT_EXTRACTOR_BOUNDS: ExtractorBounds = {
   maxInputBytes: 32 * 1024 * 1024,
   maxInflatedBytes: 16 * 1024 * 1024,
 };
+
+/**
+ * Read an uploaded CSV/TSV/XLSX for a host's import or diff tool. Unlike the search
+ * extractor this retains coordinates and numeric values. Limits REFUSE the file,
+ * never silently truncate an import. Dates/numbers retain their stored spelling;
+ * formulas are never evaluated and `formulaCells` warns about cached results.
+ */
+export async function readSpreadsheet(input: {
+  body: Uint8Array;
+  filename: string;
+  contentType: string;
+  signal?: ExtractionSignal;
+  /** Defaults to comma (CSV) or tab (TSV); semicolon is explicit for regional CSV. */
+  delimiter?: ',' | ';' | '\t';
+}): Promise<Spreadsheet> {
+  if (input.body.byteLength > 10 * 1024 * 1024) throw new ExtractionBoundExceeded('the spreadsheet exceeds 10 MiB');
+  const pace = new Pace(input.signal ?? { aborted: false });
+  if (acceptsBy((type) => type === XLSX, ['xlsx'])(input.contentType, input.filename)) {
+    const entries = await zipEntries(input.body, pace);
+    const byName = new Map(entries.map((entry) => [entry.name, entry]));
+    if (byName.size !== entries.length) throw new MalformedInput('duplicate workbook archive parts');
+    const budget: InflateBudget = { remaining: DEFAULT_EXTRACTOR_BOUNDS.maxInflatedBytes };
+    return workbook(async (name) => {
+      const entry = byName.get(name);
+      if (!entry) {
+        if (name === 'xl/sharedStrings.xml') return '';
+        throw new MalformedInput('missing workbook archive part');
+      }
+      return readEntryText(input.body, entry, budget, pace, true);
+    }, pace, (text) => decodeEntities(text, XML_ENTITIES, pace));
+  }
+  const { type, charset } = parseContentType(input.contentType);
+  const tsv = acceptsBy((t) => t === 'text/tab-separated-values', ['tsv'])(type, input.filename);
+  const csv = acceptsBy((t) => t === 'text/csv' || t === 'application/csv', ['csv'])(type, input.filename);
+  if (!tsv && !csv) throw new MalformedInput('expected a CSV, TSV or XLSX spreadsheet');
+  return delimitedSheet(await decodeText(input.body, charset, pace, true), input.delimiter ?? (tsv ? '\t' : ','), pace);
+}
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -135,14 +175,15 @@ function acceptsBy(types: (type: string) => boolean, extensions: readonly string
 }
 
 /** Decode bytes as text: a UTF-16 BOM wins, then a declared charset, then UTF-8. */
-async function decodeText(bytes: Uint8Array, charset: string | null, pace: Pace): Promise<string> {
+async function decodeText(bytes: Uint8Array, charset: string | null, pace: Pace, strict = false): Promise<string> {
   let label = charset ?? 'utf-8';
   if (bytes[0] === 0xff && bytes[1] === 0xfe) label = 'utf-16le';
   else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = 'utf-16be';
   let decoder: Decoder;
   try {
-    decoder = new TextDecoder(label);
+    decoder = new TextDecoder(label, { fatal: strict });
   } catch {
+    if (strict) throw new MalformedInput('unsupported spreadsheet text encoding');
     // An unknown label is the client's typo, not a reason to index nothing.
     decoder = new TextDecoder('utf-8');
   }
@@ -913,7 +954,7 @@ async function zipEntries(zip: Uint8Array, pace: Pace): Promise<ZipEntry[]> {
  * The count is of what the inflater actually produces (`inflateChunks`), and a throw past the
  * budget cancels the stream.
  */
-async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget, pace: Pace): Promise<string> {
+async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBudget, pace: Pace, strict = false): Promise<string> {
   if (entry.flags & 0x1) throw new MalformedInput('the archive is encrypted');
   const view = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
   const at = entry.localHeaderOffset;
@@ -929,7 +970,7 @@ async function readEntryText(zip: Uint8Array, entry: ZipEntry, budget: InflateBu
   if (entry.uncompressedSize > budget.remaining) {
     throw new ExtractionBoundExceeded('the archive inflates past the extraction bound');
   }
-  const decoder = new TextDecoder('utf-8');
+  const decoder = new TextDecoder('utf-8', { fatal: strict });
   const text: string[] = [];
   if (entry.method === 0) {
     budget.remaining -= raw.length;

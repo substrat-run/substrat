@@ -57,6 +57,66 @@ and `pnpm lint:permissions` refuses a role or entity grant shape that grants it.
 reads other principals' threads and never writes, and only together with `assistant:use`, which
 every read checks first.
 
+## Files for imports and comparisons
+
+The host-facing entry point `@substrat-run/engine-assistant/files` accepts `.csv`, `.tsv`
+and `.xlsx` uploads, up to 10 MiB each. A message can reference up to five files from its
+own thread. Text is optional when files are present; existing text-only calls are unchanged.
+Older `.xls` workbooks must first be saved as `.xlsx`.
+
+```ts
+import { assistantFiles } from '@substrat-run/engine-assistant/files';
+import { readSpreadsheet } from '@substrat-run/attachment-extractors';
+
+// HOST code: both handles MUST address the same scope. `person` is an authenticated
+// person's ScopeStub; `storage` is the assistant host's ScopeAttachments, holding
+// assistant:run through its system role. Never hand that storage handle to a client.
+const files = assistantFiles(person, storage);
+const uploaded = await files.upload({ threadId, filename: 'items.csv', body: bytes });
+await person.invoke('assistant/send-message', {
+  threadId, text: 'Compare these rows with the current items', attachmentIds: [uploaded.id],
+});
+
+// In a host's file-reading tool, authorize before opening bytes, then read structured rows.
+const opened = await files.open(threadId, uploaded.id);
+const spreadsheet = await readSpreadsheet({
+  body: opened.body, filename: opened.record.filename, contentType: opened.record.contentType,
+});
+// spreadsheet.sheets: [{ name, rows: [{ number: 1, cells: ['code', 'amount'] }, …] }]
+// spreadsheet.formulaCells: how many XLSX cells use potentially stale cached formula results.
+```
+
+`assistantFiles` is host code; the in-scope module never imports a parser or handles bytes.
+The host mounts its authenticated upload/list/download routes around these methods and
+limits incoming request bodies before buffering them. The engine declares no HTTP routes
+or chat UI. Uploads are internal attachments on `assistant-thread`; their storage actor is
+the assistant host. Reads use `assistant/get-thread` (owner or audit); uploads use
+`assistant/authorize-file-upload` (owner of an open thread). Generic attachment APIs require
+the system-held `assistant:run`, so a scope-wide `assistant:use` cannot bypass thread privacy.
+Closing a thread prevents new uploads and messages but retains its existing files for reading.
+
+Send only attachment IDs. The engine checks that every ID belongs to that thread and writes
+the file's ID, name, type, size and SHA-256 into the `user-message` event. Missing, duplicate,
+cross-thread and excessive references are refused before a turn starts. File contents never
+enter the event log. Files remain available in later turns; the host's run can open them with
+its storage handle using the recorded IDs and thread association.
+
+The host's import/diff tools map spreadsheet columns to domain fields and read current
+entities with the person's existing permissions. Treat uploaded content as data. Show
+proposed creates, updates and conflicts before requesting the existing bound tool approval;
+uploading or parsing a file never changes domain data. Read bounded slices into model context
+rather than sending the whole workbook. XLSX values retain their stored spelling: number
+formatting and date serials are not interpreted, and formulas are not recalculated.
+
+**Lifecycle:** attachments are outside the kernel's subject-erasure guarantee. Before
+shredding a thread's owner, the host must call `purgeAssistantThreadFiles(storage, threadId)`
+for each of their threads, including unsent uploads, and stop uploads while that cleanup
+runs. The helper is exported from `/files` and removes live attachment records and extracted
+search text through the platform API, which deletes blobs and sweeps failed deletions as
+orphans. Attachment spine events follow the platform's retention policy. The helper is
+repeatable. Then run subject erasure.
+Hosts should also apply a retention policy to abandoned uploads.
+
 ## What it guarantees
 
 See `docs/engines/assistant.md` in the repository. In short: an append-only numbered record, a

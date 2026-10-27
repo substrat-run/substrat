@@ -62,10 +62,12 @@ import {
   ASSISTANT_STREAM_VERSION,
   approvalDigest,
   assistantStreamBody,
+  assistantMessageFile,
   isRestingEvent,
   type ApprovalBinding,
   type AssistantStreamBody,
   type AssistantStreamEvent,
+  type AssistantMessageFile,
 } from '@substrat-run/contracts/assistant-stream';
 import {
   assertAllowed,
@@ -195,7 +197,9 @@ export const assistantManifest = moduleManifest.parse({
   ],
   events: { emits: assistantEmitDeclarations, consumes: [] },
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
-  attachmentTargets: [],
+  // Byte access is brokered by the host AFTER checking thread ownership. Using `use`
+  // here would let every person with that scope-wide key open every thread's files.
+  attachmentTargets: [{ entityType: 'assistant-thread', readPermission: 'assistant:run', writePermission: 'assistant:run' }],
   entityRelations: [],
   // K-46: derived, so the content tables' `delete` erasure is in the manifest a host reads.
   erasure: subjectErasureOf(assistantEntities),
@@ -539,7 +543,16 @@ export function sendMessage(ctx: OperationContext, rawInput: SendMessageInput): 
   if (last && !isRestingEvent({ t: last.type })) {
     throw conflict('turn_in_progress', 'the assistant is still answering the last message');
   }
-  const first = insertEvent(ctx, row, { t: 'user-message', text: input.text });
+  const files = input.attachmentIds?.map((id): AssistantMessageFile => {
+    const file = ctx.sql.query<AssistantMessageFile>(
+      `SELECT id, filename, content_type AS contentType, size, sha256 FROM _substrat_attachments
+       WHERE id = ? AND entity_type = 'assistant-thread' AND entity_id = ?`,
+      [id, row.id],
+    )[0];
+    if (!file) throw substratError('not_found', `file not found in thread: ${id}`);
+    return returns(assistantMessageFile, `message file ${id}`, file);
+  });
+  const first = insertEvent(ctx, row, { t: 'user-message', text: input.text, ...(files ? { files } : {}) });
   const second = insertEvent(ctx, row, { t: 'turn-start', v: ASSISTANT_STREAM_VERSION });
   emitAssistantEvent(ctx, row.subject_id, {
     type: 'assistant.turn-started',
@@ -547,6 +560,12 @@ export function sendMessage(ctx: OperationContext, rawInput: SendMessageInput): 
     payload: { threadId: row.id },
   });
   return { firstSeq: first.id, lastSeq: second.id };
+}
+
+/** Ownership is required even when the caller can audit other people's threads. */
+export function authorizeFileUpload(ctx: OperationContext, rawInput: ThreadIdInput): Thread {
+  const input = threadIdInput.parse(rawInput);
+  return toThread(openThreadRow(ownThreadRow(ctx, input.threadId)));
 }
 
 /**
@@ -935,6 +954,11 @@ const sendMessageOp: Handlers['assistant/send-message'] = async (ctx, input) => 
   return sendMessage(ctx, input);
 };
 
+const authorizeFileUploadOp: Handlers['assistant/authorize-file-upload'] = async (ctx, input) => {
+  assertAllowed(await ctx.check(ASSISTANT_PERM.use));
+  return authorizeFileUpload(ctx, input);
+};
+
 const resolveApprovalOp: Handlers['assistant/resolve-approval'] = async (ctx, input) => {
   assertAllowed(await ctx.check(ASSISTANT_PERM.use));
   return resolveApproval(ctx, input);
@@ -974,6 +998,7 @@ export const assistantModule: ModuleRegistration = {
     'assistant/get-thread': getThreadOp,
     'assistant/read-events': readEventsOp,
     'assistant/send-message': sendMessageOp,
+    'assistant/authorize-file-upload': authorizeFileUploadOp,
     'assistant/resolve-approval': resolveApprovalOp,
     'assistant/close-thread': closeThreadOp,
     'assistant/acquire-run': acquireRunOp,
