@@ -583,7 +583,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/snapshots` — `dashboard/list-app-snapshots`
    */
-  listAppSnapshots(input: { scopeId: string }): Promise<({ id: string; kind: string; forkedFrom: string | null; forkedAt: string | null; expiresAt: string | null; verticalVersionId: string | null; createdAt: string; url: string | null })[]>;
+  listAppSnapshots(input: { scopeId: string }): Promise<({ id: string; kind: string; forkedFrom: string | null; forkedAt: string | null; expiresAt: string | null; verticalVersionId: string | null; createdAt: string; url?: string | null })[]>;
 
   /**
    * One page of this team's apps, newest first

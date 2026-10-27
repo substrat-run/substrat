@@ -660,7 +660,7 @@ export const dashboardRoutes = defineRoutes({
     output: z.array(z.object({
       id: z.string(), kind: z.string(), forkedFrom: z.string().nullable(),
       forkedAt: z.string().nullable(), expiresAt: z.string().nullable(),
-      verticalVersionId: z.string().nullable(), createdAt: z.string(), url: z.string().nullable(),
+      verticalVersionId: z.string().nullable(), createdAt: z.string(), url: z.string().nullable().optional(),
     })),
     http: { method: 'GET', path: '/apps/{scopeId}/snapshots' },
   },
