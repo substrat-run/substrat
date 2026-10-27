@@ -24,6 +24,7 @@ import {
   channelName,
   defineRoutes,
   dnsRecord,
+  envVarSpec,
   LIST_PAGE_MAX,
   opsFailureEntry,
   FINDINGS_LIMIT_MAX,
@@ -650,6 +651,38 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1) }),
     output: appRow,
     http: { method: 'POST', path: '/apps/{scopeId}/resume' },
+  },
+
+  // -- app environment (#2170) ----------------------------------------------
+  'dashboard/get-app-env': {
+    summary: "One app's declared environment and its stored values; secrets are write-only",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({
+      spec: z.array(envVarSpec.extend({ required: z.boolean(), secret: z.boolean() })),
+      values: z.array(z.object({
+        key: z.string(),
+        isSecret: z.boolean(),
+        hasValue: z.boolean(),
+        value: z.string().nullable(),
+        updatedAt: z.string(),
+      })),
+    }),
+    http: { method: 'GET', path: '/apps/{scopeId}/env' },
+  },
+  'dashboard/set-app-env': {
+    summary: "Save one app's environment and try to deliver it to the running app",
+    input: z.object({
+      scopeId: z.string().min(1),
+      entries: z.array(z.object({ key: z.string(), value: z.string(), secret: z.boolean().optional() })).optional(),
+    }),
+    output: z.object({ saved: z.number().int().nonnegative(), delivered: z.boolean(), note: z.string().optional() }),
+    http: { method: 'PUT', path: '/apps/{scopeId}/env' },
+  },
+  'dashboard/delete-app-env': {
+    summary: "Remove one stored environment value from this app",
+    input: z.object({ scopeId: z.string().min(1), key: z.string().min(1) }),
+    output: z.object({ deleted: z.string() }),
+    http: { method: 'DELETE', path: '/apps/{scopeId}/env/{key}' },
   },
 
   // -- domains (#2170) --------------------------------------------------------
