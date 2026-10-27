@@ -223,6 +223,22 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
 
   const byLabel = (label: string) => rows.find((r) => r.label === label)!;
 
+  it('uses the app path team when another tab has switched the shared cookie', async () => {
+    const otherTeam = tenantId.parse(ulid());
+    const otherScope = scopeId.parse(ulid());
+    const otherOwner = principalId.parse(ulid());
+    await provisionDashboard(host, { tenantId: otherTeam, scopeId: otherScope, owner: otherOwner, slug: 'other-team', name: 'Other Team' });
+    await host.admin.linkIdentity(staff, {
+      provider: 'authhero', externalId: 'sub-owner', principal: otherOwner, tenantId: otherTeam, scopeId: otherScope,
+    });
+
+    const response = await app.request(`/api/teams/${tenant}/apps/${appScope}/integrations`, {
+      headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
+    }, env);
+    expect(response.status).toBe(200);
+    expect((await response.json()) as { providers: { provider: string }[] }).toMatchObject({ providers: [{ provider: 'fortnox' }] });
+  });
+
   it('lists every live company of the fleet, newest first, and says the provider is multi-account', async () => {
     const res = await req('');
     expect(res.status).toBe(200);
