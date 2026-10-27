@@ -336,27 +336,9 @@ describe('builder auth — live self-serve path', () => {
  * control-plane-api's platform-drain suite; here we prove the surface fails closed.
  */
 describe('router kick — /internal/drain-scope', () => {
-  it('refuses when the platform secret is not configured (fails closed)', async () => {
-    const res = await SELF.fetch('https://cp.test/internal/drain-scope', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
-      body: JSON.stringify({ tenantId: ulid(), scopeId: ulid() }),
-    });
-    expect(res.status).toBe(403);
-  });
-
-  it('refuses an exported-events kick the same way (#1705 PR 2)', async () => {
-    const res = await SELF.fetch('https://cp.test/internal/drain-scope', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
-      body: JSON.stringify({ tenantId: ulid(), scopeId: ulid(), platformRequests: false, exports: true }),
-    });
-    expect(res.status).toBe(403);
-  });
-
   /**
    * #1705 PR 2, end to end through the route. The suite's own environment binds no platform
-   * secret, and must not (the refusals above depend on it), so these call the worker with that
+   * secret, and must not (the route-gate table below depends on it), so these call the worker with that
    * one variable added and every other binding real, the coalescer's namespace included.
    */
   describe('the exports branch (#1705 PR 2)', () => {
@@ -458,94 +440,23 @@ describe('router kick — /internal/drain-scope', () => {
   });
 });
 
-/**
- * The email relay (#303) — the same platform-secret gate as the drain kick. This deployment
- * binds no PLATFORM_SECRET, so the relay must fail closed: a hosted vertical cannot have mail
- * sent for it on a deployment that never configured the shared secret, even presenting one. The
- * grant check and the actual send are unit-tested (the `emailSender` flag in the contract-tests
- * suite, the transport in adapter-email); here we prove the surface refuses an anonymous caller.
- */
-describe('email relay — /internal/email/send', () => {
-  it('refuses when the platform secret is not configured (fails closed)', async () => {
-    const res = await SELF.fetch('https://cp.test/internal/email/send', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
-      body: JSON.stringify({
-        tenantId: ulid(),
-        scopeId: ulid(),
-        to: 'user@example.com',
-        subject: 'Reset your password',
-        html: '<p>reset</p>',
-        text: 'reset',
-      }),
-    });
-    expect(res.status).toBe(403);
+/** An unconfigured platform secret refuses every internal relay, even with a supplied header. */
+it.each([
+  ['/internal/drain-scope', 'intents', () => ({ tenantId: ulid(), scopeId: ulid() })],
+  ['/internal/drain-scope', 'exports', () => ({ tenantId: ulid(), scopeId: ulid(), platformRequests: false, exports: true })],
+  ['/internal/email/send', 'email', () => ({ tenantId: ulid(), scopeId: ulid(), to: 'user@example.com', subject: 'Reset your password', html: '<p>reset</p>', text: 'reset' })],
+  ['/internal/connections/upsert', 'upsert', () => ({ tenantId: ulid(), scopeId: ulid(), provider: 'scrive', secret: { apiToken: 'tok' }, createdBy: ulid() })],
+  ['/internal/connections/connect-url', 'connect URL', () => ({ tenantId: ulid(), scopeId: ulid(), provider: 'fortnox', createdBy: ulid() })],
+  ['/internal/connections/connect-links', 'link mint', () => ({ tenantId: ulid(), scopeId: ulid(), provider: 'fortnox', createdBy: ulid(), linkId: ulid() })],
+  ['/internal/connections/connect-links/list', 'link list', () => ({ tenantId: ulid(), scopeId: ulid(), provider: 'fortnox', createdBy: ulid(), linkId: ulid() })],
+  ['/internal/connections/connect-links/revoke', 'link revoke', () => ({ tenantId: ulid(), scopeId: ulid(), provider: 'fortnox', createdBy: ulid(), linkId: ulid() })],
+] as const)('%s (%s) fails closed when the platform secret is not configured', async (route, _case, body) => {
+  const res = await SELF.fetch(`https://cp.test${route}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+    body: JSON.stringify(body()),
   });
-});
-
-/**
- * The connection relay (connections.md §3.5.2) — the same platform-secret gate as the two
- * surfaces above, and the one carrying a CREDENTIAL, so failing closed matters most here:
- * a deployment that never configured the shared secret must refuse to accept (and seal)
- * a provider secret for an anonymous caller. The upsert/rotation/attribution logic is
- * unit-tested against a real adapter in control-plane-api's connection-relay suite.
- */
-describe('connection relay — /internal/connections/upsert', () => {
-  it('refuses when the platform secret is not configured (fails closed)', async () => {
-    const res = await SELF.fetch('https://cp.test/internal/connections/upsert', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
-      body: JSON.stringify({
-        tenantId: ulid(),
-        scopeId: ulid(),
-        provider: 'scrive',
-        secret: { apiToken: 'tok' },
-        createdBy: ulid(),
-      }),
-    });
-    expect(res.status).toBe(403);
-  });
-});
-
-/**
- * The connect-url relay's route (connections.md §3.5.3) — the same gate as the upsert
- * above, for the same reason: minting a consent URL is what lets a caller start a round
- * whose credential lands on a tenant's vertical, so an unconfigured deployment must
- * refuse rather than mint for an anonymous caller. The minting logic — vertical
- * re-derivation, the return-URL check, the deployment 503s — is unit-tested against a
- * real adapter in control-plane-api's connect-url suite.
- */
-describe('connect-url relay — /internal/connections/connect-url', () => {
-  it('refuses when the platform secret is not configured (fails closed)', async () => {
-    const res = await SELF.fetch('https://cp.test/internal/connections/connect-url', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
-      body: JSON.stringify({
-        tenantId: ulid(),
-        scopeId: ulid(),
-        provider: 'fortnox',
-        createdBy: ulid(),
-      }),
-    });
-    expect(res.status).toBe(403);
-  });
-});
-
-/**
- * The connect-LINK relays' routes (connections.md §3.5.4) — the same gate again: a link is a
- * longer-lived consent round than the URL, so an unconfigured deployment refusing to mint,
- * list or revoke one for an anonymous caller matters more, not less. The logic is unit-tested
- * against a real adapter in control-plane-api's connect-links suite.
- */
-describe('connect-link relays — /internal/connections/connect-links{,/list,/revoke}', () => {
-  it.each(['', '/list', '/revoke'])('refuses %j when the platform secret is not configured (fails closed)', async (suffix) => {
-    const res = await SELF.fetch(`https://cp.test/internal/connections/connect-links${suffix}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
-      body: JSON.stringify({ tenantId: ulid(), scopeId: ulid(), provider: 'fortnox', createdBy: ulid(), linkId: ulid() }),
-    });
-    expect(res.status).toBe(403);
-  });
+  expect(res.status).toBe(403);
 });
 
 /**

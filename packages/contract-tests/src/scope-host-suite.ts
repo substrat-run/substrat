@@ -1206,27 +1206,22 @@ export function scopeHostContractSuite(
       });
       const byId = (rows: PlatformRequest[], id: string) => rows.find((r) => r.id === id);
 
-      it('a clean journal reads exactly as before — no decodeError anywhere (the positive twin)', async () => {
-        const s = await restoredWith([healthyPending, healthySettled]);
-        const { pending, history, inScope } = await readAll(s);
-        expect(pending.map((r) => r.id)).toEqual([healthyPending.id]);
-        expect(history.map((r) => r.id).sort()).toEqual([healthyPending.id, healthySettled.id].sort());
-        expect(inScope.map((r) => r.id).sort()).toEqual([healthyPending.id, healthySettled.id].sort());
-        for (const row of [...pending, ...history, ...inScope]) {
+      it('a clean journal reads as before, and every row beside a bad one still reads', async () => {
+        const clean = await readAll(await restoredWith([healthyPending, healthySettled]));
+        expect(clean.pending.map((r) => r.id)).toEqual([healthyPending.id]);
+        expect(clean.history.map((r) => r.id).sort()).toEqual([healthyPending.id, healthySettled.id].sort());
+        expect(clean.inScope.map((r) => r.id).sort()).toEqual([healthyPending.id, healthySettled.id].sort());
+        for (const row of [...clean.pending, ...clean.history, ...clean.inScope]) {
           // ABSENT rather than null, so a healthy list is the shape it always was.
           expect(row).not.toHaveProperty('decodeError');
           expect(row).not.toHaveProperty('undecodable');
         }
-        expect(byId(history, healthySettled.id)).toMatchObject({
+        expect(byId(clean.history, healthySettled.id)).toMatchObject({
           payload: { doc: 2 },
           requestedBy: alice,
           failure: { origin: 'provider', code: null, permission: null },
           result: { eventId: 'E1' },
         });
-      });
-
-      it('returns every other row beside the bad one, and the bad one says why', async () => {
-        const clean = await readAll(await restoredWith([healthyPending, healthySettled]));
         const s = await restoredWith([brokenPending, healthyPending, brokenSettled, healthySettled]);
         const { pending, history, inScope } = await readAll(s);
 

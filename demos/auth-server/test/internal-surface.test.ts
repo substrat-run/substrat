@@ -140,6 +140,27 @@ function provision(body: unknown, secret?: string): Promise<Response> {
   ));
 }
 
+it.each([
+  ['POST', '/internal/provision', provisionBody],
+  ['POST', '/internal/reconcile', () => ({ tenantId: ulid(), scopeId: ulid() })],
+  ['POST', '/internal/configure', () => ({ scopeId: ulid(), entries: [{ key: 'A', value: '1' }] })],
+  ['GET', `/internal/tables?scopeId=${ulid()}`, undefined],
+  ['GET', `/internal/tables/user?scopeId=${ulid()}`, undefined],
+  ['GET', `/internal/export?scopeId=${ulid()}`, undefined],
+  ['POST', '/internal/delete-scope', () => ({ scopeId: ulid() })],
+  ['POST', '/internal/preview-client/check', () => ({ tenantId: ulid(), scopeId: ulid(), parentScopeId: ulid(), parentRedirectUris: ['https://acme.test/callback'] })],
+  ['POST', '/internal/preview-client', () => ({ tenantId: ulid(), scopeId: ulid(), parentScopeId: ulid(), parentRedirectUris: ['https://acme.test/callback'], previewScopeId: ulid(), redirectUri: 'https://acme.test/callback', postLogoutRedirectUri: 'https://acme.test/', clientName: 'Preview' })],
+  ['DELETE', '/internal/preview-client', () => ({ tenantId: ulid(), scopeId: ulid(), previewScopeId: ulid() })],
+] as const)('%s %s refuses a call without the platform secret before touching any DO', async (method, path, body) => {
+  const res = await app.request(path, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    ...(body ? { body: JSON.stringify(body()) } : {}),
+  }, env);
+  expect(res.status).toBe(403);
+  expect(auth.touched).toEqual([]);
+});
+
 describe('/internal/provision (K-31)', () => {
   it('provisions the SCOPE-NAMED issuer DO and echoes the instance', async () => {
     const body = provisionBody();
@@ -157,12 +178,6 @@ describe('/internal/provision (K-31)', () => {
     expect((await provision(body, PLATFORM_SECRET)).status).toBe(201);
     expect(auth.provisioned).toHaveLength(2);
     expect(auth.provisioned[0]).toEqual(auth.provisioned[1]);
-  });
-
-  it('refuses a call without the platform secret', async () => {
-    const res = await provision(provisionBody());
-    expect(res.status).toBe(403);
-    expect(auth.provisioned).toHaveLength(0);
   });
 
   it('fails closed when the deployment has no platform secret configured', async () => {
@@ -220,12 +235,6 @@ describe('/internal/reconcile (#1660 — the sweep\'s re-provision)', () => {
     expect(res.status).toBe(409);
     expect(auth.provisioned).toHaveLength(0);
   });
-
-  it('refuses a call without the platform secret, before touching any DO', async () => {
-    const res = await reconcile({ tenantId: ulid(), scopeId: ulid() });
-    expect(res.status).toBe(403);
-    expect(auth.reconciled).toHaveLength(0);
-  });
 });
 
 describe('/internal/configure (vertical-auth-detach.md §2.2)', () => {
@@ -250,12 +259,6 @@ describe('/internal/configure (vertical-auth-detach.md §2.2)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ applied: 1 });
     expect(auth.configured).toEqual([{ doName: scope, entries }]);
-  });
-
-  it('refuses a call without the platform secret', async () => {
-    const res = await configure({ scopeId: ulid(), entries: [{ key: 'A', value: '1' }] });
-    expect(res.status).toBe(403);
-    expect(auth.configured).toHaveLength(0);
   });
 
   it('rejects empty entries as a 400 — a delivery with nothing to deliver is a caller bug', async () => {
@@ -290,12 +293,6 @@ describe('/internal/tables (§5.4 introspection — the dashboard Data tab)', ()
     expect(res.status).toBe(404);
   });
 
-  it('refuses a call without the platform secret, before touching any DO', async () => {
-    expect((await get(`/internal/tables?scopeId=${ulid()}`)).status).toBe(403);
-    expect((await get(`/internal/tables/user?scopeId=${ulid()}`)).status).toBe(403);
-    expect(auth.introspected).toHaveLength(0);
-  });
-
   it('rejects a malformed scope id as a 400', async () => {
     expect((await get('/internal/tables?scopeId=not-a-ulid', PLATFORM_SECRET)).status).toBe(400);
   });
@@ -313,12 +310,6 @@ describe('/internal/export (#590 — the full dump behind backed-up reap and car
       { name: 'user', ddl: 'CREATE TABLE user (id TEXT)', columns: ['id'], rows: [['u1']] },
     ]);
     expect(auth.exported).toEqual([scope]);
-  });
-
-  it('refuses a call without the platform secret, before touching any DO', async () => {
-    const res = await get(`/internal/export?scopeId=${ulid()}`);
-    expect(res.status).toBe(403);
-    expect(auth.exported).toHaveLength(0);
   });
 
   it('rejects a malformed scope id as a 400', async () => {
@@ -348,12 +339,6 @@ describe('/internal/delete-scope (#590 — the wipe half of a reap or carried re
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ deleted: scope });
     expect(auth.destroyed).toEqual([scope]);
-  });
-
-  it('refuses a call without the platform secret, before touching any DO', async () => {
-    const res = await del({ scopeId: ulid() });
-    expect(res.status).toBe(403);
-    expect(auth.destroyed).toHaveLength(0);
   });
 
   it('rejects a malformed scope id as a 400 — a wipe must never guess its target', async () => {
@@ -399,16 +384,6 @@ describe('/internal/preview-client (#1704 — a preview’s own client)', () => 
     expect(res.status).toBe(status);
     expect(await res.json()).toEqual({ answered: verb });
     expect(auth.previewCalls).toEqual([{ doName: b.scopeId, verb, input: b }]);
-  });
-
-  it.each([
-    ['POST', '/internal/preview-client/check'],
-    ['POST', '/internal/preview-client'],
-    ['DELETE', '/internal/preview-client'],
-  ])('%s %s refuses a call without the platform secret, before touching any DO', async (method, path) => {
-    const res = await call(method, path, mintBody());
-    expect(res.status).toBe(403);
-    expect(auth.touched).toEqual([]);
   });
 
   it('answers a DO refusal with its own status — a foreign tenant is a 403, an unclaimed parent a 409', async () => {

@@ -3,7 +3,8 @@ import {
   isTerminalDispatchFailure,
   isTerminalProviderError,
   providerErrorStatus,
-} from '../src/provider-error.js';
+  RETRYABLE_CLIENT_STATUSES,
+} from '../src/index.js';
 import { substratError } from '@substrat-run/contracts';
 
 /**
@@ -33,7 +34,8 @@ describe('isTerminalProviderError — is another attempt worth anything?', () =>
   });
 
   it('keeps the 4xx that mean "not right now" retryable — a rate limit IS an instruction to retry', () => {
-    for (const status of [408, 423, 425, 429]) {
+    expect(RETRYABLE_CLIENT_STATUSES).toEqual(new Set([408, 423, 425, 429]));
+    for (const status of RETRYABLE_CLIENT_STATUSES) {
       expect(isTerminalProviderError(withStatus(status))).toBe(false);
     }
   });
