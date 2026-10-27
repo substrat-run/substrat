@@ -32,7 +32,7 @@ import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentit
 import { dashboardRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
-import { dashboardManifest, dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
+import { dashboardManifest, dashboardModule, type AppAuthView, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
 import { resolveBrowsableScope } from './browsable-scope.js';
 import { allApps, appByScopeId, walkAll } from './walk-all.js';
 import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
@@ -4114,30 +4114,26 @@ async function removeAppHostnameIn(ctx: TeamContext, appScopeId: string, hostnam
  * and nothing anywhere saying so. The seat lives in the app's own identity directory,
  * which only its deployment can read — so the answer comes back through the plane.
  */
-app.get('/api/apps/:scopeId/owner-seat', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appOwnerSeatIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), appScopeId);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cp.ownerSeat(scope));
-});
+  return cp.ownerSeat(scope);
+}
 
 /**
  * Mint a claim link for the app's unclaimed owner seat (#925) — what the installer uses once
  * the first-sign-in window has closed. Shown once; never stored here or on the platform.
- * Authorized exactly like every other app-scoped route: the app must be the caller's own.
+ * The app must be the path team's own, and the caller must hold its owner/admin dashboard role.
  */
-app.post('/api/apps/:scopeId/owner-claim', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appOwnerClaimIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), appScopeId);
+  // A claim link can seat an owner, so minting it uses the existing owner/admin gate.
+  await dash.invoke('dashboard/authorize-restore', {});
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cp.mintOwnerClaim(scope), 201);
-});
+  return cp.mintOwnerClaim(scope);
+}
 
 /**
  * The app's MEMBERS (#1150): who works in an installed vertical, invited, moved and removed
@@ -4147,45 +4143,37 @@ app.post('/api/apps/:scopeId/owner-claim', async (c) => {
  * in the app (§5.1). A teammate who holds nothing there sees the roster and changes nothing.
  * Authorized like every other app-scoped route first: the app must be the team's own.
  */
-async function appMembersTarget(c: Context<{ Bindings: Env }>) {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appMembersTarget({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId') ?? '');
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), appScopeId);
   return { scope, cp: controlPlaneFor(c.env, node.tenantId, node.principal) };
 }
 
-app.get('/api/apps/:scopeId/members', async (c) => {
-  const { scope, cp } = await appMembersTarget(c);
-  return c.json(await cp.listMembers(scope));
-});
+async function appMembersIn(ctx: TeamContext, appScopeId: string) {
+  const { scope, cp } = await appMembersTarget(ctx, appScopeId);
+  return cp.listMembers(scope);
+}
 
-app.post('/api/apps/:scopeId/members', async (c) => {
-  const { scope, cp } = await appMembersTarget(c);
-  const body = memberInviteInput.parse(await c.req.json());
-  return c.json(await cp.inviteMember(scope, body), 201);
-});
+async function appInviteMemberIn(ctx: TeamContext, appScopeId: string, body: z.infer<typeof memberInviteInput>) {
+  const { scope, cp } = await appMembersTarget(ctx, appScopeId);
+  return cp.inviteMember(scope, body);
+}
 
-app.post('/api/apps/:scopeId/members/:principal/role', async (c) => {
-  const { scope, cp } = await appMembersTarget(c);
-  const body = memberRoleInput.parse(await c.req.json());
-  return c.json(await cp.changeMemberRole(scope, principalId.parse(c.req.param('principal')), body));
-});
+async function appChangeMemberRoleIn(ctx: TeamContext, appScopeId: string, principal: string, body: z.infer<typeof memberRoleInput>) {
+  const { scope, cp } = await appMembersTarget(ctx, appScopeId);
+  return cp.changeMemberRole(scope, principalId.parse(principal), body);
+}
 
-app.post('/api/apps/:scopeId/members/:principal/remove', async (c) => {
-  const { scope, cp } = await appMembersTarget(c);
-  return c.json(await cp.removeMember(scope, principalId.parse(c.req.param('principal'))));
-});
+async function appRemoveMemberIn(ctx: TeamContext, appScopeId: string, principal: string) {
+  const { scope, cp } = await appMembersTarget(ctx, appScopeId);
+  return cp.removeMember(scope, principalId.parse(principal));
+}
 
-app.get('/api/apps/:scopeId/auth', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function getAppAuthIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const auth = await dash.invoke('dashboard/get-app-auth', { appScopeId: appRow.app_scope_id });
+  const auth = await dash.invoke<AppAuthView | null>('dashboard/get-app-auth', { appScopeId: appRow.app_scope_id });
   // The callback URL derives from the app's hostname. Prefer the stored column, but fall
   // back to the live router bindings so a null column (a bind whose activation step threw
   // during provisioning) doesn't hide the URL the app is actually reachable at.
@@ -4196,8 +4184,8 @@ app.get('/api/apps/:scopeId/auth', async (c) => {
     stored: appRow.hostname,
     controlPlane: cp,
   });
-  return c.json({ auth, callbackUrl: hostname ? `https://${hostname}/api/auth/callback` : null });
-});
+  return { auth, callbackUrl: hostname ? `https://${hostname}/api/auth/callback` : null };
+}
 
 /**
  * Update the app's Identity choice. Authors the record first (a blank clientSecret
@@ -4205,20 +4193,17 @@ app.get('/api/apps/:scopeId/auth', async (c) => {
  * `delivered: false` with a readable note when the app's deployment cannot receive
  * live config (its 501), instead of failing the save or pretending it applied.
  */
-app.put('/api/apps/:scopeId/auth', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function setAppAuthIn({ c, host, node }: TeamContext, appScopeId: string, body: z.infer<typeof appAuthChoiceBody>) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   // The choice may name another of the team's apps as the issuer, and the MCP registration below
   // is moved between the team's auth-servers: both read every app, so the addressed one comes
   // out of the same walk rather than a second read.
   const apps = await allApps(dash);
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  const appRow = apps.find((a) => a.app_scope_id === appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const providerSlugs = await oidcProviderSlugsFor(host, cp);
-  const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps, providerSlugs);
+  const choice = resolveAuthChoice(body, apps, providerSlugs);
   // Prefer the stored column, but fall back to the live router bindings: an app can be
   // fully reachable while its dashboard column is null (a bind whose activation step threw
   // during provisioning), and refusing the save on that stale bookkeeping is the #294 bug.
@@ -4279,8 +4264,8 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   if (previousIssuer && previousIssuer !== nextIssuer) {
     await settle(clearAppMcpResources(cp, { appScopeId: appScope, issuerScopeId: previousIssuer }));
   }
-  return c.json({ delivered, ...(note ? { note } : {}) });
-});
+  return { delivered, ...(note ? { note } : {}) };
+}
 
 // The app lifecycle writes — install, remove, retry, resume (#2170) — are declared routes
 // under `/api/teams/:teamId` (`routes.ts`); each is a function of the team the path names.
@@ -5926,6 +5911,14 @@ const routeHandlers = {
   },
   'dashboard/retry-app': async (ctx, { scopeId: failed }) => retryAppIn(ctx, failed),
   'dashboard/resume-app': async (ctx, { scopeId: stuck }) => resumeAppIn(ctx, stuck),
+  'dashboard/app-owner-seat': async (ctx, { scopeId: app }) => appOwnerSeatIn(ctx, app),
+  'dashboard/app-owner-claim': async (ctx, { scopeId: app }) => appOwnerClaimIn(ctx, app),
+  'dashboard/app-members': async (ctx, { scopeId: app }) => appMembersIn(ctx, app),
+  'dashboard/app-invite-member': async (ctx, { scopeId: app, ...body }) => appInviteMemberIn(ctx, app, body),
+  'dashboard/app-change-member-role': async (ctx, { scopeId: app, principal, ...body }) => appChangeMemberRoleIn(ctx, app, principal, body),
+  'dashboard/app-remove-member': async (ctx, { scopeId: app, principal }) => appRemoveMemberIn(ctx, app, principal),
+  'dashboard/get-app-auth': async (ctx, { scopeId: app }) => getAppAuthIn(ctx, app),
+  'dashboard/set-app-auth': async (ctx, { scopeId: app, choice }) => setAppAuthIn(ctx, app, choice),
   'dashboard/list-app-snapshots': async (ctx, { scopeId: app }) => listAppSnapshotsIn(ctx, app),
   'dashboard/create-app-snapshot': async (ctx, { scopeId: app, ttlDays }) => createAppSnapshotIn(ctx, app, ttlDays),
   'dashboard/delete-app-snapshot': async (ctx, { scopeId: app, snapshotId }) => deleteAppSnapshotIn(ctx, app, snapshotId),

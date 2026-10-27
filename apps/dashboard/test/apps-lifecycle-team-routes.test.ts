@@ -341,7 +341,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
     });
   });
 
-  it('the declared app writes include lifecycle, environment, preview and email actions', () => {
+  it('the declared app writes include lifecycle, environment, preview, identity and email actions', () => {
     expect(
       Object.entries(dashboardRoutes)
         .filter(([name, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps') && !name.includes('hostname'))
@@ -358,11 +358,16 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/integrations/{provider} dashboard/connect-app-integration',
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify dashboard/verify-app-connection',
       'POST /apps/{scopeId}/integrations/{provider}/verify dashboard/verify-app-integration',
+      'POST /apps/{scopeId}/members dashboard/app-invite-member',
+      'POST /apps/{scopeId}/members/{principal}/remove dashboard/app-remove-member',
+      'POST /apps/{scopeId}/members/{principal}/role dashboard/app-change-member-role',
+      'POST /apps/{scopeId}/owner-claim dashboard/app-owner-claim',
       // #1749: files an AI note in the team's scope; its team-from-path refusal is in explanations-route.test.ts.
       'POST /apps/{scopeId}/processes/note dashboard/write-process-note',
       'POST /apps/{scopeId}/resume dashboard/resume-app',
       'POST /apps/{scopeId}/retry dashboard/retry-app',
       'POST /apps/{scopeId}/snapshots dashboard/create-app-snapshot',
+      'PUT /apps/{scopeId}/auth dashboard/set-app-auth',
       'PUT /apps/{scopeId}/env dashboard/set-app-env',
     ]);
   });

@@ -39,9 +39,17 @@ import {
   findingRuleInput,
   findingStatus,
   findingStatusInput,
+  memberInviteInput,
+  memberInviteLink,
+  memberRemoval,
+  memberRoleInput,
+  ownerClaimLink,
+  ownerSeat,
   permissionRegistry,
   previewAuth,
   REBIND_REVIEW_REASONS,
+  scopeMemberInvite,
+  scopeMembers,
   promotionAcknowledgement,
   versionOrigin,
   verticalSlug,
@@ -689,6 +697,63 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1) }),
     output: appRow,
     http: { method: 'POST', path: '/apps/{scopeId}/resume' },
+  },
+
+  // -- app owner, members and identity (#2170) -------------------------------
+  'dashboard/app-owner-seat': {
+    summary: "The owner seat of one of this team's app scopes",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: ownerSeat.extend({ state: z.string() }),
+    http: { method: 'GET', path: '/apps/{scopeId}/owner-seat' },
+  },
+  'dashboard/app-owner-claim': {
+    summary: "Mint a one-time claim link for an unclaimed app owner seat",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: ownerClaimLink,
+    http: { method: 'POST', path: '/apps/{scopeId}/owner-claim' },
+    status: 201,
+  },
+  'dashboard/app-members': {
+    summary: "The members, roles and open invites in one app scope",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: scopeMembers.extend({ invites: z.array(scopeMemberInvite.extend({
+      link: z.object({ state: z.string(), reason: z.string().nullable() }).nullable().optional(),
+    })) }),
+    http: { method: 'GET', path: '/apps/{scopeId}/members' },
+  },
+  'dashboard/app-invite-member': {
+    summary: "Invite a person into an app as the signed-in caller",
+    input: z.object({ scopeId: z.string().min(1), ...memberInviteInput.shape }).strict(),
+    output: memberInviteLink.extend({ operationId: z.string().optional(), auditWarning: z.string().optional() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/members' },
+    status: 201,
+  },
+  'dashboard/app-change-member-role': {
+    summary: "Change an app member's role as the signed-in caller",
+    input: z.object({ scopeId: z.string().min(1), principal: z.string(), ...memberRoleInput.shape }).strict(),
+    output: z.object({ principal: z.string(), from: z.string(), to: z.string(), operationId: z.string().optional(), auditWarning: z.string().optional() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/members/{principal}/role' },
+  },
+  'dashboard/app-remove-member': {
+    summary: 'Remove an app member as the signed-in caller',
+    input: z.object({ scopeId: z.string().min(1), principal: z.string() }),
+    output: memberRemoval.extend({ operationId: z.string().optional(), auditWarning: z.string().optional() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/members/{principal}/remove' },
+  },
+  'dashboard/get-app-auth': {
+    summary: "One app's stored identity choice with its write-only secret redacted and its callback URL",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({ auth: z.object({
+      mode: z.literal('oidc'), issuer: z.string(), clientId: z.string(), audience: z.string().nullable(),
+      hasClientSecret: z.boolean(), updatedAt: z.string(),
+    }).nullable(), callbackUrl: z.string().nullable() }),
+    http: { method: 'GET', path: '/apps/{scopeId}/auth' },
+  },
+  'dashboard/set-app-auth': {
+    summary: "Save one app's identity choice and attempt live delivery",
+    input: z.object({ scopeId: z.string().min(1), choice: appAuthChoiceBody }),
+    output: z.object({ delivered: z.boolean(), note: z.string().optional() }),
+    http: { method: 'PUT', path: '/apps/{scopeId}/auth' },
   },
 
   // -- app previews (#2170) --------------------------------------------------

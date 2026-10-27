@@ -327,6 +327,13 @@ export interface DashboardClient {
   addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: string; statusNote?: string | null; validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[] }>;
 
   /**
+   * Change an app member's role as the signed-in caller
+   *
+   * `POST /apps/{scopeId}/members/{principal}/role` — `dashboard/app-change-member-role`
+   */
+  appChangeMemberRole(input: { scopeId: string; principal: string; from: string; to: string }): Promise<{ principal: string; from: string; to: string; operationId?: string; auditWarning?: string }>;
+
+  /**
    * Read email sending permission for a vertical owned by this team
    *
    * `GET /apps/{scopeId}/email-sender` — `dashboard/app-email-sender`
@@ -334,11 +341,25 @@ export interface DashboardClient {
   appEmailSender(input: { scopeId: string }): Promise<{ slug: string; emailSender: boolean }>;
 
   /**
+   * Invite a person into an app as the signed-in caller
+   *
+   * `POST /apps/{scopeId}/members` — `dashboard/app-invite-member`
+   */
+  appInviteMember(input: { scopeId: string; email?: string; roleKey: string }): Promise<{ principal: string; roleKey: string; email: string | null; acceptUrl: string; operationId?: string; auditWarning?: string }>;
+
+  /**
    * Log templates for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/log-patterns` — `dashboard/app-log-patterns`
    */
   appLogPatterns(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; buckets?: string }): Promise<{ total: number; bucketMs: number; patterns: { template: string; count: number; share: number; levels: { debug: number; info: number; warn: number; error: number }; dominant: string; buckets: { start: string; count: number }[] }[]; truncated: boolean; estimated: boolean }>;
+
+  /**
+   * The members, roles and open invites in one app scope
+   *
+   * `GET /apps/{scopeId}/members` — `dashboard/app-members`
+   */
+  appMembers(input: { scopeId: string }): Promise<{ roles: string[]; members: ({ principal: string; roles: string[]; logins: number; email: string | null; owner: boolean })[]; invites: ({ principal: string; roleKey: string; roles: string[]; email: string | null; createdAt: number; link?: { state: string; reason: string | null } | null })[] }>;
 
   /**
    * One traffic summary row per installed app for this team's Apps table
@@ -360,6 +381,27 @@ export interface DashboardClient {
    * `GET /apps/{scopeId}/observability/metrics` — `dashboard/app-observability-metrics`
    */
   appObservabilityMetrics(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<({ scopeId: string; vertical: string | null; surface: string | null; requests: number; errors: number; durationP50: number; durationP95: number })[]>;
+
+  /**
+   * Mint a one-time claim link for an unclaimed app owner seat
+   *
+   * `POST /apps/{scopeId}/owner-claim` — `dashboard/app-owner-claim`
+   */
+  appOwnerClaim(input: { scopeId: string }): Promise<{ claimUrl: string; expiresAt: string }>;
+
+  /**
+   * The owner seat of one of this team's app scopes
+   *
+   * `GET /apps/{scopeId}/owner-seat` — `dashboard/app-owner-seat`
+   */
+  appOwnerSeat(input: { scopeId: string }): Promise<{ state: string; owner: string | null; firstSignIn: { open: boolean; until: string | null } | null; claimLink: { expiresAt: string } | null }>;
+
+  /**
+   * Remove an app member as the signed-in caller
+   *
+   * `POST /apps/{scopeId}/members/{principal}/remove` — `dashboard/app-remove-member`
+   */
+  appRemoveMember(input: { scopeId: string; principal: string }): Promise<{ revoked: string[]; unbound: number; inviteWithdrawn: boolean; operationId?: string; auditWarning?: string }>;
 
   /**
    * Request facet counts for one of this team's installed apps
@@ -500,6 +542,13 @@ export interface DashboardClient {
    * `GET /explanations` — `dashboard/explanations-status`
    */
   explanationsStatus(input: Record<string, never>): Promise<ExplanationView>;
+
+  /**
+   * One app's stored identity choice with its write-only secret redacted and its callback URL
+   *
+   * `GET /apps/{scopeId}/auth` — `dashboard/get-app-auth`
+   */
+  getAppAuth(input: { scopeId: string }): Promise<{ auth: { mode: "oidc"; issuer: string; clientId: string; audience: string | null; hasClientSecret: boolean; updatedAt: string } | null; callbackUrl: string | null }>;
 
   /**
    * Read one addressed connection activity and masked credential fields
@@ -831,6 +880,13 @@ export interface DashboardClient {
   revokeInvite(input: { invitationId: string }): Promise<{ revoked: true }>;
 
   /**
+   * Save one app's identity choice and attempt live delivery
+   *
+   * `PUT /apps/{scopeId}/auth` — `dashboard/set-app-auth`
+   */
+  setAppAuth(input: { scopeId: string; choice: { source: "auth-server"; scopeId: string } | { source: "external"; issuer: string; clientId: string; clientSecret?: string; audience?: string } }): Promise<{ delivered: boolean; note?: string }>;
+
+  /**
    * Enable or disable email sending across all installations of this team’s vertical
    *
    * `POST /apps/{scopeId}/email-sender` — `dashboard/set-app-email-sender`
@@ -971,16 +1027,28 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "POST", omit(input, ["scopeId"]), undefined),
     addDomain: (input: Args) =>
       send("/domains", "POST", input, undefined),
+    appChangeMemberRole: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/members/${encodeURIComponent(String(input.principal))}/role`, "POST", omit(input, ["scopeId","principal"]), undefined),
     appEmailSender: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "GET", undefined, omit(input, ["scopeId"])),
+    appInviteMember: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/members`, "POST", omit(input, ["scopeId"]), undefined),
     appLogPatterns: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/log-patterns`, "GET", undefined, omit(input, ["scopeId"])),
+    appMembers: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/members`, "GET", undefined, omit(input, ["scopeId"])),
     appMetrics: (input: Args) =>
       send("/observability/app-metrics", "GET", undefined, input),
     appObservabilityLogs: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/logs`, "GET", undefined, omit(input, ["scopeId"])),
     appObservabilityMetrics: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/metrics`, "GET", undefined, omit(input, ["scopeId"])),
+    appOwnerClaim: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/owner-claim`, "POST", omit(input, ["scopeId"]), undefined),
+    appOwnerSeat: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/owner-seat`, "GET", undefined, omit(input, ["scopeId"])),
+    appRemoveMember: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/members/${encodeURIComponent(String(input.principal))}/remove`, "POST", omit(input, ["scopeId","principal"]), undefined),
     appRequestFacets: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/facets`, "GET", undefined, omit(input, ["scopeId"])),
     appRequestVolume: (input: Args) =>
@@ -1021,6 +1089,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}`, "DELETE", undefined, omit(input, ["scopeId","provider"])),
     explanationsStatus: (input: Args) =>
       send("/explanations", "GET", undefined, input),
+    getAppAuth: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/auth`, "GET", undefined, omit(input, ["scopeId"])),
     getAppConnectionActivity: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/activity`, "GET", undefined, omit(input, ["scopeId","provider","connectionId"])),
     getAppEnv: (input: Args) =>
@@ -1115,6 +1185,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     revokeInvite: (input: Args) =>
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}`, "DELETE", undefined, omit(input, ["invitationId"])),
+    setAppAuth: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/auth`, "PUT", omit(input, ["scopeId"]), undefined),
     setAppEmailSender: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "POST", omit(input, ["scopeId"]), undefined),
     setAppEnv: (input: Args) =>

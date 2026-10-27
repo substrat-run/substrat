@@ -59,8 +59,10 @@ describe('the app members routes (#1150)', () => {
   const tenant = tenantId.parse(ulid());
   const dashScope = scopeId.parse(ulid());
   const appScope = scopeId.parse(ulid());
+  const appPath = `/api/teams/${tenant}/apps/${appScope}/members`;
   const member = principalId.parse(ulid());
   let owner: ReturnType<typeof principalId.parse>;
+  let viewer: ReturnType<typeof principalId.parse>;
   let asks: { path: string; method: string; body: unknown }[];
   let mints: unknown[];
   let refuse: { status: number; error: string } | null;
@@ -75,9 +77,12 @@ describe('the app members routes (#1150)', () => {
     mints = [];
     refuse = null;
     owner = principalId.parse(ulid());
+    viewer = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'members', name: 'Members' });
     await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
     await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-owner', principal: owner, tenantId: tenant, scopeId: dashScope });
+    await host.admin.assignRole(staff, { principalId: viewer, roleKey: 'viewer', node: { tenantId: tenant, scopeId: null } });
+    await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: 'sub-viewer', principal: viewer, tenantId: tenant, scopeId: dashScope });
     const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
     await dash.invoke('dashboard/provision-app', { appScopeId: appScope, verticalSlug: 'acme/desk', name: 'Desk' });
     env = {
@@ -114,18 +119,18 @@ describe('the app members routes (#1150)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const call = (path: string, method = 'GET', body?: unknown) =>
+  const call = (path: string, method = 'GET', body?: unknown, sub = 'sub-owner') =>
     app.request(path, {
       method,
-      headers: { cookie: 'sb_session=sub-owner', 'content-type': 'application/json' },
+      headers: { cookie: `sb_session=${sub}`, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }, env);
 
   it('lists, invites, moves and removes through the plane, as the signed-in person, on the team’s own app', async () => {
-    expect((await call(`/api/apps/${appScope}/members`)).status).toBe(200);
-    expect((await call(`/api/apps/${appScope}/members`, 'POST', { roleKey: 'agent', email: 'kim@example.test' })).status).toBe(201);
-    expect((await call(`/api/apps/${appScope}/members/${member}/role`, 'POST', { from: 'agent', to: 'lead' })).status).toBe(200);
-    expect(await (await call(`/api/apps/${appScope}/members/${member}/remove`, 'POST')).json())
+    expect((await call(appPath)).status).toBe(200);
+    expect((await call(appPath, 'POST', { roleKey: 'agent', email: 'kim@example.test' })).status).toBe(201);
+    expect((await call(`${appPath}/${member}/role`, 'POST', { from: 'agent', to: 'lead' })).status).toBe(200);
+    expect(await (await call(`${appPath}/${member}/remove`, 'POST')).json())
       .toEqual({ revoked: ['agent'], unbound: 1, inviteWithdrawn: false });
     const base = `/tenants/${tenant}/scopes/${appScope}/members`;
     expect(asks).toEqual([
@@ -139,20 +144,21 @@ describe('the app members routes (#1150)', () => {
     for (const m of mints) expect(m).toEqual({ tenantId: tenant, principal: owner });
   });
 
-  it('relays the app’s refusal as given', async () => {
-    refuse = { status: 403, error: "you cannot invite at 'lead': you do not hold perm:use" };
-    const res = await call(`/api/apps/${appScope}/members`, 'POST', { roleKey: 'lead' });
+  it('relays the app’s role refusal to a viewer as given', async () => {
+    refuse = { status: 403, error: "you cannot change this role: you do not hold perm:use" };
+    const res = await call(`${appPath}/${member}/role`, 'POST', { from: 'agent', to: 'lead' }, 'sub-viewer');
     expect(res.status).toBe(403);
     expect(await res.text()).toMatch(/do not hold perm:use/);
+    expect(mints).toContainEqual({ tenantId: tenant, principal: viewer });
   });
 
   it('refuses another team’s app, and a malformed change, before asking the plane', async () => {
     const other = scopeId.parse(ulid());
-    expect((await call(`/api/apps/${other}/members`)).status).toBe(404);
-    expect((await call(`/api/apps/${other}/members/${member}/remove`, 'POST')).status).toBe(404);
-    expect((await call(`/api/apps/${appScope}/members`, 'POST', { roleKey: '' })).status).toBe(400);
-    expect((await call(`/api/apps/${appScope}/members/${member}/role`, 'POST', { to: 'lead' })).status).toBe(400);
-    expect((await call(`/api/apps/${appScope}/members/not-a-principal/remove`, 'POST')).status).toBe(400);
+    expect((await call(`/api/teams/${tenant}/apps/${other}/members`)).status).toBe(404);
+    expect((await call(`/api/teams/${tenant}/apps/${other}/members/${member}/remove`, 'POST')).status).toBe(404);
+    expect((await call(appPath, 'POST', { roleKey: '' })).status).toBe(400);
+    expect((await call(`${appPath}/${member}/role`, 'POST', { to: 'lead' })).status).toBe(400);
+    expect((await call(`${appPath}/not-a-principal/remove`, 'POST')).status).toBe(400);
     expect(asks).toHaveLength(0);
   });
 });
