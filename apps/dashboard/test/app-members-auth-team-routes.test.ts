@@ -133,7 +133,7 @@ it('keeps app owner, roster and auth reads on the path team when another tab swi
   }
 });
 
-it('refuses an app owner claim to a viewer before minting a link, while an owner can mint', async () => {
+it('refuses an app owner claim to a viewer or member before minting a link, while an owner can mint', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-app-owner-claim-'));
   const host = new SqliteScopeHost({ dir });
   shared.host = host;
@@ -145,11 +145,14 @@ it('refuses an app owner claim to a viewer before minting a link, while an owner
     const appScope = scopeId.parse(ulid());
     const owner = principalId.parse(ulid());
     const viewer = principalId.parse(ulid());
+    const member = principalId.parse(ulid());
     const node = await provisionDashboard(host, { tenantId: team, scopeId: dashboardScope, owner, slug: 'team', name: 'Team' });
     await host.admin.registerIdentityPool(staff, { provider: 'authhero', topology: 'central', tenantId: null });
     await host.admin.assignRole(staff, { principalId: viewer, roleKey: 'viewer', node: { tenantId: team, scopeId: null } });
+    await host.admin.assignRole(staff, { principalId: member, roleKey: 'member', node: { tenantId: team, scopeId: null } });
     await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'sub-owner', principal: owner, tenantId: team, scopeId: dashboardScope });
     await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'sub-viewer', principal: viewer, tenantId: team, scopeId: dashboardScope });
+    await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'sub-member', principal: member, tenantId: team, scopeId: dashboardScope });
     await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/provision-app', {
       appScopeId: appScope, verticalSlug: 'acme/widgets', name: 'App',
     });
@@ -171,6 +174,8 @@ it('refuses an app owner claim to a viewer before minting a link, while an owner
     }, env);
 
     expect((await claim('sub-viewer')).status).toBe(403);
+    expect(minted).toHaveLength(0);
+    expect((await claim('sub-member')).status).toBe(403);
     expect(minted).toHaveLength(0);
     expect((await claim('sub-owner')).status).toBe(201);
     expect(minted).toHaveLength(1);
