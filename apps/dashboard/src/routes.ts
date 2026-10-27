@@ -653,6 +653,31 @@ export const dashboardRoutes = defineRoutes({
     http: { method: 'POST', path: '/apps/{scopeId}/resume' },
   },
 
+  // -- app previews (#2170) --------------------------------------------------
+  'dashboard/list-app-snapshots': {
+    summary: "The archive forks of one of this team's apps, newest first",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.array(z.object({
+      id: z.string(), kind: z.string(), forkedFrom: z.string().nullable(),
+      forkedAt: z.string().nullable(), expiresAt: z.string().nullable(),
+      verticalVersionId: z.string().nullable(), createdAt: z.string(), url: z.string().nullable().optional(),
+    })),
+    http: { method: 'GET', path: '/apps/{scopeId}/snapshots' },
+  },
+  'dashboard/create-app-snapshot': {
+    summary: "Create an archive fork of this app's data, with optional expiry",
+    input: z.object({ scopeId: z.string().min(1), ttlDays: z.number().int().positive().max(365).optional() }),
+    output: z.object({ id: z.string(), expiresAt: z.string().nullable(), url: z.string().nullable() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/snapshots' },
+    status: 201,
+  },
+  'dashboard/delete-app-snapshot': {
+    summary: 'Delete one archive fork belonging to this app',
+    input: z.object({ scopeId: z.string().min(1), snapshotId: z.string().min(1) }),
+    output: z.object({ deleted: z.string() }),
+    http: { method: 'DELETE', path: '/apps/{scopeId}/snapshots/{snapshotId}' },
+  },
+
   // -- app environment (#2170) ----------------------------------------------
   'dashboard/get-app-env': {
     summary: "One app's declared environment and its stored values; secrets are write-only",

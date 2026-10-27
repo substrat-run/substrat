@@ -2899,73 +2899,6 @@ app.post('/api/apps/:scopeId/rewind', async (c) => {
 });
 
 /**
- * The Snapshots tab (preview-and-snapshots.md §3): create a test copy of an app's
- * data, list the copies, delete one. Same authority as managing the app
- * (`dashboard:provision-app`, checked in-scope); the app must be the caller's own.
- * A copy is an ARCHIVE fork — it never receives traffic, never runs consumers, and
- * expires on the chosen TTL (the GC sweep reaps it) unless kept.
- */
-app.get('/api/apps/:scopeId/snapshots', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const snapshots = await listAppSnapshots(host, {
-    node,
-    appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
-  });
-  return c.json(snapshots);
-});
-
-app.post('/api/apps/:scopeId/snapshots', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = z
-    .object({ ttlDays: z.number().int().positive().max(365).optional() })
-    .parse(await c.req.json().catch(() => ({})));
-  const created = await snapshotApp(host, {
-    node,
-    appScopeId: scopeId.parse(appRow.app_scope_id),
-    ttlDays: body.ttlDays,
-    appHostname: appRow.hostname,
-    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
-  });
-  return c.json(created, 201);
-});
-
-app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  // The snapshot must be a fork OF THIS APP — a snapshot id belonging to another
-  // scope (or a non-fork) 404s here before any platform call.
-  const snapshots = await listAppSnapshots(host, {
-    node,
-    appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
-  });
-  const snap = snapshots.find((s) => s.id === c.req.param('snapshotId'));
-  if (!snap) throw new HTTPException(404, { message: 'snapshot not found' });
-  await deleteAppSnapshot(host, {
-    node,
-    appScopeId: scopeId.parse(appRow.app_scope_id),
-    snapshotScopeId: scopeId.parse(snap.id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
-  });
-  return c.json({ deleted: snap.id });
-});
-
-/**
  * Export & import (preview-and-snapshots.md §8 — the dashboard half of the CLI's
  * `scope pull`/`scope restore`). GET hands back the app's data as a dump the CLI
  * and the Import button both accept; connected mode arrives MASKED from the CP
@@ -3014,6 +2947,14 @@ app.post('/api/apps/:scopeId/restore', async (c) => {
   return c.json(result);
 });
 
+/** Look up an app only in the team named by the request path. */
+async function teamAppTarget({ host, node }: TeamContext, appScopeId: string) {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const appRow = await appByScopeId(dash, appScopeId);
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  return { dash, appRow };
+}
+
 /**
  * One app's environment/config (the Env tab). GET returns the vertical's declared
  * env-spec (placeholder + description per key, from the catalog/manifest) alongside the
@@ -3021,16 +2962,9 @@ app.post('/api/apps/:scopeId/restore', async (c) => {
  * DELETE removes one key. The app must be the caller's own, and managing config is the
  * same authority as managing the app. PUT also attempts live delivery to the running scope.
  */
-async function appEnvTarget({ host, node }: TeamContext, appScopeId: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  return { dash, appRow };
-}
-
 async function getAppEnvIn(ctx: TeamContext, appScopeId: string) {
   const { c, host, node } = ctx;
-  const { dash, appRow } = await appEnvTarget(ctx, appScopeId);
+  const { dash, appRow } = await teamAppTarget(ctx, appScopeId);
   // The env-spec comes from the REGISTRY (a vertical declares it in its manifest; the
   // registry carries it), so a pushed builder vertical works the same as a builtin. A
   // pushed vertical registers on the SHARED plane, not this deployment's registry —
@@ -3050,7 +2984,7 @@ async function getAppEnvIn(ctx: TeamContext, appScopeId: string) {
 
 async function setAppEnvIn(ctx: TeamContext, appScopeId: string, entries: Array<{ key: string; value: string; secret?: boolean }>) {
   const { c, node } = ctx;
-  const { dash, appRow } = await appEnvTarget(ctx, appScopeId);
+  const { dash, appRow } = await teamAppTarget(ctx, appScopeId);
   if (entries.length === 0) return { saved: 0, delivered: false };
   const saved = await dash.invoke<{ saved: number }>('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries });
   // DELIVER to the running app scope (vertical-auth-detach.md §2.2), not just author:
@@ -3085,9 +3019,50 @@ async function setAppEnvIn(ctx: TeamContext, appScopeId: string, entries: Array<
 }
 
 async function deleteAppEnvIn(ctx: TeamContext, appScopeId: string, key: string) {
-  const { dash, appRow } = await appEnvTarget(ctx, appScopeId);
+  const { dash, appRow } = await teamAppTarget(ctx, appScopeId);
   await dash.invoke('dashboard/delete-app-env', { appScopeId: appRow.app_scope_id, key });
   return { deleted: key };
+}
+
+/** The Previews tab's archive forks; create and delete retain the scope's app-management gate. */
+async function listAppSnapshotsIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  return listAppSnapshots(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
+  });
+}
+
+async function createAppSnapshotIn(ctx: TeamContext, appScopeId: string, ttlDays?: number) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  return snapshotApp(host, {
+    node,
+    appScopeId: scopeId.parse(appRow.app_scope_id),
+    ttlDays,
+    appHostname: appRow.hostname,
+    controlPlane: controlPlaneFor(c.env, node.tenantId, node.principal),
+  });
+}
+
+async function deleteAppSnapshotIn(ctx: TeamContext, appScopeId: string, snapshotId: string) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const appScope = scopeId.parse(appRow.app_scope_id);
+  const controlPlane = controlPlaneFor(c.env, node.tenantId, node.principal);
+  // The snapshot must be a fork of this app. Another app's fork 404s before deletion.
+  const snapshots = await listAppSnapshots(host, { node, appScopeId: appScope, controlPlane });
+  const snap = snapshots.find((s) => s.id === snapshotId);
+  if (!snap) throw new HTTPException(404, { message: 'snapshot not found' });
+  await deleteAppSnapshot(host, {
+    node,
+    appScopeId: appScope,
+    snapshotScopeId: scopeId.parse(snap.id),
+    controlPlane,
+  });
+  return { deleted: snap.id };
 }
 
 /**
@@ -5947,6 +5922,9 @@ const routeHandlers = {
   },
   'dashboard/retry-app': async (ctx, { scopeId: failed }) => retryAppIn(ctx, failed),
   'dashboard/resume-app': async (ctx, { scopeId: stuck }) => resumeAppIn(ctx, stuck),
+  'dashboard/list-app-snapshots': async (ctx, { scopeId: app }) => listAppSnapshotsIn(ctx, app),
+  'dashboard/create-app-snapshot': async (ctx, { scopeId: app, ttlDays }) => createAppSnapshotIn(ctx, app, ttlDays),
+  'dashboard/delete-app-snapshot': async (ctx, { scopeId: app, snapshotId }) => deleteAppSnapshotIn(ctx, app, snapshotId),
   'dashboard/get-app-env': async (ctx, { scopeId: app }) => getAppEnvIn(ctx, app),
   'dashboard/set-app-env': async (ctx, { scopeId: app, entries }) => setAppEnvIn(ctx, app, entries ?? []),
   'dashboard/delete-app-env': async (ctx, { scopeId: app, key }) => deleteAppEnvIn(ctx, app, key),
