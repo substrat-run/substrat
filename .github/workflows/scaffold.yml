@@ -5,7 +5,8 @@ name: Scaffold
 # workspace globs are `packages/*`, so `packages/create-substrat` is a member and
 # `template/` under it is not. This job is the one that runs what a user runs:
 # `npm create substrat`, `npm install` from the registry with no workspace links, then
-# the three gates a scaffolded project ships with.
+# the three gates a scaffolded project ships with. A separate fresh scaffold also
+# runs `pnpm install` with the current major (#2629).
 #
 # The reasoning — including why there is deliberately no `pull_request` trigger — lives
 # in tools/scaffold-check.mjs. The short form: between a merge that adds a surface and
@@ -32,7 +33,7 @@ on:
 jobs:
   scaffold:
     runs-on: ubuntu-latest
-    # The publish wait is bounded at three minutes, then an npm install and three gates.
+    # The publish wait is bounded at three minutes, then npm/pnpm installs and the gates.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
