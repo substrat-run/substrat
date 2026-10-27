@@ -838,7 +838,7 @@ export async function updateApp(
 
 /**
  * Snapshot an app's data into an archive fork (preview-and-snapshots.md §3) — the
- * Snapshots tab's "Create test copy". Authorize in the caller's own dashboard scope
+ * Previews tab's "Create preview". Authorize in the caller's own dashboard scope
  * (same authority as managing the app), then effect tenant-narrowed: the CP
  * orchestrates the fork inside the app's own vertical deployment (connected), or the
  * host forks in-process (embedded). `ttlDays` opts into the GC sweep; omitted =
@@ -962,7 +962,7 @@ async function sourceHostnameSurface(
   }
 }
 
-/** The forks of one app, newest first — the Snapshots tab's list. */
+/** The forks of one app, newest first — the Previews tab's list. */
 export async function listAppSnapshots(
   host: ScopeHost,
   input: { node: DashboardNode; appScopeId: ScopeId; controlPlane?: TenantNarrowedControlPlane },
