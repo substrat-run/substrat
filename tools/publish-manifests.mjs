@@ -39,7 +39,7 @@
 import { execFileSync, execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, relative, resolve } from 'node:path';
+import { join, relative, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import npa from 'npm-package-arg';
@@ -57,7 +57,7 @@ const run = promisify(execFile);
  */
 export function pnpmCommand(env = process.env, execPath = process.execPath) {
   const self = env.npm_execpath;
-  if (self && /^pnpm(\.exe|\.[cm]?js)?$/i.test(basename(self))) {
+  if (self && /^pnpm(\.exe|\.[cm]?js)?$/i.test(win32.basename(self))) {
     return /\.[cm]?js$/i.test(self) ? { file: execPath, args: [self] } : { file: self, args: [] };
   }
   return { file: 'pnpm', args: [] };

@@ -118,6 +118,13 @@ describe('substrat login without a TTY', () => {
     expect(r.config).toMatchObject({ controlPlaneUrl: 'https://cp.example/api', bearerToken: 'session-token', defaultTenant: 'tenant-a' });
   });
 
+  it('clears a previous account default when the signed-in account has no workspaces', () => {
+    const r = login(['--cp', 'https://cp.example/api'], [], { defaultTenant: 'tenant-a' });
+    expect(r.status).toBe(0);
+    expect(r.config).toMatchObject({ bearerToken: 'session-token' });
+    expect(r.config).not.toHaveProperty('defaultTenant');
+  });
+
   it('several workspaces, no --workspace: saves the session, asks nothing, prints how to choose', () => {
     const r = login(['--cp', 'https://cp.example/api'], [tenantA, tenantB]);
     expect(r.status, out(r)).toBe(0);

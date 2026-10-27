@@ -139,7 +139,7 @@ test('a line that leaves one out is named — and one that requires all is not',
 test('node-options.mjs quotes each path, so a checkout path with a space still loads every preload', () => {
   assert.equal(requireOption('/Users/Jane Doe/x.cjs'), '--require="/Users/Jane Doe/x.cjs"');
   // Inside quotes node reads a backslash as an escape: a POSIX name that holds one is escaped.
-  if (sep === '/') assert.equal(requireOption('/a\b/x".cjs'), '--require="/a\\b/x\\".cjs"');
+  if (sep === '/') assert.equal(requireOption(String.raw`/a\b/x".cjs`), String.raw`--require="/a\\b/x\".cjs"`);
   // Started for real: node parses the printed NODE_OPTIONS and runs every preload in it.
   const loaded = execFileSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(Object.keys(require.cache)))'], {
     encoding: 'utf8',

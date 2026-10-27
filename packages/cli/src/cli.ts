@@ -388,7 +388,7 @@ async function cmdLogin(): Promise<void> {
   // it — a re-login keeps an earlier pick, a different account does not inherit a stranger's.
   const kept = existing.defaultTenant === undefined ? undefined : byKey(existing.defaultTenant)?.slug;
   const howToSet = '  set one with `substrat login --workspace <slug>`, or pass --tenant <slug> (or SUBSTRAT_TENANT) per command.';
-  let defaultTenant = existing.defaultTenant;
+  let defaultTenant = kept;
   let refused: string | undefined;
   if (wanted !== undefined) {
     // Slug or id, as the prompt takes — not the prompt's list number, which shifts as
