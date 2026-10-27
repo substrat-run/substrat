@@ -173,14 +173,29 @@ describe('packStoreDriverDir (#2300)', () => {
 });
 
 describe('the files a release packs, and the commit they are (#2300)', () => {
-  it('refuses a symbolic link, to a file or a directory loop, and a tree nested too deep', () => {
+  it('refuses a symbolic link to a file', (ctx) => {
     const dir = driverDir({ 'driver_graph/store.py': '' });
     try {
-      symlinkSync('/etc/hosts', join(dir, 'driver_graph/hosts.py'));
-      expect(() => packedFilesOf(dir)).toThrow(/hosts\.py' is a symbolic link/);
-      rmSync(join(dir, 'driver_graph/hosts.py'));
-      symlinkSync(join(dir, 'driver_graph'), join(dir, 'driver_graph/loop'));
-      expect(() => packedFilesOf(dir)).toThrow(/loop' is a symbolic link/);
+      try {
+        symlinkSync('/etc/hosts', join(dir, 'driver_graph/hosts.py'));
+      } catch (e) {
+        // Windows lets only an administrator, or a machine in Developer Mode, link a file.
+        if (process.platform === 'win32' && (e as NodeJS.ErrnoException).code === 'EPERM') ctx.skip();
+        throw e;
+      }
+      expect(() => packedFilesOf(dir)).toThrow(/'driver_graph\/hosts\.py' is a symbolic link/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a directory loop, and a tree nested too deep', () => {
+    const dir = driverDir({ 'driver_graph/store.py': '' });
+    try {
+      // A junction on Windows, which needs no privilege and reads as a link too; the type is ignored elsewhere.
+      symlinkSync(join(dir, 'driver_graph'), join(dir, 'driver_graph/loop'), 'junction');
+      // Named with `/` on every OS, as the packed list names files.
+      expect(() => packedFilesOf(dir)).toThrow(/'driver_graph\/loop' is a symbolic link/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

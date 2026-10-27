@@ -11,7 +11,7 @@ import {
   type DeployManifest,
 } from '@substrat-run/contracts';
 import { boundManifest, flattenDeclaredMigrations, migrationDigest } from '../src/push.js';
-import { built, kernelBuilt, pushed, pushedWith, pushJs, STORES, vertical } from './push-harness.js';
+import { built, kernelBuilt, pushed, pushedWith, pushJs, pushJsUrl, STORES, vertical } from './push-harness.js';
 
 // The SQL migrations a push carries (#1677), driven through the real `push()` (./push-harness.ts).
 
@@ -172,7 +172,7 @@ process.stdout.write('SURFACE ' + JSON.stringify({ permissions: s.registry.permi
     const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-surface-'));
     const runner = join(scratch, 'run.mjs');
     writeFileSync(runner, SURFACE);
-    const r = spawnSync(process.execPath, [runner, pushJs, dir], { cwd, encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [runner, pushJsUrl, dir], { cwd, encoding: 'utf8' });
     const line = (r.stdout ?? '').split('\n').find((l) => l.startsWith('SURFACE '));
     if (r.status !== 0 || !line) throw new Error(`surface not derived (${r.status}):\n${r.stdout}\n${r.stderr}`);
     return JSON.parse(line.slice('SURFACE '.length));
@@ -183,7 +183,7 @@ process.stdout.write('SURFACE ' + JSON.stringify({ permissions: s.registry.permi
     const abs = vertical([{ id: 'helpdesk', migrations: [INIT] }]);
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'substrat-cli-root-')));
     mkdirSync(join(root, 'verticals'));
-    symlinkSync(abs, join(root, 'verticals', 'helpdesk'), 'dir');
+    symlinkSync(abs, join(root, 'verticals', 'helpdesk'), 'junction');
     return { root, abs };
   }
 

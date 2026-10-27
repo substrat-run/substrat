@@ -101,7 +101,9 @@ export async function refusedBuiltins(entry: string, flags: readonly string[]): 
 export function workerNodeImportOffence(entry: string, flags: readonly string[], found: RefusedWorkerImports): string | undefined {
   if (!found.refused.length) return undefined;
   const root = process.cwd();
-  const display = (path: string) => path.startsWith('node:') || BUILTINS.has(path) ? path : relative(root, resolve(path));
+  // `/` on every OS, so the chain reads `src/worker.ts -> lib/x.js` in a Windows log too.
+  const display = (path: string) =>
+    path.startsWith('node:') || BUILTINS.has(path) ? path : relative(root, resolve(path)).split(sep).join('/');
   return `Worker ${display(entry)} with compatibility flags ${JSON.stringify(flags)} imports unsupported Node builtins: ${found.refused.join(', ')}\n` +
     found.importPaths.map((path) => `  ${path.map(display).join(' -> ')}`).join('\n') +
     '\nRemove the import or declare nodejs_compat for this Worker. Guarded imports have no general exception.';

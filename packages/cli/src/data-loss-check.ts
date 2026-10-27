@@ -110,6 +110,7 @@ export function replayInChild(
   opts: { readonly childPath?: string; readonly timeoutMs?: number } = {},
 ): Promise<ChildResult> {
   const timeoutMs = opts.timeoutMs ?? MIGRATION_TIMEOUT_MS;
+  const spawnedAt = Date.now();
   // The child's stderr is kept, never forwarded: node's notice that `node:sqlite` is experimental
   // stays out of the push log, and only a process that dies without answering is shown it.
   const child = spawn(process.execPath, [opts.childPath ?? CHILD], {
@@ -175,9 +176,16 @@ export function replayInChild(
     });
     child.on('error', (e) => settle({ kind: 'error', message: e.message }));
     // `close`, not `exit`: it fires once stdout has drained, so a last `done` line is never lost.
-    child.on('close', (code, signal) =>
-      settle({ kind: 'error', message: `the replay process ended (${signal ?? `exit ${code}`}) without an answer${stderr ? `: ${stderr.trim()}` : ''}` }),
-    );
+    // Past the deadline, the child's watchdog is what ended it — said in words, because how it
+    // ended does not say so everywhere: SIGKILL on POSIX, but `exit 1` on Windows, which has no
+    // signals. The child's clock starts after the parent's, so its deadline is never early here.
+    child.on('close', (code, signal) => {
+      const deadline = Date.now() - spawnedAt >= request.deadlineMs ? `, past its hard deadline of ${request.deadlineMs / 1000} s` : '';
+      settle({
+        kind: 'error',
+        message: `the replay process ended (${signal ?? `exit ${code}`}) without an answer${deadline}${stderr ? `: ${stderr.trim()}` : ''}`,
+      });
+    });
     arm();
     child.stdin.on('error', () => {});
     child.stdin.end(JSON.stringify(request));

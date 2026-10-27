@@ -56,16 +56,18 @@ const isVendored = (file: string) => file.startsWith(`${VENDORED_DIR}/`);
  */
 export function packedFilesOf(dir: string): string[] {
   const out: string[] = [];
+  // The `/` form the packed list uses, so an error names `driver_graph/x.py` on every OS too.
+  const shown = (path: string): string => relative(dir, path).split(sep).join('/');
   const walk = (at: string, depth: number) => {
-    if (depth > MAX_DEPTH) throw new Error(`'${relative(dir, at)}' is nested more than ${MAX_DEPTH} directories deep`);
+    if (depth > MAX_DEPTH) throw new Error(`'${shown(at)}' is nested more than ${MAX_DEPTH} directories deep`);
     for (const name of readdirSync(at).sort()) {
       const path = join(at, name);
       const stat = lstatSync(path);
-      if (stat.isSymbolicLink()) throw new Error(`'${relative(dir, path)}' is a symbolic link; a release packs files, not links`);
+      if (stat.isSymbolicLink()) throw new Error(`'${shown(path)}' is a symbolic link; a release packs files, not links`);
       if (stat.isDirectory()) {
         if (name !== '__pycache__') walk(path, depth + 1);
       } else if (!name.endsWith('.pyc')) {
-        const file = relative(dir, path).split(sep).join('/');
+        const file = shown(path);
         if (INSTALLER_MARKERS.includes(file)) continue;
         out.push(file);
         if (out.length > STORE_RELEASE_MAX_MODULES) {

@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, basename, extname, relative, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { join, basename, delimiter, dirname, extname, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
@@ -1604,6 +1605,70 @@ export function generatedConfigPath(dir: string): string {
   return resolve(dir, '.wrangler.substrat.json');
 }
 
+/**
+ * The vertical's own wrangler: the script its `bin` names, and the version that script is.
+ *
+ * Resolved the way Node resolves an import from the vertical (its `node_modules`, then each
+ * parent's, so a workspace that hoists wrangler to its root still finds it), and run as
+ * `node <bin>`. Not through `npx`, for two reasons:
+ *
+ *   - On Windows `npx` is `npx.cmd`. Node will not spawn a batch file without a shell
+ *     (CVE-2024-27980), and through a shell every argument is parsed twice — by cmd.exe and
+ *     again by the batch file's `%*` — so a build path holding a space, `&`, `%` or `^` cannot
+ *     be passed safely. `push` failed there with `spawnSync npx ENOENT` before it built anything.
+ *   - `npx` downloads the newest wrangler when the project has none, without asking when stdin
+ *     is not a TTY. The bundle a deploy ships then depends on the day it was built. The
+ *     project's pinned wrangler is the only one this runs; a project without one is told so.
+ *
+ * Every node_modules directory is checked for `wrangler/package.json` on disk rather than
+ * through `require.resolve('wrangler/package.json')`, so the lookup never depends on which
+ * subpaths a given wrangler release lists in its `exports`.
+ */
+export function resolveWrangler(dir: string): { bin: string; version: string } {
+  const root = resolve(dir);
+  const candidates = createRequire(join(root, 'package.json')).resolve.paths('wrangler') ?? [];
+  const pkgFile = candidates.map((nm) => join(nm, 'wrangler', 'package.json')).find((f) => existsSync(f));
+  if (!pkgFile) {
+    throw new Error(
+      [
+        `wrangler is not installed in this project (${root}).`,
+        '  substrat push builds the Worker with the wrangler your project pins, and never downloads one.',
+        '  Add it as a devDependency, then push again:',
+        '    npm install --save-dev wrangler    (or: pnpm add -D wrangler, yarn add -D wrangler)',
+        '  Yarn Plug\'n\'Play installs no node_modules, which the push reads: set `nodeLinker: node-modules`',
+        '  in .yarnrc.yml and run `yarn install`.',
+      ].join('\n'),
+    );
+  }
+  const pkg = JSON.parse(readFileSync(pkgFile, 'utf8')) as { version?: string; bin?: string | Record<string, string> };
+  const rel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.wrangler;
+  if (!rel) throw new Error(`${pkgFile} names no \`wrangler\` bin — reinstall wrangler in this project`);
+  return { bin: resolve(dirname(pkgFile), rel), version: pkg.version ?? 'unknown' };
+}
+
+/**
+ * The environment wrangler builds in: this process's, with the project's `node_modules/.bin`
+ * directories (its own, then each parent's, nearest first) and Node's own directory put in
+ * front of PATH.
+ *
+ * That is what `npx` used to give it, and the project's build command depends on it. Wrangler
+ * runs `build.command` (`runtimeNeeds.build`) through a shell on the PATH it was handed, so a
+ * build of `vite build` or `tsc` finds the project's own `vite` or `tsc` only when its `.bin`
+ * is there. A CLI installed globally, or started from a repository root, has no such entry.
+ */
+export function wranglerEnv(dir: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const bins: string[] = [];
+  for (let at = resolve(dir); ; at = dirname(at)) {
+    bins.push(join(at, 'node_modules', '.bin'));
+    if (dirname(at) === at) break;
+  }
+  // Windows names it `Path`, and environment keys are case-insensitive there. A copy is a
+  // plain object, so set the key that is already present instead of adding a second one.
+  const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH';
+  const path = [...bins, dirname(process.execPath), env[key]].filter(Boolean).join(delimiter);
+  return { ...env, [key]: path };
+}
+
 export interface PreparedWorkerBundle {
   root: string;
   cfg: Record<string, unknown>;
@@ -1620,16 +1685,20 @@ export async function prepareWorkerBundle(
   output: 'stdout' | 'stderr' = 'stdout',
 ): Promise<PreparedWorkerBundle> {
   const { cfg, needs } = resolved;
+  // Before anything is written: a project without wrangler leaves no temp dir or config behind.
+  const wrangler = resolveWrangler(dir);
   const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
   const generated = needs ? generatedConfigPath(dir) : undefined;
-  (output === 'stderr' ? console.error : console.log)(`building ${label} …`);
+  (output === 'stderr' ? console.error : console.log)(`building ${label} with wrangler ${wrangler.version} …`);
   try {
     if (generated) writeFileSync(generated, JSON.stringify(cfg, null, 2) + '\n');
     try {
+      // `node <wrangler bin>`, no shell: each argument reaches wrangler as one argv entry on
+      // every OS, so `out` and `generated` may hold spaces or non-ASCII (see resolveWrangler).
       execFileSync(
-        'npx',
-        ['wrangler', 'deploy', '--dry-run', '--outdir', out, ...(generated ? ['--config', generated] : [])],
-        { cwd: dir, stdio: output === 'stderr' ? ['inherit', 2, 2] : 'inherit' },
+        process.execPath,
+        [wrangler.bin, 'deploy', '--dry-run', '--outdir', out, ...(generated ? ['--config', generated] : [])],
+        { cwd: dir, env: wranglerEnv(dir), stdio: output === 'stderr' ? ['inherit', 2, 2] : 'inherit' },
       );
     } finally {
       if (generated) rmSync(generated, { force: true });

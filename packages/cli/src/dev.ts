@@ -1,5 +1,5 @@
 /** Transparent local dev-script wrapper with an optional request-trace preload. */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { constants } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -24,11 +24,22 @@ export async function dev(options: DevOptions = {}): Promise<number> {
 
   // Give the script and its subprocesses one group. A dev script commonly runs through
   // pnpm -> concurrently -> tsx watch; signaling pnpm alone leaves the watcher alive.
-  const grouped = process.platform !== 'win32';
-  const child = spawn('pnpm', ['run', 'dev'], { cwd: project, env, stdio: 'inherit', detached: grouped });
+  const windows = process.platform === 'win32';
+  const grouped = !windows;
+  // Windows installs pnpm as a .cmd shim. Only this fixed command goes through
+  // cmd.exe: the project path stays in cwd and never becomes shell input.
+  const child = spawn(windows ? 'pnpm run dev' : 'pnpm', windows ? [] : ['run', 'dev'], {
+    cwd: project, env, stdio: 'inherit', detached: grouped, shell: windows,
+  });
   const forward = (signal: NodeJS.Signals) => {
     try {
-      if (grouped && child.pid) process.kill(-child.pid, signal);
+      if (windows && child.pid) {
+        // Killing cmd.exe alone leaves pnpm's watcher and server alive. Windows has
+        // no POSIX process-group signals, so stop the whole tree before returning.
+        execFileSync('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], {
+          stdio: 'ignore', windowsHide: true,
+        });
+      } else if (grouped && child.pid) process.kill(-child.pid, signal);
       else child.kill(signal);
     } catch {
       /* the dev script already exited */

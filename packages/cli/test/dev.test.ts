@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,13 +12,17 @@ const cli = join(repo, 'packages/cli/dist/cli.js');
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
 const temp = () => {
-  const dir = mkdtempSync(join(tmpdir(), 'substrat-dev-'));
+  const dir = mkdtempSync(join(tmpdir(), 'substrat dev å '));
   dirs.push(dir);
   return dir;
 };
 afterEach(() => {
   for (const child of children.splice(0)) {
     if (child.pid) {
+      if (process.platform === 'win32') {
+        spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+        continue;
+      }
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already stopped */ }
     }
   }
@@ -57,13 +61,25 @@ describe('substrat dev', () => {
     // separately proves that its permission checker supplies these check steps.
     const dir = temp();
     const ready = join(dir, 'ready');
-    const concurrently = join(repo, 'node_modules/.bin/concurrently');
-    const tsx = join(repo, 'node_modules/.bin/tsx');
+    const concurrently = join(repo, 'node_modules/concurrently/dist/bin/concurrently.js');
+    const tsx = join(repo, 'node_modules/tsx/dist/cli.mjs');
+    // Pass subprocess arguments directly rather than embedding platform paths in shell
+    // quotes (JSON's backslash escaping is not cmd.exe quoting).
+    writeFileSync(join(dir, 'dev.cjs'), `
+      const { spawn } = require('node:child_process');
+      const child = spawn(process.execPath, [${JSON.stringify(concurrently)}, '-k', 'node watch.cjs'], { stdio: 'inherit' });
+      child.on('exit', code => { process.exitCode = code; });
+    `);
+    writeFileSync(join(dir, 'watch.cjs'), `
+      const { spawn } = require('node:child_process');
+      const child = spawn(process.execPath, [${JSON.stringify(tsx)}, 'watch', 'server.js'], { stdio: 'inherit' });
+      child.on('exit', code => { process.exitCode = code; });
+    `);
     writeFileSync(join(dir, 'package.json'), JSON.stringify({
-      scripts: { dev: `${JSON.stringify(concurrently)} -k ${JSON.stringify(`${tsx} watch server.js`)}` },
+      scripts: { dev: 'node dev.cjs' },
     }));
     mkdirSync(join(dir, 'node_modules'));
-    symlinkSync(join(repo, 'packages/vertical-host/node_modules/hono'), join(dir, 'node_modules/hono'), 'dir');
+    symlinkSync(join(repo, 'packages/vertical-host/node_modules/hono'), join(dir, 'node_modules/hono'), process.platform === 'win32' ? 'junction' : 'dir');
     const middleware = pathToFileURL(join(repo, 'packages/vertical-host/dist/invocation-log.js')).href;
     writeFileSync(join(dir, 'server.js'), `
       import { createServer } from 'node:http';
@@ -95,8 +111,14 @@ describe('substrat dev', () => {
       server.listen(0, '127.0.0.1', () => writeFileSync(process.env.READY, String(server.address().port)));
     `);
 
-    const child = spawn(process.execPath, [cli, 'dev', dir], {
-      env: { ...process.env, READY: ready }, stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    // child.kill('SIGINT') forcibly terminates a Windows process without running its
+    // signal handlers. Deliver the event over IPC to exercise dev's real forwarding
+    // path, then disconnect so IPC itself does not keep the CLI alive.
+    const interrupt = 'data:text/javascript,' + encodeURIComponent(
+      "process.on('message', () => { process.disconnect(); process.emit('SIGINT'); });",
+    );
+    const child = spawn(process.execPath, ['--import', interrupt, cli, 'dev', dir], {
+      env: { ...process.env, READY: ready }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], detached: true,
     });
     children.push(child);
     let output = '';
@@ -121,7 +143,7 @@ describe('substrat dev', () => {
       expect(output).toContain('requires member; caller has viewer');
     }, { timeout: 2_000, interval: 20 });
     const stopped = new Promise<[number | null, NodeJS.Signals | null]>((resolve) => child.once('exit', (code, signal) => resolve([code, signal])));
-    child.kill('SIGINT');
+    child.send('interrupt');
     await stopped;
     await expect(fetch(`http://127.0.0.1:${port}/allowed`, { signal: AbortSignal.timeout(500) })).rejects.toThrow();
   }, 15_000);

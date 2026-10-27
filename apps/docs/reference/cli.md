@@ -18,8 +18,18 @@ substrat --help
 ```
 
 The package has no runtime dependencies and ships web-standard + `node:*` only. It needs Node
-≥ 20 and, for `push`, `npx wrangler` available in the vertical's directory (it builds with
-`wrangler deploy --dry-run`).
+≥ 20, and Node ≥ 22 for `push`, since wrangler 4 does. It runs on macOS, Linux and Windows.
+For `push`, the vertical must have **wrangler installed as a devDependency** (`npm install --save-dev wrangler`; a project from
+`npm create substrat` has it). The push builds with that pinned wrangler
+(`wrangler deploy --dry-run`), run directly by Node rather than through `npx`. It never
+downloads a wrangler for you, so a project without one is refused with that instruction.
+
+On Windows, long paths should be on. A project's `node_modules` holds files deeper than Windows'
+old 260-character limit, and many programs (PowerShell, Python, installers) stop at that limit
+until the setting is on. `npm create substrat` offers to turn it on, and `substrat doctor --fix`
+does it any time: Windows asks you to allow the change once, as it does for any machine-wide
+setting. Node, npm, pnpm and this CLI work either way. `cmd.exe` and Explorer keep the old limit
+whatever the setting says.
 
 ## Commands
 
@@ -31,6 +41,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat concept sync [dir]` | Rewrite the generated sections of `spec/concept.md` — roles and permissions, the entity diagram, one state diagram per lifecycle — from `model.json` and `PERMISSIONS.md`. Offline, idempotent; `--check` writes nothing and exits 1 when the file is stale. |
 | `substrat plan [dir]` | The **concept delta** a design gate shows: entities before and after, lifecycle and permission changes, the spec-version impact, and the decisions-log entry approving it writes. `--approve <digest>` records a person's approval. Offline. |
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
+| `substrat doctor [dir]` | Check that this machine and project can push: Node, the project's wrangler and, on Windows, long paths. `--fix` turns long paths on. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
 | `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
 | `substrat promote <slug> --version <id>` | Point **`prod`** (the only channel) at a version. `--channel` defaults to `prod`. |
@@ -206,15 +217,37 @@ reason; `--check` refuses one that does not.
 
 ```bash
 substrat login                     # browser loopback (PKCE) — a per-human session
+substrat login --workspace acme-co # …and set the default workspace without being asked
 substrat login --token <SERVICE_TOKEN>   # CI: store a service-actor credential
 ```
 
 The browser flow starts a one-shot `127.0.0.1` server, opens the platform's CLI broker, signs
 you in through [AuthHero](/concepts/identity), and exchanges a PKCE-bound `code` for a session
 token — the token never transits a URL. On success the CLI also resolves your workspace(s) and
-stores a default (prompting if you belong to several) — used by `promote` and `scope pull`;
-`push` pins its workspace [per project](#push) instead. Everything lands in
-`~/.substrat/config.json` (mode `0600`).
+stores a default — used by `promote` and `scope pull`; `push` pins its workspace
+[per project](#push) instead. With several workspaces it asks which, unless `--workspace <slug>`
+(a slug or id) answers first. Everything lands in `~/.substrat/config.json` (mode `0600`).
+
+**Without a terminal** (a coding agent, piped input, CI, Git Bash in its own mintty window) login asks nothing.
+The control-plane URL is `--cp`, else the one stored from before, else
+`https://console.substrat.net/api`. With several workspaces and no `--workspace`, the session is
+saved without a new default; the CLI says how to set one, and an earlier default stays if it is
+one of yours. A sign-in completed in the browser is always saved. An unknown `--workspace` is
+saved too, then reported with your workspaces listed and a non-zero exit. If the browser does not
+open, visit the URL the CLI prints.
+
+### `doctor`
+
+```bash
+substrat doctor          # check, change nothing; exits 1 when a check fails
+substrat doctor --fix    # and turn Windows long paths on
+```
+
+It checks the Node version (`push` needs 22 or later, because wrangler 4 does), that the project
+has wrangler installed, and on Windows whether long paths are on. `--fix` changes only that last
+setting. It is machine-wide and needs an administrator, so Windows shows its own permission
+prompt once, and `doctor` reads the setting back before it says it worked. Programs that were
+already running keep the old limit until you restart them.
 
 ### `whoami`
 

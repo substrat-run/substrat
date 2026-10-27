@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 import { DEV_SERVERS } from './dev-servers.js';
 import { TEST_RUNNER, TSCONFIG, VITEST_CONFIG } from './project-files.js';
+import { offerLongPaths } from './windows.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE = join(HERE, 'template');
@@ -138,7 +139,13 @@ function packageJson(name) {
         // The local OIDC issuer `pnpm dev` signs you in at. A devDependency on
         // purpose: it is never imported by anything the worker bundles.
         '@substrat-run/dev-issuer': DEV_ISSUER,
-        '@cloudflare/workers-types': '^4.20250109.0',
+        // What `substrat push` builds the Worker with. The CLI runs the project's own
+        // wrangler and never downloads one, so a push builds with the version pinned here.
+        wrangler: '^4.151.0',
+        // Major 5, because wrangler 4.151+ peers on it: with 4 here, `npm install` of a new
+        // project stops on ERESOLVE. The template compiles against 5 (checked by installing a
+        // scaffold from npm); the workspace catalog, which template-check reads, is still on 4.
+        '@cloudflare/workers-types': '^5.20261023.1',
         '@types/better-sqlite3': '^9.6.0',
         '@types/node': '^22.0.0',
         concurrently: '^9.0.0',
@@ -200,7 +207,7 @@ pnpm typecheck
 `;
 }
 
-function main() {
+async function main() {
   const target = process.argv[2];
   if (target === '-h' || target === '--help') {
     usage();
@@ -256,6 +263,10 @@ function main() {
       '',
     ].join('\n'),
   );
+
+  // Windows only, and only when the setting is off: one question, then Windows' own prompt.
+  const longPaths = await offerLongPaths();
+  if (longPaths.length) process.stdout.write(`${longPaths.join('\n')}\n`);
 }
 
-main();
+main().catch((error) => fail(error instanceof Error ? error.message : String(error)));

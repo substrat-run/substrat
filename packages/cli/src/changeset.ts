@@ -71,12 +71,23 @@ export function atCommit(commit: string, path: string, cwd: string): string | nu
 }
 
 /**
- * The repo-relative path git wants, with forward slashes. Both sides are REAL paths: git reports
- * its top level through symlinks resolved (macOS's /var is /private/var), and a path relative to
- * the unresolved one climbs out of the repository.
+ * A path in the form git reports its top level in: every link resolved (macOS's /var is
+ * /private/var) and, on Windows, every 8.3 short name expanded. The JS `realpathSync` keeps a
+ * short name as given — `os.tmpdir()` on Windows is often `C:\Users\RUNNER~1\…` — while git
+ * answers with the long one, so a path relative to it would climb out of the repository. The
+ * native call is realpath(3) on POSIX; a Windows volume that cannot answer it (some RAM disks
+ * and network shares) falls back to the JS one.
  */
-const repoPath = (root: string, abs: string): string =>
-  relative(realpathSync(root), realpathSync(abs)).split(sep).join('/');
+function realPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return realpathSync(path);
+  }
+}
+
+/** The repo-relative path git wants, with forward slashes. Both sides are {@link realPath}s. */
+const repoPath = (root: string, abs: string): string => relative(realPath(root), realPath(abs)).split(sep).join('/');
 
 /** One vertical's artifacts at the base commit and in the working tree. */
 export function readArtifacts(pkgDir: string, commit: string, root: string): { base: Artifacts; head: Artifacts } {
@@ -98,8 +109,9 @@ export function packageNameOf(pkgDir: string): string {
 
 /** The `.changeset` directory serving `pkgDir`: the nearest one at or above it, up to the repo root. */
 export function changesetDirFor(pkgDir: string, root: string): string {
-  const top = realpathSync(root);
-  for (let dir = realpathSync(pkgDir); ; dir = dirname(dir)) {
+  // Both real, or a short-name `pkgDir` never meets the long-name `top` and the walk passes the root.
+  const top = realPath(root);
+  for (let dir = realPath(pkgDir); ; dir = dirname(dir)) {
     if (existsSync(join(dir, '.changeset', 'config.json'))) return join(dir, '.changeset');
     if (dir === top || dirname(dir) === dir) break;
   }

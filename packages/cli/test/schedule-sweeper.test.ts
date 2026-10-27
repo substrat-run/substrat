@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { installFakeWrangler } from './fake-wrangler.js';
 import type { DeployManifest } from '@substrat-run/contracts';
 import { assertSchedulesAreSwept, deployConfigIfAny, sweeperClassesOf } from '../src/push.js';
 import {
@@ -245,7 +246,7 @@ describe('assertSchedulesAreSwept', () => {
 /**
  * Through the BUILT push, in a plain node child, as `push-migrations.test.ts` does: the push
  * bundles and imports the permission entry, which vitest's module runner cannot load. The
- * wrangler build is a stub `npx`, and the upload a stubbed `fetch` that prints the manifest —
+ * wrangler build is a fake `wrangler` package (fake-wrangler.ts), and the upload a stubbed `fetch` that prints the manifest —
  * so "refused before anything is uploaded" is a fact the test reads.
  */
 describe.runIf(existsSync(fileURLToPath(new URL('../dist/push.js', import.meta.url))))(
@@ -280,17 +281,13 @@ await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.i
 
     function run(dir: string, features?: string, ...flags: string[]): { status: number; stdout: string; stderr: string } {
       const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-push-'));
-      writeFileSync(
-        join(scratch, 'npx'),
-        `#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = "--outdir" ]; then echo "export default {}" > "$2/worker.js"; fi; shift; done\n`,
-        { mode: 0o755 },
-      );
+      installFakeWrangler(dir);
       writeFileSync(join(scratch, 'run.mjs'), RUNNER);
-      const r = spawnSync(process.execPath, [join(scratch, 'run.mjs'), pushJs, dir, ...flags], {
+      // A file URL for the runner's `import()`: a bare path is refused on Windows.
+      const r = spawnSync(process.execPath, [join(scratch, 'run.mjs'), pathToFileURL(pushJs).href, dir, ...flags], {
         encoding: 'utf8',
         env: {
           ...process.env,
-          PATH: `${scratch}:${process.env.PATH ?? ''}`,
           GITHUB_ACTIONS: '',
           ...(features !== undefined ? { PLANE_FEATURES: features } : {}),
         },

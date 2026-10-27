@@ -26,6 +26,7 @@
     "index.js",
     "dev-servers.js",
     "project-files.js",
+    "windows.js",
     "template"
   ],
   "engines": {
@@ -35,6 +36,7 @@
     "access": "public"
   },
   "scripts": {
+    "test": "node --test windows.test.mjs",
     "prepublishOnly": "node ../../tools/publish-guard.mjs"
   }
 }

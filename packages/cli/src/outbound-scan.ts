@@ -20,14 +20,14 @@
  * checkpoint, so nothing here shrinks one silently.
  */
 import { readFileSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { relative, resolve, sep } from 'node:path';
 import { parse } from '@babel/parser';
 import { matchesOutboundHost, outboundHost } from '@substrat-run/contracts';
 import { resolveRelative, SOURCE_EXTENSIONS } from './schedule-sweeper.js';
 
 export interface OutboundSighting {
   host: string;
-  /** Path relative to the vertical root. */
+  /** Path relative to the vertical root, with forward slashes on every platform. */
   file: string;
   line: number;
 }
@@ -189,6 +189,8 @@ export function scanOutboundHosts(dir: string, entry: string): OutboundScan {
   const sightings: OutboundSighting[] = [];
   const unread: string[] = [];
   const dynamic: OutboundScan['dynamic'] = [];
+  // Printed in a person's or a CI log and compared by tests: one form everywhere, not `src\x.ts` on Windows.
+  const shown = (file: string): string => relative(dir, file).split(sep).join('/');
   const visit = (file: string): void => {
     if (seen.has(file)) return;
     seen.add(file);
@@ -196,11 +198,11 @@ export function scanOutboundHosts(dir: string, entry: string): OutboundScan {
     try {
       read = readSource(readFileSync(file, 'utf8'), file);
     } catch {
-      unread.push(relative(dir, file));
+      unread.push(shown(file));
       return;
     }
-    for (const hit of read.hosts) sightings.push({ ...hit, file: relative(dir, file) });
-    for (const d of read.dynamic) dynamic.push({ ...d, file: relative(dir, file) });
+    for (const hit of read.hosts) sightings.push({ ...hit, file: shown(file) });
+    for (const d of read.dynamic) dynamic.push({ ...d, file: shown(file) });
     for (const spec of read.imports) {
       const target = resolveRelative(file, spec);
       if (target && SOURCE_EXTENSIONS.some((ext) => target.endsWith(ext))) visit(target);
