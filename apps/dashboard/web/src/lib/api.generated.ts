@@ -432,6 +432,13 @@ export interface DashboardClient {
   createPreview(input: { slug: string; tag: string; versionId: string; ttlHours?: number | null; empty?: boolean; sourceScopeId?: string; surface?: string; refresh?: boolean }): Promise<PreviewCreated>;
 
   /**
+   * Remove one stored environment value from this app
+   *
+   * `DELETE /apps/{scopeId}/env/{key}` — `dashboard/delete-app-env`
+   */
+  deleteAppEnv(input: { scopeId: string; key: string }): Promise<{ deleted: string }>;
+
+  /**
    * Remove a vertical from the registry (refused for a published vertical, and while any scope still runs it)
    *
    * `DELETE /deployments/{slug}` — `dashboard/delete-deployment`
@@ -458,6 +465,13 @@ export interface DashboardClient {
    * `GET /explanations` — `dashboard/explanations-status`
    */
   explanationsStatus(input: Record<string, never>): Promise<ExplanationView>;
+
+  /**
+   * One app's declared environment and its stored values; secrets are write-only
+   *
+   * `GET /apps/{scopeId}/env` — `dashboard/get-app-env`
+   */
+  getAppEnv(input: { scopeId: string }): Promise<{ spec: { key: string; label?: string; description: string; placeholder?: string; required: boolean; secret: boolean; default?: string; group?: string }[]; values: ({ key: string; isSecret: boolean; hasValue: boolean; value: string | null; updatedAt: string })[] }>;
 
   /**
    * An app's durable install record: directory, provision, activate, hostname, identity
@@ -761,6 +775,13 @@ export interface DashboardClient {
   setAppEmailSender(input: { scopeId: string; granted: boolean }): Promise<{ slug: string; emailSender: boolean }>;
 
   /**
+   * Save one app's environment and try to deliver it to the running app
+   *
+   * `PUT /apps/{scopeId}/env` — `dashboard/set-app-env`
+   */
+  setAppEnv(input: { scopeId: string; entries?: { key: string; value: string; secret?: boolean }[] }): Promise<{ saved: number; delivered: boolean; note?: string }>;
+
+  /**
    * Acknowledge, resolve or reopen one of this team's findings
    *
    * `PUT /findings/{id}/status` — `dashboard/set-finding-status`
@@ -903,6 +924,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/findings/rules", "POST", input, undefined),
     createPreview: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews`, "POST", omit(input, ["slug"]), undefined),
+    deleteAppEnv: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/env/${encodeURIComponent(String(input.key))}`, "DELETE", undefined, omit(input, ["scopeId","key"])),
     deleteDeployment: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}`, "DELETE", undefined, omit(input, ["slug"])),
     deletePreview: (input: Args) =>
@@ -911,6 +934,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/delete", "POST", input, undefined),
     explanationsStatus: (input: Args) =>
       send("/explanations", "GET", undefined, input),
+    getAppEnv: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "GET", undefined, omit(input, ["scopeId"])),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
     getDeploymentReleases: (input: Args) =>
@@ -997,6 +1022,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}`, "DELETE", undefined, omit(input, ["invitationId"])),
     setAppEmailSender: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "POST", omit(input, ["scopeId"]), undefined),
+    setAppEnv: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "PUT", omit(input, ["scopeId"]), undefined),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
     setupGithubCi: (input: Args) =>

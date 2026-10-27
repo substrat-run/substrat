@@ -956,7 +956,6 @@ export interface AppEnvValue {
   updatedAt: string;
 }
 
-/** `GET /api/apps/:scope/env` — the vertical's declared spec + this app's current values. */
 /** The app's owner seat (#925) as the platform relays it from the app's own identity directory. */
 export interface OwnerSeatView {
   state: 'claimed' | 'unclaimed' | 'unknown';
@@ -1009,14 +1008,6 @@ export interface MemberInviteView extends AuditedAnswerView {
 export interface AppEnvView {
   spec: EnvVarSpec[];
   values: AppEnvValue[];
-}
-
-/** `PUT /api/apps/:scope/env` — always authored; `delivered` says whether the running app
- *  got the values live, and `note` explains a save that could not be applied (#374). */
-export interface AppEnvUpdateResult {
-  saved: number;
-  delivered: boolean;
-  note?: string;
 }
 
 /** A provider credential form field — server-driven, the same move as the env spec. */
@@ -1840,16 +1831,6 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/members/${encodeURIComponent(principal)}/remove`,
       { method: 'POST' },
     ),
-  appEnv: (scopeId: string) => call<AppEnvView>(`/apps/${encodeURIComponent(scopeId)}/env`),
-  /** Upsert env values; an empty value leaves a key unchanged (untouched secret). */
-  setAppEnv: (scopeId: string, entries: Array<{ key: string; value: string; secret: boolean }>) =>
-    call<AppEnvUpdateResult>(`/apps/${encodeURIComponent(scopeId)}/env`, {
-      method: 'PUT',
-      body: JSON.stringify({ entries }),
-    }),
-  /** Remove one env var. */
-  deleteAppEnv: (scopeId: string, key: string) =>
-    call<void>(`/apps/${encodeURIComponent(scopeId)}/env/${encodeURIComponent(key)}`, { method: 'DELETE' }),
   /** The app's declared providers + live connections (Settings → Integrations). */
   appIntegrations: (scopeId: string) => call<AppIntegrationsView>(`/apps/${encodeURIComponent(scopeId)}/integrations`),
   /**

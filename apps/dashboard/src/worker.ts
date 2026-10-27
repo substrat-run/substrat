@@ -3019,15 +3019,11 @@ app.post('/api/apps/:scopeId/restore', async (c) => {
  * env-spec (placeholder + description per key, from the catalog/manifest) alongside the
  * app's current values — secret values are never echoed (write-only). PUT upserts values;
  * DELETE removes one key. The app must be the caller's own, and managing config is the
- * same authority as managing the app. Delivery to the running app scope is a later step
- * (a hosted vertical reads its per-scope config at runtime); this is the authoring surface.
+ * same authority as managing the app. PUT also attempts live delivery to the running scope.
  */
-app.get('/api/apps/:scopeId/env', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function getAppEnvIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // The env-spec comes from the REGISTRY (a vertical declares it in its manifest; the
   // registry carries it), so a pushed builder vertical works the same as a builtin. A
@@ -3043,20 +3039,15 @@ app.get('/api/apps/:scopeId/env', async (c) => {
     spec = (remote?.envSpec as typeof spec) ?? [];
   }
   const values = await walkAll(dash, 'dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
-  return c.json({ spec, values });
-});
+  return { spec, values };
+}
 
-app.put('/api/apps/:scopeId/env', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function setAppEnvIn({ c, host, node }: TeamContext, appScopeId: string, entries: Array<{ key: string; value: string; secret?: boolean }>) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = await c.req.json<{ entries?: Array<{ key: string; value: string; secret?: boolean }> }>();
-  const entries = (body.entries ?? []).filter((e) => e && typeof e.key === 'string');
-  if (entries.length === 0) return c.json({ saved: 0, delivered: false });
-  const saved = await dash.invoke('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries });
+  if (entries.length === 0) return { saved: 0, delivered: false };
+  const saved = await dash.invoke<{ saved: number }>('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries });
   // DELIVER to the running app scope (vertical-auth-detach.md §2.2), not just author:
   // the control plane routes the entries to the deployment holding the scope's DO. This
   // is a LIVE delivery, not a next-deploy binding — env-spec `default:` values ride as
@@ -3085,19 +3076,16 @@ app.put('/api/apps/:scopeId/env', async (c) => {
           `support and bind a version); save again to retry once it does.`
         : `Saved, but not applied: ${cause}`;
   }
-  return c.json({ ...(saved as Record<string, unknown>), delivered, ...(note ? { note } : {}) });
-});
+  return { ...saved, delivered, ...(note ? { note } : {}) };
+}
 
-app.delete('/api/apps/:scopeId/env/:key', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function deleteAppEnvIn({ host, node }: TeamContext, appScopeId: string, key: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  await dash.invoke('dashboard/delete-app-env', { appScopeId: appRow.app_scope_id, key: c.req.param('key') });
-  return c.body(null, 204);
-});
+  await dash.invoke('dashboard/delete-app-env', { appScopeId: appRow.app_scope_id, key });
+  return { deleted: key };
+}
 
 /**
  * The providers each vertical's apps offer (`providerSpecsFor`): the first-party ones its
@@ -5956,6 +5944,9 @@ const routeHandlers = {
   },
   'dashboard/retry-app': async (ctx, { scopeId: failed }) => retryAppIn(ctx, failed),
   'dashboard/resume-app': async (ctx, { scopeId: stuck }) => resumeAppIn(ctx, stuck),
+  'dashboard/get-app-env': async (ctx, { scopeId: app }) => getAppEnvIn(ctx, app),
+  'dashboard/set-app-env': async (ctx, { scopeId: app, entries }) => setAppEnvIn(ctx, app, entries ?? []),
+  'dashboard/delete-app-env': async (ctx, { scopeId: app, key }) => deleteAppEnvIn(ctx, app, key),
   'dashboard/list-domains': async (ctx, page) => listDomainsIn(ctx, listPageQuery.parse(page)),
   'dashboard/add-domain': async (ctx, body) => addDomainIn(ctx, body),
   'dashboard/verify-domain': async ({ c, node }, { hostname }) =>

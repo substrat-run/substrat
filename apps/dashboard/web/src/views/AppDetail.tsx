@@ -2689,10 +2689,9 @@ const pagerBtn = (enabled: boolean): React.CSSProperties => ({
  * The Environment section (under Settings) — a REAL settings form driven by the vertical's declared env-spec
  * (placeholder + description per key) plus this app's stored values. Secret values are
  * write-only: never sent back, shown as "set" and left blank to keep. Values are stored
- * on the account; the honesty banner names that delivery to the running app is on its next
- * deploy (a hosted vertical reads its per-scope config then).
+ * on the account; saving also attempts live delivery to the running app.
  */
-function EnvVars({ app }: { app: AppRow }) {
+function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<AppEnvView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [inputs, setInputs] = useState<Record<string, string>>({});
@@ -2708,14 +2707,14 @@ function EnvVars({ app }: { app: AppRow }) {
     let live = true;
     setView(null);
     setErr(null);
-    api
-      .appEnv(app.app_scope_id)
+    teamApi(teamId)
+      .getAppEnv({ scopeId: app.app_scope_id })
       .then((v) => live && setView(v))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, nonce]);
+  }, [teamId, app.app_scope_id, nonce]);
 
   // Seed the inputs when a fresh view loads: non-secrets prefill their current value (or
   // the spec default); secrets start blank (write-only — the value is never returned).
@@ -2759,7 +2758,7 @@ function EnvVars({ app }: { app: AppRow }) {
     setSaving(true);
     setNote(null);
     try {
-      const r = await api.setAppEnv(app.app_scope_id, entries);
+      const r = await teamApi(teamId).setAppEnv({ scopeId: app.app_scope_id, entries });
       setNote(
         r.delivered
           ? `Saved and applied to the running app (${r.saved} value${r.saved === 1 ? '' : 's'}).`
@@ -2775,7 +2774,7 @@ function EnvVars({ app }: { app: AppRow }) {
 
   const remove = async (key: string) => {
     if (DEV_MOCK) return;
-    await api.deleteAppEnv(app.app_scope_id, key).catch(() => {});
+    await teamApi(teamId).deleteAppEnv({ scopeId: app.app_scope_id, key }).catch(() => {});
     setNonce((n) => n + 1);
   };
 
@@ -3162,7 +3161,7 @@ function Settings({ teamId, app, section, onSection, onDeleted, authServers }: {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={SETTINGS_SECTIONS} value={section} onChange={onSection} />
       {section === 'general' && <GeneralSettings app={app} onDeleted={onDeleted} authServers={authServers} />}
-      {section === 'environment' && <EnvVars app={app} />}
+      {section === 'environment' && <EnvVars teamId={teamId} app={app} />}
       {section === 'domains' && <AppDomains teamId={teamId} app={app} />}
       {section === 'integrations' && <AppIntegrations app={app} />}
       {section === 'members' && <AppMembers app={app} />}

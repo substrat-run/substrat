@@ -128,7 +128,7 @@ export const ENV_VARS: EnvVar[] = [
 ];
 
 /** Dev-preview sample for the Env tab — an env-spec + values so the form isn't empty
- *  without a backend (VITE_DEV_MOCK). Mirrors the real `GET /api/apps/:scope/env` shape. */
+ *  without a backend (VITE_DEV_MOCK). Mirrors the real team-scoped app environment response. */
 export const MOCK_APP_ENV: AppEnvView = {
   spec: [
     { key: 'PUBLIC_ORIGIN', label: 'Public origin', description: 'The public URL this app is served at.', placeholder: 'https://app.acme.com', required: true, secret: false, group: 'General' },
