@@ -10,7 +10,7 @@
  * unused and `pnpm --filter @substrat-run/engine-assistant typecheck` goes red. Each negative
  * has a positive twin through the same type.
  */
-import { describe, expect, it } from 'vitest';
+import { handlerBindingSuite } from '@substrat-run/engine-test-kit/suites';
 import type { HandlerInput, HandlerOutput, OperationImpl } from '@substrat-run/contracts';
 import type { OperationContext } from '@substrat-run/kernel';
 
@@ -48,8 +48,4 @@ export const inputUndeclared: Handlers['assistant/send-message'] = async (
   return declared<Out<'assistant/send-message'>>();
 };
 
-describe('#959 engine-assistant handler binding', () => {
-  it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(assistantModule.operations?.handlers ?? {}).sort()).toEqual(Object.keys(assistantOperations).sort());
-  });
-});
+handlerBindingSuite('assistant', assistantModule, assistantOperations);

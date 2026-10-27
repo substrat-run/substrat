@@ -3,7 +3,7 @@
  * `@ts-expect-error` is load-bearing: if the binding stops refusing a wrong handler, `tsc`
  * reports the directive unused and typecheck goes red. Each negative has a positive twin.
  */
-import { describe, expect, it } from 'vitest';
+import { handlerBindingSuite } from '@substrat-run/engine-test-kit/suites';
 import type { HandlerInput, HandlerOutput, OperationImpl } from '@substrat-run/contracts';
 import type { OperationContext } from '@substrat-run/kernel';
 import { notificationsModule, notificationsOperations } from '../src/index.js';
@@ -34,10 +34,4 @@ export const selfOther: Handlers['notifications/set-my-address'] = async (
   return declared<Out<'notifications/set-my-address'>>();
 };
 
-describe('#959 engine-notifications handler binding', () => {
-  it('registers exactly one handler per declared operation', () => {
-    expect(Object.keys(notificationsModule.operations?.handlers ?? {}).sort()).toEqual(
-      Object.keys(notificationsOperations).sort(),
-    );
-  });
-});
+handlerBindingSuite('notifications', notificationsModule, notificationsOperations);
