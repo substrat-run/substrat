@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppTraffic } from '../src/views/AppTraffic';
 import { Pulse } from '../src/views/Pulse';
 import { api, teamApi, type TrafficSeries } from '../src/lib/api';
+import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
 import { classTotals, rangeLabel, resolveClockRange, seriesWindow, surfaceRows } from '../src/lib/app-traffic';
 import { applyOverlayPrefs, OVERLAY_PREFS_KEY, parseOverlayPrefs, resetOverlayPrefs } from '../src/lib/overlay-prefs';
@@ -234,6 +235,34 @@ describe('App › Overview traffic card (#1767)', () => {
     expect(pulsePushes()).toHaveLength(0);
     expect(pulseLines()).toHaveLength(0);
     expect(JSON.parse(localStorage.getItem(OVERLAY_PREFS_KEY)!)).toMatchObject({ pushed: false, live: true });
+  });
+
+  it('shows the plane-unavailable state when the generated traffic client returns 501', async () => {
+    vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockRejectedValue(new GeneratedApiError(501, 'traffic unavailable', null));
+    vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+    vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
+    vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+    vi.spyOn(api, 'appSchedules').mockRejectedValue(new Error('unavailable'));
+    await act(async () => root.render(
+      <Pulse
+        teamId="team-a"
+        apps={[{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow]}
+        scopeId="app-a"
+        hours={24}
+        window={{ from: day.since, to: day.until }}
+        requestWindow={day}
+        cursor={null}
+        nonce={0}
+        timeError=""
+        onNav={vi.fn()}
+        onRange={vi.fn()}
+        onPreset={vi.fn()}
+        onApp={vi.fn()}
+        onRefresh={vi.fn()}
+        onMarker={vi.fn()}
+      />,
+    ));
+    expect(container.textContent).toContain('Traffic over time is not available on this plane');
   });
 
   it('a reverse drag queries its exact bounds once and pins nothing; Escape or a cancel mid-drag query nothing', async () => {

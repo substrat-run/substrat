@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerE
 import { Badge, Button, Tabs } from '@substrat-run/ui';
 import {
   api,
-  ApiError,
+  isApiError,
   teamApi,
   type AppHealthRow,
   type AppMetricsView,
@@ -177,7 +177,7 @@ export function Pulse({
         if (!live) return;
         // A 501 and a worker predating the route say the same thing: nothing can be drawn.
         // Neither is an empty series, which would read as silence.
-        setChartError(!(e instanceof ApiError && e.status === 501));
+        setChartError(!(isApiError(e) && e.status === 501));
         setSeries({ series: [], bucketMinutes: 60, available: false });
       });
     return () => {
