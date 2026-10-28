@@ -866,6 +866,12 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     const path = `/store-drivers/graph/releases/${release}/approvals`;
     expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
     const body = reviewed(0);
+    const missing = await call(app, 'POST', path, person, {});
+    expect(missing.status).toBe(422);
+    expect(await missing.text()).toMatch(/sourceReferences:/);
+    const missingRevoke = await call(app, 'POST', `/store-drivers/graph/releases/${release}/revoke`, person, {});
+    expect(missingRevoke.status).toBe(422);
+    expect(await missingRevoke.text()).toMatch(/reason:/);
     const invalid = [
       { repository: 'x', commit: COMMIT },
       { repository: 'http://example.test/driver.git', commit: COMMIT },

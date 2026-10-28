@@ -12329,12 +12329,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
   const parseApprovalBody = (raw: unknown) => {
     const parsed = approvalBody.safeParse(raw);
-    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver approval: ${parsed.error.issues.map((i) => i.message).join('; ')}`);
+    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver approval: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(body)'}: ${i.message}`).join('; ')}`);
     return parsed.data;
   };
   const parseRevokeBody = (raw: unknown) => {
     const parsed = revokeBody.safeParse(raw);
-    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver revoke: ${parsed.error.issues.map((i) => i.message).join('; ')}`);
+    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver revoke: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(body)'}: ${i.message}`).join('; ')}`);
     return parsed.data;
   };
   /** The pin a release is run under, or a refusal: the platform runs only what this repo pins. */
