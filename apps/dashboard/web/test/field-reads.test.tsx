@@ -39,6 +39,20 @@ it('shows vertical assertion, rate and window beside sampled counts', async () =
   expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
 });
 
+it('shows the sampled zero-return tail under its operation and calls out largely unreturned outputs', async () => {
+  const group = answer.groups[0]!;
+  const operation = group.operations[0]!;
+  vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [{ ...group,
+    operations: [{ ...operation, fields: [...operation.fields,
+      { field: 'unused', present: 0, empty: 0, absent: 2, eligible: 0, sampleRate: 0.1, window },
+    ] }],
+    notObservedReturned: [...group.notObservedReturned, { operation: operation.operation, field: 'unused' }],
+  }] });
+  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
+  expect(container.textContent).toContain('Operations with a majority of declared fields not observed returned in sampled responses: acme/get (2 of 3)');
+  expect(container.textContent).toContain('Not observed returned in this sampled operation: optional, unused.');
+});
+
 it('uses the unarmed empty state only when there are no router arms', async () => {
   vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [] });
   await act(async () => root.render(<FieldReads scopeId="scope-a" />));
