@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable } from '@substrat-run/contracts';
@@ -589,10 +590,15 @@ describe('the fleet repair of legacy preview serving pins (#1724)', () => {
     // Active scopes older than the pinned preview, enough to fill the pass's scan page, so the
     // candidate is on the NEXT page and a pass that called an unfinished walk finished would
     // leave it pinned for good.
-    for (let i = 0; i < 505; i += 1) {
-      const filler = scopeId.parse(ulid());
-      await host.provisionScope(staff, { tenantId: t, scopeId: filler, vertical: slug });
-      await host.admin.activateScope(staff, t, filler);
+    const fillers = Array.from({ length: 505 }, () => scopeId.parse(ulid()));
+    const directory = new Database(join(dir, '_directory.sqlite'));
+    try {
+      directory.prepare(`
+        INSERT INTO scopes (scope_id, tenant_id, slug, kind, name, vertical, status, created_at)
+        SELECT value, ?, lower(value), 'install', 'Filler', ?, 'active', ? FROM json_each(?)
+      `).run(t, slug, new Date().toISOString(), JSON.stringify(fillers));
+    } finally {
+      directory.close();
     }
     const late = await legacyPreview('legacy-late', v1, 'late-row');
     const first = await pass();
