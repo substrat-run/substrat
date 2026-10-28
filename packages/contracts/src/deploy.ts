@@ -2321,6 +2321,13 @@ export function unheldMigrationDigest(versionId: string): string {
 }
 export const UNHELD_MIGRATION_DIGEST_PREFIX = 'unheld:';
 
+/** Explicitly published application documentation, bounded in UTF-8 bytes for storage. */
+export const CONCEPT_BYTES_MAX = 64 * 1024;
+export const publishedConcept = z.string().trim().min(1).refine(
+  (text) => new TextEncoder().encode(text).byteLength <= CONCEPT_BYTES_MAX,
+  `published concept must be at most ${CONCEPT_BYTES_MAX} UTF-8 bytes`,
+);
+
 export const deployManifest = z.object({
   version: z.string().min(1),
   /** Display name for a first-time register; defaults to the slug. */
@@ -2426,6 +2433,9 @@ export const deployManifest = z.object({
    *  with no `model.json` beside its package.json pushes without one, and versions pushed
    *  by a pre-#1214 CLI stay readable. */
   model: emittedModel.optional(),
+  /** Owner-opted-in documentation for readers of this application, snapshotted per release.
+   * Never discovered automatically: the CLI publishes only `substrat.concept`'s file. */
+  concept: publishedConcept.optional(),
   /**
    * What each operation DECLARES it returns (#1321), derived from the emitted
    * `openapi.json`: the operation id and the field names of its 200/201 response

@@ -600,6 +600,13 @@ export interface DashboardClient {
   getAppAuth(input: { scopeId: string }): Promise<{ auth: { mode: "oidc"; issuer: string; clientId: string; audience: string | null; hasClientSecret: boolean; updatedAt: string } | null; callbackUrl: string | null }>;
 
   /**
+   * Read the running application description: omit section to list sections, then pass a section id and versionId to read it. Follow nextOffset for more text. Describes intended behavior, not live permissions or data.
+   *
+   * `GET /apps/{scopeId}/concept` — `dashboard/get-app-concept`
+   */
+  getAppConcept(input: { scopeId: string; section?: string; versionId?: string; offset?: number }): Promise<{ versionId: string | null; sections: { id: string; title: string }[]; section: { id: string; title: string; paragraphs: string[] } | null; nextOffset: number | null; unavailable: "no-version" | "not-published" | null }>;
+
+  /**
    * Read one addressed connection activity and masked credential fields
    *
    * `GET /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/activity` — `dashboard/get-app-connection-activity`
@@ -1320,6 +1327,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/facets`, "GET", undefined, omit(input, ["scopeId"])),
     getAppAuth: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/auth`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppConcept: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/concept`, "GET", undefined, omit(input, ["scopeId"])),
     getAppConnectionActivity: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/activity`, "GET", undefined, omit(input, ["scopeId","provider","connectionId"])),
     getAppEnv: (input: Args) =>

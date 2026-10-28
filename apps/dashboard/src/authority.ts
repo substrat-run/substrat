@@ -1087,6 +1087,14 @@ export class TenantNarrowedControlPlane {
     return (await this.versionModelSurface(verticalSlug, versionId)).model;
   }
 
+  /** A published snapshot. Transport failures propagate: they do not mean no documentation. */
+  async versionConcept(verticalSlug: string, versionId: string): Promise<string | null> {
+    const res = await this.call<{ concept: string | null }>(
+      `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/concept`,
+    );
+    return res?.concept ?? null;
+  }
+
   /**
    * What one version DECLARES it emits, consumes and requires (#1234) — the declared
    * half of a flow finding, off the retained manifest.
@@ -2141,15 +2149,17 @@ export class TenantNarrowedControlPlane {
    * an app installed when prod was 0.0.9 stays on 0.0.9 until it is rebound, even after
    * prod moves to 0.0.12. This read is what lets the dashboard show the true running
    * version and offer an update. `null` when the scope has no pinned version (static
-   * binding) or can't be read (treated as "unknown, nothing to update").
+   * binding) or can't be read (treated as "unknown, nothing to update"). `strict`
+   * propagates read failures when falling back to a different version would be misleading.
    */
-  async boundVersionId(scopeId: ScopeId): Promise<string | null> {
+  async boundVersionId(scopeId: ScopeId, options: { strict?: boolean } = {}): Promise<string | null> {
     try {
       const record = await this.call<{ verticalVersionId: string | null } | undefined>(
         `/tenants/${this.tenantId}/scopes/${scopeId}`,
       );
       return record?.verticalVersionId ?? null;
-    } catch {
+    } catch (error) {
+      if (options.strict) throw error;
       return null;
     }
   }

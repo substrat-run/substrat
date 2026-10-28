@@ -104,13 +104,18 @@ function looksLikePhone(s: string): boolean {
   return digits >= 8 && digits <= 15;
 }
 
-/** Remove what looks like a secret or a person's contact details, then bound the length. */
-export function redact(text: string, max = SAMPLE_MAX): string {
+/** Redact a whole document before paging it, preserving headings and paragraph boundaries. */
+export function redactDocument(text: string): string {
   let out = text;
   for (const [pattern, replacement] of RULES) {
     out = typeof replacement === 'string' ? out.replace(pattern, replacement) : out.replace(pattern, replacement);
   }
-  out = out.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
+/** Remove what looks like a secret or a person's contact details, then bound the length. */
+export function redact(text: string, max = SAMPLE_MAX): string {
+  const out = redactDocument(text).replace(/\s+/g, ' ').trim();
   return out.length > max ? `${out.slice(0, max - 1)}…` : out;
 }
 

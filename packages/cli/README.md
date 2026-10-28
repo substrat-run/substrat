@@ -35,6 +35,13 @@ substrat help                  # full usage
 
 Run `substrat help` for the authoritative flag set — this list is a map, not the spec.
 
+To make an application description queryable in the dashboard's Ask assistant, opt in
+with `"substrat": { "concept": "spec/concept.md" }` in the application's `package.json`.
+The next push snapshots that file with the release. The whole selected document becomes
+readable to dashboard members who can read the application; use a curated Markdown file
+when the full concept includes internal design decisions. Publication is off by default.
+The file must stay within the application directory and fit in 64 KiB of UTF-8 text.
+
 `substrat dev` runs the project's `pnpm run dev` with its normal output and exit code.
 When the local server mounts `invocationLog` (as the scaffold does), completed requests
 print a compact trace line and are kept under `.data/substrat-traces/` in the project.
