@@ -10998,15 +10998,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       options.verticals?.[slug] ??
       (await options.resolveVertical?.(slug, actor));
 
-    // The pushed version, not the current prod version, chooses which ordinary settings it
-    // needs in a preview. A pre-manifest version declares none. The parent deployment reads
-    // only these keys; the control plane never copies its whole config store.
+    // Both the source and pushed versions must opt in to carrying an ordinary setting. A
+    // missing or invalid source declaration allows none. The parent deployment reads only
+    // these keys; the control plane never copies its whole config store.
     const carrySettings = async (previewId: ScopeId, parent: Scope | null): Promise<void> => {
       if (!parent) return;
-      const json = await c.var.admin.versionManifest(actor, slug, opts.versionId);
-      const declared = json ? (JSON.parse(json) as { envSpec?: unknown }).envSpec : undefined;
-      const keys = z.array(envVarSpec).parse(declared ?? [])
-        .filter((spec) => spec.previewCarry && !spec.secret).map((spec) => spec.key);
+      const eligibleKeys = (json: string | null): Set<string> => {
+        if (!json) return new Set();
+        try {
+          const declared = (JSON.parse(json) as { envSpec?: unknown }).envSpec;
+          const specs = z.array(envVarSpec).safeParse(declared);
+          if (!specs.success) return new Set();
+          return new Set(specs.data.filter((spec) => spec.previewCarry && !spec.secret).map((spec) => spec.key));
+        } catch {
+          return new Set();
+        }
+      };
+      const sourceJson = parent.verticalVersionId
+        ? await c.var.admin.versionManifest(actor, slug, parent.verticalVersionId)
+        : null;
+      const sourceKeys = eligibleKeys(sourceJson);
+      if (sourceKeys.size === 0) return;
+      const incomingJson = await c.var.admin.versionManifest(actor, slug, opts.versionId);
+      const keys = [...eligibleKeys(incomingJson)].filter((key) => sourceKeys.has(key));
       if (keys.length === 0) return;
       const sourceClient = await verticalForScope(c, parent);
       if (!sourceClient || !target) {
