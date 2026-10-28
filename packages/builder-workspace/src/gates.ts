@@ -22,10 +22,12 @@
  * own type errors. Default: every nonzero exit is a plain failure.
  */
 import type { Workspace } from './workspace.js';
+import { emitProjectModel, type ModelEmitResult } from './model.js';
 
 export type GateName =
 	| 'install'
 	| 'model'
+	| 'model-emit'
 	| 'typecheck'
 	| 'boundary-lint'
 	| 'permissions'
@@ -143,7 +145,11 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			// erasable field are all compile errors here — before a line of the
 			// module exists.
 			name: 'model',
-			cmd: `pnpm --filter ./${projectDir} exec tsc --noEmit spec/model.ts`,
+			// Before scaffold there is no package.json, so a pnpm filter matches
+			// nothing and exits zero without running tsc. Run the root toolchain
+			// against the file directly; contracts is a root tooling dependency so
+			// both tsc and the emitter can resolve it before project deps exist.
+			cmd: `pnpm exec tsc --ignoreConfig --noEmit --strict --skipLibCheck --target ES2023 --module NodeNext '${projectDir.replace(/'/g, "'\\''")}/spec/model.ts'`,
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/spec/model.ts`),
 			note: 'no spec/model.ts yet — the model phase has not run',
 		},
@@ -274,9 +280,23 @@ export async function runGates(
 	verticalDir: string,
 	gates: readonly GateSpec[] = defaultGates(verticalDir),
 	onResult?: (r: GateResult) => void,
+	/** Reuse runTurn's emission; direct rechecks validate without writing the artifact. */
+	emittedModel?: ModelEmitResult,
 ): Promise<GateRun> {
 	const started = Date.now();
 	const results: GateResult[] = [];
+	const model = emittedModel ?? await emitProjectModel(ws, verticalDir, { check: true });
+	if (model.status !== 'absent') {
+		const result: GateResult = {
+			name: 'model-emit',
+			status: model.status === 'failed' ? 'failed' : 'passed',
+			exitCode: model.status === 'failed' ? 1 : 0,
+			durationMs: Date.now() - started,
+			output: model.output,
+		};
+		results.push(result);
+		onResult?.(result);
+	}
 	for (const spec of gates) {
 		const result = await runGate(ws, spec, verticalDir);
 		results.push(result);

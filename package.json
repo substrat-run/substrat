@@ -119,6 +119,7 @@
     "@babel/parser": "^7.29.11",
     "@babel/types": "^7.29.7",
     "@changesets/cli": "^2.31.0",
+    "@substrat-run/contracts": "workspace:*",
     "concurrently": "^9.0.0",
     "esbuild": "^0.28.2",
     "npm-package-arg": "^13.0.2",
