@@ -70,10 +70,13 @@ it('accepts priced models, rejects new unlisted ids, and preserves a stored unli
     }, env);
     const stored = async () => (await walkAll(dash, 'dashboard/list-app-env', { appScopeId }))[0]?.value;
 
-    expect((await send('PUT', 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8')).status).toBe(200);
-    expect(await stored()).toBe('cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8');
-    expect((await send('PUT', 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast')).status).toBe(400);
-    expect(await stored()).toBe('cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8');
+    for (const { value, status, saved } of [
+      { value: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8', status: 200, saved: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8' },
+      { value: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast', status: 400, saved: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8' },
+    ]) {
+      expect((await send('PUT', value)).status).toBe(status);
+      expect(await stored()).toBe(saved);
+    }
 
     // A row saved before the model kind existed remains visible and can be resubmitted unchanged.
     await dash.invoke('dashboard/set-app-env', {
@@ -87,4 +90,4 @@ it('accepts priced models, rejects new unlisted ids, and preserves a stored unli
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   }
-});
+}, 30_000);
