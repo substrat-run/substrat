@@ -1105,7 +1105,7 @@ export function App() {
       <Dialog
         open={newTeamOpen}
         title="Create a team"
-        description="A team has its own apps, domains, and billing. You’ll be its owner."
+        description="A team has its own apps, domains, and entitlements. You’ll be its owner."
         confirmLabel={creatingTeam ? 'Creating…' : 'Create team'}
         confirmDisabled={!newTeamName.trim() || creatingTeam}
         onConfirm={() => void createTeam(newTeamName)}
