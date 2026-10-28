@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Dialog, Input } from '@substrat-run/ui';
 import { showPeerDisclosure } from '../lib/peer-disclosure';
 import { changePeerAccess, validPeerReason } from '../lib/peer-switch';
-import { api, type AppPeersView, type DeclaredCallRow, type PeerCallerRow } from '../lib/api';
+import { teamApi, type AppPeersView, type DeclaredCallRow, type PeerCallerRow } from '../lib/api';
 import { Pill, card, type PillKind } from '../components/ui';
 import { relativeTime } from '../lib/format';
 
@@ -62,7 +62,7 @@ function callLine(row: DeclaredCallRow): string {
   }
 }
 
-export function AppPeers({ scopeId }: { scopeId: string }) {
+export function AppPeers({ teamId, scopeId }: { teamId: string; scopeId: string }) {
   const [view, setView] = useState<AppPeersView | null>(null);
   const [failed, setFailed] = useState(false);
   const [dialog, setDialog] = useState<{ vertical: string; to: 'on' | 'off' } | null>(null);
@@ -80,13 +80,13 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     setBusy(true);
     setNotice(null);
     try {
-      let outcome: Awaited<ReturnType<typeof api.setAppPeerBinding>>;
+      let outcome: { auditWarning?: string };
       try {
-        outcome = await api.setAppPeerBinding(scopeId, vertical, targetScopeId);
+        outcome = await teamApi(teamId).setAppPeerBinding({ scopeId, vertical, targetScopeId });
       } catch (writeError) {
         // A failed transport may have applied the write. Read before anyone retries it.
         try {
-          setView(await api.appPeers(scopeId));
+          setView(await teamApi(teamId).appPeers({ scopeId }));
           setNotice(`Could not confirm the target choice (${String(writeError)}). Check the choice shown below before trying again.`);
         } catch (readError) {
           setView(null);
@@ -96,7 +96,7 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
         return;
       }
       try {
-        setView(await api.appPeers(scopeId));
+        setView(await teamApi(teamId).appPeers({ scopeId }));
         setSelection((prior) => ({ ...prior, [vertical]: targetScopeId ?? '' }));
         setNotice(outcome.auditWarning ?? 'Target choice updated.');
       } catch (readError) {
@@ -118,9 +118,9 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     setAuditWarning(null);
     try {
       const outcome = await changePeerAccess(
-        () => api.switchAppPeer(scopeId, dialog.vertical, dialog.to, reason.trim()),
+        () => teamApi(teamId).switchAppPeer({ scopeId, vertical: dialog.vertical, to: dialog.to, reason: reason.trim() }),
         async () => {
-          const fresh = await api.appPeers(scopeId);
+          const fresh = await teamApi(teamId).appPeers({ scopeId });
           if (fresh.callersError !== null) throw new Error(fresh.callersError);
           return fresh;
         },
@@ -168,8 +168,8 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     let cancelled = false;
     setView(null);
     setFailed(false);
-    api
-      .appPeers(scopeId)
+    teamApi(teamId)
+      .appPeers({ scopeId })
       .then((v) => {
         if (!cancelled) setView(v);
       })
@@ -179,7 +179,7 @@ export function AppPeers({ scopeId }: { scopeId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [scopeId]);
+  }, [teamId, scopeId]);
 
   // #2089: the member changes' wording (AppDetail) — the change stands, nothing to redo.
   const warning = auditWarning && (

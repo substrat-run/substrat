@@ -3,7 +3,7 @@ import { createClient, type BoundScopeRow, type ChannelHistoryRow, type Dashboar
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
-import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
 export type { BoundScopeRow, DeployFailureRow, FailureGroupRow, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView };
@@ -1722,27 +1722,6 @@ export const api = {
   appModel: (scopeId: string) => call<AppModelView>(`/apps/${encodeURIComponent(scopeId)}/model`),
   /** Schedule health for the app's running version (#1232) — null schedules hides the panel. */
   appSchedules: (scopeId: string) => call<AppSchedulesView>(`/apps/${encodeURIComponent(scopeId)}/schedules`),
-  appPeers: (scopeId: string) => call<AppPeersView>(`/apps/${encodeURIComponent(scopeId)}/peers`),
-  setAppPeerBinding: (scopeId: string, vertical: string, targetScopeId: string | null) =>
-    call<{ changed: boolean; previous: string | null; operationId: string; auditWarning?: string }>(
-      `/apps/${encodeURIComponent(scopeId)}/peers/binding`, {
-        method: 'PUT', body: JSON.stringify({ vertical, targetScopeId }),
-      }),
-  switchAppPeer: (scopeId: string, vertical: string, to: 'on' | 'off', reason: string) =>
-    call<{ changed: boolean; auditWarning?: string }>(`/apps/${encodeURIComponent(scopeId)}/peers/switch`, {
-      method: 'POST',
-      body: JSON.stringify({ vertical, to, reason }),
-    }),
-  /** Cross-app event edges into and out of this app (#1705 PR 3), read live. */
-  appEdges: (scopeId: string) => call<EdgeHealthReport>(`/apps/${encodeURIComponent(scopeId)}/edges`),
-  /** The replay lever on the edge into this app (#1705 PR 3). */
-  moveAppEdge: (scopeId: string, move: ImportCursorMove) =>
-    call<ImportCursorMoved>(`/apps/${encodeURIComponent(scopeId)}/edges/move`, {
-      method: 'POST',
-      body: JSON.stringify(move),
-    }),
-  /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
-  appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),
   /** The tables of the app's own database (Data tab). */
   appTables: (scopeId: string) => call<ScopeTable[]>(`/apps/${encodeURIComponent(scopeId)}/tables`),
   /** A bounded page of one table of the app's database. */

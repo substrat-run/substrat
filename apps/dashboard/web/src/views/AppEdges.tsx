@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   LEVER_EFFECT,
+  edgeHealthReport,
   edgeBadge,
   unexportedNote,
   lagText,
@@ -11,7 +12,7 @@ import {
   type LeverMode,
 } from '@substrat-run/contracts';
 import { Button, Dialog, Input } from '@substrat-run/ui';
-import { api } from '../lib/api';
+import { teamApi } from '../lib/api';
 import { validPeerReason } from '../lib/peer-switch';
 import { Pill, card } from '../components/ui';
 import { relativeTime } from '../lib/format';
@@ -28,7 +29,7 @@ import { relativeTime } from '../lib/format';
  * handlers again, and the dialog says so in the words the platform refuses in, behind a box the
  * person has to tick.
  */
-export function AppEdges({ scopeId }: { scopeId: string }) {
+export function AppEdges({ teamId, scopeId }: { teamId: string; scopeId: string }) {
   const [view, setView] = useState<EdgeHealthReport | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ edge: EdgeHealth; kind: LeverMode } | null>(null);
@@ -41,9 +42,9 @@ export function AppEdges({ scopeId }: { scopeId: string }) {
   /** Read the edges. `live` says whether the answer is still wanted when it lands. */
   const load = async (live: () => boolean = () => true): Promise<void> => {
     try {
-      const v = await api.appEdges(scopeId);
+      const v = await teamApi(teamId).appEdges({ scopeId });
       if (live()) {
-        setView(v);
+        setView(edgeHealthReport.parse(v));
         setFailed(null);
       }
     } catch (e) {
@@ -69,7 +70,7 @@ export function AppEdges({ scopeId }: { scopeId: string }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeId]);
+  }, [teamId, scopeId]);
 
   async function confirmMove() {
     if (!dialog || moving.current || !agreed || !validPeerReason(reason)) return;
@@ -77,7 +78,7 @@ export function AppEdges({ scopeId }: { scopeId: string }) {
     setBusy(true);
     setNotice(null);
     try {
-      const moved = await api.moveAppEdge(scopeId, leverRequest(dialog.kind, dialog.edge.producer.vertical, reason));
+      const moved = await teamApi(teamId).moveAppEdge({ scopeId, ...leverRequest(dialog.kind, dialog.edge.producer.vertical, reason) });
       setDialog(null);
       setReason('');
       setAgreed(false);

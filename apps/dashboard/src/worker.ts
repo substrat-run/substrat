@@ -1907,21 +1907,6 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
 });
 
 /**
- * The scopes an app spans — the Data tab's scope switcher (M4 of multi-scope-manyfold.md).
- * A multi-scope vertical (Manyfold: one site per scope) has several; the Data tab browses one
- * at a time and this lets the user pick which. Same authorization as the table reads: the app
- * is resolved from the tenant-scoped `list-apps` (a foreign scope id 404s), and the list is
- * tenant-narrowed to the app's vertical. Only browsable scopes (active/provisioning) are
- * returned; the viewed app scope is flagged so the UI opens on it.
- */
-/** The peer switch's body (#1706) — the scope comes from the path, the reason is required. */
-const peerSwitchRequest = z.object({
-  vertical: z.string().min(1),
-  to: z.enum(['on', 'off']),
-  reason: z.string().trim().min(1).max(500),
-});
-
-/**
  * The peer disclosure for one app (#1706), both directions at once, because a tenant
  * reading this panel is answering one question in two halves:
  *
@@ -1940,13 +1925,9 @@ const peerSwitchRequest = z.object({
  * One read per distinct target, deduped: a version may declare the same peer twice, and a
  * tenant should not pay for that.
  */
-app.get('/api/apps/:scopeId/peers', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function appPeersIn(ctx: TeamContext, appScopeId: string) {
+  const { c, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scope = scopeId.parse(appRow.app_scope_id);
   const slug = appRow.vertical_slug;
@@ -1987,7 +1968,7 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
     }),
   );
 
-  return c.json({
+  return {
     // `null` is a fact: this version predates the declaration and is unenforced, which a
     // reader must be able to tell from a version that declares it calls nothing (`[]`).
     declares: declared,
@@ -1995,43 +1976,31 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
     bindingChoices: outgoing.map((row) => row.choice),
     callers: callers.entries,
     callersError: callers.error,
-  });
-});
+  };
+}
 
 /**
  * Move one peer's switch on this app's scope (#1706) — the tenant's own lever over which of
  * its other apps may call in here. The control plane admits a tenant credential on this
- * route and confines it to that tenant; the dashboard adds no authority of its own beyond
- * resolving the app from the tenant-scoped `list-apps`, so a foreign scope id 404s here
- * exactly as it does on every other app route.
+ * route and confines it to that tenant. The dashboard checks app-management permission
+ * in the path team's scope before the control-plane write.
  */
-app.post('/api/apps/:scopeId/peers/switch', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function switchAppPeerIn(ctx: TeamContext, appScopeId: string, body: { vertical: string; to: 'on' | 'off'; reason: string }) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
   await assertMayManageApps(host, node);
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = peerSwitchRequest.parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const result = await cp.switchPeer(scopeId.parse(appRow.app_scope_id), body.vertical, body.to, body.reason);
-  return c.json(result);
-});
+  return cp.switchPeer(scopeId.parse(appRow.app_scope_id), body.vertical, body.to, body.reason);
+}
 
 /** One tenant admin's explicit target choice for this calling app. */
-app.put('/api/apps/:scopeId/peers/binding', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function setAppPeerBindingIn(ctx: TeamContext, appScopeId: string, vertical: string, targetScopeId: string | null) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
   await assertMayManageApps(host, node);
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const body = z.object({ vertical: z.string().min(1), targetScopeId: scopeId.nullable() }).strict().parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cp.setPeerBinding(scopeId.parse(appRow.app_scope_id), body.vertical, body.targetScopeId));
-});
+  return cp.setPeerBinding(scopeId.parse(appRow.app_scope_id), vertical, targetScopeId === null ? null : scopeId.parse(targetScopeId));
+}
 
 /**
  * Where this app's cross-vertical edges stand (#1705 PR 3): the edges INTO it (it imports) and OUT
@@ -2039,58 +2008,44 @@ app.put('/api/apps/:scopeId/peers/binding', async (c) => {
  * the panel's error to show, never an empty list: "no edges" and "could not be read" differ, and
  * only one of them is safe to show a tenant as fine.
  */
-app.get('/api/apps/:scopeId/edges', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+async function appEdgesIn(ctx: TeamContext, appScopeId: string) {
+  const { c, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
   // Focused on this app, so the plane asks nothing about the tenant's other edges. Filtered again
   // here all the same: the panel must never show another app's edge as this one's.
   const report = await controlPlaneFor(c.env, node.tenantId, node.principal).crossVerticalEdges(scopeId.parse(appRow.app_scope_id));
   const mine = (e: EdgeHealth): boolean =>
     e.consumer.scopeId === appRow.app_scope_id || e.producer.scopeId === appRow.app_scope_id;
-  return c.json({ ...report, edges: report.edges.filter(mine) });
-});
+  return { ...report, edges: report.edges.filter(mine) };
+}
 
 /**
  * The replay lever on this app (#1705 PR 3): replay or skip the edge INTO it from another of the
  * tenant's apps. Held to who may manage apps, like the peer switch. The control plane confines
- * the tenant credential and refuses a move without its acknowledgement. The dashboard adds only
- * the app resolution, so a foreign scope id 404s here as on every other app route.
+ * the tenant credential and refuses a move without its acknowledgement. The dashboard checks
+ * the path team's app-management permission before the control-plane write.
  */
-app.post('/api/apps/:scopeId/edges/move', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function moveAppEdgeIn(ctx: TeamContext, appScopeId: string, raw: unknown) {
+  const { c, host, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
   await assertMayManageApps(host, node);
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const raw: unknown = await c.req.json().catch(() => ({}));
   const refused = importCursorAcknowledgementMissing(raw);
   if (refused) throw new HTTPException(400, { message: refused });
   const move = importCursorMove.parse(raw);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cp.moveImportCursor(scopeId.parse(appRow.app_scope_id), move));
-});
+  return cp.moveImportCursor(scopeId.parse(appRow.app_scope_id), move);
+}
 
-app.get('/api/apps/:scopeId/scopes', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+/** The Data tab's scope switcher: only active or provisioning scopes of this team's app. */
+async function appScopesIn(ctx: TeamContext, appScopeId: string) {
+  const { c, node } = ctx;
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scopes = await cp.listScopes(appRow.vertical_slug);
-  return c.json(
-    (scopes ?? [])
+  return (scopes ?? [])
       .filter((s) => s.status === 'active' || s.status === 'provisioning')
-      .map((s) => ({ scopeId: s.id, name: s.name, status: s.status, isDefault: s.id === appRow.app_scope_id })),
-  );
-});
+      .map((s) => ({ scopeId: s.id, name: s.name, status: s.status, isDefault: s.id === appRow.app_scope_id }));
+}
 
 /**
  * One app's Data tab — a read-only window into the app's OWN database (kernel-design
@@ -5808,6 +5763,12 @@ const routeHandlers = {
   'dashboard/rewind-app': async (ctx, { scopeId: app, bookmark }) => rewindAppIn(ctx, app, bookmark),
   'dashboard/export-installed-app': async (ctx, { scopeId: app }) => exportInstalledAppIn(ctx, app),
   'dashboard/restore-installed-app': async (ctx, { scopeId: app, tables, stores, sourceScopeId }) => restoreInstalledAppIn(ctx, app, tables, stores, sourceScopeId),
+  'dashboard/app-peers': async (ctx, { scopeId: app }) => appPeersIn(ctx, app),
+  'dashboard/switch-app-peer': async (ctx, { scopeId: app, vertical, to, reason }) => switchAppPeerIn(ctx, app, { vertical, to, reason }),
+  'dashboard/set-app-peer-binding': async (ctx, { scopeId: app, vertical, targetScopeId }) => setAppPeerBindingIn(ctx, app, vertical, targetScopeId),
+  'dashboard/app-edges': async (ctx, { scopeId: app }) => appEdgesIn(ctx, app),
+  'dashboard/move-app-edge': async (ctx, { scopeId: app, ...move }) => moveAppEdgeIn(ctx, app, move),
+  'dashboard/app-scopes': async (ctx, { scopeId: app }) => appScopesIn(ctx, app),
   'dashboard/app-owner-seat': async (ctx, { scopeId: app }) => appOwnerSeatIn(ctx, app),
   'dashboard/app-owner-claim': async (ctx, { scopeId: app }) => appOwnerClaimIn(ctx, app),
   'dashboard/app-members': async (ctx, { scopeId: app }) => appMembersIn(ctx, app),

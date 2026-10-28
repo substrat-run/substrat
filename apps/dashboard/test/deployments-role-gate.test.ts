@@ -125,7 +125,7 @@ describe('the team-scoped deployments write routes ask the caller’s role (#159
           planeCalls.push(`${method} ${path}`);
           if ((method === 'POST' || method === 'DELETE') && path.endsWith('/peer-grants')) {
             effects.push(`${method} ${path}`);
-            return Response.json({ changed: true });
+            return Response.json({ operationId: ulid(), vertical: 'acme/board-room', calls: method === 'DELETE' ? 'off' : 'on', changed: true, permissions: [] });
           }
           if (method === 'PUT' && path.endsWith('/peer-bindings')) {
             effects.push(`${method} ${path}`);
@@ -133,7 +133,7 @@ describe('the team-scoped deployments write routes ask the caller’s role (#159
           }
           if (method === 'POST' && path.endsWith('/import-cursor')) {
             effects.push(`${method} ${path}`);
-            return Response.json({ replayId: 'r', mode: 'replay', archived: { journal: 0, deliveries: 0 } });
+            return Response.json({ replayId: ulid(), mode: 'replay', source: { vertical: 'acme/crm', scopeId: peerScope }, previous: null, cursor: null, archived: { journal: 0, deliveries: 0 } });
           }
           const acts =
             (method === 'POST' && /^\/verticals\/[^/]+\/channels\/[^/]+\/promote$/.test(u.pathname.replace(/^\/api/, ''))) ||
@@ -229,24 +229,24 @@ describe('the team-scoped deployments write routes ask the caller’s role (#159
 
   it('peer switch: a viewer cannot cut off or restore access', async () => {
     for (const to of ['on', 'off']) {
-      await refused(['POST', `/api/apps/${peerScope}/peers/switch`, { vertical: 'acme/board-room', to, reason: 'review' }]);
+      await refused(['POST', `${inTeam}/apps/${peerScope}/peers/switch`, { vertical: 'acme/board-room', to, reason: 'review' }]);
     }
   });
   it('peer switch: an owner and member can change access to their app', async () => {
-    await allowed(['POST', `/api/apps/${peerScope}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' }], [200]);
+    await allowed(['POST', `${inTeam}/apps/${peerScope}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' }], [200]);
   });
   it('peer switch: a manager cannot address an app outside the team', async () => {
-    expect((await asRole('owner', 'POST', `/api/apps/${ulid()}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' })).status).toBe(404);
+    expect((await asRole('owner', 'POST', `${inTeam}/apps/${ulid()}/peers/switch`, { vertical: 'acme/board-room', to: 'off', reason: 'review' })).status).toBe(404);
     expect(planeCalls).toEqual([]);
   });
 
   it('peer binding: only app managers can choose or clear a target in their team', async () => {
-    const route = `/api/apps/${peerScope}/peers/binding`;
+    const route = `${inTeam}/apps/${peerScope}/peers/binding`;
     const body = { vertical: 'acme/crm', targetScopeId: null };
     await refused(['PUT', route, body]);
     await allowed(['PUT', route, body], [200]);
     planeCalls.length = 0;
-    expect((await asRole('owner', 'PUT', `/api/apps/${ulid()}/peers/binding`, body)).status).toBe(404);
+    expect((await asRole('owner', 'PUT', `${inTeam}/apps/${ulid()}/peers/binding`, body)).status).toBe(404);
     expect(planeCalls).toEqual([]);
   });
 
@@ -260,18 +260,18 @@ describe('the team-scoped deployments write routes ask the caller’s role (#159
     reason: 'the app lost a day',
   };
   it('replay lever: a viewer cannot move an edge', async () => {
-    await refused(['POST', `/api/apps/${peerScope}/edges/move`, REPLAY]);
+    await refused(['POST', `${inTeam}/apps/${peerScope}/edges/move`, REPLAY]);
   });
   it('replay lever: an owner and member can replay into their app', async () => {
-    await allowed(['POST', `/api/apps/${peerScope}/edges/move`, REPLAY], [200]);
+    await allowed(['POST', `${inTeam}/apps/${peerScope}/edges/move`, REPLAY], [200]);
   });
   it('replay lever: a manager cannot address an app outside the team', async () => {
-    expect((await asRole('owner', 'POST', `/api/apps/${ulid()}/edges/move`, REPLAY)).status).toBe(404);
+    expect((await asRole('owner', 'POST', `${inTeam}/apps/${ulid()}/edges/move`, REPLAY)).status).toBe(404);
     expect(effects).toEqual([]);
   });
   it('replay lever: without its acknowledgement it is refused in words, and the plane is never asked to move', async () => {
     const { acknowledge: _, ...bare } = REPLAY;
-    const res = await asRole('owner', 'POST', `/api/apps/${peerScope}/edges/move`, bare);
+    const res = await asRole('owner', 'POST', `${inTeam}/apps/${peerScope}/edges/move`, bare);
     expect(res.status).toBe(400);
     expect(await res.text()).toContain('anything they send or call outside this app happens again');
     expect(effects).toEqual([]);
