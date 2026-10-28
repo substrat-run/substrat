@@ -333,7 +333,8 @@ export interface StoreDriverRolloutView {
 export interface StoreDriverView {
   driver: string;
   pins: { sha256: string; sourceCommit: string; schema: number }[];
-  approvals: StoreDriverApprovalView[];
+  /** Present on approval-aware status responses. */
+  approvals?: StoreDriverApprovalView[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
   rollouts: StoreDriverRolloutView[];
   /** Where a rollback goes now: the server decides, a client never derives it. */
