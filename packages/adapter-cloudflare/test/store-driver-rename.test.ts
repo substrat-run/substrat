@@ -41,6 +41,9 @@ describe('K-53: a directory DO built before the store driver rename', () => {
       sql.exec('ALTER TABLE vertical_scope_stores RENAME COLUMN driver TO kind');
       // The walk ledger (#2312) came after the rename, so a directory from before it has none.
       sql.exec('DROP TABLE store_driver_rollout_walks');
+      // D-65's approval and revoke-walk tables also came later.
+      sql.exec('DROP TABLE store_driver_revoke_walks');
+      sql.exec('DROP TABLE store_driver_approvals');
       sql.exec(
         'INSERT INTO store_kind_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',
         'graph', SHA, 'b'.repeat(40), 'staff', '2026-10-15T00:00:00.000Z',

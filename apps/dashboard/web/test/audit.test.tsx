@@ -120,6 +120,9 @@ describe('audit activity derivations (#1825)', () => {
       expect(out.split(' ').slice(1), v).toEqual(words.slice(1));
     }
     expect([actionWords('admitVersion'), actionWords('shredSubject'), actionWords('beginImpersonation')]).toEqual(['admitted version', 'shredded subject', 'began impersonation']);
+    expect([actionWords('approveStoreDriverRelease'), actionWords('revokeStoreDriverRelease')]).toEqual([
+      'approved store driver release', 'revoked store driver release',
+    ]);
   });
 
   it('leaves an action it does not know untensed, and labelled', () => {

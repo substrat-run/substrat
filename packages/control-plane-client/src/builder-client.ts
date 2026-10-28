@@ -257,7 +257,7 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   }
 
   /** Store a release bundle (`storeDriverReleaseUpload`); the control plane names it by its sha256. */
-  uploadStoreDriverRelease(driver: string, body: unknown): Promise<{ release: StoreDriverReleaseView; pinned: boolean }> {
+  uploadStoreDriverRelease(driver: string, body: unknown): Promise<{ release: StoreDriverReleaseView; pinned: boolean; approved?: boolean }> {
     return this.read(`/store-drivers/${seg(driver)}/releases`, this.write('PUT', body));
   }
 

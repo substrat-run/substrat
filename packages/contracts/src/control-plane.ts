@@ -246,6 +246,9 @@ export const adminAction = z.enum([
   // lands), rolled out across the verticals that declare the driver, or rolled back to the
   // immediately previous good release. Each row names the driver, the sha256 and the rollout.
   'uploadStoreDriverRelease',
+  // D-65: recorded separately from upload; neither action has a writer until its route ships.
+  'approveStoreDriverRelease',
+  'revokeStoreDriverRelease',
   'rollOutStoreDriver',
   'rollBackStoreDriver',
   // #2309 — a staff request ran a pass of the platform's rebuild of every script of a driver at the
