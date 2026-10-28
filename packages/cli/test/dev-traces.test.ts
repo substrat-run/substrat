@@ -1,10 +1,25 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RequestTrace } from '@substrat-run/contracts';
 import { createDevTraceSink, LocalTraceStore, traceLine } from '../src/dev-traces.js';
+
+const removalFault = vi.hoisted(() => ({ enabled: false, attempts: 0 }));
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...fs,
+    rmSync: (path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+      if (removalFault.enabled && String(path).endsWith('.json')) {
+        removalFault.attempts++;
+        throw Object.assign(new Error('trace file is busy'), { code: 'EPERM' });
+      }
+      fs.rmSync(path, options);
+    },
+  };
+});
 
 const dirs: string[] = [];
 const temp = () => {
@@ -67,6 +82,21 @@ describe('dev request trace recorder', () => {
 
     byteStore.write({ ...head('verbose'), steps: [{ type: 'log', atMs: 0, level: 'info', message: 'x'.repeat(1000) }] });
     expect(byteStore.traces()[0]).toMatchObject({ invocationId: 'verbose', steps: [], capture: { stepsDropped: 1 } });
+  });
+
+  it('keeps the new trace when pruning an older file gets EPERM', () => {
+    const store = new LocalTraceStore(temp(), 1);
+    store.write(head('old'));
+    removalFault.enabled = true;
+    try {
+      expect(() => store.write(head('new'))).not.toThrow();
+    } finally {
+      removalFault.enabled = false;
+    }
+    expect(removalFault.attempts).toBe(1);
+    expect(store.traces().map((trace) => trace.invocationId)).toEqual(['new', 'old']);
+    store.write(head('later'));
+    expect(store.traces().map((trace) => trace.invocationId)).toEqual(['later']);
   });
 
   it('keeps complete records when two processes write and prune at the cap', async () => {
