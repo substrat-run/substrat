@@ -194,14 +194,14 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 	// reaches the snapshot the Model tab reads, and dies with the container.
 	const files = model.status === 'emitted' ? await changedFiles(ws, opts.verticalDir) : written;
 
-	const gateRun = await runGates(ws, opts.verticalDir, opts.gates, opts.onGateResult);
-	const gates: GateRun = install
-		? {
-				results: [install, ...gateRun.results],
-				ok: gateRun.ok && install.status === 'passed',
-				durationMs: gateRun.durationMs + install.durationMs,
-			}
-		: gateRun;
+	// The shared runner owns the verdict, including on direct gate rechecks.
+	// Reuse this turn's emission so it does not import the model a second time.
+	const gateRun = await runGates(ws, opts.verticalDir, opts.gates, opts.onGateResult, model);
+	const gates: GateRun = {
+		results: [...(install ? [install] : []), ...gateRun.results],
+		ok: gateRun.ok && (!install || install.status === 'passed'),
+		durationMs: gateRun.durationMs + (install?.durationMs ?? 0),
+	};
 
 	const shouldCommit = files.length > 0 && (gates.ok || (opts.commitOnRed ?? true));
 	const trailer = gates.ok ? 'gates: green' : 'gates: red';

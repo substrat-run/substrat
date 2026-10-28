@@ -31,7 +31,7 @@ export type ModelEmitStatus =
 	| 'emitted'
 	/** No `spec/model.ts`: the model phase has not run. Not a failure. */
 	| 'absent'
-	/** The emitter could not do its job. Non-fatal — see `emitProjectModel`. */
+	/** The emitter could not do its job. Work is preserved with red gates. */
 	| 'failed';
 
 export interface ModelEmitResult {
@@ -45,11 +45,10 @@ const MAX_OUTPUT = 4_000;
 /**
  * Emit `<verticalDir>/model.json` from `<verticalDir>/spec/model.ts`.
  *
- * **Never throws, and a failure never fails the turn.** The artifact is a
- * projection of code the gates already judge: a `spec/model.ts` that cannot be
- * imported is a red `model` gate with a compiler's diagnostics, which says far
- * more than this emitter could. Refusing to commit the turn over it would throw
- * away the work that produced the broken file.
+ * Pass `check` to validate the existing artifact without writing it (gate rechecks).
+ * **Never throws.** `runGates` reports a failed emission as a red `model-emit`
+ * gate while still committing the work by default. Typechecking alone cannot
+ * establish that the module loads or that its artifact was produced.
  *
  * A failure also leaves the PREVIOUS artifact in place, deliberately — deleting it
  * would blank the tab over a transient container hiccup, and the last good picture
@@ -61,6 +60,7 @@ const MAX_OUTPUT = 4_000;
 export async function emitProjectModel(
 	ws: Workspace,
 	verticalDir: string,
+	opts: { readonly check?: boolean } = {},
 ): Promise<ModelEmitResult> {
 	try {
 		// The probe is INSIDE the guard: a workspace that cannot answer `exists`
@@ -74,7 +74,7 @@ export async function emitProjectModel(
 		// toolchain are — the same calling convention the standalone permission and
 		// api gates use.
 		const { stdout, stderr, exitCode } = await ws.exec(
-			`pnpm exec tsx tools/model-diff.mts --root ${JSON.stringify(verticalDir)}`,
+			`pnpm exec tsx tools/model-diff.mts --root ${JSON.stringify(verticalDir)}${opts.check ? ' --check' : ''}`,
 		);
 		if (exitCode === 0) return { status: 'emitted', output: '' };
 		const combined = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n');
@@ -92,7 +92,7 @@ export async function emitProjectModel(
  * and it is a plain string rather than an event so `builder-workspace` keeps
  * knowing nothing about the generator's event union.
  *
- * What it has to convey is the STALENESS, not the failure: the red `model` gate
+ * What it has to convey is the STALENESS, not the failure: the red `model-emit` gate
  * beside it already says the declaration is broken, and what a builder cannot
  * otherwise discover is that the Model tab is still showing the picture from
  * before this turn.

@@ -9,20 +9,20 @@
  *   read for the commit decision — so a turn whose only change IS the artifact
  *   still commits it. An uncommitted artifact never reaches the snapshot the tab
  *   reads, and dies with the container.
- * - A failed emit never fails the turn. `spec/model.ts` is code the gates already
- *   judge; refusing to commit over it would throw away the work that produced it.
+ * - A failed emit makes the gates red while preserving the turn's work.
  *
  * The third half runs the real emitter, because the first two script it.
  */
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { emitProjectModel, modelEmitWarning } from '../src/model.js';
 import { LocalWorkspace } from '../src/local.js';
 import { ensureVerticalRepo, runTurn } from '../src/turn.js';
+import { runGates, standaloneGates } from '../src/gates.js';
 import type { ExecOptions, ExecResult } from '../src/workspace.js';
 
 const PROJECT = 'proj';
@@ -154,8 +154,13 @@ describe('runTurn re-emits the artifact into the commit', () => {
 		const turn = await runTurn(ws, { verticalDir: PROJECT, message: 'turn', gates: [] });
 
 		expect(turn.model.status).toBe('failed');
+		expect(turn.gates.ok).toBe(false);
+		expect(turn.gates.results).toContainEqual(
+			expect.objectContaining({ name: 'model-emit', status: 'failed' }),
+		);
 		expect(turn.changedFiles).toContain('spec/model.ts');
 		expect(turn.commit).not.toBeNull();
+		expect((await ws.exec('git log -1 --format=%B', { cwd: PROJECT })).stdout).toContain('gates: red');
 		await ws.dispose();
 	});
 });
@@ -190,8 +195,8 @@ async function tool(args: string[]): Promise<{ code: number; out: string }> {
  * structurally and never boots a host — the same reason its output is a pure
  * function of the declaration.
  */
-async function fixtureProject(): Promise<string> {
-	const dir = join(await mkdtemp(join(tmpdir(), 'model-diff-root-')), 'acme');
+async function fixtureProject(base = tmpdir()): Promise<string> {
+	const dir = join(await mkdtemp(join(base, 'model-diff-root-')), 'acme');
 	await mkdir(join(dir, 'spec'), { recursive: true });
 	await writeFile(
 		join(dir, 'spec/model.ts'),
@@ -209,6 +214,59 @@ async function fixtureProject(): Promise<string> {
 }
 
 describe('model-diff --root — the emitter the studio calls', () => {
+	it('a direct gate recheck refuses a model that typechecks but throws on import', async () => {
+		// Real compiler/emitter subprocesses need a few seconds of CI headroom.
+		await mkdir(join(REPO_ROOT, '.builder'), { recursive: true });
+		const dir = await fixtureProject(join(REPO_ROOT, '.builder'));
+		try {
+			const ws = new LocalWorkspace({ root: REPO_ROOT });
+			const projectDir = relative(REPO_ROOT, dir);
+			expect(await emitProjectModel(ws, projectDir)).toMatchObject({ status: 'emitted' });
+			const previous = await readFile(join(dir, 'model.json'), 'utf8');
+			const source = join(dir, 'spec/model.ts');
+			await writeFile(source, await readFile(source, 'utf8') + '\nthrow new Error("runtime import failure");\n');
+			const checks = standaloneGates(projectDir).filter((g) => g.name === 'model');
+			const run = await runGates(ws, projectDir, checks);
+			expect(run.ok).toBe(false);
+			expect(run.results).toContainEqual(expect.objectContaining({ name: 'model', status: 'passed' }));
+			expect(run.results).toContainEqual(expect.objectContaining({
+				name: 'model-emit', status: 'failed', output: expect.stringContaining('runtime import failure'),
+			}));
+			expect(await readFile(join(dir, 'model.json'), 'utf8')).toBe(previous);
+			await ws.dispose();
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	it('checks and emits a contracts model before the project has a package.json', async () => {
+		// Under the repo like a builder project, but not a workspace member: the
+		// old pnpm filter silently ran no compiler at all in this phase.
+		// Real compiler and emitter subprocesses take a few seconds; allow CI headroom.
+		await mkdir(join(REPO_ROOT, '.builder'), { recursive: true });
+		const dir = await mkdtemp(join(REPO_ROOT, '.builder/model-phase-'));
+		try {
+			await mkdir(join(dir, 'spec'));
+			const source = join(dir, 'spec/model.ts');
+			const valid =
+				'import { defineEntities, emitModel, z } from "@substrat-run/contracts";\n' +
+				'export const model = emitModel(defineEntities({ item: { table: "acme_items", fields: z.object({ id: z.string() }) } }));\n';
+			await writeFile(source, valid);
+			const spec = standaloneGates(relative(REPO_ROOT, dir)).find((g) => g.name === 'model')!;
+			const ws = new LocalWorkspace({ root: REPO_ROOT });
+			expect(await ws.exec(spec.cmd)).toMatchObject({ exitCode: 0 });
+			expect(await tool(['tools/model-diff.mts', '--root', dir])).toMatchObject({ code: 0 });
+			expect(JSON.parse(await readFile(join(dir, 'model.json'), 'utf8')).entities.item.table).toBe('acme_items');
+			await writeFile(source, valid + '\nconst bad: string = 42;\n');
+			const invalid = await ws.exec(spec.cmd);
+			expect(invalid.exitCode).not.toBe(0);
+			expect(invalid.stdout + invalid.stderr).toContain('TS2322');
+			await ws.dispose();
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
 	it('renders one project, agrees with itself, then reports drift', async () => {
 		const dir = await fixtureProject();
 
