@@ -97,6 +97,13 @@ type ChildResult =
   | Extract<ChildMessage, { type: 'done' }>['result']
   | { readonly kind: 'timeout'; readonly key: string | undefined; readonly passed: number };
 
+type ReplayTimer = {
+  start(callback: () => void, ms: number): NodeJS.Timeout;
+  clear(handle: NodeJS.Timeout | undefined): void;
+};
+
+const realTimer: ReplayTimer = { start: setTimeout, clear: clearTimeout };
+
 /** The built child, beside this module in `dist`. */
 const CHILD = fileURLToPath(new URL('./data-loss-replay-child.js', import.meta.url));
 
@@ -107,9 +114,10 @@ const CHILD = fileURLToPath(new URL('./data-loss-replay-child.js', import.meta.u
  */
 export function replayInChild(
   request: ReplayRequest,
-  opts: { readonly childPath?: string; readonly timeoutMs?: number } = {},
+  opts: { readonly childPath?: string; readonly timeoutMs?: number; readonly timer?: ReplayTimer } = {},
 ): Promise<ChildResult> {
   const timeoutMs = opts.timeoutMs ?? MIGRATION_TIMEOUT_MS;
+  const clock = opts.timer ?? realTimer;
   const spawnedAt = Date.now();
   // The child's stderr is kept, never forwarded: node's notice that `node:sqlite` is experimental
   // stays out of the push log, and only a process that dies without answering is shown it.
@@ -134,7 +142,7 @@ export function replayInChild(
     const settle = (result: ChildResult): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clock.clear(timer);
       if (child.exitCode !== null || child.signalCode !== null) {
         resolveResult(result);
         return;
@@ -144,8 +152,8 @@ export function replayInChild(
       child.kill('SIGKILL');
     };
     const arm = (): void => {
-      clearTimeout(timer);
-      timer = setTimeout(() => settle({ kind: 'timeout', key, passed: authoredStarted - (runningAuthored ? 1 : 0) }), timeoutMs);
+      clock.clear(timer);
+      timer = clock.start(() => settle({ kind: 'timeout', key, passed: authoredStarted - (runningAuthored ? 1 : 0) }), timeoutMs);
     };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -248,6 +256,7 @@ export async function checkMigrationDataLoss(
     /** The replay process's entry and per-migration limit; the defaults are the shipped ones. */
     readonly childPath?: string;
     readonly timeoutMs?: number;
+    readonly timer?: ReplayTimer;
   } = {},
 ): Promise<DataLossCheck> {
   const log = opts.log ?? console.log;
@@ -276,7 +285,7 @@ export async function checkMigrationDataLoss(
 
 async function replay(
   inputs: ReplayInputs,
-  opts: { readonly childPath?: string; readonly timeoutMs?: number },
+  opts: { readonly childPath?: string; readonly timeoutMs?: number; readonly timer?: ReplayTimer },
   log: (message: string) => void,
 ): Promise<DataLossCheck> {
   const kernel = inputs.kernel as KernelReplay | null;
