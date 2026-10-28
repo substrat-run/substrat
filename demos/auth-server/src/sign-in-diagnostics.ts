@@ -24,7 +24,12 @@ interface DiagnosticContext {
  * requests, so mutating a provider itself would mix concurrent attempts. A class instance keeps
  * the mutable facts together through Better Auth's context merges, which copy plain objects.
  */
-export function diagnoseSignInCallback(context: DiagnosticContext, method: string, request?: Request): void {
+export function diagnoseSignInCallback(
+  context: DiagnosticContext,
+  method: string,
+  request?: Request,
+  fetcher?: typeof fetch,
+): void {
   const diagnostic = new CallbackDiagnostic();
   const isGithub = method === 'github';
   context.signInDiagnostic = diagnostic;
@@ -48,7 +53,9 @@ export function diagnoseSignInCallback(context: DiagnosticContext, method: strin
         // Better Auth's GitHub adapter discards the email endpoint's error. Inspect it only
         // when the profile has no email, without changing the result or retrying the sign-in.
         if (isGithub && result?.user && !result.user.email && tokens.accessToken) {
-          diagnostic.emailCheck = await githubEmailDiagnostic(tokens.accessToken);
+          diagnostic.emailCheck = fetcher
+            ? await githubEmailDiagnostic(tokens.accessToken, fetcher)
+            : 'GitHub email check skipped: no diagnostic transport configured';
         }
         return result;
       },
@@ -88,9 +95,9 @@ export function signInDiagnosticDescription(context: DiagnosticContext, descript
  * A fixed URL, no redirects, and a short deadline bound this diagnostic's cost. Only status,
  * permission presence and counts survive; bodies and arbitrary headers never enter the log.
  */
-async function githubEmailDiagnostic(accessToken: string): Promise<string> {
+async function githubEmailDiagnostic(accessToken: string, fetcher: typeof fetch): Promise<string> {
   try {
-    const response = await fetch('https://api.github.com/user/emails', {
+    const response = await fetcher('https://api.github.com/user/emails', {
       headers: {
         authorization: `Bearer ${accessToken}`,
         accept: 'application/vnd.github+json',
@@ -119,7 +126,7 @@ async function githubEmailDiagnostic(accessToken: string): Promise<string> {
     }
     const granted = response.headers.get('x-oauth-scopes');
     const emailScope = granted === null ? 'not reported' : granted.split(',').some((s) => ['user', 'user:email'].includes(s.trim())) ? 'yes' : 'no';
-    return `${prefix}; addresses=${emails.length}, primary=${primary}, verified=${verified}; OAuth email scope=${emailScope}`;
+    return `${prefix}; first-page counts: addresses=${emails.length}, primary=${primary}, verified=${verified}; OAuth email scope=${emailScope}`;
   } catch {
     // Fetch/parse errors can embed URLs, headers or bodies. Never persist their message.
     return 'GitHub email check after missing profile email: unavailable (network, timeout or unreadable response)';

@@ -37,6 +37,9 @@ Without the URL override, the same suite starts the fixture on a temporary local
 ## Observations
 
 <!-- begin:observations -->
+2026-10-28 (transport injection): all seven callback tests passed through the injected runtime
+transport, including the first-page count label. The GitHub member served token, profile and
+email traffic; no member was silent.
 2026-10-28: all seven callback tests passed against the simulation. The GitHub member served
 token, profile and email requests, including 401/403 email reads and successful empty lists;
 no member was silent. Private-email sign-in succeeded with no diagnostic follow-up request.

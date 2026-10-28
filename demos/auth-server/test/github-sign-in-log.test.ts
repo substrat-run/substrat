@@ -65,6 +65,7 @@ beforeEach(() => {
     sender: { email: 'no-reply@example.test' },
     socialProviders: { github: { clientId: 'fixture-client', clientSecret: 'fixture-client-secret' } },
     recordSignIn: (attempt) => { attempts.push(attempt); },
+    fetchSignInDiagnostic: (input, init) => globalThis.fetch(input, init),
   });
 });
 
@@ -101,7 +102,7 @@ describe('GitHub callback diagnostics', () => {
   it.each([
     ['forbidden', 'HTTP 403; check OAuth App user:email scope or GitHub App Email addresses: read permission'],
     ['unauthorized', 'HTTP 401; GitHub rejected the access token'],
-    ['empty', 'HTTP 200; addresses=0, primary=0, verified=0; OAuth email scope=no'],
+    ['empty', 'HTTP 200; first-page counts: addresses=0, primary=0, verified=0; OAuth email scope=no'],
   ])('explains a missing email: %s', async (code, detail) => {
     const flow = await start();
     const response = await complete(flow, code);

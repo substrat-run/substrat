@@ -159,6 +159,8 @@ export interface AuthDeps {
    * run, which is what the schema-generation config and a test that does not care pass.
    */
   recordSignIn?: SignInLogger;
+  /** Runtime HTTP transport for the bounded GitHub email diagnostic. Omit to skip that check. */
+  fetchSignInDiagnostic?: typeof fetch;
   /**
    * Where work that must not hold up a RESPONSE goes — Better Auth's
    * `advanced.backgroundTasks.handler`.
@@ -753,7 +755,9 @@ function betterAuthFor(deps: AuthDeps) {
        */
       before: createAuthMiddleware(async (ctx) => {
         const callbackMethod = callbackProviderOf(ctx.path, ctx.params);
-        if (deps.recordSignIn && callbackMethod) diagnoseSignInCallback(ctx.context, callbackMethod, ctx.request);
+        if (deps.recordSignIn && callbackMethod) {
+          diagnoseSignInCallback(ctx.context, callbackMethod, ctx.request, deps.fetchSignInDiagnostic);
+        }
         if (ctx.path === '/oauth2/token') return machineGrantCeiling(ctx, machineScopes);
         if (ctx.path !== '/oauth2/authorize') return;
         const query = ctx.query as Record<string, string | undefined> | undefined;
