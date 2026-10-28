@@ -72,21 +72,6 @@ export const MEMBERS: Member[] = [
   { name: 'Leo Martin', email: 'leo@acme.com', role: 'viewer', status: 'revoked', added: 'May 5, 2026', avatar: 'muted' },
 ];
 
-export interface RolePerm {
-  label: string;
-  owner: boolean;
-  admin: boolean;
-  member: boolean;
-  viewer: boolean;
-}
-export const ROLE_MATRIX: RolePerm[] = [
-  { label: 'Create & manage apps', owner: true, admin: true, member: false, viewer: false },
-  { label: 'Manage domains, env vars & integrations', owner: true, admin: true, member: false, viewer: false },
-  { label: 'Invite & manage members', owner: true, admin: true, member: false, viewer: false },
-  { label: 'Use apps & edit content', owner: true, admin: true, member: true, viewer: false },
-  { label: 'View apps, analytics & billing', owner: true, admin: true, member: true, viewer: true },
-];
-
 // -- M2: domains ------------------------------------------------------------
 
 export type DomainStatus = 'active' | 'pending' | 'failed';

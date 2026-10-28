@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { NOTIFICATIONS } from '../lib/demo';
+import { DEV_MOCK } from '../lib/mock';
 
 const DOT: Record<string, string> = {
   success: 'var(--status-success-dot)',
@@ -27,9 +28,10 @@ export function NotificationsPopover({ onClose, onMarkRead }: { onClose: () => v
         <div style={{ display: 'flex', alignItems: 'center', height: 44, padding: '0 16px', borderBottom: '1px solid var(--border-subtle)' }}>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Notifications</span>
           <div style={{ flex: 1 }} />
-          <span onClick={onMarkRead} style={{ fontSize: 12, color: 'var(--text-brand)', cursor: 'pointer' }}>Mark all read</span>
+          {DEV_MOCK && <button type="button" onClick={onMarkRead} style={{ border: 0, background: 'transparent', fontSize: 12, color: 'var(--text-brand)', cursor: 'pointer' }}>Mark all read</button>}
         </div>
-        {NOTIFICATIONS.map((n, i) => (
+        {!DEV_MOCK && <div style={{ padding: 16, fontSize: 12.5, color: 'var(--text-secondary)' }}>Notifications are not available yet.</div>}
+        {DEV_MOCK && NOTIFICATIONS.map((n, i) => (
           <div
             key={i}
             style={{ display: 'flex', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', background: n.unread ? 'var(--surface-brand-subtle)' : 'transparent' }}
@@ -41,9 +43,6 @@ export function NotificationsPopover({ onClose, onMarkRead }: { onClose: () => v
             </div>
           </div>
         ))}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 38, fontSize: 12, color: 'var(--text-brand)', cursor: 'pointer' }}>
-          View all activity
-        </div>
       </div>
     </div>
   );
