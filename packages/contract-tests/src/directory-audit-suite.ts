@@ -713,6 +713,27 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
       }
     });
 
+    it('restore rolls back the imported directory when its final audit insert fails', async () => {
+      const fixture = await makeFixture();
+      const staff = platformActorId.parse(ulid());
+      try {
+        await newTenant(fixture.host, staff);
+        const dump = await fixture.host.admin.exportDirectory(staff);
+        const later = await newTenant(fixture.host, staff);
+        // The restore rebuilds the admin table, dropping a trigger on it. A null actor
+        // instead makes the final insert fail its NOT NULL constraint on both adapters.
+        await expect(fixture.host.admin.restoreDirectory(null as unknown as PlatformActorId, dump)).rejects.toThrow();
+        expect(await fixture.host.admin.getTenant(staff, later)).toBeDefined();
+        await fixture.host.admin.restoreDirectory(staff, dump);
+        expect(await fixture.host.admin.getTenant(staff, later)).toBeUndefined();
+        const rows = await fixture.host.admin.auditLog(staff, { action: ['restoreDirectory'] });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ before: { tenants: 2 }, after: { capturedAt: dump.capturedAt, tables: dump.tables.length } });
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+
     it('a no-op rename records nothing, and the rename before it one row', async () => {
       const fixture = await makeFixture();
       const { host } = fixture;
