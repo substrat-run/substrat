@@ -85,7 +85,9 @@ export function AppEdges({ teamId, scopeId }: { teamId: string; scopeId: string 
       setNotice(
         moved.mode === 'replay'
           ? `Replay set. The next pass delivers again from the start (${moved.archived.journal} earlier deliveries kept as history).`
-          : 'Skipped. Events up to now will not be delivered; later ones will.',
+          : moved.mode === 'skip'
+            ? 'Skipped. Events up to now will not be delivered; later ones will.'
+            : `Edge move completed (${moved.mode}). Refresh to read its position.`,
       );
       await load();
     } catch (e) {

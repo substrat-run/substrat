@@ -1294,7 +1294,8 @@ export type DeclaredCallRow =
 /** Where one of the tenant's other apps stands at THIS app's door. */
 export interface PeerCallerRow {
   vertical: string;
-  calls: 'on' | 'off' | 'ungranted';
+  /** The control plane owns the vocabulary; unknown positions have no switch action. */
+  calls: string;
   switchedOff: { actor: string; reason: string; at: string } | null;
 }
 

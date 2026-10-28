@@ -338,7 +338,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/edges` — `dashboard/app-edges`
    */
-  appEdges(input: { scopeId: string }): Promise<{ tenantId: string; checkedAt: string; edges: ({ tenantId: string; consumer: { scopeId: string; vertical: string }; producer: { vertical: string; scopeId: string | null }; state: "caught-up" | "behind" | "paused" | "unresolved" | "unavailable"; reason: string | null; watermark: { cursor: string; updatedAt: string | null } | null; oldestPending: { id: string; occurredAt: string } | null; lagMs: number | null; unexported: { type: string; schemaVersion: number }[]; lastDelivered: { at: string } | null; lastProblem: { at: string; outcome: "failed" | "skipped"; error: string | null } | null })[]; unavailable: string | null; history: { available: boolean; reason: string | null } }>;
+  appEdges(input: { scopeId: string }): Promise<{ tenantId: string; checkedAt: string; edges: ({ tenantId: string; consumer: { scopeId: string; vertical: string }; producer: { vertical: string; scopeId: string | null }; state: string; reason: string | null; watermark: { cursor: string; updatedAt: string | null } | null; oldestPending: { id: string; occurredAt: string } | null; lagMs: number | null; unexported: { type: string; schemaVersion: number }[]; lastDelivered: { at: string } | null; lastProblem: { at: string; outcome: string; error: string | null } | null })[]; unavailable: string | null; history: { available: boolean; reason: string | null } }>;
 
   /**
    * Read email sending permission for a vertical owned by this team
@@ -408,7 +408,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/peers` — `dashboard/app-peers`
    */
-  appPeers(input: { scopeId: string }): Promise<{ declares: string[] | null; calls: ({ state: "not-installed"; vertical: string } | { state: "ambiguous"; vertical: string; count: number } | { state: "bound-unavailable"; vertical: string } | { state: "not-declared"; vertical: string } | { state: "allowed"; vertical: string; scopeId: string } | { state: "switched-off"; vertical: string; scopeId: string; switchedOff: { actor: string; reason: string; at: string } | null } | { state: "no-grant"; vertical: string; scopeId: string } | { state: "unreadable"; vertical: string; scopeId: string; message: string })[]; bindingChoices: ({ vertical: string; boundScopeId: string | null; invalidated: boolean; candidates: { scopeId: string; name: string }[] })[]; callers: ({ vertical: string; calls: "on" | "off" | "ungranted"; switchedOff: { actor: string; reason: string; at: string } | null })[] | null; callersError: string | null }>;
+  appPeers(input: { scopeId: string }): Promise<{ declares: string[] | null; calls: ({ state: "not-installed"; vertical: string } | { state: "ambiguous"; vertical: string; count: number } | { state: "bound-unavailable"; vertical: string } | { state: "not-declared"; vertical: string } | { state: "allowed"; vertical: string; scopeId: string } | { state: "switched-off"; vertical: string; scopeId: string; switchedOff: { actor: string; reason: string; at: string } | null } | { state: "no-grant"; vertical: string; scopeId: string } | { state: "unreadable"; vertical: string; scopeId: string; message: string })[]; bindingChoices: ({ vertical: string; boundScopeId: string | null; invalidated: boolean; candidates: { scopeId: string; name: string }[] })[]; callers: ({ vertical: string; calls: string; switchedOff: { actor: string; reason: string; at: string } | null })[] | null; callersError: string | null }>;
 
   /**
    * Remove an app member as the signed-in caller
@@ -835,7 +835,7 @@ export interface DashboardClient {
    *
    * `POST /apps/{scopeId}/edges/move` — `dashboard/move-app-edge`
    */
-  moveAppEdge(input: { scopeId: string; mode: "replay" | "skip"; from: string; after?: string | null; through?: string; acknowledge?: string; reason: string }): Promise<{ replayId: string; mode: "replay" | "skip"; source: { vertical: string; scopeId: string }; previous: string | null; cursor: string | null; archived: { journal: number; deliveries: number }; auditWarning?: string }>;
+  moveAppEdge(input: { scopeId: string; mode: "replay" | "skip"; from: string; after?: string | null; through?: string; acknowledge?: string; reason: string }): Promise<{ replayId: string; mode: string; source: { vertical: string; scopeId: string }; previous: string | null; cursor: string | null; archived: { journal: number; deliveries: number }; auditWarning?: string }>;
 
   /**
    * Rebind the chosen installs onto another of this team's verticals, stopping at the first refusal
@@ -1003,7 +1003,7 @@ export interface DashboardClient {
    *
    * `POST /apps/{scopeId}/peers/switch` — `dashboard/switch-app-peer`
    */
-  switchAppPeer(input: { scopeId: string; vertical: string; to: "on" | "off"; reason: string }): Promise<{ operationId: string; vertical: string; calls: "on" | "off"; changed: boolean; permissions: string[]; auditWarning?: string }>;
+  switchAppPeer(input: { scopeId: string; vertical: string; to: "on" | "off"; reason: string }): Promise<{ operationId: string; vertical: string; calls: string; changed: boolean; permissions: string[]; auditWarning?: string }>;
 
   /**
    * Zero-filled traffic series for this team's installed apps

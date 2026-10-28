@@ -28,6 +28,7 @@ import {
   connectionProbe,
   defineRoutes,
   dnsRecord,
+  edgeHealth,
   edgeHealthReport,
   envVarSpec,
   LIST_PAGE_MAX,
@@ -125,6 +126,10 @@ const declaredPeerCall = z.discriminatedUnion('state', [
   z.object({ state: z.literal('no-grant'), vertical: z.string(), scopeId: z.string() }),
   z.object({ state: z.literal('unreadable'), vertical: z.string(), scopeId: z.string(), message: z.string() }),
 ]);
+const edgeHealthOut = edgeHealth.extend({
+  state: z.string(),
+  lastProblem: edgeHealth.shape.lastProblem.unwrap().extend({ outcome: z.string() }).nullable(),
+});
 
 /*
  * VERSION SKEW (#2170, #2401). The control plane ships separately from the dashboard, so a plane
@@ -700,14 +705,14 @@ export const dashboardRoutes = defineRoutes({
         vertical: z.string(), boundScopeId: z.string().nullable(), invalidated: z.boolean(),
         candidates: z.array(z.object({ scopeId: z.string(), name: z.string() })),
       })),
-      callers: z.array(peerGrantsStatusEntry).nullable(), callersError: z.string().nullable(),
+      callers: z.array(peerGrantsStatusEntry.extend({ calls: z.string() })).nullable(), callersError: z.string().nullable(),
     }),
     http: { method: 'GET', path: '/apps/{scopeId}/peers' },
   },
   'dashboard/switch-app-peer': {
     summary: "Switch one peer's access to this app on or off",
     input: z.object({ scopeId: z.string().min(1), vertical: z.string().min(1), to: z.enum(['on', 'off']), reason: z.string().trim().min(1).max(500) }),
-    output: peerSwitchResult,
+    output: peerSwitchResult.extend({ calls: z.string() }),
     http: { method: 'POST', path: '/apps/{scopeId}/peers/switch' },
   },
   'dashboard/set-app-peer-binding': {
@@ -719,7 +724,7 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/app-edges': {
     summary: "The event edges into and out of this app",
     input: z.object({ scopeId: z.string().min(1) }),
-    output: edgeHealthReport,
+    output: edgeHealthReport.extend({ edges: z.array(edgeHealthOut) }),
     http: { method: 'GET', path: '/apps/{scopeId}/edges' },
   },
   'dashboard/move-app-edge': {
@@ -730,7 +735,7 @@ export const dashboardRoutes = defineRoutes({
       after: z.string().nullable().optional(), through: z.string().optional(),
       acknowledge: z.string().optional(), reason: z.string().trim().min(1).max(500),
     }),
-    output: importCursorMoved,
+    output: importCursorMoved.extend({ mode: z.string() }),
     http: { method: 'POST', path: '/apps/{scopeId}/edges/move' },
   },
   'dashboard/app-scopes': {

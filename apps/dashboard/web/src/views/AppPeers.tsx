@@ -33,11 +33,13 @@ const CALL_STATE: Record<DeclaredCallRow['state'], { kind: PillKind; label: stri
   unreadable: { kind: 'warning', label: 'Could not read' },
 };
 
-const CALLER_STATE: Record<PeerCallerRow['calls'], { kind: PillKind; label: string }> = {
+const CALLER_STATE: Record<string, { kind: PillKind; label: string }> = {
   on: { kind: 'success', label: 'Grants active' },
   off: { kind: 'danger', label: 'Switched off' },
   ungranted: { kind: 'neutral', label: 'Holds nothing here' },
 };
+const callerStateOf = (calls: string): { kind: PillKind; label: string } =>
+  CALLER_STATE[calls] ?? { kind: 'warning', label: calls };
 
 function callLine(row: DeclaredCallRow): string {
   switch (row.state) {
@@ -275,9 +277,9 @@ export function AppPeers({ teamId, scopeId }: { teamId: string; scopeId: string 
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
           {callers.map((row) => (
             <li key={row.vertical} style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <Pill kind={CALLER_STATE[row.calls].kind}>{CALLER_STATE[row.calls].label}</Pill>
+              <Pill kind={callerStateOf(row.calls).kind}>{callerStateOf(row.calls).label}</Pill>
               <code style={{ fontSize: 12.5 }}>{row.vertical}</code>
-              {row.calls !== 'ungranted' && (
+              {(row.calls === 'on' || row.calls === 'off') && (
                 <Button size="sm" variant={row.calls === 'on' ? 'danger' : 'secondary'} disabled={busy}
                   onClick={() => {
                     setDialog({ vertical: row.vertical, to: row.calls === 'on' ? 'off' : 'on' });

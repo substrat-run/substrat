@@ -355,6 +355,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'DELETE /apps/{scopeId}/snapshots/{snapshotId} dashboard/delete-app-snapshot',
       'POST /apps dashboard/install-app',
       'POST /apps/{scopeId}/bind dashboard/bind-installed-app',
+      'POST /apps/{scopeId}/edges/move dashboard/move-app-edge',
       'POST /apps/{scopeId}/email-sender dashboard/set-app-email-sender',
       'POST /apps/{scopeId}/integrations/{provider} dashboard/connect-app-integration',
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify dashboard/verify-app-connection',
@@ -363,6 +364,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/members/{principal}/remove dashboard/app-remove-member',
       'POST /apps/{scopeId}/members/{principal}/role dashboard/app-change-member-role',
       'POST /apps/{scopeId}/owner-claim dashboard/app-owner-claim',
+      'POST /apps/{scopeId}/peers/switch dashboard/switch-app-peer',
       // #1749: files an AI note in the team's scope; its team-from-path refusal is in explanations-route.test.ts.
       'POST /apps/{scopeId}/processes/note dashboard/write-process-note',
       'POST /apps/{scopeId}/restore dashboard/restore-installed-app',
@@ -373,6 +375,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/update dashboard/update-installed-app',
       'PUT /apps/{scopeId}/auth dashboard/set-app-auth',
       'PUT /apps/{scopeId}/env dashboard/set-app-env',
+      'PUT /apps/{scopeId}/peers/binding dashboard/set-app-peer-binding',
     ]);
   });
 });
