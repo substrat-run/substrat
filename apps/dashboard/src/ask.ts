@@ -152,6 +152,15 @@ export function askSummary(steps: readonly AskStep[]): string {
  * model's text as if it were the dashboard's.
  */
 export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
+  'dashboard/list-app-tables': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/read-app-table': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/facet-app-events': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/read-app-history': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/read-app-cause': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/read-app-effects': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/read-app-invocation': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/list-app-denials': 'deployed app data was not an assistant tool before this route moved',
+  'dashboard/list-app-dead-letters': 'deployed app data was not an assistant tool before this route moved',
   'dashboard/list-app-bookmarks': 'app rewind points were not an assistant tool before this route moved',
   'dashboard/list-app-migrations': 'app schema history was not an assistant tool before this route moved',
   'dashboard/get-app-release-comparison': 'app release comparison was not an assistant tool before this route moved',

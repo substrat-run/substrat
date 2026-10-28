@@ -2092,41 +2092,6 @@ app.get('/api/apps/:scopeId/scopes', async (c) => {
   );
 });
 
-/**
- * One app's Data tab — a read-only window into the app's OWN database (kernel-design
- * §5.4's admin-query RPC). Two reads: the table list, and a bounded page of one table.
- *
- * Authorized in the caller's OWN dashboard scope: the addressed scope is resolved from the
- * tenant-scoped `list-apps` (its default scope) or the tenant's own vertical scopes (a
- * secondary site scope) via `resolveBrowsableScope`, so another tenant's scope id is a 404
- * here — and the platform layer cross-checks (tenantId, scopeId) again below (K-3). The read
- * itself goes through the tenant-narrowed control plane. Read-only by construction — no user SQL.
- */
-app.get('/api/apps/:scopeId/tables', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const tables = await cp.listScopeTables(scope);
-  // Never emit an empty 200: an undefined here means the control plane answered with a
-  // non-JSON body (e.g. a route it doesn't have yet), which must surface as an error the
-  // UI can show — not a silent empty response the client parses as "Unexpected end of JSON".
-  if (tables == null) throw new HTTPException(502, { message: 'the platform returned no data for this scope' });
-  return c.json(tables);
-});
-
-/**
- * One record's story (#1235): its events with the payload, the K-34 authorization
- * chain, the K-42 impersonation stamp, the PII class, the emitting operation and
- * the version it ran as — `readHistory`'s answer, which nothing above the scope
- * could reach until #1353.
- *
- * Authorized like the table reads it sits beside: the app must be one the caller
- * can browse. The nulls it carries are FACTS the renderer must not flatten — an
- * erased payload, an unrecorded authorization chain, nobody impersonating.
- */
 /** The rollup's window: "lately", the same 24 hours the account page's strips read. */
 const FLEET_HEALTH_WINDOW_MS = 24 * 3_600_000;
 
@@ -2236,206 +2201,6 @@ app.get('/api/fleet-health', async (c) => {
       },
     }),
   });
-});
-
-/**
- * Facets over an app's own events (#1239 stage 1): narrow by type and window,
- * group by an envelope dimension or one payload field, count.
- *
- * The honest half is in the answer, not here — an ERASED payload is counted apart
- * from a genuinely absent field, because `json_extract` over a shredded event
- * returns the same NULL a missing key does, and folding them would show a clean
- * distribution over redacted history.
- */
-app.get('/api/apps/:scopeId/facets', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(
-    await cp.facetEvents(scope, {
-      groupBy: c.req.query('groupBy') ?? 'type',
-      field: c.req.query('field') ?? undefined,
-      type: c.req.query('type') ?? undefined,
-      since: c.req.query('since') ?? undefined,
-      until: c.req.query('until') ?? undefined,
-      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-    }),
-  );
-});
-
-app.get('/api/apps/:scopeId/history', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(
-    await cp.entityHistory(scope, {
-      entityType: c.req.query('entityType') ?? '',
-      entityId: c.req.query('entityId') ?? '',
-      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-      cursor: c.req.query('cursor') ?? undefined,
-    }),
-  );
-});
-
-/**
- * #1237: why one event exists — the chain walked backwards, newest first.
- *
- * The honest part is `terminal`, and it is the answer's own field rather than
- * something the screen infers from the chain's length: a chain that reached the
- * operation that started it and one that ran out of recorded trail are the same
- * shape, and telling them apart is the whole point of the view.
- */
-app.get('/api/apps/:scopeId/cause', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(
-    await cp.eventCause(scope, {
-      eventId: c.req.query('eventId') ?? '',
-      maxDepth: c.req.query('maxDepth') ? Number(c.req.query('maxDepth')) : undefined,
-    }),
-  );
-});
-
-/**
- * #1237 forward: what one event set off — the consumers it reached and the events
- * they emitted in turn.
- *
- * The honest counterpart to a trace view. There is no timing here because the
- * platform records none per operation; what it does record is which steps happened
- * and when, which is what this returns.
- */
-app.get('/api/apps/:scopeId/effects', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(
-    await cp.eventEffects(scope, {
-      eventId: c.req.query('eventId') ?? '',
-      maxNodes: c.req.query('maxNodes') ? Number(c.req.query('maxNodes')) : undefined,
-    }),
-  );
-});
-
-/**
- * #1237: everything one call emitted — the events an operation raised side by side,
- * which neither walk can reach from each other, and what its handlers raised after.
- */
-app.get('/api/apps/:scopeId/invocation', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(
-    await cp.invocationEvents(scope, {
-      invocationId: c.req.query('invocationId') ?? '',
-      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-    }),
-  );
-});
-
-/**
- * #1525: every delivery in one app's scope that gave up — "which deliveries in this app
- * gave up?", which names no record and so no walk can answer.
- */
-/**
- * #1828: one app's refused permission checks, newest first — the K-35 denial log's rows,
- * for Audit's Refused rows and Outcome filter. Gated like every per-app read: the scope is
- * resolved from the team's own apps, so a foreign id 404s before the plane is asked.
- *
- * Paged by time rather than a cursor, because that is the read the log offers: the next
- * page is `until` the oldest row already held. `limit` is capped at the log's own maximum.
- */
-app.get('/api/apps/:scopeId/denials', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  // The log compares `at` and `until` as ISO text, so only an ISO 8601 instant with a zone
-  // is accepted, and it is forwarded in the log's own spelling (UTC, milliseconds): a
-  // `Date.parse`-able "September 29, 2026" would otherwise compare as text and let later
-  // rows through.
-  const rawUntil = c.req.query('until');
-  const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
-  if (rawUntil !== undefined && (!ISO_INSTANT.test(rawUntil) || Number.isNaN(Date.parse(rawUntil)))) {
-    throw new HTTPException(400, { message: 'until must be an ISO 8601 instant with a zone' });
-  }
-  const until = rawUntil === undefined ? undefined : new Date(Date.parse(rawUntil)).toISOString();
-  const asked = Number(c.req.query('limit') ?? DENIAL_LIMIT_MAX);
-  if (!Number.isInteger(asked) || asked < 1) throw new HTTPException(400, { message: 'limit must be a positive integer' });
-  const limit = Math.min(asked, DENIAL_LIMIT_MAX);
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const entries = await cp.listDenials(scope, { limit, ...(until ? { until } : {}) });
-  // `limit` travels back so the page can tell a full page (there may be more) from the end.
-  return c.json({ entries, limit });
-});
-
-app.get('/api/apps/:scopeId/dead-letters', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(
-    await cp.deadLetters(scope, {
-      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-      // `??`, not `||`: an explicit empty `cursor=` must reach the control plane's parse
-      // and be refused there, not be quietly widened into a request for the first page.
-      cursor: c.req.query('cursor') ?? undefined,
-    }),
-  );
-});
-
-app.get('/api/apps/:scopeId/tables/:table', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const input = readScopeTableInput.parse({
-    table: c.req.param('table'),
-    limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-    offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
-  });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const page = await cp.readScopeTable(scope, input);
-  if (page == null) throw new HTTPException(502, { message: 'the platform returned no data for this table' });
-  return c.json(page);
-});
-
-// The SQL console (#219): one read-only statement against the app's own database.
-// Same authorization walk as the table reads (the app must be the caller's own);
-// enforcement lives below the seam — the kernel's gate plus the adapter's backstop —
-// and a gate refusal surfaces as the platform's 400, message intact, for the UI.
-app.post('/api/apps/:scopeId/query', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
-  const input = queryScopeInput.parse(await c.req.json());
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  // The gate's refusal arrives as the plane's own 400 (`validation_failed`), which `onError`
-  // relays with its sentence for the console UI — the caller's mistake, never a 500.
-  const result = await cp.queryScope(scope, input.sql);
-  if (result == null) throw new HTTPException(502, { message: 'the platform returned no data for this query' });
-  return c.json(result);
 });
 
 /**
@@ -5763,6 +5528,13 @@ async function appEmailSenderIn(ctx: TeamContext, appScopeId: string, granted?: 
   return granted === undefined ? cp.emailSender(row.vertical_slug) : cp.setEmailSender(row.vertical_slug, granted);
 }
 
+/** Data reads resolve the addressed app or secondary scope in the path team's dashboard scope. */
+async function browsableDataIn(ctx: TeamContext, asked: string) {
+  const cp = teamPlane(ctx);
+  const { scope } = await resolveBrowsableScope(await teamScope(ctx), cp, asked);
+  return { cp, scope };
+}
+
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
   'dashboard/app-email-sender': (ctx, { scopeId }) => appEmailSenderIn(ctx, scopeId),
@@ -5774,6 +5546,63 @@ const routeHandlers = {
     appEventsPage(host, node, appScopeId, listPageQuery.parse(page)),
   'dashboard/list-app-audit': async ({ c, host, node }, { scopeId: appScopeId, ...page }) =>
     auditLogOf(c, host, node, listPageQuery.parse(page), appScopeId),
+  'dashboard/list-app-tables': async (ctx, { scopeId: asked }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    const tables = await cp.listScopeTables(scope);
+    if (tables == null) throw new HTTPException(502, { message: 'the platform returned no data for this scope' });
+    return tables;
+  },
+  'dashboard/read-app-table': async (ctx, { scopeId: asked, table, limit, offset }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    const page = await cp.readScopeTable(scope, readScopeTableInput.parse({ table, limit, offset }));
+    if (page == null) throw new HTTPException(502, { message: 'the platform returned no data for this table' });
+    return page;
+  },
+  'dashboard/facet-app-events': async (ctx, { scopeId: asked, groupBy, field, type, since, until, limit }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    return cp.facetEvents(scope, { groupBy: groupBy ?? 'type', field, type, since, until, limit });
+  },
+  'dashboard/read-app-history': async (ctx, { scopeId: asked, entityType, entityId, limit, cursor }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    return cp.entityHistory(scope, { entityType, entityId, limit, cursor });
+  },
+  'dashboard/read-app-cause': async (ctx, { scopeId: asked, eventId, maxDepth }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    return cp.eventCause(scope, { eventId, maxDepth });
+  },
+  'dashboard/read-app-effects': async (ctx, { scopeId: asked, eventId, maxNodes }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    return cp.eventEffects(scope, { eventId, maxNodes });
+  },
+  'dashboard/read-app-invocation': async (ctx, { scopeId: asked, invocationId, limit }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    return cp.invocationEvents(scope, { invocationId, limit });
+  },
+  'dashboard/list-app-denials': async (ctx, { scopeId: asked, until: rawUntil, limit: rawLimit }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+    if (rawUntil !== undefined && (!ISO_INSTANT.test(rawUntil) || Number.isNaN(Date.parse(rawUntil)))) {
+      throw new HTTPException(400, { message: 'until must be an ISO 8601 instant with a zone' });
+    }
+    const until = rawUntil === undefined ? undefined : new Date(Date.parse(rawUntil)).toISOString();
+    const askedLimit = rawLimit ?? DENIAL_LIMIT_MAX;
+    if (!Number.isInteger(askedLimit) || askedLimit < 1) throw new HTTPException(400, { message: 'limit must be a positive integer' });
+    const limit = Math.min(askedLimit, DENIAL_LIMIT_MAX);
+    const entries = await cp.listDenials(scope, { limit, ...(until ? { until } : {}) });
+    return { entries, limit };
+  },
+  'dashboard/list-app-dead-letters': async (ctx, { scopeId: asked, limit, cursor }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    return cp.deadLetters(scope, { limit, cursor });
+  },
+  'dashboard/query-app-scope': async (ctx, { scopeId: asked, sql }) => {
+    const { cp, scope } = await browsableDataIn(ctx, asked);
+    // The kernel's single-statement gate and the adapter's read-only backstop remain
+    // below the control-plane seam; its refusal stays a 400 for the console UI.
+    const result = await cp.queryScope(scope, queryScopeInput.parse({ sql }).sql);
+    if (result == null) throw new HTTPException(502, { message: 'the platform returned no data for this query' });
+    return result;
+  },
   'dashboard/list-team-audit': async ({ c, host, node }, { scopeId: asked, ...page }) =>
     auditLogOf(c, host, node, listPageQuery.parse(page), asked || undefined),
   'dashboard/list-findings': async (ctx, filter) => {

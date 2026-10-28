@@ -118,6 +118,7 @@ interface ZodDef {
   readonly keyType?: unknown;
   readonly valueType?: unknown;
   readonly in?: unknown;
+  readonly getter?: () => unknown;
 }
 
 function defOf(schema: unknown): ZodDef | undefined {
@@ -182,6 +183,8 @@ interface PrintContext {
   readonly overrides: Map<string, string>;
   /** Which overrides were actually reached — an unused one is a stale hatch. */
   readonly used: Set<string>;
+  /** The named object currently being printed; a lazy child may refer back to it. */
+  readonly self?: { schema: unknown; name: string };
 }
 
 /**
@@ -258,6 +261,11 @@ function tsType(schema: unknown, ctx: PrintContext): string {
     case 'pipe':
       // `z.coerce.number()` is a pipe; the caller supplies its INPUT side.
       return tsType(def.in, ctx);
+    case 'lazy': {
+      const target = def.getter?.();
+      if (ctx.self && target === ctx.self.schema) return ctx.self.name;
+      return tsType(target, ctx);
+    }
     default:
       return fail(
         `${ctx.where}: no TypeScript spelling for a Zod '${def?.type ?? 'unrecognised'}' schema.\n` +
@@ -507,7 +515,7 @@ export function renderClient(
     // to itself. Every other reference to it still resolves to the name.
     const named2 = new Map(ctx.named);
     named2.delete(schema);
-    return `/** ${note}. */\nexport interface ${name} {\n${interfaceBody(def.shape ?? {}, { ...ctx, named: named2, where })}\n}`;
+    return `/** ${note}. */\nexport interface ${name} {\n${interfaceBody(def.shape ?? {}, { ...ctx, named: named2, where, self: { schema, name } })}\n}`;
   });
 
   // Then one method per operation that declares an HTTP binding. An operation

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type InvocationEvents } from '../lib/api';
+import { teamApi, type InvocationEvents } from '../lib/api';
 import { operationLabel } from '../lib/history';
 import { shortId } from '../lib/format';
 import { MonoTag } from '../components/ui';
@@ -21,11 +21,13 @@ import { MonoTag } from '../components/ui';
  * so the caller says (`whenEmpty`) instead of this component guessing.
  */
 export function InvocationStrip({
+  teamId,
   scopeId,
   eventId,
   invocationId,
   whenEmpty = 'No events recorded under this call, although this event names it.',
 }: {
+  teamId: string;
   scopeId: string;
   /** The event the strip opened from, marked "this" when the call recorded it. */
   eventId: string;
@@ -45,14 +47,15 @@ export function InvocationStrip({
     let live = true;
     setRead(null);
     setErr(null);
-    api
-      .appInvocationEvents(scopeId, invocationId)
+    teamApi(teamId)
+      .readAppInvocation({ scopeId, invocationId })
+      .then((r) => r as InvocationEvents)
       .then((r) => live && setRead(r))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [scopeId, invocationId]);
+  }, [teamId, scopeId, invocationId]);
 
   if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
   if (!read) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Reading the call…</div>;

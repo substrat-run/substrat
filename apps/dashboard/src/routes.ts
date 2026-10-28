@@ -26,9 +26,15 @@ import {
   connectionActivity,
   connectionCredentialField,
   connectionProbe,
+  causeChain,
+  deadLetter,
   defineRoutes,
   dnsRecord,
   envVarSpec,
+  eventDelivery,
+  eventFacetResult,
+  effectsTerminal,
+  historyEntry,
   LIST_PAGE_MAX,
   opsFailureEntry,
   FINDINGS_LIMIT_MAX,
@@ -47,15 +53,20 @@ import {
   ownerClaimLink,
   ownerSeat,
   permissionRegistry,
+  permissionDenial,
   previewAuth,
   REBIND_REVIEW_REASONS,
   scopeDump,
+  scopeQueryResult,
+  scopeTable,
+  scopeTablePage,
   scopeMemberInvite,
   scopeMembers,
   promotionAcknowledgement,
   versionOrigin,
   verticalSlug,
   z,
+  type EventEffects,
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
@@ -640,6 +651,11 @@ const appReleaseSide = z.object({
   errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable(),
 });
 
+export const eventEffects: z.ZodType<EventEffects> = z.object({
+  event: historyEntry, deliveries: z.array(eventDelivery), effects: z.array(z.lazy(() => eventEffects)),
+});
+const effectsTree = z.object({ root: eventEffects.nullable(), terminal: effectsTerminal, count: z.number() });
+
 export const dashboardRoutes = defineRoutes({
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {
@@ -665,6 +681,67 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), ...pageInput }),
     output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/apps/{scopeId}/audit' },
+  },
+  // -- app Data browser: deployed scope data, kept outside the assistant ------
+  'dashboard/list-app-tables': {
+    summary: "The tables in one of this team's app scopes",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.array(scopeTable),
+    http: { method: 'GET', path: '/apps/{scopeId}/tables' },
+  },
+  'dashboard/read-app-table': {
+    summary: "A bounded page of one of this app scope's tables",
+    input: z.object({ scopeId: z.string().min(1), table: z.string().min(1), limit: z.coerce.number().int().positive().optional(), offset: z.coerce.number().int().nonnegative().optional() }),
+    output: scopeTablePage,
+    http: { method: 'GET', path: '/apps/{scopeId}/tables/{table}' },
+  },
+  'dashboard/facet-app-events': {
+    summary: "Counts of one app scope's events by a selected dimension",
+    input: z.object({ scopeId: z.string().min(1), groupBy: z.string().optional(), field: z.string().optional(), type: z.string().optional(), since: z.string().optional(), until: z.string().optional(), limit: z.coerce.number().optional() }),
+    output: eventFacetResult,
+    http: { method: 'GET', path: '/apps/{scopeId}/facets' },
+  },
+  'dashboard/read-app-history': {
+    summary: "One record's event history in this app scope",
+    input: z.object({ scopeId: z.string().min(1), entityType: z.string(), entityId: z.string(), limit: z.coerce.number().optional(), cursor: z.string().optional() }),
+    output: pageOutput(historyEntry),
+    http: { method: 'GET', path: '/apps/{scopeId}/history' },
+  },
+  'dashboard/read-app-cause': {
+    summary: "The causal chain leading to an event in this app scope",
+    input: z.object({ scopeId: z.string().min(1), eventId: z.string(), maxDepth: z.coerce.number().optional() }),
+    output: causeChain,
+    http: { method: 'GET', path: '/apps/{scopeId}/cause' },
+  },
+  'dashboard/read-app-effects': {
+    summary: "The event tree caused by one event in this app scope",
+    input: z.object({ scopeId: z.string().min(1), eventId: z.string(), maxNodes: z.coerce.number().optional() }),
+    output: effectsTree,
+    http: { method: 'GET', path: '/apps/{scopeId}/effects' },
+  },
+  'dashboard/read-app-invocation': {
+    summary: "The events emitted by one invocation in this app scope",
+    input: z.object({ scopeId: z.string().min(1), invocationId: z.string(), limit: z.coerce.number().optional() }),
+    output: z.object({ events: z.array(historyEntry), truncated: z.boolean() }),
+    http: { method: 'GET', path: '/apps/{scopeId}/invocation' },
+  },
+  'dashboard/list-app-denials': {
+    summary: "One page of permission refusals in this app scope",
+    input: z.object({ scopeId: z.string().min(1), until: z.string().optional(), limit: z.coerce.number().optional() }),
+    output: z.object({ entries: z.array(permissionDenial), limit: z.number() }),
+    http: { method: 'GET', path: '/apps/{scopeId}/denials' },
+  },
+  'dashboard/list-app-dead-letters': {
+    summary: "One page of dead-lettered deliveries in this app scope",
+    input: z.object({ scopeId: z.string().min(1), limit: z.coerce.number().optional(), cursor: z.string().optional() }),
+    output: pageOutput(deadLetter),
+    http: { method: 'GET', path: '/apps/{scopeId}/dead-letters' },
+  },
+  'dashboard/query-app-scope': {
+    summary: "Run one read-only SQL statement against this app scope",
+    input: z.object({ scopeId: z.string().min(1), sql: z.string().min(1).max(10_000) }),
+    output: scopeQueryResult,
+    http: { method: 'POST', path: '/apps/{scopeId}/query' },
   },
   'dashboard/list-team-audit': {
     summary: "One page of this team's whole admin log, or one app's with `scopeId`, newest first",

@@ -8,7 +8,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 
 /**
- * `GET /api/apps/:scopeId/denials` (#1828), driven through the worker with the same seams
+ * `GET /api/teams/:teamId/apps/:scopeId/denials` (#1828), driven through the worker with the same seams
  * as `app-processes.test.ts`: the plane behind the service binding is a recorder. What the
  * route adds is the gate — the team's own app, the tenant pinned — and the input rules.
  *
@@ -104,7 +104,9 @@ describe('the refusals route (#1828)', () => {
           if (path === '/scopes') return Response.json({ entries: [], nextCursor: null });
           if (path.endsWith('/denials')) {
             asks.push(u);
-            return Response.json([{ id: 'D1', permission: 'refunds:issue' }]);
+            return Response.json([{ id: 'D1', actor: owner, permission: 'refunds:issue', tenantId: tenant,
+              scopeId: appScope, operation: null, impersonation: null, invocationId: null,
+              at: '2026-09-29T11:00:00.000Z', drainedAt: null }]);
           }
           return Response.json({ error: `unexpected ${path}` }, { status: 500 });
         },
@@ -117,12 +119,12 @@ describe('the refusals route (#1828)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const get = (scope: string, query = '') => app.request(`/api/apps/${scope}/denials${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+  const get = (scope: string, query = '') => app.request(`/api/teams/${tenant}/apps/${scope}/denials${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
 
   it('reads the app’s denial log, tenant and scope pinned, and hands back the page size', async () => {
     const res = await get(appScope, '?until=2026-09-29T12:00:00.000Z&limit=50');
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ entries: [{ id: 'D1', permission: 'refunds:issue' }], limit: 50 });
+    expect(await res.json()).toMatchObject({ entries: [{ id: 'D1', permission: 'refunds:issue' }], limit: 50 });
     const ask = asks[0]!;
     expect(ask.pathname).toBe(`/api/tenants/${tenant}/scopes/${appScope}/denials`);
     expect(ask.searchParams.get('until')).toBe('2026-09-29T12:00:00.000Z');

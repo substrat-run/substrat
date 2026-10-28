@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
-import { api, type CauseChain, type CauseTerminal, type EffectsTree, type EffectsTerminal, type EventEffects, type HistoryEntry, type InvocationEvents } from '../lib/api';
+import { teamApi, type CauseChain, type CauseTerminal, type EffectsTree, type EffectsTerminal, type EventEffects, type HistoryEntry, type InvocationEvents } from '../lib/api';
 import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, payloadUndecodable } from '../lib/history';
 import { causeChips, deliveryStatus, eventSummary, eventTime, newestFirst, payloadRows, stateChangingIds, type CauseChip, type Tone } from '../lib/event-history';
 import { shortId } from '../lib/format';
@@ -23,14 +23,14 @@ const LIFECYCLE_PAGES = 5;
  * backend.
  */
 const reads = {
-  history: (scopeId: string, entityType: string, entityId: string, cursor?: string) =>
-    DEV_MOCK ? Promise.resolve(mockEntityHistory(entityId)) : api.appEntityHistory(scopeId, entityType, entityId, cursor),
-  cause: (scopeId: string, eventId: string): Promise<CauseChain> =>
-    DEV_MOCK ? Promise.resolve(mockEventCause(eventId)) : api.appEventCause(scopeId, eventId),
-  effects: (scopeId: string, eventId: string): Promise<EffectsTree> =>
-    DEV_MOCK ? Promise.resolve(mockEventEffects(eventId)) : api.appEventEffects(scopeId, eventId),
-  invocation: (scopeId: string, invocationId: string): Promise<InvocationEvents> =>
-    DEV_MOCK ? Promise.resolve(mockInvocationEvents(invocationId)) : api.appInvocationEvents(scopeId, invocationId),
+  history: (teamId: string, scopeId: string, entityType: string, entityId: string, cursor?: string) =>
+    DEV_MOCK ? Promise.resolve(mockEntityHistory(entityId)) : teamApi(teamId).readAppHistory({ scopeId, entityType, entityId, cursor }) as Promise<{ entries: HistoryEntry[]; nextCursor: string | null }>,
+  cause: (teamId: string, scopeId: string, eventId: string): Promise<CauseChain> =>
+    DEV_MOCK ? Promise.resolve(mockEventCause(eventId)) : teamApi(teamId).readAppCause({ scopeId, eventId }) as Promise<CauseChain>,
+  effects: (teamId: string, scopeId: string, eventId: string): Promise<EffectsTree> =>
+    DEV_MOCK ? Promise.resolve(mockEventEffects(eventId)) : teamApi(teamId).readAppEffects({ scopeId, eventId }) as Promise<EffectsTree>,
+  invocation: (teamId: string, scopeId: string, invocationId: string): Promise<InvocationEvents> =>
+    DEV_MOCK ? Promise.resolve(mockInvocationEvents(invocationId)) : teamApi(teamId).readAppInvocation({ scopeId, invocationId }) as Promise<InvocationEvents>,
 };
 
 /** One read's lifecycle, keyed so a late answer for a previous key is dropped. */
@@ -82,8 +82,8 @@ function ImpersonatedIcon() {
  * beginning opens with a cut chip and says why in words underneath — a reader must never
  * conclude a consumer began something it merely continued.
  */
-function CauseChainStrip({ scopeId, eventId, held, onPick }: { scopeId: string; eventId: string; held: ReadonlySet<string>; onPick: (id: string) => void }) {
-  const { data: chain, err } = useRead(`${scopeId}|${eventId}`, () => reads.cause(scopeId, eventId));
+function CauseChainStrip({ teamId, scopeId, eventId, held, onPick }: { teamId: string; scopeId: string; eventId: string; held: ReadonlySet<string>; onPick: (id: string) => void }) {
+  const { data: chain, err } = useRead(`${teamId}|${scopeId}|${eventId}`, () => reads.cause(teamId, scopeId, eventId));
   if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
   if (!chain) return <div style={quiet}>Following the trail…</div>;
   if (chain.chain.length === 0) return <div style={quiet}>No chain to show.</div>;
@@ -158,8 +158,8 @@ function CauseChainStrip({ scopeId, eventId, held, onPick }: { scopeId: string; 
  * one interval drawn is how long after the event a consumer finished with it, read off
  * the delivery row's own timestamp.
  */
-function EffectsTreeStrip({ scopeId, eventId }: { scopeId: string; eventId: string }) {
-  const { data: tree, err } = useRead(`${scopeId}|${eventId}`, () => reads.effects(scopeId, eventId));
+function EffectsTreeStrip({ teamId, scopeId, eventId }: { teamId: string; scopeId: string; eventId: string }) {
+  const { data: tree, err } = useRead(`${teamId}|${scopeId}|${eventId}`, () => reads.effects(teamId, scopeId, eventId));
   if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
   if (!tree) return <div style={quiet}>Following what it set off…</div>;
   if (!tree.root) return <div style={quiet}>This event is not in the app’s records.</div>;
@@ -219,11 +219,11 @@ function EffectsTreeStrip({ scopeId, eventId }: { scopeId: string; eventId: stri
  * about another record is named, not linked, because this card cannot show it.
  */
 function SameCallStrip({
-  scopeId, eventId, invocationId, held, onPick, logsOpen, onLogs,
+  teamId, scopeId, eventId, invocationId, held, onPick, logsOpen, onLogs,
 }: {
-  scopeId: string; eventId: string; invocationId: string | null; held: ReadonlySet<string>; onPick: (id: string) => void; logsOpen: boolean; onLogs: () => void;
+  teamId: string; scopeId: string; eventId: string; invocationId: string | null; held: ReadonlySet<string>; onPick: (id: string) => void; logsOpen: boolean; onLogs: () => void;
 }) {
-  const { data: read, err } = useRead(invocationId === null ? null : `${scopeId}|${invocationId}`, () => reads.invocation(scopeId, invocationId!));
+  const { data: read, err } = useRead(invocationId === null ? null : `${teamId}|${scopeId}|${invocationId}`, () => reads.invocation(teamId, scopeId, invocationId!));
   // No id is a fact, not a gap: a seed or internal call carries none.
   if (invocationId === null) return <span style={quiet} title={callButtonTitle(null)}>No call recorded for this event</span>;
   if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
@@ -405,7 +405,7 @@ export function EntityTimeline({
       let all: HistoryEntry[] = [];
       let next: string | null | undefined;
       for (let i = 0; i < pages && next !== null; i++) {
-        const p = await reads.history(scopeId, entityType, entityId, next ?? undefined);
+        const p = await reads.history(teamId, scopeId, entityType, entityId, next ?? undefined);
         if (!live) return;
         all = [...all, ...p.entries];
         next = p.nextCursor;
@@ -416,14 +416,14 @@ export function EntityTimeline({
     return () => {
       live = false;
     };
-  }, [scopeId, entityType, entityId, lifecycle === undefined]);
+  }, [teamId, scopeId, entityType, entityId, lifecycle === undefined]);
 
   const readMore = () => {
     if (cursor === null || reading) return;
     const at = walk.current;
     setReading(true);
     reads
-      .history(scopeId, entityType, entityId, cursor)
+      .history(teamId, scopeId, entityType, entityId, cursor)
       .then((p) => {
         if (walk.current !== at) return;
         setEntries((prev) => [...(prev ?? []), ...p.entries]);
@@ -558,11 +558,12 @@ export function EntityTimeline({
               <div style={{ padding: '12px 16px 14px 184px', background: 'var(--surface-inset)', borderTop: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '110px minmax(0,1fr)', gap: '6px 12px', alignItems: 'start' }}>
                   <span style={label}>Why?</span>
-                  <CauseChainStrip scopeId={scopeId} eventId={e.id} held={held} onPick={pick} />
+                  <CauseChainStrip teamId={teamId} scopeId={scopeId} eventId={e.id} held={held} onPick={pick} />
                   <span style={label}>What did it do?</span>
-                  <EffectsTreeStrip scopeId={scopeId} eventId={e.id} />
+                  <EffectsTreeStrip teamId={teamId} scopeId={scopeId} eventId={e.id} />
                   <span style={label}>Same call</span>
                   <SameCallStrip
+                    teamId={teamId}
                     scopeId={scopeId}
                     eventId={e.id}
                     invocationId={e.invocationId}

@@ -120,6 +120,14 @@ that scope. The two activity reads keep the same check through their shared conn
 lookup. The old cookie routes are gone. Connect links and the account-wide Integrations
 list remain separate work under #2170.
 
+The Data browser's table list and pages, event facets and timeline reads, refusal
+and dead-letter lists, and read-only SQL console now name the team in the path.
+The app or secondary scope is resolved in that team's dashboard scope before the
+tenant-narrowed control plane is asked. These reads require `dashboard:read`; the SQL
+console's statement remains subject to the kernel read-only gate and adapter check.
+The old cookie routes are gone, and the new data-returning GETs are not assistant tools.
+The scope switcher and remaining app observability reads are separate #2170 slices.
+
 When the last area has moved, `sb_team` survives only as "last team used",
 read to decide where `/` lands.
 

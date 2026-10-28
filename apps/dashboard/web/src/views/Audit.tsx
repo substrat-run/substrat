@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Button, KeyValue, Select } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
+import { api, teamApi, ApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockAuditLogAll } from '../lib/mock-audit';
 import { shortDate, shortId } from '../lib/format';
@@ -53,6 +53,7 @@ type Read = (opts?: PageOpts & { scopeId?: string }) => Promise<ListPage<AuditEn
  * The control plane serves this, so embedded mode has nothing to show and the page says so.
  */
 export function AuditLog({
+  teamId,
   apps,
   appsComplete,
   scopeId,
@@ -60,6 +61,7 @@ export function AuditLog({
   onScope,
   personName,
 }: {
+  teamId: string;
   apps: AppRow[];
   /** False while the app index is still being walked — the filter and the app tags are then partial. */
   appsComplete: boolean;
@@ -147,12 +149,12 @@ export function AuditLog({
       if (gen === generation.current) generation.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `read` is fixed for the page's life (mock or live)
-  }, [scopeId, entryId]);
+  }, [teamId, scopeId, entryId]);
 
   /** One page of the app's refusals, appended; the next is `until` the oldest held (+1 ms, deduped). */
   const readRefusals = async (gen: number, scope: string, until?: string) => {
     try {
-      const page = DEV_MOCK ? mockDenials(scope, { until, limit: REFUSALS_PAGE }) : await api.appDenials(scope, { until, limit: REFUSALS_PAGE });
+      const page = DEV_MOCK ? mockDenials(scope, { until, limit: REFUSALS_PAGE }) : await teamApi(teamId).listAppDenials({ scopeId: scope, until, limit: REFUSALS_PAGE });
       if (gen !== generation.current) return;
       setRefusals((prev) => {
         const held = until ? prev?.entries ?? [] : [];

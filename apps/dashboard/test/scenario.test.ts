@@ -1131,7 +1131,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // The Data tab reads THIS app's own database (§5.4 admin-query RPC). After the
     // writes above, its tables are live: Meridian's own tables carry rows and the
     // `_substrat_*` spine is present and flagged system. This is the exact path the
-    // dashboard's /api/apps/:scopeId/tables route drives (host.admin, STAFF actor).
+    // dashboard's /api/teams/:teamId/apps/:scopeId/tables route drives (host.admin, STAFF actor).
     const tables = await host.admin.listScopeTables(staff, acme.tenantId, appScopeId);
     expect(tables.length).toBeGreaterThan(0);
     expect(tables.some((t) => t.name.startsWith('_substrat') && t.system)).toBe(true);
@@ -1150,7 +1150,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       host.admin.readScopeTable(staff, acme.tenantId, appScopeId, { table: 'nope', limit: 50, offset: 0 }),
     ).rejects.toThrow(/unknown table/);
 
-    // The SQL console (#219) — the exact path the dashboard's /api/apps/:scopeId/query
+    // The SQL console (#219) — the exact path the dashboard's /api/teams/:teamId/apps/:scopeId/query
     // route drives: a read runs, a write shape is refused with the gate's message.
     const counted = await host.admin.queryScope(staff, acme.tenantId, appScopeId, {
       sql: `SELECT count(*) AS n FROM "${populated.name}"`,

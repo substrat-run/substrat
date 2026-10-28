@@ -3,7 +3,7 @@ import { createClient, type BoundScopeRow, type ChannelHistoryRow, type Dashboar
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
-import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, EmittedModel, EventFacetResult, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
 export type { BoundScopeRow, DeployFailureRow, FailureGroupRow, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView };
@@ -1743,25 +1743,6 @@ export const api = {
     }),
   /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
   appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),
-  /** The tables of the app's own database (Data tab). */
-  appTables: (scopeId: string) => call<ScopeTable[]>(`/apps/${encodeURIComponent(scopeId)}/tables`),
-  /** A bounded page of one table of the app's database. */
-  appTableRows: (scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) => {
-    const q = new URLSearchParams();
-    if (opts.limit != null) q.set('limit', String(opts.limit));
-    if (opts.offset != null) q.set('offset', String(opts.offset));
-    const qs = q.toString();
-    return call<ScopeTablePage>(
-      `/apps/${encodeURIComponent(scopeId)}/tables/${encodeURIComponent(table)}${qs ? `?${qs}` : ''}`,
-    );
-  },
-  /** One read-only SQL statement against the app's database (the Data tab's console). */
-  appQuery: (scopeId: string, sql: string) =>
-    call<ScopeQueryResult>(`/apps/${encodeURIComponent(scopeId)}/query`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sql }),
-    }),
   /**
    * Mint a consent-round connect link (#1220). The `url` in the answer is both the
    * Connect button's destination (navigate to it now) and the copyable link for a
@@ -1892,54 +1873,6 @@ export const api = {
   /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
    *  cross: a dropped `until` answers about a wider slice than was asked for, and
    *  nothing about the answer says so. */
-  /** What one event set off (#1237) — the consumers it reached and what they emitted. */
-  appEventEffects: (scopeId: string, eventId: string) =>
-    call<EffectsTree>(
-      `/apps/${encodeURIComponent(scopeId)}/effects?eventId=${encodeURIComponent(eventId)}`,
-    ),
-
-  /** Every delivery in one app that gave up (#1525), newest event first. */
-  /** #1828: one app's refused permission checks, newest first; the next page is `until` the oldest held. */
-  appDenials: (scopeId: string, opts: { until?: string; limit?: number } = {}) => {
-    const q = new URLSearchParams();
-    if (opts.until) q.set('until', opts.until);
-    if (opts.limit !== undefined) q.set('limit', String(opts.limit));
-    return call<{ entries: import('./audit-activity').Refusal[]; limit: number }>(
-      `/apps/${encodeURIComponent(scopeId)}/denials${q.size ? `?${q}` : ''}`,
-    );
-  },
-  appDeadLetters: (scopeId: string, cursor?: string) =>
-    call<Page<DeadLetter>>(
-      `/apps/${encodeURIComponent(scopeId)}/dead-letters${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
-    ),
-
-  /** Everything one call emitted (#1237), oldest first — siblings included. */
-  appInvocationEvents: (scopeId: string, invocationId: string) =>
-    call<InvocationEvents>(
-      `/apps/${encodeURIComponent(scopeId)}/invocation?invocationId=${encodeURIComponent(invocationId)}`,
-    ),
-
-  /** Why one event exists (#1237) — its causal chain, newest first. */
-  appEventCause: (scopeId: string, eventId: string) =>
-    call<CauseChain>(
-      `/apps/${encodeURIComponent(scopeId)}/cause?eventId=${encodeURIComponent(eventId)}`,
-    ),
-
-  appFacets: (
-    scopeId: string,
-    q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string },
-  ) =>
-    call<EventFacetAnswer>(
-      `/apps/${encodeURIComponent(scopeId)}/facets?${new URLSearchParams(
-        Object.fromEntries(Object.entries(q).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string>,
-      )}`,
-    ),
-
-  appEntityHistory: (scopeId: string, entityType: string, entityId: string, cursor?: string) =>
-    call<Page<HistoryEntry>>(
-      `/apps/${encodeURIComponent(scopeId)}/history?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}` +
-        (cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`),
-    ),
 
   /** Every app's health, worst first (#1238) — the rollup, not a per-app read. */
   fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),

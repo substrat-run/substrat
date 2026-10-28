@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { api, type AppRow, type ConnectionSweepRow, type ConnectionSweepView, type DeadLetter, type FlowFinding, type FlowFindingsView, type FlowGraph, type FlowView, type OperationHealthView } from '../lib/api';
+import { api, teamApi, type AppRow, type ConnectionSweepRow, type ConnectionSweepView, type DeadLetter, type FlowFinding, type FlowFindingsView, type FlowGraph, type FlowView, type OperationHealthView } from '../lib/api';
 import { card } from '../components/ui';
 import { relativeTime, shortId } from '../lib/format';
 import { Button } from '@substrat-run/ui';
@@ -335,6 +335,7 @@ function DeadLetterRow({ teamId, scopeId, d }: { teamId: string; scopeId: string
       )}
       {opened && (
         <InvocationStrip
+          teamId={teamId}
           scopeId={scopeId}
           eventId={d.eventId}
           invocationId={opened.invocationId}
@@ -603,21 +604,21 @@ export function Flow({ teamId, app }: { teamId: string; app: AppRow }) {
       .then((v) => live && setView(v))
       // A worker predating the route: nothing here can say anything true, so it says nothing.
       .catch(() => live && setView(null));
-    api
-      .appDeadLetters(app.app_scope_id)
-      .then((page) => live && setDead({ entries: page.entries, nextCursor: page.nextCursor, failed: false, loading: false }))
+    teamApi(teamId)
+      .listAppDeadLetters({ scopeId: app.app_scope_id })
+      .then((page) => live && setDead({ entries: page.entries as DeadLetter[], nextCursor: page.nextCursor, failed: false, loading: false }))
       .catch(() => live && setDead((s) => ({ ...s, failed: true })));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
 
   const more = () => {
     if (dead.nextCursor === null || dead.loading) return;
     setDead((s) => ({ ...s, loading: true }));
-    api
-      .appDeadLetters(app.app_scope_id, dead.nextCursor)
-      .then((page) => setDead((s) => ({ entries: [...(s.entries ?? []), ...page.entries], nextCursor: page.nextCursor, failed: false, loading: false })))
+    teamApi(teamId)
+      .listAppDeadLetters({ scopeId: app.app_scope_id, cursor: dead.nextCursor })
+      .then((page) => setDead((s) => ({ entries: [...(s.entries ?? []), ...page.entries as DeadLetter[]], nextCursor: page.nextCursor, failed: false, loading: false })))
       .catch(() => setDead((s) => ({ ...s, failed: true, loading: false })));
   };
 

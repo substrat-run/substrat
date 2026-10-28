@@ -1,7 +1,7 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
 import { Button, Input } from '@substrat-run/ui';
-import { type EventFacetAnswer, api, ApiError, type ObservabilityLogEvent } from '../lib/api';
+import { type EventFacetAnswer, api, teamApi, ApiError, type ObservabilityLogEvent } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';
 import { card, MonoTag } from '../components/ui';
@@ -285,12 +285,14 @@ interface AppliedFacet {
  */
 export function EventExplorer({
   nonce = 0, query, onQuery,
+  teamId,
   scopeId,
   hours,
   focusEventType,
   window: cursor,
   embedded = false,
 }: {
+  teamId: string;
   scopeId: string;
   hours: number;
   focusEventType?: string;
@@ -395,7 +397,7 @@ export function EventExplorer({
       since: applied.since,
       until: applied.until,
     };
-    (DEV_MOCK ? Promise.resolve(mockEventFacets(facetQuery)) : api.appFacets(scopeId, facetQuery))
+    (DEV_MOCK ? Promise.resolve(mockEventFacets(facetQuery)) : teamApi(teamId).facetAppEvents({ scopeId, ...facetQuery }))
       .then((r) => live && (setResult(r), setLoading(false)))
       .catch(
         (e) =>
@@ -408,7 +410,7 @@ export function EventExplorer({
     return () => {
       live = false;
     };
-  }, [scopeId, applied, nonce]);
+  }, [teamId, scopeId, applied, nonce]);
 
   const group: EventGroup = fieldMode || applied.field ? 'field' : (groupBy as EventGroup);
   const rows = result ? bucketRows(result, applied.field ? 'field' : (applied.groupBy as EventGroup)) : [];

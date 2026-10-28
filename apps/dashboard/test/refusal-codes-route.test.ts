@@ -194,7 +194,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
   });
 
   it('the SQL console relays the gate\'s refusal as the plane\'s 400, with its sentence', async () => {
-    const res = await send('POST', `/apps/${appScope}/query`, { sql: 'DELETE FROM x' });
+    const res = await send('POST', `/teams/${tenant}/apps/${appScope}/query`, { sql: 'DELETE FROM x' });
     expect(res.status).toBe(400);
     expect(res.detail).toMatch(/^read-only console: /);
   });

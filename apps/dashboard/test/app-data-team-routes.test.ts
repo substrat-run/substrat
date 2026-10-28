@@ -61,7 +61,7 @@ describe('the app Data reads use the path team (#2170)', () => {
       await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'sub-owner', principal: owner, tenantId: team, scopeId: dashboardScope });
       const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
       await dash.invoke('dashboard/provision-app', { appScopeId: apps[index], verticalSlug: 'acme/widgets', name: `App ${index}` });
-      await host.provisionScope(staff, { tenantId: team, scopeId: apps[index] });
+      await host.provisionScope(staff, { tenantId: team, scopeId: apps[index]! });
     }
     planeCalls = [];
     const plane = tenantPlane(host, staff);
@@ -87,8 +87,11 @@ describe('the app Data reads use the path team (#2170)', () => {
 
   it('reads team A with team B in the cookie, refuses an unrelated team and app, and removes cookie routes', async () => {
     const base = `/api/teams/${teams[0]}/apps/${apps[0]}`;
+    const tableList = await send('GET', base + '/tables');
+    expect(tableList.status).toBe(200);
+    const table = ((await tableList.json()) as Array<{ name: string }>)[0]!.name;
     const queries = [
-      ['/tables', 'GET'], ['/tables/sqlite_master', 'GET'], ['/facets', 'GET'],
+      ['/tables', 'GET'], [`/tables/${encodeURIComponent(table)}`, 'GET'], ['/facets', 'GET'],
       ['/history?entityType=widget&entityId=one', 'GET'], ['/cause?eventId=01ARZ3NDEKTSV4RRFFQ69G5FAV', 'GET'],
       ['/effects?eventId=01ARZ3NDEKTSV4RRFFQ69G5FAV', 'GET'], ['/invocation?invocationId=one', 'GET'],
       ['/denials', 'GET'], ['/dead-letters', 'GET'], ['/query', 'POST'],
