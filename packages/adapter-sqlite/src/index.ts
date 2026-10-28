@@ -9796,6 +9796,7 @@ export class SqliteScopeHost implements ScopeHost {
             return rt.actor.turn(() => mintBecomeCapability(spineSql(rt.db), input, actor, this.clock()));
           },
           outcome: (minted) => ({ phase: 'applied', details: { capabilityId: minted.id } }),
+          onUnrecordedOutcome: (minted, error) => ({ ...minted, auditWarning: auditWarningOf('the capability mint', error) }),
           logError: (message, fields) => console.error(message, fields),
         });
       },

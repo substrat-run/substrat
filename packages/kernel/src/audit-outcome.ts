@@ -163,6 +163,7 @@ export async function auditedScopePermissionWrite<T>(input: {
   record: (after: Record<string, unknown>) => unknown;
   write: () => Promise<T>;
   outcome?: (result: T) => { phase: 'applied' | 'refused'; details?: Record<string, unknown> };
+  onUnrecordedOutcome?: (result: T, error: string) => T;
   logError: AuditLogError;
 }): Promise<T> {
   const operationId = ulid();
@@ -183,8 +184,9 @@ export async function auditedScopePermissionWrite<T>(input: {
     throw error;
   }
   const row = input.outcome?.(result) ?? { phase: 'applied' as const };
-  await outcome(row.phase, row.details);
-  return result;
+  const unrecorded = await outcome(row.phase, row.details);
+  return unrecorded !== null && input.onUnrecordedOutcome
+    ? input.onUnrecordedOutcome(result, unrecorded) : result;
 }
 
 /** The `auditWarning` a change that went through answers when its `applied` row could not be written. */

@@ -218,6 +218,8 @@ export const mintedCapability = z.object({
   id: capabilityId,
   secret: z.string().startsWith(CAPABILITY_SECRET_PREFIX),
   expiresAt: instant.nullable(),
+  /** The scope committed but the directory could not record the outcome; the intent remains discoverable. */
+  auditWarning: z.string().optional(),
 });
 export type MintedCapability = z.infer<typeof mintedCapability>;
 

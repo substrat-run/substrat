@@ -8343,6 +8343,7 @@ export class CloudflareScopeHost implements ScopeHost {
           record: (after) => this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical: rec.vertical }, null, after),
           write: async () => (await this.capabilityScopeStub(rec, scopeId, 'mintCapability')).mintBecomeCapabilityAndAuditIntent(input, actor),
           outcome: (minted) => ({ phase: 'applied', details: { capabilityId: minted.id } }),
+          onUnrecordedOutcome: (minted, error) => ({ ...minted, auditWarning: auditWarningOf('the capability mint', error) }),
           logError: (message, fields) => console.error(message, fields),
         });
       },

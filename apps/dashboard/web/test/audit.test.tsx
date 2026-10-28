@@ -34,6 +34,14 @@ describe('audit activity derivations (#1825)', () => {
     expect(filterActivity(rows.map((e) => ({ kind: 'action' as const, at: e.at, id: e.id, entry: e })),
       { outcome: 'allowed', kind: 'all', text: '', appName }).map((item) => item.id)).toEqual(['applied']);
   });
+
+  it('the overview uses one activity row per answered permission attempt', () => {
+    const attempt = (id: string, operationId: string, phase: string) => entry(id, { after: { operationId, phase } });
+    const rows = activityRows([attempt('outcome', 'one', 'applied'), attempt('intent', 'one', 'intent'),
+      attempt('pending', 'two', 'intent')], appName);
+    expect(rows.map((row) => row.id)).toEqual(['outcome', 'pending']);
+    expect(rows[1]!.text).toContain('requested:');
+  });
   it('groups consecutive entries by local day, with Today and Yesterday named', () => {
     const now = new Date(2026, 8, 26, 15).getTime();
     const days = groupByDay([entry('1', { at: at(2026, 9, 26, 14) }), entry('2', { at: at(2026, 9, 26, 9) }), entry('3', { at: at(2026, 9, 25) }), entry('4', { at: at(2026, 9, 24) }), entry('5', { at: at(2025, 12, 31) })], now);

@@ -93,6 +93,7 @@ export function scopePermissionAuditSuite(adapter: string, makeFixture: () => Pr
           expect((await rows()).filter((r) => (r.after as { operationId?: string }).operationId === operationId)
             .map((r) => (r.after as { phase: string }).phase)).toEqual(['intent', 'unknown']);
           if (action === 'mintCapability') {
+            expect((result as { auditWarning?: string }).auditWarning).toMatch(/completed, but its outcome could not be written/);
             const text = JSON.stringify(await rows());
             expect(text).not.toContain((result as { secret: string }).secret);
           }
