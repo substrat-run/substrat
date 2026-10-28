@@ -13,6 +13,38 @@ import {
   type SwitchSql,
 } from '../src/index.js';
 
+describe('the D-65 approval directory shape', () => {
+  it('admits one live approval per release and keys revoke walks by approval', () => {
+    const db = new DatabaseSync(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    db.exec(STORE_DRIVER_RELEASES_DDL);
+    const insert = db.prepare(`INSERT INTO store_driver_approvals
+      (approval_id, driver, sha256, source_commit, approved_by, approved_at, reason,
+       source_references, isolation_review, schema, class_name, operations)
+      VALUES (?, ?, ?, 'commit', 'staff', '2026-10-28', 'reviewed', '[]', '{}', 1, 'Store', '[]')`);
+    const sha256 = 'a'.repeat(64);
+    insert.run('first', 'graph', sha256);
+    expect(() => insert.run('duplicate', 'graph', sha256)).toThrow(/UNIQUE constraint failed/);
+    insert.run('other-driver', 'other', sha256);
+    db.prepare('UPDATE store_driver_approvals SET revoked_at = ? WHERE approval_id = ?').run('2026-10-29', 'first');
+    insert.run('second', 'graph', sha256);
+
+    const walk = db.prepare(`INSERT INTO store_driver_revoke_walks
+      (approval_id, cursor, actor, reason, rollout_seq)
+      VALUES (?, NULL, 'staff', 'reviewed', 0)`);
+    walk.run('first');
+    walk.run('second');
+    expect(db.prepare(`SELECT w.approval_id, a.driver, a.sha256 FROM store_driver_revoke_walks w
+      JOIN store_driver_approvals a USING (approval_id) ORDER BY w.approval_id`).all()).toEqual([
+      { approval_id: 'first', driver: 'graph', sha256 },
+      { approval_id: 'second', driver: 'graph', sha256 },
+    ]);
+    expect(() => walk.run('missing')).toThrow(/FOREIGN KEY constraint failed/);
+    db.exec(STORE_DRIVER_RELEASES_DDL);
+    db.close();
+  });
+});
+
 /**
  * Where a rollback goes (D-63, #2300), against a real SQLite, for the rows paging adds (#2312).
  * Each adapter runs these same functions over its own directory; the store-driver contract suite

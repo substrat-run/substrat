@@ -421,7 +421,7 @@ describe('the store driver rename, on the dump and the admin log', () => {
   });
 
   it('still reads an admin-log row written under a pre-rename action, and the new names', () => {
-    for (const action of [...HISTORIC_ADMIN_ACTIONS, 'uploadStoreDriverRelease', 'rollOutStoreDriver', 'rollBackStoreDriver', 'rebuildStoreDriver']) {
+    for (const action of [...HISTORIC_ADMIN_ACTIONS, 'uploadStoreDriverRelease', 'approveStoreDriverRelease', 'revokeStoreDriverRelease', 'rollOutStoreDriver', 'rollBackStoreDriver', 'rebuildStoreDriver']) {
       expect(adminAction.parse(action)).toBe(action);
     }
     expect(HISTORIC_ADMIN_ACTIONS).toEqual(['uploadStoreKindRelease', 'rollOutStoreKind', 'rollBackStoreKind']);

@@ -40,6 +40,8 @@ async function legacyDirectory(): Promise<string> {
     db.exec('ALTER TABLE vertical_scope_stores RENAME COLUMN driver TO kind');
     // The walk ledger (#2312) came after the rename, so a directory from before it has none.
     db.exec('DROP TABLE store_driver_rollout_walks');
+    // D-65's approval and revoke-walk tables also came later.
+    db.exec('DROP TABLE store_driver_revoke_walks; DROP TABLE store_driver_approvals');
     db.prepare(
       'INSERT INTO store_kind_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',
     ).run('graph', SHA, 'b'.repeat(40), staff, '2026-10-15T00:00:00.000Z');
