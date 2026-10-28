@@ -51,6 +51,7 @@ import { deriveFlowGraph } from './flow-graph.js';
 import { declaredProcesses, isProcessPeriod, processWindows, type ProcessMapAnswer, type ProcessPeriod } from './process-map.js';
 import { createModelHost, type ModelHost, type ModelTool } from '@substrat-run/vertical-host/model';
 import { ASK_MAX_STEPS, ASK_SYSTEM, READ_FAILED, REFUSED, answeredTurn, askSummary, endedTurn, exposedReads, fitToolOutput, shapeForModel, toolNameOf } from './ask.js';
+import { conceptPage } from './concept.js';
 import {
   DEFAULT_EXPLANATION_MODEL,
   EXPLANATION_SENT,
@@ -5467,6 +5468,22 @@ async function browsableDataIn(ctx: TeamContext, asked: string) {
 
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
+  'dashboard/get-app-concept': async (ctx, { scopeId: requested, section, versionId: expected, offset }) => {
+    const dash = await teamScope(ctx);
+    const cp = teamPlane(ctx);
+    const { appRow, scope } = await resolveBrowsableScope(dash, cp, requested);
+    const bound = await cp.boundVersionId(scope, { strict: true });
+    // A pinned scope needs no channel lookup. A failed pin read must never fall back to prod.
+    const runningId = bound ?? versionPair(await verticalDeploymentFromCp(cp, appRow.vertical_slug), null).runningId;
+    if (expected !== undefined && expected !== runningId) {
+      throw new HTTPException(409, { message: 'application version changed; read the description index again' });
+    }
+    const empty = { versionId: runningId, sections: [], section: null, nextOffset: null };
+    if (!runningId) return { ...empty, unavailable: 'no-version' as const };
+    const markdown = await cp.versionConcept(appRow.vertical_slug, runningId);
+    if (markdown === null) return { ...empty, unavailable: 'not-published' as const };
+    return { versionId: runningId, ...conceptPage(markdown, section, offset), unavailable: null };
+  },
   'dashboard/app-email-sender': (ctx, { scopeId }) => appEmailSenderIn(ctx, scopeId),
   'dashboard/set-app-email-sender': (ctx, { scopeId, granted }) => appEmailSenderIn(ctx, scopeId, granted),
   'dashboard/list-apps': async ({ c, host, node }, page) => listAppsPage(c, host, node, listPageQuery.parse(page)),

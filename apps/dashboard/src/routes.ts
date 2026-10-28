@@ -755,6 +755,23 @@ export const dashboardRoutes = defineRoutes({
     output: z.array(installStep),
     http: { method: 'GET', path: '/apps/{scopeId}/steps' },
   },
+  'dashboard/get-app-concept': {
+    summary: 'Read the running application description: omit section to list sections, then pass a section id and versionId to read it. Follow nextOffset for more text. Describes intended behavior, not live permissions or data.',
+    input: z.object({
+      scopeId: z.string().min(1),
+      section: z.string().min(1).max(64).optional(),
+      versionId: z.string().min(1).max(128).optional(),
+      offset: z.coerce.number().int().min(0).max(65536).optional(),
+    }),
+    output: z.object({
+      versionId: z.string().nullable(),
+      sections: z.array(z.object({ id: z.string(), title: z.string() })),
+      section: z.object({ id: z.string(), title: z.string(), paragraphs: z.array(z.string()) }).nullable(),
+      nextOffset: z.number().nullable(),
+      unavailable: z.enum(['no-version', 'not-published']).nullable(),
+    }),
+    http: { method: 'GET', path: '/apps/{scopeId}/concept' },
+  },
   'dashboard/list-app-events': {
     summary: "One page of an app's lifecycle trail (Activity panel), newest first",
     input: z.object({ scopeId: z.string().min(1), ...pageInput }),

@@ -356,6 +356,23 @@ each app's process map), and each one checks your role exactly as the page does.
 the dashboard your role cannot read is refused to it as well. It only reads; it changes
 nothing.
 
+Application owners can also publish an **application description** for Ask. Set
+`substrat.concept` in the application's `package.json` to a relative Markdown file,
+for example `"concept": "spec/concept.md"`, and push a new version. Publication is
+opt-in: having a concept file alone does not expose it. The entire selected file becomes
+readable to dashboard members who can read the app (including installing teams for a listed
+application), so choose a user-facing document if the design contains internal decisions.
+The file must stay inside the application directory and fit within 64 KiB in UTF-8.
+
+Ask reads the description belonging to the app's running version, lists its sections, and
+reads the relevant section in bounded pages. It names the section in its answer. A missing
+description is reported as unavailable; it is never filled in from the latest source tree.
+Description reads redact secrets and contact details before splitting the text into pages.
+The description explains intended behavior: current permissions, configuration, and data
+still come from the dashboard's other reads. Documentation is read-only and cannot instruct
+the assistant to take actions. This uses the existing AI availability and answer budget;
+it does not enable AI for a deployment where Ask is off.
+
 Each answer carries the **AI** marker, the reads it made (*Read apps (3) · Read app requests
 (20+)*) and when it was written. A follow-up question is asked with the
 conversation so far. The conversation lasts as long as the overlay is open: nothing records

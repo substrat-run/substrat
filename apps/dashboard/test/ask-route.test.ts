@@ -64,6 +64,7 @@ const staff = platformActorId.parse(ulid());
 const SLUG = 'acme/desk';
 const HOUR = 3_600_000;
 const ANSWER = 'Uploads have failed three times since Monday. The refusals come from a supplier, not from your app.';
+const CONCEPT = '# Desk\n\nWork orders for the team.\n\n## Approvals\n\nManagers approve a work order before it is sent. Contact help@example.test.';
 
 const MODEL: EmittedModel = {
   entities: {},
@@ -97,6 +98,7 @@ describe('AI-written text in the dashboard (#1749)', () => {
   const otherTenant = tenantId.parse(ulid());
   const dashScope = scopeId.parse(ulid());
   let appScope: ScopeId;
+  let runningVersion: string;
   let env: Record<string, unknown>;
   /** EVERY request that reached the plane — a refused route leaves this empty. */
   let planeCalls: string[];
@@ -130,6 +132,7 @@ describe('AI-written text in the dashboard (#1749)', () => {
     // One app running a version that declares the `order` lifecycle.
     await host.admin.registerVertical(staff, { slug: SLUG, name: 'Desk', source: 'cli', ownerTenant: tenant });
     const version = ulid();
+    runningVersion = version;
     await host.admin.publishVersion(staff, {
       id: version,
       verticalSlug: SLUG,
@@ -145,6 +148,7 @@ describe('AI-written text in the dashboard (#1749)', () => {
         registry: { permissions: [], roles: [], entityGrants: [] },
         digests: { manifest: 'manifest', permission: 'perm', migration: 'mig' },
         model: MODEL,
+        concept: CONCEPT,
       }),
     });
     await host.admin.admitVersion(staff, version);
@@ -252,6 +256,48 @@ describe('AI-written text in the dashboard (#1749)', () => {
   const sentOn = (n: number) => JSON.stringify(modelCalls[n - 1]!.inputs);
 
   describe('Ask (#2283)', () => {
+    it('reads published concept sections through the guarded tools with redacted text and version provenance', async () => {
+      script(
+        { response: '', tool_calls: [{ id: 'index', name: 'get_app_concept', arguments: { scopeId: appScope } }] },
+        { response: '', tool_calls: [{ id: 'section', name: 'get_app_concept', arguments: { scopeId: appScope, section: 's1', versionId: runningVersion } }] },
+        { response: 'According to the Approvals section, managers approve work orders before they are sent.' },
+      );
+      const evs = await events(ask('viewer', [{ role: 'user', text: 'Who approves a work order?' }]));
+      expect(sentOn(3)).toContain('Managers approve a work order');
+      expect(sentOn(3)).toContain(runningVersion);
+      expect(sentOn(3)).not.toContain('help@example.test');
+      expect(evs.find((e) => e.t === 'data-provenance')).toMatchObject({ sources: 2 });
+      expect(planeCalls.some((p) => p.endsWith(`/versions/${runningVersion}/concept`))).toBe(true);
+    });
+
+    it('authorizes the description before reading it and refuses stale section reads', async () => {
+      planeCalls.length = 0;
+      expect((await as('nobody', 'GET', `/apps/${appScope}/concept`)).status).toBe(403);
+      expect(planeCalls).toEqual([]);
+      expect((await as('viewer', 'GET', `/apps/${ulid()}/concept`)).status).toBe(404);
+      expect(planeCalls.some((p) => p.endsWith('/concept'))).toBe(false);
+      expect((await as('viewer', 'GET', `/apps/${appScope}/concept?section=s1&versionId=old`)).status).toBe(409);
+      expect((await as('viewer', 'GET', `/apps/${appScope}/concept?section=missing`)).status).toBe(404);
+      expect((await as('viewer', 'GET', `/apps/${appScope}/concept?offset=-1`)).status).toBe(400);
+    });
+
+    it('reads the pinned version, and reports an unpublished concept after a version change', async () => {
+      const next = ulid();
+      await host.admin.publishVersion(staff, {
+        id: next, verticalSlug: SLUG, version: '2.0.0', manifestDigest: 'm2', permissionDigest: 'p2', migrationDigest: 'g2', deploymentRef: null,
+        manifestJson: JSON.stringify({ version: '2.0.0', entry: 'index.js', compatibilityDate: '2026-07-01', registry: { permissions: [], roles: [], entityGrants: [] }, digests: { manifest: 'm2', permission: 'p2', migration: 'g2' } }),
+      });
+      await host.admin.admitVersion(staff, next);
+      await host.admin.promoteVersion(staff, SLUG, 'prod', next);
+      // Promotion moves ordinary scopes; explicitly keep this scope on the older release.
+      await host.admin.bindScopeVersion(staff, tenant, appScope, runningVersion);
+      const current = await as('viewer', 'GET', `/apps/${appScope}/concept?section=s1`);
+      expect(await current.json()).toMatchObject({ versionId: runningVersion, unavailable: null, section: { title: 'Approvals' } });
+      await host.admin.bindScopeVersion(staff, tenant, appScope, next);
+      const changed = await as('viewer', 'GET', `/apps/${appScope}/concept`);
+      expect(await changed.json()).toMatchObject({ versionId: next, unavailable: 'not-published', sections: [], section: null });
+    });
+
     it('reads through the tools, answers, and returns the protocol’s events in order', async () => {
       const f = await myFinding();
       script(

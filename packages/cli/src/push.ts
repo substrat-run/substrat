@@ -63,6 +63,7 @@ import {
 import { walkPages } from '@substrat-run/control-plane-client';
 import { checkMigrationDataLoss, type DataLossCheck, type ReplayInputs } from './data-loss-check.js';
 import { parseJsonBody } from './http.js';
+import { readPublishedConcept } from './published-concept.js';
 import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
 import { assertWorkerNodeImports } from './worker-node-imports.js';
@@ -1824,6 +1825,7 @@ export async function prepareWorkerBundle(
 export async function push(
   opts: PushOptions,
 ): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[]; dataLoss: DataLossCheck }> {
+  const concept = readPublishedConcept(opts.dir);
   // The layer rules, before anything is built or uploaded (#955). First, because it reads
   // the source tree and needs nothing else — a violation is refused in a second rather than
   // after a wrangler build whose output was never going to be admissible. Skipped only for
@@ -2020,6 +2022,7 @@ export async function push(
     // The emitted entity model (#1214) — metadata like envSpec/surfaces, not in any digest:
     // it describes what the migrations built, it does not build anything.
     ...(model ? { model } : {}),
+    ...(concept !== undefined ? { concept } : {}),
     // #1321: the declared output surface travels with the version — `openapi.json`
     // is built inside the vertical and never sent, so the platform has no other way
     // to know which declared fields anything is even capable of returning.

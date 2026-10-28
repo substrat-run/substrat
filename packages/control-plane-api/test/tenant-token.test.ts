@@ -391,6 +391,8 @@ describe('tenant tokens', () => {
       expect((await app.request(`${path}/versions`, { headers: asA })).status).toBe(404);
       expect((await app.request(`${path}/channels`, { headers: asA })).status).toBe(404);
 
+      expect((await app.request(`${path}/versions/${id}/concept`, { headers: asA })).status).toBe(404);
+
       await host.admin.setVerticalListed(staff, slug, true);
       const versions = await app.request(`${path}/versions`, { headers: asA });
       expect(versions.status).toBe(200);
@@ -398,7 +400,7 @@ describe('tenant tokens', () => {
       const channels = await app.request(`${path}/channels`, { headers: asA });
       expect(channels.status).toBe(200);
       expect((await channels.json()).entries.find((c: { channel: string }) => c.channel === 'prod')?.versionId).toBe(id);
-      for (const read of ['registry', 'schedules', 'flow', 'model', 'assets']) {
+      for (const read of ['registry', 'schedules', 'flow', 'model', 'assets', 'concept']) {
         expect((await app.request(`${path}/versions/${id}/${read}`, { headers: asA })).status, read).not.toBe(404);
       }
 

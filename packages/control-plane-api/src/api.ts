@@ -1644,6 +1644,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/registry$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/migrations$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/, pin: 'owner' },
+  { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/concept$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/flow$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/assets$/, pin: 'owner' },
   { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/schedules$/, pin: 'owner' },
@@ -2083,6 +2084,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // The emitted entity model of one version (#1214) — owner-narrowed the same way;
     // the dashboard's Model tab reads it.
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/ },
+    { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/concept$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/schedules$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
@@ -8655,6 +8657,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // to tell from a version that declares it calls nothing.
       calls: parsed?.calls ?? null,
     });
+  });
+
+  // Published documentation only, never source files. Same owner/listed visibility as model.
+  app.get('/verticals/:slug/versions/:id/concept', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    if (await notReadable(p, slug)) return refuse(c, 'not_found', 'not found');
+    const json = await c.var.admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
+    const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
+    return c.json({ concept: parsed?.concept ?? null });
   });
 
   app.get('/verticals/:slug/versions/:id/model', async (c) => {
