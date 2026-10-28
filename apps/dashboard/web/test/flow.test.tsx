@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { consumerId, flowLayout, highlight, nodeHealth } from '../src/lib/flow-layout';
 import { MOCK_DEAD_LETTERS, MOCK_FLOW_VIEW } from '../src/lib/mock-flow';
 import { Flow } from '../src/views/Flow';
-import { api, type AppRow } from '../src/lib/api';
+import { api, teamApi, type AppRow } from '../src/lib/api';
 
 const graph = MOCK_FLOW_VIEW.graph;
 
@@ -96,7 +96,7 @@ describe('Flow view', () => {
   });
 
   it('draws the map and the four panels from the flow read, and highlights on click', async () => {
-    vi.spyOn(api, 'appFlow').mockResolvedValue(MOCK_FLOW_VIEW);
+    vi.spyOn(teamApi('team-a'), 'getAppFlow').mockResolvedValue(MOCK_FLOW_VIEW);
     vi.spyOn(api, 'appDeadLetters').mockResolvedValue({ entries: MOCK_DEAD_LETTERS, nextCursor: null });
     await act(async () => root.render(<Flow teamId="team-a" app={app} />));
 
@@ -124,7 +124,7 @@ describe('Flow view', () => {
   });
 
   it('says a dead-letter list that failed to load is not a clean bill', async () => {
-    vi.spyOn(api, 'appFlow').mockResolvedValue(MOCK_FLOW_VIEW);
+    vi.spyOn(teamApi('team-a'), 'getAppFlow').mockResolvedValue(MOCK_FLOW_VIEW);
     vi.spyOn(api, 'appDeadLetters').mockRejectedValue(new Error('down'));
     await act(async () => root.render(<Flow teamId="team-a" app={app} />));
     expect(container.textContent).toContain('not a statement that nothing gave up');
