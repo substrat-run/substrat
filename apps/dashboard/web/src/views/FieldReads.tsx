@@ -43,7 +43,7 @@ function Groups({ view }: { view: FieldReadsView }) {
       const window = view.window ? `${view.window.since}–${view.window.until}` : 'window unknown';
       const operations = group.operations.map((op) => ({
         ...op,
-        notObserved: op.responses > 0 ? op.fields.filter((field) => field.eligible === 0) : [],
+        notObserved: group.notObservedReturned.filter((field) => field.operation === op.operation),
       }));
       const largelyUnreturned = operations.filter((op) =>
         op.responses > 0 && op.notObserved.length * 2 > op.fields.length);
