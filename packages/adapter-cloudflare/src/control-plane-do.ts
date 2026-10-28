@@ -2315,8 +2315,10 @@ export class ControlPlaneDO extends DurableObject {
     kind: string;
     ref: string;
     createdAt: string;
-  }): { kind: string; ref: string } {
-    const tenantRow = this.sql
+  }, audit?: AdminEntryInput): { kind: string; ref: string } {
+    let stored!: { kind: string; ref: string };
+    this.writeAndAudit(() => {
+      const tenantRow = this.sql
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', row.tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
@@ -2327,7 +2329,7 @@ export class ControlPlaneDO extends DurableObject {
         `cannot provision tenant store under non-active tenant (status: ${tenantRow.status}): ${row.tenantId}`,
       );
     }
-    this.sql.exec(
+      const inserted = this.sql.exec(
       `INSERT OR IGNORE INTO tenant_stores (tenant_id, vertical, binding, kind, ref, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
       row.tenantId,
@@ -2336,9 +2338,12 @@ export class ControlPlaneDO extends DurableObject {
       row.kind,
       row.ref,
       row.createdAt,
-    );
-    const stored = this.getTenantStore(row.tenantId, row.vertical, row.binding);
-    if (!stored) throw new Error(`tenant store write did not land for tenant ${row.tenantId}`);
+      ).rowsWritten > 0;
+      const found = this.getTenantStore(row.tenantId, row.vertical, row.binding);
+      if (!found) throw new Error(`tenant store write did not land for tenant ${row.tenantId}`);
+      stored = found;
+      return inserted;
+    }, audit);
     return stored;
   }
 
@@ -2405,8 +2410,10 @@ export class ControlPlaneDO extends DurableObject {
     kind: string;
     ref: string;
     createdAt: string;
-  }): { kind: string; ref: string } {
-    const tenantRow = this.sql
+  }, audit?: AdminEntryInput): { kind: string; ref: string } {
+    let stored!: { kind: string; ref: string };
+    this.writeAndAudit(() => {
+      const tenantRow = this.sql
       .exec('SELECT status FROM tenants WHERE tenant_id = ?', row.tenantId)
       .toArray()[0] as { status: string } | undefined;
     if (!tenantRow) {
@@ -2417,7 +2424,7 @@ export class ControlPlaneDO extends DurableObject {
         `cannot provision blob store under non-active tenant (status: ${tenantRow.status}): ${row.tenantId}`,
       );
     }
-    this.sql.exec(
+      const inserted = this.sql.exec(
       `INSERT OR IGNORE INTO blob_stores (tenant_id, vertical, binding, kind, ref, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
       row.tenantId,
@@ -2426,9 +2433,12 @@ export class ControlPlaneDO extends DurableObject {
       row.kind,
       row.ref,
       row.createdAt,
-    );
-    const stored = this.getBlobStore(row.tenantId, row.vertical, row.binding);
-    if (!stored) throw new Error(`blob store write did not land for tenant ${row.tenantId}`);
+      ).rowsWritten > 0;
+      const found = this.getBlobStore(row.tenantId, row.vertical, row.binding);
+      if (!found) throw new Error(`blob store write did not land for tenant ${row.tenantId}`);
+      stored = found;
+      return inserted;
+    }, audit);
     return stored;
   }
 
@@ -2471,11 +2481,16 @@ export class ControlPlaneDO extends DurableObject {
   // Kernel code over the directory (store-driver-releases.ts), shared with the SQLite host. Each
   // call is one transaction, and the object runs one at a time, so a hold is taken atomically.
 
-  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
+  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }, audit?: AdminEntryInput): {
     record: StoreDriverReleaseRecord;
     created: boolean;
   } {
-    return this.ctx.storage.transactionSync(() => recordStoreDriverReleaseIn(this.kernelSql, input));
+    let result!: ReturnType<typeof recordStoreDriverReleaseIn>;
+    this.writeAndAudit(() => {
+      result = recordStoreDriverReleaseIn(this.kernelSql, input);
+      return result.created;
+    }, audit ? () => ({ ...audit, after: result.record }) : undefined);
+    return result;
   }
 
   getStoreDriverRelease(driver: string, sha256: string): StoreDriverReleaseRecord | undefined {
@@ -2518,8 +2533,13 @@ export class ControlPlaneDO extends DurableObject {
     holder: string;
     actor: string;
     at: string;
-  }): StoreDriverRolloutRecord {
-    return this.ctx.storage.transactionSync(() => beginStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }, audit?: AdminEntryInput): StoreDriverRolloutRecord {
+    let row!: StoreDriverRolloutRecord;
+    this.writeAndAudit(() => {
+      row = beginStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() });
+      return true;
+    }, audit ? () => ({ ...audit, after: row }) : undefined);
+    return row;
   }
 
   finishStoreDriverRollout(input: {
@@ -2530,8 +2550,13 @@ export class ControlPlaneDO extends DurableObject {
     detail: string | null;
     walked?: readonly StoreDriverRolloutTarget[];
     at: string;
-  }): StoreDriverRolloutRecord {
-    return this.ctx.storage.transactionSync(() => finishStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }, audit?: AdminEntryInput): StoreDriverRolloutRecord {
+    let row!: StoreDriverRolloutRecord;
+    this.writeAndAudit(() => {
+      row = finishStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() });
+      return true;
+    }, audit ? () => ({ ...audit, action: row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', after: row }) : undefined);
+    return row;
   }
 
   storeDriverRebuild(driver: string): StoreDriverRebuildRecord | undefined {
@@ -4772,7 +4797,9 @@ export class ControlPlaneDO extends DurableObject {
     topology: string,
     tenantId: string | null,
     createdAt: string,
+    audit?: AdminEntryInput,
   ): boolean {
+    return this.writeAndAudit(() => {
     const existing = this.readPool(provider);
     if (existing) {
       if (existing.topology === topology && existing.tenant_id === tenantId) return false;
@@ -4789,6 +4816,7 @@ export class ControlPlaneDO extends DurableObject {
       createdAt,
     );
     return true;
+    }, audit);
   }
 
   identityTenants(provider: string, externalId: string): string[] {
@@ -4900,7 +4928,8 @@ export class ControlPlaneDO extends DurableObject {
     createdAt: string;
     keyId: string;
     ciphertext: string;
-  }): void {
+  }, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => {
     // Live-uniqueness is per ACCOUNT (COALESCEd like the index): a provider
     // without account refs stays a singleton; a multi-namespace provider may
     // hold one live connection per external account.
@@ -4947,6 +4976,8 @@ export class ControlPlaneDO extends DurableObject {
       row.ciphertext,
       row.createdAt,
     );
+    return true;
+    }, audit);
   }
 
   /** This connection's key rows — every one, current and retired (#687). */
@@ -5077,7 +5108,9 @@ export class ControlPlaneDO extends DurableObject {
     ciphertext: string,
     expiresAt: string | null,
     at: string,
+    audit?: AdminEntryInput,
   ): void {
+    this.writeAndAudit(() => {
     this.sql.exec(
       `UPDATE _substrat_connection_secrets
        SET key_id = ?, ciphertext = ?, updated_at = ? WHERE connection_id = ?`,
@@ -5093,6 +5126,8 @@ export class ControlPlaneDO extends DurableObject {
       expiresAt,
       id,
     );
+    return true;
+    }, audit);
   }
 
   /**
@@ -5102,7 +5137,8 @@ export class ControlPlaneDO extends DurableObject {
    * only be a liability. Returns false when already revoked, so the caller can
    * skip an audit row for a no-op.
    */
-  revokeConnection(id: string, at: string): boolean {
+  revokeConnection(id: string, at: string, audit?: AdminEntryInput): boolean {
+    return this.writeAndAudit(() => {
     const row = this.readConnection(id);
     if (!row) throw new Error(`connection not found: ${id}`);
     if (row.revoked_at) return false;
@@ -5123,6 +5159,7 @@ export class ControlPlaneDO extends DurableObject {
       id,
     );
     return true;
+    }, audit);
   }
 
   // -- a vertical's mailed connect links (connections.md §3.5.4) ------------------
@@ -5429,7 +5466,9 @@ export class ControlPlaneDO extends DurableObject {
     tenantId: string,
     scopeId: string | null,
     createdAt: string,
+    audit?: AdminEntryInput,
   ): boolean {
+    return this.writeAndAudit(() => {
     const existing = this.sql
       .exec(
         `SELECT principal_id FROM _substrat_identities
@@ -5457,11 +5496,13 @@ export class ControlPlaneDO extends DurableObject {
       createdAt,
     );
     return true;
+    }, audit);
   }
 
   /** Remove a principal's identity link(s) in a tenant. Returns whether a row was
    *  deleted so a no-op stays silent (idempotent). */
-  unlinkIdentity(tenantId: string, principal: string): boolean {
+  unlinkIdentity(tenantId: string, principal: string, audit?: AdminEntryInput): boolean {
+    return this.writeAndAudit(() => {
     const before = this.sql
       .exec(
         `SELECT 1 FROM _substrat_identities WHERE tenant_id = ? AND principal_id = ?`,
@@ -5476,6 +5517,7 @@ export class ControlPlaneDO extends DurableObject {
       principal,
     );
     return true;
+    }, audit);
   }
 
   resolveIdentity(
@@ -5576,7 +5618,9 @@ export class ControlPlaneDO extends DurableObject {
    * Stamp `drained_at` on undrained rows up to `upToId`. The `IS NULL` guard makes a
    * retried shipment idempotent — it re-stamps nothing and returns 0 (K-24).
    */
-  markAccessLogDrained(upToId: string, drainedAt: string): number {
+  markAccessLogDrained(upToId: string, drainedAt: string, audit?: AdminEntryInput): number {
+    let drained = 0;
+    this.writeAndAudit(() => {
     const doomed = (
       this.sql
         .exec(
@@ -5588,11 +5632,16 @@ export class ControlPlaneDO extends DurableObject {
     for (const id of doomed) {
       this.sql.exec('UPDATE _substrat_access_log SET drained_at = ? WHERE id = ?', drainedAt, id);
     }
-    return doomed.length;
+    drained = doomed.length;
+    return drained > 0;
+    }, audit ? () => ({ ...audit, after: { drained, upToId, drainedAt } }) : undefined);
+    return drained;
   }
 
   /** ONLY drained rows. Age alone is not a licence to delete evidence (K-24). */
-  pruneAccessLog(limit: number): number {
+  pruneAccessLog(limit: number, audit?: AdminEntryInput): number {
+    let pruned = 0;
+    this.writeAndAudit(() => {
     assertRowLimit('limit', limit);
     const doomed = (
       this.sql
@@ -5605,7 +5654,10 @@ export class ControlPlaneDO extends DurableObject {
     for (const id of doomed) {
       this.sql.exec('DELETE FROM _substrat_access_log WHERE id = ?', id);
     }
-    return doomed.length;
+    pruned = doomed.length;
+    return pruned > 0;
+    }, audit ? () => ({ ...audit, after: { pruned } }) : undefined);
+    return pruned;
   }
 
   // -- per-subject keys (#37) -------------------------------------------------
@@ -5717,12 +5769,12 @@ export class ControlPlaneDO extends DurableObject {
   // two actors, which keeps the DO's invoke free of a directory round-trip.
 
   /** Insert a session the coordinator minted. Returns nothing; the caller holds it. */
-  writeImpersonation(values: (string | null)[]): void {
-    this.sql.exec(
+  writeImpersonation(values: (string | null)[], audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec(
       `INSERT INTO _substrat_impersonations (${IMPERSONATION_COLUMNS})
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...values,
-    );
+    ).rowsWritten > 0, audit);
   }
 
   /** One session by id, or undefined. The door's lookup and every invoke's re-read. */
@@ -5732,12 +5784,12 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   /** Close a session. Idempotent — a row already ended keeps its first `ended_at`. */
-  endImpersonation(id: string, endedAt: string): void {
-    this.sql.exec(
+  endImpersonation(id: string, endedAt: string, audit?: AdminEntryInput): void {
+    this.writeAndAudit(() => this.sql.exec(
       'UPDATE _substrat_impersonations SET ended_at = ? WHERE id = ? AND ended_at IS NULL',
       endedAt,
       id,
-    );
+    ).rowsWritten > 0, audit);
   }
 
   listImpersonations(filter: unknown, now: string): ImpersonationRow[] {
@@ -6416,12 +6468,16 @@ export class ControlPlaneDO extends DurableObject {
     fingerprint: string,
     status: 'new' | 'resolved' | 'ignored',
     at: string,
+    audit?: AdminEntryInput,
   ): { before: unknown; after: unknown } | undefined {
+    let existing: IssueRow | undefined;
+    let after: IssueRow | undefined;
+    this.writeAndAudit(() => {
     const rows = this.sql
       .exec('SELECT * FROM _substrat_issues WHERE fingerprint = ?', fingerprint)
       .toArray() as unknown as IssueRow[];
-    const existing = rows[0];
-    if (!existing) return undefined;
+    existing = rows[0];
+    if (!existing) return false;
     const resolvedAt = status === 'resolved' ? at : null;
     // "Resolved under X": freeze the newest version at the verdict, so a later
     // regression can name the pair. A reopen or ignore clears it with the timestamp.
@@ -6433,10 +6489,12 @@ export class ControlPlaneDO extends DurableObject {
       resolvedVersion,
       fingerprint,
     );
-    return {
-      before: issueOf(existing),
-      after: issueOf({ ...existing, status, resolved_at: resolvedAt, resolved_version: resolvedVersion }),
-    };
+    after = { ...existing, status, resolved_at: resolvedAt, resolved_version: resolvedVersion };
+    return true;
+    }, audit ? () => ({ ...audit, vertical: after!.last_vertical,
+      before: { fingerprint, status: existing!.status },
+      after: { fingerprint, status: after!.status } }) : undefined);
+    return existing && after ? { before: issueOf(existing), after: issueOf(after) } : undefined;
   }
 
   /** #1054: idempotent on request_id — a replayed intent writes nothing. */

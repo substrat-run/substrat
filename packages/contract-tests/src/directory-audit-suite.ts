@@ -188,15 +188,16 @@ const REMAINING_FAMILIES: readonly {
     },
   },
   {
-    family: 'access log and issues', action: 'drainAccessLog',
+    family: 'access log and issues', action: 'setIssueStatus',
     arrange: async (host, staff, fixture) => {
-      const t = await newTenant(host, staff);
-      await host.admin.getTenant(staff, t);
-      const upToId = 'Z'.repeat(26);
-      const drainedAt = new Date().toISOString();
+      const fingerprint = ulid();
+      const now = new Date().toISOString();
+      await fixture.directorySql(`INSERT INTO _substrat_issues
+        (fingerprint, operation, status, seen_count, first_seen, last_seen, last_message)
+        VALUES ('${fingerprint}', 'audit-test', 'new', 1, '${now}', '${now}', 'test')`);
       return {
-        call: () => host.admin.markAccessLogDrained(staff, upToId, drainedAt),
-        state: () => fixture.directoryRows('SELECT id FROM _substrat_access_log WHERE drained_at IS NOT NULL'),
+        call: () => host.admin.setIssueStatus(staff, fingerprint, 'resolved'),
+        state: () => fixture.directoryRows(`SELECT status FROM _substrat_issues WHERE fingerprint = '${fingerprint}'`),
       };
     },
   },

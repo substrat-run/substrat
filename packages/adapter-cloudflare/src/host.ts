@@ -740,7 +740,7 @@ interface ControlPlaneStub {
     kind: string;
     ref: string;
     createdAt: string;
-  }): Promise<{ kind: string; ref: string }>;
+  }, audit?: AdminEntry): Promise<{ kind: string; ref: string }>;
   listTenantStores(filter: { tenantId?: string; vertical?: string }): Promise<
     {
       tenant_id: string;
@@ -751,7 +751,7 @@ interface ControlPlaneStub {
       created_at: string;
     }[]
   >;
-  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
+  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }, audit?: AdminEntry): Promise<{
     record: StoreDriverReleaseRecord;
     created: boolean;
   }>;
@@ -774,7 +774,7 @@ interface ControlPlaneStub {
     holder: string;
     actor: string;
     at: string;
-  }): Promise<StoreDriverRolloutRecord>;
+  }, audit?: AdminEntry): Promise<StoreDriverRolloutRecord>;
   finishStoreDriverRollout(input: {
     driver: string;
     seq: number;
@@ -783,7 +783,7 @@ interface ControlPlaneStub {
     detail: string | null;
     walked?: readonly StoreDriverRolloutTarget[];
     at: string;
-  }): Promise<StoreDriverRolloutRecord>;
+  }, audit?: AdminEntry): Promise<StoreDriverRolloutRecord>;
   storeDriverRebuild(driver: string): Promise<StoreDriverRebuildRecord | undefined>;
   claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string; restart?: boolean; attestedBy?: string }): Promise<StoreDriverRebuildRecord | null>;
   advanceStoreDriverRebuild(input: {
@@ -810,7 +810,7 @@ interface ControlPlaneStub {
     kind: string;
     ref: string;
     createdAt: string;
-  }): Promise<{ kind: string; ref: string }>;
+  }, audit?: AdminEntry): Promise<{ kind: string; ref: string }>;
   listBlobStores(filter: { tenantId?: string; vertical?: string }): Promise<
     {
       tenant_id: string;
@@ -1081,7 +1081,7 @@ interface ControlPlaneStub {
     createdAt: string;
     keyId: string;
     ciphertext: string;
-  }): Promise<void>;
+  }, audit?: AdminEntry): Promise<void>;
   listConnections(filter: {
     tenantId?: string;
     vertical?: string;
@@ -1121,8 +1121,9 @@ interface ControlPlaneStub {
     ciphertext: string,
     expiresAt: string | null,
     at: string,
+    audit?: AdminEntry,
   ): Promise<void>;
-  revokeConnection(id: string, at: string): Promise<boolean>;
+  revokeConnection(id: string, at: string, audit?: AdminEntry): Promise<boolean>;
   // connections.md §3.5.4 — a vertical's mailed connect links; the kernel's statements.
   insertConnectLink(row: {
     id: string;
@@ -1197,9 +1198,10 @@ interface ControlPlaneStub {
     tenantId: string,
     scopeId: string | null,
     createdAt: string,
+    audit?: AdminEntry,
   ): Promise<boolean>;
   /** Delete a principal's identity link(s) in a tenant. Idempotent (returns whether it changed). */
-  unlinkIdentity(tenantId: string, principal: string): Promise<boolean>;
+  unlinkIdentity(tenantId: string, principal: string, audit?: AdminEntry): Promise<boolean>;
   readPool(
     provider: string,
   ): Promise<{ provider: string; topology: string; tenant_id: string | null } | undefined>;
@@ -1208,6 +1210,7 @@ interface ControlPlaneStub {
     topology: string,
     tenantId: string | null,
     createdAt: string,
+    audit?: AdminEntry,
   ): Promise<boolean>;
   identityTenants(provider: string, externalId: string): Promise<string[]>;
   identityMemberships(
@@ -1223,9 +1226,9 @@ interface ControlPlaneStub {
   // K-42 (#868): the impersonation session store lives in the directory, beside
   // the admin log and for the same reason — it is a platform record about a
   // tenant, not tenant data, and a scope DO must not be able to mint one.
-  writeImpersonation(values: (string | null)[]): Promise<void>;
+  writeImpersonation(values: (string | null)[], audit?: AdminEntry): Promise<void>;
   readImpersonation(id: string): Promise<ImpersonationRow | undefined>;
-  endImpersonation(id: string, endedAt: string): Promise<void>;
+  endImpersonation(id: string, endedAt: string, audit?: AdminEntry): Promise<void>;
   listImpersonations(filter: unknown, now: string): Promise<ImpersonationRow[]>;
   recordAccess(entry: {
     id: string;
@@ -1243,8 +1246,8 @@ interface ControlPlaneStub {
     method?: string;
     drained?: boolean;
   } & ListPage): Promise<AccessLogRow[]>;
-  markAccessLogDrained(upToId: string, drainedAt: string): Promise<number>;
-  pruneAccessLog(limit: number): Promise<number>;
+  markAccessLogDrained(upToId: string, drainedAt: string, audit?: AdminEntry): Promise<number>;
+  pruneAccessLog(limit: number, audit?: AdminEntry): Promise<number>;
   // #37 — the per-subject key store. Storage only; the crypto is the kernel's.
   readSubjectKey(
     scopeId: string,
@@ -1311,6 +1314,7 @@ interface ControlPlaneStub {
     fingerprint: string,
     status: 'new' | 'resolved' | 'ignored',
     at: string,
+    audit?: AdminEntry,
   ): Promise<{ before: unknown; after: unknown } | undefined>;
   recordModelUsage(row: ModelUsageRow): Promise<{ recorded: boolean }>;
   listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
@@ -4928,7 +4932,8 @@ export class CloudflareScopeHost implements ScopeHost {
       kind: 'relational',
       ref,
       createdAt: new Date().toISOString(),
-    });
+    }, this.adminEntry(actor, 'provisionTenantStore', { tenantId: input.tenantId, vertical: input.vertical }, null,
+      { binding: input.binding, kind: 'relational', ref }));
     if (stored.ref !== ref) {
       // A concurrent provision won the ledger write. One database is canonical — the
       // ledger's — so drop ours rather than orphan it (best-effort: a leaked delete
@@ -4936,13 +4941,6 @@ export class CloudflareScopeHost implements ScopeHost {
       await d1.remove(ref).catch(() => undefined);
       return { binding: input.binding, kind: 'relational', ref: stored.ref };
     }
-    await this.recordAdmin(
-      actor,
-      'provisionTenantStore',
-      { tenantId: input.tenantId, vertical: input.vertical },
-      null,
-      { binding: input.binding, kind: 'relational', ref },
-    );
     return { binding: input.binding, kind: 'relational', ref };
   }
 
@@ -5008,18 +5006,12 @@ export class CloudflareScopeHost implements ScopeHost {
       kind: 'blob',
       ref,
       createdAt: new Date().toISOString(),
-    });
+    }, this.adminEntry(actor, 'provisionBlobStore', { tenantId: input.tenantId, vertical: input.vertical }, null,
+      { binding: input.binding, kind: 'blob', ref }));
     if (stored.ref !== ref) {
       await r2.remove(ref).catch(() => undefined);
       return { binding: input.binding, kind: 'blob', ref: stored.ref };
     }
-    await this.recordAdmin(
-      actor,
-      'provisionBlobStore',
-      { tenantId: input.tenantId, vertical: input.vertical },
-      null,
-      { binding: input.binding, kind: 'blob', ref },
-    );
     return { binding: input.binding, kind: 'blob', ref };
   }
 
@@ -9285,8 +9277,8 @@ export class CloudflareScopeHost implements ScopeHost {
       // -- store-driver releases, rollouts and holds (D-63, #2300) -------------------
       recordStoreDriverRelease: async (actor, input) => {
         const at = new Date().toISOString();
-        const { record, created } = await this.directory('recordStoreDriverRelease', { ...input, actor, at });
-        if (created) await this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, record);
+        const { record } = await this.directory('recordStoreDriverRelease', { ...input, actor, at },
+          this.adminEntry(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, null));
         return record;
       },
       getStoreDriverRelease: async (actor, driver, sha256) => {
@@ -9319,13 +9311,13 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.releaseStoreDriverHold(input);
       },
       beginStoreDriverRollout: async (actor, input) => {
-        const row = await this.directory('beginStoreDriverRollout', { ...input, actor, at: new Date().toISOString() });
-        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
+        const row = await this.directory('beginStoreDriverRollout', { ...input, actor, at: new Date().toISOString() },
+          this.adminEntry(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, null));
         return row;
       },
       finishStoreDriverRollout: async (actor, input) => {
-        const row = await this.directory('finishStoreDriverRollout', { ...input, at: new Date().toISOString() });
-        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
+        const row = await this.directory('finishStoreDriverRollout', { ...input, at: new Date().toISOString() },
+          this.adminEntry(actor, 'rollOutStoreDriver', { tenantId: null }, null, null));
         return row;
       },
       storeDriverRebuild: async (actor, driver) => {
@@ -10012,17 +10004,11 @@ export class CloudflareScopeHost implements ScopeHost {
           input,
           new Date().toISOString() as Instant,
         );
-        await this.cp.writeImpersonation(impersonationRowValues(session));
+        await this.cp.writeImpersonation(impersonationRowValues(session),
+          this.adminEntry(actor, 'beginImpersonation', { tenantId: session.tenantId, scopeId: session.scopeId }, null, session));
         // BEFORE the session is usable, so the log entry precedes every row it
         // will ever touch. The reason rides in `after`: it is what a review reads
         // first, and a log saying a session opened but not why is half a record.
-        await this.recordAdmin(
-          actor,
-          'beginImpersonation',
-          { tenantId: session.tenantId, scopeId: session.scopeId },
-          null,
-          session,
-        );
         return session;
       },
 
@@ -10036,15 +10022,11 @@ export class CloudflareScopeHost implements ScopeHost {
         // Idempotent: "stop that session" must not fail because somebody else
         // already stopped it.
         if (before.endedAt !== null) return before;
-        await this.cp.endImpersonation(String(id), new Date().toISOString());
+        const endedAt = new Date().toISOString();
+        await this.cp.endImpersonation(String(id), endedAt,
+          this.adminEntry(actor, 'endImpersonation', { tenantId: before.tenantId, scopeId: before.scopeId },
+            before, { ...before, endedAt }));
         const after = mapImpersonationRow((await this.cp.readImpersonation(String(id)))!);
-        await this.recordAdmin(
-          actor,
-          'endImpersonation',
-          { tenantId: after.tenantId, scopeId: after.scopeId },
-          before,
-          after,
-        );
         return after;
       },
 
@@ -10147,11 +10129,11 @@ export class CloudflareScopeHost implements ScopeHost {
           parsed.topology,
           parsed.tenantId,
           new Date().toISOString(),
+          this.adminEntry(actor, 'registerIdentityPool', { tenantId: parsed.tenantId }, null, parsed),
         );
         if (!created) return; // identical registration is idempotent, unaudited
         // Null tenant for a central pool: it belongs to no single tenant, which is
         // what made the admin log's tenantId nullable.
-        await this.recordAdmin(actor, 'registerIdentityPool', { tenantId: parsed.tenantId }, null, parsed);
       },
       getIdentityPool: async (actor, provider: string) => {
         const r = await this.cp.readPool(provider);
@@ -10232,23 +10214,16 @@ export class CloudflareScopeHost implements ScopeHost {
           createdAt: now,
           keyId: sealed.keyId,
           ciphertext: sealed.ciphertext,
-        });
+        }, this.adminEntry(actor, 'createConnection', { tenantId: input.tenantId, vertical: input.vertical }, null, {
+          id: input.id,
+          provider: input.provider,
+          label: input.label,
+          scopes: input.scopes,
+          externalAccountRef: input.externalAccountRef ?? null,
+          createdBy: input.createdBy ?? actor,
+        }));
         // METADATA ONLY — the admin log is append-only, so a credential written
         // here could never be removed.
-        await this.recordAdmin(
-          actor,
-          'createConnection',
-          { tenantId: input.tenantId, vertical: input.vertical },
-          null,
-          {
-            id: input.id,
-            provider: input.provider,
-            label: input.label,
-            scopes: input.scopes,
-            externalAccountRef: input.externalAccountRef ?? null,
-            createdBy: input.createdBy ?? actor,
-          },
-        );
       },
 
       connectionSealingKey: async (id: ConnectionId) => this.ensureSealingKey(id),
@@ -10308,21 +10283,13 @@ export class CloudflareScopeHost implements ScopeHost {
           sealed.ciphertext,
           expiresAt === undefined ? row.expires_at : expiresAt,
           now,
-        );
-        await this.recordAdmin(
-          actor,
-          'updateConnectionSecret',
-          { tenantId: row.tenant_id as TenantId, vertical: row.vertical },
-          null,
-          {
+          this.adminEntry(actor, 'updateConnectionSecret', { tenantId: row.tenant_id as TenantId, vertical: row.vertical }, null, {
             id,
             provider: row.provider,
             rotatedAt: now,
             expiresAt: expiresAt === undefined ? row.expires_at : expiresAt,
-            // §3.5.1's attribution, rotate-side: the authorizing tenant principal,
-            // never laundered into the actor column.
             ...(opts?.rotatedBy ? { rotatedBy: opts.rotatedBy } : {}),
-          },
+          }),
         );
       },
 
@@ -10330,15 +10297,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const row = await this.cp.readConnection(id);
         if (!row) throw new Error(`connection not found: ${id}`);
         const now = new Date().toISOString();
-        const changed = await this.cp.revokeConnection(id, now);
+        const changed = await this.cp.revokeConnection(id, now,
+          this.adminEntry(actor, 'revokeConnection', { tenantId: row.tenant_id as TenantId, vertical: row.vertical },
+            { status: row.status }, { id, provider: row.provider, status: 'revoked', revokedAt: now }));
         if (!changed) return; // idempotent, and a no-op is not audited
-        await this.recordAdmin(
-          actor,
-          'revokeConnection',
-          { tenantId: row.tenant_id as TenantId, vertical: row.vertical },
-          { status: row.status },
-          { id, provider: row.provider, status: 'revoked', revokedAt: now },
-        );
       },
 
       // -- a vertical's mailed connect links (connections.md §3.5.4) --------------
@@ -10474,16 +10436,11 @@ export class CloudflareScopeHost implements ScopeHost {
           parsed.tenantId,
           parsed.scopeId ?? null,
           new Date().toISOString(),
+          this.adminEntry(actor, 'linkIdentity', { tenantId: parsed.tenantId, scopeId: parsed.scopeId }, null,
+            { provider: parsed.provider, externalId: parsed.externalId, principal: parsed.principal }),
         );
         // Idempotent: an identity already bound is a no-op, not audited.
         if (!changed) return;
-        await this.recordAdmin(
-          actor,
-          'linkIdentity',
-          { tenantId: parsed.tenantId, scopeId: parsed.scopeId },
-          null,
-          { provider: parsed.provider, externalId: parsed.externalId, principal: parsed.principal },
-        );
         // #406: an identity link is a tenant-level write, so it fans out into the tenant's
         // projected scopes exactly as entitlements do (#304) — a no-op unless scope-local
         // projection is on; the reconcile sweep repairs any drop.
@@ -10492,9 +10449,9 @@ export class CloudflareScopeHost implements ScopeHost {
       unlinkIdentity: async (actor, tenantId: TenantId, principal: PrincipalId) => {
         // DELETE by principal (audit is the log), so the caller who removed a member
         // can sever their login without knowing the external subject. Idempotent.
-        const changed = await this.cp.unlinkIdentity(tenantId, principal);
+        const changed = await this.cp.unlinkIdentity(tenantId, principal,
+          this.adminEntry(actor, 'unlinkIdentity', { tenantId, scopeId: null }, { principal }, null));
         if (!changed) return;
-        await this.recordAdmin(actor, 'unlinkIdentity', { tenantId, scopeId: null }, { principal }, null);
         // The unlink must reach the projected scopes so the severed login stops resolving
         // there — this is what makes revocation durable at request time (#406); a dropped
         // fan-out is repaired by the reconcile sweep.
@@ -10598,30 +10555,13 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
       markAccessLogDrained: async (actor, upToId: string, drainedAt: string): Promise<number> => {
-        const drained = await this.cp.markAccessLogDrained(upToId, drainedAt);
-        if (drained > 0) {
-          // The payload is the APPLIED state, so it belongs in `after` (contracts'
-          // adminLogEntry: before = prior state, after = the applied payload).
-          await this.recordAdmin(
-            actor,
-            'drainAccessLog',
-            { tenantId: null },
-            null,
-            { drained, upToId, drainedAt },
-          );
-        }
-        return drained;
+        return this.cp.markAccessLogDrained(upToId, drainedAt,
+          this.adminEntry(actor, 'drainAccessLog', { tenantId: null }, null, null));
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
         // Checked here as well as in the directory, so the refusal keeps its code across the hop.
-        const pruned = await this.cp.pruneAccessLog(assertRowLimit('limit', limit));
-        if (pruned > 0) {
-          // The payload is the APPLIED state, so it belongs in `after` (contracts'
-          // adminLogEntry: before = prior state, after = the applied payload) — the
-          // same shape as drainAccessLog's row above (#557).
-          await this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, null, { pruned });
-        }
-        return pruned;
+        return this.cp.pruneAccessLog(assertRowLimit('limit', limit),
+          this.adminEntry(actor, 'pruneAccessLog', { tenantId: null }, null, null));
       },
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
         const rows = await this.cp.auditLog({
@@ -10770,18 +10710,11 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows.map((r) => issueEntry.parse(r));
       },
       setIssueStatus: async (actor, fingerprint, status): Promise<IssueEntry | undefined> => {
-        const change = await this.cp.setIssueStatus(fingerprint, status, new Date().toISOString());
+        const change = await this.cp.setIssueStatus(fingerprint, status, new Date().toISOString(),
+          this.adminEntry(actor, 'setIssueStatus', { tenantId: null }, null, null));
         if (!change) return undefined;
-        const before = issueEntry.parse(change.before);
         const after = issueEntry.parse(change.after);
-        // A lifecycle flip is a staff mutation — audited with the diff (K-33).
-        await this.recordAdmin(
-          actor,
-          'setIssueStatus',
-          { tenantId: null, vertical: after.lastVertical },
-          { fingerprint, status: before.status },
-          { fingerprint, status: after.status },
-        );
+        // A lifecycle flip is recorded in the same directory unit as the state write.
         return after;
       },
       listFindings: async (actor, filter?: FindingFilter): Promise<FindingEntry[]> => {
