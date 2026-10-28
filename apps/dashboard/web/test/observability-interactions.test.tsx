@@ -5,7 +5,7 @@ import { TrafficChart } from '../src/components/TrafficChart';
 import { LogList } from '../src/components/LogList';
 import { LogQueryBar } from '../src/components/LogQueryBar';
 import { Observability } from '../src/views/Observability';
-import { api, type ObservabilityLogEvent, type AppRow, type AppHealthRow } from '../src/lib/api';
+import { api, teamApi, type ObservabilityLogEvent, type AppRow, type AppHealthRow } from '../src/lib/api';
 import { obsPath } from '../src/lib/router';
 import { readObsQuery } from '../src/lib/observability-query';
 
@@ -190,7 +190,7 @@ function UrlPage({ apps = [{ app_scope_id: 'app-a', name: 'App A' } as AppRow] }
 }
 
 it('Logs reads the URL window and filters; refresh and URL replay preserve them, and it reads no traffic', async () => {
-  const traffic = vi.spyOn(api, 'appTraffic');
+  const traffic = vi.spyOn(teamApi('team-a'), 'getAppTraffic');
   const logs = vi.spyOn(api, 'appTenantLogsRead').mockResolvedValue({ events: [], incomplete: false });
   const next = { since: '2026-09-01T10:15:00.000Z', until: '2026-09-01T10:45:00.000Z' };
   const initial = obsPath({ app: 'app-a', view: 'logs', from: windowRange.since, to: windowRange.until, level: 'error', search: 'failure' });
@@ -252,8 +252,8 @@ it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear r
 });
 
 it('preserves URL event grouping and type through refresh without remounting controls', async () => {
-  vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 });
-  vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+  vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 });
+  vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
   const facets = vi
     .spyOn(api, 'appFacets')
     .mockResolvedValue({ buckets: [], total: 0, erased: 0, truncated: false } as Awaited<
@@ -428,19 +428,19 @@ it('Pulse draws the business outcomes by default — today, yesterday, the chang
 });
 
 it('relative presets retain hours-only requests for legacy readers and shared cache keys', async () => {
-  const traffic = vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 });
-  const overlays = vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+  const traffic = vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 });
+  const overlays = vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
   const metrics = vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
   vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
   vi.spyOn(api, 'appSchedules').mockRejectedValue(new Error('unavailable'));
   const team = vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [], available: true, bucketMinutes: 60 });
   const props = { apps: [{ app_scope_id: 'app-a', name: 'App A' } as AppRow], view: 'traffic', focusEventType: null, cursor: null, onNav: vi.fn() };
   await act(async () => root.render(<Observability teamId="team-a" {...props} query="app=app-a&hours=24" scopeId="app-a" />));
-  expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
-  expect(overlays).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  expect(traffic).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24' });
+  expect(overlays).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24' });
   expect(metrics).toHaveBeenLastCalledWith('team-a', 24);
   await act(async () => click(button('Refresh')));
-  expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
+  expect(traffic).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24' });
   await act(async () => root.render(<Observability teamId="team-a" {...props} query="hours=24" scopeId={null} />));
   expect(team).toHaveBeenLastCalledWith('team-a', { hours: 24 });
 });
@@ -460,7 +460,7 @@ it('partial-window marker stacks keep separate buckets independently visible', a
 describe('menu children (#1767)', () => {
   const render = async (view: string, scopeId: string | null, onNav = vi.fn()) => {
     vi.spyOn(api, 'teamTraffic').mockResolvedValue({ series: [{ scopeId: 'app-a', buckets }], available: true, bucketMinutes: 15 });
-    vi.spyOn(api, 'appTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 } as Awaited<ReturnType<typeof api.appTraffic>>);
+    vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockResolvedValue({ buckets, markers: [], available: true, bucketMinutes: 15 } as Awaited<ReturnType<ReturnType<typeof teamApi>['getAppTraffic']>>);
     await act(async () =>
       root.render(
         <Observability teamId="team-a"
@@ -542,11 +542,11 @@ describe('menu children (#1767)', () => {
 
 it('opens retained failure details without relying on the recent schedule history', async () => {
   const message = 'permission denied: widgets:dispatch';
-  const read = vi.spyOn(api, 'appFailures').mockResolvedValue({ entries: [{ id: 'failed-run', kind: 'sweep', at: windowRange.since, operation: 'widgets/queue-due', stage: 'schedule', message, code: null }], unavailableSources: [], incompleteSources: [] });
+  const read = vi.spyOn(teamApi('team-a'), 'getAppFailures').mockResolvedValue({ entries: [{ id: 'failed-run', kind: 'sweep', at: windowRange.since, operation: 'widgets/queue-due', stage: 'schedule', message, code: null }], unavailableSources: [], incompleteSources: [] });
   const schedules = vi.spyOn(api, 'appSchedules');
   const onNav = vi.fn();
   await act(async () => root.render(<Observability teamId="team-a" apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]} query={`app=app-a&view=failures&level=warn&tpl=unrelated&search=other&invocationId=old-call&from=${windowRange.since}&to=${windowRange.until}`} scopeId="app-a" view="failures" cursor={{ from: windowRange.since, to: windowRange.until }} focusEventType={null} onNav={onNav} />));
-  expect(read).toHaveBeenCalledWith('app-a', windowRange);
+  expect(read).toHaveBeenCalledWith({ scopeId: 'app-a', ...windowRange });
   expect(schedules).not.toHaveBeenCalled();
   expect(container.querySelector('h1')?.textContent).toBe('Failures');
   expect(container.textContent).toContain(message);
@@ -561,7 +561,7 @@ it('opens retained failure details without relying on the recent schedule histor
 });
 
 it('shows a failure read error and does not claim that no failures exist', async () => {
-  vi.spyOn(api, 'appFailures').mockRejectedValue(new Error('unavailable'));
+  vi.spyOn(teamApi('team-a'), 'getAppFailures').mockRejectedValue(new Error('unavailable'));
   await act(async () => root.render(<Observability teamId="team-a" apps={[]} query="app=app-a&view=failures" scopeId="app-a" view="failures" cursor={null} focusEventType={null} onNav={vi.fn()} />));
   expect(container.querySelector('[role="alert"]')?.textContent).toContain('unavailable');
   expect(container.textContent).not.toContain('No failures recorded');

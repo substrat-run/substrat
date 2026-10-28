@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { api, type AppRow, type ConnectionSweepRow, type ConnectionSweepView, type DeadLetter, type FlowFinding, type FlowFindingsView, type FlowGraph, type FlowView, type OperationHealthView } from '../lib/api';
+import { api, teamApi, type AppRow, type ConnectionSweepRow, type ConnectionSweepView, type DeadLetter, type FlowFinding, type FlowFindingsView, type FlowGraph, type FlowView, type OperationHealthView } from '../lib/api';
 import { card } from '../components/ui';
 import { relativeTime, shortId } from '../lib/format';
 import { Button } from '@substrat-run/ui';
@@ -599,8 +599,8 @@ export function Flow({ teamId, app }: { teamId: string; app: AppRow }) {
       setDead({ entries: MOCK_DEAD_LETTERS, nextCursor: null, failed: false, loading: false });
       return;
     }
-    api
-      .appFlow(app.app_scope_id)
+    teamApi(teamId)
+      .getAppFlow({ scopeId: app.app_scope_id })
       .then((v) => live && setView(v))
       // A worker predating the route: nothing here can say anything true, so it says nothing.
       .catch(() => live && setView(null));

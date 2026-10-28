@@ -6,192 +6,62 @@ description: Inventory of what the dashboard's own ControlPlaneDO holds, and a s
 
 # Retiring the dashboard's own control-plane directory
 
-Inventory and migration plan for [#1343]. **Nothing here has been run.** The migration
-checkpoint applies: this is the data move presented for review, and the production step
-is deliberately left for a human.
+Decision proposal for [#1343]. This is a source-code inventory and a migration design, **not evidence that either live directory has been reconciled**. No live data has been read or changed for this proposal. The dashboard's own `ControlPlaneDO` remains bound in both dashboard environments (`apps/dashboard/wrangler.jsonc`); `hostFor` still passes it to `CloudflareScopeHost` (`apps/dashboard/src/worker.ts`). The shared directory is a different DO, reached through `CONTROL_PLANE_SVC`.
 
-## The framing needs correcting first
+## What is in each store
 
-`docs/architecture/dashboard.md` §3 and #1343 both describe the deployment's own
-`ControlPlaneDO` as holding **identity links**, mirrored best-effort into the shared
-directory on every `/api/me` (#265). That is the part that has two sources of truth, and
-it is the part that has been visible — but it is not what the DO holds.
+The table names and keys below are from `DIRECTORY_DDL` in `packages/adapter-cloudflare/src/control-plane-do.ts`. “Local” means the dashboard deployment's `CONTROL_PLANE` binding, not its `ScopeDO`. “Shared” means the control-plane deployment's directory. A code path proves that a row *can* be present; only a read-only inventory can establish which historical rows are present.
 
-`env.CONTROL_PLANE` is handed to `CloudflareScopeHost` as its `controlPlane`
-(`apps/dashboard/src/worker.ts`, `hostFor`). The dashboard is itself a vertical (#1185)
-running a scope per team, so that DO is **the whole directory backing the dashboard's own
-host** — tenants, scopes, roles, grants, entitlements, its vertical catalog and its audit
-log. Identity links are one table of the several in use.
-
-This matters for the size of the move. Retiring the DO is not "copy the links across"; it
-is "make the dashboard's host read a directory it does not own".
-
-## What the local DO holds, confirmed from code
-
-Every row below is written by a call the dashboard makes on `hostFor(env)`. The writer is
-named so a reviewer can check the claim rather than take it.
-
-| Table | Written by | Also in the shared directory? |
+| Local table and key | Dashboard use | Shared directory today |
 |---|---|---|
-| `tenants` | `provisionDashboard` → `createTenant` (`src/provision.ts`) | **Yes** — the mirror calls `ensureTenant` and syncs the name (`src/identity-mirror.ts`) |
-| `_substrat_identities`, `_substrat_identity_pools` | `linkIdentity` / `registerIdentityPool` | **Yes**, best-effort — the mirror's `linkIdentity` on every `/api/me` |
-| `scopes` | `provisionScope` + `activateScope` for the team's DASHBOARD scope | **No** — the shared plane knows a team's *apps*, provisioned through `src/authority.ts`; the dashboard's own scope is not among them |
-| `_substrat_entitlements` | `grantEntitlement` — the dashboard vertical, and `invites` | **No** |
-| `_substrat_roles` | `defineRole` for each entry in `ROLES` | **No** |
-| `_substrat_tenant_tuples` | `assignRole` — the owner seat, and every later grant | **No** |
-| `verticals` | `ensureCatalog` seeds from `CATALOG`, and flags retirements (`src/catalog.ts`) — the only local writer | **Partly** — `oidcProviderSlugsFor` reads `local` AND `remote` and merges them, so the two catalogues are known to differ by construction. The rows that are *not* current `CATALOG` entries are the retired builtins (#389), kept `installsBlocked` and unlisted; see step 4 |
-| `_substrat_admin_log`, `_substrat_access_log` | every audited admin call above | **No** — and see "What cannot move", below |
+| `tenants` (`tenant_id`) | `provisionDashboard` creates the team; team deletion changes its `status`; login reads its name, slug and status. | The mirror ensures a tenant and updates its display name, but does not copy `status` or later lifecycle changes. App provisioning also ensures a tenant independently. |
+| `scopes` (`scope_id`) | `provisionDashboard` creates and activates the team's **dashboard** scope. `host.getScope` validates tenant, scope and lifecycle against this row before authenticated operations. | App scopes are created through the shared service. The dashboard scope is not mirrored. |
+| `_substrat_identity_pools` (`provider`) and `_substrat_identities` (`tenant_id`, `provider`, `external_id`) | `ensureIdentityPool`, team creation and invite acceptance write links; login and team switching read cross-tenant memberships; leave, member removal and team deletion unlink. The identity row also carries principal and optional landing scope. | The mirror ensures the pool and copies an active tenant's current login link, including principal and optional scope, on team creation, invite acceptance and `/api/me`. Shared unlink is best effort. There is no general cross-tenant dashboard login read on the service seam. |
+| `_substrat_roles` (`tenant_id`, `role_key`) | `provisionDashboard` writes the declared team roles; `reconcileRoles` updates definitions on a login's first resolve in an isolate. | No role-definition mirror or service write. The service-only assignment routes from #1370 do not create definitions, so an assignment alone grants nothing. |
+| `_substrat_tenant_tuples` (`tenant_id`, `subject`, `relation`, `object`) | Owner assignment and the membership executor's tenant-level add/remove write role tuples; revocations are tombstones. | No mirror. Scope-local projection can copy these rows into a `ScopeDO`, but that is not a copy into the shared directory. |
+| `_substrat_entitlements` (`tenant_id`, `entitlement_key`) | Team bootstrap grants the dashboard and invites entitlements; legacy roster healing can grant invites. | No mirror of these local grants. App entitlements in the shared directory are separate writes. |
+| `orgs` (`org_id`) | Team creation makes the `team` org; legacy roster healing may do the same. | No mirror. The dashboard roster itself is in `ScopeDO`; the org is a directory row. |
+| `verticals` (`slug`) | `ensureCatalog` registers current builtins and marks older local entries unlisted or blocked. Dashboard reads merge this local catalog with the shared catalog. | The shared catalog has its own entries; the two sets are not interchangeable. `vertical_versions` (`id`) and `vertical_channels` (`vertical_slug`, `channel`) may also contain historical embedded-mode rows; current connected app deployment writes go to the shared plane. Inventory them before discarding the namespace. |
+| `_substrat_connections` (`id`) and `_substrat_connection_secrets` (`connection_id`) | The GitHub callback creates/replaces a local connection; repository reads open its sealed installation reference. Revocation leaves historical metadata. | These connections are **not mirrored**. The shared plane's app connections are distinct. Related local key and grant tables must be counted too, even if no current dashboard path writes them. Moving a sealed value requires an explicit re-seal or reconnect decision. |
+| `_substrat_admin_log` (`id`) and `_substrat_access_log` (`id`) | Local administrative writes and audited directory reads append history. | No mirror. These records describe the local directory's actions; copying them into the shared log would misstate their origin. The earlier brief accepted not carrying them, but deletion still needs a retention decision before the last binding is removed. |
 
-The remaining 18 tables in `ControlPlaneDO`'s DDL (connections, versions, channels,
-hostnames, sweep runs, ops failures, model usage, …) are fleet concerns the dashboard
-reaches through `controlPlaneFor(env, tenantId)` — the shared plane, over HTTP. They are
-almost certainly empty in the dashboard's own DO. **Almost certainly is not confirmed**:
-see the first verification step.
+`dashboard_apps`, `dashboard_members`, `dashboard_team`, `dashboard_app_events`, `dashboard_app_env`, `dashboard_install_steps` and `dashboard_connect_links` live in the dashboard **ScopeDO**. Neither option below moves those rows. `GithubRepoLinkDO` is also a separate binding. The read-only inventory must count every local directory table, including tables without an identified current writer, before treating any as empty.
 
-## What has to be checked against live data
+## Divergence and dependencies
 
-Questions the code cannot answer, each of which changes the plan:
+The mirror in `src/identity-mirror.ts` writes tenant, display name and one identity link only. It logs failure and returns without failing the local request. A failed create/link leaves a local-only link until that user returns to `/api/me` or another mirror call. A failed shared unlink leaves a shared-only link. A shared-side change can also leave a different principal for the same `(provider, externalId)`; a count comparison misses that. `/api/identity-mirror` and `deriveIdentityDivergence` (#1366) expose missing, extra and conflicting links **for the caller's tenant**, not a fleet-wide reconciliation. The next mirror attempt may overwrite a shared-side difference, so every conflict needs review before any automated repair.
 
-1. **Which tables actually have rows in production?** The table above says what the code
-   *can* write, not what is there. A table that is empty needs no backfill, and one that
-   is unexpectedly non-empty is a path nobody has accounted for.
-2. **Do the mirrored facts actually agree?** The mirror is best-effort and one-directional
-   — #1343's own words: "a link that fails to mirror is invisible until the next
-   `/api/me`, and nothing reconciles a divergence in the other direction." So the number
-   of identity links on each side, and whether they map to the same principals, is the
-   thing that decides whether this is a backfill or a reconciliation.
-3. **Does any team have a dashboard scope whose tenant the shared plane does not know?**
-   The mirror runs on `/api/me`, so a team that provisioned and never signed in again
-   would have been mirrored at sign-up; a team that predates #265 may not have been.
-4. **Does anything still resolve through the retired builtin rows in `verticals`?** The
-   `meridian` and `manyfold` builtin rows persist for their archived scopes (#389), and
-   the backfill below does not carry them across. If an archived scope still reads its
-   vertical's name or flags off that row, it needs to, and step 4 has to say how.
+The local DO has three independent jobs today:
 
-These are reads of production state. They are not run here.
+1. **Login and tenant selection.** `account.ts` uses `listIdentityMemberships` to answer which teams a login belongs to, then resolves the selected team. `listIdentityTenants` and `resolveIdentity` are used elsewhere in `worker.ts`. The existing `TenantNarrowedControlPlane` cannot answer the first, cross-tenant question because it requires a tenant at construction.
+2. **Scope admission and administration.** `host.getScope` calls directory-backed `validateScopeAccess`; `provisionDashboard`, team lifecycle, role reconciliation, membership effects, org creation, catalog reads and GitHub connection operations use `host.admin`. Merely dropping `CONTROL_PLANE` makes these calls unavailable. A CP-less host's no-op directory gate assumes an upstream router checks lifecycle; the dashboard is reached directly, so that assumption needs an explicit replacement.
+3. **Permission inputs.** With `SCOPE_LOCAL_PERMISSIONS` off, the checker reads role definitions and tenant tuples from the local directory. The flag is on in the test environment and absent in the production config. With it on, writes and `reconcileTenantProjection` project roles, tuples, entitlements and identity links into each scope; the checker can then read locally. This covers the permission path, **not** cross-tenant login, directory administration or `validateScopeAccess`. The scope-local identity resolver requires a tenant and scope, so it cannot answer “which teams?” (`docs/architecture/scope-local-permissions.md` §9 question 4).
 
-## What cannot move — decided
+## Options
 
-The **admin and access logs** in the local DO are history. They can be copied, but a copy
-is not the same artifact: the entries were written by a different directory about actions
-taken against it, so the copy would be a log claiming to record events it was not present
-for. Everything else in this migration is a fact that is still true (this team has this
-scope, this role exists); a log entry is a claim about a past event in a particular place.
+### A. Staged dual-read and cutover to a shared directory (recommended)
 
-**Decided 2026-09-15: accept the loss.** They are the dashboard's own directory trail —
-teams created, roles defined, scopes activated — plus the K-24 record of staff reads.
-Nothing a customer sees and nothing another system reads. They are not carried across and
-not archived, so the cutover is where the dashboard's own audit history begins.
+1. **Inventory and contract.** With read-only access, enumerate local tenants and every local directory table; compare tenant metadata, dashboard scopes, identity links by tenant/provider/external login/principal/landing scope, role definitions, tuples including tombstones, entitlements, orgs, catalog entries and connection metadata with the shared side. Record counts and differences without exposing row values in a public artifact. Decide how the shared directory represents the dashboard scope and its lifecycle. Add a service-only, cross-tenant identity-membership read for dashboard login, separate from the tenant-pinned client, and a privileged directory adapter for scope admission and dashboard administration. Define the needed write/read routes, including role definitions, explicitly; #1370's assignment route alone is insufficient. The existing control-plane API policy deliberately omits `resolveIdentity` and enforcement writes, so this is an architectural approval, not an unreviewed route addition.
+2. **Take permissions off the directory read path.** Size projection fan-out for a tenant with many scopes. Enable the existing scope-local flag under its own checkpoint, reconcile every existing dashboard scope, and verify permission outcomes against the current path, especially owner, invited member, revoked member and entitlement gating. Keep the local directory as authority while this settles. A dropped fan-out must be repaired before cutover.
+3. **Shadow-read, then dual-write.** Add service-only shared writes for each required fact. Read local for user decisions while comparing shared login, scope admission and catalog answers. Write both directories for team create/delete, invite accept, member removal/leave, role drift and GitHub connection changes; report and reconcile failed writes instead of treating best effort as complete. Backfill existing rows through an idempotent process that preserves keys and tombstones. Resolve principal conflicts manually; re-seal connection values or obtain a reconnect before moving their reads. Keep an inventory of new writes since the baseline.
+4. **Fence and flip.** Briefly hold the directory writers, replay their delta, and require zero unexplained differences. Switch login, `host.admin`, scope admission, catalog and connection reads to the shared service. Keep the local namespace and dual writes for a measured observation window. Verify sign-in and team switching, membership grants and revocations, team lifecycle, GitHub repository access, the permission matrix, and app provisioning for existing and newly created teams **before deleting anything**. Resume writes only with both sides still converging.
+5. **Retire.** Stop local writes and the `/api/me` mirror after the shared read path is established. After the retention and rollback checkpoints, remove the dashboard's binding and class export. The original DO migration tag stays in history; class deletion needs a later migration tag. Keep #1343 open until the live cutover and verification are complete.
 
-The one thing worth re-reading before the DO is dropped: the access-log half is the "who
-read this tenant's data" trail, and it becomes unrecoverable at step 7 rather than at the
-cutover. If that answer changes, it has to change before then — which is why the sequence
-below drops the class last.
+**Rollback:** Before shared-only writes, switch reads back to the intact local directory. Once any shared-only write occurs, first reverse-reconcile its delta into local state, including unlinks, revocations and connection changes, then switch reads. Keep the binding and local data until that reverse path has been exercised. A failed shadow comparison or a principal conflict blocks the flip.
 
-## Where any of this runs — the constraint the sequence hangs off
+### B. One-shot copy behind a flag
 
-`ControlPlaneDO` is bound in **two workers**: `apps/control-plane` holds the shared
-directory (what the console reads, through the CP API), and `apps/dashboard` holds its own
-instance — a different Durable Object namespace.
+First implement the same privileged service contracts and scope-local permission readiness as A. Hold *all* directory writers, take a consistent read-only inventory, copy and verify the local rows once, then switch all reads behind a deployment flag before releasing writers. Keep the local DO and a tested reverse-copy path through an observation window; copy any post-flip writes back before rollback. This gives a shorter period of dual-write complexity but a longer writer hold, and a missed writer or historical table appears only at the flip. Connection re-sealing, identity conflicts and audit retention still require separate decisions.
 
-A DO is reachable only through a binding, so the rows to be migrated can be addressed by
-**the dashboard worker and nothing else**. Not the console, not the CP API, not a script
-with staff credentials. Steps 1–4 — the ones that touch rows: inventory, backfill,
-reconciliation and the delta — therefore execute inside that worker, which is the fact that
-makes this a code change rather than an operator task. Steps 5–7 are deployment and binding
-changes rather than operations against the data, and are ordinary shipping.
+### C. Keep the local directory for login while moving other work
 
-That does **not** mean a staff surface in the dashboard's UI, and it should not become a
-standing route: this is a one-off migration, and a permanent privileged endpoint outliving
-a job that runs a handful of times is a worse trade than the migration itself. Whatever
-entry point the inventory and backfill use is expected to be removed in the same series
-that drops the binding — step 7 already deletes more than this.
+First enable and backfill scope-local permissions, then move tenant/scope administration, catalog and connection handling to the shared service with dual-read verification. Leave `listIdentityMemberships`, identity links and their mirror in the dashboard-local DO. Roll back each shared read to its local path while both writes are maintained. This isolates the cross-tenant auth decision and reduces the local DO's duties, but it **does not retire the DO or close #1343**; the mirror's divergence windows remain until a later identity cutover. It also leaves a local scope-admission path unless that gate is separately moved.
 
-**What that entry point iterates, since "for every team" has to come from somewhere.** The
-two sides are reached asymmetrically, and only one of them enumerates. The local directory
-is read through `hostFor(env)`, whose `admin.listTenants(actor)` is unnarrowed and pages
-the whole `ControlPlaneDO` — that list, not the authenticated user's, is the migration's
-inventory; `/api/me` answers only for the caller's own teams and is the wrong source by
-construction. The shared side is reached through `controlPlaneFor(env, tenantId)`, which
-returns a `TenantNarrowedControlPlane` pinned to one tenant and injects it into every
-write. So the backfill is a loop: enumerate locally once, then construct one narrowed
-plane per tenant and write that tenant's rows through it. The narrowing is a property
-worth keeping rather than a limit to work around — it is what stops a mis-keyed row
-landing under another team — and `listTenants` records a K-24 access entry as it reads,
-so the enumeration is itself in the trail.
+## Decisions required before implementation
 
-## Proposed sequence
-
-Each step is separately revertible, and nothing before step 5 changes what a signed-in
-user resolves to.
-
-1. **Inventory against production** (read-only). Answer the questions above. Output
-   is a row count per table on both sides, and a diff of the identity links.
-2. **Backfill the facts that are only local** — scopes, entitlements, roles, tuples —
-   into the shared directory, for every team. Idempotent, so it can be re-run: every
-   verb involved (`ensureTenant`, `provisionScope`, `grantEntitlement`, `defineRole`,
-   `assignRole`) is already an upsert or is guarded by one at its call site. That only
-   holds if every row **keeps its local identity**: the adapters key a tenant by its
-   `tenantId`, a scope by its `scopeId`, and a role, entitlement or tuple by the key the
-   caller supplies, so the backfill carries those across unchanged and mints nothing. A
-   fresh id would slip past the existing-row check and then fail on slug uniqueness (or,
-   for a tuple, quietly become a second logical grant). If a collision on the shared side
-   ever forces a remap, the mapping is persisted and reused for every dependent row and
-   every retry — never recomputed.
-3. **Reconcile identity links in both directions**, and fail loudly on a conflict — the
-   same external id mapping to different principals is the one case that must not be
-   auto-resolved, because picking either answer signs somebody into the wrong team.
-4. **Hold the local writers, then run the delta.** Between step 2 and the flip the
-   dashboard has kept writing locally — `POST /api/teams` creates a tenant, scope, roles,
-   entitlements, owner tuple and identity link through `hostFor`, `/api/invites/accept`
-   adds a tuple, `DELETE /api/teams/:teamId/members/:memberId` and
-   `POST /api/teams/:teamId/leave` take one away — so a
-   backfill that finished an hour ago is already behind, and the shared directory would
-   be missing exactly the newest teams when the reads move. So the membership writers
-   (team create, delete and leave; invite accept; member remove) are held — a `503` on
-   those routes, nothing that reads — step 2 is run again with the hold on (idempotent,
-   so what it writes *is* the delta), and the hold stays on through the next step.
-5. **Flip the reads.** `hostFor` takes the shared directory. This is the step with a user
-   -visible window, and the one to do with a rollback ready: reverting the binding
-   restores the old directory, which the backfill left untouched. Two things change on
-   the way past that the table above only implies. The identity reads that decide who a
-   session is (`listIdentityTenants` in `/api/me`) now answer from the shared directory,
-   which is what step 3 was for. And `ensureCatalog` now seeds `CATALOG` into the
-   **shared** registry on its first read — a new write to the shared plane, so the shared
-   registry is checked for the `protocol` and `callout` slugs beforehand. The retired
-   builtin rows are deliberately not carried: a registry that never had a `meridian`
-   builtin refuses the same install by absence that `installsBlocked` refused by flag,
-   and question 4 above is what confirms nothing else reads them.
-6. **Drop the mirror write** in `/api/me`, once nothing reads the local copy.
-7. **Drop the binding, then the DO class,** and the `v1` migration entry stays — a
-   `new_sqlite_classes` tag cannot be withdrawn, only superseded by a `deleted_classes`
-   migration.
-
-Steps 6 and 7 are the only irreversible ones, and both come after the flip has been
-observed to hold.
-
-## The rollback
-
-Until step 7, the local DO still has every row it had: the backfill writes to the shared
-directory and touches nothing locally. So the rollback for step 5 is to put the binding
-back. That property is worth protecting deliberately — **the backfill must never delete
-or rewrite local rows**, however tempting a "cleanup" looks while writing it, because it
-is the entire reason this move has a way back.
-
-It is a clean rollback only **until the first membership write after the flip**. Once
-`hostFor` points at the shared directory, a team created there — the same `POST
-/api/teams` — exists in the shared directory and nowhere locally, so putting the binding
-back makes that team vanish from its owner's `/api/me`. That gives the rollback a cutoff,
-and the write hold from step 4 is what marks it:
-
-- **While the hold is on**, nothing has been written that the local DO lacks, and rollback
-  is exactly the binding revert. So the hold stays on for the whole observation window —
-  the reads are what the flip has to prove, and holding team creation for an hour costs
-  less than a team that exists on one side only.
-- **After the hold lifts**, rollback is no longer one action. It is step 2 run in the
-  other direction — the same idempotent backfill with the two directories swapped, for
-  every membership row written since the flip — and only then the binding revert. The
-  step 2 tooling is written so it can be pointed either way for that reason, and which
-  of the two rollbacks is in force is written down before the hold is lifted.
+- Approve A's **privileged service boundary**, including a cross-tenant login read and the deliberately omitted role-definition and other enforcement writes, or choose C as the intended stopping point. Keep builder-facing routes tenant-narrowed.
+- Choose whether the dashboard's own scope is registered and lifecycle-gated in the shared directory through a privileged reader, or specify another gate that works for the dashboard's direct entry path. Scope-local permissions alone does not decide this (`scope-local-permissions.md` §9 question 4).
+- Decide the treatment of locally sealed GitHub connections: re-seal with verified equivalence, or require reconnect; decide whether historical local admin/access logs may be retired after the required retention review.
+- Approve the live inventory, writer hold, comparison thresholds, observation window and rollback cutoff as a separate migration checkpoint. This document authorizes no live-data action.
 
 [#1343]: https://github.com/substrat-run/substrat/issues/1343

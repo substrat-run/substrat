@@ -1,22 +1,22 @@
 import { useEffect, useState } from 'react';
-import { api, type FieldReadsView } from '../lib/api';
+import { teamApi, type FieldReadsView } from '../lib/api';
 import { card } from '../components/ui';
 
 /**
  * Sampled response fields for one installed app — the observed half beside the declared
  * Field coverage card. Counts are the vertical's assertions, for this scope only.
  */
-export function FieldReads({ scopeId, hours = 24 }: { scopeId: string; hours?: number }) {
+export function FieldReads({ teamId, scopeId, hours = 24 }: { teamId: string; scopeId: string; hours?: number }) {
   const [view, setView] = useState<FieldReadsView | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
     let live = true;
     setView(null);
     setError('');
-    api.appFieldReads(scopeId, hours).then((answer) => { if (live) setView(answer); })
+    teamApi(teamId).getAppFieldReads({ scopeId, hours: String(hours) }).then((answer) => { if (live) setView(answer); })
       .catch(() => { if (live) setError('Field counts could not be loaded.'); });
     return () => { live = false; };
-  }, [scopeId, hours]);
+  }, [teamId, scopeId, hours]);
 
   const body = error ? <p role="alert">{error}</p>
     : !view ? <p>Loading field counts…</p>

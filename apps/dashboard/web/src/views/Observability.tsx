@@ -171,7 +171,7 @@ export function Observability({
         <AppFilter apps={apps} value={scopeId} onChange={pickApp} />
         {refresh}
       </div>
-      {scopeId ? <AppFailures scopeId={scopeId} window={window} nonce={nonce} onNav={onNav} />
+      {scopeId ? <AppFailures teamId={teamId} scopeId={scopeId} window={window} nonce={nonce} onNav={onNav} />
         : <PickApp section="pulse" apps={apps} onPick={(app) => onNav({ app, view: 'failures' })} />}
       {slideOver}
     </Page>;

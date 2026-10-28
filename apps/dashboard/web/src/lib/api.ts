@@ -1,12 +1,12 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { ApiError as GeneratedApiError, createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type AppEvent, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
-export type { BoundScopeRow, DeployFailureRow, FailureGroupRow, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView };
+export type { AppEvent, BoundScopeRow, DeployFailureRow, FailureGroupRow, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView };
 export type ChannelHistoryEntry = ChannelHistoryRow;
 export type VerticalPreview = PreviewRow;
 
@@ -175,17 +175,6 @@ export interface InstallStep {
   last_error: string | null;
   started_at: string;
   settled_at: string | null;
-}
-
-/** One entry in an app's audit trail (Activity panel) — a lifecycle transition. */
-export interface AppEvent {
-  id: string;
-  app_scope_id: string;
-  kind: 'created' | 'active' | 'failed' | 'deleted' | 'updated' | 'snapshotted' | 'snapshot-deleted' | 'data-exported' | 'data-restored';
-  /** Failure reason / bound hostname / the version move / the vertical slug — depending on `kind`. */
-  detail: string | null;
-  actor: string;
-  created_at: string;
 }
 
 /**
@@ -630,7 +619,7 @@ export interface FieldCoverageView {
 
 export interface FieldReadsView {
   available: boolean;
-  source: 'vertical-asserted';
+  source: string;
   window?: { since: string; until: string };
   groups: Array<{
     sampleRate: number | null;
@@ -1475,13 +1464,19 @@ export interface ExportBreakRow {
  * Build it from the team the TAB is on (`me.currentTeamId`, pinned by the URL), never
  * once at module load.
  */
+const teamClients = new Map<string, DashboardClient>();
+
 export function teamApi(teamId: string): DashboardClient {
-  return createClient({
+  const cached = teamClients.get(teamId);
+  if (cached) return cached;
+  const client = createClient({
     baseUrl: `/api/teams/${encodeURIComponent(teamId)}`,
     fetch: (input, init) => fetch(input, { credentials: 'include', ...init }),
     // The one reading of a failed body (#971), same as `call`.
     errorMessage: (body) => problemDetail(body),
   });
+  teamClients.set(teamId, client);
+  return client;
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -1706,14 +1701,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
-  /** One page of the app's audit trail, newest first; `nextCursor` walks older activity. */
-  appEvents: (scopeId: string, opts?: PageOpts) =>
-    call<ListPage<AppEvent>>(`/apps/${encodeURIComponent(scopeId)}/events${pageQs(opts)}`),
-  /** The install's durable step record (#424) — rendered live while an install runs. */
-  installSteps: (scopeId: string) => call<InstallStep[]>(`/apps/${encodeURIComponent(scopeId)}/steps`),
-  /** One page of the app scope's control-plane audit log (#479), newest first; `nextCursor` walks older. */
-  auditLog: (scopeId: string, opts?: PageOpts) =>
-    call<ListPage<AuditEntry>>(`/apps/${encodeURIComponent(scopeId)}/audit${pageQs(opts)}`),
   /** One page of the TEAM's control-plane audit log (#1447) — every app, newest first.
    *  `scopeId` narrows it to one app; without it the page is the tenant's whole log,
    *  which is the only way to see the entries that name no scope at all. */
@@ -1838,30 +1825,6 @@ export const api = {
     call<WorkflowPreview>(
       `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
     ),
-
-  /**
-   * The same series for ONE installed app (#1447) — tenant grain, so the answer is this
-   * installation's traffic rather than the script's across every team that installed the
-   * vertical. One app, zero-filled, with release markers — what Observability draws in
-   * one-app mode. The team-level ALL-APPS chart is NOT a consumer: it plots many apps on
-   * one axis from the multi-scope series instead, so never call this once per app to
-   * build that.
-   */
-  appTraffic: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
-    call<TrafficSeries>(`/apps/${encodeURIComponent(scopeId)}/traffic?${new URLSearchParams({ hours: String(hours), ...window })}`),
-
-  /**
-   * The declared facts drawn over that series (#1447) — migrations applied, failed
-   * schedule runs, stale freshness spans, recorded failures. Its own call because it is
-   * its own route: the chart must draw on the series alone, and these arriving late or
-   * not at all costs the overlays and nothing else.
-   */
-  appFailures: (scopeId: string, window: { since: string; until: string }) =>
-    call<AppFailuresView>(`/apps/${encodeURIComponent(scopeId)}/failures?${new URLSearchParams(window)}`),
-
-  appOverlays: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
-    call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?${new URLSearchParams({ hours: String(hours), ...window })}`),
-
   /**
    * One record's event history (#1235) — payload, authorization chain, impersonation, PII class.
    *
@@ -1889,22 +1852,12 @@ export const api = {
   fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),
   appMetrics: (teamId: string, hours = 24) => teamApi(teamId).appMetrics({ hours: String(hours) }),
 
-  /** Field coverage for the running version (#1321) — declared vs returnable. */
-  /** Declared-vs-observed findings (#1234) — what this app promises against what it has done. */
-  appFlow: (scopeId: string) => call<FlowView>(`/apps/${encodeURIComponent(scopeId)}/flow`),
-
   /** One declared lifecycle replayed for the process map (#1744); the first declared one when `entity` is absent. */
   appProcesses: (scopeId: string, input: { entity?: string; period: ProcessPeriod }) => {
     const q = new URLSearchParams({ period: input.period });
     if (input.entity) q.set('entity', input.entity);
     return call<ProcessMapView>(`/apps/${encodeURIComponent(scopeId)}/processes?${q}`);
   },
-
-  appFieldCoverage: (scopeId: string) =>
-    call<FieldCoverageView>(`/apps/${encodeURIComponent(scopeId)}/field-coverage`),
-  appFieldReads: (scopeId: string, hours: number) =>
-    call<FieldReadsView>(`/apps/${encodeURIComponent(scopeId)}/field-reads?hours=${hours}`),
-
 };
 
 /**

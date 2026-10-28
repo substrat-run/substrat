@@ -614,6 +614,34 @@ export interface DashboardClient {
   getAppEnv(input: { scopeId: string }): Promise<{ spec: { key: string; label?: string; description: string; placeholder?: string; kind?: string; required: boolean; secret: boolean; default?: string; group?: string }[]; values: ({ key: string; isSecret: boolean; hasValue: boolean; value: string | null; updatedAt: string })[]; modelCatalog: ({ id: string; label: string; status: "active" | "deprecated"; servedBy: string; inputPer1M: string; outputPer1M: string })[] }>;
 
   /**
+   * Recent failures of one installed app
+   *
+   * `GET /apps/{scopeId}/failures` — `dashboard/get-app-failures`
+   */
+  getAppFailures(input: { scopeId: string; since?: string; until?: string }): Promise<{ entries: ({ id: string; at: string; kind: "sweep" | "operation"; operation: string; stage: string | null; message: string | null; code: string | null })[]; unavailableSources: string[]; incompleteSources: string[] }>;
+
+  /**
+   * Fields declared by the app's running version and returnable by its operations
+   *
+   * `GET /apps/{scopeId}/field-coverage` — `dashboard/get-app-field-coverage`
+   */
+  getAppFieldCoverage(input: { scopeId: string }): Promise<{ available: boolean; entities: { entity: string; table: string; fields: { field: string; returned: boolean; erasable: boolean }[]; neverReturned: { field: string; returned: boolean; erasable: boolean }[] }[]; declared: number; returned: number; neverReturnedErasable: number; operations: number }>;
+
+  /**
+   * Observed field presence in one app's responses
+   *
+   * `GET /apps/{scopeId}/field-reads` — `dashboard/get-app-field-reads`
+   */
+  getAppFieldReads(input: { scopeId: string; hours?: string }): Promise<{ available: boolean; source: string; window?: { since: string; until: string }; groups: ({ sampleRate: number | null; armedRequests: number; refused: number; operations: ({ operation: string; responses: number; fields: ({ field: string; present: number; empty: number; absent: number; eligible: number; sampleRate: number | null; window: { since: string; until: string } })[] })[]; notObservedReturned: { operation: string; field: string }[] })[] }>;
+
+  /**
+   * The app's declared and observed flow
+   *
+   * `GET /apps/{scopeId}/flow` — `dashboard/get-app-flow`
+   */
+  getAppFlow(input: { scopeId: string }): Promise<{ findings: { available: boolean; observedComplete: boolean; declaredComplete: boolean; findings: ({ kind: "unemitted" | "unconsumed" | "stale" | "unconnected-provider" | "unhealthy-provider"; subject: string; moduleId: string | null; detail: string })[]; declaredTypes: number; observedTypes: number }; graph: { available: boolean; nodes: ({ id: string; kind: "trigger" | "module" | "event" | "connection" | "egress"; label: string; sublabel: string | null; observed: number | null; silent: boolean; stale: boolean; status: "ok" | "warn" | "danger"; title: string; x: number; y: number; w: number; h: number })[]; edges: ({ from: string; to: string; kind: "triggers" | "emits" | "consumes" | "uses"; title: string })[]; width: number; height: number; partialObservation: boolean; declaredComplete: boolean }; operations: { rows: ({ operation: string; events: number | null; lastSeen: string | null; refusals: number | null; refusedOnly: boolean })[]; observedComplete: boolean; refusals: { complete: boolean; held: number; counted: number; since: string | null } | null }; connectionSweep: { rows: ({ connectionId: string; provider: string; label: string; status: string; lastSweptAt: string | null; lastOutcomeFailed: boolean | null; unknown: boolean; idle: boolean })[]; windowDays: number; idleCount: number } }>;
+
+  /**
    * An app's durable install record: directory, provision, activate, hostname, identity
    *
    * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
@@ -635,11 +663,25 @@ export interface DashboardClient {
   getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[] })[] }>;
 
   /**
+   * Migration, failure and stale markers over one app's traffic
+   *
+   * `GET /apps/{scopeId}/overlays` — `dashboard/get-app-overlays`
+   */
+  getAppOverlays(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<{ unavailableSources?: string[]; incompleteSources?: string[]; markers: ({ at: string; kind: "migration" | "run-failed" | "failure"; label: string; detail: string | null })[]; spans: { from: string; to: string; kind: "stale"; label: string }[]; truncated: boolean }>;
+
+  /**
    * Compare this app’s running version with the current prod version
    *
    * `GET /apps/{scopeId}/release-comparison` — `dashboard/get-app-release-comparison`
    */
   getAppReleaseComparison(input: { scopeId: string }): Promise<{ running: { versionId: string; version: string | null; requests: number | null; errors: number | null; cpuTimeP50: number | null; cpuTimeP99: number | null } | null; update: { versionId: string; version: string | null; requests: number | null; errors: number | null; cpuTimeP50: number | null; cpuTimeP99: number | null } | null; metricsAvailable: boolean; owned: boolean }>;
+
+  /**
+   * One installed app's traffic series and release markers
+   *
+   * `GET /apps/{scopeId}/traffic` — `dashboard/get-app-traffic`
+   */
+  getAppTraffic(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<TrafficSeries>;
 
   /**
    * A vertical's release ledger: each version against its go-live, adoption and health
@@ -1282,14 +1324,26 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/activity`, "GET", undefined, omit(input, ["scopeId","provider","connectionId"])),
     getAppEnv: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppFailures: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/failures`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppFieldCoverage: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/field-coverage`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppFieldReads: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/field-reads`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppFlow: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/flow`, "GET", undefined, omit(input, ["scopeId"])),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
     getAppIntegrationActivity: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/activity`, "GET", undefined, omit(input, ["scopeId","provider"])),
     getAppIntegrations: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppOverlays: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/overlays`, "GET", undefined, omit(input, ["scopeId"])),
     getAppReleaseComparison: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/release-comparison`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppTraffic: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/traffic`, "GET", undefined, omit(input, ["scopeId"])),
     getDeploymentReleases: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/releases`, "GET", undefined, omit(input, ["slug"])),
     getDeploymentTraffic: (input: Args) =>

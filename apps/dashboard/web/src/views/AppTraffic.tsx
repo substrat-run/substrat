@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
-import { api, ApiError, type AppOverlays, type TenantMetricsRow, type TrafficSeries } from '../lib/api';
+import { api, isApiError, teamApi, type AppOverlays, type TenantMetricsRow, type TrafficSeries } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import type { MetricsState } from '../lib/use-tenant-metrics';
 import { mockAppOverlays, mockAppTraffic, mockSurfaceMetrics } from '../lib/mock-app-traffic';
@@ -95,8 +95,8 @@ export function AppTraffic({
       setMetrics(mockSurfaceMetrics(s));
       return;
     }
-    api
-      .appTraffic(scopeId, 24, asked)
+    teamApi(teamId)
+      .getAppTraffic({ scopeId, hours: '24', ...asked })
       .then((t) => live && setSeries(t))
       // A 501 (or a worker predating the route) says the plane cannot bucket — which is
       // what `available: false` means. Anything else is a read that failed, and must not
@@ -104,14 +104,14 @@ export function AppTraffic({
       .catch((e) =>
         live &&
         setSeries(
-          e instanceof ApiError && (e.status === 501 || e.status === 404)
+          isApiError(e) && (e.status === 501 || e.status === 404)
             ? { buckets: [], markers: [], bucketMinutes: 60, available: false }
             : 'error',
         ),
       );
     // A sibling read that never gates the chart: failing costs the glyphs, nothing else.
-    api
-      .appOverlays(scopeId, 24, asked)
+    teamApi(teamId)
+      .getAppOverlays({ scopeId, hours: '24', ...asked })
       .then((o) => live && setOverlays(o))
       // Said, not swallowed: a chart with no deploy line reads as "nothing shipped".
       .catch(() => live && setOverlayError(true));
@@ -120,7 +120,7 @@ export function AppTraffic({
       api
         .appTenantMetrics(teamId, scopeId, 24, asked)
         .then((r) => live && setMetrics(r))
-        .catch((e) => live && setMetrics(e instanceof ApiError && e.status === 501 ? 'absent' : 'error'));
+        .catch((e) => live && setMetrics(isApiError(e) && e.status === 501 ? 'absent' : 'error'));
     }
     return () => {
       live = false;

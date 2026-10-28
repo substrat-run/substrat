@@ -468,8 +468,8 @@ function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, can
     setSeat(undefined);
     // An active app's seat is read by the effect below, once its running version is known.
     if (app.status !== 'active') setSeat(null);
-    api
-      .appEvents(app.app_scope_id)
+    teamApi(teamId)
+      .listAppEvents({ scopeId: app.app_scope_id })
       .then((p) => {
         if (!live) return;
         setEvents(p.entries);
@@ -495,14 +495,14 @@ function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, can
     };
     // `status` too: a provisioning app has no seat to read, and the read has to happen
     // once it becomes active rather than only on the next navigation.
-  }, [app.app_scope_id, app.status]);
+  }, [teamId, app.app_scope_id, app.status]);
 
 
   const loadOlderEvents = async () => {
     if (DEV_MOCK || loadingOlder || !eventsCursor) return;
     setLoadingOlder(true);
     try {
-      const p = await api.appEvents(app.app_scope_id, { cursor: eventsCursor });
+      const p = await teamApi(teamId).listAppEvents({ scopeId: app.app_scope_id, cursor: eventsCursor });
       setEvents((prev) => [...(prev ?? []), ...p.entries.filter((e) => !prev?.some((x) => x.id === e.id))]);
       setEventsCursor(p.nextCursor);
     } finally {
@@ -1224,21 +1224,21 @@ function rolesHolding(reg: PermissionRegistry, key: string): string[] {
  * still be unreachable. Under-reporting is the safe direction for a list whose
  * purpose is to justify deleting something.
  */
-function FieldCoverage({ app }: { app: AppRow }) {
+function FieldCoverage({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<FieldCoverageView | null>(null);
 
   useEffect(() => {
     let live = true;
     setView(null);
-    api
-      .appFieldCoverage(app.app_scope_id)
+    teamApi(teamId)
+      .getAppFieldCoverage({ scopeId: app.app_scope_id })
       .then((v) => live && setView(v))
       // A worker predating the route: the card cannot say anything true, so it says nothing.
       .catch(() => live && setView(null));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
 
   if (!view) return null;
 
@@ -3133,8 +3133,8 @@ export function Data({ teamId, app, section, onSection, canRestore }: { teamId: 
       {section === 'tables' && <DataBrowser teamId={teamId} app={app} />}
       {section === 'schema' && (
         <div style={{ display: 'grid', gap: 16 }}>
-          <FieldCoverage app={app} />
-          <FieldReads scopeId={app.app_scope_id} />
+          <FieldCoverage teamId={teamId} app={app} />
+          <FieldReads teamId={teamId} scopeId={app.app_scope_id} />
           <Model app={app} />
         </div>
       )}
