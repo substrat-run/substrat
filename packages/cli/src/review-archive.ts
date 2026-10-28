@@ -7,7 +7,7 @@ const MAX_COMPRESSED = 32 * 1024 * 1024;
 const MAX_EXPANDED = 128 * 1024 * 1024;
 const MAX_FILE = 16 * 1024 * 1024;
 const MAX_ENTRIES = 10_000;
-const pathDecoder = new TextDecoder('utf-8', { fatal: true });
+const pathDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 function git(args: string[], cwd: string, input?: Buffer): Buffer {
   return execFileSync('git', args, { cwd, input, maxBuffer: MAX_EXPANDED + 1024 * 1024 });

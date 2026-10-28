@@ -80,3 +80,17 @@ it('refuses a committed tree path with invalid UTF-8 bytes instead of renaming i
   const tree = execFileSync('git', ['mktree', '-z'], { cwd: dir, input: row }).toString().trim();
   expect(() => reviewArchive(dir, tree)).toThrow(/invalid UTF-8.*6261642dff2e747874/);
 });
+
+it('preserves a committed UTF-8 BOM at the start or inside a path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-bom-'));
+  dirs.push(dir);
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: dir, input: 'content' }).toString().trim();
+  for (const path of ['\uFEFFa.txt', 'a\uFEFF.txt']) {
+    const pathBytes = Buffer.from(path);
+    const row = Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), pathBytes, Buffer.from([0])]);
+    const tree = execFileSync('git', ['mktree', '-z'], { cwd: dir, input: row }).toString().trim();
+    const tar = gunzipSync(reviewArchive(dir, tree).bytes);
+    expect(tar.subarray(0, pathBytes.length), path).toEqual(pathBytes);
+  }
+});

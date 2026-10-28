@@ -201,6 +201,13 @@ describe('phase-0 review intake', () => {
     await expect(validateReviewArchive(src.file, src.sha256)).resolves.toBeUndefined();
   });
 
+  it('keeps a leading or interior UTF-8 BOM distinct from the plain path', async () => {
+    for (const path of ['\uFEFFa.txt', 'a\uFEFF.txt']) {
+      const src = await archive([{ path }, { path: 'a.txt' }]);
+      await expect(validateReviewArchive(src.file, src.sha256), path).resolves.toBeUndefined();
+    }
+  });
+
   it('rejects every unsupported PAX override and malformed extension', async () => {
     const longPath = 'docs/' + 'a'.repeat(120);
     const invalid = [
