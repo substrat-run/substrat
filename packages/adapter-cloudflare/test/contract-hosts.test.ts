@@ -139,6 +139,39 @@ directoryAdminAuditTransactionSuite('adapter-cloudflare', async () => {
   };
 });
 
+describe('#2479: directory audit across a coordinator/DO version skew', () => {
+  it('refuses an old DO that ignores a trailing audit argument before changing directory state', async () => {
+    const staff = platformActorId.parse(ulid());
+    const provider = `skew-${ulid().toLowerCase()}`;
+    const reader = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const oldDo = interceptedControlPlane(async (args, method) => {
+      if (method !== 'reply') return;
+      const called = args[0] as string;
+      if (called === 'registerIdentityPool') {
+        // An old DO knows this method but accepts only its original four arguments.
+        const cp = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+          reply(method: string, args: unknown[]): Promise<unknown>;
+        };
+        return { answer: await cp.reply(called, (args[1] as unknown[]).slice(0, 4)) };
+      }
+      if (called === 'registerIdentityPoolAndAudit') {
+        return { answer: { failure: toWireFailure(new Error(`not a replied directory method: ${called}`)) } };
+      }
+    });
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: oldDo });
+    try {
+      await expect(host.admin.registerIdentityPool(staff, { provider, topology: 'central', tenantId: null }))
+        .rejects.toThrow('not a replied directory method: registerIdentityPoolAndAudit');
+      expect(await reader.admin.getIdentityPool(staff, provider)).toBeUndefined();
+      expect((await reader.admin.auditLog(staff, { action: ['registerIdentityPool'] }))
+        .filter((row) => row.actor === staff)).toEqual([]);
+    } finally {
+      await host.close();
+      await reader.close();
+    }
+  });
+});
+
 /**
  * #2528 across a version skew. The coordinator and the ControlPlaneDO it calls ship together, but
  * a deploy can briefly pair either side with the other's previous release: the old coordinator's
