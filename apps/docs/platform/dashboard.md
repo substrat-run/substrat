@@ -272,6 +272,23 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   because the log is written at the tenant grain and some entries — role changes, entitlements —
   name no app at all, which a per-app tab could never show.
 
+### Process map: duration targets and edge latency
+
+The state machine shows observed time in each state, but has no declared per-state duration
+target or target comparison. A single static wall-clock number would misstate the existing
+service-level targets: they vary by desk and priority, can count business hours, and pause
+while a conversation is snoozed. Add an optional state target to the lifecycle contract only
+when a vertical needs a static wall-clock dwell target and names what to compare against it
+(for example, completed stays' p90 or each instance still in the state).
+
+An edge shows counts by operation and actor kind, but no p95 operation duration. The outbox
+has the operation and invocation id, while invocation log lines have duration; there is no
+durable duration fact joined to the outbox. The log retention is shorter than the map's
+30-day window, and asynchronous moves need not have a request line. An operation-wide p95
+would also include calls that did not take that edge. Add edge p95 only after there is a
+bounded, tenant-scoped invocation-duration read whose retention covers the map window, or
+a durable per-invocation timing fact joinable to the outbox.
+
 ### Findings: triage repeated problems {#findings}
 
 **Observability → Findings** is a tenant-wide inbox with **Open · Acked · Resolved ·
