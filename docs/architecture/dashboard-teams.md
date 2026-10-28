@@ -226,6 +226,6 @@ still carries a hash). The copy-link affordance remains as the fallback.
 
 ## 9. Out of scope for this line of work
 
-Seat/member-count billing. Entitlements are boolean SKU flags per tenant; per-member metering
-is net-new ([membership.md §7](membership.md)). Billing and domains views re-scope per team
-for free but stay mock until separately taken up.
+Seat/member-count billing. The Billing view reads this team's directory entitlements
+through its team path for an owner or admin; metered usage is separate work.
+Per-member metering is net-new ([membership.md §7](membership.md)).
