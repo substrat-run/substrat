@@ -1,6 +1,5 @@
 import { useRef, useState } from 'react';
 import { Button, Dialog, Input, Select } from '@substrat-run/ui';
-import { ROLE_MATRIX } from '../lib/demo';
 import type { InviteRole, Member } from '../lib/api';
 import { Ic } from '../lib/icons';
 import { Avatar } from '../components/DashShell';
@@ -99,7 +98,6 @@ export function Team({
   } | null>(null);
   /** Which "Copy link" request the dialog is waiting on; closing it or asking again supersedes it. */
   const linkRequest = useRef(0);
-  const [matrixOpen, setMatrixOpen] = useState(false);
 
   const rows = members.filter((m) => m.status !== 'revoked');
 
@@ -226,30 +224,6 @@ export function Team({
               {loadingMore ? 'Loading…' : 'Load more'}
             </Button>
           </div>
-        )}
-      </div>
-
-      <div style={{ ...card, overflow: 'hidden' }}>
-        <div onClick={() => setMatrixOpen((o) => !o)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px 16px', borderBottom: matrixOpen ? '1px solid var(--border-subtle)' : 'none', cursor: 'pointer' }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Roles &amp; permissions</span>
-          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>what each role can do — mirrors PERMISSIONS.md</span>
-          <div style={{ flex: 1 }} />
-          <span style={{ display: 'inline-flex', transform: matrixOpen ? 'none' : 'rotate(-90deg)', transition: 'transform 120ms' }}><Ic name="chevronDown" size={14} color="var(--text-tertiary)" /></span>
-        </div>
-        {matrixOpen && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: '2.4fr 1fr 1fr 1fr 1fr', alignItems: 'center', height: 36, padding: '0 16px', fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
-              <span>Permission</span><span>Owner</span><span>Admin</span><span>Member</span><span>Viewer</span>
-            </div>
-            {ROLE_MATRIX.map((p, i) => (
-              <div key={p.label} style={{ display: 'grid', gridTemplateColumns: '2.4fr 1fr 1fr 1fr 1fr', alignItems: 'center', height: 40, padding: '0 16px', fontSize: 13, color: 'var(--text-primary)', borderBottom: i === ROLE_MATRIX.length - 1 ? 'none' : '1px solid var(--border-subtle)' }}>
-                <span>{p.label}</span>
-                {[p.owner, p.admin, p.member, p.viewer].map((v, j) => (
-                  <span key={j} style={{ color: v ? 'var(--status-success-fg)' : 'var(--text-placeholder)' }}>{v ? '✓' : '—'}</span>
-                ))}
-              </div>
-            ))}
-          </>
         )}
       </div>
 

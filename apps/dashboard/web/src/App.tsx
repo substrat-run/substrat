@@ -161,7 +161,7 @@ export function App() {
   // as a record. Absent until read; an app whose model cannot be read offers neither.
   const [paletteModels, setPaletteModels] = useState<PaletteContext['models']>({});
   const [notifs, setNotifs] = useState(false);
-  const [unread, setUnread] = useState(true);
+  const [unread, setUnread] = useState(DEV_MOCK);
   const [toast, setToast] = useState<{ status: 'success' | 'danger'; title: string; detail?: string }>();
   // Set when a signed-in user follows an invite meant for a different email — shown
   // instead of dropping them into onboarding ("create a team").
@@ -1070,7 +1070,7 @@ export function App() {
           canManageFindings={canManageFindings(members, me.principal)}
         />
       ) : route.section === 'settings' ? (
-        <Settings org={org} teamId={me.currentTeamId} />
+        <Settings org={org} teamId={me.currentTeamId} slug={currentTeam?.slug ?? ''} name={me.name} email={me.email} />
       ) : null}
 
       {palette && (

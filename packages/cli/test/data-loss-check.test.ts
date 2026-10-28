@@ -8,6 +8,7 @@ import {
   checkMigrationDataLoss,
   dataLossCheckRequired,
   formatDataLossCheck,
+  MIGRATION_TIMEOUT_MS,
   replayInChild,
   type ReplayInputs,
 } from '../src/data-loss-check.js';
@@ -40,11 +41,43 @@ const run = async (i: ReplayInputs, opts: Parameters<typeof checkMigrationDataLo
   return { result, log, warn };
 };
 
-/** A stand-in replay process that answers one message, to drive the parent's handling of it. */
-const fakeChild = (message: unknown): string => {
+/** A stand-in replay process that sends progress and an optional answer to the parent. */
+const fakeChild = (message: unknown | unknown[], stayAlive = false): string => {
   const path = join(mkdtempSync(join(tmpdir(), 'substrat-replay-child-')), 'child.mjs');
-  writeFileSync(path, `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(JSON.stringify(message))} + '\\n'));\n`);
+  const messages = Array.isArray(message) ? message : [message];
+  writeFileSync(
+    path,
+    `process.stdin.resume(); process.stdin.on('end', () => { for (const message of ${JSON.stringify(messages)}) process.stdout.write(JSON.stringify(message) + '\\n'); ${stayAlive ? 'setInterval(() => {}, 60_000);' : ''} });\n`,
+  );
   return path;
+};
+
+/** Only the parent's timer moves; the replay process still sends real progress lines. */
+const fakeTimer = () => {
+  let now = 0;
+  const delays: number[] = [];
+  const pending = new Map<NodeJS.Timeout, { at: number; fire: () => void }>();
+  const advance = (ms: number) => {
+    now += ms;
+    for (const [handle, alarm] of pending) {
+      if (alarm.at <= now) {
+        pending.delete(handle);
+        alarm.fire();
+      }
+    }
+  };
+  const timer = {
+    start(fire: () => void, ms: number): NodeJS.Timeout {
+      delays.push(ms);
+      const handle = {} as NodeJS.Timeout;
+      pending.set(handle, { at: now + ms, fire });
+      return handle;
+    },
+    clear(handle: NodeJS.Timeout | undefined): void {
+      if (handle) pending.delete(handle);
+    },
+  };
+  return { timer, advance, delays, elapsed: () => now };
 };
 
 /**
@@ -163,12 +196,6 @@ describe.runIf(ready)("the push's data-loss check, through the vertical's own ke
     const pid = child.pid();
     expect(pid).toBeGreaterThan(0);
     expect(alive(pid!)).toBe(false);
-  }, 30_000);
-
-  it('the time limit is per migration: a replay longer than it in total still passes', async () => {
-    const many = Array.from({ length: 6 }, (_, i) => ({ version: `00${i + 2}`, sql: `ALTER TABLE notes ADD COLUMN c${i} TEXT;` }));
-    const { result } = await run(inputs([INIT, ...many]), { timeoutMs: 1500 });
-    await expect(result).resolves.toEqual({ status: 'passed', authored: 7 });
   }, 30_000);
 
   it('builds the spine it is handed first; without it a spine read is INCOMPLETE and names the remedy', async () => {
@@ -336,30 +363,43 @@ describe.runIf(ready)('the replay process kills itself at its hard deadline', ()
 });
 
 describe.runIf(ready)('the time limit is per migration', () => {
-  /** A migration that runs about `ms` on this machine: a bounded recursive CTE, calibrated here. */
-  const migrationTaking = (() => {
-    let perRow: number | undefined;
-    return async (ms: number, version: string): Promise<Migration> => {
-      if (perRow === undefined) {
-        const { DatabaseSync } = await import('node:sqlite');
-        const db = new DatabaseSync(':memory:');
-        const rows = 2_000_000;
-        const t0 = performance.now();
-        db.exec(`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ${rows}) SELECT count(*) FROM c;`);
-        perRow = (performance.now() - t0) / rows;
-      }
-      const n = Math.max(1, Math.round(ms / perRow));
-      return { version, sql: `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ${n}) SELECT count(*) FROM c;` };
+  it('four migrations at half the limit each pass although their combined time exceeds it', async () => {
+    const limit = MIGRATION_TIMEOUT_MS;
+    const clock = fakeTimer();
+    const progress = ['0001', '0002', '0003', '0004'].map((version) => ({ type: 'started', key: `notes@${version}`, authored: true }));
+    const child = fakeChild([...progress, { type: 'done', result: { kind: 'outcome', outcome: { authored: 4, passed: 4, declared: [] } } }]);
+    // Time advances just before each migration ends, including the last one's done line.
+    const timer = {
+      ...clock.timer,
+      clear(handle: NodeJS.Timeout | undefined): void {
+        if (handle) clock.advance(limit / 2);
+        clock.timer.clear(handle);
+      },
     };
-  })();
-
-  it('three migrations each at about half the limit pass, though together they run past it', async () => {
-    const limit = 4000;
-    const slow = await Promise.all(['0002', '0003', '0004'].map((v) => migrationTaking(limit / 2, v)));
-    const started = Date.now();
-    const { result } = await run(inputs([INIT, ...slow]), { timeoutMs: limit });
+    const migrations = [INIT, ...['0002', '0003', '0004'].map((version) => ({ version, sql: 'SELECT 1;' }))];
+    const { result } = await run(inputs(migrations), { childPath: child, timer });
     await expect(result).resolves.toEqual({ status: 'passed', authored: 4 });
-    // The point of the test: the replay as a whole took longer than one migration may.
-    expect(Date.now() - started).toBeGreaterThan(limit);
-  }, 60_000);
+    expect(clock.elapsed()).toBeGreaterThan(limit);
+    // With no timeoutMs override, every arm uses the shipped per-migration default.
+    expect(clock.delays).toEqual(Array(5).fill(MIGRATION_TIMEOUT_MS));
+  });
+
+  it('a migration that exceeds its own limit is INCOMPLETE', async () => {
+    const limit = 100;
+    const clock = fakeTimer();
+    const child = fakeChild([
+      { type: 'started', key: 'notes@0001', authored: true },
+      { type: 'started', key: 'notes@0002', authored: true },
+    ], true);
+    const timer = {
+      ...clock.timer,
+      start(fire: () => void, ms: number): NodeJS.Timeout {
+        const handle = clock.timer.start(fire, ms);
+        if (clock.delays.length === 3) queueMicrotask(() => clock.advance(limit + 1));
+        return handle;
+      },
+    };
+    const { result } = await run(inputs([INIT, { version: '0002', sql: 'SELECT 1;' }]), { childPath: child, timeoutMs: limit, timer });
+    await expect(result).resolves.toMatchObject({ status: 'incomplete', key: 'notes@0002', notReplayed: 1 });
+  });
 });

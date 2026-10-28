@@ -9,6 +9,7 @@ import { AppCard, type AppCardData } from '../components/AppCard';
 import { FleetHealth } from './FleetHealth';
 import { Page } from '../components/layout';
 import { PageTitle, card } from '../components/ui';
+import { teamPath } from '../lib/router';
 
 /** A normal install completes in seconds; past this, a `provisioning` row is STUCK (#424). */
 const STALL_AFTER_MS = 2 * 60 * 1000;
@@ -86,7 +87,7 @@ export function Apps({
   // its "Load more". Keyed on the row count, not on `loadingMore`: a page that lands
   // re-runs this, and a page that fails changes no count, so it stops rather than retries
   // in a loop — leaving the button below as the way to try again.
-  const walking = mode === 'health' && !!hasMore && !!onLoadMore;
+  const walking = (mode === 'health' || q !== '' || status !== 'All statuses') && !!hasMore && !!onLoadMore;
   useEffect(() => {
     if (walking && !loadingMore) onLoadMore!();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
@@ -100,10 +101,10 @@ export function Apps({
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 16 }}>
         <PageTitle title="Apps" subtitle={mode === 'health' ? 'Fleet health · one row per app, ordered by name. Open a row for its traffic, schedules and releases.' : 'The tools your team runs — each app is its own isolated scope.'} />
         <div style={{ flex: 1 }} />
-        <Button icon={<Ic name="plus" />} onClick={onCreate}>Create App</Button>
+        <span className="apps-create"><Button icon={<Ic name="plus" />} onClick={onCreate}><span className="apps-create-label">Create App</span></Button></span>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="apps-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <Input placeholder="Search apps…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260 }} />
         <Select options={['All statuses', 'Active', 'Provisioning', 'Failed']} value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 150 }} />
         <div style={{ flex: 1 }} />
@@ -113,8 +114,14 @@ export function Apps({
         </div>
       </div>
 
-      {mode === 'grid' ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+      {filtered.length === 0 && !hasMore ? (
+        <div style={{ ...card, padding: 24, textAlign: 'center' }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>No apps match these filters</div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 6 }}>Try a different search or status.</div>
+          <Button variant="secondary" onClick={() => { setQ(''); setStatus('All statuses'); }} style={{ marginTop: 16 }}>Clear filters</Button>
+        </div>
+      ) : mode === 'grid' ? (
+        <div className="apps-grid" style={{ display: 'grid', gap: 16 }}>
           {filtered.map((c) => (
             <AppCard
               key={c.scopeId}
@@ -190,7 +197,7 @@ function AppsSkeleton() {
           <div style={{ flex: 1 }} />
           <Sk w={62} h={30} />
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+        <div className="apps-grid" style={{ display: 'grid', gap: 16 }}>
           {Array.from({ length: 6 }, (_, i) => (
             <div key={i} style={{ background: 'var(--surface-card)', border: '1px solid var(--border-default)', borderRadius: 12, padding: 16, boxShadow: 'var(--shadow-sm)' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, animation: 'sub-pulse 1.8s ease-in-out infinite', animationDelay: `${i * 120}ms` }}>
@@ -219,8 +226,8 @@ function AppsSkeleton() {
 export function Onboarding({ onCreate }: { onCreate: () => void }) {
   const steps = [
     { n: 1, label: 'Create an app', here: true },
-    { n: 2, label: 'Invite your team' },
-    { n: 3, label: 'Connect a domain' },
+    { n: 2, label: 'Invite your team', href: teamPath('/team') },
+    { n: 3, label: 'Connect a domain', href: teamPath('/domains') },
   ];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28, minHeight: 'calc(100vh - 56px)', padding: 24 }}>
@@ -239,7 +246,7 @@ export function Onboarding({ onCreate }: { onCreate: () => void }) {
         {steps.map((s) => (
           <div key={s.n} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: s.here ? 'var(--text-primary)' : 'var(--text-secondary)', fontWeight: s.here ? 500 : 400 }}>
             <span style={{ width: 20, height: 20, borderRadius: '50%', background: s.here ? 'var(--brand-600)' : 'transparent', border: s.here ? 'none' : '1px solid var(--border-strong)', color: s.here ? '#fff' : 'var(--text-tertiary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, boxSizing: 'border-box' }}>{s.n}</span>
-            {s.label}
+            {s.href ? <a href={s.href} style={{ color: 'var(--text-link)', textDecoration: 'underline' }}>{s.label}</a> : s.label}
             {s.here && <><span style={{ flex: 1 }} /><span style={{ fontSize: 12, color: 'var(--text-brand)', fontWeight: 500 }}>You are here</span></>}
           </div>
         ))}

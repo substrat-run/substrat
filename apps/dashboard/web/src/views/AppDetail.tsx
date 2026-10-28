@@ -34,6 +34,7 @@ import { brokenAppLines, sendWithExportBreakAck, type BrokenApp } from '../lib/b
 import { AppTraffic } from './AppTraffic';
 import { FieldReads } from './FieldReads';
 import { ModelSettingPicker } from './ModelSettingPicker';
+import { EnvImport, type EnvEntry } from './EnvImport';
 
 /**
  * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
@@ -223,14 +224,7 @@ export function AppDetail({
         app={app}
         statusKind={statusKind}
         statusLabel={statusLabel}
-        actions={
-          <>
-            <VisitControl surfaces={surfaceUrls} />
-            <button type="button" aria-label="More actions" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-default)', background: 'var(--surface-card)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-              <Ic name="dots" size={16} />
-            </button>
-          </>
-        }
+        actions={<VisitControl surfaces={surfaceUrls} />}
       />
 
       <Tabs
@@ -2700,6 +2694,7 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     if (DEV_MOCK) {
@@ -2743,6 +2738,14 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
 
   const set = (key: string, val: string) => setInputs((m) => ({ ...m, [key]: val }));
 
+  const saveEntries = async (entries: EnvEntry[]) => {
+    const r = DEV_MOCK ? { saved: entries.length, delivered: true } : await teamApi(teamId).setAppEnv({ scopeId: app.app_scope_id, entries });
+    setNote(r.delivered
+      ? `Saved and applied to the running app (${r.saved} value${r.saved === 1 ? '' : 's'}).`
+      : ('note' in r ? r.note : undefined) ?? `Saved ${r.saved} value${r.saved === 1 ? '' : 's'}.`);
+    setNonce((n) => n + 1);
+  };
+
   const save = async () => {
     const entries: Array<{ key: string; value: string; secret: boolean }> = [];
     for (const s of view.spec) {
@@ -2760,13 +2763,7 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
     setSaving(true);
     setNote(null);
     try {
-      const r = await teamApi(teamId).setAppEnv({ scopeId: app.app_scope_id, entries });
-      setNote(
-        r.delivered
-          ? `Saved and applied to the running app (${r.saved} value${r.saved === 1 ? '' : 's'}).`
-          : (r.note ?? `Saved ${r.saved} value${r.saved === 1 ? '' : 's'}.`),
-      );
-      setNonce((n) => n + 1);
+      await saveEntries(entries);
     } catch (e) {
       setNote(e instanceof Error ? e.message : String(e));
     } finally {
@@ -2817,6 +2814,9 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
         reads its per-scope config at runtime. Secret values are write-only — masked, never shown again; leave a
         secret blank to keep it. If a save can't reach the app, it says so rather than pretending it applied.
       </HonestyBanner>
+
+      <div><Button variant="secondary" onClick={() => setImportOpen(true)}>Add from .env</Button></div>
+      {importOpen && <EnvImport spec={view.spec} values={view.values} onSave={saveEntries} onClose={() => setImportOpen(false)} />}
 
       {view.spec.length === 0 && custom.length === 0 ? (
         <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>
