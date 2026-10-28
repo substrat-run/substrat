@@ -4,6 +4,7 @@ import { platformActorId } from '@substrat-run/contracts';
 import { SERVICE_TOKEN_HEADER } from '@substrat-run/control-plane-api';
 import { ulid } from '@substrat-run/kernel';
 import { createReviewApi } from '../src/reviews.js';
+import { validateReviewArchive } from '../src/review-archive.js';
 import { pruneReviews, readReview, receiveReview } from '../src/review-store.js';
 
 const bucket = (env as unknown as { REVIEW_SOURCES: R2Bucket }).REVIEW_SOURCES;
@@ -48,6 +49,19 @@ async function archive(entries: { path: string; bytes?: Uint8Array; type?: numbe
   return { file: new File([bytes], 'source.tar.gz', { type: 'application/gzip' }), sha256 };
 }
 
+function paxRecord(key: string, value: string): Uint8Array {
+  const suffix = `${key}=${value}\n`;
+  let length = new TextEncoder().encode(suffix).length + 2;
+  for (;;) {
+    const bytes = new TextEncoder().encode(`${length} ${suffix}`);
+    if (bytes.length === length) return bytes;
+    length = bytes.length;
+  }
+}
+
+const pax = (bytes: Uint8Array) => ({ path: 'PaxHeaders/000000', type: 120, bytes });
+const regular = (path = 'PaxFiles/000000') => ({ path });
+
 describe('phase-0 review intake', () => {
   it('does not admit the platform service actor as the person who uploaded source', async () => {
     const response = await SELF.fetch('http://localhost/api/reviews', {
@@ -59,6 +73,7 @@ describe('phase-0 review intake', () => {
     const a = actor();
     const b = actor();
     const src = await archive();
+    const base = await archive([{ path: 'base.ts' }]);
     const app = createReviewApi({
       bucket: () => bucket,
       authenticate: async (request) => request.headers.get('x-test-person') === 'a' ? a
@@ -68,20 +83,23 @@ describe('phase-0 review intake', () => {
       const f = new FormData();
       f.set('source', src.file);
       f.set('sourceSha256', src.sha256);
+      f.set('base', base.file);
+      f.set('baseSha256', base.sha256);
       return f;
     };
     const post = () => app.request('http://test/reviews', { method: 'POST', headers: { 'x-test-person': 'a' }, body: form() });
     expect((await app.request('http://test/reviews', { method: 'POST', body: form() })).status).toBe(401);
     const first = await post();
     expect(first.status).toBe(201);
-    const receipt = await first.json() as { id: string; state: string; findings: unknown[]; sourceSha256: string };
-    expect(receipt).toMatchObject({ state: 'received', findings: [], sourceSha256: src.sha256 });
+    const receipt = await first.json() as { id: string; state: string; findings: unknown[]; sourceSha256: string; baseSha256: string };
+    expect(receipt).toMatchObject({ state: 'received', findings: [], sourceSha256: src.sha256, baseSha256: base.sha256 });
     const second = await post();
     expect(((await second.json()) as { id: string }).id).not.toBe(receipt.id);
     expect((await app.request(`http://test/reviews/${receipt.id}`, { headers: { 'x-test-person': 'b' } })).status).toBe(404);
     const listed = await app.request('http://test/reviews', { headers: { 'x-test-person': 'b' } });
     expect((await listed.json() as { entries: unknown[] }).entries).toEqual([]);
     expect((await bucket.get(`archives/${receipt.id}/source.tar.gz`))?.size).toBe(src.file.size);
+    expect((await bucket.get(`archives/${receipt.id}/base.tar.gz`))?.size).toBe(base.file.size);
   });
 
   it('refuses an absent binding without affecting authentication', async () => {
@@ -105,6 +123,42 @@ describe('phase-0 review intake', () => {
     }
     const src = await archive();
     await expect(receiveReview(bucket, a, { source: src.file, sourceSha256: '0'.repeat(64) })).rejects.toThrow(/digest/);
+  });
+
+  it('accepts a single PAX path for a repository long-named document', async () => {
+    const path = 'docs/decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md';
+    const src = await archive([pax(paxRecord('path', path)), regular()]);
+    await expect(validateReviewArchive(src.file, src.sha256)).resolves.toBeUndefined();
+  });
+
+  it('rejects every unsupported PAX override and malformed extension', async () => {
+    const longPath = 'docs/' + 'a'.repeat(120);
+    const invalid = [
+      ...['linkpath', 'size', 'uid', 'gid', 'mtime', 'charset', 'hdrcharset', 'SCHILY.xattr', 'GNU.sparse', 'LIBARCHIVE.xattr']
+        .map((key) => [key, [pax(paxRecord(key, 'value')), regular()]] as const),
+      ['global header', [{ path: 'PaxHeaders/global', type: 103, bytes: paxRecord('path', longPath) }, regular()]],
+      ['duplicate path records', [pax(new Uint8Array([...paxRecord('path', 'one'), ...paxRecord('path', 'two')])), regular()]],
+      ['extra trailing newline', [pax(new Uint8Array([...paxRecord('path', 'one'), 10])), regular()]],
+      ['wrong length', [pax(new TextEncoder().encode('99 path=one\n')), regular()]],
+      ['invalid UTF-8', [pax(new Uint8Array([49, 49, 32, 112, 97, 116, 104, 61, 255, 10])), regular()]],
+      ['NUL', [pax(paxRecord('path', 'bad\0name')), regular()]],
+      ['oversized PAX', [pax(new Uint8Array(1025)), regular()]],
+      ['repeated x', [pax(paxRecord('path', longPath)), pax(paxRecord('path', longPath)), regular()]],
+      ['orphan x', [pax(paxRecord('path', longPath))]],
+      ['x followed by link', [pax(paxRecord('path', longPath)), { ...regular(), type: 50 }]],
+      ['absolute path', [pax(paxRecord('path', '/tmp/outside')), regular()]],
+      ['parent traversal', [pax(paxRecord('path', '../outside')), regular()]],
+      ['drive path', [pax(paxRecord('path', 'C:/outside')), regular()]],
+      ['backslash path', [pax(paxRecord('path', 'a\\b')), regular()]],
+      ['PAX case collision', [pax(paxRecord('path', 'A.ts')), regular(), { path: 'a.ts' }]],
+      ['PAX Unicode normalization collision', [pax(paxRecord('path', 'é.ts')), regular(), pax(paxRecord('path', 'e\u0301.ts')), regular('PaxFiles/000001')]],
+      ['file parent collision', [{ path: 'a' }, { path: 'a/b' }]],
+      ['file child collision', [{ path: 'a/b' }, { path: 'a' }]],
+    ] as const;
+    for (const [label, entries] of invalid) {
+      const src = await archive([...entries]);
+      await expect(validateReviewArchive(src.file, src.sha256), label).rejects.toThrow();
+    }
   });
 
   it('refuses the compressed and per-file size bounds before storing anything', async () => {
