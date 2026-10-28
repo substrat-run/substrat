@@ -611,7 +611,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/env` — `dashboard/get-app-env`
    */
-  getAppEnv(input: { scopeId: string }): Promise<{ spec: { key: string; label?: string; description: string; placeholder?: string; kind?: string; required: boolean; secret: boolean; default?: string; group?: string }[]; values: ({ key: string; isSecret: boolean; hasValue: boolean; value: string | null; updatedAt: string })[]; modelCatalog: ({ id: string; label: string; status: "active" | "deprecated"; servedBy: string; inputPer1M: string; outputPer1M: string })[] }>;
+  getAppEnv(input: { scopeId: string }): Promise<{ spec: { key: string; label?: string; description: string; placeholder?: string; kind?: string; required: boolean; secret: boolean; default?: string; group?: string }[]; values: ({ key: string; isSecret: boolean; hasValue: boolean; value: string | null; updatedAt: string })[]; modelCatalog: ({ id: string; label: string; status: "active" | "deprecated"; servedBy: string; tiers: ({ upToInputTokens: number | null; inputPer1M: string; outputPer1M: string; cacheReadPer1M: string | null; cacheWritePer1M: string | null })[] })[] }>;
 
   /**
    * Recent failures of one installed app

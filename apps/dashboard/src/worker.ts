@@ -2576,8 +2576,7 @@ async function getAppEnvIn(ctx: TeamContext, appScopeId: string) {
     values,
     modelCatalog: pricedModelCatalog().map(({ id, label, status, servedBy, rate }) => ({
       id, label, status, servedBy,
-      inputPer1M: rate.tiers[0]!.inputPer1M,
-      outputPer1M: rate.tiers[0]!.outputPer1M,
+      tiers: [...rate.tiers],
     })),
   };
 }

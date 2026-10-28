@@ -1014,8 +1014,13 @@ export interface ModelCatalogOption {
   label: string;
   status: 'active' | 'deprecated';
   servedBy: string;
-  inputPer1M: string;
-  outputPer1M: string;
+  tiers: Array<{
+    upToInputTokens: number | null;
+    inputPer1M: string;
+    outputPer1M: string;
+    cacheReadPer1M: string | null;
+    cacheWritePer1M: string | null;
+  }>;
 }
 
 /** A provider credential form field — server-driven, the same move as the env spec. */

@@ -6,6 +6,22 @@ interface Props {
   onChange(value: string): void;
 }
 
+function inputBound(tokens: number): string {
+  return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(tokens).toLowerCase();
+}
+
+function tierPrices(tiers: ModelCatalogOption['tiers']): string {
+  return tiers.map((tier, index) => {
+    const previous = tiers[index - 1]?.upToInputTokens;
+    const range = tier.upToInputTokens === null
+      ? previous == null ? '' : ` above ${inputBound(previous)} input`
+      : previous == null
+        ? ` up to ${inputBound(tier.upToInputTokens)} input`
+        : ` above ${inputBound(previous)} to ${inputBound(tier.upToInputTokens)} input`;
+    return `$${tier.inputPer1M} input / $${tier.outputPer1M} output${range}`;
+  }).join('; ');
+}
+
 /** The one model-setting control shared by any vertical that declares kind: model. */
 export function ModelSettingPicker({ value, catalog, onChange }: Props) {
   const active = catalog.filter((entry) => entry.status === 'active');
@@ -33,7 +49,9 @@ export function ModelSettingPicker({ value, catalog, onChange }: Props) {
       </select>
       {current ? (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
-          {current.servedBy} · List price from ${current.inputPer1M} input / ${current.outputPer1M} output per 1M tokens
+          {current.servedBy} · {current.tiers.length === 1
+            ? `List price from ${tierPrices(current.tiers)} per 1M tokens`
+            : `List price per 1M tokens: ${tierPrices(current.tiers)}`}
         </div>
       ) : value ? (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>

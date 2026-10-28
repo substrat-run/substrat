@@ -1111,7 +1111,11 @@ export const dashboardRoutes = defineRoutes({
       })),
       modelCatalog: z.array(z.object({
         id: z.string(), label: z.string(), status: z.enum(['active', 'deprecated']),
-        servedBy: z.string(), inputPer1M: z.string(), outputPer1M: z.string(),
+        servedBy: z.string(), tiers: z.array(z.object({
+          upToInputTokens: z.number().int().nullable(),
+          inputPer1M: z.string(), outputPer1M: z.string(),
+          cacheReadPer1M: z.string().nullable(), cacheWritePer1M: z.string().nullable(),
+        })),
       })),
     }),
     http: { method: 'GET', path: '/apps/{scopeId}/env' },
