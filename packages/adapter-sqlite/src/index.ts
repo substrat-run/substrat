@@ -9493,15 +9493,12 @@ export class SqliteScopeHost implements ScopeHost {
         await auditedScopePermissionWrite({
           action: 'unassignRole', request: { ...assignment },
           record: (after) => this.recordAdmin(actor, 'unassignRole', { tenantId: assignment.node.tenantId, scopeId: scopeNode }, assignment, after),
-          write: () => {
-            const rt = this.runtime(assignment.node.tenantId, scopeNode);
-            return rt.actor.turn(() =>
-              rt.db.prepare(
-                `UPDATE _substrat_tuples SET revoked_at = ?
-                 WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-              ).run(new Date().toISOString(), `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeNode}`).changes,
-            );
-          },
+          write: () => onNode(assignment.node, () =>
+            this.runtime(assignment.node.tenantId, scopeNode).db.prepare(
+              `UPDATE _substrat_tuples SET revoked_at = ?
+               WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+            ).run(new Date().toISOString(), `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeNode}`).changes,
+          ),
           outcome: (changes) => ({ phase: changes === 0 ? 'refused' : 'applied', details: { changed: changes !== 0 } }),
           logError: (message, fields) => console.error(message, fields),
         });
