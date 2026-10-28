@@ -279,6 +279,9 @@ Both follow the same ownership rule, and it is the interesting part: **the build
 no id**. The vertical declares a *need*; the platform mints the database or bucket, holds the
 cloud credential, and attaches a binding to the serving script. A vertical is handed a store —
 it never names one, so it can never name someone else's.
+The physical mint happens before the directory records the binding. The directory's ledger
+row and its admin audit row then commit together; the minted resource cannot join that
+transaction.
 
 Neither is a read-scaling tier. Reach for them when a vertical genuinely needs storage outside
 the per-scope execution domain, not to make scope reads faster. Scope reads still follow the
