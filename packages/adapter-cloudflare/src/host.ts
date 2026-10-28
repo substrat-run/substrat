@@ -1320,7 +1320,7 @@ interface ControlPlaneStub {
   listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
-  importDump(tables: ScopeDumpTable[]): Promise<void>;
+  importDump(tables: ScopeDumpTable[], audit?: AdminEntry): Promise<void>;
 }
 
 interface AdminEntry {
@@ -9716,14 +9716,9 @@ export class CloudflareScopeHost implements ScopeHost {
         // admin log too, so an entry written first would be overwritten by the very act
         // it records, leaving the platform's most consequential write invisible.
         const before = (await this.cp.listTenants({ limit: 1000 })).length;
-        await this.cp.importDump(dump.tables);
-        await this.recordAdmin(
-          actor,
-          'restoreDirectory',
-          { tenantId: null },
-          { tenants: before },
-          { capturedAt: dump.capturedAt, tables: dump.tables.length },
-        );
+        await this.cp.importDump(dump.tables,
+          this.adminEntry(actor, 'restoreDirectory', { tenantId: null },
+            { tenants: before }, { capturedAt: dump.capturedAt, tables: dump.tables.length }));
       },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is

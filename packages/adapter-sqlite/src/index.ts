@@ -11978,6 +11978,15 @@ export class SqliteScopeHost implements ScopeHost {
               for (const row of rows) insert.run(...(row as unknown[]));
             },
           });
+          // The dump's rows have landed in the rebuilt tables. Append this restore's
+          // own row before commit, so a failed insert rolls the imported state back.
+          this.recordAdmin(
+            actor,
+            'restoreDirectory',
+            { tenantId: null },
+            { tenants: before },
+            { capturedAt: dump.capturedAt, tables: dump.tables.length },
+          );
         })();
         // #1764's split, over any version the dump stored before it.
         this.splitVersionMigrations();
@@ -11985,13 +11994,6 @@ export class SqliteScopeHost implements ScopeHost {
         // table would leave every permission check reading the PRE-restore roles until
         // the process restarted — the exact silent-divergence a recovery must not have.
         this.loadRoles();
-        this.recordAdmin(
-          actor,
-          'restoreDirectory',
-          { tenantId: null },
-          { tenants: before },
-          { capturedAt: dump.capturedAt, tables: dump.tables.length },
-        );
       },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is

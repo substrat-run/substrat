@@ -2047,7 +2047,7 @@ export class ControlPlaneDO extends DurableObject {
    * are filled in afterwards, inside the same transaction. A refusal anywhere in it leaves the
    * directory as it was.
    */
-  async importDump(tables: ScopeDumpTable[]): Promise<void> {
+  async importDump(tables: ScopeDumpTable[], audit?: AdminEntryInput): Promise<void> {
     // Same untrusted dump, same two holes as the scope path (#1143): names reaching SQL as
     // identifiers, and a `ddl` that is never executed here but is still held to one CREATE
     // TABLE. Pure input validation, so it runs before the first DROP: a refused dump touches
@@ -2089,6 +2089,9 @@ export class ControlPlaneDO extends DurableObject {
         "INSERT OR REPLACE INTO lifecycle_revisions (subject, revision) VALUES ('directory:epoch', ?)",
         Math.max(epochBefore + 1, this.lifecycleEpoch() + 1, Date.now()),
       );
+      // Append the restore's own row after the dump rows have landed in the rebuilt
+      // admin table, inside this same import transaction.
+      if (audit) this.recordAdmin(audit);
     });
     // A restore is a new #1764 backfill episode. It replaced the data the old failure count and
     // backoff were about, so neither may delay or silence it: the count is cleared and the next
