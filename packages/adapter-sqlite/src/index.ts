@@ -3838,19 +3838,19 @@ export class SqliteScopeHost implements ScopeHost {
     // Physically mint the database now, so a successful mint means the file exists (matching
     // "the platform mints the store"); the vertical then runs its OWN migrations against it.
     this.tenantStoreDb(ref);
-    this.directory
+    this.directoryWriteAndAudit(() => this.directory
       .prepare(
         `INSERT INTO tenant_stores (tenant_id, vertical, binding, kind, ref, created_at)
          VALUES (?, ?, ?, 'relational', ?, ?)`,
       )
-      .run(input.tenantId, input.vertical, input.binding, ref, new Date().toISOString());
-    this.recordAdmin(
+      .run(input.tenantId, input.vertical, input.binding, ref, new Date().toISOString()).changes > 0,
+    () => this.recordAdmin(
       actor,
       'provisionTenantStore',
       { tenantId: input.tenantId, vertical: input.vertical },
       null,
       { binding: input.binding, kind: 'relational', ref },
-    );
+    ));
     return { binding: input.binding, kind: 'relational', ref };
   }
 
@@ -3918,19 +3918,19 @@ export class SqliteScopeHost implements ScopeHost {
     const safeVertical = input.vertical.replace(/[^A-Za-z0-9_-]+/g, '-');
     const ref = `blob__${input.tenantId}__${safeVertical}__${input.binding}__${ulid()}`;
     mkdirSync(join(this.dir, ref), { recursive: true });
-    this.directory
+    this.directoryWriteAndAudit(() => this.directory
       .prepare(
         `INSERT INTO blob_stores (tenant_id, vertical, binding, kind, ref, created_at)
          VALUES (?, ?, ?, 'blob', ?, ?)`,
       )
-      .run(input.tenantId, input.vertical, input.binding, ref, new Date().toISOString());
-    this.recordAdmin(
+      .run(input.tenantId, input.vertical, input.binding, ref, new Date().toISOString()).changes > 0,
+    () => this.recordAdmin(
       actor,
       'provisionBlobStore',
       { tenantId: input.tenantId, vertical: input.vertical },
       null,
       { binding: input.binding, kind: 'blob', ref },
-    );
+    ));
     return { binding: input.binding, kind: 'blob', ref };
   }
 
@@ -11681,11 +11681,12 @@ export class SqliteScopeHost implements ScopeHost {
       // this host's clock, so a test can let a lease lapse without waiting.
       recordStoreDriverRelease: async (actor, input) => {
         const at: string = this.clock();
-        const { record, created } = this.directory.transaction(() =>
-          recordStoreDriverReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
-        )();
-        if (created) this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, record, at);
-        return record;
+        let result!: ReturnType<typeof recordStoreDriverReleaseIn>;
+        this.directoryWriteAndAudit(() => {
+          result = recordStoreDriverReleaseIn(switchSqlOf(this.directory), { ...input, actor, at });
+          return result.created;
+        }, () => this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, result.record, at));
+        return result.record;
       },
       getStoreDriverRelease: async (actor, driver, sha256) => {
         const record = storeDriverReleaseIn(switchSqlOf(this.directory), driver, sha256);
@@ -11721,18 +11722,20 @@ export class SqliteScopeHost implements ScopeHost {
       },
       beginStoreDriverRollout: async (actor, input) => {
         const at: string = this.clock();
-        const row = this.directory.transaction(() =>
-          beginStoreDriverRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) }),
-        )();
-        this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row, at);
+        let row!: ReturnType<typeof beginStoreDriverRolloutIn>;
+        this.directoryWriteAndAudit(() => {
+          row = beginStoreDriverRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) });
+          return true;
+        }, () => this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row, at));
         return row;
       },
       finishStoreDriverRollout: async (actor, input) => {
         const at: string = this.clock();
-        const row = this.directory.transaction(() =>
-          finishStoreDriverRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
-        )();
-        this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row, at);
+        let row!: ReturnType<typeof finishStoreDriverRolloutIn>;
+        this.directoryWriteAndAudit(() => {
+          row = finishStoreDriverRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) });
+          return true;
+        }, () => this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row, at));
         return row;
       },
       storeDriverRebuild: async (actor, driver) => {
@@ -11975,6 +11978,15 @@ export class SqliteScopeHost implements ScopeHost {
               for (const row of rows) insert.run(...(row as unknown[]));
             },
           });
+          // The dump's rows have landed in the rebuilt tables. Append this restore's
+          // own row before commit, so a failed insert rolls the imported state back.
+          this.recordAdmin(
+            actor,
+            'restoreDirectory',
+            { tenantId: null },
+            { tenants: before },
+            { capturedAt: dump.capturedAt, tables: dump.tables.length },
+          );
         })();
         // #1764's split, over any version the dump stored before it.
         this.splitVersionMigrations();
@@ -11982,13 +11994,6 @@ export class SqliteScopeHost implements ScopeHost {
         // table would leave every permission check reading the PRE-restore roles until
         // the process restarted — the exact silent-divergence a recovery must not have.
         this.loadRoles();
-        this.recordAdmin(
-          actor,
-          'restoreDirectory',
-          { tenantId: null },
-          { tenants: before },
-          { capturedAt: dump.capturedAt, tables: dump.tables.length },
-        );
       },
       activateScope: async (actor, tenantId, scopeId) => {
         // Idempotent on `active`, unaudited because nothing changed. Provisioning is
@@ -12273,23 +12278,23 @@ export class SqliteScopeHost implements ScopeHost {
         // records an access that could never have happened.
         this.assertScope(input.tenantId, input.scopeId);
         const session = newImpersonationSession(ulid(), actor, input, this.clock());
-        this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare(
             `INSERT INTO _substrat_impersonations
                (${IMPERSONATION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(...impersonationRowValues(session));
+          .run(...impersonationRowValues(session)).changes > 0,
         // BEFORE the session is returned, so the log entry precedes every row it
         // will ever touch. The reason rides in `after` — it is the field a review
         // reads first, and a log saying a session opened but not why is half a
         // record.
-        this.recordAdmin(
+        () => this.recordAdmin(
           actor,
           'beginImpersonation',
           { tenantId: session.tenantId, scopeId: session.scopeId },
           null,
           session,
-        );
+        ));
         return session;
       },
 
@@ -12301,17 +12306,20 @@ export class SqliteScopeHost implements ScopeHost {
         // Idempotent: "stop that session" must not fail because somebody else
         // already stopped it, and it must not move the moment it stopped.
         if (before.endedAt !== null) return before;
-        this.directory
-          .prepare('UPDATE _substrat_impersonations SET ended_at = ? WHERE id = ?')
-          .run(this.clock(), id);
-        const after = this.readImpersonation(id);
-        this.recordAdmin(
+        let after!: ImpersonationSession;
+        this.directoryWriteAndAudit(() => {
+          const changed = this.directory
+            .prepare('UPDATE _substrat_impersonations SET ended_at = ? WHERE id = ?')
+            .run(this.clock(), id).changes > 0;
+          after = this.readImpersonation(id);
+          return changed;
+        }, () => this.recordAdmin(
           actor,
           'endImpersonation',
           { tenantId: after.tenantId, scopeId: after.scopeId },
           before,
           after,
-        );
+        ));
         return after;
       },
 
@@ -12556,25 +12564,24 @@ export class SqliteScopeHost implements ScopeHost {
       },
       registerIdentityPool: async (actor: PlatformActorId, input: IdentityPool) => {
         const parsed = identityPool.parse(input);
-        const existing = readPool(parsed.provider);
-        if (existing) {
-          // Idempotent on an identical registration. A CONFLICTING one throws:
-          // flipping a live pool's topology silently reinterprets every row it owns
-          // — the same externalId across tenants would change from one human to two.
-          if (existing.topology === parsed.topology && existing.tenantId === parsed.tenantId) {
-            return;
+        this.directoryWriteAndAudit(() => {
+          const existing = readPool(parsed.provider);
+          if (existing) {
+            // Idempotent on an identical registration. A conflicting one is refused.
+            if (existing.topology === parsed.topology && existing.tenantId === parsed.tenantId) {
+              return false;
+            }
+            throw substratError('conflict',
+              `identity pool '${parsed.provider}' is already registered as ${existing.topology}` +
+                `${existing.tenantId ? ` for tenant ${existing.tenantId}` : ''}`,
+            );
           }
-          throw substratError('conflict',
-            `identity pool '${parsed.provider}' is already registered as ${existing.topology}` +
-              `${existing.tenantId ? ` for tenant ${existing.tenantId}` : ''}`,
-          );
-        }
-        this.directory
-          .prepare(
-            'INSERT INTO _substrat_identity_pools (provider, topology, tenant_id, created_at) VALUES (?, ?, ?, ?)',
-          )
-          .run(parsed.provider, parsed.topology, parsed.tenantId, new Date().toISOString());
-        this.recordAdmin(
+          return this.directory
+            .prepare(
+              'INSERT INTO _substrat_identity_pools (provider, topology, tenant_id, created_at) VALUES (?, ?, ?, ?)',
+            )
+            .run(parsed.provider, parsed.topology, parsed.tenantId, new Date().toISOString()).changes > 0;
+        }, () => this.recordAdmin(
           actor,
           'registerIdentityPool',
           // Null for a central pool: it belongs to no single tenant, which is what
@@ -12582,7 +12589,7 @@ export class SqliteScopeHost implements ScopeHost {
           { tenantId: parsed.tenantId },
           null,
           parsed,
-        );
+        ));
       },
       getIdentityPool: async (actor, provider: string) => {
         const pool = readPool(provider);
@@ -12686,7 +12693,8 @@ export class SqliteScopeHost implements ScopeHost {
         const input = createConnectionInput.parse(raw);
         const sealed = await this.secretBox.seal(JSON.stringify(input.secret));
         const now = new Date().toISOString();
-        try {
+        this.directoryWriteAndAudit(() => {
+          try {
           this.directory
             .prepare(
               `INSERT INTO _substrat_connections
@@ -12709,7 +12717,7 @@ export class SqliteScopeHost implements ScopeHost {
               input.createdBy ?? actor,
               now,
             );
-        } catch (err) {
+          } catch (err) {
           if (/UNIQUE constraint failed/i.test((err as Error).message)) {
             const account = input.externalAccountRef
               ? ` under account '${input.externalAccountRef}'`
@@ -12720,13 +12728,15 @@ export class SqliteScopeHost implements ScopeHost {
             );
           }
           throw err;
-        }
-        this.directory
+          }
+          this.directory
           .prepare(
             `INSERT INTO _substrat_connection_secrets (connection_id, key_id, ciphertext, updated_at)
              VALUES (?, ?, ?, ?)`,
           )
-          .run(input.id, sealed.keyId, sealed.ciphertext, now);
+            .run(input.id, sealed.keyId, sealed.ciphertext, now);
+          return true;
+        }, () => {
         // METADATA ONLY. `_substrat_admin_log` is append-only, so a credential
         // written here could never be removed — the redaction is the point, and
         // it is structural rather than a rule someone has to remember.
@@ -12744,6 +12754,7 @@ export class SqliteScopeHost implements ScopeHost {
             createdBy: input.createdBy ?? actor,
           },
         );
+        });
       },
 
       connectionSealingKey: (id: ConnectionId) => this.ensureSealingKey(id),
@@ -12830,20 +12841,23 @@ export class SqliteScopeHost implements ScopeHost {
         const row = this.connectionRow(id);
         const sealed = await this.secretBox.seal(JSON.stringify(connectionSecret.parse(secret)));
         const now = new Date().toISOString();
-        this.directory
+        this.directoryWriteAndAudit(() => {
+          this.directory
           .prepare(
             `UPDATE _substrat_connection_secrets
              SET key_id = ?, ciphertext = ?, updated_at = ? WHERE connection_id = ?`,
           )
           .run(sealed.keyId, sealed.ciphertext, now, id);
         // A refresh revives a connection that had lapsed or errored.
-        this.directory
+          this.directory
           .prepare(
             `UPDATE _substrat_connections
              SET status = 'active', expires_at = ?, last_error = NULL, last_error_at = NULL
              WHERE id = ?`,
           )
-          .run(expiresAt === undefined ? row.expires_at : expiresAt, id);
+            .run(expiresAt === undefined ? row.expires_at : expiresAt, id);
+          return true;
+        }, () => {
         // The event, never the token. "Rotated at T" is the auditable fact — plus WHO
         // authorized it when the rotation was a tenant admin's act (§3.5.1's attribution,
         // rotate-side): the principal, never laundered into the actor column.
@@ -12860,41 +12874,44 @@ export class SqliteScopeHost implements ScopeHost {
             ...(opts?.rotatedBy ? { rotatedBy: opts.rotatedBy } : {}),
           },
         );
+        });
       },
 
       revokeConnection: async (actor: PlatformActorId, id: ConnectionId) => {
         const row = this.connectionRow(id);
         if (row.revoked_at) return; // idempotent, and a no-op is not audited
         const now = new Date().toISOString();
-        this.directory
+        this.directoryWriteAndAudit(() => {
+          this.directory
           .prepare(`UPDATE _substrat_connections SET status = 'revoked', revoked_at = ? WHERE id = ?`)
           .run(now, id);
         // The sealed blob goes NOW. A tombstoned connection is evidence that a
         // grant existed (K-21); keeping the usable credential would make it a
         // liability instead. The row says what happened; the secret does not.
-        this.directory
+          this.directory
           .prepare('DELETE FROM _substrat_connection_secrets WHERE connection_id = ?')
           .run(id);
         // Connector state dies with the connection: it is that connection's
         // private bookkeeping and means nothing once it can no longer act.
-        this.directory
+          this.directory
           .prepare('DELETE FROM _substrat_connector_state WHERE connection_id = ?')
           .run(id);
         // #592: its grants tombstone (K-21 — evidence, not roster). Absent from the
         // next gather, so no later provision/reconcile delivers them again.
-        this.directory
+          this.directory
           .prepare(
             `UPDATE _substrat_connection_grants SET revoked_at = ?
              WHERE connection_id = ? AND revoked_at IS NULL`,
           )
-          .run(now, id);
-        this.recordAdmin(
+            .run(now, id);
+          return true;
+        }, () => this.recordAdmin(
           actor,
           'revokeConnection',
           { tenantId: row.tenant_id as TenantId, vertical: row.vertical },
           { status: row.status },
           { id, provider: row.provider, status: 'revoked', revokedAt: now },
-        );
+        ));
       },
 
       // -- a vertical's mailed connect links (connections.md §3.5.4) --------------
@@ -13076,7 +13093,8 @@ export class SqliteScopeHost implements ScopeHost {
         // Read before write. `INSERT OR IGNORE` alone cannot tell "already bound to the
         // same principal" (idempotent) from "already bound to someone else" (a
         // collision), and silently ignoring the second resolves one person as another.
-        const existing = this.directory
+        this.directoryWriteAndAudit(() => {
+          const existing = this.directory
           .prepare(
             `SELECT principal_id FROM _substrat_identities
              WHERE tenant_id = ? AND provider = ? AND external_id = ?`,
@@ -13084,43 +13102,42 @@ export class SqliteScopeHost implements ScopeHost {
           .get(parsed.tenantId, parsed.provider, parsed.externalId) as
           | { principal_id: string }
           | undefined;
-        if (existing) {
-          if (existing.principal_id === parsed.principal) return; // idempotent, unaudited
-          throw substratError('conflict',
-            `identity ${parsed.provider}:${parsed.externalId} in tenant ${parsed.tenantId} ` +
-              `is already bound to ${existing.principal_id}`,
-          );
-        }
-        this.directory
+          if (existing) {
+            if (existing.principal_id === parsed.principal) return false; // idempotent, unaudited
+            throw substratError('conflict',
+              `identity ${parsed.provider}:${parsed.externalId} in tenant ${parsed.tenantId} ` +
+                `is already bound to ${existing.principal_id}`,
+            );
+          }
+          return this.directory
           .prepare(
             `INSERT INTO _substrat_identities
                (provider, external_id, principal_id, tenant_id, scope_id, created_at)
              VALUES (?, ?, ?, ?, ?, ?)`,
           )
-          .run(
+            .run(
             parsed.provider,
             parsed.externalId,
             parsed.principal,
             parsed.tenantId,
             parsed.scopeId ?? null,
             new Date().toISOString(),
-          );
-        this.recordAdmin(
+            ).changes > 0;
+        }, () => this.recordAdmin(
           actor,
           'linkIdentity',
           { tenantId: parsed.tenantId, scopeId: parsed.scopeId },
           null,
           { provider: parsed.provider, externalId: parsed.externalId, principal: parsed.principal },
-        );
+        ));
       },
       unlinkIdentity: async (actor: PlatformActorId, tenantId: TenantId, principal: PrincipalId) => {
         // DELETE, not a tombstone — the identity map is current state (audit is the log),
         // and re-inviting must be able to re-link a fresh principal for the same person.
-        const info = this.directory
+        this.directoryWriteAndAudit(() => this.directory
           .prepare(`DELETE FROM _substrat_identities WHERE tenant_id = ? AND principal_id = ?`)
-          .run(tenantId, principal);
-        if (info.changes === 0) return; // no link — idempotent, unaudited
-        this.recordAdmin(actor, 'unlinkIdentity', { tenantId, scopeId: null }, { principal }, null);
+          .run(tenantId, principal).changes > 0,
+        () => this.recordAdmin(actor, 'unlinkIdentity', { tenantId, scopeId: null }, { principal }, null));
       },
       resolveIdentity: async (
         tenantId: TenantId,
@@ -13221,13 +13238,17 @@ export class SqliteScopeHost implements ScopeHost {
         // `drained_at IS NULL` makes the stamp idempotent: a retried pass that ships
         // the same batch twice re-stamps nothing and reports 0, so the admin log does
         // not grow a row claiming an egress that already happened.
-        const info = this.directory
+        let drained = 0;
+        this.directoryWriteAndAudit(() => {
+          const info = this.directory
           .prepare(
             `UPDATE _substrat_access_log SET drained_at = ?
              WHERE id <= ? AND drained_at IS NULL`,
           )
           .run(drainedAt, upToId);
-        if (info.changes > 0) {
+          drained = info.changes;
+          return drained > 0;
+        }, () => {
           // The payload is the APPLIED state, so it belongs in `after` (contracts'
           // adminLogEntry: before = prior state, after = the applied payload).
           this.recordAdmin(
@@ -13235,28 +13256,32 @@ export class SqliteScopeHost implements ScopeHost {
             'drainAccessLog',
             { tenantId: null },
             null,
-            { drained: info.changes, upToId, drainedAt },
+            { drained, upToId, drainedAt },
           );
-        }
-        return info.changes;
+        });
+        return drained;
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
         assertRowLimit('limit', limit);
         // ONLY drained rows. Age alone is not a licence to delete evidence.
-        const info = this.directory
+        let pruned = 0;
+        this.directoryWriteAndAudit(() => {
+          const info = this.directory
           .prepare(
             `DELETE FROM _substrat_access_log WHERE id IN (
                SELECT id FROM _substrat_access_log WHERE drained_at IS NOT NULL ORDER BY id LIMIT ?
              )`,
           )
           .run(limit);
-        if (info.changes > 0) {
+          pruned = info.changes;
+          return pruned > 0;
+        }, () => {
           // The payload is the APPLIED state, so it belongs in `after` (contracts'
           // adminLogEntry: before = prior state, after = the applied payload) — the
           // same shape as drainAccessLog's row above (#557).
-          this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, null, { pruned: info.changes });
-        }
-        return info.changes;
+          this.recordAdmin(actor, 'pruneAccessLog', { tenantId: null }, null, { pruned });
+        });
+        return pruned;
       },
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
         const where: string[] = [];
@@ -13592,28 +13617,34 @@ export class SqliteScopeHost implements ScopeHost {
         return rows.map((r) => issueEntry.parse(issueOf(r)));
       },
       setIssueStatus: async (actor, fingerprint, status): Promise<IssueEntry | undefined> => {
-        const existing = this.directory
+        let existing: IssueRow | undefined;
+        let after: IssueEntry | undefined;
+        this.directoryWriteAndAudit(() => {
+          existing = this.directory
           .prepare('SELECT * FROM _substrat_issues WHERE fingerprint = ?')
           .get(fingerprint) as IssueRow | undefined;
-        if (!existing) return undefined;
+          if (!existing) return false;
         const resolvedAt = status === 'resolved' ? new Date().toISOString() : null;
         // "Resolved under X": freeze the newest version at the verdict, so a later
         // regression can name the pair. A reopen or ignore clears it with the timestamp.
         const resolvedVersion = status === 'resolved' ? existing.last_version : null;
-        this.directory
+          this.directory
           .prepare('UPDATE _substrat_issues SET status = ?, resolved_at = ?, resolved_version = ? WHERE fingerprint = ?')
           .run(status, resolvedAt, resolvedVersion, fingerprint);
-        const after = issueEntry.parse(
+          after = issueEntry.parse(
           issueOf({ ...existing, status, resolved_at: resolvedAt, resolved_version: resolvedVersion }),
         );
+          return true;
+        }, () => {
         // A lifecycle flip is a staff mutation — audited with the diff (K-33).
         this.recordAdmin(
           actor,
           'setIssueStatus',
-          { tenantId: null, vertical: after.lastVertical },
-          { fingerprint, status: existing.status },
-          { fingerprint, status: after.status },
+          { tenantId: null, vertical: after!.lastVertical },
+          { fingerprint, status: existing!.status },
+          { fingerprint, status: after!.status },
         );
+        });
         return after;
       },
       listFindings: async (actor, filter?: FindingFilter): Promise<FindingEntry[]> => {

@@ -1717,6 +1717,18 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(res.status).toBe(200);
     expect(got).toBe(1);
   });
+
+  it('returns only requested config keys for a preview fork', async () => {
+    const res = await appWith(fakeHost(), {
+      onReadPreviewConfig: async () => ({ THEME: 'dark', API_KEY: 'private' }),
+    }).request('/internal/preview-config', {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, keys: ['THEME'] }),
+    }, ENV);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ entries: [{ key: 'THEME', value: 'dark' }] });
+  });
 });
 
 describe('mountPlatformSurface — the connector write-back verbs (#574)', () => {

@@ -1207,9 +1207,10 @@ mountPlatformSurface<Env>(app, {
     const identity = (await instanceConfig(env, node)).identity;
     await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
   },
-  onDeleteScope: async (env, s) => {
+  onDeleteScope: async (env, s, tenantId) => {
     // A reaped desk's alarm must never wake it again.
     await sweeper(env).forgetScope(s);
+    if (tenantId) await identityDo(env, { tenantId, scopeId: s }).deleteScopeConfig(s);
   },
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
@@ -1217,6 +1218,8 @@ mountPlatformSurface<Env>(app, {
   },
   onConfigure: (env, b) =>
     identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
+  onReadPreviewConfig: (env, b) =>
+    identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).getScopeConfig(b.scopeId),
   // The owner seat as the platform may see it, and the claim link it may mint for one that
   // sits empty after the first-sign-in window (#925). Both read the same directory the
   // provision hook above writes.

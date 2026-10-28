@@ -127,7 +127,8 @@ directoryAdminAuditTransactionSuite('adapter-cloudflare', async () => {
     const sql = armed;
     armed = null;
     await directorySql(sql);
-  }), secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  }), secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  tenantStores: { create: async (name) => name, remove: async () => {}, query: async () => ({ results: [], changes: 0 }) } });
   return {
     host,
     directorySql,
@@ -136,6 +137,65 @@ directoryAdminAuditTransactionSuite('adapter-cloudflare', async () => {
     interleave: (sql: string) => { armed = sql; },
     cleanup: async () => host.close(),
   };
+});
+
+describe('#2479: directory audit across a coordinator/DO version skew', () => {
+  it('refuses an old DO that ignores a trailing audit argument before changing directory state', async () => {
+    const staff = platformActorId.parse(ulid());
+    const provider = `skew-${ulid().toLowerCase()}`;
+    const reader = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const oldDo = interceptedControlPlane(async (args, method) => {
+      if (method !== 'reply') return;
+      const called = args[0] as string;
+      if (called === 'registerIdentityPool') {
+        // An old DO knows this method but accepts only its original four arguments.
+        const cp = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+          reply(method: string, args: unknown[]): Promise<unknown>;
+        };
+        return { answer: await cp.reply(called, (args[1] as unknown[]).slice(0, 4)) };
+      }
+      if (called === 'registerIdentityPoolAndAudit') {
+        return { answer: { failure: toWireFailure(new Error(`not a replied directory method: ${called}`)) } };
+      }
+    });
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: oldDo });
+    try {
+      const outcome = await host.admin.registerIdentityPool(staff, { provider, topology: 'central', tenantId: null })
+        .then(() => 'accepted', (err: unknown) => err instanceof Error ? err.message : String(err));
+      expect({ outcome, state: await reader.admin.getIdentityPool(staff, provider),
+        rows: (await reader.admin.auditLog(staff, { action: ['registerIdentityPool'] }))
+          .filter((row) => row.actor === staff) }).toEqual({
+        outcome: 'not a replied directory method: registerIdentityPoolAndAudit', state: undefined, rows: [],
+      });
+    } finally {
+      await host.close();
+      await reader.close();
+    }
+  });
+
+  it('keeps the old coordinator\'s bare method working so it can append its own row', async () => {
+    const staff = platformActorId.parse(ulid());
+    const provider = `skew-${ulid().toLowerCase()}`;
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const cp = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+      reply(method: string, args: unknown[]): Promise<{ value?: boolean; failure?: unknown }>;
+      recordAdmin(entry: Record<string, unknown>): Promise<void>;
+    };
+    try {
+      const at = new Date().toISOString();
+      expect(await cp.reply('registerIdentityPool', [provider, 'central', null, at])).toEqual({ value: true });
+      expect(await host.admin.getIdentityPool(staff, provider)).toBeDefined();
+      const rows = async () => (await host.admin.auditLog(staff, { action: ['registerIdentityPool'] }))
+        .filter((row) => row.actor === staff);
+      expect(await rows()).toEqual([]);
+      await cp.recordAdmin({ id: ulid(), actor: staff, action: 'registerIdentityPool', tenantId: null,
+        scopeId: null, vertical: null, before: null, after: { provider, topology: 'central', tenantId: null },
+        causedBy: null, onBehalfOf: null, at });
+      expect(await rows()).toHaveLength(1);
+    } finally {
+      await host.close();
+    }
+  });
 });
 
 /**

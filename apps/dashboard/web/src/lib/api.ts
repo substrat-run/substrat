@@ -940,6 +940,7 @@ export interface EnvVarSpec {
   placeholder?: string;
   required: boolean;
   secret: boolean;
+  previewCarry?: boolean;
   default?: string;
   group?: string;
 }

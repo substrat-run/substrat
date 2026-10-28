@@ -532,6 +532,12 @@ export interface ConfigureInstanceInput {
   entries: Array<{ key: string; value: string }>;
 }
 
+export interface ReadPreviewConfigInput {
+  tenantId: TenantId;
+  scopeId: ScopeId;
+  keys: string[];
+}
+
 export interface ProvisionedInstance {
   tenantId: TenantId;
   scopeId: ScopeId;
@@ -754,6 +760,12 @@ export class VerticalClient {
    */
   async configureInstance(input: ConfigureInstanceInput): Promise<void> {
     await this.postInternal<unknown>('/internal/configure', input, 'configure');
+  }
+
+  /** Read only the parent settings the new version explicitly opted into carrying. */
+  async readPreviewConfig(input: ReadPreviewConfigInput): Promise<Array<{ key: string; value: string }>> {
+    const response = await this.postInternal<unknown>('/internal/preview-config', input, 'preview-config');
+    return z.object({ entries: z.array(z.object({ key: z.string(), value: z.string() })) }).parse(response).entries;
   }
 
   /**

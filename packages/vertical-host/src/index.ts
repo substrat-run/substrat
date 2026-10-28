@@ -964,6 +964,13 @@ const configureBody = z.object({
 /** The parsed configure body handed to `onConfigure`. */
 export type ConfigureBody = z.infer<typeof configureBody>;
 
+const readPreviewConfigBody = z.object({
+  tenantId: tenantIdOf,
+  scopeId: scopeIdOf,
+  keys: z.array(z.string().min(1)).min(1),
+});
+export type ReadPreviewConfigBody = z.infer<typeof readPreviewConfigBody>;
+
 /** `/internal/owner-claim` body (#925). `origin` is the instance's public origin, supplied by the
  *  platform (it owns the hostname directory; a dispatched `/internal` call carries no usable host). */
 const ownerClaimBody = z.object({
@@ -1276,6 +1283,8 @@ export interface PlatformSurfaceDeps<Env> {
    * answers 501 — the vertical stores no per-scope config.
    */
   onConfigure?: (env: Env, body: ConfigureBody) => Promise<void>;
+  /** Read requested per-scope settings for a preview fork; the platform asks only for declared, non-secret opt-ins. */
+  onReadPreviewConfig?: (env: Env, body: ReadPreviewConfigBody) => Promise<Record<string, string>>;
   /**
    * The scope's owner seat as the platform may see it (#925) — claimed, unclaimed (and whether
    * a plain first sign-in still claims it), or unknown. Omit ⇒ `/internal/owner-seat` answers
@@ -2614,6 +2623,18 @@ export function mountPlatformSurface<Env extends object>(
     const body = configureBody.parse(await c.req.json());
     await deps.onConfigure(c.env, body);
     return c.json({ scopeId: body.scopeId, entries: body.entries.length });
+  });
+
+  app.post('/internal/preview-config', async (c) => {
+    if (!deps.onReadPreviewConfig) {
+      throw new HTTPException(501, { message: 'this vertical cannot read settings for a preview' });
+    }
+    const body = readPreviewConfigBody.parse(await c.req.json());
+    const values = await deps.onReadPreviewConfig(c.env, body);
+    const entries = body.keys.flatMap((key) =>
+      Object.hasOwn(values, key) && typeof values[key] === 'string' ? [{ key, value: values[key] }] : [],
+    );
+    return c.json({ entries });
   });
 
   // The owner seat (#925), read and claimed on the platform's instruction. Both answer 501
