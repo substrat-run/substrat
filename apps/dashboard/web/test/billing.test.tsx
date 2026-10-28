@@ -39,7 +39,7 @@ it('shows exactly the granted keys and supplied quota or expiry', async () => {
   read.mockResolvedValue([{ key: 'app', quota: 7 }, { key: 'reports', expiresAt: '2027-01-01T00:00:00Z' }]);
   await render();
   expect(container.textContent).toContain('app');
-  expect(container.textContent).toContain('7');
+  expect(container.textContent).toContain('Quota: 7');
   expect(container.textContent).toContain('reports');
   expect(container.textContent).toContain('2027-01-01');
   expect(container.textContent).not.toMatch(/Documents engine|€480|Paid|VISA/);
