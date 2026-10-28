@@ -217,6 +217,34 @@ describe('#2479: directory audit across a coordinator/DO version skew', () => {
 });
 
 describe('#2527: scope permission audit across coordinator/ScopeDO version skew', () => {
+  it('keeps the shared coordinator placeholder on its legacy single-row path and refuses hosted mint before intent', async () => {
+    const staff = platformActorId.parse(ulid());
+    const tenant = tenantId.parse(ulid());
+    const scope = scopeId.parse(ulid());
+    const principal = principalId.parse(ulid());
+    const roleKey = `hosted-${ulid().toLowerCase()}`;
+    const reader = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    // A delegation marks this coordinator as shared; its SCOPE binding is the placeholder.
+    const shared = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
+      connectorDelegation: {} as ConnectorDelegation });
+    try {
+      await reader.admin.createTenant(staff, { id: tenant, slug: `hosted-${tenant.toLowerCase()}`, name: 'Hosted' });
+      await reader.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'hosted' });
+      await reader.admin.activateScope(staff, tenant, scope);
+      await reader.admin.defineRole(staff, tenant, { key: roleKey, permissions: [permissionKey.parse('audit:read')], source: 'vertical' });
+      await shared.admin.assignRole(staff, { principalId: principal, roleKey, node: { tenantId: tenant, scopeId: scope } });
+      const rows = await reader.admin.auditLog(staff, { tenantId: tenant, scopeId: scope, action: 'assignRole' });
+      expect(rows).toHaveLength(1);
+      expect((rows[0]!.after as { phase?: string }).phase).toBeUndefined();
+      await expect(shared.admin.mintCapability(staff, tenant, scope, { principal,
+        expiresAt: new Date(Date.now() + 60_000).toISOString() as never, maxUses: 1 })).rejects.toThrow('cannot reach');
+      expect(await reader.admin.auditLog(staff, { tenantId: tenant, scopeId: scope, action: 'mintCapability' })).toEqual([]);
+    } finally {
+      await shared.close();
+      await reader.close();
+    }
+  });
+
   it('an older ScopeDO refuses the new tuple RPC before mutation; its old tuple RPC still serves old coordinators', async () => {
     const staff = platformActorId.parse(ulid());
     const tenant = tenantId.parse(ulid());

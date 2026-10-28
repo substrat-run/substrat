@@ -479,6 +479,12 @@ fails safe (less access, never access with no row). On the Cloudflare adapter th
 re-seats the tuple from the record. **The SQLite adapter has no re-seat from the record**: nothing
 there reads it but `listConnectionGrants`, so only a re-grant delivers the tuple.
 
+This first slice covers SQLite and a Cloudflare host serving its own ScopeDO. The shared control
+plane has a module-less placeholder for scopes served by another deployment. Its existing
+permission-write path still uses one admin row, and hosted `mintCapability` still refuses before
+an audit intent. A generic authenticated delegation route is needed before those hosted writes
+can use the same intent/outcome rule.
+
 The hostname and entitlement writes do too (#2526): `bindHostname`, `setHostnameStatus`,
 `setHostnameIssuance`, `unbindHostname`, `grantEntitlement` and `revokeEntitlement`. Each reads its
 row, judges its guard and its no-op, writes, and records its admin row in one directory
