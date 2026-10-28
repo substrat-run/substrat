@@ -122,6 +122,7 @@ import {
   migrationsOnTop,
   substratError,
   errorCodeOf,
+  envVarSpec,
   capabilityFilterQuery,
   capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
@@ -11003,8 +11004,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const carrySettings = async (previewId: ScopeId, parent: Scope | null): Promise<void> => {
       if (!parent) return;
       const json = await c.var.admin.versionManifest(actor, slug, opts.versionId);
-      const manifest = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
-      const keys = manifest?.envSpec?.filter((spec) => spec.previewCarry && !spec.secret).map((spec) => spec.key) ?? [];
+      const declared = json ? (JSON.parse(json) as { envSpec?: unknown }).envSpec : undefined;
+      const keys = z.array(envVarSpec).parse(declared ?? [])
+        .filter((spec) => spec.previewCarry && !spec.secret).map((spec) => spec.key);
       if (keys.length === 0) return;
       const sourceClient = await verticalForScope(c, parent);
       if (!sourceClient || !target) {
