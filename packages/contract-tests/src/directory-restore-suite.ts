@@ -57,6 +57,8 @@ const LIVE_SCOPE = { tenant_id: 't-0', storage_shape: 'A', status: 'active', sch
 const valueFor = (table: string, column: string): unknown => {
   if (column === 'provisioned_by_tenant' || column === 'migration_count' || column === 'migrations_split') return null;
   if (column === 'manifest_json') return '{"version":"1.0.0"}';
+  // The revoke walk refers to the approval whose row this all-tables fixture also crafts.
+  if (column === 'approval_id' && (table === 'store_driver_approvals' || table === 'store_driver_revoke_walks')) return 'approval-1';
   return INTEGER_COLUMNS.has(column) ? 1 : `${table}.${column}`;
 };
 
