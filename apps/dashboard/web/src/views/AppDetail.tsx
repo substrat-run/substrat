@@ -223,11 +223,7 @@ export function AppDetail({
         app={app}
         statusKind={statusKind}
         statusLabel={statusLabel}
-        actions={
-          <>
-            <VisitControl surfaces={surfaceUrls} />
-          </>
-        }
+        actions={<VisitControl surfaces={surfaceUrls} />}
       />
 
       <Tabs

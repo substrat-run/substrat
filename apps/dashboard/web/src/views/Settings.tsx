@@ -6,7 +6,7 @@ import { ApiError, teamApi } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { APP_SHA, APP_VERSION } from '../lib/version';
 
-/** Account settings — Organization tab (screen 1v). The danger zone is REAL. */
+/** Account settings: session identity, stored team details, and organization deletion. */
 export function Settings({ org, teamId, slug, name, email }: { org: string; teamId: string; slug: string; name?: string | null; email?: string | null }) {
   const [tab, setTab] = useState('organization');
   return (
