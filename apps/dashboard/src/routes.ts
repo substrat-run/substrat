@@ -30,6 +30,8 @@ import {
   deadLetter,
   defineRoutes,
   dnsRecord,
+  edgeHealth,
+  edgeHealthReport,
   envVarSpec,
   eventDelivery,
   eventFacetResult,
@@ -53,6 +55,8 @@ import {
   ownerSeat,
   permissionRegistry,
   permissionDenial,
+  peerGrantsStatusEntry,
+  peerSwitchResult,
   previewAuth,
   REBIND_REVIEW_REASONS,
   scopeDump,
@@ -62,6 +66,7 @@ import {
   scopeMemberInvite,
   scopeMembers,
   promotionAcknowledgement,
+  importCursorMoved,
   versionOrigin,
   verticalSlug,
   z,
@@ -118,6 +123,21 @@ const integrationActivity = connectionActivity.extend({
   unreadableIntents: z.array(z.object({
     id: z.string().nullable(), status: z.string().nullable(), requestedAt: z.string().nullable(), decodeError: z.string(),
   })),
+});
+
+const declaredPeerCall = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('not-installed'), vertical: z.string() }),
+  z.object({ state: z.literal('ambiguous'), vertical: z.string(), count: z.number() }),
+  z.object({ state: z.literal('bound-unavailable'), vertical: z.string() }),
+  z.object({ state: z.literal('not-declared'), vertical: z.string() }),
+  z.object({ state: z.literal('allowed'), vertical: z.string(), scopeId: z.string() }),
+  z.object({ state: z.literal('switched-off'), vertical: z.string(), scopeId: z.string(), switchedOff: peerGrantsStatusEntry.shape.switchedOff }),
+  z.object({ state: z.literal('no-grant'), vertical: z.string(), scopeId: z.string() }),
+  z.object({ state: z.literal('unreadable'), vertical: z.string(), scopeId: z.string(), message: z.string() }),
+]);
+const edgeHealthOut = edgeHealth.extend({
+  state: z.string(),
+  lastProblem: edgeHealth.shape.lastProblem.unwrap().extend({ outcome: z.string() }).nullable(),
 });
 
 /*
@@ -756,6 +776,57 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().optional(), ...pageInput }),
     output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/audit' },
+  },
+
+  // -- app peer access and cross-vertical edges (#2170) ----------------------
+  // Each write checks `dashboard:provision-app` in the path team's dashboard scope.
+  'dashboard/app-peers': {
+    summary: "What this app calls and which of this team's apps may call it",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({
+      declares: z.array(z.string()).nullable(), calls: z.array(declaredPeerCall),
+      bindingChoices: z.array(z.object({
+        vertical: z.string(), boundScopeId: z.string().nullable(), invalidated: z.boolean(),
+        candidates: z.array(z.object({ scopeId: z.string(), name: z.string() })),
+      })),
+      callers: z.array(peerGrantsStatusEntry.extend({ calls: z.string() })).nullable(), callersError: z.string().nullable(),
+    }),
+    http: { method: 'GET', path: '/apps/{scopeId}/peers' },
+  },
+  'dashboard/switch-app-peer': {
+    summary: "Switch one peer's access to this app on or off",
+    input: z.object({ scopeId: z.string().min(1), vertical: z.string().min(1), to: z.enum(['on', 'off']), reason: z.string().trim().min(1).max(500) }),
+    output: peerSwitchResult.extend({ calls: z.string() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/peers/switch' },
+  },
+  'dashboard/set-app-peer-binding': {
+    summary: 'Choose or clear the instance this app calls for one peer vertical',
+    input: z.object({ scopeId: z.string().min(1), vertical: z.string().min(1), targetScopeId: z.string().nullable() }).strict(),
+    output: z.object({ changed: z.boolean(), previous: z.string().nullable(), operationId: z.string(), auditWarning: z.string().optional() }),
+    http: { method: 'PUT', path: '/apps/{scopeId}/peers/binding' },
+  },
+  'dashboard/app-edges': {
+    summary: "The event edges into and out of this app",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: edgeHealthReport.extend({ edges: z.array(edgeHealthOut) }),
+    http: { method: 'GET', path: '/apps/{scopeId}/edges' },
+  },
+  'dashboard/move-app-edge': {
+    summary: "Replay or skip one event edge into this app",
+    // The handler applies `importCursorMove` after the acknowledgement's fixed refusal sentence.
+    input: z.object({
+      scopeId: z.string().min(1), mode: z.enum(['replay', 'skip']), from: z.string().min(1),
+      after: z.string().nullable().optional(), through: z.string().optional(),
+      acknowledge: z.string().optional(), reason: z.string().trim().min(1).max(500),
+    }),
+    output: importCursorMoved.extend({ mode: z.string() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/edges/move' },
+  },
+  'dashboard/app-scopes': {
+    summary: "The browsable scopes of this app's vertical",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.array(z.object({ scopeId: z.string(), name: z.string(), status: z.string(), isDefault: z.boolean() })),
+    http: { method: 'GET', path: '/apps/{scopeId}/scopes' },
   },
 
   // -- apps: the lifecycle writes (#2170) -------------------------------------

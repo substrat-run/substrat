@@ -382,6 +382,29 @@ lines). A zero is “not observed returned in the sample,” never proof of no u
 Analytics Engine store for longer retention is follow-up work; it needs a platform-owned
 dataset and a trusted attribution path before the view can read it.
 
+**Recorded limits of field reads (#1331).** The Schema view now puts fields with zero
+sampled returns under each operation and calls out operations where more than half of
+their declared fields have zero sampled returns. These are candidates within each
+sample-rate group, not evidence that a consumer never read a field; a list or page checks
+only its first entry, so later entries can still return a zero-listed field. Four further asks
+remain for a source that can support them:
+
+- Declaration-age sorting needs a reliable first-declared date for each field. The
+  current `model.json` and `outputSurface` carry names, not introduction dates;
+  reconstructing one from retained version manifests would be incomplete for older
+  versions. Add the sort when model/spec history can supply that date.
+- Single-app coupling needs a tenant-wide, scope-attributed field aggregate. Today's
+  tally deliberately reads one installed app, so it cannot tell whether exactly one
+  app returns a field. Add the comparison when that aggregate exists.
+- Field exemplars need a safe field-to-request read. The tally returns counts only,
+  and request/log reads withhold `outputFields` and `fieldCoverageId`; linking to a
+  generic operation log would not identify a response that returned the field.
+  Add links when an exemplar contract preserves that relationship.
+- Consumer read counts need an explicit consumer-side observation point. The current
+  walk records fields returned by the vertical before serialization, which cannot
+  tell whether a caller used them. Rename or extend the measure if consumer read
+  telemetry is introduced.
+
 The MCP door is walked with the same function and the same rules (#1923). A tool's walk is
 derived from its operation's declared `output` when the tool list is derived, the switch is read
 once per request, and the result is walked before it is serialised into the tool result. A batch
@@ -538,6 +561,49 @@ matching line. Grouping is by equality on the recorded template, not text
 mining, so a pattern is exactly the lines written from one template — two call sites that
 share a template share a pattern. A line written with
 `console.log` has no template and is in no pattern.
+
+**4.8 Findings and evidence decisions (#1748).** The tenant-scoped findings store opens
+Recurring findings from ops failures, Invariant findings from failed schedule runs, and
+freshness Drift findings from stale sweep verdicts. It keeps the lifecycle, suppression rules,
+the latest five codes, and a version-change likely cause. The dashboard inbox links a code to
+that app's **filtered Requests** view, narrowed by operation when known. This is a recent-log
+drill-down: the dashboard accepts a window of at most 72 hours, and Workers Logs retain seven
+days. An old finding may therefore have no matching request in the view. A finding without an
+app scope shows its code as text because the link cannot be tenant-narrowed to one app.
+
+The remaining evidence work is **not-now**, with these triggers:
+
+- **Baseline-based Drift detection.** The router's Analytics Engine datapoints live for about
+  three months. The daily request rollup (#2501) now keeps request totals and status-class
+  counts per tenant, vertical and scope, but no operation or problem-code history and no
+  sub-day onset. Its retention is currently unset (no pruning); the rollup only runs where
+  its dataset and reader are configured, and a newly enabled store cannot be assumed to
+  contain a baseline. Revisit a daily 5xx-rate detector after complete, settled days have
+  accumulated and its baseline, minimum volume, threshold, sampled-day policy and missing-day
+  behavior are agreed. It must skip incomplete or saturated days rather than read their
+  absence as zero. Detect on a closed-day write with bounded per-scope work, not a scan of raw
+  logs on every inbox read.
+- **Evidence series.** Ops-failure rows last 90 days and sweep-run rows 14 days, whereas a
+  finding lasts 180 days. A recent occurrence chart could be aggregated from the retained
+  rows, but it could not represent the full finding lifetime, and a baseline comparison has
+  no chosen baseline yet. Revisit when a concrete view needs the series; choose its window and
+  completeness label first. A full-life series would need bounded daily counters with an
+  explicit retention and volume budget, not a claim that old raw rows still exist.
+- **Sample request references.** Neither an ops-failure record nor a sweep-run record stores
+  the invocation id of a tenant request. The recent Requests read has ids, but matching by
+  time and code would guess which request caused an occurrence. Revisit when the evidence
+  producer can write a tenant-bound invocation id and time, with a small sample cap and a
+  drill-down window that says when the underlying logs have expired.
+- **Deploy-onset cause.** The current cause means a resolved finding reappeared under a
+  different version; it does not assert that a rollout caused it. The finding lacks a
+  current-cycle onset timestamp, and deploy markers in the installed app's traffic read are
+  publisher-only. Revisit an “onset after rollout” claim when both the cycle onset and a
+  tenant-visible, authorized deployment marker are available. Compare their times only then;
+  version inequality alone is not timing evidence.
+
+Declared-vs-observed checks remain read-time dashboard derivations. Turning one into an
+Invariant finding needs a recorded evaluation at a defined cadence, so the detector has a
+writer and an occurrence to attach to; a page view is not that occurrence.
 
 ## 5. What each audience gets, in build order
 

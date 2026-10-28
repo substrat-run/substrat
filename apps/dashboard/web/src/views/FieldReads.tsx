@@ -36,32 +36,40 @@ function Groups({ view }: { view: FieldReadsView }) {
       Vertical-asserted counts of fields this installed app returned in sampled response
       serialisations, from requests the router sent to it. A zero means
       no return was observed in this sample; it does not prove a field is unused. Null fields count
-      as returned. Absent optional fields are excluded from the eligible count.
+      as returned. For lists and pages, only the first entry is checked, so a field in a later
+      entry can appear in the zero tail. Absent optional fields are excluded from the eligible count.
     </p>
     {view.groups.map((group, i) => {
       const rate = group.sampleRate === null ? 'rate unknown' : `${(group.sampleRate * 100).toPrecision(3)}% router sample`;
       const window = view.window ? `${view.window.since}–${view.window.until}` : 'window unknown';
+      const operations = group.operations.map((op) => ({
+        ...op,
+        notObserved: group.notObservedReturned.filter((field) => field.operation === op.operation),
+      }));
+      const largelyUnreturned = operations.filter((op) =>
+        op.responses > 0 && op.notObserved.length * 2 > op.fields.length);
       return <div key={`${group.sampleRate ?? 'unknown'}-${i}`} style={{ display: 'grid' }}>
         <h4 style={{ margin: '0 0 6px' }}>Vertical-asserted field counts · {rate} · {window}</h4>
         <p style={{ margin: '0 0 10px', fontSize: 12 }}>
           {group.armedRequests} armed requests; {group.refused} malformed reports refused. {rate}; {window}.
         </p>
+        {largelyUnreturned.length > 0 && <p style={{ margin: '0 0 10px', fontSize: 12 }}>
+          Operations with a majority of declared fields not observed returned in sampled responses:{' '}
+          {largelyUnreturned.map((op) => `${op.operation} (${op.notObserved.length} of ${op.fields.length})`).join(', ')}.
+        </p>}
         {group.operations.every((op) => op.responses === 0) &&
           <p>Armed requests, but no walked responses were observed in this sample ({rate}; {window}).</p>}
-        {group.operations.map((op) => <div key={op.operation} style={{ marginBottom: 12 }}>
+        {operations.map((op) => <div key={op.operation} style={{ marginBottom: 12 }}>
           <strong>{op.operation}</strong> <span style={{ fontSize: 12 }}>({op.responses} sampled responses; {rate}; {window})</span>
           <table><thead><tr><th>Field</th><th>Present</th><th>Null</th><th>Absent</th><th>Eligible</th><th>Sample and window</th></tr></thead>
             <tbody>{op.fields.map((field) => <tr key={field.field}>
               <td><code>{field.field}</code></td><td>{field.present}</td><td>{field.empty}</td>
               <td>{field.absent}</td><td>{field.eligible}</td><td>{rate}; {window}</td>
             </tr>)}</tbody></table>
+          {op.notObserved.length > 0 && <p style={{ fontSize: 12, margin: '6px 0 0' }}>
+            Not observed returned in this sampled operation: {op.notObserved.map((field) => field.field).join(', ')}.
+          </p>}
         </div>)}
-        <p style={{ fontSize: 12, margin: 0 }}>
-          Not observed returned in this sample ({rate}; {window}):{' '}
-          {group.notObservedReturned.length
-            ? group.notObservedReturned.map((f) => `${f.operation}.${f.field}`).join(', ')
-            : 'none'}.
-        </p>
       </div>;
     })}
   </div>;
