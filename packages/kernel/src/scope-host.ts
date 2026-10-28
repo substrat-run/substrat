@@ -7,7 +7,7 @@ import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
 import type { DeploymentWireAuthFilter, DeploymentWireAuthInput, WireWalkAudit } from './deployment-wire-auth.js';
-import type { StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverRolloutTarget, StoreDriverState } from './store-driver-releases.js';
+import type { StoreDriverApprovalRecord, StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRevokeWalkRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverRolloutTarget, StoreDriverState } from './store-driver-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -3045,6 +3045,27 @@ export interface HostAdmin {
   ): Promise<StoreDriverReleaseRecord>;
   /** One stored release, or undefined. */
   getStoreDriverRelease(actor: PlatformActorId, driver: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
+  /** Every approval of a driver, including revoked history. Staff access-logged. */
+  storeDriverApprovals(actor: PlatformActorId, driver: string): Promise<StoreDriverApprovalRecord[]>;
+  /** One live approval; the release a script leaves can instead use the full history. */
+  liveStoreDriverApproval(actor: PlatformActorId, driver: string, sha256: string): Promise<StoreDriverApprovalRecord | undefined>;
+  /** One durable staff approval of uploaded bytes, atomically audited. */
+  approveStoreDriverRelease(actor: PlatformActorId, input: {
+    driver: string; sha256: string; reason: string;
+    sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
+    isolationReview: StoreDriverApprovalRecord['isolationReview'];
+    schema: number; className: string; operations: readonly string[];
+  }): Promise<StoreDriverApprovalRecord>;
+  /** One paged revoke's cursor, or undefined before it starts. */
+  storeDriverRevokeWalk(actor: PlatformActorId, approvalId: string): Promise<StoreDriverRevokeWalkRecord | undefined>;
+  /** Persist a cursor only under the driver's exclusive hold. */
+  recordStoreDriverRevokeWalk(actor: PlatformActorId, input: {
+    approvalId: string; driver: string; holder: string; cursor: string | null; reason: string; rolloutSeq: number;
+  }): Promise<StoreDriverRevokeWalkRecord>;
+  /** Write one-time revoke fields and remove the cursor under the hold, atomically audited. */
+  revokeStoreDriverRelease(actor: PlatformActorId, input: {
+    approvalId: string; driver: string; sha256: string; holder: string; reason: string; emergency: boolean;
+  }): Promise<StoreDriverApprovalRecord>;
   /**
    * A driver's current good release, every rollout of it, oldest first, and where a rollback goes.
    * A `rolling` row whose holder holds the driver no longer reads as `diverged`.

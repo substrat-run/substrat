@@ -97,6 +97,7 @@ import {
   createWfpUploader,
   createScopeStoreEnsurer,
   createStoreCanaryEnsurer,
+  readStoreScriptSettings,
   runStoreFleetRebuild,
   storePlatformFingerprint,
   storeRebuildBudget,
@@ -809,6 +810,7 @@ function storeReleasesFor(env: Env) {
     },
     ensureCanary: async ({ loadRelease, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
       createStoreCanaryEnsurer({ ...(await options()), loadRelease })(input),
+    readScriptRelease: async (scriptName: string) => readStoreScriptSettings(await options(), scriptName),
     // #2309: what every store script is built from now; the fleet rebuild converges on it.
     fingerprint: async () => storePlatformFingerprint(await options()),
     ...settleOf(env),

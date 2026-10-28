@@ -117,6 +117,7 @@ import {
   writeDeploymentWireAuth,
   type DeploymentWireAuthFilter,
   STORE_DRIVER_RELEASES_DDL,
+  approveStoreDriverReleaseIn,
   legacyStoreDriverConflict,
   legacyStoreDriverRenames,
   beginStoreDriverRolloutIn,
@@ -127,7 +128,12 @@ import {
   storeDriverRebuildIn,
   driverDeclarationsOf,
   recordStoreDriverReleaseIn,
+  recordStoreDriverRevokeWalkIn,
   releaseStoreDriverHoldIn,
+  revokeStoreDriverReleaseIn,
+  liveStoreDriverApprovalIn,
+  storeDriverApprovalsIn,
+  storeDriverRevokeWalkIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
   storeDriverRolloutPendingIn,
@@ -136,6 +142,8 @@ import {
   type StoreDriverRebuildFailure,
   type StoreDriverRebuildRecord,
   type StoreDriverReleaseRecord,
+  type StoreDriverApprovalRecord,
+  type StoreDriverRevokeWalkRecord,
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,
   type StoreDriverRolloutState,
@@ -1547,6 +1555,9 @@ export const REPLIED_METHODS = [
   // #2300: a store driver's release, rollout and hold writes refuse with conflict, not_found,
   // validation_failed or unavailable.
   'recordStoreDriverRelease',
+  'approveStoreDriverReleaseAndAudit',
+  'recordStoreDriverRevokeWalk',
+  'revokeStoreDriverReleaseAndAudit',
   'storeDriverDeclarations',
   // #2312: a rollout page refuses a limit that is not positive, and an unknown rollout.
   'storeDriverRolloutPending',
@@ -2517,6 +2528,53 @@ export class ControlPlaneDO extends DurableObject {
 
   getStoreDriverRelease(driver: string, sha256: string): StoreDriverReleaseRecord | undefined {
     return storeDriverReleaseIn(this.kernelSql, driver, sha256);
+  }
+
+  storeDriverApprovals(driver: string): StoreDriverApprovalRecord[] {
+    return storeDriverApprovalsIn(this.kernelSql, driver);
+  }
+
+  liveStoreDriverApproval(driver: string, sha256: string): StoreDriverApprovalRecord | undefined {
+    return liveStoreDriverApprovalIn(this.kernelSql, driver, sha256);
+  }
+
+  approveStoreDriverReleaseAndAudit(input: {
+    driver: string; sha256: string; reason: string;
+    sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
+    isolationReview: StoreDriverApprovalRecord['isolationReview'];
+    schema: number; className: string; operations: readonly string[]; actor: string; at: string;
+  }, audit: AdminEntryInput): StoreDriverApprovalRecord {
+    let record!: StoreDriverApprovalRecord;
+    this.writeAndAudit(() => {
+      record = approveStoreDriverReleaseIn(this.kernelSql, { ...input, approvalId: ulid() });
+      return true;
+    }, () => ({ ...audit, after: record }));
+    return record;
+  }
+
+  storeDriverRevokeWalk(approvalId: string): StoreDriverRevokeWalkRecord | undefined {
+    return storeDriverRevokeWalkIn(this.kernelSql, approvalId);
+  }
+
+  recordStoreDriverRevokeWalk(input: {
+    approvalId: string; driver: string; holder: string; cursor: string | null;
+    actor: string; reason: string; rolloutSeq: number;
+  }): StoreDriverRevokeWalkRecord {
+    return this.ctx.storage.transactionSync(() => recordStoreDriverRevokeWalkIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  revokeStoreDriverReleaseAndAudit(input: {
+    approvalId: string; driver: string; sha256: string; holder: string;
+    actor: string; at: string; reason: string; emergency: boolean;
+  }, audit: AdminEntryInput): StoreDriverApprovalRecord {
+    let before: StoreDriverApprovalRecord | null = null;
+    let record!: StoreDriverApprovalRecord;
+    this.writeAndAudit(() => {
+      before = liveStoreDriverApprovalIn(this.kernelSql, input.driver, input.sha256) ?? null;
+      record = revokeStoreDriverReleaseIn(this.kernelSql, { ...input, nowMs: Date.now() });
+      return true;
+    }, () => ({ ...audit, before, after: record }));
+    return record;
   }
 
   storeDriverState(driver: string): StoreDriverState {

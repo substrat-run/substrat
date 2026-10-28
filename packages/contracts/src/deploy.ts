@@ -348,7 +348,7 @@ export const storeOperationName = z
   .max(STORE_OPERATION_NAME_MAX)
   .regex(/^[^@:\s]+$/, { message: 'a store operation name is a fixed label: no @, no whitespace, no :' });
 
-const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWith('substrat.'), {
+export const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWith('substrat.'), {
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 

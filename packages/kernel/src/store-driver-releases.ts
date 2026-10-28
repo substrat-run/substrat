@@ -266,6 +266,34 @@ export interface StoreDriverReleaseRecord {
   readonly uploadedAt: string;
 }
 
+/** A person's durable review of one uploaded release (D-65). Revocation changes only its four revoke fields. */
+export interface StoreDriverApprovalRecord {
+  readonly approvalId: string;
+  readonly driver: string;
+  readonly sha256: string;
+  readonly sourceCommit: string;
+  readonly approvedBy: string;
+  readonly approvedAt: string;
+  readonly reason: string;
+  readonly sourceReferences: readonly { readonly repository: string; readonly commit: string }[];
+  readonly isolationReview: Readonly<Record<string, unknown>>;
+  readonly schema: number;
+  readonly className: string;
+  readonly operations: readonly string[];
+  readonly revokedBy: string | null;
+  readonly revokedAt: string | null;
+  readonly revokedReason: string | null;
+  readonly revokedEmergency: boolean | null;
+}
+
+export interface StoreDriverRevokeWalkRecord {
+  readonly approvalId: string;
+  readonly cursor: string | null;
+  readonly actor: string;
+  readonly reason: string;
+  readonly rolloutSeq: number;
+}
+
 export type StoreDriverRolloutAction = 'rollout' | 'rollback';
 /**
  * `paused`: the request's batch ran out with verticals left to walk. Nothing failed; the fleet is
@@ -373,6 +401,112 @@ export function recordStoreDriverReleaseIn(
     input.driver, input.sha256, input.sourceCommit, input.actor, input.at,
   );
   return { record: storeDriverReleaseIn(db, input.driver, input.sha256)!, created: true };
+}
+
+interface ApprovalRow {
+  approval_id: string; driver: string; sha256: string; source_commit: string;
+  approved_by: string; approved_at: string; reason: string; source_references: string;
+  isolation_review: string; schema: number; class_name: string; operations: string;
+  revoked_by: string | null; revoked_at: string | null; revoked_reason: string | null;
+  revoked_emergency: number | null;
+}
+
+const APPROVAL_COLUMNS = `approval_id, driver, sha256, source_commit, approved_by, approved_at, reason,
+  source_references, isolation_review, schema, class_name, operations,
+  revoked_by, revoked_at, revoked_reason, revoked_emergency`;
+
+const approvalOf = (row: ApprovalRow): StoreDriverApprovalRecord => ({
+  approvalId: row.approval_id,
+  driver: row.driver,
+  sha256: row.sha256,
+  sourceCommit: row.source_commit,
+  approvedBy: row.approved_by,
+  approvedAt: row.approved_at,
+  reason: row.reason,
+  sourceReferences: JSON.parse(row.source_references) as StoreDriverApprovalRecord['sourceReferences'],
+  isolationReview: JSON.parse(row.isolation_review) as StoreDriverApprovalRecord['isolationReview'],
+  schema: Number(row.schema),
+  className: row.class_name,
+  operations: JSON.parse(row.operations) as string[],
+  revokedBy: row.revoked_by,
+  revokedAt: row.revoked_at,
+  revokedReason: row.revoked_reason,
+  revokedEmergency: row.revoked_emergency === null ? null : row.revoked_emergency === 1,
+});
+
+export function storeDriverApprovalsIn(db: SwitchSql, driver: string): StoreDriverApprovalRecord[] {
+  return (db.all(`SELECT ${APPROVAL_COLUMNS} FROM store_driver_approvals WHERE driver = ? ORDER BY approved_at, approval_id`, driver) as unknown as ApprovalRow[]).map(approvalOf);
+}
+
+export function liveStoreDriverApprovalIn(db: SwitchSql, driver: string, sha256: string): StoreDriverApprovalRecord | undefined {
+  const [row] = db.all(`SELECT ${APPROVAL_COLUMNS} FROM store_driver_approvals
+    WHERE driver = ? AND sha256 = ? AND revoked_at IS NULL`, driver, sha256) as unknown as ApprovalRow[];
+  return row ? approvalOf(row) : undefined;
+}
+
+/** The first approval fixes schema, class and catalog for these bytes forever. */
+export function approveStoreDriverReleaseIn(db: SwitchSql, input: {
+  driver: string; sha256: string; approvalId: string; actor: string; at: string; reason: string;
+  sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
+  isolationReview: StoreDriverApprovalRecord['isolationReview'];
+  schema: number; className: string; operations: readonly string[];
+}): StoreDriverApprovalRecord {
+  const stored = storeDriverReleaseIn(db, input.driver, input.sha256);
+  if (!stored) throw substratError('not_found', `release ${input.sha256} of '${input.driver}' is not stored`);
+  if (liveStoreDriverApprovalIn(db, input.driver, input.sha256)) {
+    throw substratError('conflict', `release ${input.sha256} of '${input.driver}' already has a live approval`);
+  }
+  const [first] = db.all(`SELECT ${APPROVAL_COLUMNS} FROM store_driver_approvals
+    WHERE driver = ? AND sha256 = ? ORDER BY approved_at, approval_id LIMIT 1`, input.driver, input.sha256) as unknown as ApprovalRow[];
+  if (first && (Number(first.schema) !== input.schema || first.class_name !== input.className ||
+    first.operations !== JSON.stringify(input.operations))) {
+    throw substratError('conflict', `release ${input.sha256} of '${input.driver}' has fixed schema, class and operations from its first approval`);
+  }
+  db.run(`INSERT INTO store_driver_approvals (${APPROVAL_COLUMNS})
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`,
+  input.approvalId, input.driver, input.sha256, stored.sourceCommit, input.actor, input.at,
+  input.reason, JSON.stringify(input.sourceReferences), JSON.stringify(input.isolationReview),
+  input.schema, input.className, JSON.stringify(input.operations));
+  return liveStoreDriverApprovalIn(db, input.driver, input.sha256)!;
+}
+
+export function storeDriverRevokeWalkIn(db: SwitchSql, approvalId: string): StoreDriverRevokeWalkRecord | undefined {
+  const [row] = db.all('SELECT approval_id, cursor, actor, reason, rollout_seq FROM store_driver_revoke_walks WHERE approval_id = ?', approvalId) as unknown as
+    { approval_id: string; cursor: string | null; actor: string; reason: string; rollout_seq: number }[];
+  return row ? { approvalId: row.approval_id, cursor: row.cursor, actor: row.actor, reason: row.reason, rolloutSeq: Number(row.rollout_seq) } : undefined;
+}
+
+/** Start or advance a page of the revoke guard, only while the caller still holds the driver. */
+export function recordStoreDriverRevokeWalkIn(db: SwitchSql, input: {
+  approvalId: string; driver: string; holder: string; nowMs: number;
+  cursor: string | null; actor: string; reason: string; rolloutSeq: number;
+}): StoreDriverRevokeWalkRecord {
+  assertExclusive(db, input.driver, input.holder, input.nowMs);
+  db.run(`INSERT INTO store_driver_revoke_walks (approval_id, cursor, actor, reason, rollout_seq)
+    VALUES (?, ?, ?, ?, ?) ON CONFLICT (approval_id) DO UPDATE SET
+    cursor = excluded.cursor, actor = excluded.actor, reason = excluded.reason, rollout_seq = excluded.rollout_seq`,
+  input.approvalId, input.cursor, input.actor, input.reason, input.rolloutSeq);
+  return storeDriverRevokeWalkIn(db, input.approvalId)!;
+}
+
+/** Final revoke mutation and ledger cleanup are one directory transaction in either adapter. */
+export function revokeStoreDriverReleaseIn(db: SwitchSql, input: {
+  approvalId: string; driver: string; sha256: string; holder: string; nowMs: number;
+  actor: string; at: string; reason: string; emergency: boolean;
+}): StoreDriverApprovalRecord {
+  assertExclusive(db, input.driver, input.holder, input.nowMs);
+  const approval = liveStoreDriverApprovalIn(db, input.driver, input.sha256);
+  if (!approval || approval.approvalId !== input.approvalId) {
+    throw substratError('conflict', `release ${input.sha256} of '${input.driver}' has no live approval to revoke`);
+  }
+  if (!input.emergency && storeDriverStateIn(db, input.driver, input.nowMs).current?.sha256 === input.sha256) {
+    throw substratError('conflict', `release ${input.sha256} is current for '${input.driver}'; an emergency revoke with a reason is required`);
+  }
+  db.run(`UPDATE store_driver_approvals SET revoked_by = ?, revoked_at = ?, revoked_reason = ?, revoked_emergency = ?
+    WHERE approval_id = ? AND revoked_at IS NULL`, input.actor, input.at, input.reason, input.emergency ? 1 : 0, input.approvalId);
+  db.run('DELETE FROM store_driver_revoke_walks WHERE approval_id = ?', input.approvalId);
+  const [row] = db.all(`SELECT ${APPROVAL_COLUMNS} FROM store_driver_approvals WHERE approval_id = ?`, input.approvalId) as unknown as ApprovalRow[];
+  return approvalOf(row!);
 }
 
 /**

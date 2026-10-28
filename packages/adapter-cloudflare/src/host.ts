@@ -575,10 +575,12 @@ import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsEra
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
+  StoreDriverApprovalRecord,
   StoreDriverHoldMode,
   StoreDriverRebuildFailure,
   StoreDriverRebuildRecord,
   StoreDriverReleaseRecord,
+  StoreDriverRevokeWalkRecord,
   StoreDriverRolloutAction,
   StoreDriverRolloutRecord,
   StoreDriverRolloutState,
@@ -757,6 +759,23 @@ interface ControlPlaneStub {
     created: boolean;
   }>;
   getStoreDriverRelease(driver: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
+  storeDriverApprovals(driver: string): Promise<StoreDriverApprovalRecord[]>;
+  liveStoreDriverApproval(driver: string, sha256: string): Promise<StoreDriverApprovalRecord | undefined>;
+  approveStoreDriverReleaseAndAudit(input: {
+    driver: string; sha256: string; reason: string;
+    sourceReferences: StoreDriverApprovalRecord['sourceReferences'];
+    isolationReview: StoreDriverApprovalRecord['isolationReview'];
+    schema: number; className: string; operations: readonly string[]; actor: string; at: string;
+  }, audit: AdminEntry): Promise<StoreDriverApprovalRecord>;
+  storeDriverRevokeWalk(approvalId: string): Promise<StoreDriverRevokeWalkRecord | undefined>;
+  recordStoreDriverRevokeWalk(input: {
+    approvalId: string; driver: string; holder: string; cursor: string | null;
+    actor: string; reason: string; rolloutSeq: number;
+  }): Promise<StoreDriverRevokeWalkRecord>;
+  revokeStoreDriverReleaseAndAudit(input: {
+    approvalId: string; driver: string; sha256: string; holder: string;
+    actor: string; at: string; reason: string; emergency: boolean;
+  }, audit: AdminEntry): Promise<StoreDriverApprovalRecord>;
   storeDriverState(driver: string): Promise<StoreDriverState>;
   storeDriverDeclarations(driver: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
   storeDriverRolloutPending(input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number }): Promise<{
@@ -9397,6 +9416,28 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
         return record;
       },
+      storeDriverApprovals: async (actor, driver) => {
+        const records = await this.cp.storeDriverApprovals(driver);
+        await this.recordAccess(actor, 'storeDriverApprovals', { tenantId: null }, { driver }, records.length);
+        return records;
+      },
+      liveStoreDriverApproval: async (actor, driver, sha256) => {
+        const record = await this.cp.liveStoreDriverApproval(driver, sha256);
+        await this.recordAccess(actor, 'liveStoreDriverApproval', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      approveStoreDriverRelease: async (actor, input) => this.directory('approveStoreDriverReleaseAndAudit',
+        { ...input, actor, at: new Date().toISOString() },
+        this.adminEntry(actor, 'approveStoreDriverRelease', { tenantId: null }, null, null)),
+      storeDriverRevokeWalk: async (actor, approvalId) => {
+        const record = await this.cp.storeDriverRevokeWalk(approvalId);
+        await this.recordAccess(actor, 'storeDriverRevokeWalk', { tenantId: null }, { approvalId }, record ? 1 : 0);
+        return record;
+      },
+      recordStoreDriverRevokeWalk: async (actor, input) => this.directory('recordStoreDriverRevokeWalk', { ...input, actor }),
+      revokeStoreDriverRelease: async (actor, input) => this.directory('revokeStoreDriverReleaseAndAudit',
+        { ...input, actor, at: new Date().toISOString() },
+        this.adminEntry(actor, 'revokeStoreDriverRelease', { tenantId: null }, null, null)),
       storeDriverState: async (actor, driver) => {
         const state = await this.cp.storeDriverState(driver);
         await this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { driver }, state.rollouts.length);
