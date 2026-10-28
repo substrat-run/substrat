@@ -26,6 +26,16 @@ import { errorCodeOf } from '@substrat-run/contracts';
  * ids and clocks need not agree, so every order below must resolve the same way.
  */
 describe('effectiveOutcomes', () => {
+  it('resolves scope permission writes by their outcome instead of treating the intent as an effect', () => {
+    for (const action of ['assignRole', 'unassignRole', 'grant', 'grantToOrg', 'grantToSystem', 'grantEntityShape', 'mintCapability']) {
+      expect(AUDITED_CHANGE_ACTIONS).toContain(action);
+      const rows = [
+        { action, operationId: 'scope-write', tenantId: 't1', scopeId: 's1', phase: 'intent' },
+        { action, operationId: 'scope-write', tenantId: 't1', scopeId: 's1', phase: 'applied' },
+      ];
+      expect(effectiveOutcomes(rows).get(operationKeyOf(rows[0]!))?.outcome).toBe('applied');
+    }
+  });
   const op = (phase: string, operationId = 'op', where: { tenantId?: string; scopeId?: string } = {}) => ({
     action: 'transferOwner', operationId, tenantId: where.tenantId ?? 't1', scopeId: where.scopeId ?? 's1', phase,
   });
