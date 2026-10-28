@@ -537,4 +537,49 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
       'POST /members/invites/{invitationId}/resend dashboard/resend-invite',
     ]);
   });
+
+  it('reads only the path team’s grants and returns only display fields, even when the cookie names another team', async () => {
+    const a = await team('sub-owner', 'A');
+    const b = await team('sub-owner', 'B');
+    const paths: string[] = [];
+    env.CONTROL_PLANE_SVC = { fetch: async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      if (path === '/api/tenant-tokens') return Response.json({ token: 'test-token' }, { status: 201 });
+      if (path === `/api/tenants/${b.tenant}/entitlements`) return Response.json([
+        { entitlementKey: 'app', quota: 7, expiresAt: null, plan: 'pro', grantedAt: '2026-01-01T00:00:00Z', grantedBy: staff },
+        { entitlementKey: 'reports', quota: null, expiresAt: '2027-01-01T00:00:00Z', plan: null, grantedAt: null, grantedBy: null },
+      ]);
+      return Response.json({ error: 'unexpected request' }, { status: 500 });
+    } };
+    const res = await req('GET', inTeam(b, '/entitlements'), { cookieTeam: a.tenant });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toEqual([
+      { key: 'app', quota: 7 },
+      { key: 'reports', expiresAt: '2027-01-01T00:00:00Z' },
+    ]);
+    expect(paths).toContain(`/api/tenants/${b.tenant}/entitlements`);
+    expect(paths).not.toContain(`/api/tenants/${a.tenant}/entitlements`);
+  });
+
+  it('refuses a member before asking the plane for grants', async () => {
+    const t = await team('sub-owner');
+    await join_(t, 'sub-member', 'member');
+    const fetch = vi.fn(async () => Response.json([]));
+    env.CONTROL_PLANE_SVC = { fetch };
+    const res = await req('GET', inTeam(t, '/entitlements'), { sub: 'sub-member' });
+    expect(res.status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('refuses a team the caller has not joined before opening its scope or asking the plane', async () => {
+    const t = await team('sub-other');
+    const fetch = vi.fn(async () => Response.json([]));
+    env.CONTROL_PLANE_SVC = { fetch };
+    shared.scopesOpened.length = 0;
+    const res = await req('GET', inTeam(t, '/entitlements'), { sub: 'sub-stranger' });
+    expect(res.status).toBe(404);
+    expect(shared.scopesOpened).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
