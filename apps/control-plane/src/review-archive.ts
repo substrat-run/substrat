@@ -100,7 +100,6 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
   const files = new Set<string>();
   const impliedDirectories = new Set<string>();
   let entries = 0;
-  let ended = false;
   let extendedPath: string | undefined;
   try {
     for (;;) {
@@ -109,7 +108,6 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
         if (extendedPath !== undefined) throw new Error('PAX path has no following entry');
         const second = await read(BLOCK);
         if (!second.every((byte) => byte === 0)) throw new Error('archive has one end block');
-        ended = true;
         break;
       }
       if (field(block, 257, 6) !== 'ustar') throw new Error('archive is not USTAR');
@@ -157,7 +155,7 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
       if (expanded > REVIEW_TREE_MAX_BYTES) throw new Error('archive exceeds the expanded size limit');
       if (tail.value.some((byte) => byte !== 0)) throw new Error('archive has data after its end');
     }
-    if (!ended || files.size === 0) throw new Error('archive has no files');
+    if (files.size === 0) throw new Error('archive has no files');
   } catch (error) {
     await reader.cancel(error).catch(() => {});
     throw error;
