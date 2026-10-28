@@ -7,7 +7,7 @@
  */
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
-import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 export default defineConfig({
   define: { __PROBE_DO_LIMITS__: 'false', __PROBE_WRITE_REVISION__: 'false' },

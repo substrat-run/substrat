@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { asUploaded } from '../../tools/workerd-as-uploaded.mjs';
 import { defineConfig } from 'vitest/config';
-import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, 'supplied-sweeper', 'fixture');

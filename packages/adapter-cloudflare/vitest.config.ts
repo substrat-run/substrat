@@ -1,6 +1,6 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
-import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 export default defineConfig({
   // `process.env` inside workerd is not the runner's, so an opt-in from the environment is decided

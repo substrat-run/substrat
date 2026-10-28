@@ -18,7 +18,7 @@ import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
 import { ATTACHMENT_BLOB_BINDING, blobStoreBindingName } from '@substrat-run/contracts';
 import { defineConfig } from 'vitest/config';
-import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /**

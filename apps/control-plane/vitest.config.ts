@@ -1,6 +1,6 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
-import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 export default defineConfig({
   // The directory persists across requests within a run — a tenant written

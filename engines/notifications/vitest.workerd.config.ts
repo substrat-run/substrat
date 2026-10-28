@@ -9,7 +9,7 @@
  */
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
-import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 export default defineConfig({
   plugins: [cloudflareTest({ wrangler: { configPath: './test/workerd/wrangler.jsonc' } })],
