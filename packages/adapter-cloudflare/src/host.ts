@@ -6692,7 +6692,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * configured; the mint has no such reach and no caller needing one, since an owner claim link
    * is minted by the deployment itself behind `/internal/owner-claim`.
    */
-  private async capabilityScopeStub(rec: ScopeRow, scopeId: ScopeId, verb: string) {
+  private assertCapabilityScopeReach(rec: ScopeRow, scopeId: ScopeId, verb: string): void {
     if (this.servesScopesElsewhereNow && rec.vertical !== null) {
       throw substratError(
         'unavailable',
@@ -6700,6 +6700,10 @@ export class CloudflareScopeHost implements ScopeHost {
           'deployment, and this host has no reach into it',
       );
     }
+  }
+
+  private async capabilityScopeStub(rec: ScopeRow, scopeId: ScopeId, verb: string) {
+    this.assertCapabilityScopeReach(rec, scopeId, verb);
     await this.migrateAndRecord(scopeId);
     return this.scopeStub(scopeId);
   }
@@ -8360,7 +8364,8 @@ export class CloudflareScopeHost implements ScopeHost {
         checkBecomeInput(input, new Date().toISOString() as Instant);
         await this.validateScopeAccess(tenantId, scopeId);
         const rec = await this.capabilityScopeRecord(tenantId, scopeId);
-        const stub = await this.capabilityScopeStub(rec, scopeId, 'mintCapability');
+        // A hosted refusal precedes intent; the local migrate happens inside the audited write.
+        this.assertCapabilityScopeReach(rec, scopeId, 'mintCapability');
         return auditedScopePermissionWrite({
           action: 'mintCapability', request: {
             mode: 'become',
@@ -8370,7 +8375,7 @@ export class CloudflareScopeHost implements ScopeHost {
             label: input.label ?? null,
           },
           record: (after) => this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical: rec.vertical }, null, after),
-          write: () => stub.mintBecomeCapabilityAndAuditIntent(input, actor),
+          write: async () => (await this.capabilityScopeStub(rec, scopeId, 'mintCapability')).mintBecomeCapabilityAndAuditIntent(input, actor),
           outcome: (minted) => ({ phase: 'applied', details: { capabilityId: minted.id } }),
           onUnrecordedOutcome: (minted, error) => ({ ...minted, auditWarning: auditWarningOf('the capability mint', error) }),
           logError: (message, fields) => console.error(message, fields),
