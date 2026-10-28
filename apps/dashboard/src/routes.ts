@@ -735,25 +735,28 @@ export const meteredUsageOut = z.object({
   readAt: z.string(),
   retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), requestMonths: z.number().int().nullable() }),
   storage: z.object({
-    state: z.enum(['unavailable', 'empty', 'not-sampled', 'complete', 'partial', 'stale', 'failing', 'truncated']),
-    bytes: z.number().int().nullable(), estimated: z.literal(false), basis: z.literal('scope-databases'),
-    lowerBound: z.boolean(), truncatedReason: z.enum(['scope-cap']).nullable(),
+    // Plane-owned vocabulary: currently unavailable/empty/not-sampled/complete/partial/stale/failing/truncated.
+    state: z.string(),
+    bytes: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]), basis: z.string(),
+    lowerBound: z.boolean(), truncatedReason: z.string().nullable(),
     sampled: z.number().int(), total: z.number().int(), failing: z.number().int(),
-    oldestReadAt: z.string().nullable(), excluded: z.array(z.enum(['attachments', 'tenant-stores', 'lake'])),
+    oldestReadAt: z.string().nullable(), excluded: z.array(z.string()),
   }),
   requests: z.object({
-    state: z.enum(['unavailable', 'empty', 'complete', 'partial', 'truncated']),
-    requests: z.number().int().nullable(), estimated: z.literal(true), lowerBound: z.boolean(),
+    // Plane-owned coverage and estimate status; currently unavailable/empty/complete/partial/truncated.
+    state: z.string(),
+    requests: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]), lowerBound: z.boolean(),
     coveredDays: z.number().int(), totalDays: z.number().int(), sinceDay: z.string(), untilDay: z.string(),
     lastReadAt: z.string().nullable(),
     byVertical: z.array(z.object({ vertical: z.string().nullable(), requests: z.number().int() })),
     breakdownTruncated: z.boolean(),
   }),
   models: z.object({
-    state: z.enum(['unavailable', 'empty', 'complete', 'truncated']),
+    // Plane-owned coverage; currently unavailable/empty/complete/truncated.
+    state: z.string(),
     calls: z.number().int().nullable(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
-    estimated: z.literal(false), lowerBound: z.boolean(), since: z.string(), until: z.string(),
-    truncatedReason: z.enum(['page-cap', 'time-budget']).nullable(),
+    estimated: z.union([z.boolean(), z.string()]), lowerBound: z.boolean(), since: z.string(), until: z.string(),
+    truncatedReason: z.string().nullable(),
     oldestRecordedAt: z.string().nullable(), newestRecordedAt: z.string().nullable(),
     byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
     breakdownTruncated: z.boolean(),

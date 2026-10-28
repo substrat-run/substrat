@@ -600,17 +600,24 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
       if (path === `/api/tenants/${b.tenant}/metered-usage`) return Response.json({
         readAt: '2026-10-29T00:00:00Z',
         retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
-        storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments'], priceUsd: '99' },
-        requests: { state: 'partial', requests: 7, estimated: true, lowerBound: true, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [{ vertical: 'app', requests: 7 }], breakdownTruncated: false },
-        models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false, marginPercent: 20 },
+        storage: { state: 'new-storage-state', bytes: 8, estimated: 'new-estimate-mode', basis: 'scope-databases', lowerBound: false, truncatedReason: 'new-storage-reason', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments', 'new-exclusion'], priceUsd: '99' },
+        requests: { state: 'new-request-state', requests: 7, estimated: 'new-estimate-mode', lowerBound: true, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [{ vertical: 'app', requests: 7 }], breakdownTruncated: false },
+        models: { state: 'new-model-state', calls: null, inputTokens: null, outputTokens: null, estimated: 'new-estimate-mode', lowerBound: false, truncatedReason: 'new-model-reason', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false, marginPercent: 20 },
       });
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     } };
     const res = await req('GET', inTeam(b, '/metered-usage'), { cookieTeam: a.tenant });
     expect(res.status, await res.clone().text()).toBe(200);
-    const body = await res.json() as { storage: { bytes: number }; requests: { requests: number; estimated: boolean } };
+    const body = await res.json() as {
+      storage: { bytes: number; state: string; excluded: string[] };
+      requests: { requests: number; estimated: boolean | string; state: string };
+      models: { state: string };
+    };
     expect(body.storage).toMatchObject({ bytes: 8 });
-    expect(body.requests).toMatchObject({ requests: 7, estimated: true });
+    expect(body.requests).toMatchObject({ requests: 7, estimated: 'new-estimate-mode' });
+    expect(body.storage).toMatchObject({ state: 'new-storage-state', excluded: ['attachments', 'new-exclusion'] });
+    expect(body.requests.state).toBe('new-request-state');
+    expect(body.models.state).toBe('new-model-state');
     expect(JSON.stringify(body)).not.toMatch(/price|margin|usd|cost|amount/i);
     expect(paths).toContain(`/api/tenants/${b.tenant}/metered-usage`);
     expect(paths).not.toContain(`/api/tenants/${a.tenant}/metered-usage`);

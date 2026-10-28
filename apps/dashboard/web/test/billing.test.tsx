@@ -96,6 +96,27 @@ it('shows metered usage coverage, estimate and freshness without prices', async 
   expect(container.textContent).not.toMatch(/price|margin|usd|cost|amount|invoice|checkout|payment/i);
 });
 
+it('labels new plane vocabulary as unknown and treats its figures as estimates and lower bounds', async () => {
+  read.mockResolvedValue([]);
+  readUsage.mockResolvedValue({
+    readAt: '2026-10-29T00:00:00Z',
+    retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+    storage: { state: 'new-storage-state', bytes: 8, estimated: 'new-estimate-mode', basis: 'scope-databases', lowerBound: false, truncatedReason: 'new-storage-reason', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments', 'new-exclusion'] },
+    requests: { state: 'new-request-state', requests: 7, estimated: 'new-estimate-mode', lowerBound: false, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
+    models: { state: 'new-model-state', calls: 1, inputTokens: 11, outputTokens: 3, estimated: 'new-estimate-mode', lowerBound: false, truncatedReason: 'new-model-reason', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+  });
+  await render();
+  expect(container.textContent).toContain('unknown (new-storage-state)');
+  expect(container.textContent).toContain('unknown (new-request-state)');
+  expect(container.textContent).toContain('unknown (new-model-state)');
+  expect(container.textContent).toContain('other (new-exclusion)');
+  expect(container.textContent).toContain('At least 8 bytes');
+  expect(container.textContent).toContain('At least 7 estimated');
+  expect(container.textContent).toContain('At least 1 recorded calls');
+  expect(container.textContent).toContain('Estimate: unknown; treat this figure as an estimate');
+  expect(container.textContent).not.toContain('· complete');
+});
+
 it('shows usage unavailable on read failure and recognizes a handwritten 403 refusal', async () => {
   read.mockResolvedValue([]);
   readUsage.mockRejectedValue(new Error('offline'));
