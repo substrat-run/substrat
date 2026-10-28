@@ -2631,9 +2631,10 @@ export function mountPlatformSurface<Env extends object>(
     }
     const body = readPreviewConfigBody.parse(await c.req.json());
     const values = await deps.onReadPreviewConfig(c.env, body);
-    return c.json({ entries: body.keys.flatMap((key) =>
+    const entries = body.keys.flatMap((key) =>
       Object.hasOwn(values, key) && typeof values[key] === 'string' ? [{ key, value: values[key] }] : [],
-    ) });
+    );
+    return c.json({ entries });
   });
 
   // The owner seat (#925), read and claimed on the platform's instruction. Both answer 501
