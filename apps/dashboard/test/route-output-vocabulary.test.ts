@@ -24,6 +24,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/resume-app status': OWN_APP_ROW,
   'dashboard/get-app-integrations providers[].connectFlow': 'the worker advertises only the redirect flow it can serve on this deployment',
   'dashboard/get-app-install-steps [].status': 'an install step the dashboard scope records itself',
+  'dashboard/get-app-concept unavailable': 'the worker’s own labels for an absent running version or unpublished application description',
   'dashboard/list-app-events entries[].kind': 'the dashboard scope’s own event kinds (`APP_EVENT_KINDS`, held to its CHECK)',
   'dashboard/get-app-flow findings.findings[].kind': 'the worker derives these finding kinds from its flow join',
   'dashboard/get-app-flow graph.nodes[].kind': 'the worker lays out these graph node kinds',

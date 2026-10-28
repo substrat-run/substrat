@@ -158,9 +158,10 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     }
   });
 
-  it('keeps the pre-migration assistant read tool names exactly', () => {
+  it('exposes the expected assistant read tool names exactly', () => {
     expect(exposedReads(dashboardRoutes).map(([name]) => name)).toEqual([
-      'dashboard/list-apps', 'dashboard/get-app-install-steps', 'dashboard/list-app-events',
+      'dashboard/list-apps', 'dashboard/get-app-install-steps', 'dashboard/get-app-concept',
+      'dashboard/list-app-events',
       'dashboard/list-app-audit', 'dashboard/list-team-audit', 'dashboard/list-domains',
       'dashboard/list-app-hostnames', 'dashboard/list-members', 'dashboard/app-email-sender',
       'dashboard/observability-metrics', 'dashboard/observability-logs',
