@@ -1,5 +1,13 @@
 # @substrat-run/connector-mail-in
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [7df34ee]
+  - @substrat-run/contracts@0.165.0
+  - @substrat-run/kernel@0.165.0
+
 ## 0.1.0
 
 ### Minor Changes

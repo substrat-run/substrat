@@ -1,5 +1,20 @@
 # @substrat-run/control-plane-api
 
+## 0.165.0
+
+### Minor Changes
+
+- 7df34ee: Allow application owners to publish a versioned Markdown description with `substrat.concept` in package.json. The CLI includes only the explicitly selected file, bounded to 64 KiB and confined to the application directory. The control plane exposes the published snapshot using the existing owner and listed-application visibility rules.
+
+  The dashboard's Ask assistant can query the running application's description by section, with version checks, bounded pagination, and redaction before text is split into pages. Existing releases without a published description remain supported.
+
+### Patch Changes
+
+- Updated dependencies [7df34ee]
+  - @substrat-run/contracts@0.165.0
+  - @substrat-run/control-plane-client@0.3.16
+  - @substrat-run/kernel@0.165.0
+
 ## 0.164.0
 
 ### Minor Changes
