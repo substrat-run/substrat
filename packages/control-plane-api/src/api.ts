@@ -11058,7 +11058,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const notesFor = (parent: Scope | null): string[] =>
       parent
         ? [
-            "Settings: only non-secret Env settings explicitly declared for preview carryover are delivered; " +
+            "Settings: only non-secret Env tab settings explicitly declared for preview carryover are delivered; " +
               "other settings use the deployment's defaults.",
           ]
         : [];
