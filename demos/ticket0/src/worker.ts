@@ -1207,9 +1207,10 @@ mountPlatformSurface<Env>(app, {
     const identity = (await instanceConfig(env, node)).identity;
     await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
   },
-  onDeleteScope: async (env, s) => {
+  onDeleteScope: async (env, s, tenantId) => {
     // A reaped desk's alarm must never wake it again.
     await sweeper(env).forgetScope(s);
+    if (tenantId) await identityDo(env, { tenantId, scopeId: s }).deleteScopeConfig(s);
   },
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);

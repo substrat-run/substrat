@@ -134,6 +134,20 @@ beforeEach(() => stubIssuers(binding, perInstall));
 afterEach(() => vi.unstubAllGlobals());
 
 describe('/internal/configure on a hosted manyfold (#2201)', () => {
+  it('removes a reaped preview’s carried config and keeps a live preview’s config', async () => {
+    const reaped = await install();
+    const live = await install(reaped.t);
+    expect((await deliver(reaped, 'dark', 'THEME')).status).toBe(200);
+    expect((await deliver(live, 'light', 'THEME')).status).toBe(200);
+    const directory = env.AUTH.get(env.AUTH.idFromName(reaped.t));
+    expect(await directory.getScopeConfig(reaped.s)).toMatchObject({ THEME: 'dark' });
+    expect(await directory.getScopeConfig(live.s)).toMatchObject({ THEME: 'light' });
+
+    expect((await platform('/internal/delete-scope', { tenantId: reaped.t, scopeId: reaped.s })).status).toBe(200);
+    expect(await directory.getScopeConfig(reaped.s)).toEqual({});
+    expect(await directory.getScopeConfig(live.s)).toMatchObject({ THEME: 'light' });
+  });
+
   it('stores a delivered config for the scope it names, and answers what the platform expects', async () => {
     const a = await install();
     const res = await deliver(a, choice('https://team-auth.test', a));

@@ -324,8 +324,9 @@ mountPlatformSurface<Env>(app, {
     await reportScopeMembers(identityDo(env, node), placesReporter({ identity }), b.scopeId);
   },
   // A reaped scope's alarm must never wake it again.
-  onDeleteScope: async (env, s) => {
+  onDeleteScope: async (env, s, tenantId) => {
     await sweeper(env).forgetScope(s);
+    if (tenantId) await identityDo(env, { tenantId, scopeId: s }).deleteScopeConfig(s);
   },
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
