@@ -35,7 +35,7 @@ it('shows vertical assertion, rate and window beside sampled counts', async () =
   expect(container.textContent).toContain('Vertical-asserted');
   expect(container.textContent).toContain('10.0% router sample');
   expect(container.textContent).toContain(window.since);
-  expect(container.textContent).toContain('acme/get.optional');
+  expect(container.textContent).toContain('Not observed returned in this sampled operation: optional.');
   expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
 });
 
@@ -75,5 +75,5 @@ it('sits beside the declared Field coverage card on the app page, for that app o
   const headings = [...container.querySelectorAll('h3')].map((h) => h.textContent);
   expect(headings.slice(0, 2)).toEqual(['Field coverage', 'Sampled field counts']);
   expect(reads).toHaveBeenCalledWith('scope-a', 24);
-  expect(container.textContent).toContain('acme/get.optional');
+  expect(container.textContent).toContain('Not observed returned in this sampled operation: optional.');
 });
