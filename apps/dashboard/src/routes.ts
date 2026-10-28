@@ -1101,7 +1101,9 @@ export const dashboardRoutes = defineRoutes({
     summary: "One app's declared environment and its stored values; secrets are write-only",
     input: z.object({ scopeId: z.string().min(1) }),
     output: z.object({
-      spec: z.array(envVarSpec.safeExtend({ required: z.boolean(), secret: z.boolean() })),
+      // The plane may ship a newer kind than this dashboard knows. Widen only the read
+      // shape; envVarSpec still validates declarations (including previewCarry rules).
+      spec: z.array(z.object({ ...envVarSpec.shape, required: z.boolean(), secret: z.boolean(), kind: z.string().optional() })),
       values: z.array(z.object({
         key: z.string(),
         isSecret: z.boolean(),
