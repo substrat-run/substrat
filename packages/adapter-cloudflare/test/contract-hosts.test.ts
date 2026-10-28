@@ -160,14 +160,40 @@ describe('#2479: directory audit across a coordinator/DO version skew', () => {
     });
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: oldDo });
     try {
-      await expect(host.admin.registerIdentityPool(staff, { provider, topology: 'central', tenantId: null }))
-        .rejects.toThrow('not a replied directory method: registerIdentityPoolAndAudit');
-      expect(await reader.admin.getIdentityPool(staff, provider)).toBeUndefined();
-      expect((await reader.admin.auditLog(staff, { action: ['registerIdentityPool'] }))
-        .filter((row) => row.actor === staff)).toEqual([]);
+      const outcome = await host.admin.registerIdentityPool(staff, { provider, topology: 'central', tenantId: null })
+        .then(() => 'accepted', (err: unknown) => err instanceof Error ? err.message : String(err));
+      expect({ outcome, state: await reader.admin.getIdentityPool(staff, provider),
+        rows: (await reader.admin.auditLog(staff, { action: ['registerIdentityPool'] }))
+          .filter((row) => row.actor === staff) }).toEqual({
+        outcome: 'not a replied directory method: registerIdentityPoolAndAudit', state: undefined, rows: [],
+      });
     } finally {
       await host.close();
       await reader.close();
+    }
+  });
+
+  it('keeps the old coordinator\'s bare method working so it can append its own row', async () => {
+    const staff = platformActorId.parse(ulid());
+    const provider = `skew-${ulid().toLowerCase()}`;
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const cp = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as {
+      reply(method: string, args: unknown[]): Promise<{ value?: boolean; failure?: unknown }>;
+      recordAdmin(entry: Record<string, unknown>): Promise<void>;
+    };
+    try {
+      const at = new Date().toISOString();
+      expect(await cp.reply('registerIdentityPool', [provider, 'central', null, at])).toEqual({ value: true });
+      expect(await host.admin.getIdentityPool(staff, provider)).toBeDefined();
+      const rows = async () => (await host.admin.auditLog(staff, { action: ['registerIdentityPool'] }))
+        .filter((row) => row.actor === staff);
+      expect(await rows()).toEqual([]);
+      await cp.recordAdmin({ id: ulid(), actor: staff, action: 'registerIdentityPool', tenantId: null,
+        scopeId: null, vertical: null, before: null, after: { provider, topology: 'central', tenantId: null },
+        causedBy: null, onBehalfOf: null, at });
+      expect(await rows()).toHaveLength(1);
+    } finally {
+      await host.close();
     }
   });
 });

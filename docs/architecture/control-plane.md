@@ -502,6 +502,11 @@ rows but before committing the import transaction; the rows loaded from the dump
 rewritten. Writes that also change a scope's own store still have the separate-store window
 described above.
 
+For Cloudflare, these audited units use new replied ControlPlaneDO method names. A coordinator
+deployed before the DO still uses the old methods and records its own row; a coordinator deployed
+first meets an unknown method and the write is refused before it can lose its row. Deploying the
+DO first avoids that temporary refusal.
+
 Same argument as K-4, and the reason the kernel is trusted at all: a surface that can act
 without a durable record of who acted is worse than no surface. (If §3's record-keeping
 vertical lands, this log *becomes* that scope's outbox rather than a second mechanism.)

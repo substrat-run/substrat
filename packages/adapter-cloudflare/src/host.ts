@@ -1321,7 +1321,27 @@ interface ControlPlaneStub {
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
   importDump(tables: ScopeDumpTable[], audit?: AdminEntry): Promise<void>;
+  // New replied names: an old DO does not recognize these, so it cannot ignore the audit row.
+  putTenantStoreAndAudit: AuditRequired<ControlPlaneStub['putTenantStore']>;
+  putBlobStoreAndAudit: AuditRequired<ControlPlaneStub['putBlobStore']>;
+  recordStoreDriverReleaseAndAudit: AuditRequired<ControlPlaneStub['recordStoreDriverRelease']>;
+  beginStoreDriverRolloutAndAudit: AuditRequired<ControlPlaneStub['beginStoreDriverRollout']>;
+  finishStoreDriverRolloutAndAudit: AuditRequired<ControlPlaneStub['finishStoreDriverRollout']>;
+  importDumpAndAudit: AuditRequired<ControlPlaneStub['importDump']>;
+  registerIdentityPoolAndAudit: AuditRequired<ControlPlaneStub['registerIdentityPool']>;
+  insertConnectionAndAudit: AuditRequired<ControlPlaneStub['insertConnection']>;
+  updateConnectionSecretAndAudit: AuditRequired<ControlPlaneStub['updateConnectionSecret']>;
+  revokeConnectionAndAudit: AuditRequired<ControlPlaneStub['revokeConnection']>;
+  linkIdentityAndAudit: AuditRequired<ControlPlaneStub['linkIdentity']>;
+  unlinkIdentityAndAudit: AuditRequired<ControlPlaneStub['unlinkIdentity']>;
+  markAccessLogDrainedAndAudit: AuditRequired<ControlPlaneStub['markAccessLogDrained']>;
+  pruneAccessLogAndAudit: AuditRequired<ControlPlaneStub['pruneAccessLog']>;
+  writeImpersonationAndAudit: AuditRequired<ControlPlaneStub['writeImpersonation']>;
+  endImpersonationAndAudit: AuditRequired<ControlPlaneStub['endImpersonation']>;
+  setIssueStatusAndAudit: AuditRequired<ControlPlaneStub['setIssueStatus']>;
 }
+
+type AuditRequired<F> = F extends (...args: infer A) => infer R ? (...args: Required<A>) => R : never;
 
 interface AdminEntry {
   id: string;
@@ -4925,7 +4945,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // the source of truth, carrying the D1 database_id Cloudflare assigned as the ref.
     const name = await tenantStoreDatabaseName(input.tenantId, input.vertical, input.binding);
     const ref = await d1.create(name);
-    const stored = await this.directory('putTenantStore', {
+    const stored = await this.directory('putTenantStoreAndAudit', {
       tenantId: input.tenantId,
       vertical: input.vertical,
       binding: input.binding,
@@ -4999,7 +5019,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (existing) return { binding: input.binding, kind: 'blob', ref: existing.ref };
     const name = await blobStoreBucketName(input.tenantId, input.vertical, input.binding);
     const ref = await r2.create(name);
-    const stored = await this.directory('putBlobStore', {
+    const stored = await this.directory('putBlobStoreAndAudit', {
       tenantId: input.tenantId,
       vertical: input.vertical,
       binding: input.binding,
@@ -9277,7 +9297,7 @@ export class CloudflareScopeHost implements ScopeHost {
       // -- store-driver releases, rollouts and holds (D-63, #2300) -------------------
       recordStoreDriverRelease: async (actor, input) => {
         const at = new Date().toISOString();
-        const { record } = await this.directory('recordStoreDriverRelease', { ...input, actor, at },
+        const { record } = await this.directory('recordStoreDriverReleaseAndAudit', { ...input, actor, at },
           this.adminEntry(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, null));
         return record;
       },
@@ -9311,12 +9331,12 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.releaseStoreDriverHold(input);
       },
       beginStoreDriverRollout: async (actor, input) => {
-        const row = await this.directory('beginStoreDriverRollout', { ...input, actor, at: new Date().toISOString() },
+        const row = await this.directory('beginStoreDriverRolloutAndAudit', { ...input, actor, at: new Date().toISOString() },
           this.adminEntry(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, null));
         return row;
       },
       finishStoreDriverRollout: async (actor, input) => {
-        const row = await this.directory('finishStoreDriverRollout', { ...input, at: new Date().toISOString() },
+        const row = await this.directory('finishStoreDriverRolloutAndAudit', { ...input, at: new Date().toISOString() },
           this.adminEntry(actor, 'rollOutStoreDriver', { tenantId: null }, null, null));
         return row;
       },
@@ -9716,7 +9736,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // admin log too, so an entry written first would be overwritten by the very act
         // it records, leaving the platform's most consequential write invisible.
         const before = (await this.cp.listTenants({ limit: 1000 })).length;
-        await this.cp.importDump(dump.tables,
+        await this.directory('importDumpAndAudit', dump.tables,
           this.adminEntry(actor, 'restoreDirectory', { tenantId: null },
             { tenants: before }, { capturedAt: dump.capturedAt, tables: dump.tables.length }));
       },
@@ -9999,7 +10019,7 @@ export class CloudflareScopeHost implements ScopeHost {
           input,
           new Date().toISOString() as Instant,
         );
-        await this.cp.writeImpersonation(impersonationRowValues(session),
+        await this.directory('writeImpersonationAndAudit', impersonationRowValues(session),
           this.adminEntry(actor, 'beginImpersonation', { tenantId: session.tenantId, scopeId: session.scopeId }, null, session));
         // BEFORE the session is usable, so the log entry precedes every row it
         // will ever touch. The reason rides in `after`: it is what a review reads
@@ -10018,7 +10038,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // already stopped it.
         if (before.endedAt !== null) return before;
         const endedAt = new Date().toISOString();
-        await this.cp.endImpersonation(String(id), endedAt,
+        await this.directory('endImpersonationAndAudit', String(id), endedAt,
           this.adminEntry(actor, 'endImpersonation', { tenantId: before.tenantId, scopeId: before.scopeId },
             before, { ...before, endedAt }));
         const after = mapImpersonationRow((await this.cp.readImpersonation(String(id)))!);
@@ -10119,7 +10139,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       registerIdentityPool: async (actor, input: IdentityPool) => {
         const parsed = identityPool.parse(input);
-        const created = await this.directory('registerIdentityPool',
+        const created = await this.directory('registerIdentityPoolAndAudit',
           parsed.provider,
           parsed.topology,
           parsed.tenantId,
@@ -10194,7 +10214,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // never seen a plaintext credential.
         const sealed = await this.secretBox.seal(JSON.stringify(input.secret));
         const now = new Date().toISOString();
-        await this.cp.insertConnection({
+        await this.directory('insertConnectionAndAudit', {
           id: input.id,
           tenantId: input.tenantId,
           vertical: input.vertical,
@@ -10272,7 +10292,7 @@ export class CloudflareScopeHost implements ScopeHost {
         if (!row) throw new Error(`connection not found: ${id}`);
         const sealed = await this.secretBox.seal(JSON.stringify(connectionSecret.parse(secret)));
         const now = new Date().toISOString();
-        await this.cp.updateConnectionSecret(
+        await this.directory('updateConnectionSecretAndAudit',
           id,
           sealed.keyId,
           sealed.ciphertext,
@@ -10292,7 +10312,7 @@ export class CloudflareScopeHost implements ScopeHost {
         const row = await this.cp.readConnection(id);
         if (!row) throw new Error(`connection not found: ${id}`);
         const now = new Date().toISOString();
-        const changed = await this.cp.revokeConnection(id, now,
+        const changed = await this.directory('revokeConnectionAndAudit', id, now,
           this.adminEntry(actor, 'revokeConnection', { tenantId: row.tenant_id as TenantId, vertical: row.vertical },
             { status: row.status }, { id, provider: row.provider, status: 'revoked', revokedAt: now }));
         if (!changed) return; // idempotent, and a no-op is not audited
@@ -10424,7 +10444,7 @@ export class CloudflareScopeHost implements ScopeHost {
             `identity pool '${parsed.provider}' is bound to tenant ${pool.tenant_id} and cannot link into ${parsed.tenantId}`,
           );
         }
-        const changed = await this.directory('linkIdentity',
+        const changed = await this.directory('linkIdentityAndAudit',
           parsed.provider,
           parsed.externalId,
           parsed.principal,
@@ -10444,7 +10464,7 @@ export class CloudflareScopeHost implements ScopeHost {
       unlinkIdentity: async (actor, tenantId: TenantId, principal: PrincipalId) => {
         // DELETE by principal (audit is the log), so the caller who removed a member
         // can sever their login without knowing the external subject. Idempotent.
-        const changed = await this.cp.unlinkIdentity(tenantId, principal,
+        const changed = await this.directory('unlinkIdentityAndAudit', tenantId, principal,
           this.adminEntry(actor, 'unlinkIdentity', { tenantId, scopeId: null }, { principal }, null));
         if (!changed) return;
         // The unlink must reach the projected scopes so the severed login stops resolving
@@ -10550,12 +10570,12 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
       markAccessLogDrained: async (actor, upToId: string, drainedAt: string): Promise<number> => {
-        return this.cp.markAccessLogDrained(upToId, drainedAt,
+        return this.directory('markAccessLogDrainedAndAudit', upToId, drainedAt,
           this.adminEntry(actor, 'drainAccessLog', { tenantId: null }, null, null));
       },
       pruneAccessLog: async (actor, limit: number): Promise<number> => {
         // Checked here as well as in the directory, so the refusal keeps its code across the hop.
-        return this.cp.pruneAccessLog(assertRowLimit('limit', limit),
+        return this.directory('pruneAccessLogAndAudit', assertRowLimit('limit', limit),
           this.adminEntry(actor, 'pruneAccessLog', { tenantId: null }, null, null));
       },
       auditLog: async (actor, filter?: AuditLogFilter): Promise<AdminLogEntry[]> => {
@@ -10705,7 +10725,7 @@ export class CloudflareScopeHost implements ScopeHost {
         return rows.map((r) => issueEntry.parse(r));
       },
       setIssueStatus: async (actor, fingerprint, status): Promise<IssueEntry | undefined> => {
-        const change = await this.cp.setIssueStatus(fingerprint, status, new Date().toISOString(),
+        const change = await this.directory('setIssueStatusAndAudit', fingerprint, status, new Date().toISOString(),
           this.adminEntry(actor, 'setIssueStatus', { tenantId: null }, null, null));
         if (!change) return undefined;
         const after = issueEntry.parse(change.after);

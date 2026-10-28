@@ -1592,6 +1592,25 @@ export const REPLIED_METHODS = [
   'deleteHostname',
   'grantEntitlement',
   'revokeEntitlement',
+  // #2479: these names are new even where the bare method above already exists. A DO from
+  // before the audit unit must refuse the name, not drop a trailing audit argument and commit.
+  'putTenantStoreAndAudit',
+  'putBlobStoreAndAudit',
+  'recordStoreDriverReleaseAndAudit',
+  'beginStoreDriverRolloutAndAudit',
+  'finishStoreDriverRolloutAndAudit',
+  'importDumpAndAudit',
+  'registerIdentityPoolAndAudit',
+  'insertConnectionAndAudit',
+  'updateConnectionSecretAndAudit',
+  'revokeConnectionAndAudit',
+  'linkIdentityAndAudit',
+  'unlinkIdentityAndAudit',
+  'markAccessLogDrainedAndAudit',
+  'pruneAccessLogAndAudit',
+  'writeImpersonationAndAudit',
+  'endImpersonationAndAudit',
+  'setIssueStatusAndAudit',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -4030,6 +4049,63 @@ export class ControlPlaneDO extends DurableObject {
       if (changed && audit) this.recordAdmin(typeof audit === 'function' ? audit() : audit);
       return changed;
     });
+  }
+
+  /**
+   * The coordinator calls these new RPC names for directory-only audited writes. The old names
+   * remain callable by an older coordinator, which records its own row afterwards. An older DO
+   * knows none of these names and refuses before the state write instead of dropping the row.
+   */
+  putTenantStoreAndAudit(...args: Required<Parameters<ControlPlaneDO['putTenantStore']>>): ReturnType<ControlPlaneDO['putTenantStore']> {
+    return this.putTenantStore(...args);
+  }
+  putBlobStoreAndAudit(...args: Required<Parameters<ControlPlaneDO['putBlobStore']>>): ReturnType<ControlPlaneDO['putBlobStore']> {
+    return this.putBlobStore(...args);
+  }
+  recordStoreDriverReleaseAndAudit(...args: Required<Parameters<ControlPlaneDO['recordStoreDriverRelease']>>): ReturnType<ControlPlaneDO['recordStoreDriverRelease']> {
+    return this.recordStoreDriverRelease(...args);
+  }
+  beginStoreDriverRolloutAndAudit(...args: Required<Parameters<ControlPlaneDO['beginStoreDriverRollout']>>): ReturnType<ControlPlaneDO['beginStoreDriverRollout']> {
+    return this.beginStoreDriverRollout(...args);
+  }
+  finishStoreDriverRolloutAndAudit(...args: Required<Parameters<ControlPlaneDO['finishStoreDriverRollout']>>): ReturnType<ControlPlaneDO['finishStoreDriverRollout']> {
+    return this.finishStoreDriverRollout(...args);
+  }
+  importDumpAndAudit(...args: Required<Parameters<ControlPlaneDO['importDump']>>): ReturnType<ControlPlaneDO['importDump']> {
+    return this.importDump(...args);
+  }
+  registerIdentityPoolAndAudit(...args: Required<Parameters<ControlPlaneDO['registerIdentityPool']>>): ReturnType<ControlPlaneDO['registerIdentityPool']> {
+    return this.registerIdentityPool(...args);
+  }
+  insertConnectionAndAudit(...args: Required<Parameters<ControlPlaneDO['insertConnection']>>): ReturnType<ControlPlaneDO['insertConnection']> {
+    return this.insertConnection(...args);
+  }
+  updateConnectionSecretAndAudit(...args: Required<Parameters<ControlPlaneDO['updateConnectionSecret']>>): ReturnType<ControlPlaneDO['updateConnectionSecret']> {
+    return this.updateConnectionSecret(...args);
+  }
+  revokeConnectionAndAudit(...args: Required<Parameters<ControlPlaneDO['revokeConnection']>>): ReturnType<ControlPlaneDO['revokeConnection']> {
+    return this.revokeConnection(...args);
+  }
+  linkIdentityAndAudit(...args: Required<Parameters<ControlPlaneDO['linkIdentity']>>): ReturnType<ControlPlaneDO['linkIdentity']> {
+    return this.linkIdentity(...args);
+  }
+  unlinkIdentityAndAudit(...args: Required<Parameters<ControlPlaneDO['unlinkIdentity']>>): ReturnType<ControlPlaneDO['unlinkIdentity']> {
+    return this.unlinkIdentity(...args);
+  }
+  markAccessLogDrainedAndAudit(...args: Required<Parameters<ControlPlaneDO['markAccessLogDrained']>>): ReturnType<ControlPlaneDO['markAccessLogDrained']> {
+    return this.markAccessLogDrained(...args);
+  }
+  pruneAccessLogAndAudit(...args: Required<Parameters<ControlPlaneDO['pruneAccessLog']>>): ReturnType<ControlPlaneDO['pruneAccessLog']> {
+    return this.pruneAccessLog(...args);
+  }
+  writeImpersonationAndAudit(...args: Required<Parameters<ControlPlaneDO['writeImpersonation']>>): ReturnType<ControlPlaneDO['writeImpersonation']> {
+    return this.writeImpersonation(...args);
+  }
+  endImpersonationAndAudit(...args: Required<Parameters<ControlPlaneDO['endImpersonation']>>): ReturnType<ControlPlaneDO['endImpersonation']> {
+    return this.endImpersonation(...args);
+  }
+  setIssueStatusAndAudit(...args: Required<Parameters<ControlPlaneDO['setIssueStatus']>>): ReturnType<ControlPlaneDO['setIssueStatus']> {
+    return this.setIssueStatus(...args);
   }
 
   scopeErasureEpoch(tenantId: string, scopeId: string): number {
