@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, teamApi } from '../src/lib/api';
 import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api/browser';

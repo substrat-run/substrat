@@ -18,6 +18,7 @@ import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { resolveWranglerConfig } from '@substrat-run/cli/dist/push.js';
 import { ATTACHMENT_BLOB_BINDING, blobStoreBindingName } from '@substrat-run/contracts';
 import { defineConfig } from 'vitest/config';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /**
@@ -68,10 +69,10 @@ export default defineConfig({
   // so storage must carry across `it` blocks.
   plugins: [cloudflareTest({ wrangler: { configPath: config } })],
   test: {
+    ...workerdTestTimeout,
     // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
     fsModuleCache: false,
     include: ['test/workerd/**/*.test.ts'],
-    testTimeout: 30_000,
     // One file at a time, as the old pool's `singleWorker` ran them.
     fileParallelism: false,
     // A rejection nobody handles fails its test; one an RPC caller awaited does not (#2131).

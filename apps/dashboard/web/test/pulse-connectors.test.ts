@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from 'vitest';
 import type { ConnectorCallsBucket } from '../src/lib/api';
 import { bucketSpans, metricLinePath, pulseConnectorRows } from '../src/lib/pulse-rows';
