@@ -539,6 +539,49 @@ mining, so a pattern is exactly the lines written from one template — two call
 share a template share a pattern. A line written with
 `console.log` has no template and is in no pattern.
 
+**4.8 Findings and evidence decisions (#1748).** The tenant-scoped findings store opens
+Recurring findings from ops failures, Invariant findings from failed schedule runs, and
+freshness Drift findings from stale sweep verdicts. It keeps the lifecycle, suppression rules,
+the latest five codes, and a version-change likely cause. The dashboard inbox links a code to
+that app's **filtered Requests** view, narrowed by operation when known. This is a recent-log
+drill-down: the dashboard accepts a window of at most 72 hours, and Workers Logs retain seven
+days. An old finding may therefore have no matching request in the view. A finding without an
+app scope shows its code as text because the link cannot be tenant-narrowed to one app.
+
+The remaining evidence work is **not-now**, with these triggers:
+
+- **Baseline-based Drift detection.** The router's Analytics Engine datapoints live for about
+  three months. The daily request rollup (#2501) now keeps request totals and status-class
+  counts per tenant, vertical and scope, but no operation or problem-code history and no
+  sub-day onset. Its retention is currently unset (no pruning); the rollup only runs where
+  its dataset and reader are configured, and a newly enabled store cannot be assumed to
+  contain a baseline. Revisit a daily 5xx-rate detector after complete, settled days have
+  accumulated and its baseline, minimum volume, threshold, sampled-day policy and missing-day
+  behavior are agreed. It must skip incomplete or saturated days rather than read their
+  absence as zero. Detect on a closed-day write with bounded per-scope work, not a scan of raw
+  logs on every inbox read.
+- **Evidence series.** Ops-failure rows last 90 days and sweep-run rows 14 days, whereas a
+  finding lasts 180 days. A recent occurrence chart could be aggregated from the retained
+  rows, but it could not represent the full finding lifetime, and a baseline comparison has
+  no chosen baseline yet. Revisit when a concrete view needs the series; choose its window and
+  completeness label first. A full-life series would need bounded daily counters with an
+  explicit retention and volume budget, not a claim that old raw rows still exist.
+- **Sample request references.** Neither an ops-failure record nor a sweep-run record stores
+  the invocation id of a tenant request. The recent Requests read has ids, but matching by
+  time and code would guess which request caused an occurrence. Revisit when the evidence
+  producer can write a tenant-bound invocation id and time, with a small sample cap and a
+  drill-down window that says when the underlying logs have expired.
+- **Deploy-onset cause.** The current cause means a resolved finding reappeared under a
+  different version; it does not assert that a rollout caused it. The finding lacks a
+  current-cycle onset timestamp, and deploy markers in the installed app's traffic read are
+  publisher-only. Revisit an “onset after rollout” claim when both the cycle onset and a
+  tenant-visible, authorized deployment marker are available. Compare their times only then;
+  version inequality alone is not timing evidence.
+
+Declared-vs-observed checks remain read-time dashboard derivations. Turning one into an
+Invariant finding needs a recorded evaluation at a defined cadence, so the detector has a
+writer and an occurrence to attach to; a page view is not that occurrence.
+
 ## 5. What each audience gets, in build order
 
 | # | View | Source | Cost |

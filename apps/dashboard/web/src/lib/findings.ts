@@ -1,5 +1,6 @@
 import { ApiError } from './api.generated';
 import type { FindingEntry, FindingRuleEntry } from './api.generated';
+import { obsPath } from './router';
 
 /**
  * The Findings inbox's logic (#1748), kept out of the view so the rules a reader would
@@ -73,11 +74,17 @@ export function inTab(entries: readonly FindingEntry[], tab: FindingStatus): Fin
   return entries.filter((e) => e.status === tab).sort(byRecency);
 }
 
+/** Recent requests for a code, narrowed to the finding's app and operation when known. */
+export function findingCodePath(f: Pick<FindingEntry, 'scopeId' | 'operation'>, code: string): string | null {
+  if (!f.scopeId) return null;
+  return obsPath({ app: f.scopeId, view: 'requests', code, ...(f.operation ? { op: f.operation } : {}) });
+}
+
 export type FindingMove = 'acked' | 'resolved' | 'open';
 
 /**
  * The moves a finding in `status` offers. A suppressed finding offers none: it is held by a
- * rule, and the way out is revoking the rule — the plane refuses a status change on it. Nor does
+ * rule, and the inbox offers revocation as its way out. Nor does
  * one in a status this page does not know: what moves out of it is the plane's to say.
  */
 export function movesFrom(status: string): { to: FindingMove; label: string }[] {
