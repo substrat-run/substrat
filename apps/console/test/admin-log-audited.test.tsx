@@ -73,6 +73,7 @@ it('the permission review queue includes only one confirmed effect per scope wri
   const entry = (phase: string, operationId: string): AdminLogEntry => ({ ...base, id: ulid(), after: { phase, operationId }, audited: { operationId, outcome: phase === 'intent' ? 'applied' : phase as 'applied', superseded: false } });
   const operationId = ulid();
   expect(permissionReviewRows([entry('intent', operationId), entry('applied', operationId), entry('unknown', ulid()),
-    { ...base, id: ulid(), scopeId: null }]).map((row) => (row.after as { phase?: string } | null)?.phase ?? 'legacy'))
+    { ...entry('intent', ulid()), audited: undefined }, { ...base, id: ulid(), scopeId: null }])
+    .map((row) => (row.after as { phase?: string } | null)?.phase ?? 'legacy'))
     .toEqual(['applied', 'legacy']);
 });

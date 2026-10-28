@@ -39,8 +39,8 @@ const LOG_PAGE = 50;
 
 /** A request is reviewable only after the scope confirms the permission change. */
 export const permissionReviewRows = (rows: readonly AdminLogEntry[]): AdminLogEntry[] => rows.filter((row) => {
-  if (!row.audited) return true; // tenant-node and historical one-row writes
-  return (row.after as { phase?: string } | null)?.phase === 'applied';
+  const phase = (row.after as { phase?: string } | null)?.phase;
+  return phase === undefined || phase === 'applied'; // tenant-node and historical one-row writes have no phase
 });
 
 export interface PermissionsProps {
