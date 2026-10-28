@@ -207,6 +207,15 @@ establishes the session also resumes the authorize and returns the person to the
 that sent them. Dropping `oauth_query` on that path would sign someone in while silently
 abandoning the application waiting on them — #898, wearing a different hat.
 
+The admin **Sign-in log** keeps callback-stage diagnostics in its **Detail** column when the
+upstream supplied no description. It distinguishes token exchange failures, missing profiles
+and missing email; unexpected callback exceptions also leave a record. For GitHub profiles
+without an email, a second `/user/emails` read reports HTTP status, address counts and email-scope
+presence, with permission guidance for a 403. This read has a 1.5-second deadline and does not
+change the sign-in result. Its detail explicitly identifies it as a follow-up check rather
+than the adapter's original response. These summaries contain no tokens, addresses, profiles
+or raw exception messages, and use the existing bounded log without a schema migration.
+
 ## Supabase on the legacy secret
 
 The `supabase` catalogue entry above is the way in for a Supabase project, and it is the one

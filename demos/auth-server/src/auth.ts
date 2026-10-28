@@ -18,6 +18,7 @@ import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
 import { USER_DELEGATED_SCOPES } from './settings.js';
 import { basicCredentialsOf } from './token-exchange.js';
+import { diagnoseSignInCallback, recordSignInException, signInDiagnosticDescription } from './sign-in-diagnostics.js';
 import {
   authorityOf,
   callbackProviderOf,
@@ -441,8 +442,18 @@ export function buildAuth(deps: AuthDeps) {
   const handle = auth.handler;
   // `fetch` is Better Auth's alias for the same function; both are replaced so neither
   // spelling serves a document without the flag.
-  auth.handler = auth.fetch = async (request: Request) =>
-    advertiseExtensions(request, await handle(request), deps.servesTokenExchange === true);
+  auth.handler = auth.fetch = async (request: Request) => {
+    try {
+      const response = await handle(request);
+      // Better Auth's HTTP router can turn an unexpected exception into a 500 before it
+      // reaches this wrapper. Both paths need the same safe record.
+      if (response.status >= 500) await recordSignInException(request, deps.recordSignIn);
+      return advertiseExtensions(request, response, deps.servesTokenExchange === true);
+    } catch (error) {
+      await recordSignInException(request, deps.recordSignIn);
+      throw error;
+    }
+  };
   return auth;
 }
 
@@ -741,6 +752,8 @@ function betterAuthFor(deps: AuthDeps) {
        * the moment it tries to become a code, not merely on the way in.
        */
       before: createAuthMiddleware(async (ctx) => {
+        const callbackMethod = callbackProviderOf(ctx.path, ctx.params);
+        if (deps.recordSignIn && callbackMethod) diagnoseSignInCallback(ctx.context, callbackMethod, ctx.request);
         if (ctx.path === '/oauth2/token') return machineGrantCeiling(ctx, machineScopes);
         if (ctx.path !== '/oauth2/authorize') return;
         const query = ctx.query as Record<string, string | undefined> | undefined;
@@ -825,7 +838,10 @@ function betterAuthFor(deps: AuthDeps) {
         );
         const refusal = errorOfRedirect(location);
         if (refusal) {
-          record({ method, outcome: 'failed', phase: 'callback', correlation, ...refusal });
+          record({
+            method, outcome: 'failed', phase: 'callback', correlation, ...refusal,
+            errorDescription: signInDiagnosticDescription(ctx.context, refusal.errorDescription),
+          });
           return;
         }
         record({

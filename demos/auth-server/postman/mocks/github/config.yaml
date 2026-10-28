@@ -1,0 +1,10 @@
+version: 1
+name: Auth GitHub diagnostics
+slug: auth-github-diagnostics
+protocol: http
+port: 4917
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true
