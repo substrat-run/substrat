@@ -808,6 +808,14 @@ function storeReleasesFor(env: Env) {
         const object = await bucket.get(key);
         return object ? new Uint8Array(await object.arrayBuffer()) : undefined;
       },
+      head: async (key: string) => {
+        const object = await bucket.head(key);
+        return object ? { size: object.size } : undefined;
+      },
+      open: async (key: string) => {
+        const object = await bucket.get(key);
+        return object ? { size: object.size, body: object.body } : undefined;
+      },
       put: async (key: string, bytes: Uint8Array) => {
         await bucket.put(key, bytes);
       },

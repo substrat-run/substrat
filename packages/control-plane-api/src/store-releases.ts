@@ -32,6 +32,7 @@ import {
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import {
   createUlid,
+  runtimeSha256,
   ulid,
   type HostAdmin,
   type StoreDriverApprovalRecord,
@@ -46,7 +47,13 @@ import type { ScopeStoreEnsurerOptions, StoreDriverReleaseArtifact } from './sto
 export interface StoreReleaseBytes {
   get(key: string): Promise<Uint8Array | undefined>;
   put(key: string, bytes: Uint8Array): Promise<void>;
+  /** Object metadata is read before opening approval bytes. */
+  head(key: string): Promise<{ size: number } | undefined>;
+  open(key: string): Promise<{ size: number; body: ReadableStream<Uint8Array> } | undefined>;
 }
+
+/** The JSON/base64 envelope around at most STORE_RELEASE_MAX_BYTES of module bytes. */
+export const STORE_RELEASE_STORED_MAX_BYTES = Math.ceil((STORE_RELEASE_MAX_BYTES * 4) / 3) + 1024 * 1024;
 
 /** The key a release's bytes are stored under. */
 export const storeReleaseKey = (driver: string, sha256: string): string => `${driver}/${sha256}`;
@@ -284,8 +291,44 @@ export async function approveStoredDriverRelease(input: {
   const { admin, actor, bytes, driver, sha256 } = input;
   const stored = await admin.getStoreDriverRelease(actor, driver, sha256);
   if (!stored) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' is not stored`);
-  const raw = await bytes.get(storeReleaseKey(driver, sha256));
-  if (!raw) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' has no stored bytes`);
+  const key = storeReleaseKey(driver, sha256);
+  const head = await bytes.head(key);
+  if (!head) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' has no stored bytes`);
+  if (!Number.isSafeInteger(head.size) || head.size < 0 || head.size > STORE_RELEASE_STORED_MAX_BYTES) {
+    throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+  }
+  const opened = await bytes.open(key);
+  if (!opened) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' has no stored bytes`);
+  if (opened.size !== head.size) {
+    await opened.body.cancel();
+    throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+  }
+  const reader = opened.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > head.size || size > STORE_RELEASE_STORED_MAX_BYTES) {
+        throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    await reader.cancel().catch(() => undefined);
+    throw e;
+  } finally {
+    reader.releaseLock();
+  }
+  if (size !== head.size) throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+  const raw = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    raw.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
   let release: ReturnType<typeof decodeStoredReleaseBytes>;
   try {
     release = decodeStoredReleaseBytes(raw, driver, sha256);
@@ -295,7 +338,7 @@ export async function approveStoredDriverRelease(input: {
     }
     throw e;
   }
-  const digest = await storeDriverReleaseDigest(release).catch(() => undefined);
+  const digest = await storeDriverReleaseDigest(release, runtimeSha256()).catch(() => undefined);
   if (digest !== sha256 || release.sourceCommit !== stored.sourceCommit) {
     throw new ControlPlaneError(409, `release ${sha256} of '${driver}' differs from its stored digest or source commit`);
   }

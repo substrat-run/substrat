@@ -18,6 +18,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   canaryStoreRelease,
+  approveStoredDriverRelease,
   decodeStoreDriverRelease,
   createControlPlaneApi,
   createScopeStoreEnsurer,
@@ -32,6 +33,21 @@ import {
   UNSAFE_devPlatformActorAuth,
   type CanaryCall,
 } from '../src/index.js';
+
+const storedBytes = (objects: Map<string, Uint8Array>) => ({
+  get: async (key: string) => objects.get(key),
+  put: async (key: string, value: Uint8Array) => { objects.set(key, value); },
+  head: async (key: string) => {
+    const value = objects.get(key);
+    return value ? { size: value.byteLength } : undefined;
+  },
+  open: async (key: string) => {
+    const value = objects.get(key);
+    return value ? { size: value.byteLength, body: new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(value); controller.close(); },
+    }) } : undefined;
+  },
+});
 
 /**
  * A store driver's release flow (D-63, #2300): the canary on the platform's own object, the rollout
@@ -738,7 +754,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
         moves.push(move);
       },
       storeReleases: {
-        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
+        bytes: storedBytes(bytes),
         ensureCanary: async ({ to }) => {
           scripts.set('substrat-store-graph--canary', to);
           return { scriptName: 'substrat-store-graph--canary' };
@@ -860,6 +876,39 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(201);
   });
 
+  it('bounds the stored release before opening it for approval', async () => {
+    const driver = 'graph';
+    const sha256 = shas[0]!;
+    await host.admin.recordStoreDriverRelease(person, { driver, sha256, sourceCommit: COMMIT });
+    const raw = new TextEncoder().encode(JSON.stringify(wire(bundle(1))));
+    const key = `${driver}/${sha256}`;
+    const limit = Math.ceil((STORE_RELEASE_MAX_BYTES * 4) / 3) + 1024 * 1024;
+    let object = new Uint8Array(limit + 1);
+    let openedSize = raw.byteLength;
+    const open = vi.fn(async () => ({ size: openedSize, body: new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(object); controller.close(); },
+    }) }));
+    const get = vi.fn(async () => object);
+    let headSize = object.byteLength;
+    const storedBytes = {
+      get, put: async () => undefined,
+      head: async (name: string) => name === key ? { size: headSize } : undefined,
+      open,
+    };
+    const approve = () => approveStoredDriverRelease({ admin: host.admin, actor: person, bytes: storedBytes,
+      driver, sha256, approval: reviewed(0) });
+    expect(await refusal(approve())).toMatchObject({ status: 409 });
+    expect(open).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    object = raw;
+    headSize = raw.byteLength + 1;
+    expect(await refusal(approve())).toMatchObject({ status: 409 });
+    headSize = raw.byteLength - 1;
+    openedSize = headSize;
+    expect(await refusal(approve())).toMatchObject({ status: 409 });
+    expect(await host.admin.storeDriverApprovals(person, driver)).toEqual([]);
+  });
+
   it('validates repository and commit shapes in approval references', async () => {
     const app = appWith(asPerson);
     const release = shas[0]!;
@@ -881,13 +930,27 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       { repository: 'https://example.test/', commit: COMMIT },
       { repository: 'https://example.test/driver\\branch', commit: COMMIT },
       { repository: 'https://example.test/driver git', commit: COMMIT },
+      { repository: 'https://example.test/driver\u0085git', commit: COMMIT },
+      { repository: 'https://example.test/driver\u202egit', commit: COMMIT },
+      { repository: 'https://example.test/driver\u2066git', commit: COMMIT },
+      { repository: 'https://example.test/driver\u2028git', commit: COMMIT },
+      { repository: 'https://example.test/driver\ufeffgit', commit: COMMIT },
       { repository: `https://example.test/driver${'x'.repeat(1024)}`, commit: COMMIT },
       { repository: 'https://example.test/driver.git', commit: 'abc' },
       { repository: 'https://example.test/driver.git', commit: COMMIT.toUpperCase() },
+      { repository: 'https://example.test/driver.git', commit: `${COMMIT.slice(0, -1)}\u0085` },
     ];
     for (const source of invalid) {
       expect((await call(app, 'POST', path, person, { ...body, sourceReferences: [source] })).status).toBe(422);
     }
+    for (const field of ['reason', 'isolationReview'] as const) {
+      const bad = field === 'reason'
+        ? { ...body, reason: `Reviewed\u0085release` }
+        : { ...body, isolationReview: { ...body.isolationReview, noModuleStateChecked: { checked: true, evidence: `Read\u202emodules` } } };
+      expect((await call(app, 'POST', path, person, bad)).status).toBe(422);
+    }
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${release}/revoke`, person,
+      { reason: 'Revoke\u2069release' })).status).toBe(422);
     expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
     const valid = { ...body, sourceReferences: [
       { repository: 'https://example.test/driver.git', commit: release },
@@ -1042,7 +1105,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
         return { uploaded: 1 };
       },
       storeReleases: {
-        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
+        bytes: storedBytes(bytes),
         ensureCanary: async () => ({ scriptName: 'substrat-store-graph--canary' }),
         callCanary: canaryStore().call,
       },
@@ -1325,7 +1388,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
       humanStaffActor: async () => person,
       ensureScopeStores: ({ loadRelease, ...input }) => createScopeStoreEnsurer({ ...ensurerOptions, loadRelease })(input),
       storeReleases: {
-        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
+        bytes: storedBytes(bytes),
         ensureCanary: ({ loadRelease, ...input }) => createStoreCanaryEnsurer({ ...ensurerOptions, loadRelease })(input),
         callCanary: canaryStore().call,
       },
@@ -1345,7 +1408,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     failPut.clear();
     // A push of either vertical meanwhile rebuilds its script at the release it runs: va stays on
     // 2, vb on 1. The schema rule refuses moves, and a push makes none.
-    const push = createScopeStoreEnsurer({ ...ensurerOptions, loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: { get: async (k) => bytes.get(k), put: async () => undefined } }) });
+    const push = createScopeStoreEnsurer({ ...ensurerOptions, loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: storedBytes(bytes) }) });
     for (const vertical of ['va', 'vb']) await push({ vertical, stores: [{ binding: 'GRAPH', driver: 'graph' }] });
     expect([release('substrat-store-graph-va'), release('substrat-store-graph-vb')]).toEqual([s2, s1]);
     // Re-posting the current release would move va from schema 1 back to 0: the ensurer refuses.

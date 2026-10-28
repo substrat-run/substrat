@@ -19,7 +19,6 @@ import {
   ASSET_PART_PREFIX,
   assetHash,
   STORE_DRIVERS,
-  STORE_RELEASE_MAX_BYTES,
   storeCatalogOperation,
   channelName,
   connectLinkId,
@@ -213,7 +212,7 @@ import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-s
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
 import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
-import { PUSH_HOLD_TTL_MS, approveStoredDriverRelease, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
+import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -12293,11 +12292,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const approvalWords = { write: 'a store driver release approval', person: 'a store driver release is approved by a person' };
   const revokeWords = { write: 'a store driver release revoke', person: 'a store driver release is revoked by a person' };
   const statusWords = { write: 'store driver release status', person: 'store driver release status is read by a person' };
-  const reviewEvidence = z.object({ met: z.boolean(), evidence: z.string().trim().min(1).max(2048) }).strict();
-  const checkedEvidence = z.object({ checked: z.literal(true), evidence: z.string().trim().min(1).max(2048) }).strict();
+  const nonPrinting = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+  const auditText = z.string().min(1).max(2048).refine((value) => value.trim().length > 0 && !nonPrinting.test(value),
+    { message: 'must be printable text' });
+  const reviewEvidence = z.object({ met: z.boolean(), evidence: auditText }).strict();
+  const checkedEvidence = z.object({ checked: z.literal(true), evidence: auditText }).strict();
   // D-65 stores the reviewer's exact references: one HTTPS repository URL and one hex revision.
   const repositoryReference = z.string().min(1).max(1024).refine((value) => {
-    if (!value.startsWith('https://') || /[\s\\?#]/u.test(value) || [...value].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127)) return false;
+    if (!value.startsWith('https://') || /[\s\\?#]/u.test(value) || nonPrinting.test(value)) return false;
     try {
       const url = new URL(value);
       return url.protocol === 'https:' && !!url.hostname && !url.username && !url.password &&
@@ -12308,7 +12310,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   }, { message: 'a source repository is an HTTPS URL with a host and path' });
   const sourceCommit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, { message: 'a source commit is 40 or 64 lowercase hex characters' });
   const approvalBody = z.object({
-    reason: z.string().trim().min(1).max(2048),
+    reason: auditText,
     sourceReferences: z.array(z.object({ repository: repositoryReference, commit: sourceCommit }).strict()).min(1).max(64),
     isolationReview: z.object({
       separateScriptPerTenant: reviewEvidence,
@@ -12322,7 +12324,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     className: z.string().trim().min(1).max(256),
     operations: z.array(storeCatalogOperation).max(256),
   }).strict();
-  const revokeBody = z.object({ reason: z.string().trim().min(1).max(2048), emergency: z.boolean().optional() }).strict();
+  const revokeBody = z.object({ reason: auditText, emergency: z.boolean().optional() }).strict();
   const releaseSha = (value: string): string => {
     if (!/^[0-9a-f]{64}$/.test(value)) throw new ControlPlaneError(422, 'a release sha256 is 64 lowercase hex characters');
     return value;
@@ -12675,7 +12677,7 @@ const WIRE_WALK_REQUEST_MAX_BYTES = 64 * 1024;
  * The most a release upload's body may be: the decoded cap, as base64 (4 bytes per 3), plus room
  * for the JSON around it. A bigger body is refused (413) before it is read whole.
  */
-const STORE_RELEASE_REQUEST_MAX_BYTES = Math.ceil((STORE_RELEASE_MAX_BYTES * 4) / 3) + 1024 * 1024;
+const STORE_RELEASE_REQUEST_MAX_BYTES = STORE_RELEASE_STORED_MAX_BYTES;
 
 /** A JSON body read to at most `max` bytes: a declared length over it, or a stream past it, is 413. */
 async function readCappedJson(request: Request, max: number): Promise<unknown> {

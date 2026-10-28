@@ -797,7 +797,24 @@ it('checks stored release bytes before an approval write through the Cloudflare 
       modules: [{ name: 'driver_graph/store.py', content: new TextEncoder().encode('class Store:\n    pass\n') }] };
     const sha256 = await storeDriverReleaseDigest(release);
     const bytes = new Map<string, Uint8Array>();
-    const storedBytes = { get: async (key: string) => bytes.get(key), put: async (key: string, value: Uint8Array) => { bytes.set(key, value); } };
+    let headSize: number | undefined;
+    let openedSize: number | undefined;
+    let opened = 0;
+    const storedBytes = {
+      get: async (key: string) => bytes.get(key),
+      put: async (key: string, value: Uint8Array) => { bytes.set(key, value); },
+      head: async (key: string) => {
+        const raw = bytes.get(key);
+        return raw ? { size: headSize ?? raw.byteLength } : undefined;
+      },
+      open: async (key: string) => {
+        opened++;
+        const raw = bytes.get(key);
+        return raw ? { size: openedSize ?? raw.byteLength, body: new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(raw); controller.close(); },
+        }) } : undefined;
+      },
+    };
     const wire = (content: string) => new TextEncoder().encode(JSON.stringify({ sourceCommit: release.sourceCommit, entry: release.entry,
       modules: [{ name: release.entry, contentBase64: btoa(content) }] }));
     const input = { admin: host.admin, actor, bytes: storedBytes, driver, sha256, approval: {
@@ -809,7 +826,22 @@ it('checks stored release bytes before an approval write through the Cloudflare 
     bytes.set(storeReleaseKey(driver, sha256), wire('class Store:\n    changed = True\n'));
     await expect(approveStoredDriverRelease(input)).rejects.toMatchObject({ status: 409 });
     expect(await host.admin.storeDriverApprovals(actor, driver)).toEqual([]);
-    bytes.set(storeReleaseKey(driver, sha256), wire('class Store:\n    pass\n'));
+    const good = wire('class Store:\n    pass\n');
+    bytes.set(storeReleaseKey(driver, sha256), new Uint8Array(Math.ceil((10 * 1024 * 1024 * 4) / 3) + 1024 * 1024 + 1));
+    const before = opened;
+    await expect(approveStoredDriverRelease(input)).rejects.toMatchObject({ status: 409 });
+    expect(opened).toBe(before);
+    bytes.set(storeReleaseKey(driver, sha256), good);
+    headSize = good.byteLength + 1;
+    openedSize = good.byteLength;
+    await expect(approveStoredDriverRelease(input)).rejects.toMatchObject({ status: 409 });
+    expect(await host.admin.storeDriverApprovals(actor, driver)).toEqual([]);
+    headSize = good.byteLength - 1;
+    openedSize = headSize;
+    await expect(approveStoredDriverRelease(input)).rejects.toMatchObject({ status: 409 });
+    expect(await host.admin.storeDriverApprovals(actor, driver)).toEqual([]);
+    headSize = undefined;
+    openedSize = undefined;
     expect(await approveStoredDriverRelease(input)).toMatchObject({ driver, sha256, sourceCommit: release.sourceCommit });
   } finally {
     await host.close();
