@@ -27,7 +27,7 @@ export interface PreviewCreated {
    * it — which also means nothing was done about the login at all.
    */
   auth?: PreviewAuth;
-  /** What a preview does not carry over from the app it forks. */
+  /** What settings the preview receives from the app it forks. */
   notes?: string[];
 }
 
@@ -70,7 +70,7 @@ export interface PreviewRow {
 }
 
 /**
- * The lines `preview create` prints about the preview's login and what it did not carry over
+ * The lines `preview create` prints about the preview's login and settings
  * (#1704). Every status gets a line, so a preview without a working login is never silent —
  * and one that could not be wired is marked, since its URL still opens.
  */

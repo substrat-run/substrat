@@ -129,11 +129,11 @@ preview their own pending code (#513). What a preview will not do is fork a scop
 
 ### What a fork carries over, and what it doesn't
 
-A fork copies the app's **data** and nothing it was *configured* with. The per-install settings the
-platform delivers to an app, such as the dashboard's **Env** tab values and its **Identity** choice
-(`substrat:auth`), live with the app's own deployment, not in its database. A preview runs its own
-version, so those per-install settings start unset in each new deployment; the preview's database
-data is retained across pushes. Unset settings fall back to the deployment's defaults.
+A fork copies the app's **data**. A setting from the dashboard's **Env** tab also carries to the
+preview when both the source and preview versions declare it non-secret with `previewCarry: true`.
+The platform delivers those opted-in values on every push. Other settings are not copied and use
+the preview deployment's defaults. The preview's database data is retained across pushes. The
+per-install **Identity** choice (`substrat:auth`) is handled separately, as described below.
 
 The login is handled for you when the app signs in at one of **your team's auth servers**. Each create
 and each push registers a client **of the preview's own** at that auth server, delivers it to the
@@ -152,10 +152,10 @@ tells you so and prints the preview's callback, `https://<app>--<tag>.<base>/api
 dashboard shows the same callback on the preview's row. Registering it at the issuer isn't enough on
 its own: the platform never copies your app's client secret to a preview.
 
+For a fork, `preview create` includes this settings line:
+
 ```text
-✓ preview 'pr-42' created → https://helpdesk-acme--pr-42.global.substrat.run
-  Sign-in: this preview has its own client at your auth server https://auth-acme.global.substrat.run …
-  Settings: a preview does not carry over the app's per-install settings (the dashboard's Env tab) …
+  Settings: only non-secret Env tab settings explicitly declared for preview carryover are delivered; other settings use the deployment's defaults.
 ```
 
 ### A vertical's *first* environment — the clean room
