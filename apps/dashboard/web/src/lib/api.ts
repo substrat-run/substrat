@@ -1,5 +1,5 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
@@ -477,7 +477,7 @@ export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts
  * from before this release relays such an answer without `withheldPersonal` at all, so
  * the absence is "unknown", never 0.
  */
-export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal'> & { withheldPersonal?: number };
+export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal' | 'withheldReason'> & { withheldPersonal?: number; withheldReason?: string };
 
 /** One declared field and whether anything declares it as output (#1321). */
 /** One node of the flow map (#1234), already laid out. */
@@ -1440,6 +1440,10 @@ export class ApiError extends Error {
   }
 }
 
+/** The handwritten cookie client and declared team client report separate error classes. */
+export const isApiError = (error: unknown): error is ApiError | GeneratedApiError =>
+  error instanceof ApiError || error instanceof GeneratedApiError;
+
 /** One app a move would break (#1756): it imports `type` at `schemaVersion`, and the version stops exporting it. */
 export interface ExportBreakRow {
   scopeId: string;
@@ -1723,25 +1727,11 @@ export const api = {
   appModel: (scopeId: string) => call<AppModelView>(`/apps/${encodeURIComponent(scopeId)}/model`),
   /** Schedule health for the app's running version (#1232) — null schedules hides the panel. */
   appSchedules: (scopeId: string) => call<AppSchedulesView>(`/apps/${encodeURIComponent(scopeId)}/schedules`),
-  /** The tables of the app's own database (Data tab). */
-  appTables: (scopeId: string) => call<ScopeTable[]>(`/apps/${encodeURIComponent(scopeId)}/tables`),
-  /** A bounded page of one table of the app's database. */
-  appTableRows: (scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) => {
-    const q = new URLSearchParams();
-    if (opts.limit != null) q.set('limit', String(opts.limit));
-    if (opts.offset != null) q.set('offset', String(opts.offset));
-    const qs = q.toString();
-    return call<ScopeTablePage>(
-      `/apps/${encodeURIComponent(scopeId)}/tables/${encodeURIComponent(table)}${qs ? `?${qs}` : ''}`,
-    );
-  },
-  /** One read-only SQL statement against the app's database (the Data tab's console). */
-  appQuery: (scopeId: string, sql: string) =>
-    call<ScopeQueryResult>(`/apps/${encodeURIComponent(scopeId)}/query`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sql }),
-    }),
+  /** Data reads use the selected tab's team through the generated client. */
+  appTables: (teamId: string, scopeId: string) => teamApi(teamId).listAppTables({ scopeId }),
+  appTableRows: (teamId: string, scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) =>
+    teamApi(teamId).readAppTable({ scopeId, table, ...opts }),
+  appQuery: (teamId: string, scopeId: string, sql: string) => teamApi(teamId).queryAppScope({ scopeId, sql }),
   /**
    * Mint a consent-round connect link (#1220). The `url` in the answer is both the
    * Connect button's destination (navigate to it now) and the copyable link for a
@@ -1861,7 +1851,6 @@ export const api = {
   appOverlays: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
     call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?${new URLSearchParams({ hours: String(hours), ...window })}`),
 
-
   /**
    * One record's event history (#1235) — payload, authorization chain, impersonation, PII class.
    *
@@ -1869,57 +1858,21 @@ export const api = {
    * a page at a time, so dropping `nextCursor` would show a long-lived record's
    * OLDEST events and silently hide everything since.
    */
-  /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
-   *  cross: a dropped `until` answers about a wider slice than was asked for, and
-   *  nothing about the answer says so. */
-  /** What one event set off (#1237) — the consumers it reached and what they emitted. */
-  appEventEffects: (scopeId: string, eventId: string) =>
-    call<EffectsTree>(
-      `/apps/${encodeURIComponent(scopeId)}/effects?eventId=${encodeURIComponent(eventId)}`,
-    ),
-
-  /** Every delivery in one app that gave up (#1525), newest event first. */
-  /** #1828: one app's refused permission checks, newest first; the next page is `until` the oldest held. */
-  appDenials: (scopeId: string, opts: { until?: string; limit?: number } = {}) => {
-    const q = new URLSearchParams();
-    if (opts.until) q.set('until', opts.until);
-    if (opts.limit !== undefined) q.set('limit', String(opts.limit));
-    return call<{ entries: import('./audit-activity').Refusal[]; limit: number }>(
-      `/apps/${encodeURIComponent(scopeId)}/denials${q.size ? `?${q}` : ''}`,
-    );
-  },
-  appDeadLetters: (scopeId: string, cursor?: string) =>
-    call<Page<DeadLetter>>(
-      `/apps/${encodeURIComponent(scopeId)}/dead-letters${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
-    ),
-
-  /** Everything one call emitted (#1237), oldest first — siblings included. */
-  appInvocationEvents: (scopeId: string, invocationId: string) =>
-    call<InvocationEvents>(
-      `/apps/${encodeURIComponent(scopeId)}/invocation?invocationId=${encodeURIComponent(invocationId)}`,
-    ),
-
-  /** Why one event exists (#1237) — its causal chain, newest first. */
-  appEventCause: (scopeId: string, eventId: string) =>
-    call<CauseChain>(
-      `/apps/${encodeURIComponent(scopeId)}/cause?eventId=${encodeURIComponent(eventId)}`,
-    ),
-
-  appFacets: (
-    scopeId: string,
-    q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string },
-  ) =>
-    call<EventFacetAnswer>(
-      `/apps/${encodeURIComponent(scopeId)}/facets?${new URLSearchParams(
-        Object.fromEntries(Object.entries(q).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string>,
-      )}`,
-    ),
-
-  appEntityHistory: (scopeId: string, entityType: string, entityId: string, cursor?: string) =>
-    call<Page<HistoryEntry>>(
-      `/apps/${encodeURIComponent(scopeId)}/history?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}` +
-        (cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`),
-    ),
+  appEntityHistory: (teamId: string, scopeId: string, entityType: string, entityId: string, cursor?: string) =>
+    teamApi(teamId).readAppHistory({ scopeId, entityType, entityId, cursor }) as Promise<Page<HistoryEntry>>,
+  /** Facets over an app's events (#1239), with both window bounds. */
+  appFacets: (teamId: string, scopeId: string, q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string }) =>
+    teamApi(teamId).facetAppEvents({ scopeId, ...q }) as Promise<EventFacetAnswer>,
+  appEventCause: (teamId: string, scopeId: string, eventId: string) =>
+    teamApi(teamId).readAppCause({ scopeId, eventId }) as Promise<CauseChain>,
+  appEventEffects: (teamId: string, scopeId: string, eventId: string) =>
+    teamApi(teamId).readAppEffects({ scopeId, eventId }) as Promise<EffectsTree>,
+  appInvocationEvents: (teamId: string, scopeId: string, invocationId: string) =>
+    teamApi(teamId).readAppInvocation({ scopeId, invocationId }) as Promise<InvocationEvents>,
+  appDenials: (teamId: string, scopeId: string, opts: { until?: string; limit?: number } = {}) =>
+    teamApi(teamId).listAppDenials({ scopeId, ...opts }),
+  appDeadLetters: (teamId: string, scopeId: string, cursor?: string) =>
+    teamApi(teamId).listAppDeadLetters({ scopeId, cursor }) as Promise<Page<DeadLetter>>,
 
   /** Every app's health, worst first (#1238) — the rollup, not a per-app read. */
   fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),

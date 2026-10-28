@@ -145,7 +145,7 @@ describe('EntityTimeline', () => {
 
   it('a record opened while the previous one was reading can still read its own later events', async () => {
     const pending = new Promise<never>(() => undefined);
-    const history = vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_s, _t, id, cursor) => {
+    const history = vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_team, _s, _t, id, cursor) => {
       if (cursor === 'c1') return pending; // the first record's page never comes back
       return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : 'c2' } as never;
     });
@@ -158,12 +158,12 @@ describe('EntityTimeline', () => {
     expect(later().textContent).toBe('Read later events');
     expect(later().disabled).toBe(false);
     await click(later());
-    expect(history).toHaveBeenLastCalledWith('s', 'account', 'a2', 'c2');
+    expect(history).toHaveBeenLastCalledWith('team-a', 's', 'account', 'a2', 'c2');
   });
 
   it('a page read before the same record was reopened is dropped, not appended to the new walk', async () => {
     const stale: Array<(v: unknown) => void> = [];
-    vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_s, _t, id, cursor) => {
+    vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_team, _s, _t, id, cursor) => {
       if (cursor === 'c1') return new Promise((res) => stale.push(res)) as never;
       return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : null } as never;
     });

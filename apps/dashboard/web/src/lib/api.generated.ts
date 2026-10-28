@@ -139,6 +139,13 @@ export interface ExplanationView {
   budget: { person: { used: number; limit: number }; team: { used: number; limit: number } } | null;
 }
 
+/** `eventEffects` — a published schema, not a stored row. */
+export interface EventEffects {
+  event: { id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null };
+  deliveries: ({ consumer: string; state: string; at: string; error: string | null; attempts: number; invocationId: string | null; decodeError?: string })[];
+  effects: EventEffects[];
+}
+
 /** `failureGroupRow` — a published schema, not a stored row. */
 export interface FailureGroupRow {
   fingerprint: string;
@@ -579,6 +586,13 @@ export interface DashboardClient {
   exportInstalledApp(input: { scopeId: string }): Promise<{ tenantId: string; scopeId: string; capturedAt: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; stores?: { binding: string; driver: string; tables: { name: string; ddl: string; columns: string[]; rows: unknown[][] }[]; kind?: never }[]; masked: boolean }>;
 
   /**
+   * Counts of one app scope's events by a selected dimension
+   *
+   * `GET /apps/{scopeId}/facets` — `dashboard/facet-app-events`
+   */
+  facetAppEvents(input: { scopeId: string; groupBy?: string; field?: string; type?: string; since?: string; until?: string; limit?: number }): Promise<{ buckets: ({ value: string | null; count: number; lastSeen: string | null })[]; erased: number; withheldPersonal: number; withheldReason?: string; total: number; truncated: boolean }>;
+
+  /**
    * One app's stored identity choice with its write-only secret redacted and its callback URL
    *
    * `GET /apps/{scopeId}/auth` — `dashboard/get-app-auth`
@@ -705,6 +719,20 @@ export interface DashboardClient {
   listAppBookmarks(input: { scopeId: string }): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
 
   /**
+   * One page of dead-lettered deliveries in this app scope
+   *
+   * `GET /apps/{scopeId}/dead-letters` — `dashboard/list-app-dead-letters`
+   */
+  listAppDeadLetters(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ entries: ({ eventId: string; eventType: string; occurredAt: string; entity: { entityType: string; entityId: string }; invocationId: string | null; attemptInvocationId: string | null; consumer: string; at: string; error: string; attempts: number; decodeError?: string })[]; nextCursor: string | null }>;
+
+  /**
+   * One page of permission refusals in this app scope
+   *
+   * `GET /apps/{scopeId}/denials` — `dashboard/list-app-denials`
+   */
+  listAppDenials(input: { scopeId: string; until?: string; limit?: number }): Promise<{ entries: ({ id: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; permission: string; tenantId: string; scopeId: string | null; operation: string | null; impersonation: { session: string; by: string } | null; invocationId: string | null; at: string; drainedAt: string | null; decodeError?: string })[]; limit: number }>;
+
+  /**
    * One page of an app's lifecycle trail (Activity panel), newest first
    *
    * `GET /apps/{scopeId}/events` — `dashboard/list-app-events`
@@ -731,6 +759,13 @@ export interface DashboardClient {
    * `GET /apps/{scopeId}/snapshots` — `dashboard/list-app-snapshots`
    */
   listAppSnapshots(input: { scopeId: string }): Promise<({ id: string; kind: string; forkedFrom: string | null; forkedAt: string | null; expiresAt: string | null; verticalVersionId: string | null; createdAt: string; url?: string | null })[]>;
+
+  /**
+   * The tables in one of this team's app scopes
+   *
+   * `GET /apps/{scopeId}/tables` — `dashboard/list-app-tables`
+   */
+  listAppTables(input: { scopeId: string }): Promise<{ name: string; rowCount: number; system: boolean; liveRowCount?: number }[]>;
 
   /**
    * One page of this team's apps, newest first
@@ -864,6 +899,48 @@ export interface DashboardClient {
    * `POST /deployments/{slug}/promote` — `dashboard/promote-deployment`
    */
   promoteDeployment(input: { slug: string; channel: "prod"; versionId: string; acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean; roleStateUnjudged?: boolean; review?: { base: string | null; digest: string } } }): Promise<{ promoted: true }>;
+
+  /**
+   * Run one read-only SQL statement against this app scope
+   *
+   * `POST /apps/{scopeId}/query` — `dashboard/query-app-scope`
+   */
+  queryAppScope(input: { scopeId: string; sql: string }): Promise<{ columns: string[]; rows: unknown[][]; truncated: boolean }>;
+
+  /**
+   * The causal chain leading to an event in this app scope
+   *
+   * `GET /apps/{scopeId}/cause` — `dashboard/read-app-cause`
+   */
+  readAppCause(input: { scopeId: string; eventId: string; maxDepth?: number }): Promise<{ chain: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; terminal: string; imported?: { eventId: string; vertical: string; scopeId: string } }>;
+
+  /**
+   * The event tree caused by one event in this app scope
+   *
+   * `GET /apps/{scopeId}/effects` — `dashboard/read-app-effects`
+   */
+  readAppEffects(input: { scopeId: string; eventId: string; maxNodes?: number }): Promise<{ root: EventEffects | null; terminal: string; count: number }>;
+
+  /**
+   * One record's event history in this app scope
+   *
+   * `GET /apps/{scopeId}/history` — `dashboard/read-app-history`
+   */
+  readAppHistory(input: { scopeId: string; entityType: string; entityId: string; limit?: number; cursor?: string }): Promise<{ entries: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; nextCursor: string | null }>;
+
+  /**
+   * The events emitted by one invocation in this app scope
+   *
+   * `GET /apps/{scopeId}/invocation` — `dashboard/read-app-invocation`
+   */
+  readAppInvocation(input: { scopeId: string; invocationId: string; limit?: number }): Promise<{ events: ({ id: string; type: string; occurredAt: string; actor: string | { system: string } | { connection: string } | { capability: string } | { vertical: string; scope: string }; decodeError?: string; payload: unknown; authorization: { permission: string; grant?: string }[] | null; impersonation: { session: string; by: string } | null; piiClass: string; subjectId: string | null; operation: string | null; version: string | null; causedBy: string | null; invocationId: string | null })[]; truncated: boolean }>;
+
+  /**
+   * A bounded page of one of this app scope's tables
+   *
+   * `GET /apps/{scopeId}/tables/{table}` — `dashboard/read-app-table`
+   */
+  readAppTable(input: { scopeId: string; table: string; limit?: number; offset?: number }): Promise<{ table: string; columns: string[]; rows: unknown[][]; rowCount: number; limit: number; offset: number }>;
 
   /**
    * Delete one of this team's apps: deprovision its scope and take its hostname offline
@@ -1197,6 +1274,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/explanations", "GET", undefined, input),
     exportInstalledApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/export`, "GET", undefined, omit(input, ["scopeId"])),
+    facetAppEvents: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/facets`, "GET", undefined, omit(input, ["scopeId"])),
     getAppAuth: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/auth`, "GET", undefined, omit(input, ["scopeId"])),
     getAppConnectionActivity: (input: Args) =>
@@ -1233,6 +1312,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
     listAppBookmarks: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/bookmarks`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppDeadLetters: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/dead-letters`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppDenials: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/denials`, "GET", undefined, omit(input, ["scopeId"])),
     listAppEvents: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/events`, "GET", undefined, omit(input, ["scopeId"])),
     listAppHostnames: (input: Args) =>
@@ -1241,6 +1324,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/migrations`, "GET", undefined, omit(input, ["scopeId"])),
     listAppSnapshots: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/snapshots`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppTables: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/tables`, "GET", undefined, omit(input, ["scopeId"])),
     listApps: (input: Args) =>
       send("/apps", "GET", undefined, input),
     listBoundScopes: (input: Args) =>
@@ -1279,6 +1364,18 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/observability/metrics", "GET", undefined, input),
     promoteDeployment: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/promote`, "POST", omit(input, ["slug"]), undefined),
+    queryAppScope: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/query`, "POST", omit(input, ["scopeId"]), undefined),
+    readAppCause: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/cause`, "GET", undefined, omit(input, ["scopeId"])),
+    readAppEffects: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/effects`, "GET", undefined, omit(input, ["scopeId"])),
+    readAppHistory: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/history`, "GET", undefined, omit(input, ["scopeId"])),
+    readAppInvocation: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/invocation`, "GET", undefined, omit(input, ["scopeId"])),
+    readAppTable: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/tables/${encodeURIComponent(String(input.table))}`, "GET", undefined, omit(input, ["scopeId","table"])),
     removeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.id))}`, "DELETE", undefined, omit(input, ["id"])),
     removeAppHostname: (input: Args) =>

@@ -344,7 +344,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
   it('the declared app writes include lifecycle, version, data, preview, identity, environment and email actions', () => {
     expect(
       Object.entries(dashboardRoutes)
-        .filter(([name, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps') && !name.includes('hostname'))
+        .filter(([name, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps') && !name.includes('hostname') && name !== 'dashboard/query-app-scope')
         .map(([name, r]) => `${r.http.method} ${r.http.path} ${name}`)
         .sort(),
     ).toEqual([

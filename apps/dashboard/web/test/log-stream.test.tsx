@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventExplorer } from '../src/views/ObservabilityPanels';
 import { api, type EventFacetAnswer, type EventFacetResult } from '../src/lib/api';
+import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { bucketNarrow, bucketRows, dimensionLabel, emptyGroupingText, withheldOf } from '../src/lib/log-stream';
 
 const cursor = { from: '2026-09-01T10:00:00.000Z', to: '2026-09-01T11:00:00.000Z' };
@@ -75,14 +76,22 @@ describe('Events mode', () => {
   const byText = (text: string) =>
     [...container.querySelectorAll('button')].find((b) => b.textContent === text || b.textContent?.startsWith(text))!;
 
+  it('shows the unavailable state when the generated facet client receives 501', async () => {
+    vi.spyOn(api, 'appFacets').mockRejectedValue(new GeneratedApiError(501, 'facets unavailable', null));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} />));
+    expect(container.textContent).toContain('This app publishes no event stream');
+    expect(container.textContent).not.toContain('facets unavailable');
+  });
+
   it('a type bucket narrows the read to that type, grouped by operation, and says so in the URL', async () => {
     const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());
     const onQuery = vi.fn();
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} onQuery={onQuery} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} onQuery={onQuery} />));
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased');
     await click(byText('invoice.sent'));
     expect(onQuery).toHaveBeenLastCalledWith({ groupBy: 'operation', field: undefined, type: 'invoice.sent' });
     expect(facets).toHaveBeenLastCalledWith(
+      'team-a',
       'app-a',
       expect.objectContaining({ groupBy: 'operation', type: 'invoice.sent', since: cursor.from, until: cursor.to }),
     );
@@ -91,25 +100,25 @@ describe('Events mode', () => {
 
   it('a bucket nothing can narrow to is not a button', async () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue(result({ buckets: [{ value: 'acme/assign', count: 4, lastSeen: null }] }));
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ groupBy: 'operation' }} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} query={{ groupBy: 'operation' }} />));
     expect(container.textContent).toContain('acme/assign');
     expect(byText('acme/assign')).toBeUndefined();
   });
 
   it('narrowing from a half-chosen Payload field leaves field mode, so the control matches the rows', async () => {
     const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} />));
     await click(byText('Payload field'));
     expect(container.querySelector('[aria-label="Group by payload field"]')).not.toBeNull();
     await click(byText('invoice.sent'));
-    expect(facets).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ groupBy: 'operation', type: 'invoice.sent' }));
+    expect(facets).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ groupBy: 'operation', type: 'invoice.sent' }));
     expect(container.querySelector('[aria-label="Group by"] [aria-pressed="true"]')!.textContent).toBe('Operation');
     expect(container.querySelector('[aria-label="Group by payload field"]')).toBeNull();
   });
 
   it('picking Payload field asks nothing until a field is named', async () => {
     const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} />));
     expect(facets).toHaveBeenCalledTimes(1);
     await click(byText('Payload field'));
     expect(facets).toHaveBeenCalledTimes(1);
@@ -119,14 +128,14 @@ describe('Events mode', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await click(byText('Group'));
-    expect(facets).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ field: 'currency', groupBy: undefined }));
+    expect(facets).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ field: 'currency', groupBy: undefined }));
   });
 
   it('a payload grouping says how many events it withheld as personal data, and why (#1762)', async () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue(
       result({ buckets: [{ value: 'SEK', count: 50, lastSeen: null }], total: 4263, erased: 3, withheldPersonal: 4210 }),
     );
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe(
       '4,263 events · 3 erased · 4,210 withheld as personal data',
     );
@@ -136,7 +145,7 @@ describe('Events mode', () => {
 
   it('a payload grouping whose events were all withheld says so instead of drawing nothing (#1762)', async () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue(result({ buckets: [], total: 40, erased: 0, withheldPersonal: 40 }));
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'email' }} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'email' }} />));
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe('40 events · 0 erased · 40 withheld as personal data');
     expect(container.textContent).toContain('Every matching event is classed as personal data, so none is grouped by a payload field.');
   });
@@ -144,7 +153,7 @@ describe('Events mode', () => {
   it('an answer with no withheld count says unknown, not 0 (#1762)', async () => {
     const { withheldPersonal: _, ...older } = result();
     vi.spyOn(api, 'appFacets').mockResolvedValue(older as EventFacetAnswer);
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'currency' }} />));
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · withheld unknown');
     // The rule is not claimed for an answer that cannot show it held: only the doubt is.
     expect(container.textContent).not.toContain('counts only events not classed as personal data');
@@ -157,7 +166,7 @@ describe('Events mode', () => {
     vi.spyOn(api, 'appFacets').mockResolvedValue(
       result({ buckets: [], total: 58, erased: 3, withheldPersonal: 55, withheldReason: 'vertical-predates-rule' }),
     );
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'email' }} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} query={{ field: 'email' }} />));
     // The count covers every event not erased, so it does not claim to be personal data.
     expect(container.querySelector('[data-event-totals]')!.textContent).toBe('58 events · 3 erased · 55 withheld');
     expect(container.textContent).toContain(
@@ -169,7 +178,7 @@ describe('Events mode', () => {
   it('an envelope grouping mentions no withholding at all', async () => {
     const { withheldPersonal: _, ...older } = result();
     vi.spyOn(api, 'appFacets').mockResolvedValue(older as EventFacetAnswer);
-    await act(async () => root.render(<EventExplorer embedded scopeId="app-a" hours={24} window={cursor} />));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} />));
     expect(container.querySelector('[data-event-withheld]')).toBeNull();
     expect(container.textContent).not.toContain('personal data');
   });

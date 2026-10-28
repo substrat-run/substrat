@@ -16,6 +16,7 @@
         "DeployFailureRow": "deployFailureRow",
         "DeploymentRow": "deploymentRow",
         "ExplanationView": "explanationView",
+        "EventEffects": "eventEffects",
         "FailureGroupRow": "failureGroupRow",
         "FindingEntry": "findingRow",
         "FindingRuleEntry": "findingRuleRow",

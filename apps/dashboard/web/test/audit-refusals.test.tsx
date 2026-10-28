@@ -82,7 +82,7 @@ describe('Audit page with refusals', () => {
     vi.restoreAllMocks();
   });
   const apps = [{ app_scope_id: 'a', name: 'Acme HR' } as AppRow];
-  const render = (scopeId: string | null) => act(async () => root.render(<AuditLog apps={apps} appsComplete scopeId={scopeId} onScope={() => {}} />));
+  const render = (scopeId: string | null) => act(async () => root.render(<AuditLog teamId="team-a" apps={apps} appsComplete scopeId={scopeId} onScope={() => {}} />));
   const press = (label: string) =>
     act(async () =>
       [...container.querySelectorAll('[aria-label="Outcome"] button')].find((b) => b.textContent === label)!.dispatchEvent(new MouseEvent('click', { bubbles: true })),
@@ -92,7 +92,7 @@ describe('Audit page with refusals', () => {
     vi.spyOn(api, 'auditLogAll').mockResolvedValue({ entries: [action('A1', 1)], nextCursor: null });
     const denials = vi.spyOn(api, 'appDenials').mockResolvedValue({ entries: [refusal('R1', 5, { invocationId: '01J8Z000000000000000000401' })], limit: 100 });
     await render('a');
-    expect(denials).toHaveBeenCalledWith('a', { until: undefined, limit: 100 });
+    expect(denials).toHaveBeenCalledWith('team-a', 'a', { until: undefined, limit: 100 });
     expect(container.querySelector('[data-refusal-id="R1"]')!.textContent).toContain('sara@acme.test was refused refunds:issue on shop/refund-order');
     expect(container.querySelector('[data-refusal-id="R1"] a')!.getAttribute('href')).toContain('req=01J8Z000000000000000000401');
     await press('Refused');

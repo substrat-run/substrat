@@ -125,7 +125,7 @@ Now that an app can have >1 scope, make the Data tab honest:
   `host.admin.listScopes({ tenantId, vertical: app.vertical_slug })`, the viewed scope default.
 - **Client** `api.appScopes(appScopeId)`.
 - **UI (`DataBrowser`)** — a scope `<select>` above the table list, shown when >1 scope; it swaps
-  the `scopeId` fed to the **existing** `appTables` / `appTableRows` / `appQuery` calls. Read path,
+  the `scopeId` fed to the table list, table page, and SQL query calls. Read path,
   permissions, and audit are unchanged (already per-`scopeId`).
 
 **Exit:** the Data tab shows every scope of the app and lets you browse each.

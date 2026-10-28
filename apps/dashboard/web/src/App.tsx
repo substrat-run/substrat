@@ -1054,7 +1054,7 @@ export function App() {
       ) : route.section === 'billing' ? (
         <Billing />
       ) : route.section === 'audit' ? (
-        <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} personName={personName} />
+        <AuditLog teamId={me.currentTeamId} apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} personName={personName} />
       ) : route.section === 'observability' ? (
         <Observability
           query={window.location.search}

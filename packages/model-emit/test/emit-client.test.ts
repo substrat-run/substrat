@@ -219,6 +219,19 @@ const render = (ops: Record<string, unknown> = operations) =>
 describe('rendering a client', () => {
   const out = render();
 
+  it('prints a named recursive response through its lazy child', () => {
+    interface Tree { label: string; children: Tree[] }
+    const tree: z.ZodType<Tree> = z.object({ label: z.string(), children: z.array(z.lazy(() => tree)) });
+    const printed = renderClient('demos/demo', { ...config, schemas: { Tree: 'tree' } }, 'model.ts', {}, {
+      'demo/read-tree': {
+        summary: 'Read a tree', input: z.object({}), output: z.object({ root: tree.nullable() }),
+        http: { method: 'GET', path: '/tree' },
+      },
+    }, { tree });
+    expect(printed).toContain('export interface Tree {\n  label: string;\n  children: Tree[];\n}');
+    expect(printed).toContain('root: Tree | null');
+  });
+
   it('declares an interface per entity, from its fields', () => {
     expect(out).toContain(
       'export interface Note {\n  id: string;\n  body: string;\n  pinned: number;\n  created_at: string;\n}',

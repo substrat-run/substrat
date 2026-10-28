@@ -2330,7 +2330,7 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     // is gone with it.
     setHistory(null);
     api
-      .appTables(activeScope)
+      .appTables(teamId, activeScope)
       .then((ts) => {
         if (!live) return;
         setTables(ts);
@@ -2340,7 +2340,7 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     return () => {
       live = false;
     };
-  }, [activeScope]);
+  }, [teamId, activeScope]);
 
   // A page of the selected table. Refetch on table change (offset reset) or paging.
   useEffect(() => {
@@ -2359,13 +2359,13 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     let live = true;
     setPage(null);
     api
-      .appTableRows(activeScope, selected, { limit: DATA_PAGE, offset })
+      .appTableRows(teamId, activeScope, selected, { limit: DATA_PAGE, offset })
       .then((p) => live && setPage(p))
       .catch((e) => live && setPageErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [activeScope, selected, offset, tables]);
+  }, [teamId, activeScope, selected, offset, tables]);
 
   const pickTable = (name: string) => {
     setSelected(name);
@@ -2425,7 +2425,7 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
           {system.length > 0 && <TableGroup label="System" tables={system} selected={selected} onPick={pickTable} />}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-          <SqlConsole scopeId={activeScope} />
+          <SqlConsole teamId={teamId} scopeId={activeScope} />
           <div style={{ ...card, overflow: 'hidden' }}>
             {!selected ? (
               <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Select a table.</div>
@@ -2469,7 +2469,7 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
  * rejects any write shape and rolls back regardless), so the worst a query can do here
  * is come back truncated or refused with the gate's message.
  */
-function SqlConsole({ scopeId }: { scopeId: string }) {
+function SqlConsole({ teamId, scopeId }: { teamId: string; scopeId: string }) {
   const [open, setOpen] = useState(false);
   const [sql, setSql] = useState('');
   const [running, setRunning] = useState(false);
@@ -2486,7 +2486,7 @@ function SqlConsole({ scopeId }: { scopeId: string }) {
     setRunning(true);
     setErr(null);
     api
-      .appQuery(scopeId, sql)
+      .appQuery(teamId, scopeId, sql)
       .then((r) => setResult(r))
       .catch((e) => {
         setResult(null);

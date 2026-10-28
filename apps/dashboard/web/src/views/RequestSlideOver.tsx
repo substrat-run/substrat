@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
-import { ApiError, api, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
+import { api, isApiError, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
 import { LogList } from '../components/LogList';
 import { callLogsWindow } from '../lib/history';
 import { shortId } from '../lib/format';
@@ -53,7 +53,7 @@ const CAUSES_MAX = 3;
 type Part<T> = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; value: T };
 const loading = { state: 'loading' } as const;
 const errorText = (e: unknown) =>
-  e instanceof ApiError ? (e.status === 501 ? 'not available on this platform' : `${e.status}: ${e.message}`) : e instanceof Error ? e.message : String(e);
+  isApiError(e) ? (e.status === 501 ? 'not available on this platform' : `${e.status}: ${e.message}`) : e instanceof Error ? e.message : String(e);
 
 interface Detail {
   logs: Part<ObservabilityLogEvent[]>;
@@ -113,7 +113,7 @@ function useRequestDetail(teamId: string, scopeId: string, invocationId: string,
           const withLifecycle = refs.filter((r) => lifecycles[r.entityType]).slice(0, ENTITIES_MAX);
           const found = await Promise.all(
             withLifecycle.map(async (r) => {
-              const page = await api.appEntityHistory(scopeId, r.entityType, r.entityId);
+              const page = await api.appEntityHistory(teamId, scopeId, r.entityType, r.entityId);
               return causedTransition(r.entityType, r.entityId, invocationId, lifecycles[r.entityType]!, page.entries);
             }),
           );
@@ -123,20 +123,19 @@ function useRequestDetail(teamId: string, scopeId: string, invocationId: string,
         }
       })
       .catch((e) => set({ logs: { state: 'error', message: errorText(e) }, transitions: { state: 'ready', value: [] } }));
-    api
-      .appInvocationEvents(scopeId, invocationId)
+    api.appInvocationEvents(teamId, scopeId, invocationId)
       .then(async (r) => {
         set({ events: { state: 'ready', value: r.events } });
         // Each event's consumers are their own read: one that fails costs its own rows,
         // not the events list or the consumers of the others.
-        const settled = await Promise.allSettled(r.events.slice(0, EFFECTS_MAX).map((e) => api.appEventEffects(scopeId, e.id)));
+        const settled = await Promise.allSettled(r.events.slice(0, EFFECTS_MAX).map((e) => api.appEventEffects(teamId, scopeId, e.id)));
         const trees = settled.flatMap((s) => (s.status === 'fulfilled' ? [s.value] : []));
         const failed = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
         set({ followUps: { state: 'ready', value: { trees } }, followUpsError: failed ? errorText(failed.reason) : null });
         // Who set this request off: walk back from the events that were themselves a reaction.
         const allReacting = r.events.filter((e) => e.causedBy !== null);
         const reacting = allReacting.slice(0, CAUSES_MAX);
-        const causeReads = await Promise.allSettled(reacting.map((e) => api.appEventCause(scopeId, e.id)));
+        const causeReads = await Promise.allSettled(reacting.map((e) => api.appEventCause(teamId, scopeId, e.id)));
         const causes = causeReads.flatMap((c) => (c.status === 'fulfilled' ? [c.value] : []));
         const rejected = settled.length - trees.length + causeReads.length - causes.length;
         const reasons = [

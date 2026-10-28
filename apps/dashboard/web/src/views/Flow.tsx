@@ -335,6 +335,7 @@ function DeadLetterRow({ teamId, scopeId, d }: { teamId: string; scopeId: string
       )}
       {opened && (
         <InvocationStrip
+          teamId={teamId}
           scopeId={scopeId}
           eventId={d.eventId}
           invocationId={opened.invocationId}
@@ -604,19 +605,19 @@ export function Flow({ teamId, app }: { teamId: string; app: AppRow }) {
       // A worker predating the route: nothing here can say anything true, so it says nothing.
       .catch(() => live && setView(null));
     api
-      .appDeadLetters(app.app_scope_id)
+      .appDeadLetters(teamId, app.app_scope_id)
       .then((page) => live && setDead({ entries: page.entries, nextCursor: page.nextCursor, failed: false, loading: false }))
       .catch(() => live && setDead((s) => ({ ...s, failed: true })));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
 
   const more = () => {
     if (dead.nextCursor === null || dead.loading) return;
     setDead((s) => ({ ...s, loading: true }));
     api
-      .appDeadLetters(app.app_scope_id, dead.nextCursor)
+      .appDeadLetters(teamId, app.app_scope_id, dead.nextCursor)
       .then((page) => setDead((s) => ({ entries: [...(s.entries ?? []), ...page.entries], nextCursor: page.nextCursor, failed: false, loading: false })))
       .catch(() => setDead((s) => ({ ...s, failed: true, loading: false })));
   };

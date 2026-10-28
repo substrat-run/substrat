@@ -340,6 +340,7 @@ export function Observability({
           {/* Event filters stay mounted on refresh; snapshot panels refresh by remount. */}
           {logMode === 'events' && (
             <EventExplorer
+              teamId={teamId}
               key={scopeId}
               embedded
               nonce={nonce}
