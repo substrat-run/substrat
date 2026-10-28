@@ -61,7 +61,10 @@ describe('the keys the portal shape gained reach a customer granted before marke
     try {
       const world = await seedBikeShop(seedHost, seedDir);
       const grants = await seedHost.admin.auditLog(staff, { tenantId: world.t1, scopeId: world.s1, action: 'grantEntityShape' });
-      expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([world.lisbeth, world.otto].sort());
+      expect(grants).toHaveLength(4);
+      expect(grants.filter((entry) => (entry.after as { phase?: string }).phase === 'applied')
+        .map((entry) => (entry.after as { principalId: string }).principalId).sort())
+        .toEqual([world.lisbeth, world.otto].sort());
     } finally {
       await seedHost.close();
       rmSync(seedDir, { recursive: true, force: true });
