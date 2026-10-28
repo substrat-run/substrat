@@ -8077,7 +8077,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       unassignRole: async (actor, assignment: RoleAssignment) => {
         // Tombstone (K-21) — the checker skips revoked rows. A no-op returns false so
-        // a repeat unassign stays silent (no second audit row, no needless fan-out).
+        // a repeat unassign is a refused no-op at a scope node, with no needless fan-out.
         const relation = `role:${assignment.roleKey}`;
         const { tenantId, scopeId } = assignment.node;
         if (!scopeId) {
@@ -8240,7 +8240,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // module, one permission; tombstones on revoke; shows in the permission diff.
         const grant = systemGrant.parse(raw);
         const target = { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId };
-        const after = { moduleId: grant.moduleId, permission: grant.permission, node: grant.node };
+        const after = { moduleId: grant.moduleId, permission: grant.permission, node: grant.node,
+          expiresAt: grant.expiresAt ?? null, grantedBy: grant.grantedBy };
         if (grant.node.scopeId) {
           // #1666: refused while the module is switched off on this scope — checked and
           // written in one DO unit. Restore is the lever; a grant is not.
@@ -8316,10 +8317,8 @@ export class CloudflareScopeHost implements ScopeHost {
         return { switchedOffPeers, tenantHeldPeers, fences };
       },
       reassertSystemSwitches: reassertSystemSwitchesOf,
-      // #1672 — the platform's two capability verbs. Audited AFTER the write, on both, and
-      // the failure each leaves is the safe one: a mint whose audit row did not land never
-      // returned its secret, so nobody can ever exchange it; a revoke whose row did not land
-      // has still revoked. Neither the secret nor its hash is ever in before/after.
+      // #1672 — the platform's two capability verbs. An intent precedes the scope write and
+      // the outcome follows it. Neither the secret nor its hash is ever in before/after.
       mintCapability: async (
         actor: PlatformActorId,
         tenantId: TenantId,
@@ -8334,11 +8333,11 @@ export class CloudflareScopeHost implements ScopeHost {
         const rec = await this.capabilityScopeRecord(tenantId, scopeId);
         return auditedScopePermissionWrite({
           action: 'mintCapability', request: {
-          mode: 'become',
-          principal: input.principal,
-          expiresAt: input.expiresAt,
-          maxUses: input.maxUses,
-          label: input.label ?? null,
+            mode: 'become',
+            principal: input.principal,
+            expiresAt: input.expiresAt,
+            maxUses: input.maxUses,
+            label: input.label ?? null,
           },
           record: (after) => this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical: rec.vertical }, null, after),
           write: async () => (await this.capabilityScopeStub(rec, scopeId, 'mintCapability')).mintBecomeCapabilityAndAuditIntent(input, actor),

@@ -1442,7 +1442,7 @@ export const adminLogEntry = z.object({
   scopeId: scopeId.nullable(),
   vertical: z.string().nullable(),
   before: z.unknown().nullable(), // prior state where cheaply readable (e.g. a redefined role)
-  after: z.unknown().nullable(), // the applied payload
+  after: z.unknown().nullable(), // payload or audited intent/outcome envelope
   /**
    * The domain event that caused this action, when one did (K-22 §4.2).
    *

@@ -4,7 +4,8 @@
  * The owner hand-over (#1665) and dashboard member management (#1150) audit a change made in the
  * vertical's own deployment in two rows paired by `operationId`: an `intent`, then `applied`,
  * `refused` or `failed`. The schedule and peer kill switches (#1666, #1706; #2089) audit the
- * scope's move the same way, from inside each adapter, and so does the replay lever
+ * scope's move the same way, from inside each adapter. The first scope permission writes
+ * (#2527) and the replay lever
  * (`moveImportCursor`, #2114), whose rows carry its `replayId` as their `operationId`. The two
  * stores are separate, so an intent can be left with no outcome: its outcome write failed (`recordAuditOutcome` logs it), or the
  * request died between the two. The control plane's scheduled
@@ -40,7 +41,12 @@ import { ulid } from './ulid.js';
  * so every reader passes it over as it passes over any row without one. (#1686) The operator's
  * capability revoke is written the same way around the revoke in the scope's store
  * (`auditedCapabilityRevoke`), which on the shared control plane is another deployment's.
+ * The scope permission actions use `auditedScopePermissionWrite` in both adapters.
  */
+const SCOPE_PERMISSION_ACTIONS = [
+  'assignRole', 'unassignRole', 'grant', 'grantToOrg', 'grantToSystem', 'grantEntityShape', 'mintCapability',
+] as const satisfies readonly AdminAction[];
+
 export const AUDITED_CHANGE_ACTIONS = [
   'bindConnectionScope',
   'transferOwner',
@@ -49,13 +55,7 @@ export const AUDITED_CHANGE_ACTIONS = [
   ...SWITCH_ACTIONS,
   'moveImportCursor',
   'revokeCapability',
-  'assignRole',
-  'unassignRole',
-  'grant',
-  'grantToOrg',
-  'grantToSystem',
-  'grantEntityShape',
-  'mintCapability',
+  ...SCOPE_PERMISSION_ACTIONS,
 ] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 
@@ -158,7 +158,7 @@ export async function auditedCapabilityRevoke(input: {
 
 /** One directory intent around one scope-owned permission write. The returned scope result decides the outcome. */
 export async function auditedScopePermissionWrite<T>(input: {
-  action: AuditedChangeAction;
+  action: (typeof SCOPE_PERMISSION_ACTIONS)[number];
   request: Record<string, unknown>;
   record: (after: Record<string, unknown>) => unknown;
   write: () => Promise<T>;
@@ -333,7 +333,7 @@ const isSwitch = (action: string): action is SwitchAction => (SWITCH_ACTIONS as 
 /** The actions whose rows have no schema of their own, so an `unknown` row is the intent's fields. */
 const copiesIntent = (action: string): boolean =>
   isSwitch(action) || action === 'moveImportCursor' || action === 'revokeCapability' ||
-  ['assignRole', 'unassignRole', 'grant', 'grantToOrg', 'grantToSystem', 'grantEntityShape', 'mintCapability'].includes(action);
+  (SCOPE_PERMISSION_ACTIONS as readonly string[]).includes(action);
 
 /**
  * The `unknown` row of a kill switch's operation (#2089), or of the replay lever's (#2114): the
