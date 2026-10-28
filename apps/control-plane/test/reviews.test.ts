@@ -154,6 +154,7 @@ describe('phase-0 review intake', () => {
       ['PAX Unicode normalization collision', [pax(paxRecord('path', 'é.ts')), regular(), pax(paxRecord('path', 'e\u0301.ts')), regular('PaxFiles/000001')]],
       ['file parent collision', [{ path: 'a' }, { path: 'a/b' }]],
       ['file child collision', [{ path: 'a/b' }, { path: 'a' }]],
+      ['directories only', [{ path: 'empty/', type: 53 }]],
     ] as const;
     for (const [label, entries] of invalid) {
       const src = await archive([...entries]);

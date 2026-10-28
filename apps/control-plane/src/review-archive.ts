@@ -157,7 +157,7 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
       if (expanded > REVIEW_TREE_MAX_BYTES) throw new Error('archive exceeds the expanded size limit');
       if (tail.value.some((byte) => byte !== 0)) throw new Error('archive has data after its end');
     }
-    if (!ended || entries === 0) throw new Error('archive has no files');
+    if (!ended || files.size === 0) throw new Error('archive has no files');
   } catch (error) {
     await reader.cancel(error).catch(() => {});
     throw error;
