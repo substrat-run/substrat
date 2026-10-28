@@ -10,6 +10,7 @@ import {
   countByStatus,
   draftFor,
   draftReady,
+  findingCodePath,
   findingsError,
   inTab,
   mergeFindings,
@@ -70,6 +71,13 @@ describe('findings, pure', () => {
     const c = finding({ id: 'c', status: 'resolved' });
     expect(inTab([a, b, c], 'open').map((e) => e.id)).toEqual(['b', 'a']);
     expect(countByStatus([a, b, c])).toEqual({ open: 2, acked: 0, resolved: 1, suppressed: 0 });
+  });
+
+  it('links a code to the finding app and operation, and leaves an unscoped code unlinked', () => {
+    expect(findingCodePath(finding({ scopeId: 'scope-a' }), 'conflict')).toBe(
+      '/observability?app=scope-a&view=requests&op=tickets%2Fcreate&code=conflict',
+    );
+    expect(findingCodePath(finding({ scopeId: null }), 'conflict')).toBeNull();
   });
 
   it('offers the moves the lifecycle allows, and none for a suppressed finding', () => {
@@ -235,6 +243,13 @@ describe('Findings view', () => {
     const tabs = [...host.querySelectorAll('button')].map((b) => b.textContent);
     expect(tabs.some((t) => t?.startsWith('Open'))).toBe(true);
     expect(tabs.some((t) => t?.startsWith('Suppressed'))).toBe(true);
+  });
+
+  it('draws a finding code as a filtered requests link', async () => {
+    await mount(fake([finding({ id: 'linked', scopeId: 'scope-a' })]));
+    const link = [...row('linked').querySelectorAll('a')].find((a) => a.textContent === 'conflict');
+    expect(link?.getAttribute('href')).toContain('/observability?app=scope-a&view=requests&op=tickets%2Fcreate&code=conflict');
+    expect(link?.getAttribute('title')).toContain('Filtered requests');
   });
 
   it('#2401: shows a kind, severity, code and likely cause from a newer plane as the plane named them', async () => {

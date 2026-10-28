@@ -14,6 +14,7 @@ import {
   draftFor,
   draftNarrows,
   draftReady,
+  findingCodePath,
   findingsError,
   inTab,
   mergeFindings,
@@ -26,6 +27,7 @@ import {
   type SuppressDraft,
 } from '../lib/findings';
 import type { FindingsClient } from '../lib/mock-findings';
+import { isPlainClick, navigate, teamPath } from '../lib/router';
 
 /**
  * The Findings inbox (#1748): the team's anomalies, triaged like email. Four tabs, one per
@@ -341,7 +343,15 @@ function FindingRow({
         </div>
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
           {f.count.toLocaleString('en-US')} {f.count === 1 ? 'occurrence' : 'occurrences'} · first seen {relativeTime(f.firstSeen)} · last seen {relativeTime(f.lastSeen)}
-          {f.codes.length > 0 && <> · <span style={{ fontFamily: 'var(--font-mono)' }}>{f.codes.join(', ')}</span></>}
+          {f.codes.length > 0 && <> · {f.codes.map((code, i) => {
+            const path = findingCodePath(f, code);
+            return <span key={code} style={{ fontFamily: 'var(--font-mono)' }}>
+              {i > 0 ? ', ' : ''}
+              {path ? <a href={teamPath(path)} title="Filtered requests (recent)" onClick={(e) => {
+                if (isPlainClick(e)) { e.preventDefault(); navigate(path); }
+              }}>{code}</a> : code}
+            </span>;
+          })}</>}
         </div>
         {f.likelyCause && (
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
