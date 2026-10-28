@@ -999,6 +999,13 @@ export interface DashboardClient {
   readAppTable(input: { scopeId: string; table: string; limit?: number; offset?: number }): Promise<{ table: string; columns: string[]; rows: unknown[][]; rowCount: number; limit: number; offset: number }>;
 
   /**
+   * Read this team's persisted metered usage without prices (owner or admin)
+   *
+   * `GET /metered-usage` — `dashboard/read-metered-usage`
+   */
+  readMeteredUsage(): Promise<{ readAt: string; retention: { storageMonths: number; modelDays: number; requestMonths: number | null }; storage: { state: "unavailable" | "empty" | "not-sampled" | "complete" | "partial" | "stale" | "failing"; bytes: number | null; estimated: false; basis: "scope-databases"; sampled: number; total: number; failing: number; oldestReadAt: string | null; excluded: ("attachments" | "tenant-stores" | "lake")[] }; requests: { state: "unavailable" | "empty" | "complete" | "partial" | "truncated"; requests: number | null; estimated: true; lowerBound: boolean; coveredDays: number; totalDays: number; sinceDay: string; untilDay: string; lastReadAt: string | null; byVertical: ({ vertical: string | null; requests: number })[]; breakdownTruncated: boolean }; models: { state: "unavailable" | "empty" | "complete" | "truncated"; calls: number | null; inputTokens: number | null; outputTokens: number | null; estimated: false; lowerBound: boolean; since: string; until: string; oldestRecordedAt: string | null; newestRecordedAt: string | null; byVerticalModel: ({ vertical: string; model: string; calls: number; inputTokens: number | null; outputTokens: number | null })[]; breakdownTruncated: boolean } }>;
+
+  /**
    * Delete one of this team's apps: deprovision its scope and take its hostname offline
    *
    * `DELETE /apps/{id}` — `dashboard/remove-app`
@@ -1448,6 +1455,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/invocation`, "GET", undefined, omit(input, ["scopeId"])),
     readAppTable: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/tables/${encodeURIComponent(String(input.table))}`, "GET", undefined, omit(input, ["scopeId","table"])),
+    readMeteredUsage: () =>
+      send("/metered-usage", "GET", undefined, undefined),
     removeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.id))}`, "DELETE", undefined, omit(input, ["id"])),
     removeAppHostname: (input: Args) =>

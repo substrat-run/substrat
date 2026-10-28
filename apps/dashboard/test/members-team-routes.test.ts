@@ -588,4 +588,63 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
     expect(shared.scopesOpened).toEqual([]);
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it('reads metered usage for the path team and projects no price even if the directory sends one', async () => {
+    const a = await team('sub-owner', 'A');
+    const b = await team('sub-owner', 'B');
+    const paths: string[] = [];
+    env.CONTROL_PLANE_SVC = { fetch: async (url: string | URL | Request) => {
+      const path = new URL(String(url)).pathname;
+      paths.push(path);
+      if (path === '/api/tenant-tokens') return Response.json({ token: 'test-token' }, { status: 201 });
+      if (path === `/api/tenants/${b.tenant}/metered-usage`) return Response.json({
+        readAt: '2026-10-29T00:00:00Z',
+        retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+        storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments'], priceUsd: '99' },
+        requests: { state: 'partial', requests: 7, estimated: true, lowerBound: true, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [{ vertical: 'app', requests: 7 }], breakdownTruncated: false },
+        models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false, marginPercent: 20 },
+      });
+      return Response.json({ error: 'unexpected request' }, { status: 500 });
+    } };
+    const res = await req('GET', inTeam(b, '/metered-usage'), { cookieTeam: a.tenant });
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await res.json() as { storage: { bytes: number }; requests: { requests: number; estimated: boolean } };
+    expect(body.storage).toMatchObject({ bytes: 8 });
+    expect(body.requests).toMatchObject({ requests: 7, estimated: true });
+    expect(JSON.stringify(body)).not.toMatch(/price|margin|usd|cost|amount/i);
+    expect(paths).toContain(`/api/tenants/${b.tenant}/metered-usage`);
+    expect(paths).not.toContain(`/api/tenants/${a.tenant}/metered-usage`);
+  });
+
+  it('refuses metered usage to a member before calling the plane, while an admin may read it', async () => {
+    const t = await team('sub-owner');
+    await join_(t, 'sub-member', 'member');
+    await join_(t, 'sub-admin', 'admin');
+    const fetch = vi.fn(async (url: string | URL | Request) =>
+      new URL(String(url)).pathname === '/api/tenant-tokens'
+        ? Response.json({ token: 'test-token' }, { status: 201 })
+        : Response.json({
+          readAt: '2026-10-29T00:00:00Z', retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+          storage: { state: 'unavailable', bytes: null, estimated: false, basis: 'scope-databases', sampled: 0, total: 0, failing: 0, oldestReadAt: null, excluded: [] },
+          requests: { state: 'unavailable', requests: null, estimated: true, lowerBound: false, coveredDays: 0, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: null, byVertical: [], breakdownTruncated: false },
+          models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false },
+        }));
+    env.CONTROL_PLANE_SVC = { fetch };
+    const res = await req('GET', inTeam(t, '/metered-usage'), { sub: 'sub-member' });
+    expect(res.status).toBe(403);
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await req('GET', inTeam(t, '/metered-usage'), { sub: 'sub-admin' })).status).toBe(200);
+  });
+
+  it('refuses a foreign team metered-usage read before opening its scope or plane', async () => {
+    await team('sub-stranger');
+    const t = await team('sub-other');
+    const fetch = vi.fn(async () => Response.json({}));
+    env.CONTROL_PLANE_SVC = { fetch };
+    shared.scopesOpened.length = 0;
+    const res = await req('GET', inTeam(t, '/metered-usage'), { sub: 'sub-stranger' });
+    expect(res.status).toBe(404);
+    expect(shared.scopesOpened).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });

@@ -1081,6 +1081,7 @@ export type {
 export {
   ATTACHMENT_BYTES_SQL,
   SCOPE_STORAGE_DDL,
+  STORAGE_GAUGE_RETENTION_MONTHS,
   forgetScopeStorage,
   listScopeAttachmentStorageRows,
   retireScopeStorage,

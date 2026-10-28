@@ -155,6 +155,7 @@ export function askSummary(steps: readonly AskStep[]): string {
  */
 export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
   'dashboard/list-entitlements': 'team plan details are only for an owner or admin, not an assistant tool',
+  'dashboard/read-metered-usage': 'team usage details are only for an owner or admin, not an assistant tool',
   'dashboard/get-app-flow': 'flow diagnostics were not an assistant tool before this route moved',
   'dashboard/get-app-field-coverage': 'field coverage was not an assistant tool before this route moved',
   'dashboard/get-app-field-reads': 'field observations were not an assistant tool before this route moved',

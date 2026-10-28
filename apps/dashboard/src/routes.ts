@@ -731,6 +731,33 @@ const appReleaseSide = z.object({
 // than this dashboard. Preserve its value for the person reading the record.
 const historyEntryOut = historyEntry.extend({ piiClass: z.string() });
 const eventDeliveryOut = eventDelivery.extend({ state: z.string() });
+export const meteredUsageOut = z.object({
+  readAt: z.string(),
+  retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), requestMonths: z.number().int().nullable() }),
+  storage: z.object({
+    state: z.enum(['unavailable', 'empty', 'not-sampled', 'complete', 'partial', 'stale', 'failing']),
+    bytes: z.number().int().nullable(), estimated: z.literal(false), basis: z.literal('scope-databases'),
+    sampled: z.number().int(), total: z.number().int(), failing: z.number().int(),
+    oldestReadAt: z.string().nullable(), excluded: z.array(z.enum(['attachments', 'tenant-stores', 'lake'])),
+  }),
+  requests: z.object({
+    state: z.enum(['unavailable', 'empty', 'complete', 'partial', 'truncated']),
+    requests: z.number().int().nullable(), estimated: z.literal(true), lowerBound: z.boolean(),
+    coveredDays: z.number().int(), totalDays: z.number().int(), sinceDay: z.string(), untilDay: z.string(),
+    lastReadAt: z.string().nullable(),
+    byVertical: z.array(z.object({ vertical: z.string().nullable(), requests: z.number().int() })),
+    breakdownTruncated: z.boolean(),
+  }),
+  models: z.object({
+    state: z.enum(['unavailable', 'empty', 'complete', 'truncated']),
+    calls: z.number().int().nullable(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
+    estimated: z.literal(false), lowerBound: z.boolean(), since: z.string(), until: z.string(),
+    oldestRecordedAt: z.string().nullable(), newestRecordedAt: z.string().nullable(),
+    byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
+    breakdownTruncated: z.boolean(),
+  }),
+});
+export type MeteredUsageOut = z.infer<typeof meteredUsageOut>;
 interface EventEffectsOut {
   event: z.infer<typeof historyEntryOut>;
   deliveries: z.infer<typeof eventDeliveryOut>[];
@@ -750,6 +777,11 @@ export const dashboardRoutes = defineRoutes({
       expiresAt: z.string().optional(),
     })),
     http: { method: 'GET', path: '/entitlements' },
+  },
+  'dashboard/read-metered-usage': {
+    summary: "Read this team's persisted metered usage without prices (owner or admin)",
+    output: meteredUsageOut,
+    http: { method: 'GET', path: '/metered-usage' },
   },
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {

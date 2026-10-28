@@ -71,6 +71,7 @@ import type {
 } from '@substrat-run/contracts';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api';
 import type { DeclaredSchedule } from './flow-graph.js';
+import type { MeteredUsageOut } from './routes.js';
 import { readPromotionReview, type ExportBreaks, type PromotionReview } from './promotion-review.js';
 import { FINDINGS_LIMIT_DEFAULT, LIST_PAGE_MAX, denialQuery, substratError, type BindAcknowledgement, type ExportBreak, type VerticalConnectorDeclaration } from '@substrat-run/contracts';
 import {
@@ -457,6 +458,11 @@ export class TenantNarrowedControlPlane {
   /** Read the directory's grants for the pinned tenant. */
   listEntitlements(): Promise<EntitlementGrant[]> {
     return this.call(`/tenants/${this.tenantId}/entitlements`);
+  }
+
+  /** Persisted tenant usage only; the plane projects no prices or caller identities. */
+  readMeteredUsage(): Promise<MeteredUsageOut> {
+    return this.call(`/tenants/${this.tenantId}/metered-usage`);
   }
 
   /** Write the directory row for a new scope (`provisioning`) in the pinned tenant. */

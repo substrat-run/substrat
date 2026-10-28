@@ -5495,18 +5495,57 @@ async function browsableDataIn(ctx: TeamContext, asked: string) {
 }
 
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
+async function assertMayReadBilling(ctx: TeamContext): Promise<void> {
+  const role = await (await teamScope(ctx)).invoke<string | null>('dashboard/my-role', {});
+  if (role !== 'owner' && role !== 'admin') {
+    throw new HTTPException(403, { message: 'Ask a team owner or admin to view entitlements.' });
+  }
+}
+
 const routeHandlers = {
   'dashboard/list-entitlements': async (ctx) => {
-    const role = await (await teamScope(ctx)).invoke<string | null>('dashboard/my-role', {});
-    if (role !== 'owner' && role !== 'admin') {
-      throw new HTTPException(403, { message: 'Ask a team owner or admin to view entitlements.' });
-    }
+    await assertMayReadBilling(ctx);
     const grants = await teamPlane(ctx).listEntitlements();
     return grants.map((grant) => ({
       key: grant.entitlementKey,
       ...(grant.quota === null ? {} : { quota: grant.quota }),
       ...(grant.expiresAt === null ? {} : { expiresAt: grant.expiresAt }),
     }));
+  },
+  'dashboard/read-metered-usage': async (ctx) => {
+    await assertMayReadBilling(ctx);
+    const raw = await teamPlane(ctx).readMeteredUsage();
+    // Explicit projection at this boundary too: a future plane field never reaches
+    // the browser just because it was added to a staff meter record.
+    return {
+      readAt: raw.readAt,
+      retention: { storageMonths: raw.retention.storageMonths, modelDays: raw.retention.modelDays, requestMonths: raw.retention.requestMonths },
+      storage: {
+        state: raw.storage.state, bytes: raw.storage.bytes, estimated: raw.storage.estimated,
+        basis: raw.storage.basis, sampled: raw.storage.sampled, total: raw.storage.total,
+        failing: raw.storage.failing, oldestReadAt: raw.storage.oldestReadAt,
+        excluded: raw.storage.excluded,
+      },
+      requests: {
+        state: raw.requests.state, requests: raw.requests.requests, estimated: raw.requests.estimated,
+        lowerBound: raw.requests.lowerBound, coveredDays: raw.requests.coveredDays,
+        totalDays: raw.requests.totalDays, sinceDay: raw.requests.sinceDay,
+        untilDay: raw.requests.untilDay, lastReadAt: raw.requests.lastReadAt,
+        byVertical: raw.requests.byVertical.map((row) => ({ vertical: row.vertical, requests: row.requests })),
+        breakdownTruncated: raw.requests.breakdownTruncated,
+      },
+      models: {
+        state: raw.models.state, calls: raw.models.calls, inputTokens: raw.models.inputTokens,
+        outputTokens: raw.models.outputTokens, estimated: raw.models.estimated,
+        lowerBound: raw.models.lowerBound, since: raw.models.since, until: raw.models.until,
+        oldestRecordedAt: raw.models.oldestRecordedAt, newestRecordedAt: raw.models.newestRecordedAt,
+        byVerticalModel: raw.models.byVerticalModel.map((row) => ({
+          vertical: row.vertical, model: row.model, calls: row.calls,
+          inputTokens: row.inputTokens, outputTokens: row.outputTokens,
+        })),
+        breakdownTruncated: raw.models.breakdownTruncated,
+      },
+    };
   },
   'dashboard/get-app-concept': async (ctx, { scopeId: requested, section, versionId: expected, offset }) => {
     const dash = await teamScope(ctx);
