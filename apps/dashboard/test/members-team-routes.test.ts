@@ -562,17 +562,23 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
     expect(paths).not.toContain(`/api/tenants/${a.tenant}/entitlements`);
   });
 
-  it('refuses a member before asking the plane for grants', async () => {
+  it('refuses a member before asking the plane for grants, while an admin may read them', async () => {
     const t = await team('sub-owner');
     await join_(t, 'sub-member', 'member');
-    const fetch = vi.fn(async () => Response.json([]));
+    await join_(t, 'sub-admin', 'admin');
+    const fetch = vi.fn(async (url: string | URL | Request) =>
+      new URL(String(url)).pathname === '/api/tenant-tokens'
+        ? Response.json({ token: 'test-token' }, { status: 201 })
+        : Response.json([]));
     env.CONTROL_PLANE_SVC = { fetch };
     const res = await req('GET', inTeam(t, '/entitlements'), { sub: 'sub-member' });
     expect(res.status).toBe(403);
     expect(fetch).not.toHaveBeenCalled();
+    expect((await req('GET', inTeam(t, '/entitlements'), { sub: 'sub-admin' })).status).toBe(200);
   });
 
   it('refuses a team the caller has not joined before opening its scope or asking the plane', async () => {
+    await team('sub-stranger');
     const t = await team('sub-other');
     const fetch = vi.fn(async () => Response.json([]));
     env.CONTROL_PLANE_SVC = { fetch };
