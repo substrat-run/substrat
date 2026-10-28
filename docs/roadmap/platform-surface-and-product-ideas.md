@@ -128,7 +128,7 @@ These entries preserve proposals and decisions whose next step is not scheduled.
 - Idea: a third invoicing use case requests per-line tax rates and a per-rate net/tax breakdown frozen with the exported document; tax determination remains outside the engine.
 - State: currency shipped separately, so the original co-sequencing request has elapsed. The proposed [VAT carriage RFC](../rfc/vat-carriage.md) now holds the concept spec, including the multi-rate example; no carriage code is in `engines/invoicing/src`.
 - Parked on a maintainer decision on the RFC's open questions, including the export-event shape under [K-39](../decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md), with no implementation owner. [Commerce gaps](../strategy/commerce-gaps.md) §4.1 holds the engine-versus-integration argument.
-- Resume when that decision is recorded and an invoicing consumer needs the breakdown; implement it additively against the shipped currency shape.
+- Resume when that decision is recorded and an invoicing consumer needs the breakdown; scope the change against the shipped currency shape and the RFC's chosen export-event policy.
 
 ### [#327 — Booking turnaround](https://github.com/substrat-run/substrat/issues/327)
 
@@ -165,7 +165,7 @@ These entries preserve proposals and decisions whose next step is not scheduled.
 ### [#1089 — ticket0 product-scope survey](https://github.com/substrat-run/substrat/issues/1089)
 
 - Idea: the August 2026 comparison with Zendesk, Freshdesk and Intercom asks how far ticket0 should go as a support product rather than treating every competitor gap as a defect.
-- State: separate issues track near-term gaps (#1079–#1088). The dated survey here records the uncommitted choices: public articles, outbound messaging, company/custom fields, multiple desks, tenant integrations, languages, agent efficiency and more channels.
+- State: separate issues track near-term gaps (#1079–#1088). The issue's dated survey records the uncommitted choices: public articles, outbound messaging, company/custom fields, multiple desks, tenant integrations, languages, agent efficiency and more channels.
 - Parked because: [ticket0's concept](../../demos/ticket0/spec/concept.md) §10 defers several of these, and no product-scope decision or owner has selected which should become work.
 - Resume when the maintainer decides whether ticket0 aims to replace those products or remain a platform-proof demo; file only the selected gaps. The issue retains the comparison and its per-gap argument.
 
