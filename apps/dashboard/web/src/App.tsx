@@ -274,8 +274,8 @@ export function App() {
 
   /** The install's durable step record (#424), for the cards' live progress list. */
   const loadInstallSteps = useCallback(
-    (scopeId: string) => (DEV_MOCK ? Promise.resolve([]) : api.installSteps(scopeId)),
-    [],
+    (scopeId: string) => (DEV_MOCK || !currentTeamId ? Promise.resolve([]) : teamApi(currentTeamId).getAppInstallSteps({ scopeId })),
+    [currentTeamId],
   );
 
   const reloadDeployments = useCallback(async () => {

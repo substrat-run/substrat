@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { api, type AppFailuresView } from '../lib/api';
+import { teamApi, type AppFailuresView } from '../lib/api';
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { card } from '../components/ui';
 import { isPlainClick, obsPath, teamPath } from '../lib/router';
 
 /** Show retained failure records and link to their log intervals without stale log filters. */
-export function AppFailures({ scopeId, window, nonce, onNav }: {
+export function AppFailures({ teamId, scopeId, window, nonce, onNav }: {
+  teamId: string;
   scopeId: string;
   window: { since: string; until: string };
   nonce: number;
@@ -17,10 +18,10 @@ export function AppFailures({ scopeId, window, nonce, onNav }: {
     let live = true;
     setRead(null);
     setError(null);
-    api.appFailures(scopeId, window).then((r) => live && setRead(r))
+    teamApi(teamId).getAppFailures({ scopeId, ...window }).then((r) => live && setRead(r))
       .catch((e) => live && setError(e instanceof Error ? e.message : String(e)));
     return () => { live = false; };
-  }, [scopeId, window.since, window.until, nonce]);
+  }, [teamId, scopeId, window.since, window.until, nonce]);
   const missing = read?.unavailableSources ?? [];
   const incomplete = read?.incompleteSources ?? [];
   return <div style={{ ...card, padding: 16, display: 'grid', gap: 16 }}>
