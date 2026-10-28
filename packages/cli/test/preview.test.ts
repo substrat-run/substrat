@@ -55,14 +55,16 @@ describe('formatPreviewLogin (#1704) — a preview without a working login is ne
   });
   const callbackUrl = 'https://desk--pr-7.global.substrat.run/api/auth/callback';
 
-  it('prints the control plane’s note for a wired login, unmarked, and every carried-over note', () => {
+  it('prints the control plane’s note for a wired login, unmarked, and the settings note', () => {
+    const settingsNote =
+      "Settings: only non-secret Env tab settings explicitly declared for preview carryover are delivered; other settings use the deployment's defaults.";
     const lines = formatPreviewLogin(
       created({
         auth: { status: 'wired', callbackUrl, issuer: 'https://auth.acme.test', clientId: 'c1', note: 'Sign-in: wired at auth.acme.test' },
-        notes: ['Settings: not carried over'],
+        notes: [settingsNote],
       }),
     );
-    expect(lines).toEqual(['  Sign-in: wired at auth.acme.test', '  Settings: not carried over']);
+    expect(lines).toEqual(['  Sign-in: wired at auth.acme.test', `  ${settingsNote}`]);
   });
 
   it.each(['unregistered', 'ambiguous', 'unknown'] as const)('marks %s with a warning', (status) => {

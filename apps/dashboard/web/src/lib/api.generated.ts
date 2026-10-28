@@ -611,7 +611,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/env` — `dashboard/get-app-env`
    */
-  getAppEnv(input: { scopeId: string }): Promise<{ spec: { key: string; label?: string; description: string; placeholder?: string; required: boolean; secret: boolean; default?: string; group?: string }[]; values: ({ key: string; isSecret: boolean; hasValue: boolean; value: string | null; updatedAt: string })[] }>;
+  getAppEnv(input: { scopeId: string }): Promise<{ spec: { key: string; label?: string; description: string; placeholder?: string; required: boolean; secret: boolean; previewCarry?: boolean; default?: string; group?: string }[]; values: ({ key: string; isSecret: boolean; hasValue: boolean; value: string | null; updatedAt: string })[] }>;
 
   /**
    * Recent failures of one installed app

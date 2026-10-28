@@ -396,6 +396,34 @@ touch the DO's storage lifecycle, never the vertical's operations — and they e
 reap them). That is the line to ratify: the platform holds **scope-storage lifecycle** authority
 over verticals, but reads/writes domain data across the boundary only through §6's gated paths.
 
+### Preview settings and external sign-in (#1704)
+
+A pushed version may set `previewCarry: true` on a declared, non-secret `envSpec` key. On
+each preview push, the control plane asks the parent deployment for only those keys through
+`/internal/preview-config` and delivers present values to the new version's preview scope
+through `/internal/configure`. The vertical implements `onReadPreviewConfig` beside
+`onConfigure` to read its per-scope settings. The flag is off when omitted; a secret setting
+cannot opt in. Other settings remain absent from the preview and use the new deployment's
+defaults. A clean-room preview has no parent settings to carry.
+
+The delete-scope hook clears a preview's delivered settings from the deployment being
+deleted. After a push moves the preview to another deployment, `/internal/wipe-carried`
+wipes the earlier deployment's scope data but does not clear its per-scope config rows:
+that call carries no tenant ID for the tenant identity store. The earlier copy is then
+settled as done, so a later reap does not visit it. Carry-specific rows left there hold
+only values declared non-secret and opted in by both versions, in the tenant's own store
+under the preview's scope ID. After reap, that ID no longer routes. A later retention
+need, or a vertical carrying sensitive but non-secret values, would justify either
+carrying the tenant ID on the wipe call or reading the scope's provision receipt through
+the host; those changes extend the wire or adapter surface respectively.
+
+A team auth server can mint and reap a preview's own client automatically. An external
+issuer cannot: the platform has no issuer administration integration and does not retain
+the parent's client for a preview. Such a preview has no platform-delivered login. For now,
+registering the preview callback and a distinct client at that issuer is a manual operator
+step; this alone does not deliver the client to the preview. Build automatic external-issuer
+registration, delivery, and reaping when a real external-issuer vertical needs previews.
+
 ## 10. Open questions
 
 0. ~~Per-PR previews (composition of §2 × §9)~~ **Built + decided (2026-07-30, D-43).**

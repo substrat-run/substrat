@@ -257,6 +257,10 @@ class AppDeployments {
         this.deliveries.push({ version, scopeId: input.scopeId, keys: input.entries.map((e) => e.key) });
         if (this.duringDelivery) await this.duringDelivery(version);
       },
+      readPreviewConfig: async (input: { scopeId: string; keys: string[] }) => {
+        const config = this.stores.get(version)?.get(input.scopeId) ?? {};
+        return input.keys.flatMap((key) => Object.hasOwn(config, key) ? [{ key, value: config[key]! }] : []);
+      },
     } as unknown as VerticalClient;
     this.clients.set(version, c);
     return c;
@@ -448,6 +452,54 @@ describe('a preview of an app on a team auth server gets its own login (#1704)',
     }>;
     expect(rows.find((r) => r.scopeId === out.scopeId)?.callbackUrl).toBe(oidcCallbackUrl(PREVIEW_HOST('pr-7')));
   });
+});
+
+async function publishSettingsVersion(label: string, settings: Array<{ key: string; description: string; secret: boolean; previewCarry?: boolean }>): Promise<string> {
+  const id = ulid();
+  await host.admin.publishVersion(staff, {
+    id, verticalSlug: APP, version: label, manifestDigest: `m-${label}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+    manifestJson: JSON.stringify({
+      version: label, entry: 'worker.ts', compatibilityDate: '2026-01-01', envSpec: settings,
+      digests: { manifest: `m-${label}`, permission: 'p', migration: 'g' },
+    }),
+  });
+  await host.admin.admitVersion(staff, id);
+  return id;
+}
+
+it('carries only declared non-secret Env values from the parent on each preview push', async () => {
+  const settings = [
+    { key: 'THEME', description: 'Display theme', secret: false, previewCarry: true },
+    { key: 'REGION', description: 'Region', secret: false },
+    { key: 'API_KEY', description: 'Credential', secret: true },
+  ];
+  const sourceVersion = await publishSettingsVersion('1.0.4', settings);
+  await host.admin.bindScopeVersion(staff, tenant, prod, sourceVersion);
+  deployments.stores.set(sourceVersion, new Map([[prod, { THEME: 'dark', REGION: 'north', API_KEY: 'private' }]]));
+  const firstVersion = await publishSettingsVersion('1.1.0', settings);
+  const secondVersion = await publishSettingsVersion('1.1.1', settings);
+  const first = await created({ tag: 'pr-7', versionId: firstVersion });
+  const second = await created({ tag: 'pr-7', versionId: secondVersion });
+  expect(second.scopeId).toBe(first.scopeId);
+  for (const version of [firstVersion, secondVersion]) {
+    const config = deployments.stores.get(version)?.get(first.scopeId);
+    expect(config?.THEME).toBe('dark');
+    expect(config).not.toHaveProperty('REGION');
+    expect(config).not.toHaveProperty('API_KEY');
+  }
+});
+
+it('requires the source version to declare a carried setting non-secret and opted in', async () => {
+  const sourceVersion = await publishSettingsVersion('1.0.4', [
+    { key: 'THEME', description: 'Display theme', secret: true },
+  ]);
+  await host.admin.bindScopeVersion(staff, tenant, prod, sourceVersion);
+  deployments.stores.set(sourceVersion, new Map([[prod, { THEME: 'dark' }]]));
+  const incomingVersion = await publishSettingsVersion('1.1.0', [
+    { key: 'THEME', description: 'Display theme', secret: false, previewCarry: true },
+  ]);
+  const preview = await created({ tag: 'pr-7', versionId: incomingVersion });
+  expect(deployments.stores.get(incomingVersion)?.get(preview.scopeId)).not.toHaveProperty('THEME');
 });
 
 describe('the reap deletes the preview’s client (#1704)', () => {

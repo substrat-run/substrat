@@ -122,6 +122,7 @@ import {
   migrationsOnTop,
   substratError,
   errorCodeOf,
+  envVarSpec,
   capabilityFilterQuery,
   capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
@@ -10997,6 +10998,42 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       options.verticals?.[slug] ??
       (await options.resolveVertical?.(slug, actor));
 
+    // Both the source and pushed versions must opt in to carrying an ordinary setting. A
+    // missing or invalid source declaration allows none. The parent deployment reads only
+    // these keys; the control plane never copies its whole config store.
+    const carrySettings = async (previewId: ScopeId, parent: Scope | null): Promise<void> => {
+      if (!parent) return;
+      const eligibleKeys = (json: string | null): Set<string> => {
+        if (!json) return new Set();
+        try {
+          const declared = (JSON.parse(json) as { envSpec?: unknown }).envSpec;
+          const specs = z.array(envVarSpec).safeParse(declared);
+          if (!specs.success) return new Set();
+          return new Set(specs.data.filter((spec) => spec.previewCarry && !spec.secret).map((spec) => spec.key));
+        } catch {
+          return new Set();
+        }
+      };
+      const sourceJson = parent.verticalVersionId
+        ? await c.var.admin.versionManifest(actor, slug, parent.verticalVersionId)
+        : null;
+      const sourceKeys = eligibleKeys(sourceJson);
+      if (sourceKeys.size === 0) return;
+      const incomingJson = await c.var.admin.versionManifest(actor, slug, opts.versionId);
+      const keys = [...eligibleKeys(incomingJson)].filter((key) => sourceKeys.has(key));
+      if (keys.length === 0) return;
+      const sourceClient = await verticalForScope(c, parent);
+      if (!sourceClient || !target) {
+        throw new ControlPlaneError(501, 'the parent or preview deployment cannot deliver declared preview settings');
+      }
+      const requested = new Set(keys);
+      const values = await retryTransient(() => sourceClient.readPreviewConfig({ tenantId, scopeId: parent.id, keys }));
+      const entries = values.filter((entry) => requested.has(entry.key));
+      if (entries.length > 0) {
+        await retryTransient(() => target.configureInstance({ tenantId, scopeId: previewId, entries }));
+      }
+    };
+
     // The preview's own login (#1704), once it serves this version. Delivered into `target` —
     // THIS push's version deployment — and never "whatever the scope is bound to now", so an
     // older push can never overwrite a newer push's config store. A failure lands an
@@ -11037,8 +11074,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const notesFor = (parent: Scope | null): string[] =>
       parent
         ? [
-            "Settings: a preview does not carry over the app's per-install settings (the dashboard's Env tab); " +
-              "it runs on the deployment's defaults.",
+            "Settings: only non-secret Env tab settings explicitly declared for preview carryover are delivered; " +
+              "other settings use the deployment's defaults.",
           ]
         : [];
 
@@ -11134,6 +11171,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const servedFork = async (p: ForkLanding) => {
       const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, p.previewId, opts.tag, surface);
       await assertServesBoundVersion(p.previewId);
+      await carrySettings(p.previewId, p.parent);
       const auth = await wireLogin(p.previewId, hostname, p.parent);
       return {
         scopeId: p.previewId,
@@ -11388,6 +11426,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const parent = existing.forkedFrom
         ? ((await c.var.admin.getScopeRecord(actor, tenantId, existing.forkedFrom)) ?? null)
         : null;
+      await carrySettings(existing.id, parent);
       const auth = await wireLogin(existing.id, hostname, parent);
       return {
         scopeId: existing.id,

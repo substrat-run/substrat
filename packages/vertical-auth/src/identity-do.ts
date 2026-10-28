@@ -129,6 +129,11 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     return config;
   }
 
+  /** Remove a reaped scope's delivered settings from this tenant's shared directory. */
+  async deleteScopeConfig(scopeId: string): Promise<void> {
+    this.ctx.storage.sql.exec('DELETE FROM scope_config WHERE scope_id = ?', scopeId);
+  }
+
   /**
    * Everything the worker needs to build the scope's `AuthProvider`, in ONE round-trip:
    * the scope's delivered config (notably `substrat:auth`) plus this tenant's
@@ -372,6 +377,7 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
 export type IdentityStub = {
   setScopeConfig(scopeId: string, entries: Array<{ key: string; value: string }>): Promise<void>;
   getScopeConfig(scopeId: string): Promise<Record<string, string>>;
+  deleteScopeConfig(scopeId: string): Promise<void>;
   authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }>;
   recordSite(scopeId: string, slug: string, name: string): Promise<void>;
   forgetSite(scopeId: string): Promise<void>;
