@@ -8262,22 +8262,20 @@ export class CloudflareScopeHost implements ScopeHost {
         // module, one permission; tombstones on revoke; shows in the permission diff.
         const grant = systemGrant.parse(raw);
         const target = { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId };
-        const after = { moduleId: grant.moduleId, permission: grant.permission, node: grant.node,
-          expiresAt: grant.expiresAt ?? null, grantedBy: grant.grantedBy };
+        const after = { moduleId: grant.moduleId, permission: grant.permission, node: grant.node };
         if (grant.node.scopeId) {
           if (await this.scopePermissionUsesLegacyPlaceholder(grant.node.tenantId, grant.node.scopeId)) {
             const written = await this.scopeStub(grant.node.scopeId).writeSystemGrant(
               grant.moduleId, `granted:${grant.permission}`, `scope:${grant.node.scopeId}`, grant.expiresAt ?? null,
             );
             if (!written) throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
-            await this.recordAdmin(actor, 'grantToSystem', target, null,
-              { moduleId: grant.moduleId, permission: grant.permission, node: grant.node });
+            await this.recordAdmin(actor, 'grantToSystem', target, null, after);
             return;
           }
           // #1666: refused while the module is switched off on this scope — checked and
           // written in one DO unit. Restore is the lever; a grant is not.
           const written = await auditedScopePermissionWrite({
-            action: 'grantToSystem', request: after,
+            action: 'grantToSystem', request: { ...after, expiresAt: grant.expiresAt ?? null, grantedBy: grant.grantedBy },
             record: (row) => this.recordAdmin(actor, 'grantToSystem', target, null, row),
             write: () => this.scopeStub(grant.node.scopeId!).writeSystemGrantAndAuditIntent(
               grant.moduleId, `granted:${grant.permission}`, `scope:${grant.node.scopeId}`, grant.expiresAt ?? null,
