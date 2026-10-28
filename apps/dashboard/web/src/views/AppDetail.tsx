@@ -2329,8 +2329,8 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     // The open record belonged to the scope we just left, and its table selection
     // is gone with it.
     setHistory(null);
-    teamApi(teamId)
-      .listAppTables({ scopeId: activeScope })
+    api
+      .appTables(teamId, activeScope)
       .then((ts) => {
         if (!live) return;
         setTables(ts);
@@ -2358,8 +2358,8 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     }
     let live = true;
     setPage(null);
-    teamApi(teamId)
-      .readAppTable({ scopeId: activeScope, table: selected, limit: DATA_PAGE, offset })
+    api
+      .appTableRows(teamId, activeScope, selected, { limit: DATA_PAGE, offset })
       .then((p) => live && setPage(p))
       .catch((e) => live && setPageErr(e instanceof Error ? e.message : String(e)));
     return () => {
@@ -2485,8 +2485,8 @@ function SqlConsole({ teamId, scopeId }: { teamId: string; scopeId: string }) {
     }
     setRunning(true);
     setErr(null);
-    teamApi(teamId)
-      .queryAppScope({ scopeId, sql })
+    api
+      .appQuery(teamId, scopeId, sql)
       .then((r) => setResult(r))
       .catch((e) => {
         setResult(null);

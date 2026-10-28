@@ -33,7 +33,6 @@ import {
   envVarSpec,
   eventDelivery,
   eventFacetResult,
-  effectsTerminal,
   historyEntry,
   LIST_PAGE_MAX,
   opsFailureEntry,
@@ -66,7 +65,6 @@ import {
   versionOrigin,
   verticalSlug,
   z,
-  type EventEffects,
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
@@ -651,10 +649,19 @@ const appReleaseSide = z.object({
   errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable(),
 });
 
-export const eventEffects: z.ZodType<EventEffects> = z.object({
-  event: historyEntry, deliveries: z.array(eventDelivery), effects: z.array(z.lazy(() => eventEffects)),
+// These vocabularies are written by the deployed app's kernel, which may be newer
+// than this dashboard. Preserve its value for the person reading the record.
+const historyEntryOut = historyEntry.extend({ piiClass: z.string() });
+const eventDeliveryOut = eventDelivery.extend({ state: z.string() });
+interface EventEffectsOut {
+  event: z.infer<typeof historyEntryOut>;
+  deliveries: z.infer<typeof eventDeliveryOut>[];
+  effects: EventEffectsOut[];
+}
+export const eventEffects: z.ZodType<EventEffectsOut> = z.object({
+  event: historyEntryOut, deliveries: z.array(eventDeliveryOut), effects: z.array(z.lazy(() => eventEffects)),
 });
-const effectsTree = z.object({ root: eventEffects.nullable(), terminal: effectsTerminal, count: z.number() });
+const effectsTree = z.object({ root: eventEffects.nullable(), terminal: z.string(), count: z.number() });
 
 export const dashboardRoutes = defineRoutes({
   // -- apps: the read side (#2170) --------------------------------------------
@@ -698,19 +705,19 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/facet-app-events': {
     summary: "Counts of one app scope's events by a selected dimension",
     input: z.object({ scopeId: z.string().min(1), groupBy: z.string().optional(), field: z.string().optional(), type: z.string().optional(), since: z.string().optional(), until: z.string().optional(), limit: z.coerce.number().optional() }),
-    output: eventFacetResult,
+    output: eventFacetResult.extend({ withheldReason: z.string().optional() }),
     http: { method: 'GET', path: '/apps/{scopeId}/facets' },
   },
   'dashboard/read-app-history': {
     summary: "One record's event history in this app scope",
     input: z.object({ scopeId: z.string().min(1), entityType: z.string(), entityId: z.string(), limit: z.coerce.number().optional(), cursor: z.string().optional() }),
-    output: pageOutput(historyEntry),
+    output: pageOutput(historyEntryOut),
     http: { method: 'GET', path: '/apps/{scopeId}/history' },
   },
   'dashboard/read-app-cause': {
     summary: "The causal chain leading to an event in this app scope",
     input: z.object({ scopeId: z.string().min(1), eventId: z.string(), maxDepth: z.coerce.number().optional() }),
-    output: causeChain,
+    output: causeChain.extend({ chain: z.array(historyEntryOut), terminal: z.string() }),
     http: { method: 'GET', path: '/apps/{scopeId}/cause' },
   },
   'dashboard/read-app-effects': {
@@ -722,7 +729,7 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/read-app-invocation': {
     summary: "The events emitted by one invocation in this app scope",
     input: z.object({ scopeId: z.string().min(1), invocationId: z.string(), limit: z.coerce.number().optional() }),
-    output: z.object({ events: z.array(historyEntry), truncated: z.boolean() }),
+    output: z.object({ events: z.array(historyEntryOut), truncated: z.boolean() }),
     http: { method: 'GET', path: '/apps/{scopeId}/invocation' },
   },
   'dashboard/list-app-denials': {

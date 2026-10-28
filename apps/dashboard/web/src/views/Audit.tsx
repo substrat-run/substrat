@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Button, KeyValue, Select } from '@substrat-run/ui';
-import { api, teamApi, ApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
+import { api, ApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockAuditLogAll } from '../lib/mock-audit';
 import { shortDate, shortId } from '../lib/format';
@@ -154,7 +154,7 @@ export function AuditLog({
   /** One page of the app's refusals, appended; the next is `until` the oldest held (+1 ms, deduped). */
   const readRefusals = async (gen: number, scope: string, until?: string) => {
     try {
-      const page = DEV_MOCK ? mockDenials(scope, { until, limit: REFUSALS_PAGE }) : await teamApi(teamId).listAppDenials({ scopeId: scope, until, limit: REFUSALS_PAGE });
+      const page = DEV_MOCK ? mockDenials(scope, { until, limit: REFUSALS_PAGE }) : await api.appDenials(teamId, scope, { until, limit: REFUSALS_PAGE });
       if (gen !== generation.current) return;
       setRefusals((prev) => {
         const held = until ? prev?.entries ?? [] : [];

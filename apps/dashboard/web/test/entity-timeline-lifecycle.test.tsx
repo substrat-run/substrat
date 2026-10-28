@@ -35,7 +35,7 @@ describe('EntityTimeline with a lifecycle', () => {
   });
 
   const pages = () =>
-    vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_s, _t, _i, cursor) =>
+    vi.spyOn(api, 'appEntityHistory').mockImplementation(async (_team, _s, _t, _i, cursor) =>
       cursor === undefined
         ? { entries: [ev('01A', '2026-09-21T00:00:00.000Z', 'desk/create', 'new'), ev('01B', '2026-09-21T02:00:00.000Z', 'desk/assign', 'open')], nextCursor: 'p2' }
         : { entries: [ev('01C', '2026-09-22T02:00:00.000Z', 'desk/close', 'closed')], nextCursor: null },

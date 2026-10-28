@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
-import { ApiError, api, teamApi, type CauseChain, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type InvocationEvents, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
+import { ApiError, api, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
 import { LogList } from '../components/LogList';
 import { callLogsWindow } from '../lib/history';
 import { shortId } from '../lib/format';
@@ -113,7 +113,7 @@ function useRequestDetail(teamId: string, scopeId: string, invocationId: string,
           const withLifecycle = refs.filter((r) => lifecycles[r.entityType]).slice(0, ENTITIES_MAX);
           const found = await Promise.all(
             withLifecycle.map(async (r) => {
-              const page = await teamApi(teamId).readAppHistory({ scopeId, entityType: r.entityType, entityId: r.entityId }) as { entries: HistoryEntry[]; nextCursor: string | null };
+              const page = await api.appEntityHistory(teamId, scopeId, r.entityType, r.entityId);
               return causedTransition(r.entityType, r.entityId, invocationId, lifecycles[r.entityType]!, page.entries);
             }),
           );
@@ -123,19 +123,19 @@ function useRequestDetail(teamId: string, scopeId: string, invocationId: string,
         }
       })
       .catch((e) => set({ logs: { state: 'error', message: errorText(e) }, transitions: { state: 'ready', value: [] } }));
-    (teamApi(teamId).readAppInvocation({ scopeId, invocationId }) as Promise<InvocationEvents>)
+    api.appInvocationEvents(teamId, scopeId, invocationId)
       .then(async (r) => {
         set({ events: { state: 'ready', value: r.events } });
         // Each event's consumers are their own read: one that fails costs its own rows,
         // not the events list or the consumers of the others.
-        const settled = await Promise.allSettled(r.events.slice(0, EFFECTS_MAX).map((e) => teamApi(teamId).readAppEffects({ scopeId, eventId: e.id }) as Promise<EffectsTree>));
+        const settled = await Promise.allSettled(r.events.slice(0, EFFECTS_MAX).map((e) => api.appEventEffects(teamId, scopeId, e.id)));
         const trees = settled.flatMap((s) => (s.status === 'fulfilled' ? [s.value] : []));
         const failed = settled.find((s): s is PromiseRejectedResult => s.status === 'rejected');
         set({ followUps: { state: 'ready', value: { trees } }, followUpsError: failed ? errorText(failed.reason) : null });
         // Who set this request off: walk back from the events that were themselves a reaction.
         const allReacting = r.events.filter((e) => e.causedBy !== null);
         const reacting = allReacting.slice(0, CAUSES_MAX);
-        const causeReads = await Promise.allSettled(reacting.map((e) => teamApi(teamId).readAppCause({ scopeId, eventId: e.id }) as Promise<CauseChain>));
+        const causeReads = await Promise.allSettled(reacting.map((e) => api.appEventCause(teamId, scopeId, e.id)));
         const causes = causeReads.flatMap((c) => (c.status === 'fulfilled' ? [c.value] : []));
         const rejected = settled.length - trees.length + causeReads.length - causes.length;
         const reasons = [

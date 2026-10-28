@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
-import { teamApi, type CauseChain, type CauseTerminal, type EffectsTree, type EffectsTerminal, type EventEffects, type HistoryEntry, type InvocationEvents } from '../lib/api';
+import { api, type CauseChain, type CauseTerminal, type EffectsTree, type EffectsTerminal, type EventEffects, type HistoryEntry, type InvocationEvents } from '../lib/api';
 import { actorLabel, authorizationLabel, callButtonTitle, callLogsButtonTitle, impersonationLabel, operationLabel, payloadText, payloadUndecodable } from '../lib/history';
 import { causeChips, deliveryStatus, eventSummary, eventTime, newestFirst, payloadRows, stateChangingIds, type CauseChip, type Tone } from '../lib/event-history';
 import { shortId } from '../lib/format';
@@ -24,13 +24,13 @@ const LIFECYCLE_PAGES = 5;
  */
 const reads = {
   history: (teamId: string, scopeId: string, entityType: string, entityId: string, cursor?: string) =>
-    DEV_MOCK ? Promise.resolve(mockEntityHistory(entityId)) : teamApi(teamId).readAppHistory({ scopeId, entityType, entityId, cursor }) as Promise<{ entries: HistoryEntry[]; nextCursor: string | null }>,
+    DEV_MOCK ? Promise.resolve(mockEntityHistory(entityId)) : api.appEntityHistory(teamId, scopeId, entityType, entityId, cursor),
   cause: (teamId: string, scopeId: string, eventId: string): Promise<CauseChain> =>
-    DEV_MOCK ? Promise.resolve(mockEventCause(eventId)) : teamApi(teamId).readAppCause({ scopeId, eventId }) as Promise<CauseChain>,
+    DEV_MOCK ? Promise.resolve(mockEventCause(eventId)) : api.appEventCause(teamId, scopeId, eventId),
   effects: (teamId: string, scopeId: string, eventId: string): Promise<EffectsTree> =>
-    DEV_MOCK ? Promise.resolve(mockEventEffects(eventId)) : teamApi(teamId).readAppEffects({ scopeId, eventId }) as Promise<EffectsTree>,
+    DEV_MOCK ? Promise.resolve(mockEventEffects(eventId)) : api.appEventEffects(teamId, scopeId, eventId),
   invocation: (teamId: string, scopeId: string, invocationId: string): Promise<InvocationEvents> =>
-    DEV_MOCK ? Promise.resolve(mockInvocationEvents(invocationId)) : teamApi(teamId).readAppInvocation({ scopeId, invocationId }) as Promise<InvocationEvents>,
+    DEV_MOCK ? Promise.resolve(mockInvocationEvents(invocationId)) : api.appInvocationEvents(teamId, scopeId, invocationId),
 };
 
 /** One read's lifecycle, keyed so a late answer for a previous key is dropped. */

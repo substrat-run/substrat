@@ -3,7 +3,7 @@ import { createClient, type BoundScopeRow, type ChannelHistoryRow, type Dashboar
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
-import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, EmittedModel, EventFacetResult, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
 export type { BoundScopeRow, DeployFailureRow, FailureGroupRow, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView };
@@ -477,7 +477,7 @@ export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts
  * from before this release relays such an answer without `withheldPersonal` at all, so
  * the absence is "unknown", never 0.
  */
-export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal'> & { withheldPersonal?: number };
+export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal' | 'withheldReason'> & { withheldPersonal?: number; withheldReason?: string };
 
 /** One declared field and whether anything declares it as output (#1321). */
 /** One node of the flow map (#1234), already laid out. */
@@ -1743,6 +1743,11 @@ export const api = {
     }),
   /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
   appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),
+  /** Data reads use the selected tab's team through the generated client. */
+  appTables: (teamId: string, scopeId: string) => teamApi(teamId).listAppTables({ scopeId }),
+  appTableRows: (teamId: string, scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) =>
+    teamApi(teamId).readAppTable({ scopeId, table, ...opts }),
+  appQuery: (teamId: string, scopeId: string, sql: string) => teamApi(teamId).queryAppScope({ scopeId, sql }),
   /**
    * Mint a consent-round connect link (#1220). The `url` in the answer is both the
    * Connect button's destination (navigate to it now) and the copyable link for a
@@ -1870,9 +1875,21 @@ export const api = {
    * a page at a time, so dropping `nextCursor` would show a long-lived record's
    * OLDEST events and silently hide everything since.
    */
-  /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
-   *  cross: a dropped `until` answers about a wider slice than was asked for, and
-   *  nothing about the answer says so. */
+  appEntityHistory: (teamId: string, scopeId: string, entityType: string, entityId: string, cursor?: string) =>
+    teamApi(teamId).readAppHistory({ scopeId, entityType, entityId, cursor }) as Promise<Page<HistoryEntry>>,
+  /** Facets over an app's events (#1239), with both window bounds. */
+  appFacets: (teamId: string, scopeId: string, q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string }) =>
+    teamApi(teamId).facetAppEvents({ scopeId, ...q }) as Promise<EventFacetAnswer>,
+  appEventCause: (teamId: string, scopeId: string, eventId: string) =>
+    teamApi(teamId).readAppCause({ scopeId, eventId }) as Promise<CauseChain>,
+  appEventEffects: (teamId: string, scopeId: string, eventId: string) =>
+    teamApi(teamId).readAppEffects({ scopeId, eventId }) as Promise<EffectsTree>,
+  appInvocationEvents: (teamId: string, scopeId: string, invocationId: string) =>
+    teamApi(teamId).readAppInvocation({ scopeId, invocationId }) as Promise<InvocationEvents>,
+  appDenials: (teamId: string, scopeId: string, opts: { until?: string; limit?: number } = {}) =>
+    teamApi(teamId).listAppDenials({ scopeId, ...opts }),
+  appDeadLetters: (teamId: string, scopeId: string, cursor?: string) =>
+    teamApi(teamId).listAppDeadLetters({ scopeId, cursor }) as Promise<Page<DeadLetter>>,
 
   /** Every app's health, worst first (#1238) — the rollup, not a per-app read. */
   fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),

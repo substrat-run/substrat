@@ -67,7 +67,7 @@ describe('RequestSlideOver', () => {
   it('keeps the events, and the consumers that could be read, when one effects read fails', async () => {
     vi.spyOn(api, 'appTenantLogs').mockResolvedValue([stampedLine]);
     vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [event('E1', 'acme.assigned'), event('E2', 'acme.noted')], truncated: false } as InvocationEvents);
-    vi.spyOn(api, 'appEventEffects').mockImplementation(async (_s, eventId) => {
+    vi.spyOn(api, 'appEventEffects').mockImplementation(async (_team, _s, eventId) => {
       if (eventId === 'E2') throw new ApiError(503, 'scope busy');
       return {
         root: { event: event('E1', 'acme.assigned'), deliveries: [{ consumer: 'notify', state: 'delivered', at: new Date(END + 180).toISOString(), attempts: 1, error: null }], effects: [] },

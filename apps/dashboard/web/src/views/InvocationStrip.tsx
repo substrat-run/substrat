@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { teamApi, type InvocationEvents } from '../lib/api';
+import { api, type InvocationEvents } from '../lib/api';
 import { operationLabel } from '../lib/history';
 import { shortId } from '../lib/format';
 import { MonoTag } from '../components/ui';
@@ -47,9 +47,8 @@ export function InvocationStrip({
     let live = true;
     setRead(null);
     setErr(null);
-    teamApi(teamId)
-      .readAppInvocation({ scopeId, invocationId })
-      .then((r) => r as InvocationEvents)
+    api
+      .appInvocationEvents(teamId, scopeId, invocationId)
       .then((r) => live && setRead(r))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {

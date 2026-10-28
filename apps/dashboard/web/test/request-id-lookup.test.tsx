@@ -5,7 +5,7 @@ import { RequestsMode } from '../src/views/RequestsMode';
 import { RequestSlideOver } from '../src/views/RequestSlideOver';
 import { failureDetail, RequestIdNote, requestIdOf } from '../src/components/RequestIdNote';
 import { ApiError as ClientError } from '../src/lib/api.generated';
-import { api, teamApi, ApiError, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
+import { api, ApiError, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
 import { parseRequestId, requestLookup, REQUEST_WINDOW_MS } from '../src/lib/request-url';
 import { recordFromLogs, relatedRequests } from '../src/lib/request-detail';
 
@@ -156,7 +156,7 @@ describe('ApiError.requestId', () => {
   afterEach(() => vi.unstubAllGlobals());
   const failWith = async (init: ResponseInit, body: unknown) => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify(body), { status: 403, headers: { 'content-type': 'application/json' }, ...init }));
-    return teamApi('team-a').readAppInvocation({ scopeId: 'app-a', invocationId: 'X' }).then(
+    return api.appFlow('app-a').then(
       () => null,
       (e: unknown) => e as ApiError,
     );

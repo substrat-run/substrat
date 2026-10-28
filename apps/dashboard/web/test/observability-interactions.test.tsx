@@ -284,6 +284,7 @@ it('preserves URL event grouping and type through refresh without remounting con
   await act(async () => click(button('Refresh')));
   expect(facets).toHaveBeenCalledTimes(2);
   expect(facets).toHaveBeenLastCalledWith(
+    'team-a',
     'app-a',
     expect.objectContaining({ groupBy: 'operation', type: 'receipt.sent', ...windowRange }),
   );
