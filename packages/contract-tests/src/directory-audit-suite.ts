@@ -124,6 +124,84 @@ const hostnameStatus = async (host: ScopeHost, staff: PlatformActorId, s: ScopeI
 
 const RECORDS = [{ type: 'txt' as const, name: '_cf-custom-hostname', value: 'dcv-token', status: null }];
 
+/** One representative write for each remaining directory-only family. */
+const REMAINING_FAMILIES: readonly {
+  family: string;
+  action: AdminAction;
+  arrange(host: ScopeHost, staff: PlatformActorId, fixture: DirectoryAuditFixture): Promise<{
+    call(): Promise<unknown>;
+    state(): Promise<unknown>;
+  }>;
+}[] = [
+  {
+    family: 'impersonation', action: 'beginImpersonation',
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      const s = await newScope(host, staff, t);
+      const principal = principalId.parse(ulid());
+      return {
+        call: () => host.admin.beginImpersonation(staff, { tenantId: t, scopeId: s, principal, reason: 'support request' }),
+        state: () => fixture.directoryRows(`SELECT id FROM _substrat_impersonations WHERE tenant_id = '${t}' AND scope_id = '${s}'`),
+      };
+    },
+  },
+  {
+    family: 'identity', action: 'registerIdentityPool',
+    arrange: async (host, staff) => {
+      const provider = slugOf();
+      return {
+        call: () => host.admin.registerIdentityPool(staff, { provider, topology: 'central', tenantId: null }),
+        state: () => host.admin.getIdentityPool(staff, provider),
+      };
+    },
+  },
+  {
+    family: 'connections', action: 'createConnection',
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      const id = connectionId.parse(ulid());
+      return {
+        call: () => host.admin.createConnection(staff, { id, tenantId: t, vertical: 'audit-vertical', provider: slugOf(), label: 'Audit connection', secret: { accessToken: 'tok' } }),
+        state: () => fixture.directoryRows(`SELECT id FROM _substrat_connections WHERE id = '${id}'`),
+      };
+    },
+  },
+  {
+    family: 'store drivers', action: 'uploadStoreDriverRelease',
+    arrange: async (host, staff) => {
+      const driver = `k${ulid().toLowerCase().slice(-10)}`;
+      const sha256 = 'a'.repeat(64);
+      return {
+        call: () => host.admin.recordStoreDriverRelease(staff, { driver, sha256, sourceCommit: 'b'.repeat(40) }),
+        state: () => host.admin.getStoreDriverRelease(staff, driver, sha256),
+      };
+    },
+  },
+  {
+    family: 'tenant-store ledger', action: 'provisionTenantStore',
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      return {
+        call: () => host.provisionTenantStore(staff, { tenantId: t, vertical: 'audit-vertical', binding: 'AUDIT_DB' }),
+        state: () => fixture.directoryRows(`SELECT ref FROM tenant_stores WHERE tenant_id = '${t}' AND binding = 'AUDIT_DB'`),
+      };
+    },
+  },
+  {
+    family: 'access log and issues', action: 'drainAccessLog',
+    arrange: async (host, staff, fixture) => {
+      const t = await newTenant(host, staff);
+      await host.admin.getTenant(staff, t);
+      const upToId = 'Z'.repeat(26);
+      const drainedAt = new Date().toISOString();
+      return {
+        call: () => host.admin.markAccessLogDrained(staff, upToId, drainedAt),
+        state: () => fixture.directoryRows('SELECT id FROM _substrat_access_log WHERE drained_at IS NOT NULL'),
+      };
+    },
+  },
+];
+
 const entitlementsOf = async (host: ScopeHost, staff: PlatformActorId, t: TenantId) =>
   (await host.admin.listEntitlements(staff, t)).map((e) => [e.entitlementKey, e.plan]);
 
@@ -604,6 +682,34 @@ export function directoryAdminAuditTransactionSuite(adapterName: string, makeFix
 
     it.each(CASES.map((c) => [c.action, c] as const))('%s records no audit row when its state write is refused', async (_, c) => {
       await run(c, 'write');
+    });
+
+    it.each(REMAINING_FAMILIES.map((c) => [c.family, c] as const))('%s rolls back its directory state when the audit insert fails', async (_, c) => {
+      const fixture = await makeFixture();
+      const staff = platformActorId.parse(ulid());
+      const trigger = refusal(`test_refuse_remaining_${ulid().toLowerCase()}`, 'INSERT ON _substrat_admin_log',
+        `WHEN NEW.action = '${c.action}'`);
+      let lifted = true;
+      try {
+        const { call, state } = await c.arrange(fixture.host, staff, fixture);
+        const before = await state();
+        const since = new Date().toISOString();
+        const rows = async () => (await fixture.host.admin.auditLog(staff, { action: [c.action], since }))
+          .filter((r) => r.actor === staff);
+        await fixture.directorySql(trigger.create);
+        lifted = false;
+        await expect(call()).rejects.toThrow(/test fault/);
+        expect(await state()).toEqual(before);
+        expect(await rows()).toEqual([]);
+        await fixture.directorySql(trigger.drop);
+        lifted = true;
+        await call();
+        expect(await state()).not.toEqual(before);
+        expect(await rows()).toHaveLength(1);
+      } finally {
+        if (!lifted) await fixture.directorySql(trigger.drop);
+        await fixture.cleanup();
+      }
     });
 
     it('a no-op rename records nothing, and the rename before it one row', async () => {

@@ -127,7 +127,8 @@ directoryAdminAuditTransactionSuite('adapter-cloudflare', async () => {
     const sql = armed;
     armed = null;
     await directorySql(sql);
-  }), secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  }), secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  tenantStores: { create: async (name) => name, remove: async () => {} } });
   return {
     host,
     directorySql,
