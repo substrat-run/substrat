@@ -21,12 +21,13 @@ describe('the D-65 approval directory shape', () => {
     const insert = db.prepare(`INSERT INTO store_driver_approvals
       (approval_id, driver, sha256, source_commit, approved_by, approved_at, reason,
        source_references, isolation_review, schema, class_name, operations)
-      VALUES (?, 'graph', ?, 'commit', 'staff', '2026-10-28', 'reviewed', '[]', '{}', 1, 'Store', '[]')`);
+      VALUES (?, ?, ?, 'commit', 'staff', '2026-10-28', 'reviewed', '[]', '{}', 1, 'Store', '[]')`);
     const sha256 = 'a'.repeat(64);
-    insert.run('first', sha256);
-    expect(() => insert.run('duplicate', sha256)).toThrow(/UNIQUE constraint failed/);
+    insert.run('first', 'graph', sha256);
+    expect(() => insert.run('duplicate', 'graph', sha256)).toThrow(/UNIQUE constraint failed/);
+    insert.run('other-driver', 'other', sha256);
     db.prepare('UPDATE store_driver_approvals SET revoked_at = ? WHERE approval_id = ?').run('2026-10-29', 'first');
-    insert.run('second', sha256);
+    insert.run('second', 'graph', sha256);
 
     const walk = db.prepare(`INSERT INTO store_driver_revoke_walks
       (approval_id, driver, sha256, cursor, actor, reason, rollout_seq)
