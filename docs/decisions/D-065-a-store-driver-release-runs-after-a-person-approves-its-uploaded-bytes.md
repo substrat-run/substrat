@@ -29,9 +29,9 @@ for the driver package and every dependency built from a repository. The reviewe
 pyproject/lock. A dependency built from another repository is third-party wherever it is installed;
 one resolved from a public package index is install output. The platform does not prove those
 references produced the bytes. The uploader's `sourceCommit` stays on the upload, and the release
-row records who uploaded it. The approval copies `sourceCommit` as a consistency check and
-separately records who approved it, when, why, the
-release facts, the source references and the isolation review. There is no two-person rule yet.
+row records who uploaded it. The approval copies `sourceCommit` as a consistency check. It also
+records who approved it, when, why, the release facts, the source references and the isolation
+review. There is no two-person rule yet.
 
 **The review behind an approval is the review of what the platform will run for every tenant.** It
 records, with evidence, whether each of D-63's three isolation conditions is met, and that the
@@ -50,11 +50,11 @@ including a rollback or return, and the target cannot have a lower `schema` than
 script runs. If the approval read fails, the request refuses with 503; no approval is cached. A
 stored release is readable only by staff.
 
-**An approval takes effect when written and stands until a staff person revokes it.** Its release facts
-never change; an incorrect fact requires new bytes and a new sha256. A revoke stops later uploads
-of the release, including a rollback to it, but cannot stop a script already running it. Without
-an emergency flag and a reason, revocation is refused while the release is current or any script
-of that driver runs it. The guard walks each script's own release setting under the driver's
+**An approval takes effect when written and stands until a staff person revokes it.** Its release
+facts never change; an incorrect fact requires new bytes and a new sha256. A revoke stops later
+uploads of the release, including a rollback to it, but cannot stop a script already running it.
+Without an emergency flag and a reason, revocation is refused while the release is current or any
+script of that driver runs it. The guard walks each script's own release setting under the driver's
 exclusive hold, in pages, with a cursor ledger; there is no directory table of which release each
 script runs. An emergency revoke skips the walk. Every revoke records who made it, when, why and
 whether it was an emergency. Approvals and their revocations are kept, never deleted. At most one
