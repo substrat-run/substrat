@@ -33,8 +33,8 @@ export function Settings({ org, teamId, slug, name, email }: { org: string; team
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-secondary)' }}>Organization slug</div>
-              <div style={{ display: 'flex', alignItems: 'center', height: 32, width: 320, border: '1px solid var(--border-default)', borderRadius: 6, overflow: 'hidden', fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
-                <span style={{ padding: '0 10px', lineHeight: '30px', color: 'var(--text-primary)', background: 'var(--surface-card)' }}>{slug}</span>
+              <div style={{ width: 320, maxWidth: '100%', minHeight: 32, border: '1px solid var(--border-default)', borderRadius: 6, fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
+                <span style={{ display: 'block', padding: '7px 10px', color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>{slug}</span>
               </div>
             </div>
           </div>

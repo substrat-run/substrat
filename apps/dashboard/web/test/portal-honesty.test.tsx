@@ -9,6 +9,10 @@ import { Team } from '../src/views/Team';
 import { AppDetail } from '../src/views/AppDetail';
 
 vi.mock('../src/lib/version', () => ({ APP_VERSION: 'test', APP_SHA: 'test' }));
+vi.mock('../src/lib/mock', async () => ({
+  ...(await vi.importActual<typeof import('../src/lib/mock')>('../src/lib/mock')),
+  DEV_MOCK: false,
+}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -24,9 +28,12 @@ afterEach(() => {
 });
 
 it('shows the selected team name and slug without offering a save that cannot act', () => {
-  act(() => root.render(<Settings org="Example Team" teamId="team-a" slug="example-team-abc" name="Avery" email="avery@example.test" />));
+  const slug = 'example-team-with-a-very-long-name-and-unique-suffix';
+  act(() => root.render(<Settings org="Example Team" teamId="team-a" slug={slug} name="Avery" email="avery@example.test" />));
   expect(container.textContent).toContain('Example Team');
-  expect(container.textContent).toContain('example-team-abc');
+  const slugValue = [...container.querySelectorAll('span')].find((s) => s.textContent === slug)!;
+  expect(slugValue.style.overflowWrap).toBe('anywhere');
+  expect(slugValue.parentElement?.style.overflow).not.toBe('hidden');
   expect(container.textContent).not.toContain('Stockholm');
   expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Save')).toBe(false);
 });
