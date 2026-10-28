@@ -31,6 +31,7 @@ import {
   operationsFor,
 } from '@substrat-run/kernel';
 import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } from '@substrat-run/engine-invites';
+import { selectableModel } from '@substrat-run/model-providers';
 
 // ============================================================================
 // The Dashboard — the tenant-facing self-service surface, built AS a Substrat
@@ -998,6 +999,8 @@ const envKey = z.string().regex(/^[A-Z][A-Z0-9_]*$/, 'env keys are UPPER_SNAKE_C
 
 const setAppEnvInput = z.object({
   appScopeId: z.string().min(1),
+  /** Trusted manifest model keys supplied by the dashboard worker. */
+  modelKeys: z.array(envKey).optional(),
   entries: z
     .array(z.object({ key: envKey, value: z.string(), secret: z.boolean().default(false) }))
     .min(1),
@@ -1017,6 +1020,15 @@ const setAppEnvOp: OperationHandler<z.infer<typeof setAppEnvInput>, { saved: num
   const saved: string[] = [];
   for (const e of input.entries) {
     if (e.value === '') continue; // leave-unchanged (untouched secret)
+    if (input.modelKeys?.includes(e.key)) {
+      const old = ctx.sql.query<{ value: string }>(
+        'SELECT value FROM dashboard_app_env WHERE app_scope_id = ? AND key = ?',
+        [input.appScopeId, e.key],
+      )[0];
+      if (e.secret || (!selectableModel(e.value) && old?.value !== e.value)) {
+        throw substratError('validation_failed', `${e.key} must be a listed model`);
+      }
+    }
     ctx.sql.exec(
       `INSERT INTO dashboard_app_env (id, app_scope_id, key, value, is_secret, updated_by, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)

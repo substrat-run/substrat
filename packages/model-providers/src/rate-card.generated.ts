@@ -10,16 +10,12 @@
  * all-or-nothing by the request's total input tokens (DashScope/Anthropic
  * threshold semantics — the whole request bills at the tier it lands in).
  *
- * The models we choose ourselves are one authored row each; a provider whose
- * catalog a TENANT picks from is expanded whole, so a pick outside a curated
- * few is priced rather than silently free. Cloudflare is here as its own
- * Workers AI catalog (the @cf/... ids) - partner-served vendor/model ids are
- * deliberately absent: the picker keeps them free text, and billing them is a
- * decision rather than an omission.
+ * The rate card covers every priced provider row; the picker is the reviewed,
+ * narrower allow-list emitted beside it. Partner-served ids remain unpriced.
  */
 import type { ModelRate } from './pricing.js';
 
-export const RATE_CARD_GENERATED_AT = '2026-09-01';
+export const RATE_CARD_GENERATED_AT = '2026-10-28';
 
 export const RATE_CARD: readonly ModelRate[] = [
 	{
@@ -29,11 +25,18 @@ export const RATE_CARD: readonly ModelRate[] = [
 		"contextTokens": 1000000,
 		"tiers": [
 			{
+				"upToInputTokens": 256000,
+				"inputPer1M": "0.25",
+				"outputPer1M": "1.5",
+				"cacheReadPer1M": "0.025",
+				"cacheWritePer1M": "0.3125"
+			},
+			{
 				"upToInputTokens": null,
-				"inputPer1M": "0.1875",
-				"outputPer1M": "1.125",
-				"cacheReadPer1M": null,
-				"cacheWritePer1M": "0.234375"
+				"inputPer1M": "1",
+				"outputPer1M": "4",
+				"cacheReadPer1M": "0.1",
+				"cacheWritePer1M": "1.25"
 			}
 		],
 		"sources": [
@@ -77,7 +80,7 @@ export const RATE_CARD: readonly ModelRate[] = [
 		"sources": [
 			"models.dev:anthropic/claude-sonnet-5",
 			"litellm:claude-sonnet-5",
-			"https://docs.anthropic.com/en/docs/about-claude/models/overview"
+			"https://platform.claude.com/docs/en/about-claude/pricing"
 		]
 	},
 	{
@@ -97,7 +100,7 @@ export const RATE_CARD: readonly ModelRate[] = [
 		"sources": [
 			"models.dev:anthropic/claude-opus-5",
 			"litellm:claude-opus-5",
-			"https://docs.anthropic.com/en/docs/about-claude/models/overview"
+			"https://platform.claude.com/docs/en/about-claude/pricing"
 		]
 	},
 	{
@@ -142,7 +145,7 @@ export const RATE_CARD: readonly ModelRate[] = [
 		"provider": "cloudflare",
 		"idPrefix": "@cf/deepseek-ai/deepseek-v4-flash-0731",
 		"label": "DeepSeek V4 Flash 0731",
-		"contextTokens": 1310720,
+		"contextTokens": 1048576,
 		"tiers": [
 			{
 				"upToInputTokens": null,
@@ -176,6 +179,24 @@ export const RATE_CARD: readonly ModelRate[] = [
 	},
 	{
 		"provider": "cloudflare",
+		"idPrefix": "@cf/deepseek-ai/deepseek-v4.1-flash-1017",
+		"label": "DeepSeek V4.1 Flash 1017",
+		"contextTokens": 1048576,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.3",
+				"outputPer1M": "1.2",
+				"cacheReadPer1M": "0.006",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017"
+		]
+	},
+	{
+		"provider": "cloudflare",
 		"idPrefix": "@cf/google/gemma-4-26b-a4b-it",
 		"label": "Gemma 4 26B A4B IT",
 		"contextTokens": 256000,
@@ -184,7 +205,7 @@ export const RATE_CARD: readonly ModelRate[] = [
 				"upToInputTokens": null,
 				"inputPer1M": "0.1",
 				"outputPer1M": "0.3",
-				"cacheReadPer1M": null,
+				"cacheReadPer1M": "0.05",
 				"cacheWritePer1M": null
 			}
 		],
@@ -576,7 +597,7 @@ export const RATE_CARD: readonly ModelRate[] = [
 		"provider": "cloudflare",
 		"idPrefix": "@cf/zai-org/glm-5.3",
 		"label": "Glm 5.3",
-		"contextTokens": 1310720,
+		"contextTokens": 1048576,
 		"tiers": [
 			{
 				"upToInputTokens": null,
@@ -594,7 +615,7 @@ export const RATE_CARD: readonly ModelRate[] = [
 		"provider": "cloudflare",
 		"idPrefix": "@cf/zai-org/glm-5.3-flash",
 		"label": "Glm 5.3 Flash",
-		"contextTokens": 1310720,
+		"contextTokens": 1048576,
 		"tiers": [
 			{
 				"upToInputTokens": null,

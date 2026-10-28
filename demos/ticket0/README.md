@@ -306,7 +306,7 @@ Give the platform a credential for the chosen provider and it generates instead 
 `.env.example` to `.env` (the dev server is the platform here):
 
 ```sh
-# TICKET0_MODEL=cloudflare:@cf/meta/llama-3.1-8b-instruct-fast   (the default)
+# TICKET0_MODEL=cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8   (the default)
 CLOUDFLARE_AI_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1
 CLOUDFLARE_AI_API_TOKEN=…                                  # Workers AI run
 ```

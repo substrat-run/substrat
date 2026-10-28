@@ -35,6 +35,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/get-app-overlays markers[].kind': 'the worker derives the chart markers',
   'dashboard/get-app-overlays spans[].kind': 'the worker derives stale chart spans',
   'dashboard/get-app-auth auth.mode': 'the dashboard scope’s own stored auth shape',
+  'dashboard/get-app-env modelCatalog[].status': 'the generated platform model catalog’s own active/deprecated status',
   'dashboard/app-peers calls[].state': 'derived by the dashboard peer disclosure from the tenant directory and peer grants',
   'dashboard/list-members entries[].status': 'the dashboard module’s own roster projection',
   'dashboard/remove-app removed': ACK,

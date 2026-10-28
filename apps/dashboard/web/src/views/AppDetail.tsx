@@ -33,6 +33,7 @@ import { useAppSchedules, type SchedulesState } from '../lib/use-app-schedules';
 import { brokenAppLines, sendWithExportBreakAck, type BrokenApp } from '../lib/bind-ack';
 import { AppTraffic } from './AppTraffic';
 import { FieldReads } from './FieldReads';
+import { ModelSettingPicker } from './ModelSettingPicker';
 
 /**
  * App detail (screens 1i, 1j, 1k, 1l). The header and the Overview tab render REAL
@@ -2781,7 +2782,7 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
 
   const field = (
     key: string,
-    opts: { label?: string; description?: string; placeholder?: string; required?: boolean; secret: boolean; hasValue: boolean },
+    opts: { label?: string; description?: string; placeholder?: string; required?: boolean; secret: boolean; hasValue: boolean; kind?: string },
   ) => (
     <div key={key} style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
@@ -2795,7 +2796,7 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
         )}
       </div>
       {opts.description && <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 8, lineHeight: 1.5 }}>{opts.description}</div>}
-      <input
+      {opts.kind === 'model' ? <ModelSettingPicker value={inputs[key] ?? ''} catalog={view.modelCatalog} onChange={(value) => set(key, value)} /> : <input
         type={opts.secret ? 'password' : 'text'}
         value={inputs[key] ?? ''}
         onChange={(e) => set(key, e.target.value)}
@@ -2805,7 +2806,7 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
           fontFamily: opts.secret ? 'inherit' : 'var(--font-mono)',
           background: 'var(--surface-inset)', border: '1px solid var(--border-default)', borderRadius: 6, color: 'var(--text-primary)',
         }}
-      />
+      />}
     </div>
   );
 
@@ -2833,6 +2834,7 @@ function EnvVars({ teamId, app }: { teamId: string; app: AppRow }) {
                   ...(s.placeholder !== undefined ? { placeholder: s.placeholder } : {}),
                   required: s.required,
                   secret: s.secret,
+                  ...(s.kind ? { kind: s.kind } : {}),
                   hasValue: valueByKey.get(s.key)?.hasValue ?? false,
                 }),
               )}

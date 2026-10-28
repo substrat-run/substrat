@@ -1,0 +1,15 @@
+[
+  { "id": "anthropic:claude-sonnet-5", "status": "active", "servedBy": "Anthropic" },
+  { "id": "anthropic:claude-opus-5", "status": "active", "servedBy": "Anthropic" },
+  { "id": "qwen:qwen3.6-flash", "status": "active", "servedBy": "Alibaba Cloud Model Studio" },
+  { "id": "qwen:qwen3.8-max", "status": "active", "servedBy": "Alibaba Cloud Model Studio" },
+  { "id": "cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/meta/llama-4-scout-17b-16e-instruct", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/openai/gpt-oss-120b", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/openai/gpt-oss-20b", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/zai-org/glm-5.3", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/moonshotai/kimi-k2.6", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/deepseek-ai/deepseek-v4-flash-0731", "status": "active", "servedBy": "Cloudflare Workers AI" },
+  { "id": "cloudflare:@cf/mistralai/mistral-small-3.1-24b-instruct", "status": "active", "servedBy": "Cloudflare Workers AI" }
+]

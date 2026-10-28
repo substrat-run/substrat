@@ -11021,7 +11021,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           const declared = (JSON.parse(json) as { envSpec?: unknown }).envSpec;
           const specs = z.array(envVarSpec).safeParse(declared);
           if (!specs.success) return new Set();
-          return new Set(specs.data.filter((spec) => spec.previewCarry && !spec.secret).map((spec) => spec.key));
+          return new Set(specs.data.filter((spec) => spec.previewCarry && !spec.secret && spec.kind !== 'model').map((spec) => spec.key));
         } catch {
           return new Set();
         }

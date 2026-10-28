@@ -73,8 +73,9 @@ function runsToolCalls(row: CatalogRow): boolean {
  * `task` (a text turn, not embeddings or speech), `hide_experimental` and
  * `include_deprecated`. The fourth — can it run a tool call — is per row and
  * applied here (`runsToolCalls`). It lists Cloudflare's own `@cf/…` models only;
- * partner-served `vendor/model` ids stay free-text. Paged defensively; the
- * filtered catalog fits one page today.
+ * partner-served `vendor/model` ids remain outside this listing. Paged defensively; the
+ * filtered catalog fits one page today. The hosted settings picker uses the
+ * generated priced allow-list, not this live provider listing.
  */
 async function listCloudflareCatalog(baseUrl: string, headers: Record<string, string>): Promise<string[]> {
 	const root = baseUrl.replace(/\/$/, '').replace(/\/v1$/, '');

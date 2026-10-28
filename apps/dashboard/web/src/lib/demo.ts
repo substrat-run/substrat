@@ -130,6 +130,7 @@ export const ENV_VARS: EnvVar[] = [
 /** Dev-preview sample for the Env tab — an env-spec + values so the form isn't empty
  *  without a backend (VITE_DEV_MOCK). Mirrors the real team-scoped app environment response. */
 export const MOCK_APP_ENV: AppEnvView = {
+  modelCatalog: [],
   spec: [
     { key: 'PUBLIC_ORIGIN', label: 'Public origin', description: 'The public URL this app is served at.', placeholder: 'https://app.acme.com', required: true, secret: false, group: 'General' },
     { key: 'SMTP_PASSWORD', label: 'SMTP password', description: 'Credential for outbound email.', placeholder: 'at least 8 characters', required: false, secret: true, group: 'Email' },

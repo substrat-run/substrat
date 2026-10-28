@@ -215,6 +215,7 @@ export const envVarSpec = z.object({
   label: z.string().optional(), // "Admin password" — falls back to the key
   description: z.string().min(1), // shown under the field
   placeholder: z.string().optional(), // "at least 8 characters"
+  kind: z.enum(['model']).optional(), // a priced model from the platform catalog
   required: z.boolean().default(false),
   secret: z.boolean().default(false), // masked + write-only + delivered as a secret
   /** A non-secret per-install value may be re-delivered to a preview on every push. */
@@ -223,6 +224,9 @@ export const envVarSpec = z.object({
   group: z.string().optional(), // "Bootstrap" · "Email" — form sectioning
 }).refine((spec) => !spec.secret || !spec.previewCarry, {
   message: 'a secret setting cannot carry to previews',
+  path: ['previewCarry'],
+}).refine((spec) => spec.kind !== 'model' || !spec.previewCarry, {
+  message: 'a model setting cannot carry to previews',
   path: ['previewCarry'],
 });
 export type EnvVarSpec = z.infer<typeof envVarSpec>;

@@ -165,8 +165,8 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 	}
 
 	it('records a turn and reads it back priced from the record-time cost entry', async () => {
-		// flash publishes no cache-read rate, so the cached slice bills at the
-		// input rate: 1M × $0.1875/1M + 100k × $1.125/1M = 0.1875 + 0.1125.
+		// At the over-256k tier: 200k plain × $1 + 800k cached × $0.1
+		// + 100k output × $4 = $0.68.
 		await metering.recordTurnUsage(env, {
 			projectId: 'proj-1',
 			turnId: ulid(),
@@ -187,14 +187,14 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 				output: 100_000,
 				cacheRead: 800_000,
 				cacheWrite: 0,
-				listUsd: '0.3',
-				billedUsd: '0.36',
+				listUsd: '0.68',
+				billedUsd: '0.816',
 			},
 		]);
 		expect(report.byProject).toEqual([
 			{ projectId: 'proj-1', input: 1_000_000, output: 100_000, turns: 1 },
 		]);
-		expect(report.cost).toEqual({ listUsd: '0.3', billedUsd: '0.36', unpricedTokens: 0 });
+		expect(report.cost).toEqual({ listUsd: '0.68', billedUsd: '0.816', unpricedTokens: 0 });
 	});
 
 	it('replaying a turn (same turnId) never double-bills — tokens or cost', async () => {
@@ -211,7 +211,7 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 
 		const report = await metering.studioUsage(env);
 		expect(report.totals).toEqual({ input: 1_000_000, output: 100_000 });
-		expect(report.byModel[0]).toMatchObject({ listUsd: '0.3', billedUsd: '0.36' });
+		expect(report.byModel[0]).toMatchObject({ listUsd: '1.4', billedUsd: '1.68' });
 		expect(report.byProject[0]?.turns).toBe(1);
 	});
 
@@ -220,13 +220,13 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 		await recordLegacyTokens(FLASH, 2_000_000, 100_000);
 
 		const report = await metering.studioUsage(env);
-		// 2M × $0.1875/1M + 100k × $1.125/1M = 0.375 + 0.1125
+		// 2M × $1/1M + 100k × $4/1M = $2.4.
 		expect(report.byModel[0]).toMatchObject({
 			model: FLASH,
 			input: 2_000_000,
 			output: 100_000,
-			listUsd: '0.4875',
-			billedUsd: '0.585',
+			listUsd: '2.4',
+			billedUsd: '2.88',
 		});
 		expect(report.cost.unpricedTokens).toBe(0);
 	});
@@ -250,12 +250,12 @@ describe('studio metering (recordTurnUsage → studioUsage)', () => {
 
 		const report = await metering.studioUsage(env);
 		const row = report.byModel.find((m) => m.model === FLASH);
-		// Tokens: legacy + new. Cost: ONLY the new turn — 40k × $0.1875/1M + 2k × $1.125/1M.
+		// Tokens: legacy + new. Cost: ONLY the new turn — 40k × $0.25/1M + 2k × $1.5/1M.
 		expect(row).toMatchObject({
 			input: 2_040_000,
 			output: 102_000,
-			listUsd: '0.00975',
-			billedUsd: '0.0117',
+			listUsd: '0.013',
+			billedUsd: '0.0156',
 		});
 	});
 
