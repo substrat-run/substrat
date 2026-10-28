@@ -13,6 +13,7 @@ const client = vi.hoisted(() => ({
   getDeploymentReleases: vi.fn(),
   listChannelHistory: vi.fn(),
   getPromotionReview: vi.fn(),
+  getAppReleaseComparison: vi.fn(),
 }));
 vi.mock('../src/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/lib/api')>()),
@@ -109,7 +110,7 @@ describe('Deployments cards', () => {
   const column = (title: string) => container.querySelector(`[data-diff-column="${title}"]`)!.textContent;
 
   it('compares running with the update target from the per-app reads, with the action in its header', async () => {
-    vi.spyOn(api, 'releaseComparison').mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: true });
+    client.getAppReleaseComparison.mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: true });
     vi.spyOn(api, 'appPermissions').mockResolvedValue(MOCK_APP_PERMISSIONS);
     vi.spyOn(api, 'appModel').mockResolvedValue(MOCK_APP_MODEL_UPDATE);
     const ledger: Ledger = { rows: ledgerRows(MOCK_APP_RELEASES, MOCK_PROD_HISTORY), source: 'ledger', failed: false };
@@ -126,7 +127,7 @@ describe('Deployments cards', () => {
   });
 
   it('shows an unpromoted push of another team as theirs to review, without asking the promote review', async () => {
-    vi.spyOn(api, 'releaseComparison').mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: false });
+    client.getAppReleaseComparison.mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: false });
     const review = client.getPromotionReview;
     const theirs: AppDeployments = { ...dep, owned: false };
     await act(async () => root.render(<ReleaseComparisonCard teamId="T1" app={app} dep={theirs} running={v('0.3.0')} target={{ version: v('0.4.0-beta.7'), state: 'unpromoted' }} ledger={null} />));
@@ -137,7 +138,7 @@ describe('Deployments cards', () => {
   });
 
   it('says the app is current rather than hiding', async () => {
-    vi.spyOn(api, 'releaseComparison').mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: true });
+    client.getAppReleaseComparison.mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: true });
     await act(async () => root.render(<ReleaseComparisonCard teamId="T1" app={app} dep={dep} running={v('0.3.0')} target={null} ledger={null} />));
     expect(container.textContent).toContain('Running the latest version — nothing to update to.');
   });

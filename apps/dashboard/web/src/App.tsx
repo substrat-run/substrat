@@ -949,7 +949,7 @@ export function App() {
   // Hints for what to draw, never the gate: /api/me reads the caller's own role,
   // independent of the roster page shown on Team. The dashboard scope still refuses.
   const isTeamAdmin = ['owner', 'admin'].includes(me.roleKey ?? '');
-  const canRewind = ['owner', 'admin', 'member'].includes(me.roleKey ?? '');
+  const canManageApp = ['owner', 'admin', 'member'].includes(me.roleKey ?? '');
 
   return (
     <DashShell
@@ -998,7 +998,7 @@ export function App() {
           authServers={authServers}
           teamApps={apps.map((a) => a.app_scope_id)}
           canRestore={isTeamAdmin}
-          canRewind={canRewind}
+          canManageApp={canManageApp}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight — or older pages are still being

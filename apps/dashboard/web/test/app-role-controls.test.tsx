@@ -26,9 +26,9 @@ vi.mock('../src/lib/mock', async (importOriginal) => {
 // Keep this test at the App → AppDetail boundary: the child already renders these
 // controls from its props, while this regression concerns where App gets the role.
 vi.mock('../src/views/AppDetail', () => ({
-  AppDetail: ({ canRewind, canRestore }: { canRewind: boolean; canRestore: boolean }) => (
+  AppDetail: ({ canManageApp, canRestore }: { canManageApp: boolean; canRestore: boolean }) => (
     <div>
-      {canRewind && <button>Back out</button>}
+      {canManageApp && <button>Update, Bind, Back out</button>}
       {canRestore && <button>Import</button>}
     </div>
   ),
@@ -52,16 +52,16 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
 });
 
-it('uses the caller role beyond the first roster page for Rewind and Restore controls', async () => {
+it('uses the caller role beyond the first roster page for app lifecycle controls', async () => {
   MOCK_ME.roleKey = 'owner';
   await act(async () => root.render(<App />));
-  expect(container.textContent).toContain('Back out');
+  expect(container.textContent).toContain('Update, Bind, Back out');
   expect(container.textContent).toContain('Import');
 
   act(() => root.unmount());
   root = createRoot(container);
   MOCK_ME.roleKey = 'viewer';
   await act(async () => root.render(<App />));
-  expect(container.textContent).not.toContain('Back out');
+  expect(container.textContent).not.toContain('Update, Bind, Back out');
   expect(container.textContent).not.toContain('Import');
 });

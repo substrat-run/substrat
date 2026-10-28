@@ -341,7 +341,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
     });
   });
 
-  it('the declared app writes include lifecycle, environment, preview, identity and email actions', () => {
+  it('the declared app writes include lifecycle, version, data, preview, identity, environment and email actions', () => {
     expect(
       Object.entries(dashboardRoutes)
         .filter(([name, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps') && !name.includes('hostname'))
@@ -354,6 +354,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'DELETE /apps/{scopeId}/integrations/{provider}/connections/{connectionId} dashboard/disconnect-app-connection',
       'DELETE /apps/{scopeId}/snapshots/{snapshotId} dashboard/delete-app-snapshot',
       'POST /apps dashboard/install-app',
+      'POST /apps/{scopeId}/bind dashboard/bind-installed-app',
       'POST /apps/{scopeId}/email-sender dashboard/set-app-email-sender',
       'POST /apps/{scopeId}/integrations/{provider} dashboard/connect-app-integration',
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify dashboard/verify-app-connection',
@@ -364,9 +365,12 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/owner-claim dashboard/app-owner-claim',
       // #1749: files an AI note in the team's scope; its team-from-path refusal is in explanations-route.test.ts.
       'POST /apps/{scopeId}/processes/note dashboard/write-process-note',
+      'POST /apps/{scopeId}/restore dashboard/restore-installed-app',
       'POST /apps/{scopeId}/resume dashboard/resume-app',
       'POST /apps/{scopeId}/retry dashboard/retry-app',
+      'POST /apps/{scopeId}/rewind dashboard/rewind-app',
       'POST /apps/{scopeId}/snapshots dashboard/create-app-snapshot',
+      'POST /apps/{scopeId}/update dashboard/update-installed-app',
       'PUT /apps/{scopeId}/auth dashboard/set-app-auth',
       'PUT /apps/{scopeId}/env dashboard/set-app-env',
     ]);

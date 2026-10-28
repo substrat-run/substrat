@@ -54,6 +54,7 @@ import type {
   Scope,
   ScopeDump,
   ScopeDumpTable,
+  ScopeStoreDump,
   ScopeId,
   ScopeQueryResult,
   ScopeTable,
@@ -2080,6 +2081,7 @@ export class TenantNarrowedControlPlane {
   restoreScope(
     scopeId: ScopeId,
     tables: ScopeDumpTable[],
+    stores: ScopeStoreDump[],
     opts?: { sourceScopeId?: ScopeId },
   ): Promise<{ restored: string; tables: number }> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/restore`, {
@@ -2094,6 +2096,7 @@ export class TenantNarrowedControlPlane {
       capturedAt: new Date().toISOString(),
       // boundary-lint-end R6
       tables,
+      stores,
     });
   }
 

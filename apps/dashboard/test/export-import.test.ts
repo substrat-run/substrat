@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type ScopeStoreRunner } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
 import { exportAppData, restoreAppData, listAppSnapshots } from '../src/provision.js';
@@ -58,6 +58,39 @@ describe('Dashboard export & import — dump out, dump in, safety copy', () => {
     // The `_substrat_*` spine travels with the dump — a restore must carry the
     // event/migration state, not just the vertical's tables.
     expect(dump.tables.some((t) => t.name.startsWith('_substrat_'))).toBe(true);
+  });
+
+  it('exports and restores a non-empty embedded scope store with the app dump', async () => {
+    const { node, appScope } = await makeTeamWithApp();
+    await host.close();
+    let storeRows = [['saved']];
+    const runner: ScopeStoreRunner = {
+      driver: 'counter',
+      async start() {},
+      async stop() {},
+      async invoke(_address, request) {
+        if (request.operation === 'substrat.export') return { result: { tables: [{
+          name: 'held', ddl: 'CREATE TABLE held (id TEXT)', columns: ['id'], rows: storeRows,
+        }] } };
+        if (request.operation === 'substrat.import') {
+          const tables = Reflect.get(request.input ?? {}, 'tables') as { rows: string[][] }[];
+          storeRows = tables[0]!.rows;
+          return { result: { tables: tables.length } };
+        }
+        return { result: { bytes: storeRows.length } };
+      },
+    };
+    host = new SqliteScopeHost({ dir, scopeStores: { runners: [{ binding: 'GRAPH', runner }] } });
+    for (const module of MODULES) host.registerModule(module);
+
+    const dump = await exportAppData(host, { node, appScopeId: appScope });
+    expect(dump.stores).toEqual([{ binding: 'GRAPH', driver: 'counter', tables: [{
+      name: 'held', ddl: 'CREATE TABLE held (id TEXT)', columns: ['id'], rows: [['saved']],
+    }] }]);
+    storeRows = [['changed']];
+    await restoreAppData(host, { node, appScopeId: appScope, tables: dump.tables, stores: dump.stores });
+    expect(storeRows).toEqual([['saved']]);
+    expect((await exportAppData(host, { node, appScopeId: appScope })).stores).toEqual(dump.stores);
   });
 
   it('restore replaces the data wholesale — after forking a TTL’d safety copy', async () => {

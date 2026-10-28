@@ -8,7 +8,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES, ROLES, provisionDashboard } from '../src/index.js';
 
 /**
- * `POST /api/apps/:scopeId/restore` (#1869): the uploaded file's own `scopeId` reaches the
+ * `POST /api/teams/:teamId/apps/:scopeId/restore` (#1869): the uploaded file's `sourceScopeId` reaches the
  * control plane as a SEPARATE `sourceScopeId` hint for the grant re-point, and the body's
  * `tenantId`/`scopeId` (which pick the keys that open sealed payloads) are unchanged by it.
  * And the route is a team owner's or admin's (#2573): a member, who manages the team's apps
@@ -119,7 +119,7 @@ describe('the app restore and rewind routes', () => {
 
   const upload = (file: Record<string, unknown>, as: 'owner' | 'admin' | 'member' = 'owner') =>
     app.request(
-      `/api/apps/${appScope}/restore`,
+      `/api/teams/${tenant}/apps/${appScope}/restore`,
       {
         method: 'POST',
         headers: { cookie: `sb_session=sub-${as}`, 'content-type': 'application/json' },
@@ -130,7 +130,7 @@ describe('the app restore and rewind routes', () => {
 
   const rewind = (as: 'owner' | 'admin' | 'member' | 'viewer') =>
     app.request(
-      `/api/apps/${appScope}/rewind`,
+      `/api/teams/${tenant}/apps/${appScope}/rewind`,
       {
         method: 'POST',
         headers: { cookie: `sb_session=sub-${as}`, 'content-type': 'application/json' },
@@ -174,17 +174,17 @@ describe('the app restore and rewind routes', () => {
     expect((await upload({}, 'member')).status).toBe(403);
   });
 
-  it("sends the file's scopeId as sourceScopeId, and leaves tenantId/scopeId as the destination", async () => {
+  it("sends the file's sourceScopeId separately, and leaves tenantId/scopeId as the destination", async () => {
     const source = scopeId.parse(ulid());
-    const res = await upload({ tenantId: tenantId.parse(ulid()), scopeId: source });
+    const res = await upload({ tenantId: tenantId.parse(ulid()), sourceScopeId: source });
     expect(res.status).toBe(200);
     expect(restores).toHaveLength(1);
     // The key-selection ids are the destination's, exactly as before; the hint is its own field.
     expect(restores[0]).toMatchObject({ tenantId: tenant, scopeId: appScope, sourceScopeId: source });
   });
 
-  it('sends no hint for a file with no scopeId, or one that is not a scope id', async () => {
-    for (const file of [{}, { scopeId: 'not-a-scope' }, { scopeId: 42 }]) {
+  it('sends no hint for a file with no sourceScopeId, or one that is not a scope id', async () => {
+    for (const file of [{}, { sourceScopeId: 'not-a-scope' }, { sourceScopeId: 42 }]) {
       expect((await upload(file)).status).toBe(200);
     }
     expect(restores).toHaveLength(3);

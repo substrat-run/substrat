@@ -18,6 +18,7 @@ import {
   type RoleDefinition,
   type ScopeDump,
   type ScopeDumpTable,
+  type ScopeStoreDump,
   type ScopeId,
   type TenantId,
   bareSlug,
@@ -756,6 +757,10 @@ export async function updateApp(
 ): Promise<UpdateAppResult> {
   const scope = await host.getScope(input.node.principal, input.node.tenantId, input.node.scopeId);
 
+  // A no-op still needs the app-management permission. Ask before any control-plane read;
+  // the recording `dashboard/update-app` operation below remains the gate for a real move.
+  await scope.invoke('dashboard/authorize-scope-change', {});
+
   // Resolve the vertical's current prod version and the scope's currently-bound one,
   // plus the version labels (id → "0.0.12") for a readable audit line.
   let prodVersionId: string | undefined;
@@ -1066,6 +1071,7 @@ export async function restoreAppData(
     node: DashboardNode;
     appScopeId: ScopeId;
     tables: ScopeDumpTable[];
+    stores?: ScopeStoreDump[];
     /** The app's bound hostname — gives the safety copy a preview URL. */
     appHostname?: string | null;
     controlPlane?: TenantNarrowedControlPlane;
@@ -1090,6 +1096,7 @@ export async function restoreAppData(
     await input.controlPlane.restoreScope(
       input.appScopeId,
       input.tables,
+      input.stores ?? [],
       input.sourceScopeId ? { sourceScopeId: input.sourceScopeId } : undefined,
     );
   } else {
@@ -1107,7 +1114,7 @@ export async function restoreAppData(
       capturedAt: new Date().toISOString(),
       // boundary-lint-end R6
       tables: input.tables,
-      stores: [],
+      stores: input.stores ?? [],
     }, input.sourceScopeId ? { sourceScopeId: input.sourceScopeId } : undefined);
   }
   return { restored: input.appScopeId, tables: input.tables.length, safetyCopyId: safety.id };
