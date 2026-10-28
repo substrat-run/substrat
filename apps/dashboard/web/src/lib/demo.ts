@@ -413,24 +413,6 @@ export const MOCK_PROVIDER_DOCUMENTS: ConnectionActivityView = {
   ],
 };
 
-// -- M3: plan ---------------------------------------------------------------
-
-export interface EntitlementRow {
-  label: string;
-  accent?: string;
-  included: boolean;
-  used: string;
-  upgrade?: boolean;
-}
-export const ENTITLEMENTS: EntitlementRow[] = [
-  { label: 'Documents engine', accent: LAYER.vertical, included: true, used: '2 apps' },
-  { label: 'Work Orders engine', accent: LAYER.engine, included: true, used: '1 app' },
-  { label: 'Invoicing engine', accent: LAYER.kernel, included: false, used: '—', upgrade: true },
-  { label: 'Apps', included: true, used: '4 / 5' },
-  { label: 'Members', included: true, used: '4 / 10' },
-  { label: 'Custom domains', included: true, used: '3 / 10' },
-];
-
 // -- future: deployments ----------------------------------------------------
 
 export interface Deployment {
@@ -443,19 +425,6 @@ export interface Deployment {
 export const DEPLOYMENTS: Deployment[] = [
   { version: 'v0.0.2', source: 'hr-portal@e4f21c9', status: 'current', promoted: 'Jul 20, 2026 14:02', by: 'dana@acme.com' },
   { version: 'v0.0.1', source: 'hr-portal@b91d044', status: 'previous', promoted: 'Jul 14, 2026 09:40', by: 'dana@acme.com' },
-];
-
-// -- future: billing --------------------------------------------------------
-
-export interface Invoice {
-  id: string;
-  amount: string;
-  status: 'Paid';
-  date: string;
-}
-export const INVOICES: Invoice[] = [
-  { id: 'INV-2026-0007', amount: '€480.00', status: 'Paid', date: 'Jul 1, 2026' },
-  { id: 'INV-2026-0006', amount: '€400.00', status: 'Paid', date: 'Jun 1, 2026' },
 ];
 
 // -- polish: notifications --------------------------------------------------

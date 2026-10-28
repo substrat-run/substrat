@@ -1052,7 +1052,7 @@ export function App() {
       ) : route.section === 'integrations' ? (
         <Integrations teamId={me.currentTeamId} />
       ) : route.section === 'billing' ? (
-        <Billing />
+        <Billing teamId={me.currentTeamId} canRead={isTeamAdmin} />
       ) : route.section === 'audit' ? (
         <AuditLog teamId={me.currentTeamId} apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} personName={personName} />
       ) : route.section === 'observability' ? (
