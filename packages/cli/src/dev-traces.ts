@@ -89,8 +89,11 @@ export class LocalTraceStore {
       try {
         rmSync(join(this.dir, files[i]!));
       } catch (error) {
-        if (!missing(error)) throw error;
+        // Another writer may still hold this file on Windows; a later write will prune it.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT' && code !== 'EPERM' && code !== 'EBUSY') throw error;
       }
+      // Count an inaccessible old file as removed so it cannot cost the newest record.
       count--;
       bytes -= sizes[i]!;
     }
