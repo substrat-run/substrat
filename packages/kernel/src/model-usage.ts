@@ -47,6 +47,26 @@ export interface ModelUsageFilter {
   order?: 'asc' | 'desc';
 }
 
+/** Narrow, bounded tenant meter projection; labels longer than the projection caps are omitted from breakdowns. */
+export interface TenantModelUsageMeterRow {
+  id: string;
+  at: string;
+  vertical: string;
+  model: string;
+  labelTruncated: boolean;
+  reported: boolean;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface TenantModelUsageMeterFilter {
+  tenantId: TenantId;
+  since: string;
+  until: string;
+  limit: number;
+  cursor?: { at: string; id: string };
+}
+
 /** The window `summarizeModelUsage` folds: half-open `[since, until)`, one tenant or the fleet. */
 export interface ModelUsageWindow {
   tenantId?: TenantId;

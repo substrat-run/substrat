@@ -1071,6 +1071,8 @@ export {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type TenantModelUsageMeterFilter,
+  type TenantModelUsageMeterRow,
 } from './model-usage.js';
 export type {
   MeterEntitlementInput,
@@ -1089,6 +1091,7 @@ export {
   listScopeStorageRows,
   listScopeStoreStorageRows,
   pruneScopeStorageRows,
+  readBoundedTenantStorageGauge,
   recordScopeStorageRows,
   type ScopeStorageAttempt,
   type ScopeStorageFilter,
@@ -1104,10 +1107,14 @@ export {
   listRequestRollupDayRows,
   pruneRequestDayRows,
   recordRequestDayRows,
+  readRequestMeterDayRows,
+  readTenantRequestMeterRows,
   type RequestDayCount,
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  type RequestMeterDayRow,
+  type TenantRequestMeterRow,
 } from './request-rollup.js';
 export {
   VERTICAL_OWNERS_BACKFILL,

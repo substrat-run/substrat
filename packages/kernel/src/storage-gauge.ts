@@ -337,6 +337,35 @@ export function listScopeStorageRows(sql: RedactionSql, filter: ScopeStorageFilt
   );
 }
 
+/** A bounded projection for a tenant-facing gauge. The sentinel proves when its sum is partial. */
+export function readBoundedTenantStorageGauge(
+  sql: RedactionSql, tenantId: TenantId, limit: number,
+): { gauge: StorageGauge; truncated: boolean } {
+  const cap = Math.min(assertRowLimit('limit', limit), 500);
+  const rows = sql(
+    `SELECT g.bytes, g.read_at, a.attempted_at,
+            CASE WHEN a.error IS NULL THEN 0 ELSE 1 END AS failed
+       FROM scopes s
+       LEFT JOIN _substrat_scope_storage g ON g.scope_id = s.scope_id AND g.tenant_id = s.tenant_id
+        AND g.day = (SELECT MAX(m.day) FROM _substrat_scope_storage m WHERE m.scope_id = s.scope_id)
+       LEFT JOIN _substrat_scope_storage_attempts a ON a.scope_id = s.scope_id AND a.tenant_id = s.tenant_id
+      WHERE s.tenant_id = ? AND ${holdsStoreSql('s.')}
+      ORDER BY s.scope_id LIMIT ?`,
+    [tenantId, cap + 1],
+  ) as { bytes: number | null; read_at: string | null; attempted_at: string | null; failed: number }[];
+  const covered = rows.slice(0, cap);
+  return {
+    gauge: foldStorageGauge(
+      covered.filter((row) => row.bytes !== null && row.read_at !== null)
+        .map((row) => ({ bytes: row.bytes!, readAt: row.read_at! })),
+      covered.length,
+      covered.filter((row) => row.attempted_at !== null)
+        .map((row) => ({ attemptedAt: row.attempted_at!, error: row.failed ? 'failed' : null })),
+    ),
+    truncated: rows.length > cap,
+  };
+}
+
 /**
  * Every stored scope's latest attempt — what the storage phase picks due scopes by, and
  * what a meter reading names failing scopes from. `tenantId` narrows to one tenant.

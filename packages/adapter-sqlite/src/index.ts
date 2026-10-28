@@ -384,6 +384,7 @@ import {
   listScopeStoreStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
+  readBoundedTenantStorageGauge,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
   REQUEST_ROLLUP_DDL,
@@ -391,6 +392,8 @@ import {
   listRequestRollupDayRows,
   pruneRequestDayRows,
   recordRequestDayRows,
+  readTenantRequestMeterRows,
+  readRequestMeterDayRows,
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
@@ -447,6 +450,8 @@ import {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type TenantModelUsageMeterFilter,
+  type TenantModelUsageMeterRow,
   MODEL_USAGE_RETENTION_DAYS,
   foldModelUsage,
   type BlobStoreProvisionInput,
@@ -3139,6 +3144,7 @@ export class SqliteScopeHost implements ScopeHost {
         elapsed_ms INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
+      CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant_page ON _substrat_model_usage (tenant_id, at, id);
       CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
       -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
       ${SCOPE_STORAGE_DDL}
@@ -12590,6 +12596,11 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'readMeters', { tenantId: only ?? null }, filter ?? null, reading.perTenant.length);
         return meterReading.parse(reading);
       },
+      readTenantStorageGauge: async (actor, tenantId, limit) => {
+        const result = readBoundedTenantStorageGauge(redactionSqlOf(this.directory), tenantId, limit);
+        this.recordAccess(actor, 'readTenantStorageGauge', { tenantId }, { limit }, result.gauge.sampled);
+        return result;
+      },
       registerIdentityPool: async (actor: PlatformActorId, input: IdentityPool) => {
         const parsed = identityPool.parse(input);
         this.directoryWriteAndAudit(() => {
@@ -13777,6 +13788,16 @@ export class SqliteScopeHost implements ScopeHost {
         this.recordAccess(actor, 'listRequestRollupDays', { tenantId: null }, filter ?? null, rows.length);
         return rows;
       },
+      listTenantRequestMeter: async (actor, tenantId, since, until, limit) => {
+        const rows = readTenantRequestMeterRows(redactionSqlOf(this.directory), tenantId, since, until, limit);
+        this.recordAccess(actor, 'listTenantRequestMeter', { tenantId }, { since, until, limit }, rows.length);
+        return rows;
+      },
+      listRequestMeterDays: async (actor, since, until) => {
+        const rows = readRequestMeterDayRows(redactionSqlOf(this.directory), since, until);
+        this.recordAccess(actor, 'listRequestMeterDays', { tenantId: null }, { since, until }, rows.length);
+        return rows;
+      },
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.directory.transaction(() =>
           pruneRequestDayRows(redactionSqlOf(this.directory), Date.now(), limit, retentionMonths),
@@ -13808,6 +13829,28 @@ export class SqliteScopeHost implements ScopeHost {
           rows.length,
         );
         return rows;
+      },
+      listTenantModelUsageMeter: async (actor, filter: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]> => {
+        const cursor = filter.cursor;
+        const rows = this.directory.prepare(
+          `SELECT id, at, substr(vertical, 1, 64) AS vertical, substr(model, 1, 128) AS model,
+                  CASE WHEN length(vertical) > 64 OR length(model) > 128 THEN 1 ELSE 0 END AS label_truncated,
+                  reported, input_tokens, output_tokens
+             FROM _substrat_model_usage
+            WHERE tenant_id = ? AND at >= ? AND at < ?
+              ${cursor ? 'AND (at < ? OR (at = ? AND id < ?))' : ''}
+            ORDER BY at DESC, id DESC LIMIT ?`,
+        ).all(filter.tenantId, filter.since, filter.until,
+          ...(cursor ? [cursor.at, cursor.at, cursor.id] : []),
+          Math.min(assertRowLimit('limit', filter.limit), 501)) as {
+            id: string; at: string; vertical: string; model: string; label_truncated: number;
+            reported: number; input_tokens: number; output_tokens: number;
+          }[];
+        this.recordAccess(actor, 'listTenantModelUsageMeter', { tenantId: filter.tenantId },
+          { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
+        return rows.map((row) => ({ id: row.id, at: row.at, vertical: row.vertical, model: row.model,
+          labelTruncated: row.label_truncated !== 0, reported: row.reported !== 0,
+          inputTokens: row.input_tokens, outputTokens: row.output_tokens }));
       },
       summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary> => {
         const rows = this.selectModelUsage({ ...window, order: 'asc' });

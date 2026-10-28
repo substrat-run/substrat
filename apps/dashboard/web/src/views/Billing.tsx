@@ -20,8 +20,8 @@ function UsageCards({ usage }: { usage: Usage }) {
     <>
       <div style={section}>
         <h3>Stored bytes</h3>
-        <p>{storage.bytes === null ? storage.state === 'empty' ? 'No scope database storage recorded.' : 'not available' : `${number(storage.bytes)} bytes`}</p>
-        <p>Coverage: {storage.state === 'unavailable' ? 'not available' : `${storage.sampled} of ${storage.total} scopes sampled · ${storage.state}`}{storage.failing > 0 ? ` · ${storage.failing} latest reads failed` : ''}.</p>
+        <p>{storage.bytes === null ? storage.state === 'empty' ? 'No scope database storage recorded.' : 'not available' : `${storage.lowerBound ? 'At least ' : ''}${number(storage.bytes)} bytes`}</p>
+        <p>Coverage: {storage.state === 'unavailable' ? 'not available' : `${storage.sampled} of ${storage.lowerBound ? 'at least ' : ''}${storage.total} scopes sampled · ${storage.state}`}{storage.failing > 0 ? ` · ${storage.failing} latest reads failed` : ''}{storage.truncatedReason ? ' Scope scan capped at 500; this is a lower bound.' : ''}</p>
         <p>Estimate: no; scope database samples only. Freshness: oldest sample {date(storage.oldestReadAt)}.</p>
         <p>{storage.state === 'unavailable' ? 'Storage exclusions are not available.' : `Excludes ${storage.excluded.map((item) => exclusions[item]).join(', ') || 'none'}.`} Storage day rows are kept {usage.retention.storageMonths} months.</p>
       </div>
@@ -36,8 +36,8 @@ function UsageCards({ usage }: { usage: Usage }) {
       </div>
       <div style={section}>
         <h3>Model usage</h3>
-        <p>{models.calls === null ? models.state === 'empty' ? 'No model usage recorded in this window.' : 'not available' : `${models.lowerBound ? 'At least ' : ''}${number(models.calls)} recorded calls · ${models.inputTokens === null ? 'not available' : number(models.inputTokens)} input and ${models.outputTokens === null ? 'not available' : number(models.outputTokens)} output tokens`}</p>
-        <p>Coverage: recorded model-usage lines from {date(models.since)} to {date(models.until)} · {models.state}{models.lowerBound ? `; partial ledger scan through ${date(models.oldestRecordedAt)}` : ''}. Calls without a recorded line are not represented.</p>
+        <p>{models.calls === null ? models.state === 'empty' ? 'No model usage recorded in this window.' : 'not available' : `${models.lowerBound ? 'At least ' : ''}${number(models.calls)} recorded calls · ${models.inputTokens === null ? 'not available' : `${models.lowerBound ? 'at least ' : ''}${number(models.inputTokens)}`} input and ${models.outputTokens === null ? 'not available' : `${models.lowerBound ? 'at least ' : ''}${number(models.outputTokens)}`} output tokens`}</p>
+        <p>Coverage: recorded model-usage lines from {date(models.since)} to {date(models.until)} · {models.state}{models.lowerBound ? `; partial ledger scan through ${date(models.oldestRecordedAt)}` : ''}{models.truncatedReason === 'time-budget' ? '; stopped at the read time budget' : ''}. Calls without a recorded line are not represented.</p>
         <p>Estimate: no; tokens are as reported by providers. Freshness: last recorded line {date(models.newestRecordedAt)}.</p>
         {models.byVerticalModel.length > 0 && <ul>{models.byVerticalModel.map((row) => <li key={`${row.vertical}:${row.model}`}>{row.vertical} · {row.model}: {number(row.calls)} calls, {row.inputTokens === null ? 'not available' : number(row.inputTokens)} input and {row.outputTokens === null ? 'not available' : number(row.outputTokens)} output tokens as reported</li>)}</ul>}
         {models.breakdownTruncated && <p>App and model breakdown truncated to 50 entries.</p>}

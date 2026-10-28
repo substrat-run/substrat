@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { platformActorId } from '@substrat-run/contracts';
+import { platformActorId, tenantId } from '@substrat-run/contracts';
 import { runPlatformSweep, type PlatformSweepOptions, type RequestRollupSweepOptions } from '../src/platform-sweep.js';
 import {
   REQUEST_ROLLUP_DAYS_PER_PASS,
@@ -7,6 +7,7 @@ import {
   REQUEST_ROLLUP_PRUNE_BATCH,
   RequestRollupSaturated,
   requestRollupDueDays,
+  readTenantRequestMeterRows,
   type RequestDayCount,
   type RequestDayReadInput,
 } from '../src/request-rollup.js';
@@ -23,6 +24,21 @@ import type { ScopeHost } from '../src/scope-host.js';
 const ACTOR = platformActorId.parse('01JZ00000000000000000000SV');
 const FETCH = (() => Promise.reject(new Error('unused'))) as unknown as FetchLike;
 const HOUR = 3_600_000;
+
+it('projects and caps the tenant request meter read at 10,000 rows', () => {
+  let statement = '';
+  let params: readonly (string | number | null)[] = [];
+  const tenant = tenantId.parse('01JZ00000000000000000000SV');
+  const rows = readTenantRequestMeterRows((sql, args) => {
+    statement = sql;
+    params = args;
+    return [];
+  }, tenant, '2026-09-01', '2026-09-30', 20_000);
+  expect(rows).toEqual([]);
+  expect(params).toEqual([tenant, '2026-09-01', '2026-09-30', 10_000]);
+  expect(statement).toMatch(/substr\(vertical, 1, 64\)/);
+  expect(statement).not.toMatch(/SELECT \*/);
+});
 const at = (iso: string) => Date.parse(iso);
 
 describe('the days a pass reads', () => {

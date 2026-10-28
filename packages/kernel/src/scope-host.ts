@@ -81,6 +81,7 @@ import type {
   MeterDayTake,
   VerticalOwnerPeriod,
   ScopeStorageSample,
+  StorageGauge,
   RequestDay,
   RequestRollupDay,
   EntityRef,
@@ -211,10 +212,10 @@ import type { CapabilityVerbs } from './capability.js';
 import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { substratError, type EntityStateName } from '@substrat-run/contracts';
-import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
+import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow, TenantModelUsageMeterFilter, TenantModelUsageMeterRow } from './model-usage.js';
 import type { FindingPruneReport } from './findings.js';
 import type { ScopeStorageAttempt, ScopeStorageFilter, ScopeStorageReadingInput } from './storage-gauge.js';
-import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter } from './request-rollup.js';
+import type { RequestDayFilter, RequestDayReadInput, RequestRollupDayFilter, TenantRequestMeterRow, RequestMeterDayRow } from './request-rollup.js';
 import type { MeterDayFilter, MeterDayTakeFilter, MeterDayTakeInput, MeterDayTakeResult } from './meter-days.js';
 import type { SealedSecret } from './secret-box.js';
 import type { OnSubjectErased } from './module-erasure.js';
@@ -3931,6 +3932,8 @@ export interface HostAdmin {
    * and a persisted running total is the first half of a billing ledger.
    */
   readMeters(actor: PlatformActorId, filter?: { tenantId?: TenantId }): Promise<MeterReading>;
+  /** Bounded latest scope-database gauge for one tenant; `truncated` means a lower bound. */
+  readTenantStorageGauge(actor: PlatformActorId, tenantId: TenantId, limit: number): Promise<{ gauge: StorageGauge; truncated: boolean }>;
 
   // -- identity (D-16; control-plane.md §6) ----------------------------------
   // The neutral seam an auth adapter maps into. An external identity
@@ -4334,6 +4337,10 @@ export interface HostAdmin {
   listRequestDays?(actor: PlatformActorId, filter?: RequestDayFilter): Promise<RequestDay[]>;
   /** The rollup's record of each day it tried (#2501): what the phase picks due days by. Access-logged. */
   listRequestRollupDays?(actor: PlatformActorId, filter?: RequestRollupDayFilter): Promise<RequestRollupDay[]>;
+  /** Projected, capped request counts for one tenant's usage page. */
+  listTenantRequestMeter?(actor: PlatformActorId, tenantId: TenantId, since: string, until: string, limit: number): Promise<TenantRequestMeterRow[]>;
+  /** Projected rollup coverage for a closed UTC day window. */
+  listRequestMeterDays?(actor: PlatformActorId, since: string, until: string): Promise<RequestMeterDayRow[]>;
   /**
    * Delete day rows older than a retention of `retentionMonths`, oldest first and at most `limit`
    * per call. `null` deletes nothing (`BILLING_ROLLUP_RETENTION_MONTHS`). Returns how many went.
@@ -4427,6 +4434,8 @@ export interface HostAdmin {
 
   /** The lines, newest first by default — the per-tenant usage read behind the console. */
   listModelUsage(actor: PlatformActorId, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]>;
+  /** Indexed and projected page for the tenant usage read. */
+  listTenantModelUsageMeter(actor: PlatformActorId, filter: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]>;
 
   /**
    * Meter 3, folded: per (tenant, vertical, model) over a half-open window, list price

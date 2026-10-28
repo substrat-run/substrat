@@ -735,8 +735,9 @@ export const meteredUsageOut = z.object({
   readAt: z.string(),
   retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), requestMonths: z.number().int().nullable() }),
   storage: z.object({
-    state: z.enum(['unavailable', 'empty', 'not-sampled', 'complete', 'partial', 'stale', 'failing']),
+    state: z.enum(['unavailable', 'empty', 'not-sampled', 'complete', 'partial', 'stale', 'failing', 'truncated']),
     bytes: z.number().int().nullable(), estimated: z.literal(false), basis: z.literal('scope-databases'),
+    lowerBound: z.boolean(), truncatedReason: z.enum(['scope-cap']).nullable(),
     sampled: z.number().int(), total: z.number().int(), failing: z.number().int(),
     oldestReadAt: z.string().nullable(), excluded: z.array(z.enum(['attachments', 'tenant-stores', 'lake'])),
   }),
@@ -752,6 +753,7 @@ export const meteredUsageOut = z.object({
     state: z.enum(['unavailable', 'empty', 'complete', 'truncated']),
     calls: z.number().int().nullable(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
     estimated: z.literal(false), lowerBound: z.boolean(), since: z.string(), until: z.string(),
+    truncatedReason: z.enum(['page-cap', 'time-budget']).nullable(),
     oldestRecordedAt: z.string().nullable(), newestRecordedAt: z.string().nullable(),
     byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
     breakdownTruncated: z.boolean(),

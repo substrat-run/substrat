@@ -5514,7 +5514,7 @@ const routeHandlers = {
   },
   'dashboard/read-metered-usage': async (ctx) => {
     await assertMayReadBilling(ctx);
-    const raw = await teamPlane(ctx).readMeteredUsage();
+    const raw = await telemetry(ctx.c, ctx.node.tenantId, 'metered-usage', {}, () => teamPlane(ctx).readMeteredUsage());
     // Explicit projection at this boundary too: a future plane field never reaches
     // the browser just because it was added to a staff meter record.
     return {
@@ -5522,7 +5522,8 @@ const routeHandlers = {
       retention: { storageMonths: raw.retention.storageMonths, modelDays: raw.retention.modelDays, requestMonths: raw.retention.requestMonths },
       storage: {
         state: raw.storage.state, bytes: raw.storage.bytes, estimated: raw.storage.estimated,
-        basis: raw.storage.basis, sampled: raw.storage.sampled, total: raw.storage.total,
+        basis: raw.storage.basis, lowerBound: raw.storage.lowerBound, truncatedReason: raw.storage.truncatedReason,
+        sampled: raw.storage.sampled, total: raw.storage.total,
         failing: raw.storage.failing, oldestReadAt: raw.storage.oldestReadAt,
         excluded: raw.storage.excluded,
       },
@@ -5537,7 +5538,8 @@ const routeHandlers = {
       models: {
         state: raw.models.state, calls: raw.models.calls, inputTokens: raw.models.inputTokens,
         outputTokens: raw.models.outputTokens, estimated: raw.models.estimated,
-        lowerBound: raw.models.lowerBound, since: raw.models.since, until: raw.models.until,
+        lowerBound: raw.models.lowerBound, truncatedReason: raw.models.truncatedReason,
+        since: raw.models.since, until: raw.models.until,
         oldestRecordedAt: raw.models.oldestRecordedAt, newestRecordedAt: raw.models.newestRecordedAt,
         byVerticalModel: raw.models.byVerticalModel.map((row) => ({
           vertical: row.vertical, model: row.model, calls: row.calls,

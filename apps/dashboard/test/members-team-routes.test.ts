@@ -600,9 +600,9 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
       if (path === `/api/tenants/${b.tenant}/metered-usage`) return Response.json({
         readAt: '2026-10-29T00:00:00Z',
         retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
-        storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments'], priceUsd: '99' },
+        storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments'], priceUsd: '99' },
         requests: { state: 'partial', requests: 7, estimated: true, lowerBound: true, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [{ vertical: 'app', requests: 7 }], breakdownTruncated: false },
-        models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false, marginPercent: 20 },
+        models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false, marginPercent: 20 },
       });
       return Response.json({ error: 'unexpected request' }, { status: 500 });
     } };
@@ -625,9 +625,9 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
         ? Response.json({ token: 'test-token' }, { status: 201 })
         : Response.json({
           readAt: '2026-10-29T00:00:00Z', retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
-          storage: { state: 'unavailable', bytes: null, estimated: false, basis: 'scope-databases', sampled: 0, total: 0, failing: 0, oldestReadAt: null, excluded: [] },
+          storage: { state: 'unavailable', bytes: null, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 0, total: 0, failing: 0, oldestReadAt: null, excluded: [] },
           requests: { state: 'unavailable', requests: null, estimated: true, lowerBound: false, coveredDays: 0, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: null, byVertical: [], breakdownTruncated: false },
-          models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false },
+          models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false },
         }));
     env.CONTROL_PLANE_SVC = { fetch };
     const res = await req('GET', inTeam(t, '/metered-usage'), { sub: 'sub-member' });

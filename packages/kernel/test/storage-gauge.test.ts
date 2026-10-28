@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Instant, TenantId } from '@substrat-run/contracts';
 import { foldMeterReading, type MeterInput } from '../src/meters.js';
-import { foldStorageGauge, storageGaugeDay, storageRetentionHorizon } from '../src/storage-gauge.js';
+import { foldStorageGauge, readBoundedTenantStorageGauge, storageGaugeDay, storageRetentionHorizon } from '../src/storage-gauge.js';
 
 /**
  * The stored storage gauge's arithmetic (#1524). The SQL half (upsert per day, tenant check,
@@ -15,6 +15,21 @@ const fold = (over: Partial<MeterInput>) =>
   foldMeterReading({ readAt: READ_AT, tenants: [], scopes: [], entitlements: [], ...over });
 
 describe('storage gauge arithmetic (#1524)', () => {
+  it('limits the tenant gauge projection and marks a 501st scope as overflow', () => {
+    let statement = '';
+    let params: readonly (string | number | null)[] = [];
+    const read = (sql: string, args: readonly (string | number | null)[]) => {
+      statement = sql;
+      params = args;
+      return Array.from({ length: 501 }, () => ({ bytes: 2, read_at: READ_AT, attempted_at: null, failed: 0 }));
+    };
+    const result = readBoundedTenantStorageGauge(read, t(1), 500);
+    expect(params).toEqual([t(1), 501]);
+    expect(statement).toMatch(/WHERE s\.tenant_id = \?/);
+    expect(statement).toMatch(/LIMIT \?/);
+    expect(statement).not.toMatch(/SELECT \*/);
+    expect(result).toMatchObject({ truncated: true, gauge: { bytes: 1000, sampled: 500, total: 500 } });
+  });
   it('buckets a reading by its UTC day, whatever offset it was written in', () => {
     expect(storageGaugeDay('2026-03-01T23:59:59.999Z')).toBe('2026-03-01');
     expect(storageGaugeDay('2026-03-02T00:00:00.000Z')).toBe('2026-03-02');

@@ -176,6 +176,7 @@ export const INDEX_VALUE_EXPORTS = [
   'SETTLE_OUTCOME_SQL',
   'SHAPE_MARKER_INDEX_DDL',
   'SHAPE_MARKER_READS_PER_ROW',
+  'STORAGE_GAUGE_RETENTION_MONTHS',
   'STORE_DRIVER_RELEASES_DDL',
   'STORE_LOCAL_META_KEYS',
   // #2518: the idle window of a streamed connector response body.
@@ -592,6 +593,7 @@ export const INDEX_VALUE_EXPORTS = [
   'readAttachmentText',
   'readAuditedOperations',
   'readBecomeLinkStates',
+  'readBoundedTenantStorageGauge',
   'readCapabilityPage',
   'readConnectLink',
   'readDeadLetters',
@@ -601,8 +603,10 @@ export const INDEX_VALUE_EXPORTS = [
   'readLifecycle',
   'readLifecycleFlow',
   'readOperationSeries',
+  'readRequestMeterDayRows',
   'readScopeHistory',
   'readScopeTimeline',
+  'readTenantRequestMeterRows',
   'readTimeline',
   'readUndrainedOutbox',
   // Both adapters' `listScopesReadable` map directory rows through it, so they name an

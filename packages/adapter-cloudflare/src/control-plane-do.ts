@@ -32,6 +32,7 @@ import {
   listScopeStoreStorageRows,
   pruneScopeStorageRows,
   recordScopeStorageRows,
+  readBoundedTenantStorageGauge,
   type ScopeStorageAttempt,
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
@@ -40,6 +41,8 @@ import {
   listRequestRollupDayRows,
   pruneRequestDayRows,
   recordRequestDayRows,
+  readTenantRequestMeterRows,
+  readRequestMeterDayRows,
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
@@ -159,6 +162,8 @@ import {
   type SwitchSql,
   type SystemSwitchRecordRow,
   MODEL_USAGE_RETENTION_DAYS,
+  type TenantModelUsageMeterFilter,
+  type TenantModelUsageMeterRow,
   DO_SQL_LIMITS,
   ulid,
   isPrimaryScopeRow,
@@ -1391,6 +1396,7 @@ const DIRECTORY_DDL = `
     elapsed_ms INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
+  CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant_page ON _substrat_model_usage (tenant_id, at, id);
   CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
   -- #1524: the stored storage gauge — one row per (scope, UTC day), kernel-owned DDL.
   ${SCOPE_STORAGE_DDL}
@@ -4804,6 +4810,10 @@ export class ControlPlaneDO extends DurableObject {
     };
   }
 
+  readTenantStorageGauge(tenantId: TenantId, limit: number) {
+    return readBoundedTenantStorageGauge(doRedactionSql(this.sql), tenantId, limit);
+  }
+
   // -- the stored storage gauge (#1524) — kernel `storage-gauge.ts` --------------
   recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): { recorded: number } {
     return { recorded: this.ctx.storage.transactionSync(() => recordScopeStorageRows(doRedactionSql(this.sql), readings)) };
@@ -4832,6 +4842,14 @@ export class ControlPlaneDO extends DurableObject {
 
   listRequestRollupDays(filter?: RequestRollupDayFilter): RequestRollupDay[] {
     return listRequestRollupDayRows(doRedactionSql(this.sql), filter);
+  }
+
+  listTenantRequestMeter(tenantId: TenantId, since: string, until: string, limit: number) {
+    return readTenantRequestMeterRows(doRedactionSql(this.sql), tenantId, since, until, limit);
+  }
+
+  listRequestMeterDays(since: string, until: string) {
+    return readRequestMeterDayRows(doRedactionSql(this.sql), since, until);
   }
 
   pruneRequestDays(limit: number, retentionMonths: number | null): number {
@@ -6649,5 +6667,27 @@ export class ControlPlaneDO extends DurableObject {
       params.push(assertRowLimit('limit', query.limit));
     }
     return this.sql.exec(sql, ...params).toArray() as unknown as ModelUsageRow[];
+  }
+
+  listTenantModelUsageMeter(query: TenantModelUsageMeterFilter): TenantModelUsageMeterRow[] {
+    const cursor = query.cursor;
+    const rows = this.sql.exec(
+      `SELECT id, at, substr(vertical, 1, 64) AS vertical, substr(model, 1, 128) AS model,
+              CASE WHEN length(vertical) > 64 OR length(model) > 128 THEN 1 ELSE 0 END AS label_truncated,
+              reported, input_tokens, output_tokens
+         FROM _substrat_model_usage
+        WHERE tenant_id = ? AND at >= ? AND at < ?
+          ${cursor ? 'AND (at < ? OR (at = ? AND id < ?))' : ''}
+        ORDER BY at DESC, id DESC LIMIT ?`,
+      query.tenantId, query.since, query.until,
+      ...(cursor ? [cursor.at, cursor.at, cursor.id] : []),
+      Math.min(assertRowLimit('limit', query.limit), 501),
+    ).toArray() as unknown as {
+      id: string; at: string; vertical: string; model: string; label_truncated: number;
+      reported: number; input_tokens: number; output_tokens: number;
+    }[];
+    return rows.map((row) => ({ id: row.id, at: row.at, vertical: row.vertical, model: row.model,
+      labelTruncated: row.label_truncated !== 0, reported: row.reported !== 0,
+      inputTokens: row.input_tokens, outputTokens: row.output_tokens }));
   }
 }

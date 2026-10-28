@@ -394,6 +394,8 @@ export interface ConnectionInspector {
 }
 
 export interface ControlPlaneApiOptions {
+  /** Monotonic clock for the bounded tenant usage composition (injectable in tests). */
+  meteredUsageNow?: () => number;
   /**
    * The platform's margin over list price for model usage it provides (#1054), whole
    * percent, applied at read time by `GET /model-usage/summary`. One global number
@@ -2574,31 +2576,36 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   );
 
   // One tenant's persisted usage, with no price-bearing fields (#2689). This read never
-  // wakes a scope or writes a row. Worst case: one gauge read, one 30-day rollup-status
-  // read, one 10,000-row request read, and 25 pages of 501 model ledger rows: 28
-  // directory calls, 22,525 rows fetched, 12,500 model rows folded. A sentinel row on
-  // each model page detects overflow; the answer marks every cap and partial window.
+  // wakes a scope or writes a row. A gauge projection is capped at 501 narrow scope rows;
+  // request rows at 10,000 plus 30 status rows; model pages at 25 x 501: at most 28
+  // directory calls and 23,056 projected rows. Labels are capped at the read source,
+  // and no staff ledger row crosses the RPC. The 5-second cooperative budget stops new
+  // reads, though it cannot interrupt one in flight. Every cap marks a lower bound.
   // The dashboard credential reaches this path only when its signed tenant pin matches.
   app.get('/tenants/:tenantId/metered-usage', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     if (outsideTenant(c.get('principal'), tenantId)) return refuse(c, 'forbidden', 'forbidden');
     const admin = c.var.admin;
     const actor = c.get('actor');
+    const usageNow = options.meteredUsageNow ?? (() => performance.now());
+    const deadline = usageNow() + 5_000;
     const readAt = new Date().toISOString();
     const until = readAt.slice(0, 10);
     const since = new Date(Date.parse(`${until}T00:00:00Z`) - 30 * 86_400_000).toISOString().slice(0, 10);
     const through = new Date(Date.parse(`${until}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
 
-    const meters = await admin.readMeters(actor, { tenantId });
-    const gauge = meters.perTenant.find((row) => row.tenantId === tenantId)?.storage;
+    const gaugeRead = await admin.readTenantStorageGauge(actor, tenantId, 500);
+    const gauge = gaugeRead.gauge;
     const stale = gauge?.oldestReadAt ? Date.parse(readAt) - Date.parse(gauge.oldestReadAt) > 2 * 86_400_000 : false;
-    const storageState = !gauge ? 'unavailable' : gauge.sampled === 0 ? (gauge.total === 0 ? 'empty' : 'not-sampled')
+    const storageState = gaugeRead.truncated ? 'truncated' : !gauge ? 'unavailable' : gauge.sampled === 0 ? (gauge.total === 0 ? 'empty' : 'not-sampled')
       : gauge.failing > 0 ? 'failing' : stale ? 'stale' : gauge.sampled < gauge.total ? 'partial' : 'complete';
     // Literal output allowlist: never spread a meter row (which also carries plan data).
     const storage = {
       state: storageState,
       bytes: gauge && gauge.sampled > 0 ? gauge.bytes : null,
       estimated: false,
+      lowerBound: gaugeRead.truncated,
+      truncatedReason: gaugeRead.truncated ? 'scope-cap' : null,
       basis: 'scope-databases' as const,
       sampled: gauge?.sampled ?? 0,
       total: gauge?.total ?? 0,
@@ -2617,10 +2624,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       coveredDays: 0, totalDays: 30, sinceDay: since, untilDay: through,
       lastReadAt: null, byVertical: [], breakdownTruncated: false,
     };
-    if (admin.listRequestDays && admin.listRequestRollupDays) {
+    if (usageNow() < deadline && admin.listTenantRequestMeter && admin.listRequestMeterDays) {
       const [rows, days] = await Promise.all([
-        admin.listRequestDays(actor, { tenantId, since, until: through, limit: REQUEST_ROLLUP_LIMIT_MAX }),
-        admin.listRequestRollupDays(actor, { since, until: through }),
+        admin.listTenantRequestMeter(actor, tenantId, since, through, REQUEST_ROLLUP_LIMIT_MAX),
+        admin.listRequestMeterDays(actor, since, through),
       ]);
       const covered = days.filter((d) => d.readAt !== null && !d.saturated);
       const coveredDaySet = new Set(covered.map((day) => day.day));
@@ -2628,11 +2635,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const groups = new Map<string | null, number>();
       let count = 0;
       let countedRows = 0;
+      let requestLabelsTruncated = false;
       for (const row of rows.slice(0, REQUEST_ROLLUP_LIMIT_MAX - 1)) {
         if (!coveredDaySet.has(row.day)) continue;
         countedRows++;
         count += row.requests;
-        groups.set(row.vertical, (groups.get(row.vertical) ?? 0) + row.requests);
+        if (row.labelTruncated) requestLabelsTruncated = true;
+        else groups.set(row.vertical, (groups.get(row.vertical) ?? 0) + row.requests);
       }
       const byVertical = [...groups].sort((a, b) => (a[0] ?? '').localeCompare(b[0] ?? ''));
       const incomplete = covered.length < 30 || clipped;
@@ -2647,7 +2656,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         untilDay: through,
         lastReadAt: covered.reduce<string | null>((latest, day) => !latest || day.readAt! > latest ? day.readAt : latest, null),
         byVertical: covered.length > 0 ? byVertical.slice(0, 50).map(([vertical, n]) => ({ vertical, requests: n })) : [],
-        breakdownTruncated: covered.length > 0 && byVertical.length > 50,
+        breakdownTruncated: covered.length > 0 && (byVertical.length > 50 || requestLabelsTruncated),
       };
     }
 
@@ -2659,12 +2668,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     let oldestRecordedAt: string | null = null;
     let newestRecordedAt: string | null = null;
     let truncated = false;
+    let truncatedReason: 'page-cap' | 'time-budget' | null = null;
+    let modelSkipped = false;
+    let labelsTruncated = false;
     const earlier = (a: string | null, b: string): string => a === null || b < a ? b : a;
     const later = (a: string | null, b: string): string => a === null || b > a ? b : a;
-    if (typeof admin.listModelUsage === 'function') {
-      let cursor: string | undefined;
+    if (typeof admin.listTenantModelUsageMeter === 'function') {
+      let cursor: { at: string; id: string } | undefined;
       for (let page = 0; page < 25; page++) {
-        const entries = await admin.listModelUsage(actor, { tenantId, since: `${since}T00:00:00Z`, until: `${until}T00:00:00Z`, limit: 501, order: 'desc', ...(cursor ? { cursor } : {}) });
+        if (usageNow() >= deadline) {
+          if (calls > 0) { truncated = true; truncatedReason = 'time-budget'; }
+          else modelSkipped = true;
+          break;
+        }
+        const entries = await admin.listTenantModelUsageMeter(actor, { tenantId, since: `${since}T00:00:00Z`, until: `${until}T00:00:00Z`, limit: 501, ...(cursor ? { cursor } : {}) });
         for (const entry of entries.slice(0, 500)) {
           calls++;
           if (entry.reported) {
@@ -2674,35 +2691,40 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           }
           oldestRecordedAt = earlier(oldestRecordedAt, entry.at);
           newestRecordedAt = later(newestRecordedAt, entry.at);
-          const key = `${entry.attribution.vertical}\u0000${entry.model}`;
-          const row = groups.get(key) ?? { vertical: entry.attribution.vertical, model: entry.model, calls: 0, reportedCalls: 0, inputTokens: 0, outputTokens: 0 };
-          row.calls++;
-          if (entry.reported) {
-            row.reportedCalls++;
-            row.inputTokens += entry.inputTokens;
-            row.outputTokens += entry.outputTokens;
+          if (entry.labelTruncated) labelsTruncated = true;
+          else {
+            const key = `${entry.vertical}\u0000${entry.model}`;
+            const row = groups.get(key) ?? { vertical: entry.vertical, model: entry.model, calls: 0, reportedCalls: 0, inputTokens: 0, outputTokens: 0 };
+            row.calls++;
+            if (entry.reported) {
+              row.reportedCalls++;
+              row.inputTokens += entry.inputTokens;
+              row.outputTokens += entry.outputTokens;
+            }
+            groups.set(key, row);
           }
-          groups.set(key, row);
         }
         truncated = entries.length > 500;
         if (!truncated) break;
-        cursor = entries[499]!.id;
+        truncatedReason = 'page-cap';
+        cursor = { at: entries[499]!.at, id: entries[499]!.id };
       }
     }
     const modelGroups = [...groups.values()].sort((a, b) => a.vertical.localeCompare(b.vertical) || a.model.localeCompare(b.model));
     const models = {
-      state: typeof admin.listModelUsage !== 'function' ? 'unavailable' : calls === 0 ? 'empty' : truncated ? 'truncated' : 'complete',
+      state: typeof admin.listTenantModelUsageMeter !== 'function' || modelSkipped ? 'unavailable' : calls === 0 ? 'empty' : truncated ? 'truncated' : 'complete',
       calls: calls > 0 ? calls : null,
       inputTokens: reportedCalls > 0 ? inputTokens : null,
       outputTokens: reportedCalls > 0 ? outputTokens : null,
       estimated: false,
       lowerBound: truncated,
+      truncatedReason,
       since: `${since}T00:00:00Z`,
       until: `${until}T00:00:00Z`,
       oldestRecordedAt,
       newestRecordedAt,
       byVerticalModel: modelGroups.slice(0, 50).map((row) => ({ vertical: row.vertical, model: row.model, calls: row.calls, inputTokens: row.reportedCalls > 0 ? row.inputTokens : null, outputTokens: row.reportedCalls > 0 ? row.outputTokens : null })),
-      breakdownTruncated: modelGroups.length > 50,
+      breakdownTruncated: modelGroups.length > 50 || labelsTruncated,
     };
     return c.json({
       readAt,

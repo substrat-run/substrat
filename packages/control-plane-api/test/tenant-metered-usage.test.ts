@@ -77,9 +77,9 @@ it('projects stored usage with coverage and age, with no price or person or scop
 });
 
 it('labels a capped model ledger scan as an at-least lower bound', async () => {
-  const real = host.admin.listModelUsage.bind(host.admin);
+  const real = host.admin.listTenantModelUsageMeter.bind(host.admin);
   let pages = 0;
-  const spy = vi.spyOn(host.admin, 'listModelUsage').mockImplementation(async (who, filter) => {
+  const spy = vi.spyOn(host.admin, 'listTenantModelUsageMeter').mockImplementation(async (who, filter) => {
     pages++;
     const seed = (await real(who, { ...filter, cursor: undefined, limit: 1 }))[0]!;
     return Array.from({ length: 501 }, (_, i) => ({ ...seed, id: `${String(10_000 - pages).padStart(8, '0')}-${String(500 - i).padStart(3, '0')}` }));
@@ -96,10 +96,61 @@ it('labels a capped model ledger scan as an at-least lower bound', async () => {
   }
 });
 
+it('uses a capped tenant storage gauge read instead of materializing readMeters', async () => {
+  const oldRead = vi.spyOn(host.admin, 'readMeters').mockImplementation(() => { throw Error('unbounded meter read'); });
+  const gaugeRead = vi.spyOn(host.admin, 'readTenantStorageGauge');
+  try {
+    const response = await app.request(`/tenants/${own}/metered-usage`, { headers });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(oldRead).not.toHaveBeenCalled();
+    expect(gaugeRead).toHaveBeenCalledWith(serviceActor, own, 500);
+  } finally {
+    oldRead.mockRestore();
+    gaugeRead.mockRestore();
+  }
+});
+
+it('reads projected tenant model rows rather than full staff ledger records', async () => {
+  const wideRead = vi.spyOn(host.admin, 'listModelUsage').mockImplementation(() => { throw Error('wide ledger read'); });
+  try {
+    const response = await app.request(`/tenants/${own}/metered-usage`, { headers });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(wideRead).not.toHaveBeenCalled();
+  } finally {
+    wideRead.mockRestore();
+  }
+});
+
+it('stops model pages at the injected time budget and labels the lower bound', async () => {
+  let elapsed = 0;
+  const timed = createControlPlaneApi({
+    host,
+    authenticate: UNSAFE_devPlatformActorAuth(),
+    authenticateTenantService: tenantTokenAuth(secret, serviceActor),
+    meteredUsageNow: () => elapsed,
+  });
+  const real = host.admin.listTenantModelUsageMeter.bind(host.admin);
+  let pages = 0;
+  const spy = vi.spyOn(host.admin, 'listTenantModelUsageMeter').mockImplementation(async (who, filter) => {
+    pages++;
+    const seed = (await real(who, { ...filter, cursor: undefined, limit: 1 }))[0]!;
+    elapsed = 5_001;
+    return Array.from({ length: 501 }, (_, i) => ({ ...seed, id: `${String(10_000 - pages).padStart(8, '0')}-${String(500 - i).padStart(3, '0')}` }));
+  });
+  try {
+    const response = await timed.request(`/tenants/${own}/metered-usage`, { headers });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(pages).toBe(1);
+    expect((await response.json()).models).toMatchObject({ state: 'truncated', lowerBound: true, truncatedReason: 'time-budget', calls: 500 });
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 it('labels a capped request-row scan as a partial sum of estimates', async () => {
-  const real = host.admin.listRequestDays!.bind(host.admin);
-  const spy = vi.spyOn(host.admin, 'listRequestDays').mockImplementation(async (who, filter) => {
-    const seed = (await real(who, { ...filter, limit: 1 }))[0]!;
+  const real = host.admin.listTenantRequestMeter!.bind(host.admin);
+  const spy = vi.spyOn(host.admin, 'listTenantRequestMeter').mockImplementation(async (who, tenant, since, until) => {
+    const seed = (await real(who, tenant, since, until, 1))[0]!;
     return Array.from({ length: 10_000 }, (_, i) => ({ ...seed, vertical: `app-${i % 60}` }));
   });
   try {
@@ -128,4 +179,19 @@ it('keeps provider-unreported token counts unavailable instead of displaying zer
   const body = await response.json();
   expect(body.models).toMatchObject({ calls: 1, inputTokens: null, outputTokens: null });
   expect(body.models.byVerticalModel).toContainEqual(expect.objectContaining({ calls: 1, inputTokens: null, outputTokens: null }));
+});
+
+it('caps model labels in the reader and omits long labels from the breakdown', async () => {
+  const day = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  await host.admin.recordModelUsage({ requestId: 'model-usage-long-label', line: {
+    attribution: { tenant: own, scope, vertical: 'app', version: '1', operation: 'ask' },
+    model: `provider:${'m'.repeat(140)}`, provider: 'provider', modelId: 'long', reported: true,
+    inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0,
+    listUsd: null, at: `${day}T12:00:00.000Z`, elapsedMs: 10,
+  } });
+  const response = await app.request(`/tenants/${own}/metered-usage`, { headers });
+  expect(response.status, await response.clone().text()).toBe(200);
+  const body = await response.json();
+  expect(body.models).toMatchObject({ calls: 2, breakdownTruncated: true });
+  expect(body.models.byVerticalModel).toHaveLength(1);
 });
