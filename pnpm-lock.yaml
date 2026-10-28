@@ -334,6 +334,9 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
+      '@substrat-run/model-providers':
+        specifier: workspace:^
+        version: link:../../packages/model-providers
       '@substrat-run/oidc-rp':
         specifier: workspace:^
         version: link:../../packages/oidc-rp

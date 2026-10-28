@@ -279,6 +279,7 @@ export async function createApp(
      * the embedded path has no delivery seam (modules there read authored config).
      */
     appConfig?: Array<{ key: string; value: string; secret: boolean }>;
+    modelKeys?: string[];
     /**
      * The install form's Identity choice (§2.4): which issuer this app authenticates
      * against. Applied AFTER the hostname binds — the OIDC callback URL needs the app's
@@ -314,7 +315,7 @@ export async function createApp(
   //      for a retry) — the whole point of the form is that these values never exist
   //      only in one in-flight request.
   if (input.appConfig?.length) {
-    await scope.invoke('dashboard/set-app-env', { appScopeId: input.appScopeId, entries: input.appConfig });
+    await scope.invoke('dashboard/set-app-env', { appScopeId: input.appScopeId, entries: input.appConfig, modelKeys: input.modelKeys });
   }
 
   // 2. Effect the app scope IN THE CALLER'S OWN TENANT (node.tenantId, ambient —

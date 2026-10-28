@@ -215,6 +215,7 @@ export const envVarSpec = z.object({
   label: z.string().optional(), // "Admin password" — falls back to the key
   description: z.string().min(1), // shown under the field
   placeholder: z.string().optional(), // "at least 8 characters"
+  kind: z.enum(['model']).optional(), // a priced model from the platform catalog
   required: z.boolean().default(false),
   secret: z.boolean().default(false), // masked + write-only + delivered as a secret
   default: z.string().optional(), // non-secret default, prefilled

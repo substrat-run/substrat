@@ -20,6 +20,7 @@ import { ControlPlaneTransport } from '@substrat-run/control-plane-client';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { pricedModelCatalog, selectableModel } from '@substrat-run/model-providers';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { grantableEntitlements, FINDINGS_LIMIT_MAX, findingKind, findingStatus, isSubstratError, type EdgeHealth, type FindingEntry, type ModelUsageLine, type OpsFailureEntry, type SweepRunEntry, type VerticalConnectorDeclaration, isVerticalConnectorProvider } from '@substrat-run/contracts';
@@ -2588,14 +2589,40 @@ async function getAppEnvIn(ctx: TeamContext, appScopeId: string) {
     spec = (remote?.envSpec as typeof spec) ?? [];
   }
   const values = await walkAll(dash, 'dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
-  return { spec, values };
+  return {
+    spec,
+    values,
+    modelCatalog: pricedModelCatalog().map(({ id, label, status, servedBy, rate }) => ({
+      id, label, status, servedBy,
+      inputPer1M: rate.tiers[0]!.inputPer1M,
+      outputPer1M: rate.tiers[0]!.outputPer1M,
+    })),
+  };
+}
+
+function validateModelEntries(
+  spec: readonly EnvVarSpec[],
+  entries: readonly { key: string; value: string; secret?: boolean }[],
+  stored: readonly { key: string; value: string | null }[] = [],
+): void {
+  for (const entry of entries) {
+    if (!entry.value) continue;
+    const declaration = spec.find((s) => s.key === entry.key);
+    if (declaration?.kind !== 'model') continue;
+    if (entry.secret || (!selectableModel(entry.value) && stored.find((v) => v.key === entry.key)?.value !== entry.value)) {
+      throw new HTTPException(400, { message: `${entry.key} must be a listed model` });
+    }
+  }
 }
 
 async function setAppEnvIn(ctx: TeamContext, appScopeId: string, entries: Array<{ key: string; value: string; secret?: boolean }>) {
   const { c, node } = ctx;
   const { dash, appRow } = await teamAppTarget(ctx, appScopeId);
   if (entries.length === 0) return { saved: 0, delivered: false };
-  const saved = await dash.invoke<{ saved: number }>('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries });
+  const { spec, values } = await getAppEnvIn(ctx, appScopeId);
+  validateModelEntries(spec, entries, values);
+  const modelKeys = spec.filter((s) => s.kind === 'model').map((s) => s.key);
+  const saved = await dash.invoke<{ saved: number }>('dashboard/set-app-env', { appScopeId: appRow.app_scope_id, entries, modelKeys });
   // DELIVER to the running app scope (vertical-auth-detach.md §2.2), not just author:
   // the control plane routes the entries to the deployment holding the scope's DO. This
   // is a LIVE delivery, not a next-deploy binding — env-spec `default:` values ride as
@@ -3897,6 +3924,7 @@ async function installAppIn({ c, host, node }: TeamContext, body: z.infer<typeof
   const appConfig = envSpec
     .filter((s) => (body.config?.[s.key] ?? '') !== '')
     .map((s) => ({ key: s.key, value: body.config![s.key]!, secret: s.secret }));
+  validateModelEntries(envSpec, appConfig);
   // The team's human handle, suffixed into the default hostname
   // (`callout-sesamy.global.substrat.run`). From the TEAM record, not the user.
   const team = await host.admin.getTenant(STAFF, node.tenantId);
@@ -3927,6 +3955,7 @@ async function installAppIn({ c, host, node }: TeamContext, body: z.infer<typeof
     tenantName: team?.name ?? 'Workspace',
     ...(appAuth ? { appAuth, teamIssuers: installIssuers } : {}),
     ...(appConfig.length > 0 ? { appConfig } : {}),
+    modelKeys: envSpec.filter((s) => s.kind === 'model').map((s) => s.key),
   });
 }
 

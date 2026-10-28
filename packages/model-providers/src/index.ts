@@ -51,5 +51,7 @@ export {
 	type StepTokens,
 } from './pricing.js';
 export { RATE_CARD, RATE_CARD_GENERATED_AT } from './rate-card.generated.js';
+export { MODEL_CATALOG } from './model-catalog.generated.js';
+export { pricedModelCatalog, selectableModel, type ModelCatalogEntry, type PricedModelCatalogEntry } from './model-catalog.js';
 export { errorFacts, explainProviderFailure, type ErrorFacts } from './provider-errors.js';
 export { qwenCacheFetch, withQwenCacheMarkers } from './qwen-cache.js';

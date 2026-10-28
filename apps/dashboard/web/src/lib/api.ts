@@ -945,6 +945,7 @@ export interface ScopeQueryResult {
 /** A declared env var for a vertical — drives the Env form (placeholder + description). */
 export interface EnvVarSpec {
   key: string;
+  kind?: string;
   label?: string;
   description: string;
   placeholder?: string;
@@ -1016,6 +1017,16 @@ export interface MemberInviteView extends AuditedAnswerView {
 export interface AppEnvView {
   spec: EnvVarSpec[];
   values: AppEnvValue[];
+  modelCatalog: ModelCatalogOption[];
+}
+
+export interface ModelCatalogOption {
+  id: string;
+  label: string;
+  status: 'active' | 'deprecated';
+  servedBy: string;
+  inputPer1M: string;
+  outputPer1M: string;
 }
 
 /** A provider credential form field — server-driven, the same move as the env spec. */

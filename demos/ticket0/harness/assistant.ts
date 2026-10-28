@@ -205,7 +205,7 @@ export function extractiveModel(): Model {
 }
 
 /** The platform default: runs on Cloudflare's network, costs next to nothing, and answers. */
-export const DEFAULT_TICKET0_MODEL = 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast';
+export const DEFAULT_TICKET0_MODEL = 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8';
 
 /**
  * Whichever the platform can actually run. Never throws for want of a credential.
