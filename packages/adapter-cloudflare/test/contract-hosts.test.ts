@@ -19,6 +19,7 @@ import {
   platformActorId,
   principalId,
   scopeId,
+  storeDriverReleaseDigest,
   tenantId,
   type EntityRef,
   type MintedCapability,
@@ -57,6 +58,7 @@ import {
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost, type ConnectorDelegation } from './test-host.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
+import { approveStoredDriverRelease, storeReleaseKey } from '@substrat-run/control-plane-api';
 
 // Absorb the inter-file DO reload before any suite's first directory call
 // (see do-warmup.ts) — file-level, so it runs before every suite below.
@@ -784,6 +786,34 @@ storeDriverReleaseContractSuite('adapter-cloudflare', async () => {
     checker: UNSAFE_allowAllChecker,
   });
   return { host, cleanup: async () => host.close() };
+});
+
+it('checks stored release bytes before an approval write through the Cloudflare directory', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, checker: UNSAFE_allowAllChecker });
+  try {
+    const actor = platformActorId.parse(ulid());
+    const driver = `review-${ulid()}`;
+    const release = { sourceCommit: 'c'.repeat(40), entry: 'driver_graph/store.py',
+      modules: [{ name: 'driver_graph/store.py', content: new TextEncoder().encode('class Store:\n    pass\n') }] };
+    const sha256 = await storeDriverReleaseDigest(release);
+    const bytes = new Map<string, Uint8Array>();
+    const storedBytes = { get: async (key: string) => bytes.get(key), put: async (key: string, value: Uint8Array) => { bytes.set(key, value); } };
+    const wire = (content: string) => new TextEncoder().encode(JSON.stringify({ sourceCommit: release.sourceCommit, entry: release.entry,
+      modules: [{ name: release.entry, contentBase64: btoa(content) }] }));
+    const input = { admin: host.admin, actor, bytes: storedBytes, driver, sha256, approval: {
+      reason: 'Reviewed the release', sourceReferences: [{ repository: 'https://example.test/driver.git', commit: release.sourceCommit }],
+      isolationReview: {}, schema: 1, className: 'Store', operations: [],
+    } };
+    await host.admin.recordStoreDriverRelease(actor, { driver, sha256, sourceCommit: release.sourceCommit });
+    await expect(approveStoredDriverRelease(input)).rejects.toMatchObject({ status: 404 });
+    bytes.set(storeReleaseKey(driver, sha256), wire('class Store:\n    changed = True\n'));
+    await expect(approveStoredDriverRelease(input)).rejects.toMatchObject({ status: 409 });
+    expect(await host.admin.storeDriverApprovals(actor, driver)).toEqual([]);
+    bytes.set(storeReleaseKey(driver, sha256), wire('class Store:\n    pass\n'));
+    expect(await approveStoredDriverRelease(input)).toMatchObject({ driver, sha256, sourceCommit: release.sourceCommit });
+  } finally {
+    await host.close();
+  }
 });
 
 // connections.md §3.5.4: a vertical's mailed connect link — the kernel's statements, run inside

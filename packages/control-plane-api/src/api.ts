@@ -213,7 +213,7 @@ import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-s
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
 import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
-import { PUSH_HOLD_TTL_MS, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
+import { PUSH_HOLD_TTL_MS, approveStoredDriverRelease, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -12294,9 +12294,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const statusWords = { write: 'store driver release status', person: 'store driver release status is read by a person' };
   const reviewEvidence = z.object({ met: z.boolean(), evidence: z.string().trim().min(1).max(2048) }).strict();
   const checkedEvidence = z.object({ checked: z.literal(true), evidence: z.string().trim().min(1).max(2048) }).strict();
+  // D-65 stores the reviewer's exact references: one HTTPS repository URL and one hex revision.
+  const repositoryReference = z.string().min(1).max(1024).refine((value) => {
+    if (!value.startsWith('https://') || /[\s\\?#]/u.test(value) || [...value].some((ch) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127)) return false;
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && !!url.hostname && !url.username && !url.password &&
+        !url.search && !url.hash && url.pathname.split('/').some(Boolean);
+    } catch {
+      return false;
+    }
+  }, { message: 'a source repository is an HTTPS URL with a host and path' });
+  const sourceCommit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, { message: 'a source commit is 40 or 64 lowercase hex characters' });
   const approvalBody = z.object({
     reason: z.string().trim().min(1).max(2048),
-    sourceReferences: z.array(z.object({ repository: z.string().trim().min(1).max(1024), commit: z.string().trim().min(1).max(128) }).strict()).min(1).max(64),
+    sourceReferences: z.array(z.object({ repository: repositoryReference, commit: sourceCommit }).strict()).min(1).max(64),
     isolationReview: z.object({
       separateScriptPerTenant: reviewEvidence,
       noOutboundAccess: reviewEvidence,
@@ -12407,7 +12419,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = await byAPerson(c, approvalWords);
     const sha256 = releaseSha(c.req.param('sha256'));
     const body = parseApprovalBody(await readCappedJson(c.req.raw, 64 * 1024));
-    const approval = await c.var.admin.approveStoreDriverRelease(actor, { driver: registration.driver, sha256, ...body });
+    const flow = options.storeReleases;
+    if (!flow) throw new ControlPlaneError(501, 'this control plane cannot read stored release bytes for approval');
+    const approval = await approveStoredDriverRelease({ admin: c.var.admin, actor, bytes: flow.bytes, driver: registration.driver, sha256, approval: body });
     const state = await c.var.admin.storeDriverState(actor, registration.driver);
     const approvals = state.current ? await c.var.admin.storeDriverApprovals(actor, registration.driver) : [];
     const currentSchema = state.current

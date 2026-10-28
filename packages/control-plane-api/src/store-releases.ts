@@ -157,6 +157,9 @@ export async function runStoreDriverRevoke(input: {
       throw new ControlPlaneError(409, `store canary '${canary}' records no release; roll it out before revoking ${sha256}`);
     }
     if (runningCanary.release === sha256 && state.current) {
+      if (!(await admin.liveStoreDriverApproval(actor, driver, state.current.sha256))) {
+        throw new ControlPlaneError(409, `current release ${state.current.sha256} of '${driver}' has no live approval for a canary move`);
+      }
       await renew();
       await input.ensureCanary(state.current.sha256);
     }
@@ -258,14 +261,45 @@ export function storedReleaseLoader(input: { admin: HostAdmin; actor: PlatformAc
     if (!wanted) return undefined;
     const raw = await input.bytes.get(storeReleaseKey(driver, wanted));
     if (!raw) return undefined;
-    let json: unknown;
-    try {
-      json = JSON.parse(new TextDecoder().decode(raw));
-    } catch {
-      throw new ControlPlaneError(422, `driver '${driver}' release ${wanted} is stored as something other than a release`);
-    }
-    return { ...decodeStoreDriverRelease(json), sha256: wanted };
+    return { ...decodeStoredReleaseBytes(raw, driver, wanted), sha256: wanted };
   };
+}
+
+function decodeStoredReleaseBytes(raw: Uint8Array, driver: string, sha256: string) {
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    throw new ControlPlaneError(422, `driver '${driver}' release ${sha256} is stored as something other than a release`);
+  }
+  return decodeStoreDriverRelease(json);
+}
+
+/** Verify the named stored bundle before an approval can be recorded. */
+export async function approveStoredDriverRelease(input: {
+  admin: HostAdmin; actor: PlatformActorId; bytes: StoreReleaseBytes;
+  driver: string; sha256: string;
+  approval: Omit<Parameters<HostAdmin['approveStoreDriverRelease']>[1], 'driver' | 'sha256'>;
+}) {
+  const { admin, actor, bytes, driver, sha256 } = input;
+  const stored = await admin.getStoreDriverRelease(actor, driver, sha256);
+  if (!stored) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' is not stored`);
+  const raw = await bytes.get(storeReleaseKey(driver, sha256));
+  if (!raw) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' has no stored bytes`);
+  let release: ReturnType<typeof decodeStoredReleaseBytes>;
+  try {
+    release = decodeStoredReleaseBytes(raw, driver, sha256);
+  } catch (e) {
+    if (e instanceof ControlPlaneError && e.status === 422) {
+      throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+    }
+    throw e;
+  }
+  const digest = await storeDriverReleaseDigest(release).catch(() => undefined);
+  if (digest !== sha256 || release.sourceCommit !== stored.sourceCommit) {
+    throw new ControlPlaneError(409, `release ${sha256} of '${driver}' differs from its stored digest or source commit`);
+  }
+  return admin.approveStoreDriverRelease(actor, { driver, sha256, ...input.approval });
 }
 
 /** The reserved calls a canary makes, at the canary script. */

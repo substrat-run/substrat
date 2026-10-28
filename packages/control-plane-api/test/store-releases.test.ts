@@ -845,6 +845,53 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect(((await listed.json()).approvals as unknown[]).length).toBe(2);
   });
 
+  it('refuses approval when the stored release is missing or has a different digest', async () => {
+    const app = appWith(asPerson);
+    const release = shas[0]!;
+    const path = `/store-drivers/graph/releases/${release}/approvals`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const saved = bytes.get(`graph/${release}`)!;
+    bytes.delete(`graph/${release}`);
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(404);
+    bytes.set(`graph/${release}`, new TextEncoder().encode(JSON.stringify(wire(bundle(2)))));
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(409);
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    bytes.set(`graph/${release}`, saved);
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(201);
+  });
+
+  it('validates repository and commit shapes in approval references', async () => {
+    const app = appWith(asPerson);
+    const release = shas[0]!;
+    const path = `/store-drivers/graph/releases/${release}/approvals`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const body = reviewed(0);
+    const invalid = [
+      { repository: 'x', commit: COMMIT },
+      { repository: 'http://example.test/driver.git', commit: COMMIT },
+      { repository: 'https://name@example.test/driver.git', commit: COMMIT },
+      { repository: 'https://example.test/driver.git?view=1', commit: COMMIT },
+      { repository: 'https://example.test/driver.git#readme', commit: COMMIT },
+      { repository: 'https://example.test/', commit: COMMIT },
+      { repository: 'https://example.test/driver\\branch', commit: COMMIT },
+      { repository: 'https://example.test/driver git', commit: COMMIT },
+      { repository: `https://example.test/driver${'x'.repeat(1024)}`, commit: COMMIT },
+      { repository: 'https://example.test/driver.git', commit: 'abc' },
+      { repository: 'https://example.test/driver.git', commit: COMMIT.toUpperCase() },
+    ];
+    for (const source of invalid) {
+      expect((await call(app, 'POST', path, person, { ...body, sourceReferences: [source] })).status).toBe(422);
+    }
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    const valid = { ...body, sourceReferences: [
+      { repository: 'https://example.test/driver.git', commit: release },
+      { repository: 'https://example.test/dependency', commit: COMMIT },
+    ] };
+    const approved = await call(app, 'POST', path, person, valid);
+    expect(approved.status).toBe(201);
+    expect(await approved.json()).toMatchObject({ approval: { sourceReferences: valid.sourceReferences } });
+  });
+
   it('refuses a normal revoke while a script runs the release or its settings are unreadable', async () => {
     const app = appWith(asPerson);
     const release = shas[0]!;
@@ -887,6 +934,21 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     const emergency = await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/revoke`, person, { reason: 'Incident', emergency: true });
     expect(emergency.status, await emergency.clone().text()).toBe(200);
     expect(await emergency.json()).toMatchObject({ approval: { revokedEmergency: true } });
+  });
+
+  it('refuses a canary move when the current release has no live approval', async () => {
+    const app = appWith(asPerson);
+    for (const n of [1, 2]) {
+      expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)))).status).toBe(201);
+      expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[n - 1]}/approvals`, person, reviewed(n - 1))).status).toBe(201);
+    }
+    expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[1] })).status).toBe(200);
+    scripts.set('substrat-store-graph--canary', shas[0]);
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/revoke`, person, { reason: 'Withdraw', emergency: true })).status).toBe(200);
+    const refused = await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/revoke`, person, { reason: 'Withdraw' });
+    expect(refused.status).toBe(409);
+    expect(scripts.get('substrat-store-graph--canary')).toBe(shas[0]);
+    expect(await host.admin.liveStoreDriverApproval(person, 'graph', shas[0]!)).toBeDefined();
   });
 
   it('pages the revoke walk and restarts when the person, reason or rollout sequence changes', async () => {

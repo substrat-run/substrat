@@ -185,6 +185,7 @@ export {
   ROLLOUT_VERTICALS_PER_REQUEST,
   canaryObjectName,
   canaryStoreRelease,
+  approveStoredDriverRelease,
   decodeStoreDriverRelease,
   runStoreDriverRollout,
   runStoreDriverRevoke,
