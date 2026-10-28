@@ -1,5 +1,6 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
 
 export default defineConfig({
   // `process.env` inside workerd is not the runner's, so an opt-in from the environment is decided
@@ -18,10 +19,10 @@ export default defineConfig({
     }),
   ],
   test: {
+    ...workerdTestTimeout,
     // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
     fsModuleCache: false,
     include: ['test/**/*.test.ts'],
-    testTimeout: 30_000,
     passWithNoTests: true,
     // One file at a time, as the old pool's `singleWorker` ran them: several suites count
     // everything in a directory another file's scopes could be written into.

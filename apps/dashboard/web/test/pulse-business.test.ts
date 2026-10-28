@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it } from 'vitest';
 import type { BusinessVolumeRow } from '../src/lib/api';
 import { businessChange, businessLabel, isBusinessOutcome } from '../src/lib/pulse-rows';

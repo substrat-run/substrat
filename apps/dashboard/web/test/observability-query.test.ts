@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, it, expect } from 'vitest';
 import { queryWindow, readObsQuery, dragWindow } from '../src/lib/observability-query';
 import { obsPath } from '../src/lib/router';

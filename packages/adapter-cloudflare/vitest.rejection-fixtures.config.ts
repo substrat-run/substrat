@@ -7,6 +7,7 @@
  */
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.ts';
 
 export default defineConfig({
   define: { __PROBE_DO_LIMITS__: 'false', __PROBE_WRITE_REVISION__: 'false' },
@@ -16,6 +17,7 @@ export default defineConfig({
     }),
   ],
   test: {
+    ...workerdTestTimeout,
     // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
     fsModuleCache: false,
     include: ['rejection-fixtures/**/*.fixture.ts'],

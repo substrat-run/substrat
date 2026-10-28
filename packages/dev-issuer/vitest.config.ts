@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
+import { nodeTestTimeout } from '../../tools/vitest/timeout-policy.ts';
 
 export default defineConfig({
-  test: { include: ['test/**/*.test.ts'] },
+  test: { ...nodeTestTimeout, include: ['test/**/*.test.ts'] },
 });
