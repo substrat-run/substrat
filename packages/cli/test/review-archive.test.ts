@@ -64,7 +64,8 @@ it('round-trips the repository docs that need deterministic PAX path extensions'
     at += 512 + Math.ceil(paxSize / 512) * 512;
     expect(tar[at + 156]).toBe(48);
     const fileSize = Number.parseInt(tar.toString('ascii', at + 124, at + 136).replace(/\0.*$/, '').trim(), 8);
-    expect(tar.subarray(at + 512, at + 512 + fileSize)).toEqual(readFileSync(new URL(`../../../${path}`, import.meta.url)));
+    // Git may normalize CRLF in a Windows checkout; the archive reads the committed blob.
+    expect(tar.subarray(at + 512, at + 512 + fileSize)).toEqual(git('show', `HEAD:${path}`));
     at += 512 + Math.ceil(fileSize / 512) * 512;
   }
 });
