@@ -25,6 +25,7 @@ import type {
   DenialFilter,
   DenialSummary,
   EffectsTree,
+  EntitlementGrant,
   InvocationEvents,
   DeadLetter,
   LifecycleFlowInput,
@@ -451,6 +452,11 @@ export class TenantNarrowedControlPlane {
   /** Grant a SKU flag on the pinned tenant (idempotent). */
   grantEntitlement(key: string): Promise<void> {
     return this.call(`/tenants/${this.tenantId}/entitlements/${encodeURIComponent(key)}`, { method: 'PUT', idempotent: true });
+  }
+
+  /** Read the directory's grants for the pinned tenant. */
+  listEntitlements(): Promise<EntitlementGrant[]> {
+    return this.call(`/tenants/${this.tenantId}/entitlements`);
   }
 
   /** Write the directory row for a new scope (`provisioning`) in the pinned tenant. */

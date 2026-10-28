@@ -866,6 +866,13 @@ export interface DashboardClient {
   listDomains(input: { limit?: number; cursor?: string }): Promise<{ entries: ({ hostname: string; appScopeId: string; app: string; surface: string; status: string; statusNote: string | null; primary: boolean; createdAt: string; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] })[]; nextCursor: string | null }>;
 
   /**
+   * Read this team's entitlement grants (owner or admin)
+   *
+   * `GET /entitlements` — `dashboard/list-entitlements`
+   */
+  listEntitlements(): Promise<{ key: string; quota?: number; expiresAt?: string }[]>;
+
+  /**
    * This team's suppress rules; `active` keeps the unexpired ones
    *
    * `GET /findings/rules` — `dashboard/list-finding-rules`
@@ -1403,6 +1410,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/deployments", "GET", undefined, undefined),
     listDomains: (input: Args) =>
       send("/domains", "GET", undefined, input),
+    listEntitlements: () =>
+      send("/entitlements", "GET", undefined, undefined),
     listFindingRules: (input: Args) =>
       send("/findings/rules", "GET", undefined, input),
     listFindings: (input: Args) =>
