@@ -258,6 +258,9 @@
 		{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups" },
 		{ "binding": "DIRECTORY_BACKUPS", "bucket_name": "substrat-directory-backups" },
 		{ "binding": "STORE_RELEASES", "bucket_name": "substrat-store-releases" },
+		// Phase-0 source reviews. Create substrat-review-sources manually BEFORE this change
+		// merges; deploys never provision buckets. The worker refuses review routes if absent.
+		{ "binding": "REVIEW_SOURCES", "bucket_name": "substrat-review-sources" },
 		// Accepted inbound mail waiting for delivery (#2611). Deleted once delivered.
 		{ "binding": "MAIL_IN_BUCKET", "bucket_name": "substrat-mail-in" }
 	],

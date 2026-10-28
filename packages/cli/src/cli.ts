@@ -26,6 +26,7 @@
  */
 import { bindConnectionScope, listConnectionBindings } from './connections.js';
 import { join, resolve as resolvePath } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { ask } from './prompt.js';
 import { doctor } from './doctor.js';
@@ -57,6 +58,8 @@ import { setListing, requestPublish } from './listing.js';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, rebuildStoreDriver, rollBackStoreDriver, skippedInstallerMarkersOf, sourceCommitOf, rollOutStoreDriver, storeDriverPackLines, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
+import { assertCleanReviewTree, reviewArchive } from './review-archive.js';
+import { failureMessage } from './problem.js';
 import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js';
 import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, bindScopeVersion, scopeStatus } from './scope.js';
@@ -127,6 +130,10 @@ Usage:
   substrat whoami                             show who you are + your workspaces
   substrat workspaces                         list your workspaces (alias of whoami)
   substrat version                            print the CLI version (also --version, -v)
+  substrat review upload [dir] [--base <ref>]  upload a committed staff branch for a
+                                               phase-0 review receipt (no gates run)
+  substrat review <id>                         read your review receipt
+  substrat review list                         list your review receipts
   substrat dev      [dir] [--no-trace]         run the project's dev script with local request traces
   substrat push     [dir] [--promote prod]     push a vertical (slug/name/version default
                                                from package.json; version auto-bumps);
@@ -1446,6 +1453,57 @@ async function cmdWhoami(): Promise<void> {
   for (const t of tenants) console.log(`  ${t.name}  [${t.slug}]`);
 }
 
+async function cmdReview(): Promise<void> {
+  const sub = argv[1];
+  if (!sub) throw new Error('usage: substrat review upload [dir] [--base <ref>] | review list | review <id>');
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token') });
+  const plane = planeFor(controlPlaneUrl, header);
+  if (sub === 'upload') {
+    const dir = resolvePath(positional(1) ?? '.');
+    assertCleanReviewTree(dir);
+    const source = reviewArchive(dir, 'HEAD');
+    const form = new FormData();
+    form.set('source', new Blob([source.bytes as Uint8Array<ArrayBuffer>], { type: 'application/gzip' }), 'source.tar.gz');
+    form.set('sourceSha256', source.sha256);
+    const baseRef = flag('base');
+    if (baseRef) {
+      const base = execFileSync('git', ['merge-base', 'HEAD', baseRef], { cwd: dir, encoding: 'utf8' }).trim();
+      const archive = reviewArchive(dir, base);
+      form.set('base', new Blob([archive.bytes as Uint8Array<ArrayBuffer>], { type: 'application/gzip' }), 'base.tar.gz');
+      form.set('baseSha256', archive.sha256);
+    }
+    const response = await plane.request('/reviews', { method: 'POST', body: form });
+    const body = await response.text();
+    if (!response.ok) throw new Error(failureMessage('review upload failed', response.status, body));
+    const record = JSON.parse(body) as { id: string; state: string; expiresAt: string };
+    console.log(`review ${record.id}: ${record.state} (no gates run; expires ${record.expiresAt})`);
+    return;
+  }
+  const rows: Array<{ id: string; state: string; createdAt: string }> = [];
+  let cursor: string | null = null;
+  do {
+    const path = sub === 'list'
+      ? `/reviews${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`
+      : `/reviews/${encodeURIComponent(sub)}`;
+    const response = await plane.request(path);
+    const body = await response.text();
+    if (!response.ok) throw new Error(failureMessage('review read failed', response.status, body));
+    if (sub === 'list') {
+      const page = JSON.parse(body) as { entries: typeof rows; cursor: string | null };
+      rows.push(...page.entries);
+      cursor = page.cursor;
+    } else {
+      rows.push(JSON.parse(body) as (typeof rows)[number]);
+      cursor = null;
+    }
+  } while (cursor);
+  if (argv.includes('--json')) {
+    console.log(JSON.stringify(sub === 'list' ? { entries: rows } : rows[0], null, 2));
+    return;
+  }
+  for (const record of rows) console.log(`${record.id}  ${record.state}  ${record.createdAt}  (no gates run)`);
+}
+
 async function main(): Promise<void> {
   // #386: in the monorepo the bin is a symlink into dist/ — say up front when that
   // build is older than src, so a stale-build failure is never chased as a real one.
@@ -1461,6 +1519,8 @@ async function main(): Promise<void> {
       return cmdDoctor();
     case 'versions':
       return cmdVersions();
+    case 'review':
+      return cmdReview();
     case 'installs':
       return cmdInstalls();
     case 'push':
