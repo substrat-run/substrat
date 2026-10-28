@@ -3,7 +3,7 @@ id: D-65
 date: 2026-10-28
 layer: plan
 title: "A store driver release runs after a person approves its uploaded bytes"
-status: proposed
+status: accepted
 aliases: []
 amends: ["D-63"]
 tracking: ["#2210", "#2297"]
@@ -11,10 +11,9 @@ tracking: ["#2210", "#2297"]
 
 # D-65 — A store driver release runs after a person approves its uploaded bytes
 
-> Proposed, not accepted. This is step 1 of the
+> **Ratified 2026-10-28 by the merge of #2683.** This is step 1 of the
 > [store-driver release approval RFC](../rfc/store-driver-release-approval.md). It amends D-63's
-> release pin and third-party registration rule if a person ratifies it. It changes no code or
-> registration.
+> release pin and third-party registration rule. It changes no code or registration.
 
 **A store driver is registered in this repo. A release of it runs only once a person on the
 platform's staff has approved that release for that driver in the control plane, the approval has
@@ -80,7 +79,7 @@ directory read. The review remains the control while D-63's isolation conditions
 
 ## Limits and rollout order
 
-- This record proposes the policy only. The approval vocabulary and directory tables, staff
+- This record decides the policy only. The approval vocabulary and directory tables, staff
   routes, and the switch of every pin reader ship in separate steps of the RFC. No release is
   runnable under approval until all readers switch together. The first rollout after a driver is
   registered waits for a person to attest that the registering deploy has finished.
