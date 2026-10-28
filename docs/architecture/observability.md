@@ -382,6 +382,29 @@ lines). A zero is “not observed returned in the sample,” never proof of no u
 Analytics Engine store for longer retention is follow-up work; it needs a platform-owned
 dataset and a trusted attribution path before the view can read it.
 
+**Recorded limits of field reads (#1331).** The Schema view now puts fields with zero
+sampled returns under each operation and calls out operations where more than half of
+their declared fields have zero sampled returns. These are candidates within each
+sample-rate group, not evidence that a consumer never read a field; a list or page checks
+only its first entry, so later entries can still return a zero-listed field. Four further asks
+remain for a source that can support them:
+
+- Declaration-age sorting needs a reliable first-declared date for each field. The
+  current `model.json` and `outputSurface` carry names, not introduction dates;
+  reconstructing one from retained version manifests would be incomplete for older
+  versions. Add the sort when model/spec history can supply that date.
+- Single-app coupling needs a tenant-wide, scope-attributed field aggregate. Today's
+  tally deliberately reads one installed app, so it cannot tell whether exactly one
+  app returns a field. Add the comparison when that aggregate exists.
+- Field exemplars need a safe field-to-request read. The tally returns counts only,
+  and request/log reads withhold `outputFields` and `fieldCoverageId`; linking to a
+  generic operation log would not identify a response that returned the field.
+  Add links when an exemplar contract preserves that relationship.
+- Consumer read counts need an explicit consumer-side observation point. The current
+  walk records fields returned by the vertical before serialization, which cannot
+  tell whether a caller used them. Rename or extend the measure if consumer read
+  telemetry is introduced.
+
 The MCP door is walked with the same function and the same rules (#1923). A tool's walk is
 derived from its operation's declared `output` when the tool list is derived, the switch is read
 once per request, and the result is walked before it is serialised into the tool result. A batch

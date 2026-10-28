@@ -35,8 +35,22 @@ it('shows vertical assertion, rate and window beside sampled counts', async () =
   expect(container.textContent).toContain('Vertical-asserted');
   expect(container.textContent).toContain('10.0% router sample');
   expect(container.textContent).toContain(window.since);
-  expect(container.textContent).toContain('acme/get.optional');
+  expect(container.textContent).toContain('Not observed returned in this sampled operation: optional.');
   expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
+});
+
+it('shows the sampled zero-return tail under its operation and calls out largely unreturned outputs', async () => {
+  const group = answer.groups[0]!;
+  const operation = group.operations[0]!;
+  vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [{ ...group,
+    operations: [{ ...operation, fields: [...operation.fields,
+      { field: 'unused', present: 0, empty: 0, absent: 2, eligible: 0, sampleRate: 0.1, window },
+    ] }],
+    notObservedReturned: [...group.notObservedReturned, { operation: operation.operation, field: 'unused' }],
+  }] });
+  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
+  expect(container.textContent).toContain('Operations with a majority of declared fields not observed returned in sampled responses: acme/get (2 of 3)');
+  expect(container.textContent).toContain('Not observed returned in this sampled operation: optional, unused.');
 });
 
 it('uses the unarmed empty state only when there are no router arms', async () => {
@@ -61,5 +75,5 @@ it('sits beside the declared Field coverage card on the app page, for that app o
   const headings = [...container.querySelectorAll('h3')].map((h) => h.textContent);
   expect(headings.slice(0, 2)).toEqual(['Field coverage', 'Sampled field counts']);
   expect(reads).toHaveBeenCalledWith('scope-a', 24);
-  expect(container.textContent).toContain('acme/get.optional');
+  expect(container.textContent).toContain('Not observed returned in this sampled operation: optional.');
 });
