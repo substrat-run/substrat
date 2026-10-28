@@ -347,7 +347,7 @@ function FindingRow({
             const path = findingCodePath(f, code);
             return <span key={code} style={{ fontFamily: 'var(--font-mono)' }}>
               {i > 0 ? ', ' : ''}
-              {path ? <a href={teamPath(path)} title="Filtered requests from the last 72 hours" onClick={(e) => {
+              {path ? <a href={teamPath(path)} title="Filtered requests (recent)" onClick={(e) => {
                 if (isPlainClick(e)) { e.preventDefault(); navigate(path); }
               }}>{code}</a> : code}
             </span>;
