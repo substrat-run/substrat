@@ -68,6 +68,8 @@ describe('the peer panel reads a tenant-pinned install (#2252)', () => {
   const caller = scopeId.parse(ulid());
   const pinned = scopeId.parse(ulid());
   const foreign = scopeId.parse(ulid());
+  const otherTenant = tenantId.parse(ulid());
+  const otherScope = scopeId.parse(ulid());
 
   const install = async (id: ScopeId, vertical: string) => {
     await host.provisionScope(staff, { tenantId: tenant, scopeId: id, vertical });
@@ -90,6 +92,11 @@ describe('the peer panel reads a tenant-pinned install (#2252)', () => {
     await install(pinned, 'first/crm');
     // Another tenant's listed vertical of the same name, installed here: another vertical.
     await install(foreign, 'acme/crm');
+    await provisionDashboard(host, {
+      tenantId: otherTenant, scopeId: scopeId.parse(ulid()), owner: principalId.parse(ulid()), slug: 'second', name: 'second',
+    });
+    await host.provisionScope(staff, { tenantId: otherTenant, scopeId: otherScope, vertical: 'crm' });
+    await host.admin.activateScope(staff, otherTenant, otherScope);
 
     const plane = tenantPlane(host, staff);
     env = {
@@ -114,7 +121,7 @@ describe('the peer panel reads a tenant-pinned install (#2252)', () => {
 
   const peers = async (): Promise<PeersBody> => {
     const res = await app.request(
-      `/api/apps/${caller}/peers`,
+      `/api/teams/${tenant}/apps/${caller}/peers`,
       { headers: { cookie: `sb_session=sub-owner; sb_team=${tenant}` } },
       env,
       { waitUntil: (p: Promise<unknown>) => void background.push(p), passThroughOnException: () => undefined },
@@ -138,5 +145,17 @@ describe('the peer panel reads a tenant-pinned install (#2252)', () => {
 
   it('another tenant\'s prefix cannot be bound for the bare name', async () => {
     await expect(host.admin.setPeerBinding(staff, tenant, caller, 'crm', foreign)).rejects.toThrow();
+  });
+
+  it('refuses a peer target scope in another team through the dashboard route', async () => {
+    const res = await app.request(
+      `/api/teams/${tenant}/apps/${caller}/peers/binding`,
+      { method: 'PUT', headers: { cookie: `sb_session=sub-owner; sb_team=${tenant}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ vertical: 'crm', targetScopeId: otherScope }) },
+      env,
+      { waitUntil: (p: Promise<unknown>) => void background.push(p), passThroughOnException: () => undefined },
+    );
+    expect(res.status).toBe(404);
+    expect(await host.admin.peerBinding(staff, tenant, caller, 'crm')).toBeUndefined();
   });
 });

@@ -608,8 +608,8 @@ function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, can
           )}
         </div>
         <OwnerSeatCard key={app.app_scope_id} teamId={teamId} scopeId={app.app_scope_id} seat={seat} onClaimed={readSeat} canClaim={canClaimOwnerSeat} />
-        <AppPeers key={`peers:${app.app_scope_id}`} scopeId={app.app_scope_id} />
-        <AppEdges key={`edges:${app.app_scope_id}`} scopeId={app.app_scope_id} />
+        <AppPeers key={`peers:${app.app_scope_id}`} teamId={teamId} scopeId={app.app_scope_id} />
+        <AppEdges key={`edges:${app.app_scope_id}`} teamId={teamId} scopeId={app.app_scope_id} />
         {provisionResult && (
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Eyebrow>Provision result</Eyebrow>
@@ -2304,15 +2304,15 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
       return;
     }
     let live = true;
-    api
-      .appScopes(app.app_scope_id)
+    teamApi(teamId)
+      .appScopes({ scopeId: app.app_scope_id })
       .then((ss) => live && setScopes(ss.length ? ss : fallbackScopes))
       .catch(() => live && setScopes(fallbackScopes));
     return () => {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app.app_scope_id, app.name]);
+  }, [teamId, app.app_scope_id, app.name]);
 
   // The table list for the ACTIVE scope. Auto-select the first non-system table (the vertical's
   // own data is what you usually want), falling back to the first table of any kind.

@@ -334,6 +334,13 @@ export interface DashboardClient {
   appChangeMemberRole(input: { scopeId: string; principal: string; from: string; to: string }): Promise<{ principal: string; from: string; to: string; operationId?: string; auditWarning?: string }>;
 
   /**
+   * The event edges into and out of this app
+   *
+   * `GET /apps/{scopeId}/edges` — `dashboard/app-edges`
+   */
+  appEdges(input: { scopeId: string }): Promise<{ tenantId: string; checkedAt: string; edges: ({ tenantId: string; consumer: { scopeId: string; vertical: string }; producer: { vertical: string; scopeId: string | null }; state: string; reason: string | null; watermark: { cursor: string; updatedAt: string | null } | null; oldestPending: { id: string; occurredAt: string } | null; lagMs: number | null; unexported: { type: string; schemaVersion: number }[]; lastDelivered: { at: string } | null; lastProblem: { at: string; outcome: string; error: string | null } | null })[]; unavailable: string | null; history: { available: boolean; reason: string | null } }>;
+
+  /**
    * Read email sending permission for a vertical owned by this team
    *
    * `GET /apps/{scopeId}/email-sender` — `dashboard/app-email-sender`
@@ -397,6 +404,13 @@ export interface DashboardClient {
   appOwnerSeat(input: { scopeId: string }): Promise<{ state: string; owner: string | null; firstSignIn: { open: boolean; until: string | null } | null; claimLink: { expiresAt: string } | null }>;
 
   /**
+   * What this app calls and which of this team's apps may call it
+   *
+   * `GET /apps/{scopeId}/peers` — `dashboard/app-peers`
+   */
+  appPeers(input: { scopeId: string }): Promise<{ declares: string[] | null; calls: ({ state: "not-installed"; vertical: string } | { state: "ambiguous"; vertical: string; count: number } | { state: "bound-unavailable"; vertical: string } | { state: "not-declared"; vertical: string } | { state: "allowed"; vertical: string; scopeId: string } | { state: "switched-off"; vertical: string; scopeId: string; switchedOff: { actor: string; reason: string; at: string } | null } | { state: "no-grant"; vertical: string; scopeId: string } | { state: "unreadable"; vertical: string; scopeId: string; message: string })[]; bindingChoices: ({ vertical: string; boundScopeId: string | null; invalidated: boolean; candidates: { scopeId: string; name: string }[] })[]; callers: ({ vertical: string; calls: string; switchedOff: { actor: string; reason: string; at: string } | null })[] | null; callersError: string | null }>;
+
+  /**
    * Remove an app member as the signed-in caller
    *
    * `POST /apps/{scopeId}/members/{principal}/remove` — `dashboard/app-remove-member`
@@ -423,6 +437,13 @@ export interface DashboardClient {
    * `GET /apps/{scopeId}/observability/requests/list` — `dashboard/app-requests`
    */
   appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
+
+  /**
+   * The browsable scopes of this app's vertical
+   *
+   * `GET /apps/{scopeId}/scopes` — `dashboard/app-scopes`
+   */
+  appScopes(input: { scopeId: string }): Promise<{ scopeId: string; name: string; status: string; isDefault: boolean }[]>;
 
   /**
    * Ask the dashboard assistant a question about this team, read-only, as the assistant stream protocol
@@ -810,6 +831,13 @@ export interface DashboardClient {
   listTeamAudit(input: { scopeId?: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
 
   /**
+   * Replay or skip one event edge into this app
+   *
+   * `POST /apps/{scopeId}/edges/move` — `dashboard/move-app-edge`
+   */
+  moveAppEdge(input: { scopeId: string; mode: "replay" | "skip"; from: string; after?: string | null; through?: string; acknowledge?: string; reason: string }): Promise<{ replayId: string; mode: string; source: { vertical: string; scopeId: string }; previous: string | null; cursor: string | null; archived: { journal: number; deliveries: number }; auditWarning?: string }>;
+
+  /**
    * Rebind the chosen installs onto another of this team's verticals, stopping at the first refusal
    *
    * `POST /deployments/{slug}/scopes/move` — `dashboard/move-scopes`
@@ -950,6 +978,13 @@ export interface DashboardClient {
   setAppEnv(input: { scopeId: string; entries?: { key: string; value: string; secret?: boolean }[] }): Promise<{ saved: number; delivered: boolean; note?: string }>;
 
   /**
+   * Choose or clear the instance this app calls for one peer vertical
+   *
+   * `PUT /apps/{scopeId}/peers/binding` — `dashboard/set-app-peer-binding`
+   */
+  setAppPeerBinding(input: { scopeId: string; vertical: string; targetScopeId: string | null }): Promise<{ changed: boolean; previous: string | null; operationId: string; auditWarning?: string }>;
+
+  /**
    * Acknowledge, resolve or reopen one of this team's findings
    *
    * `PUT /findings/{id}/status` — `dashboard/set-finding-status`
@@ -962,6 +997,13 @@ export interface DashboardClient {
    * `POST /github/setup-ci` — `dashboard/setup-github-ci`
    */
   setupGithubCi(input: { repo: string; branch: string; account?: string; path?: string }): Promise<{ ok: true; workflowPath: string; workflowUpdated: boolean; branch: string; vertical: string } | { ok: false; needsPermissions: true }>;
+
+  /**
+   * Switch one peer's access to this app on or off
+   *
+   * `POST /apps/{scopeId}/peers/switch` — `dashboard/switch-app-peer`
+   */
+  switchAppPeer(input: { scopeId: string; vertical: string; to: "on" | "off"; reason: string }): Promise<{ operationId: string; vertical: string; calls: string; changed: boolean; permissions: string[]; auditWarning?: string }>;
 
   /**
    * Zero-filled traffic series for this team's installed apps
@@ -1085,6 +1127,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/domains", "POST", input, undefined),
     appChangeMemberRole: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/members/${encodeURIComponent(String(input.principal))}/role`, "POST", omit(input, ["scopeId","principal"]), undefined),
+    appEdges: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/edges`, "GET", undefined, omit(input, ["scopeId"])),
     appEmailSender: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "GET", undefined, omit(input, ["scopeId"])),
     appInviteMember: (input: Args) =>
@@ -1103,6 +1147,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/owner-claim`, "POST", omit(input, ["scopeId"]), undefined),
     appOwnerSeat: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/owner-seat`, "GET", undefined, omit(input, ["scopeId"])),
+    appPeers: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/peers`, "GET", undefined, omit(input, ["scopeId"])),
     appRemoveMember: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/members/${encodeURIComponent(String(input.principal))}/remove`, "POST", omit(input, ["scopeId","principal"]), undefined),
     appRequestFacets: (input: Args) =>
@@ -1111,6 +1157,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/volume`, "GET", undefined, omit(input, ["scopeId"])),
     appRequests: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/list`, "GET", undefined, omit(input, ["scopeId"])),
+    appScopes: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/scopes`, "GET", undefined, omit(input, ["scopeId"])),
     ask: (input: Args) =>
       send("/assistant/ask", "POST", input, undefined),
     bindInstalledApp: (input: Args) =>
@@ -1221,6 +1269,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews`, "GET", undefined, omit(input, ["slug"])),
     listTeamAudit: (input: Args) =>
       send("/audit", "GET", undefined, input),
+    moveAppEdge: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/edges/move`, "POST", omit(input, ["scopeId"]), undefined),
     moveScopes: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes/move`, "POST", omit(input, ["slug"]), undefined),
     observabilityLogs: (input: Args) =>
@@ -1261,10 +1311,14 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "POST", omit(input, ["scopeId"]), undefined),
     setAppEnv: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "PUT", omit(input, ["scopeId"]), undefined),
+    setAppPeerBinding: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/peers/binding`, "PUT", omit(input, ["scopeId"]), undefined),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
     setupGithubCi: (input: Args) =>
       send("/github/setup-ci", "POST", input, undefined),
+    switchAppPeer: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/peers/switch`, "POST", omit(input, ["scopeId"]), undefined),
     teamTraffic: (input: Args) =>
       send("/observability/traffic", "GET", undefined, input),
     tenantMetricsSeries: (input: Args) =>

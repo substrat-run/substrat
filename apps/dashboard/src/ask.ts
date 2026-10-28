@@ -152,6 +152,9 @@ export function askSummary(steps: readonly AskStep[]): string {
  * model's text as if it were the dashboard's.
  */
 export const ASK_UNEXPOSED: Readonly<Record<string, string>> = {
+  'dashboard/app-peers': 'app peer disclosure was not an assistant tool before this route moved',
+  'dashboard/app-edges': 'app event edges were not an assistant tool before this route moved',
+  'dashboard/app-scopes': 'app scope choices were not an assistant tool before this route moved',
   'dashboard/list-app-bookmarks': 'app rewind points were not an assistant tool before this route moved',
   'dashboard/list-app-migrations': 'app schema history was not an assistant tool before this route moved',
   'dashboard/get-app-release-comparison': 'app release comparison was not an assistant tool before this route moved',
