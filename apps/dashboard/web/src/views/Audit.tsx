@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { Button, KeyValue, Select } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
+import { api, ApiError, isApiError, type AppRow, type AuditEntry, type ListPage, type PageOpts } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockAuditLogAll } from '../lib/mock-audit';
 import { shortDate, shortId } from '../lib/format';
@@ -164,7 +164,7 @@ export function AuditLog({
     } catch (e) {
       if (gen !== generation.current) return;
       // The actions still show; the page says the refusals are missing rather than implying none.
-      setRefusalsFailed(e instanceof ApiError ? `${e.status}: ${e.message}${e.requestId ? `, request id ${e.requestId}` : ''}` : String(e));
+      setRefusalsFailed(isApiError(e) ? `${e.status}: ${e.message}${e instanceof ApiError && e.requestId ? `, request id ${e.requestId}` : ''}` : String(e));
       setRefusals({ entries: [], more: false });
     }
   };

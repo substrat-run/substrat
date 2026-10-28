@@ -1,5 +1,5 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import { exportBreaksIn } from './bind-ack';
@@ -1438,6 +1438,10 @@ export class ApiError extends Error {
     this.name = 'ApiError';
   }
 }
+
+/** The handwritten cookie client and declared team client report separate error classes. */
+export const isApiError = (error: unknown): error is ApiError | GeneratedApiError =>
+  error instanceof ApiError || error instanceof GeneratedApiError;
 
 /** One app a move would break (#1756): it imports `type` at `schemaVersion`, and the version stops exporting it. */
 export interface ExportBreakRow {

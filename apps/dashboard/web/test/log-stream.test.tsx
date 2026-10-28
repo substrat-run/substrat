@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventExplorer } from '../src/views/ObservabilityPanels';
 import { api, type EventFacetAnswer, type EventFacetResult } from '../src/lib/api';
+import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { bucketNarrow, bucketRows, dimensionLabel, emptyGroupingText, withheldOf } from '../src/lib/log-stream';
 
 const cursor = { from: '2026-09-01T10:00:00.000Z', to: '2026-09-01T11:00:00.000Z' };
@@ -74,6 +75,13 @@ describe('Events mode', () => {
   const click = (el: Element) => act(async () => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   const byText = (text: string) =>
     [...container.querySelectorAll('button')].find((b) => b.textContent === text || b.textContent?.startsWith(text))!;
+
+  it('shows the unavailable state when the generated facet client receives 501', async () => {
+    vi.spyOn(api, 'appFacets').mockRejectedValue(new GeneratedApiError(501, 'facets unavailable', null));
+    await act(async () => root.render(<EventExplorer teamId="team-a" embedded scopeId="app-a" hours={24} window={cursor} />));
+    expect(container.textContent).toContain('This app publishes no event stream');
+    expect(container.textContent).not.toContain('facets unavailable');
+  });
 
   it('a type bucket narrows the read to that type, grouped by operation, and says so in the URL', async () => {
     const facets = vi.spyOn(api, 'appFacets').mockResolvedValue(result());

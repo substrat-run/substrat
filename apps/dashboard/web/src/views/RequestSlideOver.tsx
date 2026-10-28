@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from '@substrat-run/ui';
-import { ApiError, api, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
+import { api, isApiError, type EffectsTree, type EmittedLifecycle, type HistoryEntry, type ObservabilityLogEvent, type RequestRecord } from '../lib/api';
 import { LogList } from '../components/LogList';
 import { callLogsWindow } from '../lib/history';
 import { shortId } from '../lib/format';
@@ -53,7 +53,7 @@ const CAUSES_MAX = 3;
 type Part<T> = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; value: T };
 const loading = { state: 'loading' } as const;
 const errorText = (e: unknown) =>
-  e instanceof ApiError ? (e.status === 501 ? 'not available on this platform' : `${e.status}: ${e.message}`) : e instanceof Error ? e.message : String(e);
+  isApiError(e) ? (e.status === 501 ? 'not available on this platform' : `${e.status}: ${e.message}`) : e instanceof Error ? e.message : String(e);
 
 interface Detail {
   logs: Part<ObservabilityLogEvent[]>;

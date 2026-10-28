@@ -1,7 +1,7 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
 import { Button, Input } from '@substrat-run/ui';
-import { type EventFacetAnswer, api, ApiError, type ObservabilityLogEvent } from '../lib/api';
+import { type EventFacetAnswer, api, ApiError, isApiError, type ObservabilityLogEvent } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';
 import { card, MonoTag } from '../components/ui';
@@ -403,7 +403,7 @@ export function EventExplorer({
         (e) =>
           live &&
           (setLoading(false),
-          e instanceof ApiError && e.status === 501
+          isApiError(e) && e.status === 501
             ? setAbsent(true)
             : setErr(e instanceof Error ? e.message : String(e))),
       );
