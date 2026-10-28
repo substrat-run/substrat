@@ -226,9 +226,6 @@ export function AppDetail({
         actions={
           <>
             <VisitControl surfaces={surfaceUrls} />
-            <button type="button" aria-label="More actions" style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, border: '1px solid var(--border-default)', background: 'var(--surface-card)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-              <Ic name="dots" size={16} />
-            </button>
           </>
         }
       />

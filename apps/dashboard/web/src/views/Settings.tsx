@@ -7,9 +7,8 @@ import { DEV_MOCK } from '../lib/mock';
 import { APP_SHA, APP_VERSION } from '../lib/version';
 
 /** Account settings — Organization tab (screen 1v). The danger zone is REAL. */
-export function Settings({ org, teamId }: { org: string; teamId: string }) {
+export function Settings({ org, teamId, slug, name, email }: { org: string; teamId: string; slug: string; name?: string | null; email?: string | null }) {
   const [tab, setTab] = useState('organization');
-  const [name, setName] = useState(org);
   return (
     <Page maxWidth={720}>
       <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>Settings</div>
@@ -27,21 +26,16 @@ export function Settings({ org, teamId }: { org: string; teamId: string }) {
       {tab === 'organization' && (
         <>
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <Input label="Organization name" value={name} onChange={(e) => setName(e.target.value)} hint="Shown in the sidebar and invites." style={{ width: 320 }} />
+            <div>
+              <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-secondary)' }}>Organization name</div>
+              <div style={{ fontSize: 14, color: 'var(--text-primary)', paddingTop: 6 }}>{org}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', paddingTop: 4 }}>Shown in the sidebar and invites.</div>
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <div style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--text-secondary)' }}>Organization slug</div>
               <div style={{ display: 'flex', alignItems: 'center', height: 32, width: 320, border: '1px solid var(--border-default)', borderRadius: 6, overflow: 'hidden', fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
-                <span style={{ padding: '0 10px', lineHeight: '30px', color: 'var(--text-primary)', background: 'var(--surface-card)' }}>{org.toLowerCase()}</span>
-                <span style={{ padding: '0 10px', lineHeight: '30px', color: 'var(--text-tertiary)', background: 'var(--surface-inset)', borderLeft: '1px solid var(--border-subtle)', flex: 1 }}>.substrat.run</span>
+                <span style={{ padding: '0 10px', lineHeight: '30px', color: 'var(--text-primary)', background: 'var(--surface-card)' }}>{slug}</span>
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Drives your default app hostnames. Changing it re-issues them.</div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', fontSize: 13 }}>
-              <span style={{ color: 'var(--text-tertiary)', padding: '8px 0' }}>Region</span>
-              <span style={{ padding: '8px 0', color: 'var(--text-primary)' }}>EU (Stockholm) <span style={{ color: 'var(--text-tertiary)' }}>— data residency, read-only</span></span>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
-              <Button>Save</Button>
             </div>
           </div>
           <DeleteOrgCard org={org} teamId={teamId} />
@@ -50,9 +44,8 @@ export function Settings({ org, teamId }: { org: string; teamId: string }) {
 
       {tab === 'profile' && (
         <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Input label="Your name" value="Dana Vogel" style={{ width: 320 }} />
-          <Input label="Email" value="dana@acme.com" mono style={{ width: 320 }} />
-          <div><Button>Save</Button></div>
+          <div><div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Your name</div><div style={{ paddingTop: 6, color: 'var(--text-primary)' }}>{name || 'Not provided'}</div></div>
+          <div><div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>Email</div><div style={{ paddingTop: 6, color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{email || 'Not provided'}</div></div>
         </div>
       )}
 
