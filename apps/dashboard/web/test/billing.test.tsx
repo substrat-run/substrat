@@ -1,10 +1,14 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { ApiError } from '../src/lib/api';
 import { Billing } from '../src/views/Billing';
 
 const read = vi.hoisted(() => vi.fn());
-vi.mock('../src/lib/api', () => ({ teamApi: () => ({ listEntitlements: read }) }));
+vi.mock('../src/lib/api', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/lib/api')>(),
+  teamApi: () => ({ listEntitlements: read }),
+}));
 
 let container: HTMLDivElement;
 let root: Root;
@@ -33,6 +37,13 @@ it('asks a member to contact an owner or admin without reading grants', async ()
   await render(false);
   expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
   expect(read).not.toHaveBeenCalled();
+});
+
+it('shows the owner/admin refusal for a handwritten API 403', async () => {
+  read.mockRejectedValue(new ApiError(403, 'Forbidden'));
+  await render();
+  expect(container.textContent).toContain('Ask a team owner or admin to view entitlements.');
+  expect(container.textContent).not.toContain('Entitlements are unavailable');
 });
 
 it('shows exactly the granted keys and supplied quota or expiry', async () => {

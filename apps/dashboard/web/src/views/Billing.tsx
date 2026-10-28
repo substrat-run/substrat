@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Page } from '../components/layout';
 import { card, PageTitle } from '../components/ui';
-import { teamApi } from '../lib/api';
-import { ApiError } from '../lib/api.generated';
+import { isApiError, teamApi } from '../lib/api';
 
 type Grants = Awaited<ReturnType<ReturnType<typeof teamApi>['listEntitlements']>>;
 type Result = { teamId: string; grants: Grants; error: 'forbidden' | 'unavailable' | null };
@@ -18,7 +17,7 @@ export function Billing({ teamId, canRead }: { teamId: string; canRead: boolean 
     void teamApi(teamId).listEntitlements().then(
       (grants) => { if (current) setResult({ teamId, grants, error: null }); },
       (error: unknown) => {
-        if (current) setResult({ teamId, grants: [], error: error instanceof ApiError && error.status === 403 ? 'forbidden' : 'unavailable' });
+        if (current) setResult({ teamId, grants: [], error: isApiError(error) && error.status === 403 ? 'forbidden' : 'unavailable' });
       },
     );
     return () => { current = false; };
