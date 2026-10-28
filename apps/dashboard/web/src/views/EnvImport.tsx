@@ -53,10 +53,10 @@ export function EnvImport({ spec, values, onSave, onClose }: {
     try {
       await onSave(parsed.entries);
       setPaste('');
+      setBusy(false);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
       setBusy(false);
     }
   };
