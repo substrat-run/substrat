@@ -200,6 +200,7 @@ export {
   knownLengthInit,
   knownLengthStream,
   runtimeSha256,
+  witnessedStream,
   verifiedStream,
   type ByteBody,
   type ByteStream,
