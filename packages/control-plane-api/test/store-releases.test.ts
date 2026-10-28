@@ -961,6 +961,55 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect(await approved.json()).toMatchObject({ approval: { sourceReferences: valid.sourceReferences } });
   });
 
+  it('rejects non-printing approval identifiers and never reflects unknown input keys in validation errors', async () => {
+    const app = appWith(asPerson);
+    const release = shas[0]!;
+    const path = `/store-drivers/graph/releases/${release}/approvals`;
+    const revokePath = `/store-drivers/graph/releases/${release}/revoke`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const body = reviewed(0);
+    for (const mark of ['\u0085', '\u202e', '\u200b', '\u2028']) {
+      const cases = [
+        { ...body, className: `Sto${mark}re` },
+        { ...body, operations: [`re${mark}ad`] },
+        { ...body, reason: `review${mark}ed` },
+        { ...body, sourceReferences: [{ repository: `https://example.test/driver${mark}`, commit: COMMIT }] },
+        { ...body, sourceReferences: [{ repository: 'https://example.test/driver', commit: `${COMMIT.slice(0, -1)}${mark}` }] },
+        { ...body, isolationReview: { ...body.isolationReview, envelopeChecked: { checked: true, evidence: `rea${mark}d` } } },
+      ];
+      for (const candidate of cases) expect((await call(app, 'POST', path, person, candidate)).status).toBe(422);
+      expect((await call(app, 'POST', revokePath, person, { reason: `revoke${mark}` })).status).toBe(422);
+    }
+    for (const className of ['9Store', 'Store.Name', 'Store Name']) {
+      expect((await call(app, 'POST', path, person, { ...body, className })).status).toBe(422);
+    }
+    expect((await call(app, 'POST', path, person, { ...body, operations: ['read:name'] })).status).toBe(422);
+    for (const unknown of ['token=abc', `token\u0085abc`]) {
+      const approval = await call(app, 'POST', path, person, { ...body, [unknown]: 'value' });
+      expect(approval.status).toBe(422);
+      const approvalText = await approval.text();
+      expect(approvalText).not.toContain(unknown);
+      expect(approvalText).toContain('unrecognized_key');
+      const revoke = await call(app, 'POST', revokePath, person, { reason: 'Reviewed', [unknown]: 'value' });
+      expect(revoke.status).toBe(422);
+      const revokeText = await revoke.text();
+      expect(revokeText).not.toContain(unknown);
+      expect(revokeText).toContain('unrecognized_key');
+      const nested = await call(app, 'POST', path, person, {
+        ...body,
+        isolationReview: {
+          ...body.isolationReview,
+          envelopeChecked: { ...body.isolationReview.envelopeChecked, [unknown]: 'value' },
+        },
+      });
+      expect(nested.status).toBe(422);
+      const nestedText = await nested.text();
+      expect(nestedText).not.toContain(unknown);
+      expect(nestedText).toContain('isolationReview.envelopeChecked: unrecognized_key');
+    }
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+  });
+
   it('refuses a normal revoke while a script runs the release or its settings are unreadable', async () => {
     const app = appWith(asPerson);
     const release = shas[0]!;

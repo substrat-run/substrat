@@ -12309,6 +12309,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   }, { message: 'a source repository is an HTTPS URL with a host and path' });
   const sourceCommit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, { message: 'a source commit is 40 or 64 lowercase hex characters' });
+  // The release entry loads a Python class by identifier; catalog names keep their existing
+  // fixed-label grammar and additionally exclude characters that cannot safely appear in audit.
+  const approvalClassName = z.string().min(1).max(256).regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+  const approvalOperation = storeCatalogOperation.refine((name) => !nonPrinting.test(name));
   const approvalBody = z.object({
     reason: auditText,
     sourceReferences: z.array(z.object({ repository: repositoryReference, commit: sourceCommit }).strict()).min(1).max(64),
@@ -12321,22 +12325,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       noModuleStateChecked: checkedEvidence,
     }).strict(),
     schema: z.number().int().min(0),
-    className: z.string().trim().min(1).max(256),
-    operations: z.array(storeCatalogOperation).max(256),
+    className: approvalClassName,
+    operations: z.array(approvalOperation).max(256),
   }).strict();
   const revokeBody = z.object({ reason: auditText, emergency: z.boolean().optional() }).strict();
+  const approvalPathParts = new Set([
+    'reason', 'sourceReferences', 'repository', 'commit', 'isolationReview', 'separateScriptPerTenant',
+    'noOutboundAccess', 'envelopeVerifiedOutsideDriver', 'envelopeChecked', 'reservedOperationsChecked',
+    'noModuleStateChecked', 'met', 'checked', 'evidence', 'schema', 'className', 'operations', 'emergency',
+  ]);
+  const issueCodes: Record<string, string> = {
+    unrecognized_keys: 'unrecognized_key', invalid_type: 'invalid_type', too_small: 'out_of_range',
+    too_big: 'out_of_range', invalid_format: 'invalid_format', custom: 'invalid_value',
+  };
+  const safeIssue = (issue: z.ZodIssue): string => {
+    const knownPath = issue.path.every((part) =>
+      (typeof part === 'number' && Number.isSafeInteger(part) && part >= 0) ||
+      (typeof part === 'string' && approvalPathParts.has(part)));
+    const path = knownPath && issue.path.length ? issue.path.join('.') : '(body)';
+    return `${path}: ${issueCodes[issue.code] ?? 'invalid_value'}`;
+  };
   const releaseSha = (value: string): string => {
     if (!/^[0-9a-f]{64}$/.test(value)) throw new ControlPlaneError(422, 'a release sha256 is 64 lowercase hex characters');
     return value;
   };
   const parseApprovalBody = (raw: unknown) => {
     const parsed = approvalBody.safeParse(raw);
-    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver approval: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(body)'}: ${i.message}`).join('; ')}`);
+    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver approval: ${parsed.error.issues.map(safeIssue).join('; ')}`);
     return parsed.data;
   };
   const parseRevokeBody = (raw: unknown) => {
     const parsed = revokeBody.safeParse(raw);
-    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver revoke: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(body)'}: ${i.message}`).join('; ')}`);
+    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver revoke: ${parsed.error.issues.map(safeIssue).join('; ')}`);
     return parsed.data;
   };
   /** The pin a release is run under, or a refusal: the platform runs only what this repo pins. */
