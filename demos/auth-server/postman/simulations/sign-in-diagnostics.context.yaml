@@ -1,0 +1,23 @@
+purpose:
+  stands_in_for: GitHub token exchange, authenticated profile and email-list HTTP endpoints.
+  unblocks: Regression testing of GitHub sign-in diagnostics and verified-email fallback without production accounts.
+assumptions:
+  - id: github-private-email-endpoint
+    status: supported
+    claim: GitHub can omit the profile email and expose private addresses through the separately authorized email-list endpoint.
+    reason: The documented email endpoint and installed Better Auth adapter define the fixture shapes and calls.
+    verification: The local simulator served token, profile and email traffic during sixteen callback and fallback tests; the private-email success case used the email-list response.
+    source: https://docs.github.com/en/rest/users/emails#list-email-addresses-for-the-authenticated-user; ../mocks/github/handler.cjs; ../../test/github-sign-in-log.test.ts
+    updated_at: "2026-10-28"
+  - id: caller-verifies-fallback-email
+    status: supported
+    claim: The caller pauses for missing or mismatched email and resumes OIDC only after browser-bound, single-use mailbox verification.
+    reason: Tests exercise the real auth handler against the HTTP simulation and inspect users, account bindings, sessions and OIDC redirects.
+    verification: Sixteen tests passed, including expiry, replay, concurrent completion, existing-address collision, explicit linking and per-client/provider policy checks. Email delivery was captured with MockEmailTransport; no live GitHub account or mail delivery was tested.
+    source: ../../src/github-email-plugin.ts; ../../test/github-sign-in-log.test.ts; sign-in-diagnostics.context.md
+    updated_at: "2026-10-28"
+fingerprints:
+  - id: verified-email-fallback
+    date: "2026-10-28"
+    commit: null
+    cli: "1.75.0"

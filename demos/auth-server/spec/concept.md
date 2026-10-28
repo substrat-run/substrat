@@ -217,6 +217,37 @@ explicitly identifies it as a follow-up check rather
 than the adapter's original response. These summaries contain no tokens, addresses, profiles
 or raw exception messages, and use the existing bounded log without a schema migration.
 
+### GitHub email fallback
+
+GitHub authentication can finish without GitHub's email API. If a new GitHub profile has
+no verified email, or its address differs from the relying party's signed `login_hint`
+(the dashboard supplies the invited address), the callback pauses at `/github-email`.
+No user, account, session or OIDC code is created for a new GitHub identity at this point.
+A returning linked GitHub account uses its locally verified email when GitHub's email API
+is unavailable, unless the invited address differs.
+
+`GET /api/auth/github-email/status` reads an opaque, HttpOnly browser cookie and returns the
+GitHub handle, suggested email and original signed OAuth query. `POST` to the same status
+endpoint with `{ token }` previews the actual address the emailed proof verifies, only in
+the matching browser. `POST /github-email/send`
+takes `{ email }` and delivers a 10-minute verification link only to that mailbox. Sends
+are bounded to one per minute per GitHub account. `POST /github-email/verify` takes
+`{ token, oauth_query? }` and requires both the emailed secret and the original browser
+cookie. The original OAuth query must be preserved and is verified again before resuming.
+Both proofs expire and are consumed once, including concurrent completion. Raw secrets,
+GitHub access tokens and profiles are not retained in the pending verification records.
+
+Verification makes this the account's email, marked verified. It preserves an existing
+GitHub user's id and links a new user only to the account id from the authenticated GitHub
+profile. Previous issuer sessions are revoked when completing verification. An address
+belonging to another account is refused rather than merged: sign in with that account's
+existing method and explicitly connect GitHub. Provider sign-up restrictions, bans and
+per-client provider/domain policies still apply. Membership invitations continue to check
+the verified address through the invites engine; the copied invite link proves no address.
+Explicitly connecting an email-less GitHub account requires the existing account's fresh,
+unimpersonated session throughout the flow and email verification at that account's own
+address. It cannot replace that address or move a GitHub identity from another account.
+
 ## Supabase on the legacy secret
 
 The `supabase` catalogue entry above is the way in for a Supabase project, and it is the one

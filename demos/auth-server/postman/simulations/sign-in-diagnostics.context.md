@@ -37,6 +37,12 @@ Without the URL override, the same suite starts the fixture on a temporary local
 ## Observations
 
 <!-- begin:observations -->
+2026-10-28 (verified-email fallback): all sixteen callback and fallback tests passed against
+the simulation. Missing email pauses without a user or session; a different signed login hint
+also pauses. Browser-bound, single-use email proof resumes OIDC with the same GitHub identity.
+Expiry, resend limits, bounced mail, concurrent verification, address collisions, explicit
+linking from a fresh existing session, and provider restrictions were exercised. The mock
+served token, profile and email requests; email delivery used the in-memory email transport.
 2026-10-28 (transport injection): all seven callback tests passed through the injected runtime
 transport, including the first-page count label. The GitHub member served token, profile and
 email traffic; no member was silent.
