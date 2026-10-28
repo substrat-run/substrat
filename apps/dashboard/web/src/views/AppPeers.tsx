@@ -275,9 +275,10 @@ export function AppPeers({ teamId, scopeId }: { teamId: string; scopeId: string 
         </p>
       ) : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
-          {callers.map((row) => (
-            <li key={row.vertical} style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <Pill kind={callerStateOf(row.calls).kind}>{callerStateOf(row.calls).label}</Pill>
+          {callers.map((row) => {
+            const state = callerStateOf(row.calls);
+            return <li key={row.vertical} style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+              <Pill kind={state.kind}>{state.label}</Pill>
               <code style={{ fontSize: 12.5 }}>{row.vertical}</code>
               {(row.calls === 'on' || row.calls === 'off') && (
                 <Button size="sm" variant={row.calls === 'on' ? 'danger' : 'secondary'} disabled={busy}
@@ -294,8 +295,8 @@ export function AppPeers({ teamId, scopeId }: { teamId: string; scopeId: string 
                   Cut off by {row.switchedOff.actor} {relativeTime(row.switchedOff.at)} — “{row.switchedOff.reason}”
                 </span>
               )}
-            </li>
-          ))}
+            </li>;
+          })}
         </ul>
       )}
       <Dialog open={dialog !== null}

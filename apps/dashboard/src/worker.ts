@@ -2043,8 +2043,8 @@ async function appScopesIn(ctx: TeamContext, appScopeId: string) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scopes = await cp.listScopes(appRow.vertical_slug);
   return (scopes ?? [])
-      .filter((s) => s.status === 'active' || s.status === 'provisioning')
-      .map((s) => ({ scopeId: s.id, name: s.name, status: s.status, isDefault: s.id === appRow.app_scope_id }));
+    .filter((s) => s.status === 'active' || s.status === 'provisioning')
+    .map((s) => ({ scopeId: s.id, name: s.name, status: s.status, isDefault: s.id === appRow.app_scope_id }));
 }
 
 /**
