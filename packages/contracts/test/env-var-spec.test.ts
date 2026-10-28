@@ -20,3 +20,9 @@ describe('envVarSpec keys', () => {
     }
   });
 });
+
+it('refuses preview carryover for a secret setting', () => {
+  const result = envVarSpec.safeParse({ key: 'API_KEY', description: 'Credential', secret: true, previewCarry: true });
+  expect(result.success).toBe(false);
+  expect(result.error?.issues[0]?.path).toEqual(['previewCarry']);
+});

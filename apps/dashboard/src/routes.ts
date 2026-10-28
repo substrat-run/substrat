@@ -1007,7 +1007,7 @@ export const dashboardRoutes = defineRoutes({
     summary: "One app's declared environment and its stored values; secrets are write-only",
     input: z.object({ scopeId: z.string().min(1) }),
     output: z.object({
-      spec: z.array(envVarSpec.extend({ required: z.boolean(), secret: z.boolean() })),
+      spec: z.array(envVarSpec.safeExtend({ required: z.boolean(), secret: z.boolean() })),
       values: z.array(z.object({
         key: z.string(),
         isSecret: z.boolean(),

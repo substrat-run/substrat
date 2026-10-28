@@ -217,8 +217,13 @@ export const envVarSpec = z.object({
   placeholder: z.string().optional(), // "at least 8 characters"
   required: z.boolean().default(false),
   secret: z.boolean().default(false), // masked + write-only + delivered as a secret
+  /** A non-secret per-install value may be re-delivered to a preview on every push. */
+  previewCarry: z.boolean().optional(), // absent = off; secrets may never opt in
   default: z.string().optional(), // non-secret default, prefilled
   group: z.string().optional(), // "Bootstrap" · "Email" — form sectioning
+}).refine((spec) => !spec.secret || !spec.previewCarry, {
+  message: 'a secret setting cannot carry to previews',
+  path: ['previewCarry'],
 });
 export type EnvVarSpec = z.infer<typeof envVarSpec>;
 

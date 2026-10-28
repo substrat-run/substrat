@@ -336,6 +336,8 @@ mountPlatformSurface<Env>(app, {
   members: membersHook({ roles: ROLES.map((r) => r.key), directory: identityDo }),
   onConfigure: (env, b) =>
     identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
+  onReadPreviewConfig: (env, b) =>
+    identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).getScopeConfig(b.scopeId),
   // The owner seat as the platform may see it, and the claim link it may mint for one that
   // sits empty after the first-sign-in window (#925). Both read the same directory the
   // provision hook above writes.

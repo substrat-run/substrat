@@ -328,6 +328,8 @@ mountPlatformSurface<Env>(app, {
   // The route's platform-secret guard is `mountPlatformSurface`'s, the same one every vertical has.
   onConfigure: (env, b) =>
     identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
+  onReadPreviewConfig: (env, b) =>
+    identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).getScopeConfig(b.scopeId),
   resolveOwner: async (env, ref) => {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
     return owner ? principalId.parse(owner) : null;
