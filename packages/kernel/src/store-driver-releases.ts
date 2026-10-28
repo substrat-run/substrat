@@ -73,8 +73,6 @@ export const STORE_DRIVER_RELEASES_DDL = `
   -- Its cursor records a vertical slug, never which release that vertical runs.
   CREATE TABLE IF NOT EXISTS store_driver_revoke_walks (
     approval_id TEXT PRIMARY KEY REFERENCES store_driver_approvals(approval_id),
-    driver      TEXT NOT NULL,
-    sha256      TEXT NOT NULL,
     cursor      TEXT,
     actor       TEXT NOT NULL,
     reason      TEXT NOT NULL,

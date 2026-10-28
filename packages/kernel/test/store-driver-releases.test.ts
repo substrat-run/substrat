@@ -30,12 +30,16 @@ describe('the D-65 approval directory shape', () => {
     insert.run('second', 'graph', sha256);
 
     const walk = db.prepare(`INSERT INTO store_driver_revoke_walks
-      (approval_id, driver, sha256, cursor, actor, reason, rollout_seq)
-      VALUES (?, 'graph', ?, NULL, 'staff', 'reviewed', 0)`);
-    walk.run('first', sha256);
-    walk.run('second', sha256);
-    expect(db.prepare('SELECT count(*) AS n FROM store_driver_revoke_walks').get()).toEqual({ n: 2 });
-    expect(() => walk.run('missing', sha256)).toThrow(/FOREIGN KEY constraint failed/);
+      (approval_id, cursor, actor, reason, rollout_seq)
+      VALUES (?, NULL, 'staff', 'reviewed', 0)`);
+    walk.run('first');
+    walk.run('second');
+    expect(db.prepare(`SELECT w.approval_id, a.driver, a.sha256 FROM store_driver_revoke_walks w
+      JOIN store_driver_approvals a USING (approval_id) ORDER BY w.approval_id`).all()).toEqual([
+      { approval_id: 'first', driver: 'graph', sha256 },
+      { approval_id: 'second', driver: 'graph', sha256 },
+    ]);
+    expect(() => walk.run('missing')).toThrow(/FOREIGN KEY constraint failed/);
     db.exec(STORE_DRIVER_RELEASES_DDL);
     db.close();
   });
