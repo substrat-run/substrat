@@ -99,9 +99,8 @@ describe('the app Data reads use the path team (#2170)', () => {
     for (const [suffix, method] of queries) {
       const result = await send(method, base + suffix, method === 'POST' ? { sql: 'SELECT name FROM sqlite_master LIMIT 1' } : undefined);
       expect(result.status, suffix).toBe(200);
+      if (suffix === '/query') expect(((await result.json()) as { columns: string[] }).columns).toEqual(['name']);
     }
-    const select = await send('POST', base + '/query', { sql: 'SELECT name FROM sqlite_master LIMIT 1' });
-    expect(((await select.json()) as { columns: string[] }).columns).toEqual(['name']);
     const write = await send('POST', base + '/query', { sql: 'DELETE FROM sqlite_master' });
     expect(write.status).toBe(400);
     expect(await write.text()).toContain('read-only console');

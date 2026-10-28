@@ -1867,7 +1867,6 @@ export const api = {
   appOverlays: (scopeId: string, hours: number, window?: { since: string; until: string }) =>
     call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?${new URLSearchParams({ hours: String(hours), ...window })}`),
 
-
   /**
    * One record's event history (#1235) — payload, authorization chain, impersonation, PII class.
    *
