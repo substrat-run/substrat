@@ -135,6 +135,10 @@ The platform delivers those opted-in values on every push. Other settings are no
 the preview deployment's defaults. The preview's database data is retained across pushes. The
 per-install **Identity** choice (`substrat:auth`) is handled separately, as described below.
 
+Deleting a preview clears the settings delivered into its current deployment; settings
+delivered into an earlier deployment can remain in that deployment's tenant store after a
+later push and reap.
+
 The login is handled for you when the app signs in at one of **your team's auth servers**. Each create
 and each push registers a client **of the preview's own** at that auth server, delivers it to the
 preview, and removes the one the previous push used. Deleting the preview, or letting it expire, removes
