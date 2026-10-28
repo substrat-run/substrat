@@ -1,5 +1,13 @@
 # @substrat-run/contracts
 
+## 0.165.0
+
+### Minor Changes
+
+- 7df34ee: Allow application owners to publish a versioned Markdown description with `substrat.concept` in package.json. The CLI includes only the explicitly selected file, bounded to 64 KiB and confined to the application directory. The control plane exposes the published snapshot using the existing owner and listed-application visibility rules.
+
+  The dashboard's Ask assistant can query the running application's description by section, with version checks, bounded pagination, and redaction before text is split into pages. Existing releases without a published description remain supported.
+
 ## 0.164.0
 
 ### Minor Changes
@@ -7222,7 +7230,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

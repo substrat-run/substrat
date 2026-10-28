@@ -31,7 +31,7 @@ between what's shared and what isn't is the design:
 | **Custom domains** | Hostname issuance, DNS validation, certificate lifecycle | — |
 | **Tenancy** | Tenant registry, scope directory, provisioning lifecycle | — |
 | **Identity** | Auth callbacks, principal derivation, capability minting | — |
-| **Entitlements** | The store and the module-load gate | The `entitlementKey` each manifest declares |
+| **Entitlements** | The entitlement store, operation gate and scope-local projection | The `entitlementKey` each manifest declares; how its plan and quota are used |
 | **History & analytics** | The event spine and its history tier | — |
 | **Copies** | Snapshots, forks, per-PR previews, per-scope PITR, directory backup/restore | — |
 | **The outside world** | Connections and their sealed credentials, the outbound egress seam, the email relay | The declared allowlist and the connectors a manifest requires |
@@ -47,6 +47,13 @@ So building a second vertical does not mean standing up a second Substrat. It me
 a second binary onto the same substrate — new modules, new vocabulary, new screens, against
 the same tenancy, the same permission model, the same event spine, the same domains
 machinery.
+
+The platform also implements the deployment and lifecycle machinery for
+[scope stores](/concepts/scope-stores): separate objects a vertical declares by binding
+and driver. Their storage is included in full scope dumps, erasure, reaping and the
+storage meter. **Hosted scope stores are not available yet**: the driver registry is
+empty, so a push declaring one is refused. Store-driver releases have their own rollout
+and rollback, separate from a vertical's code release.
 
 ## Why the deployments don't merge
 
@@ -139,6 +146,12 @@ const id = ctx.requestPlatform({
 Authorization is the vertical's; isolation is the platform's. That split is why the intent is
 enqueued *after* the vertical's own `ctx.check`.
 
+On a hosted request, the vertical flags a newly queued intent in its response. The router
+then asks the control plane to drain that scope in the background, using the tenant and
+scope it resolved from the directory. This usually reduces the wait to seconds without
+holding up the response. If that notification fails, the durable intent stays queued for
+the control plane's periodic sweep.
+
 **And the outcome comes back.** `ctx.platformRequests(filter)` reads this scope's own intent
 journal — newest first, filterable by `kind` and `status` — returning the same record the
 platform settled, with its `result` or `lastError`. That read exists for one concrete reason:
@@ -185,32 +198,28 @@ failure rather than letting it sink the pass. A schedule fires no more often tha
 cadence, tracked per scope; a fork or snapshot is skipped, so a test copy never runs real
 recurring side effects.
 
-## Entitlements gate modules, not features
+## Entitlements gate operations and carry plans
 
 Every [manifest](/concepts/modules) declares an `entitlementKey`. The platform holds a set of
 entitlements per tenant, and checks it **when a scope invokes an operation** — default-deny,
 uncached today (a DO-cached variant is an open benchmark).
 
-A module whose key the tenant does not hold **does not register** — its operations simply do
-not resolve, exactly as if the module had never existed. This is the same mechanism as a
-manifest `withdraws` declaration, and it is deliberately blunter than a feature flag: there
-is no half-loaded engine, no operation that exists but refuses, no code path where an
-unlicensed invariant is half-enforced. A tenant either has the work-order engine or does not
-have it.
-
-That bluntness is what makes the *load gate* safe to enforce at the boundary rather than
-sprinkled through business logic.
+A module's handlers are registered with the deployment, but an invocation whose tenant
+lacks its key is refused as `not_found` before the handler runs. A revoke or expiry therefore
+takes effect at the operation boundary without redeploying the vertical. A module's own
+declared schedule, invoked through its system door, is the exception: its system grant is
+the switch, so background cleanup does not stop when a tenant's entitlement expires.
 
 **The flag also carries a plan.** An entitlement is not only an on/off SKU: a grant carries
 a `plan` (the tier), a `quota` and an `expiresAt`, which a vertical reads at request time
 through `ctx.entitlement(key)` / `ctx.entitlements()` to gate features and enforce quota
-*within* a module it already holds. So entitlements are the load gate **and** a
-feature/plan surface — the earlier "not a feature flag" line was too absolute. The kernel
-enforces two things itself: presence (the load gate above) and **expiry**, which fails closed
-at the gate exactly as a revoke would; `quota` and `plan` are expression only — the vertical
+*within* a module it already holds. Entitlements are an operation gate **and** a
+feature/plan surface. The kernel enforces two things itself: presence (the gate above)
+and **expiry**, which fails closed at the gate exactly as a revoke would; `quota` and `plan`
+are expression only — the vertical
 reads the number and enforces its own meaning. For a **hosted** vertical these are read from a
 **scope-local projection**, so gating a feature needs no control-plane binding. It is the same
-mechanism as the load gate and, like it, **uncached today** (a DO-cached variant is the open
+mechanism as the operation gate and, like it, **uncached today** (a DO-cached variant is the open
 benchmark).
 
 ## Why the admin console isn't a vertical
