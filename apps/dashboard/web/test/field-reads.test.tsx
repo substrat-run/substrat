@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { api, type AppRow, type FieldReadsView } from '../src/lib/api';
+import { api, teamApi, type AppRow, type FieldReadsView } from '../src/lib/api';
 import { Data } from '../src/views/AppDetail';
 import { FieldReads } from '../src/views/FieldReads';
 
@@ -30,8 +30,8 @@ const answer: FieldReadsView = {
 };
 
 it('shows vertical assertion, rate and window beside sampled counts', async () => {
-  vi.spyOn(api, 'appFieldReads').mockResolvedValue(answer);
-  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
+  vi.spyOn(teamApi('team-a'), 'getAppFieldReads').mockResolvedValue(answer);
+  await act(async () => root.render(<FieldReads teamId="team-a" scopeId="scope-a" />));
   expect(container.textContent).toContain('Vertical-asserted');
   expect(container.textContent).toContain('10.0% router sample');
   expect(container.textContent).toContain(window.since);
@@ -42,38 +42,38 @@ it('shows vertical assertion, rate and window beside sampled counts', async () =
 it('shows the sampled zero-return tail under its operation and calls out largely unreturned outputs', async () => {
   const group = answer.groups[0]!;
   const operation = group.operations[0]!;
-  vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [{ ...group,
+  vi.spyOn(teamApi('team-a'), 'getAppFieldReads').mockResolvedValue({ ...answer, groups: [{ ...group,
     operations: [{ ...operation, fields: [...operation.fields,
       { field: 'unused', present: 0, empty: 0, absent: 2, eligible: 0, sampleRate: 0.1, window },
     ] }],
     notObservedReturned: [...group.notObservedReturned, { operation: operation.operation, field: 'unused' }],
   }] });
-  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
+  await act(async () => root.render(<FieldReads teamId="team-a" scopeId="scope-a" />));
   expect(container.textContent).toContain('Operations with a majority of declared fields not observed returned in sampled responses: acme/get (2 of 3)');
   expect(container.textContent).toContain('Not observed returned in this sampled operation: optional, unused.');
 });
 
 it('uses the unarmed empty state only when there are no router arms', async () => {
-  vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [] });
-  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
+  vi.spyOn(teamApi('team-a'), 'getAppFieldReads').mockResolvedValue({ ...answer, groups: [] });
+  await act(async () => root.render(<FieldReads teamId="team-a" scopeId="scope-a" />));
   expect(container.textContent).toContain('No requests were armed');
 });
 
 it('shows an unknown rate without guessing for older router lines', async () => {
-  vi.spyOn(api, 'appFieldReads').mockResolvedValue({ ...answer, groups: [{ ...answer.groups[0]!, sampleRate: null }] });
-  await act(async () => root.render(<FieldReads scopeId="scope-a" />));
+  vi.spyOn(teamApi('team-a'), 'getAppFieldReads').mockResolvedValue({ ...answer, groups: [{ ...answer.groups[0]!, sampleRate: null }] });
+  await act(async () => root.render(<FieldReads teamId="team-a" scopeId="scope-a" />));
   expect(container.textContent).toContain('rate unknown');
 });
 
 it('sits beside the declared Field coverage card on the app page, for that app only', async () => {
-  vi.spyOn(api, 'appFieldCoverage').mockResolvedValue({
+  vi.spyOn(teamApi('team-a'), 'getAppFieldCoverage').mockResolvedValue({
     available: true, entities: [], declared: 2, returned: 2, neverReturnedErasable: 0, operations: 1 });
-  const reads = vi.spyOn(api, 'appFieldReads').mockResolvedValue(answer);
+  const reads = vi.spyOn(teamApi('team-a'), 'getAppFieldReads').mockResolvedValue(answer);
   vi.spyOn(api, 'appModel').mockReturnValue(new Promise(() => {}));
   const app = { app_scope_id: 'scope-a', name: 'Acme', vertical_slug: 'acme/widgets', status: 'active' } as AppRow;
-  await act(async () => root.render(<Data app={app} section="schema" onSection={() => {}} />));
+  await act(async () => root.render(<Data teamId="team-a" app={app} section="schema" onSection={() => {}} />));
   const headings = [...container.querySelectorAll('h3')].map((h) => h.textContent);
   expect(headings.slice(0, 2)).toEqual(['Field coverage', 'Sampled field counts']);
-  expect(reads).toHaveBeenCalledWith('scope-a', 24);
+  expect(reads).toHaveBeenCalledWith({ scopeId: 'scope-a', hours: '24' });
   expect(container.textContent).toContain('Not observed returned in this sampled operation: optional.');
 });

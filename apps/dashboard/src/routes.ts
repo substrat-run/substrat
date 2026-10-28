@@ -509,6 +509,64 @@ export const trafficSeries = z.object({
   available: z.boolean(),
 });
 
+const flowNode = z.object({
+  id: z.string(), kind: z.enum(['trigger', 'module', 'event', 'connection', 'egress']), label: z.string(), sublabel: z.string().nullable(),
+  observed: z.number().nullable(), silent: z.boolean(), stale: z.boolean(), status: z.enum(['ok', 'warn', 'danger']),
+  title: z.string(), x: z.number(), y: z.number(), w: z.number(), h: z.number(),
+});
+const appFlowView = z.object({
+  findings: z.object({
+    available: z.boolean(), observedComplete: z.boolean(), declaredComplete: z.boolean(),
+    findings: z.array(z.object({ kind: z.enum(['unemitted', 'unconsumed', 'stale', 'unconnected-provider', 'unhealthy-provider']), subject: z.string(), moduleId: z.string().nullable(), detail: z.string() })),
+    declaredTypes: z.number(), observedTypes: z.number(),
+  }),
+  graph: z.object({
+    available: z.boolean(), nodes: z.array(flowNode),
+    edges: z.array(z.object({ from: z.string(), to: z.string(), kind: z.enum(['triggers', 'emits', 'consumes', 'uses']), title: z.string() })),
+    width: z.number(), height: z.number(), partialObservation: z.boolean(), declaredComplete: z.boolean(),
+  }),
+  operations: z.object({
+    rows: z.array(z.object({ operation: z.string(), events: z.number().nullable(), lastSeen: z.string().nullable(),
+      refusals: z.number().nullable(), refusedOnly: z.boolean() })),
+    observedComplete: z.boolean(),
+    refusals: z.object({ complete: z.boolean(), held: z.number(), counted: z.number(), since: z.string().nullable() }).nullable(),
+  }),
+  connectionSweep: z.object({
+    rows: z.array(z.object({ connectionId: z.string(), provider: z.string(), label: z.string(), status: z.string(),
+      lastSweptAt: z.string().nullable(), lastOutcomeFailed: z.boolean().nullable(), unknown: z.boolean(), idle: z.boolean() })),
+    windowDays: z.number(), idleCount: z.number(),
+  }),
+});
+const coverageField = z.object({ field: z.string(), returned: z.boolean(), erasable: z.boolean() });
+const fieldCoverageView = z.object({
+  available: z.boolean(), entities: z.array(z.object({ entity: z.string(), table: z.string(),
+    fields: z.array(coverageField), neverReturned: z.array(coverageField) })),
+  declared: z.number(), returned: z.number(), neverReturnedErasable: z.number(), operations: z.number(),
+});
+export const fieldReadsView = z.object({
+  available: z.boolean(), source: z.string(),
+  window: z.object({ since: z.string(), until: z.string() }).optional(),
+  groups: z.array(z.object({
+    sampleRate: z.number().nullable(), armedRequests: z.number(), refused: z.number(),
+    operations: z.array(z.object({ operation: z.string(), responses: z.number(), fields: z.array(z.object({
+      field: z.string(), present: z.number(), empty: z.number(), absent: z.number(), eligible: z.number(),
+      sampleRate: z.number().nullable(), window: z.object({ since: z.string(), until: z.string() }),
+    })) })),
+    notObservedReturned: z.array(z.object({ operation: z.string(), field: z.string() })),
+  })),
+});
+const appFailuresView = z.object({
+  entries: z.array(z.object({ id: z.string(), at: z.string(), kind: z.enum(['sweep', 'operation']), operation: z.string(),
+    stage: z.string().nullable(), message: z.string().nullable(), code: z.string().nullable() })),
+  unavailableSources: z.array(z.string()), incompleteSources: z.array(z.string()),
+});
+const appOverlaysView = z.object({
+  unavailableSources: z.array(z.string()).optional(), incompleteSources: z.array(z.string()).optional(),
+  markers: z.array(z.object({ at: z.string(), kind: z.enum(['migration', 'run-failed', 'failure']), label: z.string(), detail: z.string().nullable() })),
+  spans: z.array(z.object({ from: z.string(), to: z.string(), kind: z.literal('stale'), label: z.string() })),
+  truncated: z.boolean(),
+});
+
 /** Read-only observability responses. Plane-owned labels stay strings across deploy skew. */
 const observabilityRow = z.object({
   vertical: z.string(), version: z.string(), versionId: z.string().nullable(), service: z.string(),
@@ -708,6 +766,42 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), ...pageInput }),
     output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/apps/{scopeId}/audit' },
+  },
+  'dashboard/get-app-flow': {
+    summary: "The app's declared and observed flow",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: appFlowView,
+    http: { method: 'GET', path: '/apps/{scopeId}/flow' },
+  },
+  'dashboard/get-app-field-coverage': {
+    summary: "Fields declared by the app's running version and returnable by its operations",
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: fieldCoverageView,
+    http: { method: 'GET', path: '/apps/{scopeId}/field-coverage' },
+  },
+  'dashboard/get-app-field-reads': {
+    summary: "Observed field presence in one app's responses",
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional() }),
+    output: fieldReadsView,
+    http: { method: 'GET', path: '/apps/{scopeId}/field-reads' },
+  },
+  'dashboard/get-app-traffic': {
+    summary: "One installed app's traffic series and release markers",
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: trafficSeries,
+    http: { method: 'GET', path: '/apps/{scopeId}/traffic' },
+  },
+  'dashboard/get-app-failures': {
+    summary: "Recent failures of one installed app",
+    input: z.object({ scopeId: z.string().min(1), since: z.string().optional(), until: z.string().optional() }),
+    output: appFailuresView,
+    http: { method: 'GET', path: '/apps/{scopeId}/failures' },
+  },
+  'dashboard/get-app-overlays': {
+    summary: "Migration, failure and stale markers over one app's traffic",
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    output: appOverlaysView,
+    http: { method: 'GET', path: '/apps/{scopeId}/overlays' },
   },
   // -- app Data browser: deployed scope data, kept outside the assistant ------
   'dashboard/list-app-tables': {
