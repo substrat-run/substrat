@@ -494,7 +494,13 @@ commit. A scope that refuses it rejects the call with `conflict` while the chang
 stand. A retry changes nothing, so it does not fan out again: `reconcileTenantProjection`
 converges that scope.
 
-The remaining HostAdmin writes still record their row as a separate step.
+The remaining writes that change only directory state also record their row in the same
+directory transaction: impersonation sessions, identity pools and links, connections,
+store-driver release and rollout state, tenant-store ledger rows, access-log and issue
+maintenance, and `restoreDirectory`. A restore appends its own row after loading the dump's
+rows but before committing the import transaction; the rows loaded from the dump are not
+rewritten. Writes that also change a scope's own store still have the separate-store window
+described above.
 
 Same argument as K-4, and the reason the kernel is trusted at all: a surface that can act
 without a durable record of who acted is worse than no surface. (If §3's record-keeping
