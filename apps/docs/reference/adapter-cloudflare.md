@@ -132,8 +132,8 @@ A host serving its own ScopeDO now records directory intent and outcome rows aro
 of a permission change. The shared control plane still has only a module-less placeholder for a
 scope served by another deployment. Until it has an authenticated permission delegation route,
 those six non-mint writes keep their previous single-row audit path there, while hosted mint
-still refuses before writing an audit intent. The [control-plane audit design](/concepts/permissions)
-describes where the tuples live.
+still refuses before writing an audit intent. See [Permissions](/concepts/permissions) for where
+the tuples live.
 
 ## Status
 
