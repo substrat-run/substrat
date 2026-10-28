@@ -29,8 +29,7 @@ describe('rateFor', () => {
 
 	it('leaves a partner-served id unpriced — the catalog we expand is Cloudflare\'s own', () => {
 		// A bare `vendor/model` runs on the partner's infrastructure under Cloudflare's
-		// unified billing; the picker keeps it free text and the card keeps it unpriced.
-		// Whether the platform bills those is a decision, not an oversight.
+		// unified billing; the hosted picker excludes it and the card keeps it unpriced.
 		expect(rateFor('cloudflare:deepseek/deepseek-v4-pro')).toBeNull();
 	});
 });
@@ -65,10 +64,10 @@ describe('listCostOfSteps — real card', () => {
 	});
 
 	it('bills cache slices at the input rate when the card has no cache rate', () => {
-		// qwen3.6-flash publishes no cache_read rate: a cached slice must cost
+		// The Workers AI Llama 3.1 row publishes no cache_read rate: a cached slice must cost
 		// exactly what a plain slice costs — a discount is never invented.
-		const plain = listCostOfSteps('qwen:qwen3.6-flash', [{ inputTokens: 1_000_000, outputTokens: 0 }]);
-		const cached = listCostOfSteps('qwen:qwen3.6-flash', [
+		const plain = listCostOfSteps('cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8', [{ inputTokens: 1_000_000, outputTokens: 0 }]);
+		const cached = listCostOfSteps('cloudflare:@cf/meta/llama-3.1-8b-instruct-fp8', [
 			{ inputTokens: 1_000_000, outputTokens: 0, cachedInputTokens: 500_000 },
 		]);
 		expect(cached).toBe(plain);
