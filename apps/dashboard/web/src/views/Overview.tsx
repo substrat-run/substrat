@@ -80,7 +80,9 @@ export function Overview({
     api.fleetHealth().then((r) => live && setHealth(r.rows)).catch(() => live && setHealth('failed'));
     api.integrations().then((v) => live && setIntegrations(v.providers)).catch(() => live && setIntegrations('failed'));
     api
-      .auditLogAll({ limit: 6 })
+      // A scope permission change can have intent, unknown and eventual outcome rows.
+      // Eighteen raw rows cover six attempts; activityRows collapses each operation.
+      .auditLogAll({ limit: 18 })
       .then((p) => live && setAudit(p.entries))
       .catch((e) => {
         if (!live) return;

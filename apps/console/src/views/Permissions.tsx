@@ -37,6 +37,12 @@ const REVIEWABLE = ['defineRole', 'grant', 'grantToOrg'] as const;
 /** The review queue's page — kept at the pre-pagination read size. */
 const LOG_PAGE = 50;
 
+/** A request is reviewable only after the scope confirms the permission change. */
+export const permissionReviewRows = (rows: readonly AdminLogEntry[]): AdminLogEntry[] => rows.filter((row) => {
+  const phase = (row.after as { phase?: string } | null)?.phase;
+  return phase === undefined || phase === 'applied'; // tenant-node and historical one-row writes have no phase
+});
+
 export interface PermissionsProps {
   api: Api;
   tenants: Map<TenantId, Tenant>;
@@ -82,7 +88,7 @@ export function Permissions({ api, tenants }: PermissionsProps) {
     setLogCursor(page.nextCursor);
   }
 
-  const pending = rows.filter((r) => !reviewed[r.id]);
+  const pending = permissionReviewRows(rows).filter((r) => !reviewed[r.id]);
   // Filtered client-side over the LOADED pages (the AdminLog `q` pattern): the
   // role set is small (one row per tenant per role key), so a round-trip per
   // filter change would buy nothing. The API takes `source` for callers that

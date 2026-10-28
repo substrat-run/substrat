@@ -4,7 +4,8 @@
  * The owner hand-over (#1665) and dashboard member management (#1150) audit a change made in the
  * vertical's own deployment in two rows paired by `operationId`: an `intent`, then `applied`,
  * `refused` or `failed`. The schedule and peer kill switches (#1666, #1706; #2089) audit the
- * scope's move the same way, from inside each adapter, and so does the replay lever
+ * scope's move the same way, from inside each adapter. The first scope permission writes
+ * (#2527) and the replay lever
  * (`moveImportCursor`, #2114), whose rows carry its `replayId` as their `operationId`. The two
  * stores are separate, so an intent can be left with no outcome: its outcome write failed (`recordAuditOutcome` logs it), or the
  * request died between the two. The control plane's scheduled
@@ -40,7 +41,12 @@ import { ulid } from './ulid.js';
  * so every reader passes it over as it passes over any row without one. (#1686) The operator's
  * capability revoke is written the same way around the revoke in the scope's store
  * (`auditedCapabilityRevoke`), which on the shared control plane is another deployment's.
+ * The scope permission actions use `auditedScopePermissionWrite` in both adapters.
  */
+const SCOPE_PERMISSION_ACTIONS = [
+  'assignRole', 'unassignRole', 'grant', 'grantToOrg', 'grantToSystem', 'grantEntityShape', 'mintCapability',
+] as const satisfies readonly AdminAction[];
+
 export const AUDITED_CHANGE_ACTIONS = [
   'bindConnectionScope',
   'transferOwner',
@@ -49,6 +55,7 @@ export const AUDITED_CHANGE_ACTIONS = [
   ...SWITCH_ACTIONS,
   'moveImportCursor',
   'revokeCapability',
+  ...SCOPE_PERMISSION_ACTIONS,
 ] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 
@@ -147,6 +154,39 @@ export async function auditedCapabilityRevoke(input: {
     throw substratError('unavailable', message);
   }
   await outcome(before, { phase: 'applied', revoked: true });
+}
+
+/** One directory intent around one scope-owned permission write. The returned scope result decides the outcome. */
+export async function auditedScopePermissionWrite<T>(input: {
+  action: (typeof SCOPE_PERMISSION_ACTIONS)[number];
+  request: Record<string, unknown>;
+  record: (after: Record<string, unknown>) => unknown;
+  write: () => Promise<T>;
+  outcome?: (result: T) => { phase: 'applied' | 'refused'; details?: Record<string, unknown> };
+  onUnrecordedOutcome?: (result: T, error: string) => T;
+  logError: AuditLogError;
+}): Promise<T> {
+  const operationId = ulid();
+  const base = { ...input.request, operationId };
+  await input.record({ ...base, phase: 'intent' });
+  const line = (phase: string) => ({ flow: `scope-permission.${input.action}`, operationId, phase });
+  const outcome = (phase: 'applied' | 'refused', details?: Record<string, unknown>) =>
+    recordAuditOutcome(() => input.record({ ...base, ...details, phase }), line(phase), input.logError);
+  let result: T;
+  try {
+    result = await input.write();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (provesNothingChanged(error)) await outcome('refused', { error: message.slice(0, AUDIT_ERROR_MAX) });
+    else {
+      try { input.logError(UNRECORDED_OUTCOME_LOG, { ...line('unknown'), auditError: message }); } catch { /* preserve the scope error */ }
+    }
+    throw error;
+  }
+  const row = input.outcome?.(result) ?? { phase: 'applied' as const };
+  const unrecorded = await outcome(row.phase, row.details);
+  return unrecorded !== null && input.onUnrecordedOutcome
+    ? input.onUnrecordedOutcome(result, unrecorded) : result;
 }
 
 /** The `auditWarning` a change that went through answers when its `applied` row could not be written. */
@@ -292,7 +332,8 @@ const isAudited = (action: string): action is AuditedChangeAction =>
 const isSwitch = (action: string): action is SwitchAction => (SWITCH_ACTIONS as readonly string[]).includes(action);
 /** The actions whose rows have no schema of their own, so an `unknown` row is the intent's fields. */
 const copiesIntent = (action: string): boolean =>
-  isSwitch(action) || action === 'moveImportCursor' || action === 'revokeCapability';
+  isSwitch(action) || action === 'moveImportCursor' || action === 'revokeCapability' ||
+  (SCOPE_PERMISSION_ACTIONS as readonly string[]).includes(action);
 
 /**
  * The `unknown` row of a kill switch's operation (#2089), or of the replay lever's (#2114): the

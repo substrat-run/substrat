@@ -117,9 +117,16 @@ export function entryVia(e: Pick<AuditEntry, 'actor' | 'onBehalfOf'>): string | 
 }
 
 /** "assigned role on Acme HR" — the sentence after the actor's bold name. */
-export function entrySentence(e: Pick<AuditEntry, 'action' | 'scopeId'>, appName: (scopeId: string) => string | null): string {
+const SCOPE_PERMISSION_ACTIONS = new Set(['assignRole', 'unassignRole', 'grant', 'grantToOrg', 'grantToSystem', 'grantEntityShape', 'mintCapability']);
+const scopePermissionPhase = (e: Pick<AuditEntry, 'action'> & Partial<Pick<AuditEntry, 'after'>>): string | null =>
+  SCOPE_PERMISSION_ACTIONS.has(e.action) && e.after && typeof e.after === 'object' && 'phase' in e.after
+    ? String(e.after.phase) : null;
+
+export function entrySentence(e: Pick<AuditEntry, 'action' | 'scopeId'> & Partial<Pick<AuditEntry, 'after'>>, appName: (scopeId: string) => string | null): string {
   const app = e.scopeId ? appName(e.scopeId) : null;
-  return `${actionWords(e.action)}${app ? ` on ${app}` : ''}`;
+  const phase = scopePermissionPhase(e);
+  const prefix = phase === 'intent' ? 'requested: ' : phase === 'unknown' ? 'outcome unknown: ' : phase === 'refused' ? 'refused: ' : phase === 'failed' ? 'failed: ' : '';
+  return `${prefix}${actionWords(e.action)}${app ? ` on ${app}` : ''}`;
 }
 
 /** The Overview's link into one entry: the app narrowing it was already linked with, plus the entry. */
@@ -305,7 +312,7 @@ export function filterActivity(
 ): ActivityItem[] {
   const q = opts.text.trim().toLowerCase();
   return items.filter((i) => {
-    if (opts.outcome === 'allowed' && i.kind !== 'action') return false;
+    if (opts.outcome === 'allowed' && (i.kind !== 'action' || (scopePermissionPhase(i.entry) !== null && scopePermissionPhase(i.entry) !== 'applied'))) return false;
     if (opts.outcome === 'refused' && i.kind !== 'refusal') return false;
     if (i.kind === 'action') return filterEntries([i.entry], opts).length === 1;
     const who = refusalActorOf(i.refusal.actor);

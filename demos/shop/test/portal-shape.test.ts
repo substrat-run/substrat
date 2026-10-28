@@ -77,7 +77,10 @@ describe('a key the portal shape gains reaches a customer granted before markers
       const newcomer = await oidcAdapter(login, seedHost, world).resolve(new Headers());
       const grants = await seedHost.admin.auditLog(staff, { tenantId: world.t1, scopeId: world.s1, action: 'grantEntityShape' });
       expect(newcomer).not.toBeNull();
-      expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([world.elin, world.otto, newcomer!.principal].sort());
+      expect(grants).toHaveLength(6);
+      expect(grants.filter((entry) => (entry.after as { phase?: string }).phase === 'applied')
+        .map((entry) => (entry.after as { principalId: string }).principalId).sort())
+        .toEqual([world.elin, world.otto, newcomer!.principal].sort());
     } finally {
       await seedHost.close();
       rmSync(seedDir, { recursive: true, force: true });

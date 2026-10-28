@@ -56,7 +56,10 @@ describe('a key the portal shape gains reaches a customer granted before markers
 
   it('the seeded customers each receive one audited shape grant', async () => {
     const grants = await host.admin.auditLog(staff, { tenantId: w.t1, scopeId: w.s1, action: 'grantEntityShape' });
-    expect(grants.map((entry) => (entry.after as { principalId: string }).principalId).sort()).toEqual([w.lisbeth, w.otto].sort());
+    expect(grants).toHaveLength(4);
+    expect(grants.filter((entry) => (entry.after as { phase?: string }).phase === 'applied')
+      .map((entry) => (entry.after as { principalId: string }).principalId).sort())
+      .toEqual([w.lisbeth, w.otto].sort());
   });
 
   it('the shape is declared bootstrap, and its holder is whoever holds a key of it', () => {

@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { asUploaded } from '../../tools/workerd-as-uploaded.mjs';
 import { defineConfig } from 'vitest/config';
+import { workerdTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = join(here, 'supplied-sweeper', 'fixture');
@@ -50,10 +51,10 @@ export default defineConfig({
   // One deployment walked through provision → pass → delete: storage carries across `it`s.
   plugins: [cloudflareTest({ wrangler: { configPath: config } })],
   test: {
+    ...workerdTestTimeout,
     // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
     fsModuleCache: false,
     include: ['supplied-sweeper/**/*.test.ts'],
-    testTimeout: 30_000,
     // One file at a time, as the old pool's `singleWorker` ran them.
     fileParallelism: false,
     // A rejection nobody handles fails its test; one an RPC caller awaited does not (#2131).

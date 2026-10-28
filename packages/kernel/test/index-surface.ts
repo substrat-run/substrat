@@ -286,6 +286,8 @@ export const INDEX_VALUE_EXPORTS = [
   'auditWarningOf',
   'auditedCapabilityRevoke',
   'auditedOperationsSql',
+  // #2527: both adapters share one directory intent/outcome grammar for scope permission writes.
+  'auditedScopePermissionWrite',
   'autoAdmittedProdRefusal',
   'backoffAt',
   'becomeMintCheck',

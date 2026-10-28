@@ -1,5 +1,9 @@
 import { defineConfig } from 'vitest/config';
+import { nodeTestTimeout } from '../../tools/vitest/timeout-policy.mjs';
 
 export default defineConfig({
-  test: { include: ['test/**/*.test.ts'] },
+  test: {
+    ...nodeTestTimeout,
+    include: ['test/**/*.test.ts'],
+  },
 });

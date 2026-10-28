@@ -5,6 +5,7 @@ import { platformActorId, principalId, scopeId, tenantId, type AdminLogEntry } f
 import { ulid } from '@substrat-run/kernel';
 import { withAuditedOutcomes } from '@substrat-run/control-plane-api';
 import { AuditedOutcome } from '../src/views/AdminLog';
+import { permissionReviewRows } from '../src/views/Permissions';
 
 /**
  * #2064: intent → unknown → applied, as the console shows it. The rows are resolved by the
@@ -61,4 +62,18 @@ describe('the admin log reads an audited change by its latest outcome', () => {
     const entry = { ...row('intent', 0), action: 'createTenant' } as AdminLogEntry;
     expect(renderToString(createElement(AuditedOutcome, { entry }))).toBe('');
   });
+});
+
+it('the permission review queue includes only one confirmed effect per scope write', () => {
+  const base: AdminLogEntry = {
+    id: ulid(), actor: platformActorId.parse(ulid()), action: 'grant', tenantId: tenantId.parse(ulid()),
+    scopeId: scopeId.parse(ulid()), vertical: null, before: null, after: null, causedBy: null,
+    at: new Date().toISOString() as AdminLogEntry['at'],
+  };
+  const entry = (phase: string, operationId: string): AdminLogEntry => ({ ...base, id: ulid(), after: { phase, operationId }, audited: { operationId, outcome: phase === 'intent' ? 'applied' : phase as 'applied', superseded: false } });
+  const operationId = ulid();
+  expect(permissionReviewRows([entry('intent', operationId), entry('applied', operationId), entry('unknown', ulid()),
+    { ...entry('intent', ulid()), audited: undefined }, { ...base, id: ulid(), scopeId: null }])
+    .map((row) => (row.after as { phase?: string } | null)?.phase ?? 'legacy'))
+    .toEqual(['applied', 'legacy']);
 });
