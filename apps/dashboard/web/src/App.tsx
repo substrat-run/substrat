@@ -1,8 +1,7 @@
 import { sortApps } from './lib/name-order';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
-import { api, signIn, signOut, teamApi, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
-import { ApiError as TeamApiError } from './lib/api.generated';
+import { api, signIn, signOut, teamApi, isApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { removalRefusalDetail } from './lib/bound-scopes';
 import { promoteReviewOf, promoteWithCheckpoint, type Acks, type Checkpoint } from './lib/promote-review';
@@ -347,7 +346,7 @@ export function App() {
           // holds what it grants. That card says so, in the server's words.
           if (!live) return;
           window.history.replaceState(null, '', '/');
-          const refusal = err instanceof ApiError && err.status === 409 ? err.message : undefined;
+          const refusal = isApiError(err) && err.status === 409 ? err.message : undefined;
           setInviteBlock({ token, teamName: preview?.teamName, invitedEmail: preview?.email, signedInAs: (who as { email?: string | null }).email ?? undefined, refusal });
           return;
         }
@@ -498,7 +497,7 @@ export function App() {
         setToast({ status: 'success', title: `${app.name} deleted`, detail: 'Its hostname is offline; audit history is retained.' });
       } catch (e) {
         // Already gone (e.g. a slipped double-submit) is the state we wanted, not an error.
-        if (e instanceof TeamApiError && e.status === 404) {
+        if (isApiError(e) && e.status === 404) {
           await reloadApps();
           go('/apps');
         } else {
@@ -647,7 +646,7 @@ export function App() {
         // The registry's one 409 on this route is "still backs N scope(s)" — a count with
         // nowhere to go. The vertical's page lists exactly those installs and lets you move
         // or retire them, so a refusal takes you there rather than leaving you with a number.
-        if (e instanceof TeamApiError && e.status === 409) {
+        if (isApiError(e) && e.status === 409) {
           go(`/verticals/${encodeURIComponent(slug)}`);
           // The plane counts every team's installs; the page lists only this team's. When
           // none of the counted ones are ours, say so instead of pointing at an empty list.
@@ -1053,7 +1052,7 @@ export function App() {
       ) : route.section === 'integrations' ? (
         <Integrations teamId={me.currentTeamId} />
       ) : route.section === 'billing' ? (
-        <Billing />
+        <Billing teamId={me.currentTeamId} canRead={isTeamAdmin} />
       ) : route.section === 'audit' ? (
         <AuditLog teamId={me.currentTeamId} apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} entryId={route.entry ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} personName={personName} />
       ) : route.section === 'observability' ? (
@@ -1106,7 +1105,7 @@ export function App() {
       <Dialog
         open={newTeamOpen}
         title="Create a team"
-        description="A team has its own apps, domains, and billing. You’ll be its owner."
+        description="A team has its own apps, domains, and entitlements. You’ll be its owner."
         confirmLabel={creatingTeam ? 'Creating…' : 'Create team'}
         confirmDisabled={!newTeamName.trim() || creatingTeam}
         onConfirm={() => void createTeam(newTeamName)}

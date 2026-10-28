@@ -553,6 +553,15 @@ describe('tenant tokens', () => {
       await app.request(`/tenants/${tA}/entitlements/builder`, { method: 'DELETE', headers: staffHeaders });
     });
 
+    it('reads only its own entitlement grants, without gaining another tenant route', async () => {
+      expect((await put(`/tenants/${tA}/entitlements/app`, asA)).status).toBe(200);
+      const own = await app.request(`/tenants/${tA}/entitlements`, { headers: asA });
+      expect(own.status).toBe(200);
+      expect((await own.json()).map((g: { entitlementKey: string }) => g.entitlementKey)).toContain('app');
+      expect((await app.request(`/tenants/${tB}/entitlements`, { headers: asA })).status).toBe(403);
+      expect((await app.request('/tenants', { headers: asA })).status).toBe(403);
+    });
+
     it('does not reach the tenant-level acts the dashboard never issues', async () => {
       const refused = [
         ['PATCH', `/tenants/${tA}/status`, { status: 'suspended' }],
