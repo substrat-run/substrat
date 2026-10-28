@@ -5,6 +5,9 @@
  * - `store_driver_releases`: a release's bytes were stored (the bytes themselves live outside the
  *   directory, keyed by driver and sha256). Insert-only: who uploaded a release, and from which
  *   commit, is never rewritten.
+ * - `store_driver_approvals`: an inert, append-only approval record for D-65. A partial unique
+ *   index permits one live approval per release. `store_driver_revoke_walks` is a cursor per
+ *   approval, not a second record of which release each script runs.
  * - `store_driver_rollouts`: one row per attempt to move every script of the driver to a release, in
  *   `seq` order. A row is `rolling` until its holder ends it `good`, `failed` or `diverged`.
  * - `store_driver_current`: the release the last `good` rollout moved every script to.
@@ -44,6 +47,38 @@ export const STORE_DRIVER_RELEASES_DDL = `
     uploaded_by   TEXT NOT NULL,
     uploaded_at   TEXT NOT NULL,
     PRIMARY KEY (driver, sha256)
+  );
+  -- D-65 approval data. No release is admitted by this table until every pin reader switches.
+  CREATE TABLE IF NOT EXISTS store_driver_approvals (
+    approval_id       TEXT PRIMARY KEY,
+    driver            TEXT NOT NULL,
+    sha256            TEXT NOT NULL,
+    source_commit     TEXT NOT NULL,
+    approved_by       TEXT NOT NULL,
+    approved_at       TEXT NOT NULL,
+    reason            TEXT NOT NULL,
+    source_references TEXT NOT NULL,
+    isolation_review TEXT NOT NULL,
+    schema            INTEGER NOT NULL,
+    class_name        TEXT NOT NULL,
+    operations        TEXT NOT NULL,
+    revoked_by        TEXT,
+    revoked_at        TEXT,
+    revoked_reason    TEXT,
+    revoked_emergency INTEGER
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS store_driver_approvals_one_live
+    ON store_driver_approvals (driver, sha256) WHERE revoked_at IS NULL;
+  -- A revoke walk belongs to one approval, even if the same bytes are approved again later.
+  -- Its cursor records a vertical slug, never which release that vertical runs.
+  CREATE TABLE IF NOT EXISTS store_driver_revoke_walks (
+    approval_id TEXT PRIMARY KEY REFERENCES store_driver_approvals(approval_id),
+    driver      TEXT NOT NULL,
+    sha256      TEXT NOT NULL,
+    cursor      TEXT,
+    actor       TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    rollout_seq INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS store_driver_rollouts (
     driver               TEXT NOT NULL,

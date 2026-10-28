@@ -265,6 +265,33 @@ export interface StoreDriverReleaseView {
   uploadedAt: string;
 }
 
+/** D-65 approval data, before any route reads or writes it. */
+export interface StoreDriverApprovalView {
+  approvalId: string;
+  driver: string;
+  sha256: string;
+  sourceCommit: string;
+  approvedBy: string;
+  approvedAt: string;
+  reason: string;
+  sourceReferences: { repository: string; commit: string }[];
+  /** The review of D-63's conditions and required checks; its validated shape ships with the writer. */
+  isolationReview: Record<string, unknown>;
+  schema: number;
+  className: string;
+  operations: string[];
+  revokedBy: string | null;
+  revokedAt: string | null;
+  revokedReason: string | null;
+  revokedEmergency: boolean | null;
+}
+
+/** The proposed approval response also shows the schema of the current good release. */
+export interface StoreDriverApprovalResultView {
+  approval: StoreDriverApprovalView;
+  currentSchema: number | null;
+}
+
 /** One attempt to move every script of a driver to a release. */
 export interface StoreDriverRolloutView {
   driver: string;
@@ -283,6 +310,8 @@ export interface StoreDriverRolloutView {
 export interface StoreDriverView {
   driver: string;
   pins: { sha256: string; sourceCommit: string; schema: number }[];
+  /** Added by the approval status route; absent until it ships. */
+  approvals?: StoreDriverApprovalView[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
   rollouts: StoreDriverRolloutView[];
   /** Where a rollback goes now: the server decides, a client never derives it. */
