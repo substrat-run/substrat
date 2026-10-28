@@ -76,6 +76,11 @@ export function invitationEmail(input: { to: string; from: EmailAddress; url: st
   };
 }
 
+export function githubEmailVerification(input: { to: string; from: EmailAddress; name: string; url: string }): EmailMessage {
+  const lead = `Verify this email to finish signing in with the GitHub account ${input.name}`;
+  return { to: input.to, from: input.from, subject: 'Verify your email for GitHub sign-in', text: `${lead}.\n\n${input.url}\n\nOpen this link in the browser where you signed in with GitHub. It expires in 10 minutes. This becomes your account email. If you did not request this, ignore this email.`, html: actionEmailHtml(`${lead}. Open this link in the browser where you signed in with GitHub. It expires in 10 minutes and becomes your account email`, 'Verify email', input.url) };
+}
+
 function actionEmailHtml(lead: string, cta: string, url: string): string {
   return `<!-- ${escapeHtml(cta)} -->
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1a1a1a">

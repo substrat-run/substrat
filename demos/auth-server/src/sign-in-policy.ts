@@ -376,6 +376,7 @@ export function signInMethodOfPath(
 ): string | null {
   if (!path) return null;
   if (path === '/invitation/accept') return 'invitation';
+  if (path === '/github-email/verify') return 'github';
   if (path === '/invitation/password') return PASSWORD_METHOD;
   if (path === '/phone/verify') return PASSWORD_SMS_METHOD;
   if (path === '/sign-in/email' || path === '/sign-up/email') return PASSWORD_METHOD;

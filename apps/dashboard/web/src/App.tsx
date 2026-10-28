@@ -317,9 +317,9 @@ export function App() {
         const who = await api.me();
         const preview = await api.previewInvite(token).catch(() => null);
         if (!who) {
-          // Not signed in. Prefill the invited email and default to the sign-up screen
-          // (invitees are usually new), then come back to this same link to accept.
-          signIn({ returnTo: `/invite/${token}`, loginHint: preview?.email, screenHint: 'signup' });
+          // Prefill the invited email at the issuer. Its sign-in screen offers GitHub
+          // for new and returning accounts, then comes back to this link to accept.
+          signIn({ returnTo: `/invite/${token}`, loginHint: preview?.email });
           return;
         }
         // Signed in: this invite belongs to a specific email, so verify it is THIS
@@ -901,6 +901,7 @@ export function App() {
         invitedEmail={inviteBlock.invitedEmail}
         signedInAs={inviteBlock.signedInAs}
         refusal={inviteBlock.refusal}
+        onVerifyEmail={() => signIn({ returnTo: `/invite/${inviteBlock.token}`, loginHint: inviteBlock.invitedEmail, prompt: 'login' })}
         onSignOut={() => signOut({ returnTo: `/invite/${inviteBlock.token}` })}
         onContinue={() => window.location.assign('/')}
       />

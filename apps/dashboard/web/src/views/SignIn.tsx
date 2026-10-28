@@ -54,6 +54,7 @@ export function InviteBlocked({
   invitedEmail,
   signedInAs,
   refusal,
+  onVerifyEmail,
   onSignOut,
   onContinue,
 }: {
@@ -62,6 +63,7 @@ export function InviteBlocked({
   signedInAs?: string;
   /** The server's sentence when the invite was accepted but could not be applied (#1184). */
   refusal?: string;
+  onVerifyEmail?: () => void;
   onSignOut: () => void;
   onContinue: () => void;
 }) {
@@ -94,8 +96,9 @@ export function InviteBlocked({
           {teamName ? <>The invitation to <strong>{teamName}</strong> was sent to </> : <>This invitation was sent to </>}
           {invitedEmail ? <strong>{invitedEmail}</strong> : 'another address'}
           {signedInAs ? <>, but you’re signed in as <strong>{signedInAs}</strong>.</> : '.'}
-          {' '}Sign out to continue as {invitedEmail ? <strong>{invitedEmail}</strong> : 'the invited email'} — we’ll take you to sign-up if you don’t have an account yet.
+          {' '}Continue with GitHub and verify the invited email to use it for your account, or sign in with the account that already owns that address.
         </div>
+        {onVerifyEmail && <Button style={{ width: '100%', justifyContent: 'center' }} onClick={onVerifyEmail}>Continue with GitHub &amp; verify email</Button>}
         <Button style={{ width: '100%', justifyContent: 'center' }} onClick={onSignOut}>
           Sign out &amp; continue as {invitedEmail ?? 'the invited email'}
         </Button>

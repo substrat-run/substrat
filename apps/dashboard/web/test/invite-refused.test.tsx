@@ -39,4 +39,14 @@ describe('InviteBlocked', () => {
     await draw();
     expect(container.textContent).toMatch(/different email/);
   });
+
+  it('offers email verification for a different email and invokes the fallback', async () => {
+    const verify = vi.fn();
+    await act(async () => root.render(<InviteBlocked invitedEmail="work@acme.test" signedInAs="personal@example.test" onVerifyEmail={verify} onSignOut={vi.fn()} onContinue={vi.fn()} />));
+    const button = [...container.querySelectorAll('button')].find((b) => b.textContent?.includes('verify email'))!;
+    expect(button).toBeDefined();
+    await act(async () => button.click());
+    expect(verify).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain('verify the invited email');
+  });
 });

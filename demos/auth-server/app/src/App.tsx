@@ -18,6 +18,7 @@ import { Setup } from './auth/Setup';
 import { SignIn } from './auth/SignIn';
 import { SignUp } from './auth/SignUp';
 import { Invitation } from './auth/Invitation';
+import { GitHubEmail } from './auth/GitHubEmail';
 import { recoverInvitation, saveInvitation, type InvitationRecovery } from './auth/invitation-recovery';
 import { Console } from './console/Console';
 import { returnTarget } from './console/routes';
@@ -25,6 +26,7 @@ import { Card, Centered } from './primitives';
 import { IssuerUnreachable } from './wire';
 
 type Phase =
+  | { t: 'github-email' }
   | { t: 'invitation'; recovery: InvitationRecovery }
   | { t: 'loading' }
   /**
@@ -108,6 +110,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     // A password-reset link lands the user here with a token — handle that first.
     const url = new URL(window.location.href);
+    if (url.pathname === '/github-email') return setPhase({ t: 'github-email' });
     const invitation = recoverInvitation(url);
     if (invitation) {
       // Clear the capability from the address bar only after tab-scoped storage succeeds.
@@ -229,6 +232,7 @@ export default function App() {
   }, [run]);
 
   switch (phase.t) {
+    case 'github-email': return <GitHubEmail />;
     case 'invitation': return <Invitation recovery={phase.recovery} />;
     case 'loading':
       return <Centered>Loading…</Centered>;

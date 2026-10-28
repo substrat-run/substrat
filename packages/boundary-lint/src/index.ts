@@ -309,10 +309,11 @@ export const DEFAULT_HARNESS = [
   'bankid.ts',
   'bankid-plugin.ts',
   'bankid-transport-node.ts',
-  // Better Auth's account invitation and SMS factor adapters. Their verification
+  // Better Auth's account invitation, social email and SMS factor adapters. Their verification
   // lifetimes use the issuer's real clock, and their delivery is a server transport,
   // just like the BankID plugin above; neither is reachable from a domain module.
   'invitation-plugin.ts',
+  'github-email-plugin.ts',
   'phone-plugin.ts',
   'twilio.ts',
   'do-contract.ts',
