@@ -7,6 +7,7 @@ const MAX_COMPRESSED = 32 * 1024 * 1024;
 const MAX_EXPANDED = 128 * 1024 * 1024;
 const MAX_FILE = 16 * 1024 * 1024;
 const MAX_ENTRIES = 10_000;
+const pathDecoder = new TextDecoder('utf-8', { fatal: true });
 
 function git(args: string[], cwd: string, input?: Buffer): Buffer {
   return execFileSync('git', args, { cwd, input, maxBuffer: MAX_EXPANDED + 1024 * 1024 });
@@ -22,6 +23,7 @@ function putOctal(block: Uint8Array, at: number, size: number, value: number): v
   const digits = value.toString(8).padStart(size - 1, '0');
   if (digits.length !== size - 1) throw new Error('archive number is too large');
   putText(block, at, size, digits);
+  block[at + size - 1] = 0;
 }
 
 function portablePath(path: string): void {
@@ -60,9 +62,7 @@ function header(path: string, mode: number, size: number, type = 48): Uint8Array
   putText(block, 345, 155, fields.prefix);
   let sum = 0;
   for (const byte of block) sum += byte;
-  putText(block, 148, 6, sum.toString(8).padStart(6, '0'));
-  block[154] = 0;
-  block[155] = 32;
+  putOctal(block, 148, 8, sum);
   return block;
 }
 
@@ -81,12 +81,27 @@ function paxPath(path: string): Uint8Array {
 
 /** The committed tree as canonical USTAR + narrowly scoped PAX paths + gzip. */
 export function reviewArchive(cwd: string, ref: string): { bytes: Uint8Array; sha256: string } {
-  const rows = git(['ls-tree', '-r', '-z', ref], cwd).toString('utf8').split('\0').filter(Boolean);
+  const tree = git(['ls-tree', '-r', '-z', ref], cwd);
+  const rows: Buffer[] = [];
+  for (let start = 0; start < tree.length;) {
+    const end = tree.indexOf(0, start);
+    if (end < 0) throw new Error('review tree listing is incomplete');
+    rows.push(tree.subarray(start, end));
+    start = end + 1;
+  }
   if (rows.length === 0 || rows.length > MAX_ENTRIES) throw new Error('archive entry count is out of bounds');
   const files = rows.map((row) => {
-    const match = /^(100644|100755) blob ([0-9a-f]+)\t(.+)$/.exec(row);
+    const tab = row.indexOf(9);
+    const match = tab < 0 ? null : /^(100644|100755) blob ([0-9a-f]+)$/.exec(row.toString('ascii', 0, tab));
     if (!match) throw new Error('review tree contains a link, submodule or unsupported entry');
-    return { mode: match[1] === '100755' ? 0o755 : 0o644, oid: match[2]!, path: match[3]! };
+    const pathBytes = row.subarray(tab + 1);
+    let path: string;
+    try {
+      path = pathDecoder.decode(pathBytes);
+    } catch {
+      throw new Error(`review tree path has invalid UTF-8 bytes: ${pathBytes.toString('hex')}`);
+    }
+    return { mode: match[1] === '100755' ? 0o755 : 0o644, oid: match[2]!, path };
   }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   const seen = new Set<string>();
   for (const file of files) {

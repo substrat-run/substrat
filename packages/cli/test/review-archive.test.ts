@@ -69,3 +69,14 @@ it('round-trips the repository docs that need deterministic PAX path extensions'
     at += 512 + Math.ceil(fileSize / 512) * 512;
   }
 });
+
+it('refuses a committed tree path with invalid UTF-8 bytes instead of renaming it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'review-invalid-utf8-'));
+  dirs.push(dir);
+  execFileSync('git', ['init', '-q'], { cwd: dir });
+  const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: dir, input: 'content' }).toString().trim();
+  const path = Buffer.from([98, 97, 100, 45, 255, 46, 116, 120, 116]);
+  const row = Buffer.concat([Buffer.from(`100644 blob ${blob}\t`), path, Buffer.from([0])]);
+  const tree = execFileSync('git', ['mktree', '-z'], { cwd: dir, input: row }).toString().trim();
+  expect(() => reviewArchive(dir, tree)).toThrow(/invalid UTF-8.*6261642dff2e747874/);
+});

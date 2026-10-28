@@ -17,6 +17,7 @@ export interface ReviewReceipt {
 }
 
 export class ReviewValidationError extends Error {}
+export class ReviewCollisionError extends Error {}
 
 // Pinned to the checklist bundled with this release. The test holds these values
 // to the source files, so a checklist or plugin bump cannot silently go unstamped.
@@ -57,15 +58,20 @@ export async function receiveReview(
     pluginVersion: REVIEW_PLUGIN_VERSION,
     state: 'received', model: null, findings: [], createdAt, expiresAt,
   };
-  const keys = [archiveKey(id, 'source'), ...(input.base ? [archiveKey(id, 'base')] : []), recordKey(id), indexKey(actor, createdAt, id), expiryKey(expiresAt, id)];
+  const createdKeys: string[] = [];
+  const putNew = async (key: string, value: string | ArrayBuffer): Promise<void> => {
+    const stored = await bucket.put(key, value, { onlyIf: { etagDoesNotMatch: '*' } });
+    if (!stored) throw new ReviewCollisionError('review object key already exists');
+    createdKeys.push(key);
+  };
   try {
-    await bucket.put(keys[0]!, await input.source.arrayBuffer());
-    if (input.base) await bucket.put(keys[1]!, await input.base.arrayBuffer());
-    await bucket.put(recordKey(id), JSON.stringify(receipt));
-    await bucket.put(indexKey(actor, createdAt, id), id);
-    await bucket.put(expiryKey(expiresAt, id), id);
+    await putNew(archiveKey(id, 'source'), await input.source.arrayBuffer());
+    if (input.base) await putNew(archiveKey(id, 'base'), await input.base.arrayBuffer());
+    await putNew(recordKey(id), JSON.stringify(receipt));
+    await putNew(indexKey(actor, createdAt, id), id);
+    await putNew(expiryKey(expiresAt, id), id);
   } catch (error) {
-    await Promise.allSettled(keys.map((key) => bucket.delete(key)));
+    await Promise.allSettled(createdKeys.map((key) => bucket.delete(key)));
     throw error;
   }
   return receipt;

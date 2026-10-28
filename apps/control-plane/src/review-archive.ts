@@ -11,13 +11,17 @@ const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 function field(block: Uint8Array, at: number, length: number): string {
   const bytes = block.subarray(at, at + length);
   const end = bytes.indexOf(0);
+  if (end >= 0 && bytes.subarray(end + 1).some((byte) => byte !== 0)) {
+    throw new Error('archive header has bytes after NUL');
+  }
   return decoder.decode(end < 0 ? bytes : bytes.subarray(0, end));
 }
 
-function octal(block: Uint8Array, at: number, length: number): number {
-  const value = field(block, at, length).trim();
-  if (!/^[0-7]+$/.test(value)) throw new Error('invalid tar number');
-  const number = Number.parseInt(value, 8);
+function octal(block: Uint8Array, at: number, length: number, empty = false): number {
+  const value = field(block, at, length);
+  if (empty && !value) return 0;
+  if (!/^ *[0-7]+$/.test(value)) throw new Error('invalid tar number');
+  const number = Number.parseInt(value.trimStart(), 8);
   if (!Number.isSafeInteger(number)) throw new Error('tar number is too large');
   return number;
 }
@@ -111,6 +115,16 @@ export async function validateReviewArchive(file: File, expectedSha256: string):
         break;
       }
       if (field(block, 257, 6) !== 'ustar') throw new Error('archive is not USTAR');
+      if (field(block, 263, 2) !== '00') throw new Error('archive has an unsupported USTAR version');
+      if (field(block, 157, 100) || field(block, 265, 32) || field(block, 297, 32)) {
+        throw new Error('archive has unsupported header metadata');
+      }
+      octal(block, 108, 8);
+      octal(block, 116, 8);
+      octal(block, 136, 12);
+      octal(block, 329, 8, true);
+      octal(block, 337, 8, true);
+      if (block.subarray(500).some((byte) => byte !== 0)) throw new Error('archive header padding is not zero');
       const recorded = octal(block, 148, 8);
       let checksum = 0;
       for (let i = 0; i < BLOCK; i++) checksum += i >= 148 && i < 156 ? 32 : block[i]!;

@@ -5,7 +5,7 @@ import { SERVICE_TOKEN_HEADER } from '@substrat-run/control-plane-api';
 import { ulid } from '@substrat-run/kernel';
 import { createReviewApi } from '../src/reviews.js';
 import { validateReviewArchive } from '../src/review-archive.js';
-import { pruneReviews, readReview, receiveReview } from '../src/review-store.js';
+import { pruneReviews, readReview, receiveReview, ReviewCollisionError } from '../src/review-store.js';
 
 const bucket = (env as unknown as { REVIEW_SOURCES: R2Bucket }).REVIEW_SOURCES;
 const actor = () => platformActorId.parse(ulid());
@@ -13,6 +13,7 @@ const BLOCK = 512;
 
 function octal(block: Uint8Array, at: number, width: number, n: number): void {
   block.set(new TextEncoder().encode(n.toString(8).padStart(width - 1, '0')), at);
+  block[at + width - 1] = 0;
 }
 
 function tar(entries: { path: string; bytes?: Uint8Array; type?: number; declaredSize?: number }[]): Uint8Array {
@@ -30,8 +31,7 @@ function tar(entries: { path: string; bytes?: Uint8Array; type?: number; declare
     h[156] = entry.type ?? 48;
     h.set(new TextEncoder().encode('ustar'), 257);
     h.set(new TextEncoder().encode('00'), 263);
-    octal(h, 148, 7, h.reduce((a, b) => a + b, 0));
-    h[155] = 32;
+    octal(h, 148, 8, h.reduce((a, b) => a + b, 0));
     parts.push(h, body, new Uint8Array((BLOCK - body.length % BLOCK) % BLOCK));
   }
   parts.push(new Uint8Array(2 * BLOCK));
@@ -41,12 +41,21 @@ function tar(entries: { path: string; bytes?: Uint8Array; type?: number; declare
   return out;
 }
 
-async function archive(entries: { path: string; bytes?: Uint8Array; type?: number; declaredSize?: number }[] = [{ path: 'src/main.ts' }]) {
-  const gzip = new Blob([tar(entries)]).stream().pipeThrough(new CompressionStream('gzip'));
+async function archiveRaw(raw: Uint8Array) {
+  const gzip = new Blob([raw]).stream().pipeThrough(new CompressionStream('gzip'));
   const bytes = new Uint8Array(await new Response(gzip).arrayBuffer());
   const sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
     .map((byte) => byte.toString(16).padStart(2, '0')).join('');
   return { file: new File([bytes], 'source.tar.gz', { type: 'application/gzip' }), sha256 };
+}
+
+async function archive(entries: { path: string; bytes?: Uint8Array; type?: number; declaredSize?: number }[] = [{ path: 'src/main.ts' }]) {
+  return archiveRaw(tar(entries));
+}
+
+function rechecksum(block: Uint8Array): void {
+  block.fill(32, 148, 156);
+  octal(block, 148, 8, block.reduce((a, b) => a + b, 0));
 }
 
 function paxRecord(key: string, value: string): Uint8Array {
@@ -100,6 +109,67 @@ describe('phase-0 review intake', () => {
     expect((await listed.json() as { entries: unknown[] }).entries).toEqual([]);
     expect((await bucket.get(`archives/${receipt.id}/source.tar.gz`))?.size).toBe(src.file.size);
     expect((await bucket.get(`archives/${receipt.id}/base.tar.gz`))?.size).toBe(base.file.size);
+  });
+
+  it('preserves an existing object when a generated review key collides', async () => {
+    const src = await archive();
+    for (const prefix of ['archives/', 'records/']) {
+      let collided = '';
+      const collidingBucket = new Proxy(bucket, {
+        get(target, property) {
+          if (property === 'put') return async (key: string, value: Parameters<R2Bucket['put']>[1], options?: R2PutOptions) => {
+            if (!collided && key.startsWith(prefix)) {
+              collided = key;
+              await target.put(key, 'existing review object');
+            }
+            return target.put(key, value, options);
+          };
+          const value = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }) as R2Bucket;
+      await expect(receiveReview(collidingBucket, actor(), { source: src.file, sourceSha256: src.sha256 })).rejects.toBeInstanceOf(ReviewCollisionError);
+      expect(await (await bucket.get(collided))?.text()).toBe('existing review object');
+      if (prefix === 'records/') {
+        const id = collided.slice('records/'.length, -'.json'.length);
+        expect(await bucket.get(`archives/${id}/source.tar.gz`)).toBeNull();
+      }
+    }
+  });
+
+  it('limits live review receipts for one person', async () => {
+    const person = actor();
+    const src = await archive();
+    for (let n = 0; n < 20; n++) await receiveReview(bucket, person, { source: src.file, sourceSha256: src.sha256 });
+    const app = createReviewApi({ bucket: () => bucket, authenticate: async () => person });
+    const response = await app.request('http://test/reviews', { method: 'POST', body: new FormData() });
+    expect(response.status).toBe(429);
+  });
+
+  it('refuses a second upload while the same person has one in flight', async () => {
+    const person = actor();
+    let release!: () => void;
+    let entered!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const begun = new Promise<void>((resolve) => { entered = resolve; });
+    const delayedBucket = new Proxy(bucket, {
+      get(target, property) {
+        if (property === 'list') return async (options: R2ListOptions) => {
+          entered();
+          await hold;
+          return target.list(options);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as R2Bucket;
+    const app = createReviewApi({ bucket: () => delayedBucket, authenticate: async () => person });
+    const post = () => app.request('http://test/reviews', { method: 'POST', body: new FormData() });
+    const first = post();
+    await begun;
+    expect((await post()).status).toBe(429);
+    release();
+    expect((await first).status).toBe(400);
   });
 
   it('refuses an absent binding without affecting authentication', async () => {
@@ -158,6 +228,31 @@ describe('phase-0 review intake', () => {
     ] as const;
     for (const [label, entries] of invalid) {
       const src = await archive([...entries]);
+      await expect(validateReviewArchive(src.file, src.sha256), label).rejects.toThrow();
+    }
+  });
+
+  it('rejects hidden bytes and malformed fields in USTAR and PAX headers', async () => {
+    const hidden = (at: number) => (h: Uint8Array) => { h[at] = 0; h[at + 1] = 88; };
+    const cases: Array<[string, (h: Uint8Array) => void, boolean?]> = [
+      ['name', hidden(1)], ['mode', hidden(101)], ['uid', hidden(109)],
+      ['gid', hidden(117)], ['size', hidden(125)], ['mtime', hidden(137)],
+      ['linkname', hidden(157)], ['magic', hidden(257)], ['version', hidden(263)],
+      ['uname', hidden(265)], ['gname', hidden(297)],
+      ['devmajor', hidden(329)], ['devminor', hidden(337)],
+      ['prefix', hidden(345)], ['reserved padding', (h) => { h[500] = 88; }],
+      ['checksum tail', (h) => { h[155] = 88; }],
+      ['size non-octal', (h) => { h[124] = 88; }],
+      ['size trailing space', (h) => { h[134] = 32; }],
+      ['PAX header name', hidden(1), true],
+    ];
+    for (const [label, change, extended] of cases) {
+      const raw = tar(extended ? [pax(paxRecord('path', 'long/path')), regular()] : [{ path: 'src/main.ts' }]);
+      const header = raw.subarray(0, BLOCK);
+      change(header);
+      rechecksum(header);
+      if (label === 'checksum tail') header[155] = 88;
+      const src = await archiveRaw(raw);
       await expect(validateReviewArchive(src.file, src.sha256), label).rejects.toThrow();
     }
   });

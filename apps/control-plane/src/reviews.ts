@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import type { PlatformActorId } from '@substrat-run/contracts';
 import { refuse, refuseStatus } from './problem.js';
-import { listReviews, readReview, receiveReview, ReviewValidationError } from './review-store.js';
+import { listReviews, readReview, receiveReview, ReviewCollisionError, ReviewValidationError } from './review-store.js';
 
 const INTAKE_BODY_MAX = 2 * 32 * 1024 * 1024 + 1024 * 1024;
+const MAX_LIVE_REVIEWS_PER_ACTOR = 20;
+const intakeActors = new Set<PlatformActorId>();
 
 async function boundedForm(request: Request): Promise<FormData> {
   const contentType = request.headers.get('content-type') ?? '';
@@ -47,9 +49,22 @@ export function createReviewApi(deps: {
   app.post('/reviews', async (c) => {
     const access = await gate(c.req.raw);
     if (access instanceof Response) return access;
+    if (intakeActors.has(access.actor)) return refuseStatus(429, 'a review upload is already in progress for this person');
+    intakeActors.add(access.actor);
+    try {
+      const live = await listReviews(access.bucket, access.actor);
+      if (live.entries.length >= MAX_LIVE_REVIEWS_PER_ACTOR) {
+        return refuseStatus(429, 'review intake limit reached: 20 live reviews per person');
+      }
+      return await receive(c.req.raw, access);
+    } finally {
+      intakeActors.delete(access.actor);
+    }
+  });
+  const receive = async (request: Request, access: { bucket: R2Bucket; actor: PlatformActorId }): Promise<Response> => {
     let form: FormData;
     try {
-      form = await boundedForm(c.req.raw);
+      form = await boundedForm(request);
     } catch (error) {
       return refuse('validation_failed', error instanceof Error ? error.message : 'invalid upload');
     }
@@ -73,12 +88,13 @@ export function createReviewApi(deps: {
         ...(base instanceof File ? { base } : {}),
         ...(typeof baseSha256 === 'string' ? { baseSha256 } : {}),
       });
-      return c.json(record, 201);
+      return Response.json(record, { status: 201 });
     } catch (error) {
       if (error instanceof ReviewValidationError) return refuse('validation_failed', error.message);
+      if (error instanceof ReviewCollisionError) return refuseStatus(409, error.message);
       throw error;
     }
-  });
+  };
   app.get('/reviews', async (c) => {
     const access = await gate(c.req.raw);
     if (access instanceof Response) return access;
