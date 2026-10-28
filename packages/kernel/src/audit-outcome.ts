@@ -49,6 +49,13 @@ export const AUDITED_CHANGE_ACTIONS = [
   ...SWITCH_ACTIONS,
   'moveImportCursor',
   'revokeCapability',
+  'assignRole',
+  'unassignRole',
+  'grant',
+  'grantToOrg',
+  'grantToSystem',
+  'grantEntityShape',
+  'mintCapability',
 ] as const satisfies readonly AdminAction[];
 export type AuditedChangeAction = (typeof AUDITED_CHANGE_ACTIONS)[number];
 
@@ -147,6 +154,37 @@ export async function auditedCapabilityRevoke(input: {
     throw substratError('unavailable', message);
   }
   await outcome(before, { phase: 'applied', revoked: true });
+}
+
+/** One directory intent around one scope-owned permission write. The returned scope result decides the outcome. */
+export async function auditedScopePermissionWrite<T>(input: {
+  action: AuditedChangeAction;
+  request: Record<string, unknown>;
+  record: (after: Record<string, unknown>) => unknown;
+  write: () => Promise<T>;
+  outcome?: (result: T) => { phase: 'applied' | 'refused'; details?: Record<string, unknown> };
+  logError: AuditLogError;
+}): Promise<T> {
+  const operationId = ulid();
+  const base = { ...input.request, operationId };
+  await input.record({ ...base, phase: 'intent' });
+  const line = (phase: string) => ({ flow: `scope-permission.${input.action}`, operationId, phase });
+  const outcome = (phase: 'applied' | 'refused', details?: Record<string, unknown>) =>
+    recordAuditOutcome(() => input.record({ ...base, ...details, phase }), line(phase), input.logError);
+  let result: T;
+  try {
+    result = await input.write();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (provesNothingChanged(error)) await outcome('refused', { error: message.slice(0, AUDIT_ERROR_MAX) });
+    else {
+      try { input.logError(UNRECORDED_OUTCOME_LOG, { ...line('unknown'), auditError: message }); } catch { /* preserve the scope error */ }
+    }
+    throw error;
+  }
+  const row = input.outcome?.(result) ?? { phase: 'applied' as const };
+  await outcome(row.phase, row.details);
+  return result;
 }
 
 /** The `auditWarning` a change that went through answers when its `applied` row could not be written. */
@@ -292,7 +330,8 @@ const isAudited = (action: string): action is AuditedChangeAction =>
 const isSwitch = (action: string): action is SwitchAction => (SWITCH_ACTIONS as readonly string[]).includes(action);
 /** The actions whose rows have no schema of their own, so an `unknown` row is the intent's fields. */
 const copiesIntent = (action: string): boolean =>
-  isSwitch(action) || action === 'moveImportCursor' || action === 'revokeCapability';
+  isSwitch(action) || action === 'moveImportCursor' || action === 'revokeCapability' ||
+  ['assignRole', 'unassignRole', 'grant', 'grantToOrg', 'grantToSystem', 'grantEntityShape', 'mintCapability'].includes(action);
 
 /**
  * The `unknown` row of a kill switch's operation (#2089), or of the replay lever's (#2114): the

@@ -48,6 +48,7 @@ import {
   adminRowFaultSql,
   adminActionFaultSql,
   scopeAdminAuditTransactionSuite,
+  scopePermissionAuditSuite,
   directoryAdminAuditTransactionSuite,
   switchRecordFaultSql,
   peerContractSuite,
@@ -115,6 +116,22 @@ scopeAdminAuditTransactionSuite('adapter-sqlite', async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
     },
+  };
+});
+
+scopePermissionAuditSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-scope-permission-audit-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  const directory = (host as unknown as { directory: { exec(sql: string): void } }).directory;
+  const scopeDb = (tenant: string, scope: string) =>
+    (host as unknown as { runtime(tenant: string, scope: string): { db: Database.Database } }).runtime(tenant, scope).db;
+  return {
+    host,
+    directoryExec: async (sql: string) => { directory.exec(sql); },
+    scopeExec: async (tenant: string, scope: string, sql: string) => { scopeDb(tenant, scope).exec(sql); },
+    scopeCount: async (tenant: string, scope: string, sql: string) => (scopeDb(tenant, scope).prepare(sql).get() as { n: number }).n,
+    cleanup: async () => { await host.close(); rmSync(dir, { recursive: true, force: true }); },
   };
 });
 

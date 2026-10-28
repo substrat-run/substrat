@@ -561,6 +561,7 @@ import {
   switchAuditSubject,
   recordAuditOutcome,
   auditedCapabilityRevoke,
+  auditedScopePermissionWrite,
   auditWarningOf,
   switchNotFoundMessage,
   switchRecordsOf,
@@ -9079,13 +9080,21 @@ export class SqliteScopeHost implements ScopeHost {
      * row, so it and its row are one directory transaction. At a scope node it is in the scope's
      * own store, which no directory transaction reaches, so the row follows it (#1292's window).
      */
-    const auditedOnNode = async (node: Node, write: () => void, audit: () => void): Promise<void> => {
+    const auditedOnNode = async (
+      node: Node, write: () => void, audit: () => void,
+      scopeAudit?: { actor: PlatformActorId; action: 'assignRole' | 'grant' | 'grantToOrg'; request: Record<string, unknown> },
+    ): Promise<void> => {
       if (!node.scopeId) {
         this.directoryWriteAndAudit(() => { write(); return true; }, audit);
         return;
       }
-      await onNode(node, write);
-      audit();
+      if (!scopeAudit) throw new Error('scope audit metadata is required');
+      await auditedScopePermissionWrite({
+        ...scopeAudit,
+        record: (after) => this.recordAdmin(scopeAudit.actor, scopeAudit.action, node, null, after),
+        write: () => onNode(node, write),
+        logError: (message, fields) => console.error(message, fields),
+      });
     };
 
     /**
@@ -9467,7 +9476,8 @@ export class SqliteScopeHost implements ScopeHost {
         await auditedOnNode(assignment.node, () => {
           if (scopeId) writeScopeTuple(assignment.node, subject, `role:${assignment.roleKey}`, `scope:${scopeId}`);
           else writeTenantTuple(tenantId, subject, `role:${assignment.roleKey}`, `tenant:${tenantId}`);
-        }, () => this.recordAdmin(actor, 'assignRole', { tenantId, scopeId }, null, assignment));
+        }, () => this.recordAdmin(actor, 'assignRole', { tenantId, scopeId }, null, assignment),
+        { actor, action: 'assignRole', request: { ...assignment } });
       },
       unassignRole: async (actor: PlatformActorId, assignment: RoleAssignment) => {
         // Tombstone (K-21), never DELETE — the checker skips revoked_at rows, so the
@@ -9482,7 +9492,10 @@ export class SqliteScopeHost implements ScopeHost {
         // On the scope actor (#1678): a revoke that joined a stranger's transaction and
         // rolled back with it left the role LIVE after the caller was told it was gone.
         const rt = this.runtime(assignment.node.tenantId, scopeNode);
-        const changes = await rt.actor.turn(
+        const changes = await auditedScopePermissionWrite({
+          action: 'unassignRole', request: { ...assignment },
+          record: (after) => this.recordAdmin(actor, 'unassignRole', { tenantId: assignment.node.tenantId, scopeId: scopeNode }, assignment, after),
+          write: () => rt.actor.turn(
           () =>
             rt.db
               .prepare(
@@ -9490,9 +9503,11 @@ export class SqliteScopeHost implements ScopeHost {
                  WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
               )
               .run(new Date().toISOString(), `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeNode}`).changes,
-        );
-        if (changes === 0) return; // never assigned, or already revoked — idempotent, unaudited
-        this.recordAdmin(actor, 'unassignRole', { tenantId: assignment.node.tenantId, scopeId: scopeNode }, assignment, null);
+          ),
+          outcome: (changes) => ({ phase: changes === 0 ? 'refused' : 'applied', details: { changed: changes !== 0 } }),
+          logError: (message, fields) => console.error(message, fields),
+        });
+        if (changes === 0) return;
       },
       grant: async (actor: PlatformActorId, raw: CapabilityGrant) => {
         // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
@@ -9504,6 +9519,7 @@ export class SqliteScopeHost implements ScopeHost {
           grant.node,
           () => writeGrant(`principal:${grant.principalId}`, grant.permission, grant.node, grant.entity, grant.expiresAt),
           () => this.recordAdmin(actor, 'grant', { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId }, null, grant),
+          { actor, action: 'grant', request: { ...grant } },
         );
       },
       grantEntityShape: async (actor, grant) => {
@@ -9512,10 +9528,14 @@ export class SqliteScopeHost implements ScopeHost {
         this.refuseReservedGrant(grant.permissions); // #2430
         const rt = this.runtime(tenantId, scopeId);
         // One unit on the scope actor (#1678): the marker and its keys land together or not at all.
-        await rt.actor.turn(() =>
-          rt.db.transaction(() => grantEntityShapeIn(switchSqlOf(rt.db), grant.principalId, grant.entity, grant.permissions))(),
-        );
-        this.recordAdmin(actor, 'grantEntityShape', { tenantId, scopeId }, null, grant);
+        await auditedScopePermissionWrite({
+          action: 'grantEntityShape', request: { ...grant },
+          record: (after) => this.recordAdmin(actor, 'grantEntityShape', { tenantId, scopeId }, null, after),
+          write: () => rt.actor.turn(() =>
+            rt.db.transaction(() => grantEntityShapeIn(switchSqlOf(rt.db), grant.principalId, grant.entity, grant.permissions))(),
+          ),
+          logError: (message, fields) => console.error(message, fields),
+        });
       },
       reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
         const limit = shapeTopUpBatch(opts?.batch);
@@ -9680,13 +9700,17 @@ export class SqliteScopeHost implements ScopeHost {
           // turn is re-entrant: from inside one of this scope's tasks it joins that task.
           // Restore is the lever; a grant is not.
           const rt = this.runtime(grant.node.tenantId, scope);
-          await rt.actor.turn(() => {
+          await auditedScopePermissionWrite({
+            action: 'grantToSystem', request: { moduleId: grant.moduleId, permission: grant.permission, node: grant.node },
+            record: (after) => this.recordAdmin(actor, 'grantToSystem', { tenantId: grant.node.tenantId, scopeId: scope }, null, after),
+            write: () => rt.actor.turn(() => {
             if (systemSwitchedOff(switchSqlOf(rt.db), grant.moduleId)) {
               throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, scope));
             }
             write();
+            }),
+            logError: (message, fields) => console.error(message, fields),
           });
-          audit();
         } else {
           // Tenant-level: a directory write, which no scope's transaction can hold. #1743:
           // refused while the record holds the module off on any scope (`scopesSwitchedOffFor`);
@@ -9758,19 +9782,22 @@ export class SqliteScopeHost implements ScopeHost {
         scopeId: ScopeId,
         input: BecomeCapabilityInput,
       ): Promise<MintedCapability> => {
-        const rt = await this.openActiveScope(tenantId, scopeId);
-        const minted = await rt.actor.turn(() =>
-          mintBecomeCapability(spineSql(rt.db), input, actor, this.clock()),
-        );
-        this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId }, null, {
-          capabilityId: minted.id,
+        return auditedScopePermissionWrite({
+          action: 'mintCapability', request: {
           mode: 'become',
           principal: input.principal,
           expiresAt: input.expiresAt,
           maxUses: input.maxUses,
           label: input.label ?? null,
+          },
+          record: (after) => this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId }, null, after),
+          write: async () => {
+            const rt = await this.openActiveScope(tenantId, scopeId);
+            return rt.actor.turn(() => mintBecomeCapability(spineSql(rt.db), input, actor, this.clock()));
+          },
+          outcome: (minted) => ({ phase: 'applied', details: { capabilityId: minted.id } }),
+          logError: (message, fields) => console.error(message, fields),
         });
-        return minted;
       },
       revokeCapability: async (
         actor: PlatformActorId,
@@ -9829,6 +9856,7 @@ export class SqliteScopeHost implements ScopeHost {
             writeGrant(`org:${orgId}`, permission, node, entity);
           },
           () => this.recordAdmin(actor, 'grantToOrg', { tenantId: node.tenantId, scopeId: node.scopeId }, null, { orgId, permission, node, entity }),
+          { actor, action: 'grantToOrg', request: { orgId, permission, node, entity } },
         );
       },
       // -- vertical + version registry (#31) ---------------------------------

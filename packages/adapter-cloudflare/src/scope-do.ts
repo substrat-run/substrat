@@ -2790,6 +2790,11 @@ export function defineScopeDO(
       }));
     }
 
+    /** An older ScopeDO refuses this new RPC before the audited coordinator changes a tuple. */
+    async writeTupleAndAuditIntent(subject: string, relation: string, object: string, expiresAt: string | null): Promise<DoReply<null>> {
+      return this.writeTuple(subject, relation, object, expiresAt);
+    }
+
     /**
      * Provisioning's scope-tuple write (#1659): create the row if it is missing, follow the
      * platform's expiry if it is live, and leave it alone if it was revoked — so a re-run
@@ -2835,6 +2840,10 @@ export function defineScopeDO(
       await this.queue.enqueue(() =>
         this.revision.transactionSync(() => grantEntityShapeIn(this.switchSql(), principal, entity, permissions)),
       );
+    }
+
+    async grantEntityShapeAndAuditIntent(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void> {
+      return this.grantEntityShape(principal, entity, permissions);
     }
 
     /**
@@ -2949,6 +2958,10 @@ export function defineScopeDO(
         );
         return true;
       });
+    }
+
+    async revokeTupleAndAuditIntent(subject: string, relation: string, object: string, at: string): Promise<boolean> {
+      return this.revokeTuple(subject, relation, object, at);
     }
 
     async invoke(
@@ -5073,6 +5086,10 @@ export function defineScopeDO(
       });
     }
 
+    async writeSystemGrantAndAuditIntent(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean> {
+      return this.writeSystemGrant(moduleId, relation, object, expiresAt);
+    }
+
     /**
      * Move a module's schedule switch on this scope (#1666) — the kernel's
      * `switchSystemSchedules`, serialized on the queue with every other tuple write and run
@@ -5880,6 +5897,10 @@ export function defineScopeDO(
       return await this.queue.enqueue(() =>
         mintBecomeCapability(doSpineSql(this.sql), input, actor, instant.parse(new Date().toISOString())),
       );
+    }
+
+    async mintBecomeCapabilityAndAuditIntent(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability> {
+      return this.mintBecomeCapability(input, actor);
     }
 
     /**

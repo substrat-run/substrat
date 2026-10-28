@@ -51,6 +51,7 @@ import {
   restoreRoleContractSuite,
   adminActionFaultSql,
   scopeAdminAuditTransactionSuite,
+  scopePermissionAuditSuite,
   directoryAdminAuditTransactionSuite,
   scopeHostContractSuite,
 } from '@substrat-run/contract-tests';
@@ -79,6 +80,23 @@ scopeAdminAuditTransactionSuite('adapter-cloudflare', async () => {
       return async () => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
         (_, state) => { state.storage.sql.exec(drop); });
     },
+    cleanup: async () => host.close(),
+  };
+});
+
+scopePermissionAuditSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
+  const directory = (sql: string) => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
+    (_, state) => { state.storage.sql.exec(sql); });
+  const scopeState = (scope: string, sql: string) => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)),
+    (_, state) => state.storage.sql.exec(sql));
+  return {
+    host,
+    directoryExec: async (sql: string) => { await directory(sql); },
+    scopeExec: async (_tenant: string, scope: string, sql: string) => { await scopeState(scope, sql); },
+    scopeCount: async (_tenant: string, scope: string, sql: string) => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)),
+      (_, state) => (state.storage.sql.exec(sql).toArray()[0] as { n: number }).n),
     cleanup: async () => host.close(),
   };
 });
@@ -194,6 +212,55 @@ describe('#2479: directory audit across a coordinator/DO version skew', () => {
       expect(await rows()).toHaveLength(1);
     } finally {
       await host.close();
+    }
+  });
+});
+
+describe('#2527: scope permission audit across coordinator/ScopeDO version skew', () => {
+  it('an older ScopeDO refuses the new tuple RPC before mutation; its old tuple RPC still serves old coordinators', async () => {
+    const staff = platformActorId.parse(ulid());
+    const tenant = tenantId.parse(ulid());
+    const scope = scopeId.parse(ulid());
+    const principal = principalId.parse(ulid());
+    const roleKey = `skew-${ulid().toLowerCase()}`;
+    const assignment = { principalId: principal, roleKey, node: { tenantId: tenant, scopeId: scope } };
+    const reader = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const oldScope = {
+      idFromName: (name: string) => env.SCOPE.idFromName(name),
+      get: (id: DurableObjectId) => {
+        const stub = env.SCOPE.get(id) as unknown as Record<string, (...args: unknown[]) => unknown>;
+        return new Proxy(stub, { get: (target, prop) =>
+          prop === 'writeTupleAndAuditIntent'
+            ? async () => { throw new Error('unknown scope RPC: writeTupleAndAuditIntent'); }
+            : Reflect.get(target, prop) });
+      },
+    } as unknown as typeof env.SCOPE;
+    const coordinator = new CloudflareScopeHost({ scope: oldScope, controlPlane: env.CONTROL_PLANE });
+    const count = () => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) =>
+      (state.storage.sql.exec(`SELECT COUNT(*) AS n FROM _substrat_tuples WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+        `principal:${principal}`, `role:${roleKey}`, `scope:${scope}`).toArray()[0] as { n: number }).n);
+    try {
+      await reader.admin.createTenant(staff, { id: tenant, slug: `skew-${tenant.toLowerCase()}`, name: 'Skew' });
+      await reader.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'skew' });
+      await reader.admin.activateScope(staff, tenant, scope);
+      await reader.admin.defineRole(staff, tenant, { key: roleKey, permissions: [permissionKey.parse('audit:read')], source: 'vertical' });
+      await expect(coordinator.admin.assignRole(staff, assignment)).rejects.toThrow('unknown scope RPC');
+      expect(await count()).toBe(0);
+      const rows = () => reader.admin.auditLog(staff, { tenantId: tenant, scopeId: scope, action: 'assignRole' });
+      expect((await rows()).map((row) => (row.after as { phase?: string }).phase)).toEqual(['intent']);
+
+      const oldStub = env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
+        writeTuple(subject: string, relation: string, object: string, expiresAt: null): Promise<unknown>;
+      };
+      await oldStub.writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scope}`, null);
+      expect(await count()).toBe(1);
+      const cp = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as { recordAdmin(entry: Record<string, unknown>): Promise<void> };
+      await cp.recordAdmin({ id: ulid(), actor: staff, action: 'assignRole', tenantId: tenant, scopeId: scope,
+        vertical: null, before: null, after: assignment, causedBy: null, onBehalfOf: null, at: new Date().toISOString() });
+      expect((await rows()).map((row) => (row.after as { phase?: string }).phase)).toEqual(['intent', undefined]);
+    } finally {
+      await coordinator.close();
+      await reader.close();
     }
   });
 });

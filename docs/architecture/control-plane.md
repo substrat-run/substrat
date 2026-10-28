@@ -463,8 +463,16 @@ The fan-out runs after the commit: when a scope refuses the projection, the call
 up to date, and a retry records a second row.
 
 At a **scope node** the tuple lives in the scope's own store, which no directory transaction
-reaches, so `assignRole`, `grant`, `grantToOrg` and `grantToSystem` there still write the tuple and
-then the row as separate steps: the window #1292 describes below. `grantToConnection` at a scope
+reaches. `assignRole`, `unassignRole`, `grant`, `grantToOrg`, `grantToSystem`,
+`grantEntityShape` and `mintCapability` record an `intent` in the directory before asking the
+scope to change and an `applied` or `refused` outcome after its answer (#2527). Both rows carry
+the same `after.operationId`; `after.phase` distinguishes a request from a confirmed effect.
+An uncertain scope failure or failed outcome insert leaves the intent discoverable; the scheduled
+settle records `unknown` if no outcome arrives. A repeat `unassignRole` records `refused` with
+`changed: false`, never a new revoke. A successful audited scope write normally adds **two**
+directory rows where it previously added one. The directory export keeps both raw rows, and the
+append-only retention rule below is unchanged. Readers that want confirmed effects use only
+`applied` outcomes; a request or `unknown` cannot prove a scope mutation. `grantToConnection` at a scope
 node commits its directory record and its row as one unit first, and delivers the tuple after it.
 If the delivery fails, the call throws and the record and its row stand without the tuple, which
 fails safe (less access, never access with no row). On the Cloudflare adapter the reconcile
