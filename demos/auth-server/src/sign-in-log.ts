@@ -87,7 +87,7 @@ export interface SignInAttempt {
   authority: string | null;
   /** The refusal code, as Better Auth or the upstream spelled it. Null unless `failed`. */
   error: string | null;
-  /** The upstream's own sentence about it — Entra's `AADSTS…` text is usually the diagnosis. */
+  /** The upstream's reason, or safe callback-stage diagnostics when it supplied none. */
   errorDescription: string | null;
   /** The relying party that sent this person here, when the flow carried one. */
   clientId: string | null;
@@ -200,7 +200,7 @@ export function recordSignInAttempt(sql: SqlExec, attempt: SignInAttemptInput): 
 }
 
 /**
- * How much of the upstream's sentence is kept. Entra's `error_description` carries the message,
+ * How much of the refusal's detail is kept. Entra's `error_description` carries the message,
  * a correlation id, a request id and a timestamp, and runs to several hundred characters; the
  * diagnosis is the first clause. Capped rather than unbounded because this is a RING in a
  * Durable Object's SQLite, and the cap is generous enough to keep the `AADSTS…` code and the

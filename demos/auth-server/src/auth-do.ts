@@ -219,6 +219,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // tab, and `/internal/export`. A dispatch-namespace script's `console.log` is none of
       // those.
       recordSignIn: signInLoggerFor(this.ctx.storage.sql),
+      fetchSignInDiagnostic: (input, init) => globalThis.fetch(input, init),
       // `ctx.waitUntil`, which is the DO's own way of saying "finish this, but not before the
       // response". Better Auth cannot find it by itself — it is handed a `Request` and nothing
       // else — so without this line a new user's verification email is awaited inside the

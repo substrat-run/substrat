@@ -164,6 +164,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // The same sign-in log the deployed issuer keeps, over the dev database — so a provider
     // misconfiguration is debugged the same way locally as in production.
     recordSignIn: signInLoggerFor(sql),
+    fetchSignInDiagnostic: (input, init) => globalThis.fetch(input, init),
     // The same promise the worker hands to `ctx.waitUntil`. Node has nothing to hand it to, so
     // it is simply not awaited — which is the behaviour being mirrored: a verification email
     // must not hold up the redirect that a new user's first sign-in ends with.

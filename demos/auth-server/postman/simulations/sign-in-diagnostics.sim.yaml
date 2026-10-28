@@ -1,0 +1,6 @@
+simulation: sign-in-diagnostics
+routing: path
+mocks:
+  - name: github
+    routeKey: github
+    path: demos/auth-server/postman/mocks/github/config.yaml
