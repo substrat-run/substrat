@@ -816,6 +816,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2554: a tenant-filed failure whose text only staff read, for every writer, the hosts' included.
   'withheldOpsFailure',
   'withheldStaffFailure',
+  // #2365: a platform review upload witnesses the complete compressed source digest.
+  'witnessedStream',
   // RFC wire-signing §7: the capability record's write, which the adapters' recordWireAuth runs.
   'writeDeploymentWireAuth',
   'writeExplicitTupleIn',

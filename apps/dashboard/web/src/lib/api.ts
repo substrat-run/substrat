@@ -1874,12 +1874,13 @@ export const api = {
  * the default one (the server accepts that one value and ignores any other).
  */
 export const signIn = (
-  opts: { returnTo?: string; loginHint?: string; screenHint?: 'signup' | 'login' } = {},
+  opts: { returnTo?: string; loginHint?: string; screenHint?: 'signup' | 'login'; prompt?: 'login' } = {},
 ) => {
   const p = new URLSearchParams();
   if (opts.returnTo) p.set('returnTo', opts.returnTo);
   if (opts.loginHint) p.set('login_hint', opts.loginHint);
   if (opts.screenHint) p.set('screen_hint', opts.screenHint);
+  if (opts.prompt) p.set('prompt', opts.prompt);
   if (new URLSearchParams(window.location.search).get('idp') === 'alt') p.set('idp', 'alt');
   const qs = p.toString();
   window.location.href = `/api/auth/login${qs ? `?${qs}` : ''}`;

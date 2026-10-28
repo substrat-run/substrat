@@ -11,6 +11,7 @@ import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { resetPasswordEmail, verifyEmail } from './email.js';
 import { legacyAwarePassword } from './legacy-password.js';
 import { invitationPlugin } from './invitation-plugin.js';
+import { githubEmailPlugin, withGithubEmailFallback } from './github-email-plugin.js';
 import { phonePlugin } from './phone-plugin.js';
 import type { PhoneVerifier } from './twilio.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
@@ -636,6 +637,7 @@ function betterAuthFor(deps: AuthDeps) {
       // BankID sign-in — see the `bankid` dep above for when this is (and is not) mounted.
       ...(deps.bankid ? [bankidPlugin(deps.bankid)] : []),
       invitationPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
+      githubEmailPlugin({ transport: deps.transport, sender: deps.sender, baseURL: deps.baseURL }),
       phonePlugin(deps.phoneVerifier),
       admin(),
     ],
@@ -648,7 +650,7 @@ function betterAuthFor(deps: AuthDeps) {
      * per request like everything else here, so enabling Microsoft in the dashboard answers on
      * the next request instead of the next deploy.
      */
-    ...(deps.socialProviders ? { socialProviders: deps.socialProviders } : {}),
+    ...(deps.socialProviders ? { socialProviders: withGithubEmailFallback(deps.socialProviders) } : {}),
     account: {
       accountLinking: {
         /**
@@ -799,6 +801,10 @@ function betterAuthFor(deps: AuthDeps) {
       after: createAuthMiddleware(async (ctx) => {
         const record = deps.recordSignIn;
         if (!record) return;
+        if (ctx.path === '/github-email/verify' && ctx.context.newSession) {
+          record({ method: 'github', outcome: 'succeeded', phase: 'callback', userId: ctx.context.newSession.user.id });
+          return;
+        }
         // `/sign-in/social` serves BOTH kinds of upstream: `genericOAuth` registers its
         // providers as first-class social providers, so there is no second path to match.
         if (ctx.path === '/sign-in/social') {
@@ -841,6 +847,10 @@ function betterAuthFor(deps: AuthDeps) {
           (ctx.query as Record<string, string | undefined> | undefined)?.state,
         );
         const refusal = errorOfRedirect(location);
+        if (location && new URL(location, deps.baseURL).pathname === '/github-email') {
+          record({ method, outcome: 'failed', phase: 'callback', correlation, error: 'email_verification_required', errorDescription: signInDiagnosticDescription(ctx.context, null) });
+          return;
+        }
         if (refusal) {
           record({
             method, outcome: 'failed', phase: 'callback', correlation, ...refusal,

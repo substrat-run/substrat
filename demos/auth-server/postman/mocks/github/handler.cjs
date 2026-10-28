@@ -16,18 +16,25 @@ module.exports = async function handler(req, res) {
     const code = body && typeof body === 'object' && !Buffer.isBuffer(body) ? body.code
       : req.headers['content-type']?.includes('application/json') ? JSON.parse(String(body)).code
       : new URLSearchParams(String(body)).get('code');
-    if (!['forbidden', 'unauthorized', 'empty', 'success', 'profile-exception', 'invalid-code'].includes(code)) {
+    if (!['forbidden', 'unauthorized', 'empty', 'success', 'profile-exception', 'invalid-code', 'email-network-error', 'email-malformed', 'email-timeout', 'profile-unauthorized'].includes(code)) {
       return send(400, { error: 'unknown_fixture_code' });
     }
     if (code === 'invalid-code') return send(200, { error: 'bad_verification_code' });
     return send(200, { access_token: `fixture-${code}-secret`, token_type: 'bearer', scope: 'read:user,user:email' });
   }
   if (path === '/user') {
+    if ((req.headers.authorization || '').includes('profile-unauthorized')) return send(401, { message: 'Bad credentials' });
     if ((req.headers.authorization || '').includes('profile-exception')) return send(200, null);
     return send(200, { id: 12345, login: 'demo-user', name: 'Demo User', email: null });
   }
   if (path === '/user/emails') {
     const token = req.headers.authorization || '';
+    if (token.includes('email-network-error')) return req.socket.destroy();
+    if (token.includes('email-malformed')) return send(200, { unexpected: true });
+    if (token.includes('email-timeout')) {
+      await new Promise((resolve) => setTimeout(resolve, 1700));
+      return send(200, []);
+    }
     if (token.includes('forbidden')) return send(403, { message: 'sensitive-upstream-body' });
     if (token.includes('unauthorized')) return send(401, { message: 'sensitive-upstream-body' });
     if (token.includes('empty')) return send(200, [], { 'x-oauth-scopes': 'read:user' });

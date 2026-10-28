@@ -5496,6 +5496,18 @@ async function browsableDataIn(ctx: TeamContext, asked: string) {
 
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
+  'dashboard/list-entitlements': async (ctx) => {
+    const role = await (await teamScope(ctx)).invoke<string | null>('dashboard/my-role', {});
+    if (role !== 'owner' && role !== 'admin') {
+      throw new HTTPException(403, { message: 'Ask a team owner or admin to view entitlements.' });
+    }
+    const grants = await teamPlane(ctx).listEntitlements();
+    return grants.map((grant) => ({
+      key: grant.entitlementKey,
+      ...(grant.quota === null ? {} : { quota: grant.quota }),
+      ...(grant.expiresAt === null ? {} : { expiresAt: grant.expiresAt }),
+    }));
+  },
   'dashboard/get-app-concept': async (ctx, { scopeId: requested, section, versionId: expected, offset }) => {
     const dash = await teamScope(ctx);
     const cp = teamPlane(ctx);

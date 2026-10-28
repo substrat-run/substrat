@@ -17,6 +17,8 @@
  * then `wrangler deploy`; needs Workers Paid for DO SQLite + a D1 for the roster).
  */
 import { Hono, type Context } from 'hono';
+import { pruneReviews } from './review-store.js';
+import { createReviewApi } from './reviews.js';
 import { ObservabilityCacheDO, durableCubeStore } from './obs-cache-do.js';
 import { checkRelayCaller, scopeNamedBy, type RelayCallerEnv } from './relay-caller.js';
 import { sendAsTenant, TenantMailRefusal } from './tenant-mail.js';
@@ -341,6 +343,8 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * wrangler.jsonc. Absent ⇒ the release routes answer 501 and a push finds no release to upload.
    */
   STORE_RELEASES?: R2Bucket;
+  /** Staff branch review intake; absent means the feature answers 501. */
+  REVIEW_SOURCES?: R2Bucket;
   /**
    * The platform's DIRECTORY-backup bucket (#40) — where the daily copy of the control
    * plane's own database lands. Bound in wrangler.jsonc. Absent (the workerd test, a
@@ -2873,6 +2877,14 @@ export default {
         err instanceof Error ? err.message : String(err),
       );
     }
+    if (env.REVIEW_SOURCES) {
+      try {
+        const removed = await pruneReviews(env.REVIEW_SOURCES);
+        if (removed) console.log('review-retention', { removed });
+      } catch (err) {
+        console.error('review-retention failed', err instanceof Error ? err.message : String(err));
+      }
+    }
   },
 
   fetch(request: Request, env: Env): Response | Promise<Response> {
@@ -2945,6 +2957,13 @@ export default {
     // CLI calls this on `login` to store a default tenant, and to prompt when a user
     // belongs to several. Reads the same session (bearer or cookie) as the API.
     app.get('/api/auth/whoami', async (c) => c.json(await resolveWhoami(hostFor(c.env), c.env, c.req.raw)));
+
+    // The API's general staff auth also accepts a service actor; review intake
+    // requires a signed-in person from the roster instead.
+    app.route('/api', createReviewApi({
+      bucket: () => env.REVIEW_SOURCES,
+      authenticate: humanStaffActorFor(env) ?? (async () => null),
+    }));
 
     // The members surface (console → Members): the staff roster (staff_actor) —
     // listed, granted, revoked. Lives here rather than in `control-plane-api`

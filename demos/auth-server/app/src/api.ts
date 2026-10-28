@@ -81,6 +81,30 @@ export async function currentSession(): Promise<Session | null> {
   return readIssuerJson(await fetch('/api/session'), 'The current session', isSessionOrNull);
 }
 
+async function githubEmailRequest(path: string, body?: unknown): Promise<Record<string, unknown>> {
+  const res = await fetch(`/api/auth/github-email/${path}`, body === undefined ? undefined : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const value = await res.json();
+  if (!res.ok) throw new Error(value.message ?? 'Email verification failed. Try signing in again.');
+  return value;
+}
+
+export async function githubEmailStatus(token?: string | null): Promise<{ name: string; email: string | null; oauthQuery: string | null; linking: boolean }> {
+  const value = await githubEmailRequest('status', token ? { token } : undefined);
+  if (typeof value.name !== 'string' || (value.email !== null && typeof value.email !== 'string') || (value.oauthQuery !== null && typeof value.oauthQuery !== 'string') || typeof value.linking !== 'boolean') throw new Error('Could not read the pending GitHub sign-in.');
+  return value as { name: string; email: string | null; oauthQuery: string | null; linking: boolean };
+}
+
+export async function sendGithubEmail(email: string): Promise<void> {
+  await githubEmailRequest('send', { email });
+}
+
+export async function verifyGithubEmail(token: string, oauthQuery: string | null): Promise<void> {
+  const result = await githubEmailRequest('verify', { token, ...(oauthQuery ? { oauth_query: oauthQuery } : {}) });
+  if (typeof result.url !== 'string') throw new Error('Could not resume sign-in. Open your invitation again.');
+  window.history.replaceState({}, '', '/github-email');
+  window.location.assign(result.url);
+}
+
 /** The plugin's own name for the parameter that lists which parameters the signature covers.
  *  Its value is the library's (`@better-auth/oauth-provider`'s `signed-query.ts`), which does
  *  not export the reader — so `test/oidc-flow.test.ts` pins it, as it pins the others. */

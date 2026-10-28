@@ -1543,6 +1543,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'POST', re: /\/tenants\/[^/]+\/orgs$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/role-assignments$/, pin: 'path' },
   { method: 'DELETE', re: /\/tenants\/[^/]+\/role-assignments$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/entitlements$/, pin: 'path' },
   // An install's entitlement. The handler narrows WHICH key a tenant credential may
   // grant (`tenantGrantableEntitlement`): the pin alone would let it grant itself any.
   { method: 'PUT', re: /\/tenants\/[^/]+\/entitlements\/[^/]+$/, pin: 'path' },

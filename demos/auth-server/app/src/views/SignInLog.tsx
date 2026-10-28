@@ -155,6 +155,7 @@ export function SignInLogView() {
 
 /** The outcome in the words an operator reads, not the stored token. */
 function outcomeText(attempt: SignInAttempt): string {
+  if (attempt.error === 'email_verification_required') return 'Email verification required';
   if (attempt.outcome === 'started') return 'Sent to the provider';
   if (attempt.outcome === 'succeeded') return 'Signed in';
   return attempt.phase === 'sign-in' ? 'Refused before leaving' : 'Refused on the way back';

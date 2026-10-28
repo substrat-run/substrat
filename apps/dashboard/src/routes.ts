@@ -742,6 +742,15 @@ export const eventEffects: z.ZodType<EventEffectsOut> = z.object({
 const effectsTree = z.object({ root: eventEffects.nullable(), terminal: z.string(), count: z.number() });
 
 export const dashboardRoutes = defineRoutes({
+  'dashboard/list-entitlements': {
+    summary: "Read this team's entitlement grants (owner or admin)",
+    output: z.array(z.object({
+      key: z.string().min(1),
+      quota: z.number().int().positive().optional(),
+      expiresAt: z.string().optional(),
+    })),
+    http: { method: 'GET', path: '/entitlements' },
+  },
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {
     summary: "One page of this team's apps, newest first",
