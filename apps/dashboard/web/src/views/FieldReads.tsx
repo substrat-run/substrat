@@ -36,7 +36,8 @@ function Groups({ view }: { view: FieldReadsView }) {
       Vertical-asserted counts of fields this installed app returned in sampled response
       serialisations, from requests the router sent to it. A zero means
       no return was observed in this sample; it does not prove a field is unused. Null fields count
-      as returned. Absent optional fields are excluded from the eligible count.
+      as returned. For lists and pages, only the first entry is checked, so a field in a later
+      entry can appear in the zero tail. Absent optional fields are excluded from the eligible count.
     </p>
     {view.groups.map((group, i) => {
       const rate = group.sampleRate === null ? 'rate unknown' : `${(group.sampleRate * 100).toPrecision(3)}% router sample`;

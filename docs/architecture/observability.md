@@ -385,7 +385,8 @@ dataset and a trusted attribution path before the view can read it.
 **Recorded limits of field reads (#1331).** The Schema view now puts fields with zero
 sampled returns under each operation and calls out operations where more than half of
 their declared fields have zero sampled returns. These are candidates within each
-sample-rate group, not evidence that a consumer never read a field. Four further asks
+sample-rate group, not evidence that a consumer never read a field; a list or page checks
+only its first entry, so later entries can still return a zero-listed field. Four further asks
 remain for a source that can support them:
 
 - Declaration-age sorting needs a reliable first-declared date for each field. The
