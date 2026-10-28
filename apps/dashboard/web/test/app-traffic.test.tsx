@@ -3,7 +3,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppTraffic } from '../src/views/AppTraffic';
 import { Pulse } from '../src/views/Pulse';
-import { api, type TrafficSeries } from '../src/lib/api';
+import { api, teamApi, type TrafficSeries } from '../src/lib/api';
+import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { useTenantMetrics } from '../src/lib/use-tenant-metrics';
 import { classTotals, rangeLabel, resolveClockRange, seriesWindow, surfaceRows } from '../src/lib/app-traffic';
 import { applyOverlayPrefs, OVERLAY_PREFS_KEY, parseOverlayPrefs, resetOverlayPrefs } from '../src/lib/overlay-prefs';
@@ -115,10 +116,10 @@ describe('app traffic derivations (#1767)', () => {
 
 describe('App › Overview traffic card (#1767)', () => {
   const mount = async () => {
-    const traffic = vi.spyOn(api, 'appTraffic').mockImplementation(async (_s, _h, w) =>
-      w ? { ...series, window: w, bucketMinutes: 15, buckets: hourly.slice(0, 4).map((b, i) => ({ ...b, start: new Date(Date.parse(w.since) + i * 900_000).toISOString() })) } : series,
+    const traffic = vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockImplementation(async ({ since, until }) =>
+      since && until ? { ...series, window: { since, until }, bucketMinutes: 15, buckets: hourly.slice(0, 4).map((b, i) => ({ ...b, start: new Date(Date.parse(since) + i * 900_000).toISOString() })) } : series,
     );
-    vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+    vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
     const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} />));
     return { traffic, metrics };
@@ -134,18 +135,18 @@ describe('App › Overview traffic card (#1767)', () => {
       pointer(plot, 'pointerup', 280);
     });
     const zoomed = { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' };
-    expect(traffic).toHaveBeenLastCalledWith('app-a', 24, zoomed);
+    expect(traffic).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24', ...zoomed });
     expect(metrics).toHaveBeenLastCalledWith('team-a', 'app-a', 24, zoomed);
     expect(container.textContent).toContain('12:00 → 14:00 UTC · 15 min bars');
     await act(async () => [...container.querySelectorAll('a')].find((a) => a.textContent === 'Undo zoom')!.click());
-    expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
+    expect(traffic).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24' });
   });
 
   it('with the parent\'s 24h read it asks for no metrics of its own, until a zoom needs a window', async () => {
-    vi.spyOn(api, 'appTraffic').mockImplementation(async (_s, _h, w) =>
-      w ? { ...series, window: w, bucketMinutes: 15, buckets: hourly.slice(0, 4).map((b, i) => ({ ...b, start: new Date(Date.parse(w.since) + i * 900_000).toISOString() })) } : series,
+    vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockImplementation(async ({ since, until }) =>
+      since && until ? { ...series, window: { since, until }, bucketMinutes: 15, buckets: hourly.slice(0, 4).map((b, i) => ({ ...b, start: new Date(Date.parse(since) + i * 900_000).toISOString() })) } : series,
     );
-    vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+    vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
     const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     const rows = [{ scopeId: 'app-a', vertical: null, surface: 'api', requests: 1234, errors: 5, durationP50: 10, durationP95: 20 }];
     await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} metrics24={{ state: 'ok', rows }} />));
@@ -162,8 +163,8 @@ describe('App › Overview traffic card (#1767)', () => {
   });
 
   it('the Overview reads 24h metrics once, and the traffic card rides that read', async () => {
-    vi.spyOn(api, 'appTraffic').mockResolvedValue(series);
-    vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+    vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockResolvedValue(series);
+    vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
     const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     const Both = () => {
@@ -236,6 +237,34 @@ describe('App › Overview traffic card (#1767)', () => {
     expect(JSON.parse(localStorage.getItem(OVERLAY_PREFS_KEY)!)).toMatchObject({ pushed: false, live: true });
   });
 
+  it('shows the plane-unavailable state when the generated traffic client returns 501', async () => {
+    vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockRejectedValue(new GeneratedApiError(501, 'traffic unavailable', null));
+    vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
+    vi.spyOn(api, 'fleetHealth').mockResolvedValue({ rows: [] });
+    vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
+    vi.spyOn(api, 'appSchedules').mockRejectedValue(new Error('unavailable'));
+    await act(async () => root.render(
+      <Pulse
+        teamId="team-a"
+        apps={[{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow]}
+        scopeId="app-a"
+        hours={24}
+        window={{ from: day.since, to: day.until }}
+        requestWindow={day}
+        cursor={null}
+        nonce={0}
+        timeError=""
+        onNav={vi.fn()}
+        onRange={vi.fn()}
+        onPreset={vi.fn()}
+        onApp={vi.fn()}
+        onRefresh={vi.fn()}
+        onMarker={vi.fn()}
+      />,
+    ));
+    expect(container.textContent).toContain('Traffic over time is not available on this plane');
+  });
+
   it('a reverse drag queries its exact bounds once and pins nothing; Escape or a cancel mid-drag query nothing', async () => {
     const { traffic } = await mount();
     const calls = traffic.mock.calls.length;
@@ -247,7 +276,7 @@ describe('App › Overview traffic card (#1767)', () => {
     });
     act(() => plot.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(traffic).toHaveBeenCalledTimes(calls + 1);
-    expect(traffic).toHaveBeenLastCalledWith('app-a', 24, { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' });
+    expect(traffic).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24', since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' });
     expect(buttonNamed('Open logs for this window')).toBeUndefined();
     const zoomed = container.querySelector('[data-traffic-plot] rect')!;
     pointer(zoomed, 'pointerdown', 50);
@@ -274,13 +303,13 @@ describe('App › Overview traffic card (#1767)', () => {
       pointer(plot, 'pointermove', 900);
       pointer(plot, 'pointerup', 900);
     });
-    expect(traffic).toHaveBeenLastCalledWith('app-a', 24, { since: '2026-09-01T18:00:00.000Z', until: day.until });
+    expect(traffic).toHaveBeenLastCalledWith({ scopeId: 'app-a', hours: '24', since: '2026-09-01T18:00:00.000Z', until: day.until });
   });
 
   it('says so when the overlays cannot be read, and names partial or unavailable sources', async () => {
-    vi.spyOn(api, 'appTraffic').mockResolvedValue(series);
+    vi.spyOn(teamApi('team-a'), 'getAppTraffic').mockResolvedValue(series);
     vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
-    const overlays = vi.spyOn(api, 'appOverlays').mockRejectedValue(new Error('down'));
+    const overlays = vi.spyOn(teamApi('team-a'), 'getAppOverlays').mockRejectedValue(new Error('down'));
     await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} />));
     expect(container.textContent).toContain('Change overlays are unavailable. Traffic is still shown.');
     expect(container.querySelector('[data-traffic-plot]')).not.toBeNull();

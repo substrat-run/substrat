@@ -9,13 +9,13 @@ import { MODULES, provisionDashboard } from '../src/index.js';
 import { APP_EVENT_KINDS } from '../src/app-event-kinds.js';
 import { dashboardMigrations } from '../src/module.js';
 import { dashboardRoutes } from '../src/routes.js';
+import { exposedReads } from '../src/ask.js';
 import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Apps read routes, declared under `/api/teams/:teamId` (#2170).
  *
- * The cookie routes (`/api/apps…`) keep working beside them and share ONE implementation,
- * so each case here pairs the team path with its cookie twin: same team, same body.
+ * App reads resolve the path team; their cookie routes have been removed.
  */
 
 const shared = vi.hoisted(() => ({ host: null as unknown }));
@@ -140,6 +140,42 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     expect(theirs.entries.map((a) => a.app_scope_id)).toEqual([secondApp]);
   });
 
+  it('the remaining app reads use the path team when another tab has moved the cookie', async () => {
+    const appScope = apps[0]!;
+    const response = await get(`/api/teams/${tenant}/apps/${appScope}/field-coverage`, second);
+    expect(response.status).toBe(200);
+    expect((await response.json()) as { available: boolean }).toMatchObject({ available: false });
+    planeCalls = [];
+    const suffixes = [
+      '/steps', '/events', '/audit', '/flow', '/field-coverage', '/field-reads',
+      '/traffic', '/failures', '/overlays',
+    ];
+    for (const suffix of suffixes) {
+      expect((await get(`/api/teams/${tenant}/apps/${secondApp}${suffix}`, second)).status, suffix).toBe(404);
+      expect((await get(`/api/teams/${stranger}/apps/${appScope}${suffix}`, second)).status, suffix).toBe(404);
+      expect((await get(`/api/apps/${appScope}${suffix}`, tenant)).status, suffix).toBe(404);
+      expect(planeCalls, suffix).toEqual([]);
+    }
+  });
+
+  it('keeps the pre-migration assistant read tool names exactly', () => {
+    expect(exposedReads(dashboardRoutes).map(([name]) => name)).toEqual([
+      'dashboard/list-apps', 'dashboard/get-app-install-steps', 'dashboard/list-app-events',
+      'dashboard/list-app-audit', 'dashboard/list-team-audit', 'dashboard/list-domains',
+      'dashboard/list-app-hostnames', 'dashboard/list-members', 'dashboard/app-email-sender',
+      'dashboard/observability-metrics', 'dashboard/observability-logs',
+      'dashboard/app-observability-metrics', 'dashboard/tenant-metrics-series',
+      'dashboard/connector-calls', 'dashboard/business-volumes', 'dashboard/team-traffic',
+      'dashboard/app-metrics', 'dashboard/app-observability-logs', 'dashboard/app-request-volume',
+      'dashboard/app-request-facets', 'dashboard/app-requests', 'dashboard/app-log-patterns',
+      'dashboard/list-deployments', 'dashboard/get-promotion-review',
+      'dashboard/list-channel-history', 'dashboard/list-deployment-failures',
+      'dashboard/get-deployment-releases', 'dashboard/get-deployment-traffic',
+      'dashboard/list-deployment-issues', 'dashboard/list-bound-scopes',
+      'dashboard/list-previews', 'dashboard/list-findings', 'dashboard/list-finding-rules',
+    ]);
+  });
+
   it('the cookie list route is gone, and the declared one answers its output schema alone', async () => {
     // The last caller of the cookie list (the Domains view's app picker) moved to the path.
     expect((await get('/api/apps', tenant)).status).toBe(404);
@@ -168,20 +204,17 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     }
   });
 
-  it('install steps and events: same as the cookie route, and only for the path’s own team', async () => {
+  it('install steps and events belong only to the path’s own team', async () => {
     const [a] = apps;
-    expect(await (await get(`/api/teams/${tenant}/apps/${a}/steps`, second)).json()).toEqual(
-      await (await get(`/api/apps/${a}/steps`, tenant)).json(),
-    );
+    expect((await get(`/api/teams/${tenant}/apps/${a}/steps`, second)).status).toBe(200);
     const events = await json(await get(`/api/teams/${tenant}/apps/${a}/events`, second));
     expect(events.entries.map((e) => e.kind)).toEqual(['created']);
-    expect(events).toEqual(await json(await get(`/api/apps/${a}/events`, tenant)));
-    // The twin that matters: another team's app, asked through this team's path, has no trail here.
-    const foreign = await json(await get(`/api/teams/${tenant}/apps/${secondApp}/events`, tenant));
-    expect(foreign.entries).toEqual([]);
+    expect((await get(`/api/apps/${a}/steps`, tenant)).status).toBe(404);
+    expect((await get(`/api/apps/${a}/events`, tenant)).status).toBe(404);
+    expect((await get(`/api/teams/${tenant}/apps/${secondApp}/events`, tenant)).status).toBe(404);
   });
 
-  describe('the declared output is every shape the cookie route can return', () => {
+  describe('the declared output covers the stored response shapes', () => {
     it('events: a hostname bind, an unbind and a resume read back — not a 400 from the output parse', async () => {
       const [a] = apps;
       await dash.invoke('dashboard/bind-app-hostname', { appScopeId: a, detail: 'shop.example.com' });
@@ -189,7 +222,6 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
       await dash.invoke('dashboard/resume-app', { appScopeId: a });
       const declared = await json(await get(`/api/teams/${tenant}/apps/${a}/events`));
       expect(declared.entries.map((e) => e.kind).sort()).toEqual(['created', 'hostname-bound', 'hostname-unbound', 'resumed']);
-      expect(declared).toEqual(await json(await get(`/api/apps/${a}/events`, tenant)));
     });
 
     it('drift: every kind the shared constant lists is accepted by the route’s output schema', () => {
@@ -221,9 +253,6 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
         ['provision', 'failed', 'boom'],
         ['activate', 'running', null],
       ]);
-      // The cookie route also leaks the row's `app_scope_id` (the caller already holds it); the declared one answers its schema.
-      const old = (await (await get(`/api/apps/${a}/steps`, tenant)).json()) as Array<{ app_scope_id: string }>;
-      expect(steps).toEqual(old.map(({ app_scope_id: _same, ...row }) => row));
     });
   });
 
@@ -240,20 +269,19 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
         waitUntil: () => undefined,
         passThroughOnException: () => undefined,
       });
-    for (const path of [`/api/teams/${tenant}/apps/${secondApp}/audit`, `/api/teams/${tenant}/audit?scopeId=${secondApp}`, `/api/apps/${secondApp}/audit`, `/api/audit?scopeId=${secondApp}`]) {
+    for (const path of [`/api/teams/${tenant}/apps/${secondApp}/audit`, `/api/teams/${tenant}/audit?scopeId=${secondApp}`, `/api/audit?scopeId=${secondApp}`]) {
       expect((await ask(path)).status, path).toBe(404);
     }
     expect((await ask(`/api/teams/${tenant}/apps/${apps[0]}/audit`)).status).toBe(503);
   });
 
-  it('audit: the team log and one app’s log match the cookie routes; a foreign app is a 404', async () => {
+  it('audit: the team log still matches its cookie route; a foreign app is a 404', async () => {
     const whole = await json(await get(`/api/teams/${tenant}/audit`, second));
     expect(whole.entries.length).toBeGreaterThan(0);
     expect(whole).toEqual(await json(await get('/api/audit', tenant)));
     const [a] = apps;
-    expect(await json(await get(`/api/teams/${tenant}/apps/${a}/audit`, second))).toEqual(
-      await json(await get(`/api/apps/${a}/audit`, tenant)),
-    );
+    expect((await get(`/api/teams/${tenant}/apps/${a}/audit`, second)).status).toBe(200);
+    expect((await get(`/api/apps/${a}/audit`, tenant)).status).toBe(404);
     expect(await json(await get(`/api/teams/${tenant}/audit?scopeId=${a}`, second))).toEqual(
       await json(await get(`/api/audit?scopeId=${a}`, tenant)),
     );

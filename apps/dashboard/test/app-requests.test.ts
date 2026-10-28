@@ -232,7 +232,7 @@ describe('the app request reads (#1746)', () => {
   });
   it('reads retained failures in the requested window, scoped to this app, with full messages', async () => {
     const query = new URLSearchParams({ since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z', scopeId: scopeId.parse(ulid()) });
-    const res = await app.request(`/api/apps/${appScope}/failures?${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    const res = await app.request(`/api/teams/${tenant}/apps/${appScope}/failures?${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
     expect(res.status).toBe(200);
     const body = await res.json() as { entries: Array<{ operation: string; message: string }>; unavailableSources: string[] };
     expect(body.entries).toHaveLength(2);
@@ -248,14 +248,14 @@ describe('the app request reads (#1746)', () => {
   });
 
   it('refuses another team’s app and unauthenticated failure reads before querying the plane', async () => {
-    expect((await app.request(`/api/apps/${scopeId.parse(ulid())}/failures`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
-    expect((await app.request(`/api/apps/${appScope}/failures`, {}, env)).status).toBe(401);
+    expect((await app.request(`/api/teams/${tenant}/apps/${scopeId.parse(ulid())}/failures`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+    expect((await app.request(`/api/teams/${tenant}/apps/${appScope}/failures`, {}, env)).status).toBe(401);
     expect(reads).toHaveLength(0);
   });
 
   it('reports unavailable failure sources rather than claiming an empty healthy history', async () => {
     failureSourcesUnavailable = true;
-    const res = await app.request(`/api/apps/${appScope}/failures`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    const res = await app.request(`/api/teams/${tenant}/apps/${appScope}/failures`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
     expect(await res.json()).toMatchObject({ entries: [], unavailableSources: ['background runs', 'operation failures'] });
   });
 

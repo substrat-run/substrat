@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerE
 import { Badge, Button, Tabs } from '@substrat-run/ui';
 import {
   api,
-  ApiError,
+  isApiError,
+  teamApi,
   type AppHealthRow,
   type AppMetricsView,
   type AppOverlays,
@@ -152,7 +153,7 @@ export function Pulse({
     // One app is the per-app route's question, and it answers the release markers with the
     // series — the team route cannot, because it plots several verticals at once.
     const read: Promise<ChartRead> = scopeId
-      ? api.appTraffic(scopeId, hours, requestWindow).then((t) => ({
+      ? teamApi(teamId).getAppTraffic({ scopeId, hours: String(hours), ...requestWindow }).then((t) => ({
           series: { window: t.window, series: [{ scopeId, buckets: t.buckets }], bucketMinutes: t.bucketMinutes, available: t.available },
           markers: t.markers,
         }))
@@ -161,8 +162,8 @@ export function Pulse({
     // it: the card draws the moment the series lands, and a slow overlay source must not
     // hold it. A failure costs the glyphs and nothing else.
     if (scopeId) {
-      api
-        .appOverlays(scopeId, hours, requestWindow)
+      teamApi(teamId)
+        .getAppOverlays({ scopeId, hours: String(hours), ...requestWindow })
         .then((o) => live && setOverlays(o))
         .catch(() => live && setOverlayError(true));
     }
@@ -176,7 +177,7 @@ export function Pulse({
         if (!live) return;
         // A 501 and a worker predating the route say the same thing: nothing can be drawn.
         // Neither is an empty series, which would read as silence.
-        setChartError(!(e instanceof ApiError && e.status === 501));
+        setChartError(!(isApiError(e) && e.status === 501));
         setSeries({ series: [], bucketMinutes: 60, available: false });
       });
     return () => {

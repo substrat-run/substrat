@@ -29,7 +29,7 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, type ScopeStub, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
+import { dashboardRoutes, fieldReadsView, type appEvent, type domainRow, type explanationView, type installAppInput, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardManifest, dashboardModule, type AppAuthView, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume, type ExplanationBudget } from './module.js';
@@ -1407,16 +1407,12 @@ const RECONCILE_AFTER_MS = 2 * 60 * 1000;
  * and the diagnosis (the failed step + the downstream error VERBATIM) once one fails.
  * Read from the caller's OWN dashboard scope, so tenant-scoped like the events trail.
  */
-app.get('/api/apps/:scopeId/steps', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  return c.json(await installStepsOf(host, node, c.req.param('scopeId')));
-});
 
 async function installStepsOf(host: CloudflareScopeHost, node: DashboardNode, appScopeId: string) {
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  if (!(await appByScopeId(dash, appScopeId))) throw new HTTPException(404, { message: 'app not found' });
   // Every page: the route answers the whole record, which is a handful of steps.
-  return walkAll(await host.getScope(node.principal, node.tenantId, node.scopeId), 'dashboard/install-steps', { appScopeId });
+  return walkAll(dash, 'dashboard/install-steps', { appScopeId });
 }
 
 /**
@@ -1509,15 +1505,10 @@ async function removeDomainIn({ c, node }: TeamContext, hostname: string): Promi
  * the caller's OWN dashboard scope, so the events are naturally tenant-scoped:
  * another tenant's app-scope-id has no events here.
  */
-app.get('/api/apps/:scopeId/events', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  return c.json(await appEventsPage(host, node, c.req.param('scopeId'), pageParams(c)));
-});
 
 async function appEventsPage(host: CloudflareScopeHost, node: DashboardNode, appScopeId: string, page: ListPageQuery) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  if (!(await appByScopeId(dash, appScopeId))) throw new HTTPException(404, { message: 'app not found' });
   return dash.invoke<Page<z.infer<typeof appEvent>>>('dashboard/app-events', {
     appScopeId,
     limit: page.limit,
@@ -1537,12 +1528,6 @@ async function appEventsPage(host: CloudflareScopeHost, node: DashboardNode, app
  * the tenant-narrowed control plane, which pins `tenantId` — so no query can name
  * another tenant's log.
  */
-app.get('/api/apps/:scopeId/audit', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  return c.json(await auditLogOf(c, host, node, pageParams(c), c.req.param('scopeId')));
-});
 
 /**
  * The admin log, whole or narrowed to one app. The app is resolved from the caller's OWN
@@ -2236,12 +2221,11 @@ async function readConnectionSightings(
  * cap raised so the join sees every type rather than the largest few — a type
  * missing only because it fell off the tail would read as a finding.
  */
-app.get('/api/apps/:scopeId/flow', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appFlowIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scope = scopeId.parse(appRow.app_scope_id);
@@ -2258,7 +2242,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
   const declaredConnectors = (offered.get(slug) ?? []).map((s) => s.provider).filter(isVerticalConnectorProvider);
   const knownProviders = [...Object.keys(PROVIDERS), ...declaredConnectors];
   if (runningId === null) {
-    return c.json({
+    return ({
       findings: deriveFlowFindings({
         declaredEvents: null,
         requires: [],
@@ -2360,7 +2344,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
     now,
     unread: sweeps.unread,
   });
-  return c.json({
+  return ({
     findings: deriveFlowFindings({
       declaredEvents: flow.declaredEvents,
       requires: [...flow.requires, ...declaredConnectors],
@@ -2409,14 +2393,13 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       staleAfterDays: FLOW_STALE_DAYS,
     }),
   });
-});
+}
 
-app.get('/api/apps/:scopeId/field-coverage', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appFieldCoverageIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scope = scopeId.parse(appRow.app_scope_id);
@@ -2427,18 +2410,17 @@ app.get('/api/apps/:scopeId/field-coverage', async (c) => {
   ]);
   const { runningId } = versionPair(deployment, boundVersionId);
   if (runningId === null) {
-    return c.json(deriveFieldCoverage({ model: null, outputSurface: null }));
+    return (deriveFieldCoverage({ model: null, outputSurface: null }));
   }
   const { model, outputSurface } = await cp.versionModelSurface(slug, runningId);
-  return c.json(deriveFieldCoverage({ model, outputSurface }));
-});
+  return (deriveFieldCoverage({ model, outputSurface }));
+}
 
-app.get('/api/apps/:scopeId/field-reads', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appFieldReadsIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const hours = chartHours(c.req.query('hours'));
@@ -2446,17 +2428,17 @@ app.get('/api/apps/:scopeId/field-reads', async (c) => {
     verticalDeploymentFromCp(cp, appRow.vertical_slug), cp.boundVersionId(scopeId.parse(appRow.app_scope_id)),
   ]);
   const { runningId } = versionPair(deployment, boundVersionId);
-  if (!runningId) return c.json({ available: false, source: 'vertical-asserted', groups: [] });
+  if (!runningId) return fieldReadsView.parse({ available: false, source: 'vertical-asserted', groups: [] });
   try {
     const read = await cpObservability(() => cp.tenantFieldCoverage(appRow.app_scope_id, runningId, hours));
-    return c.json({ available: true, ...read as object });
+    return fieldReadsView.parse({ available: true, ...read as object });
   } catch (e) {
     if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 501)) {
-      return c.json({ available: false, source: 'vertical-asserted', groups: [] });
+      return fieldReadsView.parse({ available: false, source: 'vertical-asserted', groups: [] });
     }
     throw e;
   }
-});
+}
 
 /** Look up an app only in the team named by the request path. */
 async function teamAppTarget({ host, node }: TeamContext, appScopeId: string) {
@@ -4410,12 +4392,11 @@ function chartHours(raw: string | undefined, fallback = 24): number {
  * traffic is the tenant's to see and the release history is the publisher's, and an empty
  * marker set is how the page says so.
  */
-app.get('/api/apps/:scopeId/traffic', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appTrafficIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const hours = chartHours(c.req.query('hours'));
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
@@ -4435,8 +4416,7 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
     ? deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null }).releases
     : [];
 
-  return c.json(
-    deriveTrafficSeries({
+  return deriveTrafficSeries({
       // Mapped field by field rather than handed the wider row, which would satisfy
       // `TrafficBucketInput` structurally and leave the web client's parity guard
       // asserting something narrower than what actually crosses.
@@ -4456,18 +4436,16 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
       hours,
       window,
       now: new Date(),
-    }),
-  );
-});
+    });
+}
 
 // Read failures directly: the recent-runs panel cannot explain a failure after
 // successful runs have pushed it out of that panel's twenty-row history.
-app.get('/api/apps/:scopeId/failures', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appFailuresIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const window = chartWindow(c.req.query('since'), c.req.query('until'), 24);
   const since = window?.since ?? new Date(Date.now() - FLEET_HEALTH_WINDOW_MS).toISOString();
@@ -4478,21 +4456,21 @@ app.get('/api/apps/:scopeId/failures', async (c) => {
     cp.readOpsFailures({ scopeId: scope, since, until: window?.until, limit: 400 }),
   ]);
   const sources = [['background runs', runs], ['operation failures', failures]] as const;
-  return c.json({
+  return ({
     entries: [
       ...runs.entries.filter((r) => r.kind !== 'freshness').map((r) => ({
-        id: r.id, at: r.at, kind: 'sweep', operation: r.operation ?? r.unit.replace(`${scope}:`, ''),
+        id: r.id, at: r.at, kind: 'sweep' as const, operation: r.operation ?? r.unit.replace(`${scope}:`, ''),
         stage: r.kind, message: r.error, code: null,
       })),
       ...failures.entries.map((f) => ({
-        id: f.id, at: f.at, kind: 'operation', operation: f.operation,
+        id: f.id, at: f.at, kind: 'operation' as const, operation: f.operation,
         stage: f.stage, message: f.message, code: f.code,
       })),
     ].sort((a, b) => b.at.localeCompare(a.at)),
     unavailableSources: sources.filter(([, r]) => r.failed).map(([name]) => name),
     incompleteSources: sources.filter(([, r]) => !r.failed && !r.complete).map(([name]) => name),
   });
-});
+}
 
 /**
  * The same window's declared facts (#1447 step 3b) — migrations applied, failed schedule
@@ -4504,12 +4482,11 @@ app.get('/api/apps/:scopeId/failures', async (c) => {
  * bad minute would hold the chart up or take it down with it; separate, it costs its own
  * kind and nothing else. The page reads both in parallel and tolerates this one's absence.
  */
-app.get('/api/apps/:scopeId/overlays', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appOverlaysIn(ctx: TeamContext, appScopeId: string) {
+  const { c, host, node } = ctx;
+
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const hours = chartHours(c.req.query('hours'));
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
@@ -4560,8 +4537,7 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
     }),
   ]);
 
-  return c.json(
-    { ...deriveAppOverlays({
+  return { ...deriveAppOverlays({
       migrations: migrations ?? [],
       sweepRuns: [...failedRuns, ...freshnessPerUnit.flat()],
       failures,
@@ -4569,9 +4545,8 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
       hours,
       window,
       now,
-    }), unavailableSources: [...new Set(unavailableSources)], incompleteSources: [...new Set(incompleteSources)] },
-  );
-});
+    }), unavailableSources: [...new Set(unavailableSources)], incompleteSources: [...new Set(incompleteSources)] };
+}
 
 /**
  * Ask the caller's own dashboard scope whether their ROLE may change what this team runs
@@ -5501,6 +5476,12 @@ const routeHandlers = {
     appEventsPage(host, node, appScopeId, listPageQuery.parse(page)),
   'dashboard/list-app-audit': async ({ c, host, node }, { scopeId: appScopeId, ...page }) =>
     auditLogOf(c, host, node, listPageQuery.parse(page), appScopeId),
+  'dashboard/get-app-flow': async (ctx, { scopeId: app }) => appFlowIn(ctx, app),
+  'dashboard/get-app-field-coverage': async (ctx, { scopeId: app }) => appFieldCoverageIn(ctx, app),
+  'dashboard/get-app-field-reads': async (ctx, { scopeId: app }) => appFieldReadsIn(ctx, app),
+  'dashboard/get-app-traffic': async (ctx, { scopeId: app }) => appTrafficIn(ctx, app),
+  'dashboard/get-app-failures': async (ctx, { scopeId: app }) => appFailuresIn(ctx, app),
+  'dashboard/get-app-overlays': async (ctx, { scopeId: app }) => appOverlaysIn(ctx, app),
   'dashboard/list-app-tables': async (ctx, { scopeId: asked }) => {
     const { cp, scope } = await browsableDataIn(ctx, asked);
     const tables = await cp.listScopeTables(scope);
