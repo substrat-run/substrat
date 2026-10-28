@@ -45,6 +45,7 @@ it('renders an existing unlisted value beside priced catalog choices', () => {
       }]}
     />,
   );
-  expect(tiered).toContain('$0.25 input / $1.5 output up to 256k input');
-  expect(tiered).toContain('$1 input / $4 output above 256k input');
+  expect(tiered).toContain('One tier bills all input and output in each request, chosen by its total input tokens (including cached input)');
+  expect(tiered).toContain('up to 256k total input: $0.25 input / $1.5 output');
+  expect(tiered).toContain('above 256k total input: $1 input / $4 output');
 });

@@ -14,11 +14,11 @@ function tierPrices(tiers: ModelCatalogOption['tiers']): string {
   return tiers.map((tier, index) => {
     const previous = tiers[index - 1]?.upToInputTokens;
     const range = tier.upToInputTokens === null
-      ? previous == null ? '' : ` above ${inputBound(previous)} input`
+      ? previous == null ? '' : `above ${inputBound(previous)} total input: `
       : previous == null
-        ? ` up to ${inputBound(tier.upToInputTokens)} input`
-        : ` above ${inputBound(previous)} to ${inputBound(tier.upToInputTokens)} input`;
-    return `$${tier.inputPer1M} input / $${tier.outputPer1M} output${range}`;
+        ? `up to ${inputBound(tier.upToInputTokens)} total input: `
+        : `above ${inputBound(previous)} to ${inputBound(tier.upToInputTokens)} total input: `;
+    return `${range}$${tier.inputPer1M} input / $${tier.outputPer1M} output`;
   }).join('; ');
 }
 
@@ -51,7 +51,7 @@ export function ModelSettingPicker({ value, catalog, onChange }: Props) {
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
           {current.servedBy} · {current.tiers.length === 1
             ? `List price from ${tierPrices(current.tiers)} per 1M tokens`
-            : `List price per 1M tokens: ${tierPrices(current.tiers)}`}
+            : `List price per 1M tokens. One tier bills all input and output in each request, chosen by its total input tokens (including cached input): ${tierPrices(current.tiers)}`}
         </div>
       ) : value ? (
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
