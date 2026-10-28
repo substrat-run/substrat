@@ -327,7 +327,29 @@ export function activityRows(
   now = Date.now(),
   personName?: PersonName,
 ): ActivityRow[] {
-  return entries.slice(0, 6).map((e) => {
+  const operationOf = (e: AuditEntry) => {
+    const after = e.after as { operationId?: unknown; phase?: unknown } | null;
+    return typeof after?.operationId === 'string' && typeof after.phase === 'string'
+      ? { key: JSON.stringify([e.action, e.tenantId, e.scopeId, after.operationId]), phase: after.phase }
+      : null;
+  };
+  const phases = new Map<string, Set<string>>();
+  for (const e of entries) {
+    const op = operationOf(e);
+    if (!op) continue;
+    const set = phases.get(op.key) ?? new Set<string>();
+    set.add(op.phase);
+    phases.set(op.key, set);
+  }
+  const visible = entries.filter((e) => {
+    const op = operationOf(e);
+    if (!op) return true;
+    const seen = phases.get(op.key)!;
+    if (op.phase === 'intent') return seen.size === 1;
+    if (op.phase === 'unknown') return ![...seen].some((phase) => ['applied', 'refused', 'failed'].includes(phase));
+    return true;
+  });
+  return visible.slice(0, 6).map((e) => {
     // #977: the person the dashboard acted for, where the row records one.
     const who = entryActorOf(e, personName);
     return {

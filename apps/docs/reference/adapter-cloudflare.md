@@ -126,6 +126,15 @@ Two options change the topology:
 | fail-closed addressing + lifecycle gates | validated in the `ControlPlaneDO` before the stub is minted |
 | permission checks | tuple checker, evaluated entirely from the scope's own storage — scope tuples written locally, tenant tuples + roles **projected** in by the control plane at write time (`scopeLocalPermissions`); no per-request control-plane read |
 
+A host serving its own ScopeDO now records directory intent and outcome rows around scope-node
+`assignRole`, `unassignRole`, `grant`, `grantToOrg`, `grantToSystem`, `grantEntityShape` and
+`mintCapability`. Each pair carries one operation id; a request or uncertain outcome is not proof
+of a permission change. The shared control plane still has only a module-less placeholder for a
+scope served by another deployment. Until it has an authenticated permission delegation route,
+those six non-mint writes keep their previous single-row audit path there, while hosted mint
+still refuses before writing an audit intent. See [Permissions](/concepts/permissions) for where
+the tuples live.
+
 ## Status
 
 The shared contract suites run **green in workerd against real Durable Objects** (one

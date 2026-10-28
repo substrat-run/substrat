@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api, type AppRow, type AuditEntry } from '../src/lib/api';
 import { adminAction } from '@substrat-run/contracts';
-import { actionKeyWords, actionWords, actorOf, entryActorOf, entryDiff, entryVia, filterEntries, groupByDay } from '../src/lib/audit-activity';
+import { actionKeyWords, actionWords, actorOf, entryActorOf, entryDiff, entrySentence, entryVia, filterActivity, filterEntries, groupByDay } from '../src/lib/audit-activity';
 import { actionWords as overviewActionWords, activityRows } from '../src/lib/overview-status';
 import { AuditLog, DEEP_LINK_PAGES } from '../src/views/Audit';
 
@@ -28,6 +28,20 @@ const entry = (id: string, over: Partial<AuditEntry> = {}): AuditEntry => ({
 const appName = (s: string) => (s === 'a' ? 'Acme HR' : null);
 
 describe('audit activity derivations (#1825)', () => {
+  it('labels permission intents as requests and keeps them out of confirmed activity', () => {
+    const rows = [entry('intent', { after: { operationId: 'one', phase: 'intent' } }), entry('applied', { after: { operationId: 'one', phase: 'applied' } })];
+    expect(entrySentence(rows[0]!, appName)).toContain('requested:');
+    expect(filterActivity(rows.map((e) => ({ kind: 'action' as const, at: e.at, id: e.id, entry: e })),
+      { outcome: 'allowed', kind: 'all', text: '', appName }).map((item) => item.id)).toEqual(['applied']);
+  });
+
+  it('the overview uses one activity row per answered permission attempt', () => {
+    const attempt = (id: string, operationId: string, phase: string) => entry(id, { after: { operationId, phase } });
+    const rows = activityRows([attempt('outcome', 'one', 'applied'), attempt('intent', 'one', 'intent'),
+      attempt('pending', 'two', 'intent')], appName);
+    expect(rows.map((row) => row.id)).toEqual(['outcome', 'pending']);
+    expect(rows[1]!.text).toContain('requested:');
+  });
   it('groups consecutive entries by local day, with Today and Yesterday named', () => {
     const now = new Date(2026, 8, 26, 15).getTime();
     const days = groupByDay([entry('1', { at: at(2026, 9, 26, 14) }), entry('2', { at: at(2026, 9, 26, 9) }), entry('3', { at: at(2026, 9, 25) }), entry('4', { at: at(2026, 9, 24) }), entry('5', { at: at(2025, 12, 31) })], now);

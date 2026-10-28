@@ -472,6 +472,7 @@ import {
   switchAuditSubject,
   recordAuditOutcome,
   auditedCapabilityRevoke,
+  auditedScopePermissionWrite,
   auditWarningOf,
   switchNotFoundMessage,
   recordWriteSuperseded,
@@ -1566,6 +1567,7 @@ interface ScopeStubRpc {
   ): Promise<CapabilityExchange | null>;
   /** The platform's `become` mint (#1672), serialized in this scope's own storage. */
   mintBecomeCapability(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
+  mintBecomeCapabilityAndAuditIntent(input: BecomeCapabilityInput, actor: PlatformActorId): Promise<MintedCapability>;
   /** The platform's revoke (#1672) — the record as it stood before, or null. */
   revokeCapabilityAsPlatform(id: string, actor: PlatformActorId): Promise<CapabilityRecord | null>;
   /** A principal's bounded `become` mint (#1686) — a member invite's link. */
@@ -1673,6 +1675,7 @@ interface ScopeStubRpc {
   /** `grantToSystem`'s scope-level write (#1666): `false`, and nothing written, while the
    *  module's schedule kill switch is off on this scope. */
   writeSystemGrant(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
+  writeSystemGrantAndAuditIntent(moduleId: string, relation: string, object: string, expiresAt: string | null): Promise<boolean>;
   /** The last time a schedule's operation ran on this scope (#383), or null if never. */
   scheduleLastRun(operation: string): Promise<string | null>;
   /**
@@ -1774,6 +1777,7 @@ interface ScopeStubRpc {
   ): Promise<{ subject: string; relation: string; expires_at: string | null }[]>;
   /** A declared entity-grant shape's grant: marker plus keys, one unit (#2071). */
   grantEntityShape(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
+  grantEntityShapeAndAuditIntent(principal: PrincipalId, entity: EntityRef, permissions: readonly string[]): Promise<void>;
   /**
    * One bounded pass of the shape reconcile with its events (#2071, retirements #2082), resuming
    * at `after` (#2083). A DO from before the cursor ignores `after`, answers `done` and no `next`.
@@ -1792,6 +1796,7 @@ interface ScopeStubRpc {
     object: string,
     expiresAt: string | null,
   ): Promise<DoReply<null>>;
+  writeTupleAndAuditIntent(subject: string, relation: string, object: string, expiresAt: string | null): Promise<DoReply<null>>;
   /** Provisioning's write (#1659): creates a missing tuple, never un-revokes one. */
   seatTuple(
     subject: string,
@@ -1806,6 +1811,7 @@ interface ScopeStubRpc {
   ): Promise<SwitchedOff[]>;
   /** Tombstone a scope tuple by exact (subject, relation, object). Idempotent. */
   revokeTuple(subject: string, relation: string, object: string, at: string): Promise<boolean>;
+  revokeTupleAndAuditIntent(subject: string, relation: string, object: string, at: string): Promise<boolean>;
   hasEffectiveRoleGrantFor(tenantId: string, subject: string): Promise<boolean>;
   /** Attachment surface, metadata half (#473) — see the ScopeDO methods of the same names.
    *  `connectionId` (#476) gates as a connection instead of `principal` when set. Each answers
@@ -6686,7 +6692,7 @@ export class CloudflareScopeHost implements ScopeHost {
    * configured; the mint has no such reach and no caller needing one, since an owner claim link
    * is minted by the deployment itself behind `/internal/owner-claim`.
    */
-  private async capabilityScopeStub(rec: ScopeRow, scopeId: ScopeId, verb: string) {
+  private assertCapabilityScopeReach(rec: ScopeRow, scopeId: ScopeId, verb: string): void {
     if (this.servesScopesElsewhereNow && rec.vertical !== null) {
       throw substratError(
         'unavailable',
@@ -6694,6 +6700,10 @@ export class CloudflareScopeHost implements ScopeHost {
           'deployment, and this host has no reach into it',
       );
     }
+  }
+
+  private async capabilityScopeStub(rec: ScopeRow, scopeId: ScopeId, verb: string) {
+    this.assertCapabilityScopeReach(rec, scopeId, verb);
     await this.migrateAndRecord(scopeId);
     return this.scopeStub(scopeId);
   }
@@ -7422,23 +7432,16 @@ export class CloudflareScopeHost implements ScopeHost {
       node: Node,
       entity?: EntityRef,
       expiresAt?: string,
+      audited = false,
     ): Promise<void> => {
+      const writeTuple = async (scopeId: ScopeId, object: string) => {
+        if (audited) unwrapReply(await this.scopeStub(scopeId).writeTupleAndAuditIntent(subject, `granted:${permission}`, object, expiresAt ?? null));
+        else await this.writeScopeTuple(scopeId, subject, `granted:${permission}`, object, expiresAt ?? null);
+      };
       if (entity) {
-        await this.writeScopeTuple(
-          node.scopeId!,
-          subject,
-          `granted:${permission}`,
-          entityObjectRef(entity, 'HostAdmin'), // #1856: grant and grantToOrg both land here
-          expiresAt ?? null,
-        );
+        await writeTuple(node.scopeId!, entityObjectRef(entity, 'HostAdmin')); // #1856
       } else if (node.scopeId) {
-        await this.writeScopeTuple(
-          node.scopeId,
-          subject,
-          `granted:${permission}`,
-          `scope:${node.scopeId}`,
-          expiresAt ?? null,
-        );
+        await writeTuple(node.scopeId, `scope:${node.scopeId}`);
       } else {
         // #2526: a tenant-level grant is a directory tuple, written by the ControlPlaneDO in the
         // unit that writes its admin row — never through here.
@@ -8067,14 +8070,30 @@ export class CloudflareScopeHost implements ScopeHost {
           await this.fanOut(tenantId);
           return;
         }
-        const refusal = await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform');
+        if (await this.scopePermissionUsesLegacyPlaceholder(tenantId, scopeId)) {
+          const refusal = await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform');
+          if (refusal) throw substratError('forbidden', refusal);
+          await this.writeScopeTuple(scopeId, `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeId}`, null);
+          await this.recordAdmin(actor, 'assignRole', { tenantId, scopeId }, null, assignment);
+          return;
+        }
+        const refusal = await auditedScopePermissionWrite({
+          action: 'assignRole', request: { ...assignment },
+          record: (after) => this.recordAdmin(actor, 'assignRole', { tenantId, scopeId }, null, after),
+          write: async () => {
+            const refusal = await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform');
+            if (refusal) return refusal;
+            unwrapReply(await this.scopeStub(scopeId).writeTupleAndAuditIntent(`principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeId}`, null));
+            return null;
+          },
+          outcome: (refusal) => ({ phase: refusal ? 'refused' : 'applied', details: { changed: !refusal } }),
+          logError: (message, fields) => console.error(message, fields),
+        });
         if (refusal) throw substratError('forbidden', refusal);
-        await this.writeScopeTuple(scopeId, `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeId}`, null);
-        await this.recordAdmin(actor, 'assignRole', { tenantId, scopeId }, null, assignment);
       },
       unassignRole: async (actor, assignment: RoleAssignment) => {
         // Tombstone (K-21) — the checker skips revoked rows. A no-op returns false so
-        // a repeat unassign stays silent (no second audit row, no needless fan-out).
+        // a repeat unassign is a refused no-op at a scope node, with no needless fan-out.
         const relation = `role:${assignment.roleKey}`;
         const { tenantId, scopeId } = assignment.node;
         if (!scopeId) {
@@ -8091,21 +8110,30 @@ export class CloudflareScopeHost implements ScopeHost {
           if (changed) await this.fanOut(tenantId);
           return;
         }
-        const changed = await this.scopeStub(scopeId).revokeTuple(
-          `principal:${assignment.principalId}`,
-          relation,
-          `scope:${scopeId}`,
-          new Date().toISOString(),
-        );
-        if (!changed) return;
-        await this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId }, assignment, null);
+        if (await this.scopePermissionUsesLegacyPlaceholder(tenantId, scopeId)) {
+          const changed = await this.scopeStub(scopeId).revokeTuple(
+            `principal:${assignment.principalId}`, relation, `scope:${scopeId}`, new Date().toISOString(),
+          );
+          if (changed) await this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId }, assignment, null);
+          return;
+        }
+        await auditedScopePermissionWrite({
+          action: 'unassignRole', request: { ...assignment },
+          record: (after) => this.recordAdmin(actor, 'unassignRole', { tenantId, scopeId }, assignment, after),
+          write: () => this.scopeStub(scopeId).revokeTupleAndAuditIntent(
+            `principal:${assignment.principalId}`, relation, `scope:${scopeId}`, new Date().toISOString(),
+          ),
+          outcome: (changed) => ({ phase: changed ? 'applied' : 'refused', details: { changed } }),
+          logError: (message, fields) => console.error(message, fields),
+        });
       },
       grant: async (actor, raw: CapabilityGrant) => {
         // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
         // trust: the parse is where an `expiresAt` carrying a UTC offset is normalised
         // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
         const grant = capabilityGrant.parse(raw);
-        await this.refuseReservedGrant([grant.permission], grant.node.scopeId); // #2430
+        const legacy = !!grant.node.scopeId && await this.scopePermissionUsesLegacyPlaceholder(grant.node.tenantId, grant.node.scopeId);
+        await this.refuseReservedGrant([grant.permission], legacy ? grant.node.scopeId! : null); // #2430
         const subject = `principal:${grant.principalId}`;
         const target = { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId };
         if (!grant.node.scopeId && !grant.entity) {
@@ -8117,12 +8145,45 @@ export class CloudflareScopeHost implements ScopeHost {
           return;
         }
         // Scope-level and entity grants write scope tuples (already local): no fan-out.
-        await writeGrant(subject, grant.permission, grant.node, grant.entity, grant.expiresAt);
-        await this.recordAdmin(actor, 'grant', target, null, grant);
+        if (legacy) {
+          await writeGrant(subject, grant.permission, grant.node, grant.entity, grant.expiresAt);
+          await this.recordAdmin(actor, 'grant', target, null, grant);
+          return;
+        }
+        const refusal = await auditedScopePermissionWrite({
+          action: 'grant', request: { ...grant },
+          record: (after) => this.recordAdmin(actor, 'grant', target, null, after),
+          write: async () => {
+            const refusal = await this.scopeStub(grant.node.scopeId!).reservedGrantRefusalFor([grant.permission]);
+            if (refusal) return refusal;
+            await writeGrant(subject, grant.permission, grant.node, grant.entity, grant.expiresAt, true);
+            return null;
+          },
+          outcome: (refusal) => ({ phase: refusal ? 'refused' : 'applied', details: { changed: !refusal } }),
+          logError: (message, fields) => console.error(message, fields),
+        });
+        if (refusal) throw substratError('forbidden', refusal);
       },
       grantEntityShape: async (actor, grant) => {
-        await this.grantEntityShapeLocal(grant.node.scopeId, grant.principalId, grant.entity, grant.permissions);
-        await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
+        if (await this.scopePermissionUsesLegacyPlaceholder(grant.node.tenantId, grant.node.scopeId)) {
+          await this.grantEntityShapeLocal(grant.node.scopeId, grant.principalId, grant.entity, grant.permissions);
+          await this.recordAdmin(actor, 'grantEntityShape', grant.node, null, grant);
+          return;
+        }
+        await this.refuseReservedGrant(grant.permissions, null);
+        const refusal = await auditedScopePermissionWrite({
+          action: 'grantEntityShape', request: { ...grant },
+          record: (after) => this.recordAdmin(actor, 'grantEntityShape', grant.node, null, after),
+          write: async () => {
+            const refusal = await this.scopeStub(grant.node.scopeId).reservedGrantRefusalFor([...grant.permissions]);
+            if (refusal) return refusal;
+            await this.scopeStub(grant.node.scopeId).grantEntityShapeAndAuditIntent(grant.principalId, grant.entity, grant.permissions);
+            return null;
+          },
+          outcome: (refusal) => ({ phase: refusal ? 'refused' : 'applied', details: { changed: !refusal } }),
+          logError: (message, fields) => console.error(message, fields),
+        });
+        if (refusal) throw substratError('forbidden', refusal);
       },
       reconcileEntityGrantShapes: async (actor, node, shapes, opts) => {
         // #2184: the bound types are the reconcile route's answer to the platform, not part of this
@@ -8229,18 +8290,28 @@ export class CloudflareScopeHost implements ScopeHost {
         const target = { tenantId: grant.node.tenantId, scopeId: grant.node.scopeId };
         const after = { moduleId: grant.moduleId, permission: grant.permission, node: grant.node };
         if (grant.node.scopeId) {
+          if (await this.scopePermissionUsesLegacyPlaceholder(grant.node.tenantId, grant.node.scopeId)) {
+            const written = await this.scopeStub(grant.node.scopeId).writeSystemGrant(
+              grant.moduleId, `granted:${grant.permission}`, `scope:${grant.node.scopeId}`, grant.expiresAt ?? null,
+            );
+            if (!written) throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
+            await this.recordAdmin(actor, 'grantToSystem', target, null, after);
+            return;
+          }
           // #1666: refused while the module is switched off on this scope — checked and
           // written in one DO unit. Restore is the lever; a grant is not.
-          const written = await this.scopeStub(grant.node.scopeId).writeSystemGrant(
-            grant.moduleId,
-            `granted:${grant.permission}`,
-            `scope:${grant.node.scopeId}`,
-            grant.expiresAt ?? null,
-          );
+          const written = await auditedScopePermissionWrite({
+            action: 'grantToSystem', request: { ...after, expiresAt: grant.expiresAt ?? null, grantedBy: grant.grantedBy },
+            record: (row) => this.recordAdmin(actor, 'grantToSystem', target, null, row),
+            write: () => this.scopeStub(grant.node.scopeId!).writeSystemGrantAndAuditIntent(
+              grant.moduleId, `granted:${grant.permission}`, `scope:${grant.node.scopeId}`, grant.expiresAt ?? null,
+            ),
+            outcome: (written) => ({ phase: written ? 'applied' : 'refused', details: { changed: written } }),
+            logError: (message, fields) => console.error(message, fields),
+          });
           if (!written) {
             throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, grant.node.scopeId));
           }
-          await this.recordAdmin(actor, 'grantToSystem', target, null, after);
           return;
         }
         // #1743: refused while the record holds the module off on any scope — checked and
@@ -8301,10 +8372,8 @@ export class CloudflareScopeHost implements ScopeHost {
         return { switchedOffPeers, tenantHeldPeers, fences };
       },
       reassertSystemSwitches: reassertSystemSwitchesOf,
-      // #1672 — the platform's two capability verbs. Audited AFTER the write, on both, and
-      // the failure each leaves is the safe one: a mint whose audit row did not land never
-      // returned its secret, so nobody can ever exchange it; a revoke whose row did not land
-      // has still revoked. Neither the secret nor its hash is ever in before/after.
+      // #1672 — the platform's two capability verbs. An intent precedes the scope write and
+      // the outcome follows it. Neither the secret nor its hash is ever in before/after.
       mintCapability: async (
         actor: PlatformActorId,
         tenantId: TenantId,
@@ -8317,17 +8386,22 @@ export class CloudflareScopeHost implements ScopeHost {
         checkBecomeInput(input, new Date().toISOString() as Instant);
         await this.validateScopeAccess(tenantId, scopeId);
         const rec = await this.capabilityScopeRecord(tenantId, scopeId);
-        const stub = await this.capabilityScopeStub(rec, scopeId, 'mintCapability');
-        const minted = await stub.mintBecomeCapability(input, actor);
-        await this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical: rec.vertical }, null, {
-          capabilityId: minted.id,
-          mode: 'become',
-          principal: input.principal,
-          expiresAt: input.expiresAt,
-          maxUses: input.maxUses,
-          label: input.label ?? null,
+        // A hosted refusal precedes intent; the local migrate happens inside the audited write.
+        this.assertCapabilityScopeReach(rec, scopeId, 'mintCapability');
+        return auditedScopePermissionWrite({
+          action: 'mintCapability', request: {
+            mode: 'become',
+            principal: input.principal,
+            expiresAt: input.expiresAt,
+            maxUses: input.maxUses,
+            label: input.label ?? null,
+          },
+          record: (after) => this.recordAdmin(actor, 'mintCapability', { tenantId, scopeId, vertical: rec.vertical }, null, after),
+          write: async () => (await this.capabilityScopeStub(rec, scopeId, 'mintCapability')).mintBecomeCapabilityAndAuditIntent(input, actor),
+          outcome: (minted) => ({ phase: 'applied', details: { capabilityId: minted.id } }),
+          onUnrecordedOutcome: (minted, error) => ({ ...minted, auditWarning: auditWarningOf('the capability mint', error) }),
+          logError: (message, fields) => console.error(message, fields),
         });
-        return minted;
       },
       revokeCapability: async (
         actor: PlatformActorId,
@@ -8365,7 +8439,8 @@ export class CloudflareScopeHost implements ScopeHost {
         // The org must exist in the node's tenant. A grant to a phantom org looks
         // applied, resolves for nobody, and still shows up in the permission diff.
         await requireOrg(node.tenantId, orgId);
-        await this.refuseReservedGrant([permission], node.scopeId); // #2430: an org's members are people
+        const legacy = !!node.scopeId && await this.scopePermissionUsesLegacyPlaceholder(node.tenantId, node.scopeId);
+        await this.refuseReservedGrant([permission], legacy ? node.scopeId! : null); // #2430: an org's members are people
         const target = { tenantId: node.tenantId, scopeId: node.scopeId };
         const after = { orgId, permission, node, entity };
         if (!node.scopeId && !entity) {
@@ -8375,8 +8450,24 @@ export class CloudflareScopeHost implements ScopeHost {
           await this.fanOut(node.tenantId);
           return;
         }
-        await writeGrant(`org:${orgId}`, permission, node, entity);
-        await this.recordAdmin(actor, 'grantToOrg', target, null, after);
+        if (legacy) {
+          await writeGrant(`org:${orgId}`, permission, node, entity);
+          await this.recordAdmin(actor, 'grantToOrg', target, null, after);
+          return;
+        }
+        const refusal = await auditedScopePermissionWrite({
+          action: 'grantToOrg', request: after,
+          record: (row) => this.recordAdmin(actor, 'grantToOrg', target, null, row),
+          write: async () => {
+            const refusal = await this.scopeStub(node.scopeId!).reservedGrantRefusalFor([permission]);
+            if (refusal) return refusal;
+            await writeGrant(`org:${orgId}`, permission, node, entity, undefined, true);
+            return null;
+          },
+          outcome: (refusal) => ({ phase: refusal ? 'refused' : 'applied', details: { changed: !refusal } }),
+          logError: (message, fields) => console.error(message, fields),
+        });
+        if (refusal) throw substratError('forbidden', refusal);
       },
       // -- vertical + version registry (#31) ---------------------------------
 
@@ -11348,6 +11439,13 @@ export class CloudflareScopeHost implements ScopeHost {
     // Deterministic DO id in milestone 1. Production mints per-jurisdiction ids
     // via newUniqueId (K-7) and stores the mapping in the directory — deferred.
     return this.scopeNs.get(this.scopeNs.idFromName(scopeId)) as unknown as ScopeStubRpc;
+  }
+
+  /** The shared coordinator has only a placeholder ScopeDO for a scope served by another deployment.
+   * Until a permission delegation seam exists, preserve its existing write and single-row audit path. */
+  private async scopePermissionUsesLegacyPlaceholder(tenantId: TenantId, scopeId: ScopeId): Promise<boolean> {
+    if (!this.servesScopesElsewhereNow) return false;
+    return (await this.cp.getScopeRecord(tenantId, scopeId))?.vertical != null;
   }
 
   // -- the rewind hold (#1819) ------------------------------------------------

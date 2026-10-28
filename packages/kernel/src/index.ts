@@ -747,6 +747,7 @@ export {
   UNRECORDED_OUTCOME_LOG,
   recordAuditOutcome,
   auditedCapabilityRevoke,
+  auditedScopePermissionWrite,
   auditWarningOf,
 } from './audit-outcome.js';
 export type {
