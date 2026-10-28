@@ -16,8 +16,26 @@ assumptions:
     verification: Sixteen tests passed, including expiry, replay, concurrent completion, existing-address collision, explicit linking and per-client/provider policy checks. Email delivery was captured with MockEmailTransport; no live GitHub account or mail delivery was tested.
     source: ../../src/github-email-plugin.ts; ../../test/github-sign-in-log.test.ts; sign-in-diagnostics.context.md
     updated_at: "2026-10-28"
+  - id: optional-email-service-failures
+    status: supported
+    claim: With a valid authenticated GitHub profile, the caller can complete browser-bound mailbox verification after email transport failures, malformed responses or timeouts.
+    reason: The real auth handler fetched the profile independently and treated the bounded email lookup as optional in the injected failure scenarios.
+    verification: On 2026-10-28, all 27 GitHub callback and fallback tests passed through the local Postman simulation, including first-time verification and returning linked-account sign-in under each email failure. Rejected profile credentials did not create pending verification or a user. This establishes caller behavior against synthetic HTTP responses, not live GitHub availability or delivery.
+    source: ../mocks/github/handler.cjs; ../../src/github-email-plugin.ts; ../../test/github-sign-in-log.test.ts; sign-in-diagnostics.context.md
+    updated_at: "2026-10-28"
+  - id: shared-identity-policy-preservation
+    status: supported
+    claim: In the exercised scenarios, fallback verification cannot replace an existing email routed to another provider by any enabled application on the issuer.
+    reason: Regression tests store live client metadata and attempt the change through the originating application, an unrestricted application and direct issuer login.
+    verification: On 2026-10-28, verification returned 403 without changing the user email for all three entry points and for a restricting application beyond the first registry page. Disabling the restriction allowed retry of the same proof at the issuer. Expired temporary bans permitted completion and were cleared, while permanent and future bans were refused without changing the email.
+    source: ../../src/github-email-plugin.ts; ../../test/github-sign-in-log.test.ts
+    updated_at: "2026-10-28"
 fingerprints:
   - id: verified-email-fallback
     date: "2026-10-28"
     commit: null
+    cli: "1.75.0"
+  - id: verified-email-review-fixes
+    date: "2026-10-28"
+    commit: "057ccdeadccebfff76d723aa8cf9d7aeb584ed39 plus uncommitted review fixes"
     cli: "1.75.0"

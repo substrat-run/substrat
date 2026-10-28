@@ -225,6 +225,9 @@ no verified email, or its address differs from the relying party's signed `login
 No user, account, session or OIDC code is created for a new GitHub identity at this point.
 A returning linked GitHub account uses its locally verified email when GitHub's email API
 is unavailable, unless the invited address differs.
+The authenticated profile lookup must succeed with a valid GitHub account id. A separate
+1.5-second email lookup may fail, time out or return unreadable data without discarding
+that identity; mailbox verification supplies the missing proof.
 
 `GET /api/auth/github-email/status` reads an opaque, HttpOnly browser cookie and returns the
 GitHub handle, suggested email and original signed OAuth query. `POST` to the same status
@@ -244,6 +247,10 @@ belonging to another account is refused rather than merged: sign in with that ac
 existing method and explicitly connect GitHub. Provider sign-up restrictions, bans and
 per-client provider/domain policies still apply. Membership invitations continue to check
 the verified address through the invites engine; the copied invite link proves no address.
+Changing an existing primary email is refused when any enabled application routes the old
+address to a provider other than GitHub, including when verification starts through another
+application or directly at the issuer. Active bans are refused before any account mutation;
+expired temporary bans follow the ordinary session creation path that clears them.
 Explicitly connecting an email-less GitHub account requires the existing account's fresh,
 unimpersonated session throughout the flow and email verification at that account's own
 address. It cannot replace that address or move a GitHub identity from another account.

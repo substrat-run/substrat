@@ -1,9 +1,42 @@
-import type { BetterAuthPlugin } from 'better-auth';
+import type { BetterAuthOptions, BetterAuthPlugin } from 'better-auth';
+import type { GithubOptions, GithubProfile } from 'better-auth/social-providers';
 import { APIError, addOAuthServerContext, createAuthEndpoint, createAuthMiddleware, getOAuthState, getSessionFromCtx } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
 import { z } from 'zod';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { githubEmailVerification } from './email.js';
+import { routeFor, sanitizeSignInPolicy } from './sign-in-policy.js';
+
+const githubProfile = z.object({ id: z.number().int().positive().safe(), login: z.string().min(1), name: z.string().nullable().optional(), email: z.string().nullable().optional(), avatar_url: z.string().optional() }).passthrough();
+const githubEmails = z.array(z.object({ email: z.string().email(), primary: z.boolean(), verified: z.boolean() }));
+
+/** Authenticate the stable profile independently of GitHub's optional email service. */
+export function withGithubEmailFallback(providers: BetterAuthOptions['socialProviders']): BetterAuthOptions['socialProviders'] {
+  const configured = providers?.github;
+  if (!configured) return providers;
+  const decorate = (options: GithubOptions) => ({
+    ...options,
+    getUserInfo: options.getUserInfo ?? (async (token) => {
+      const headers = { 'User-Agent': 'better-auth', authorization: `Bearer ${token.accessToken}` };
+      const response = await fetch('https://api.github.com/user', { headers, redirect: 'error', signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) { await response.body?.cancel(); return null; }
+      // Invalid identity data must fail closed; only the email lookup is optional.
+      const profile = githubProfile.parse(await response.json());
+      let emails: z.infer<typeof githubEmails> = [];
+      try {
+        const response = await fetch('https://api.github.com/user/emails', { headers, redirect: 'error', signal: AbortSignal.timeout(1500) });
+        if (response.ok) emails = githubEmails.parse(await response.json());
+        else await response.body?.cancel();
+      } catch { /* Authenticated profile remains usable through mailbox verification. */ }
+      if (!profile.email) profile.email = (emails.find((email) => email.primary) ?? emails[0])?.email ?? null;
+      // The SDK declares id as a string although GitHub supplies a numeric id.
+      const data = profile as unknown as GithubProfile;
+      const mapped = await options.mapProfileToUser?.(data);
+      return { user: { name: profile.name || profile.login, email: profile.email, image: profile.avatar_url, emailVerified: emails.find((email) => email.email === profile.email)?.verified ?? false, ...mapped }, data };
+    }) satisfies NonNullable<GithubOptions['getUserInfo']>,
+  });
+  return { ...providers, github: typeof configured === 'function' ? async () => decorate(await configured()) : decorate(configured) };
+}
 
 const TTL = 10 * 60_000;
 const address = z.string().trim().toLowerCase().email().max(254);
@@ -161,7 +194,25 @@ export const githubEmailPlugin = (opts: { transport: EmailTransport; sender: Ema
         }
         const existing = await adapter.findUserByEmail(proof.email);
         if (existing && existing.user.id !== pending.userId) throw new APIError('CONFLICT', { message: 'This email already has an account. Sign in with its existing method and connect GitHub under Sign-in methods.' });
-        if (owner?.kind === 'owned' && (owner.user as Record<string, unknown>).banned) throw new APIError('FORBIDDEN', { message: 'This account is disabled.' });
+        if (owner?.kind === 'owned') {
+          const user = owner.user as typeof owner.user & { banned?: boolean; banExpires?: Date | string | number | null };
+          const banExpired = user.banExpires && new Date(user.banExpires).getTime() < Date.now();
+          if (user.banned && !banExpired) throw new APIError('FORBIDDEN', { message: 'This account is disabled.' });
+          if (user.email.trim().toLowerCase() !== proof.email) {
+            // A primary-email change affects every RP sharing this user id. An
+            // unrestricted RP (or issuer login) must not erase another RP's SSO route.
+            for (let offset = 0; ; offset += 100) {
+              const clients = await ctx.context.adapter.findMany<{ metadata?: unknown; disabled?: boolean }>({ model: 'oauthClient', limit: 100, offset, sortBy: { field: 'id', direction: 'asc' } });
+              for (const client of clients) {
+                if (client.disabled) continue;
+                const metadata = typeof client.metadata === 'string' ? JSON.parse(client.metadata) as unknown : client.metadata;
+                const route = routeFor(sanitizeSignInPolicy((metadata as { signIn?: unknown } | null)?.signIn), user.email);
+                if (route && route.provider !== 'github') throw new APIError('FORBIDDEN', { message: 'Use your organization’s required sign-in method to change this account email.' });
+              }
+              if (clients.length < 100) break;
+            }
+          }
+        }
         if (!await adapter.consumeVerificationValue(key) || !await adapter.consumeVerificationValue(pendingKey)) throw new APIError('BAD_REQUEST', { message: 'This verification link has already been used.' });
         const current = await adapter.findAccountByKey({ providerId: 'github', accountId: pending.accountId });
         if (pending.linkSessionId ? current && current.userId !== pending.userId : current?.userId !== pending.userId) throw new APIError('CONFLICT', { message: 'This GitHub account changed. Sign in again.' });

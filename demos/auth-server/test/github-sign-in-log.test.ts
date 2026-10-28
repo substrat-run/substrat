@@ -195,6 +195,74 @@ async function authorizeQuery(email = 'work@example.test') {
 }
 
 describe('verified GitHub email fallback', () => {
+  it.each(['email-network-error', 'email-malformed', 'email-timeout'])('verifies a mailbox after an authenticated profile but unavailable email lookup: %s', async (code) => {
+    const cookie = await pending(code);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM user').get()).toEqual({ n: 0 });
+    const response = await post('/github-email/verify', { token: await send(cookie) }, cookie);
+    expect(response.status).toBe(200);
+    expect(db.prepare('SELECT email, email_verified FROM user').get()).toEqual({ email: 'work@example.test', email_verified: 1 });
+    expect(db.prepare('SELECT provider_id, account_id FROM account').get()).toEqual({ provider_id: 'github', account_id: '12345' });
+    const returning = await complete(await start(), code);
+    expect(new URL(returning.headers.get('location')!, ORIGIN).pathname).toBe('/');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM user').get()).toEqual({ n: 1 });
+  }, 10_000); // Timeout fixture exercises two callbacks and their bounded diagnostic reads.
+
+  it('does not offer mailbox verification when GitHub rejects the profile credentials', async () => {
+    const response = await complete(await start(), 'profile-unauthorized');
+    expect(new URL(response.headers.get('location')!, ORIGIN).pathname).not.toBe('/github-email');
+    expect(calls).toEqual(['/login/oauth/access_token', '/user']);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM verification WHERE identifier LIKE 'github-email:%'").get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM user').get()).toEqual({ n: 0 });
+  });
+
+  it.each(['originating application', 'another application', 'another application beyond the first page', 'issuer login'])('preserves organization SSO when changing a linked account email through %s', async (origin) => {
+    await complete(await start(), 'success');
+    db.prepare("UPDATE user SET email = 'staff@corp.test'").run();
+    const before = db.prepare('SELECT id, email FROM user').get();
+    const query = origin === 'issuer login' ? undefined : await authorizeQuery('personal@example.test');
+    if (origin === 'issuer login') db.prepare("UPDATE user SET email_verified = 0 WHERE email = 'staff@corp.test'").run();
+    const cookie = await pending('success', query);
+    const token = await send(cookie, 'personal@example.test');
+    // Apply a route after verification starts, using the real issuer registry.
+    const routed: SignInPolicy = { providers: ['github'], password: false, domainRoutes: [{ domains: ['corp.test'], provider: 'microsoft' }] };
+    if (origin === 'originating application') {
+      policy = routed;
+      db.prepare('UPDATE oauth_client SET metadata = ?').run(JSON.stringify({ signIn: routed }));
+    } else {
+      if (origin.includes('first page')) {
+        const insert = db.prepare('INSERT INTO oauth_client (id, client_id, redirect_uris) VALUES (?, ?, ?)');
+        db.transaction(() => { for (let i = 0; i < 100; i++) insert.run(`filler-${i}`, `filler-${i}`, '[]'); })();
+      }
+      db.prepare('INSERT INTO oauth_client (id, client_id, redirect_uris, metadata) VALUES (?, ?, ?, ?)').run('protected-client', 'protected-client', '[]', JSON.stringify({ signIn: routed }));
+    }
+    const response = await post('/github-email/verify', { token, ...(query ? { oauth_query: query } : {}) }, cookie);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ message: expect.stringContaining('required sign-in method') });
+    expect(db.prepare("SELECT id, email FROM user WHERE email = 'staff@corp.test'").get()).toEqual(before);
+    // The refusal does not burn the mailbox proof; removing the restriction permits retry.
+    policy = undefined;
+    db.prepare('UPDATE oauth_client SET disabled = 1').run();
+    if (!query) expect((await post('/github-email/verify', { token }, cookie)).status).toBe(200);
+  });
+
+  it.each(['expired', 'permanent', 'future'])('handles a %s ban consistently with ordinary GitHub sign-in', async (ban) => {
+    await complete(await start(), 'success');
+    const query = await authorizeQuery();
+    const cookie = await pending('success', query);
+    const token = await send(cookie);
+    db.prepare("UPDATE user SET banned = 1, ban_expires = ? WHERE email = 'private@example.test'").run(ban === 'permanent' ? null : Date.now() + (ban === 'expired' ? -60_000 : 60_000));
+    const response = await post('/github-email/verify', { token, oauth_query: query }, cookie);
+    expect(response.status).toBe(ban === 'expired' ? 200 : 403);
+    if (ban === 'expired') {
+      const { url } = await response.json() as { url: string };
+      expect(new URL(url).searchParams.get('code')).toBeTruthy();
+      expect(db.prepare("SELECT email, banned FROM user WHERE email = 'work@example.test'").get()).toEqual({ email: 'work@example.test', banned: 0 });
+    } else {
+      expect(db.prepare("SELECT email FROM user WHERE email = 'private@example.test'").get()).toBeTruthy();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM verification WHERE identifier LIKE 'github-email-proof:%'").get()).toEqual({ n: 1 });
+    }
+  });
+
   it('requires both browser proof and emailed proof, issues one GitHub session, and reuses its stable identity when emails remain unavailable', async () => {
     const cookie = await pending();
     const token = await send(cookie);

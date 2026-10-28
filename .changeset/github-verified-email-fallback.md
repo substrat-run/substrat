@@ -10,4 +10,6 @@ Add verified-email fallback for GitHub sign-in when GitHub provides no verified 
 
 Preserve existing user IDs and require an existing account's fresh session before explicitly connecting an email-less GitHub identity. Refuse automatic account merges, expired or replayed proofs, and addresses belonging to another account. Keep provider restrictions, sign-up policy and invitation checks in place.
 
+Keep authenticated GitHub profiles usable when the optional email service fails, times out or returns unreadable data. Preserve organization SSO restrictions across all issuer applications before changing an existing email, and respect the expiry of temporary account bans.
+
 Offer the fallback from dashboard invitation mismatches and distinguish pending email verification in the sign-in log. Recognize the GitHub email plugin as auth adapter code in the boundary linter.

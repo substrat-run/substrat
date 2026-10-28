@@ -37,6 +37,14 @@ Without the URL override, the same suite starts the fixture on a temporary local
 ## Observations
 
 <!-- begin:observations -->
+2026-10-28 (PR review fixes): all 27 callback and fallback tests passed through the
+simulation. Email connection drops, malformed responses and bounded timeouts permitted
+mailbox verification and returning linked-account sign-in; rejected profile credentials
+created no pending verification or user. The shared client registry prevented corporate
+email changes through the originating application, another application (including a policy
+beyond the first registry page), and direct issuer login. Expired temporary bans were
+cleared by session creation; active bans prevented changes. These are local HTTP and
+in-memory email transport results, with no live GitHub or email delivery claim.
 2026-10-28 (verified-email fallback): all sixteen callback and fallback tests passed against
 the simulation. Missing email pauses without a user or session; a different signed login hint
 also pauses. Browser-bound, single-use email proof resumes OIDC with the same GitHub identity.

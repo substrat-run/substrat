@@ -11,7 +11,7 @@ import { TOKEN_EXCHANGE_GRANT_TYPE } from '@substrat-run/contracts';
 import { resetPasswordEmail, verifyEmail } from './email.js';
 import { legacyAwarePassword } from './legacy-password.js';
 import { invitationPlugin } from './invitation-plugin.js';
-import { githubEmailPlugin } from './github-email-plugin.js';
+import { githubEmailPlugin, withGithubEmailFallback } from './github-email-plugin.js';
 import { phonePlugin } from './phone-plugin.js';
 import type { PhoneVerifier } from './twilio.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
@@ -650,7 +650,7 @@ function betterAuthFor(deps: AuthDeps) {
      * per request like everything else here, so enabling Microsoft in the dashboard answers on
      * the next request instead of the next deploy.
      */
-    ...(deps.socialProviders ? { socialProviders: deps.socialProviders } : {}),
+    ...(deps.socialProviders ? { socialProviders: withGithubEmailFallback(deps.socialProviders) } : {}),
     account: {
       accountLinking: {
         /**
