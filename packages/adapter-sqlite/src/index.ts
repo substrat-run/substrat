@@ -9490,16 +9490,18 @@ export class SqliteScopeHost implements ScopeHost {
         }
         // On the scope actor (#1678): a revoke that joined a stranger's transaction and
         // rolled back with it left the role LIVE after the caller was told it was gone.
-        const rt = this.runtime(assignment.node.tenantId, scopeNode);
         await auditedScopePermissionWrite({
           action: 'unassignRole', request: { ...assignment },
           record: (after) => this.recordAdmin(actor, 'unassignRole', { tenantId: assignment.node.tenantId, scopeId: scopeNode }, assignment, after),
-          write: () => rt.actor.turn(() =>
-            rt.db.prepare(
-              `UPDATE _substrat_tuples SET revoked_at = ?
-               WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
-            ).run(new Date().toISOString(), `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeNode}`).changes,
-          ),
+          write: () => {
+            const rt = this.runtime(assignment.node.tenantId, scopeNode);
+            return rt.actor.turn(() =>
+              rt.db.prepare(
+                `UPDATE _substrat_tuples SET revoked_at = ?
+                 WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+              ).run(new Date().toISOString(), `principal:${assignment.principalId}`, `role:${assignment.roleKey}`, `scope:${scopeNode}`).changes,
+            );
+          },
           outcome: (changes) => ({ phase: changes === 0 ? 'refused' : 'applied', details: { changed: changes !== 0 } }),
           logError: (message, fields) => console.error(message, fields),
         });
@@ -9521,14 +9523,16 @@ export class SqliteScopeHost implements ScopeHost {
         const { tenantId, scopeId } = grant.node;
         this.assertScope(tenantId, scopeId);
         this.refuseReservedGrant(grant.permissions); // #2430
-        const rt = this.runtime(tenantId, scopeId);
         // One unit on the scope actor (#1678): the marker and its keys land together or not at all.
         await auditedScopePermissionWrite({
           action: 'grantEntityShape', request: { ...grant },
           record: (after) => this.recordAdmin(actor, 'grantEntityShape', { tenantId, scopeId }, null, after),
-          write: () => rt.actor.turn(() =>
-            rt.db.transaction(() => grantEntityShapeIn(switchSqlOf(rt.db), grant.principalId, grant.entity, grant.permissions))(),
-          ),
+          write: () => {
+            const rt = this.runtime(tenantId, scopeId);
+            return rt.actor.turn(() =>
+              rt.db.transaction(() => grantEntityShapeIn(switchSqlOf(rt.db), grant.principalId, grant.entity, grant.permissions))(),
+            );
+          },
           logError: (message, fields) => console.error(message, fields),
         });
       },
@@ -9694,17 +9698,19 @@ export class SqliteScopeHost implements ScopeHost {
           // `invoke`'s open transaction and roll back with it after this verb returned. The
           // turn is re-entrant: from inside one of this scope's tasks it joins that task.
           // Restore is the lever; a grant is not.
-          const rt = this.runtime(grant.node.tenantId, scope);
           await auditedScopePermissionWrite({
             action: 'grantToSystem', request: { moduleId: grant.moduleId, permission: grant.permission, node: grant.node,
               expiresAt: grant.expiresAt ?? null, grantedBy: grant.grantedBy },
             record: (after) => this.recordAdmin(actor, 'grantToSystem', { tenantId: grant.node.tenantId, scopeId: scope }, null, after),
-            write: () => rt.actor.turn(() => {
-              if (systemSwitchedOff(switchSqlOf(rt.db), grant.moduleId)) {
-                throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, scope));
-              }
-              write();
-            }),
+            write: () => {
+              const rt = this.runtime(grant.node.tenantId, scope);
+              return rt.actor.turn(() => {
+                if (systemSwitchedOff(switchSqlOf(rt.db), grant.moduleId)) {
+                  throw substratError('conflict', systemSwitchedOffMessage(grant.moduleId, scope));
+                }
+                write();
+              });
+            },
             logError: (message, fields) => console.error(message, fields),
           });
         } else {

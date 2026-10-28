@@ -8,6 +8,8 @@ type Fixture = {
   directoryExec(sql: string): Promise<void>;
   scopeExec(tenant: string, scope: string, sql: string): Promise<void>;
   scopeCount(tenant: string, scope: string, sql: string): Promise<number>;
+  prepareOldScopeForIntentFault(tenant: string, scope: string): Promise<void>;
+  oldScopeStayedUnmigrated(tenant: string, scope: string): Promise<boolean>;
   cleanup(): Promise<void>;
 };
 
@@ -17,7 +19,7 @@ export function scopePermissionAuditSuite(adapter: string, makeFixture: () => Pr
     it.each(['assignRole', 'unassignRole', 'grant', 'grantToOrg', 'grantToSystem', 'grantEntityShape', 'mintCapability'] as const)(
       '%s leaves an intent before mutation and preserves it through either later fault', async (action) => {
         const fixture = await makeFixture();
-        const { host } = fixture;
+        const host = () => fixture.host;
         const staff = platformActorId.parse(ulid());
         const tenant = tenantId.parse(ulid());
         const scope = scopeId.parse(ulid());
@@ -35,16 +37,16 @@ export function scopePermissionAuditSuite(adapter: string, makeFixture: () => Pr
           : `SELECT COUNT(*) AS n FROM _substrat_tuples WHERE subject = '${subject}' AND relation = '${relation}' AND revoked_at IS NULL`;
         const call = (): Promise<unknown> => {
           switch (action) {
-            case 'assignRole': return host.admin.assignRole(staff, target);
-            case 'unassignRole': return host.admin.unassignRole(staff, target);
-            case 'grant': return host.admin.grant(staff, { principalId: principal, permission, node, grantedBy: principal });
-            case 'grantToOrg': return host.admin.grantToOrg(staff, org, permission, node);
-            case 'grantToSystem': return host.admin.grantToSystem(staff, { moduleId: moduleId.parse('@substrat-run/engine-workorder'), permission, node, grantedBy: staff });
-            case 'grantEntityShape': return host.admin.grantEntityShape(staff, { principalId: principal, node, entity, permissions: [permission], grantedBy: principal });
-            case 'mintCapability': return host.admin.mintCapability(staff, tenant, scope, { principal, expiresAt: new Date(Date.now() + 60_000).toISOString() as never, maxUses: 1 });
+            case 'assignRole': return host().admin.assignRole(staff, target);
+            case 'unassignRole': return host().admin.unassignRole(staff, target);
+            case 'grant': return host().admin.grant(staff, { principalId: principal, permission, node, grantedBy: principal });
+            case 'grantToOrg': return host().admin.grantToOrg(staff, org, permission, node);
+            case 'grantToSystem': return host().admin.grantToSystem(staff, { moduleId: moduleId.parse('@substrat-run/engine-workorder'), permission, node, grantedBy: staff });
+            case 'grantEntityShape': return host().admin.grantEntityShape(staff, { principalId: principal, node, entity, permissions: [permission], grantedBy: principal });
+            case 'mintCapability': return host().admin.mintCapability(staff, tenant, scope, { principal, expiresAt: new Date(Date.now() + 60_000).toISOString() as never, maxUses: 1 });
           }
         };
-        const rows = () => host.admin.auditLog(staff, { tenantId: tenant, scopeId: scope, action: action as AdminAction });
+        const rows = () => host().admin.auditLog(staff, { tenantId: tenant, scopeId: scope, action: action as AdminAction });
         const count = () => fixture.scopeCount(tenant, scope, stateSql);
         const fault = async (phase: 'intent' | 'applied') => {
           const { create, drop } = adminRowFaultSql(scope, phase);
@@ -53,16 +55,18 @@ export function scopePermissionAuditSuite(adapter: string, makeFixture: () => Pr
         };
         let lift: (() => Promise<void>) | undefined;
         try {
-          await host.admin.createTenant(staff, { id: tenant, slug: `audit-${tenant.toLowerCase()}`, name: 'Audit' });
-          await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'audit' });
-          await host.admin.activateScope(staff, tenant, scope);
-          if (action === 'assignRole' || action === 'unassignRole') await host.admin.defineRole(staff, tenant, { key: roleKey, permissions: [permission], source: 'vertical' });
-          if (action === 'grantToOrg') await host.admin.createOrg(staff, { id: org, tenantId: tenant, slug: `audit-${org.toLowerCase()}`, name: 'Audit' });
-          if (action === 'unassignRole') await host.admin.assignRole(staff, target);
+          await host().admin.createTenant(staff, { id: tenant, slug: `audit-${tenant.toLowerCase()}`, name: 'Audit' });
+          await host().provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'audit' });
+          await host().admin.activateScope(staff, tenant, scope);
+          if (action === 'assignRole' || action === 'unassignRole') await host().admin.defineRole(staff, tenant, { key: roleKey, permissions: [permission], source: 'vertical' });
+          if (action === 'grantToOrg') await host().admin.createOrg(staff, { id: org, tenantId: tenant, slug: `audit-${org.toLowerCase()}`, name: 'Audit' });
+          if (action === 'unassignRole') await host().admin.assignRole(staff, target);
           const before = await count();
 
+          await fixture.prepareOldScopeForIntentFault(tenant, scope);
           lift = await fault('intent');
           await expect(call()).rejects.toThrow();
+          expect(await fixture.oldScopeStayedUnmigrated(tenant, scope)).toBe(true);
           expect(await count()).toBe(before);
           expect(await rows()).toEqual([]);
           await lift(); lift = undefined;
@@ -79,7 +83,7 @@ export function scopePermissionAuditSuite(adapter: string, makeFixture: () => Pr
           expect(await count()).toBe(before);
           const failed = await rows();
           expect(failed.map((r) => (r.after as { phase: string }).phase)).toEqual(['intent']);
-          expect(await host.admin.settleUnrecordedOutcome(staff, { intentId: failed[0]!.id, error: 'scope answer unknown' })).toBe(true);
+          expect(await host().admin.settleUnrecordedOutcome(staff, { intentId: failed[0]!.id, error: 'scope answer unknown' })).toBe(true);
 
           lift = await fault('applied');
           const result = await call();
@@ -89,7 +93,7 @@ export function scopePermissionAuditSuite(adapter: string, makeFixture: () => Pr
           expect(pending).toHaveLength(2);
           const latest = pending.at(-1)!;
           const operationId = (latest.after as { operationId: string }).operationId;
-          expect(await host.admin.settleUnrecordedOutcome(staff, { intentId: latest.id, error: 'outcome missing' })).toBe(true);
+          expect(await host().admin.settleUnrecordedOutcome(staff, { intentId: latest.id, error: 'outcome missing' })).toBe(true);
           expect((await rows()).filter((r) => (r.after as { operationId?: string }).operationId === operationId)
             .map((r) => (r.after as { phase: string }).phase)).toEqual(['intent', 'unknown']);
           if (action === 'mintCapability') {

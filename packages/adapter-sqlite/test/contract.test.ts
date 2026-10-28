@@ -121,18 +121,32 @@ scopeAdminAuditTransactionSuite('adapter-sqlite', async () => {
 
 scopePermissionAuditSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-scope-permission-audit-'));
-  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker,
+  const newHost = () => new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
-  const directory = (host as unknown as { directory: { exec(sql: string): void } }).directory;
+  let host = newHost();
+  const directory = () => (host as unknown as { directory: { exec(sql: string): void } }).directory;
   const scopeDb = (tenant: string, scope: string) =>
     (host as unknown as { runtime(tenant: string, scope: string): { db: Database.Database } }).runtime(tenant, scope).db;
-  return {
+  const fixture = {
     host,
-    directoryExec: async (sql: string) => { directory.exec(sql); },
+    directoryExec: async (sql: string) => { directory().exec(sql); },
     scopeExec: async (tenant: string, scope: string, sql: string) => { scopeDb(tenant, scope).exec(sql); },
     scopeCount: async (tenant: string, scope: string, sql: string) => (scopeDb(tenant, scope).prepare(sql).get() as { n: number }).n,
+    prepareOldScopeForIntentFault: async (tenant: string, scope: string) => {
+      await host.close();
+      const raw = new Database(join(dir, `${tenant}__${scope}.sqlite`));
+      try { raw.exec('ALTER TABLE _substrat_capabilities DROP COLUMN attachments'); } finally { raw.close(); }
+      host = newHost();
+      fixture.host = host;
+    },
+    oldScopeStayedUnmigrated: async (tenant: string, scope: string) => {
+      const raw = new Database(join(dir, `${tenant}__${scope}.sqlite`), { readonly: true });
+      try { return !(raw.prepare("SELECT name FROM pragma_table_info('_substrat_capabilities') WHERE name = 'attachments'").get()); }
+      finally { raw.close(); }
+    },
     cleanup: async () => { await host.close(); rmSync(dir, { recursive: true, force: true }); },
   };
+  return fixture;
 });
 
 directoryAdminAuditTransactionSuite('adapter-sqlite', async () => {

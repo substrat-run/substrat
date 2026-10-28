@@ -85,7 +85,16 @@ scopeAdminAuditTransactionSuite('adapter-cloudflare', async () => {
 });
 
 scopePermissionAuditSuite('adapter-cloudflare', async () => {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE,
+  let countScopeStubGets = false;
+  let scopeStubGets = 0;
+  const trackedScope = {
+    idFromName: (name: string) => env.SCOPE.idFromName(name),
+    get: (id: DurableObjectId) => {
+      if (countScopeStubGets) scopeStubGets++;
+      return env.SCOPE.get(id);
+    },
+  } as typeof env.SCOPE;
+  const host = new CloudflareScopeHost({ scope: trackedScope, controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
   const directory = (sql: string) => runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')),
     (_, state) => { state.storage.sql.exec(sql); });
@@ -97,6 +106,24 @@ scopePermissionAuditSuite('adapter-cloudflare', async () => {
     scopeExec: async (_tenant: string, scope: string, sql: string) => { await scopeState(scope, sql); },
     scopeCount: async (_tenant: string, scope: string, sql: string) => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)),
       (_, state) => (state.storage.sql.exec(sql).toArray()[0] as { n: number }).n),
+    prepareOldScopeForIntentFault: async (_tenant: string, scope: string) => {
+      await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+        state.storage.sql.exec('ALTER TABLE _substrat_capabilities DROP COLUMN attachments');
+        if (state.storage.sql.exec("SELECT name FROM pragma_table_info('_substrat_capabilities') WHERE name = 'attachments'").toArray().length) {
+          throw new Error('the old scope still has the attachments column');
+        }
+      });
+      await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_, state) => {
+        state.abort('reopen old scope for intent fault');
+      }).catch(() => undefined);
+      scopeStubGets = 0;
+      countScopeStubGets = true;
+    },
+    oldScopeStayedUnmigrated: async () => {
+      countScopeStubGets = false;
+      // A cold DO cannot migrate unless the coordinator obtains a stub to wake it.
+      return scopeStubGets === 0;
+    },
     cleanup: async () => host.close(),
   };
 });
