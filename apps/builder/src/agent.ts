@@ -72,7 +72,7 @@ import {
 import { reportTurnUsage } from './metering.js';
 import { underProject, withinProject } from './project-path.js';
 import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
-import { checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote } from './repositories.js';
+import { checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote, writeSandboxFile } from './repositories.js';
 
 const REPO = '/workspace';
 const TOOLCHAIN = '/workspace/substrat';
@@ -294,7 +294,7 @@ export class BuilderAgent extends DurableObject<Env> {
 			await checkedExec(sb, 'mkdir -p /build');
 			await checkoutRepository(sb, await this.#access(entry, 'read', this.#tenant), root, entry.repository.branch);
 			if (request.snapshot) {
-				await raw.writeFile('/build/snapshot.json', JSON.stringify(request.snapshot));
+				await writeSandboxFile(sb, '/build/snapshot.json', JSON.stringify(request.snapshot));
 				await checkedExec(sb, 'node --import tsx /workspace/substrat/apps/builder/src/stage-source.ts /build/source /build/snapshot.json', TOOLCHAIN);
 				await checkedExec(sb, "git -c core.hooksPath=/dev/null add -A && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=build@substrat.invalid commit --allow-empty -m 'Source snapshot'", root);
 				if (entry.repository.kind === 'artifacts') {
