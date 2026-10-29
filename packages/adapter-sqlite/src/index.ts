@@ -918,6 +918,7 @@ import {
   settlePlatformRequestIn,
   type PlatformRequestSettle,
 } from '@substrat-run/kernel';
+import { canonicalInstant } from '@substrat-run/kernel';
 import {
   ADMIN_LOG_INDEXES_SQL,
   SETTLE_INTENT_SQL,
@@ -13832,10 +13833,8 @@ export class SqliteScopeHost implements ScopeHost {
       },
       listTenantModelUsageMeter: async (actor, filter: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]> => {
         const cursor = filter.cursor;
-        // SQLite compares these TEXT instants lexically. Match the millisecond format
-        // used by recorded rows so whole-second API boundaries remain half-open.
-        const since = new Date(filter.since).toISOString();
-        const until = new Date(filter.until).toISOString();
+        const since = canonicalInstant(filter.since);
+        const until = canonicalInstant(filter.until);
         const rows = this.directory.prepare(
           `SELECT id, at, substr(vertical, 1, 64) AS vertical, substr(model, 1, 128) AS model,
                   CASE WHEN length(vertical) > 64 OR length(model) > 128 THEN 1 ELSE 0 END AS label_truncated,

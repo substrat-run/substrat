@@ -512,7 +512,7 @@ export {
   type MigrationStep,
   type PendingMigration,
 } from './migration-digest.js';
-export { frozenClock, manualClock } from './clock.js';
+export { canonicalInstant, frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';

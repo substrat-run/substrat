@@ -304,6 +304,7 @@ export const INDEX_VALUE_EXPORTS = [
   'bytesStream',
   'callReservedStoreOperation',
   'callScopeStore',
+  'canonicalInstant',
   'capabilitiesForLoad',
   'capabilityAttachmentWriteRefused',
   'capabilityByIdQuery',

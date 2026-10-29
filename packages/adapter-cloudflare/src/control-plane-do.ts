@@ -210,6 +210,7 @@ import {
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
 import { autoAdmittedProdRefusal, listedPromoteRefusal, opsFailureReferenceWhere } from '@substrat-run/kernel';
+import { canonicalInstant } from '@substrat-run/kernel';
 import { doBuiltColumnsOf, doRedactionSql } from './sql.js';
 import type {
   AdminLogEntry,
@@ -6671,10 +6672,8 @@ export class ControlPlaneDO extends DurableObject {
 
   listTenantModelUsageMeter(query: TenantModelUsageMeterFilter): TenantModelUsageMeterRow[] {
     const cursor = query.cursor;
-    // Durable Object SQL stores canonical millisecond ISO instants as TEXT.
-    // Normalize whole-second API bounds before the lexical half-open comparison.
-    const since = new Date(query.since).toISOString();
-    const until = new Date(query.until).toISOString();
+    const since = canonicalInstant(query.since);
+    const until = canonicalInstant(query.until);
     const rows = this.sql.exec(
       `SELECT id, at, substr(vertical, 1, 64) AS vertical, substr(model, 1, 128) AS model,
               CASE WHEN length(vertical) > 64 OR length(model) > 128 THEN 1 ELSE 0 END AS label_truncated,
