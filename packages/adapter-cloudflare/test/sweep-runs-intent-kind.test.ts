@@ -144,6 +144,16 @@ describe('#1572: a directory DO carrying the (request_id, unit) index', () => {
     expect(counts.afterReplay).toBe(2);
     expect(counts.legacyUnit).toBe(1);
   });
+
+  it('stores an unsupported connector outcome without a failure row', async () => {
+    const stub = await legacyDirectory();
+    const saved = await runInDurableObject(stub, (_instance, state) => {
+      const cp = new ControlPlaneDO(state, env);
+      cp.recordSweepRun(row({ kind: 'connector', unit: 'invoice-connection', outcome: 'unsupported', error: 'invoice sweep unavailable' }));
+      return cp.listSweepRuns({ kind: 'connector', unit: 'invoice-connection' });
+    });
+    expect(saved).toEqual([expect.objectContaining({ outcome: 'unsupported', error: 'invoice sweep unavailable' })]);
+  });
 });
 
 /**
