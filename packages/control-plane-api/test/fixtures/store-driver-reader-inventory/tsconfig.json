@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
+  },
+  "files": [
+    "readers.ts",
+    "readers.tsx",
+    "store-driver-registration.d.ts"
+  ]
+}
