@@ -40,7 +40,7 @@ const TEMPLATE = join(HERE, 'template');
 const SUBSTRAT = '^0.165.0';
 const ENGINE_WORKORDER = '^0.12.49';
 const ENGINE_INVOICING = '^0.11.49';
-const BOUNDARY_LINT = '^0.8.0';
+const BOUNDARY_LINT = '^0.8.1';
 const DEV_ISSUER = '^0.2.47';
 const ATTACHMENT_EXTRACTORS = '^0.2.26';
 

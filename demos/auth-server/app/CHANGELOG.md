@@ -1,5 +1,17 @@
 # @substrat-run/demo-auth-server-app
 
+## 0.2.0
+
+### Minor Changes
+
+- c1661e6: Add verified-email fallback for GitHub sign-in when GitHub provides no verified email or the address differs from the dashboard invitation. Send a browser-bound, single-use verification link that expires after ten minutes, then resume the original OIDC request with the verified account email and the same GitHub identity.
+
+  Preserve existing user IDs and require an existing account's fresh session before explicitly connecting an email-less GitHub identity. Refuse automatic account merges, expired or replayed proofs, and addresses belonging to another account. Keep provider restrictions, sign-up policy and invitation checks in place.
+
+  Keep authenticated GitHub profiles usable when the optional email service fails, times out or returns unreadable data. Preserve organization SSO restrictions across all issuer applications before changing an existing email, and respect the expiry of temporary account bans.
+
+  Offer the fallback from dashboard invitation mismatches and distinguish pending email verification in the sign-in log. Recognize the GitHub email plugin as auth adapter code in the boundary linter.
+
 ## 0.1.1
 
 ### Patch Changes

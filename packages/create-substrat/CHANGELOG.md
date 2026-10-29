@@ -1,5 +1,12 @@
 # create-substrat
 
+## 0.13.3
+
+### Patch Changes
+
+- A new project now installs the package versions released alongside this one:
+  - `@substrat-run/boundary-lint`: `^0.8.1`
+
 ## 0.13.2
 
 ### Patch Changes
