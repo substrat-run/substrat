@@ -2705,8 +2705,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           }
         }
         truncated = entries.length > 500;
+        truncatedReason = truncated ? 'page-cap' : null;
         if (!truncated) break;
-        truncatedReason = 'page-cap';
         cursor = { at: entries[499]!.at, id: entries[499]!.id };
       }
     }

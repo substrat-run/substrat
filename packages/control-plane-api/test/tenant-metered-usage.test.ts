@@ -122,6 +122,31 @@ it('labels a capped model ledger scan as an at-least lower bound', async () => {
   }
 });
 
+it('clears the page-cap reason when a 501–1,000 row scan reaches the end', async () => {
+  let pages = 0;
+  const spy = vi.spyOn(host.admin, 'listTenantModelUsageMeter').mockImplementation(async (who, filter) => {
+    pages++;
+    const start = pages === 1 ? 0 : 500;
+    const count = pages === 1 ? 501 : 100;
+    return Array.from({ length: count }, (_, i) => ({
+      vertical: 'test-app', model: 'test-model', labelTruncated: false,
+      reported: true, inputTokens: 2, outputTokens: 3,
+      id: `cap-${String(start + i).padStart(4, '0')}`,
+      at: new Date(Date.now() - (start + i)).toISOString(),
+    }));
+  });
+  try {
+    const response = await app.request(`/tenants/${own}/metered-usage`, { headers });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(pages).toBe(2);
+    expect((await response.json()).models).toMatchObject({
+      state: 'complete', lowerBound: false, truncatedReason: null, calls: 600,
+    });
+  } finally {
+    spy.mockRestore();
+  }
+});
+
 it('uses a capped tenant storage gauge read instead of materializing readMeters', async () => {
   const oldRead = vi.spyOn(host.admin, 'readMeters').mockImplementation(() => { throw Error('unbounded meter read'); });
   const gaugeRead = vi.spyOn(host.admin, 'readTenantStorageGauge');

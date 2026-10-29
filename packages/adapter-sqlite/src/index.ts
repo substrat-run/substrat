@@ -13832,6 +13832,10 @@ export class SqliteScopeHost implements ScopeHost {
       },
       listTenantModelUsageMeter: async (actor, filter: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]> => {
         const cursor = filter.cursor;
+        // SQLite compares these TEXT instants lexically. Match the millisecond format
+        // used by recorded rows so whole-second API boundaries remain half-open.
+        const since = new Date(filter.since).toISOString();
+        const until = new Date(filter.until).toISOString();
         const rows = this.directory.prepare(
           `SELECT id, at, substr(vertical, 1, 64) AS vertical, substr(model, 1, 128) AS model,
                   CASE WHEN length(vertical) > 64 OR length(model) > 128 THEN 1 ELSE 0 END AS label_truncated,
@@ -13840,14 +13844,14 @@ export class SqliteScopeHost implements ScopeHost {
             WHERE tenant_id = ? AND at >= ? AND at < ?
               ${cursor ? 'AND (at < ? OR (at = ? AND id < ?))' : ''}
             ORDER BY at DESC, id DESC LIMIT ?`,
-        ).all(filter.tenantId, filter.since, filter.until,
+        ).all(filter.tenantId, since, until,
           ...(cursor ? [cursor.at, cursor.at, cursor.id] : []),
           Math.min(assertRowLimit('limit', filter.limit), 501)) as {
             id: string; at: string; vertical: string; model: string; label_truncated: number;
             reported: number; input_tokens: number; output_tokens: number;
           }[];
         this.recordAccess(actor, 'listTenantModelUsageMeter', { tenantId: filter.tenantId },
-          { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
+          { since, until, limit: filter.limit }, rows.length);
         return rows.map((row) => ({ id: row.id, at: row.at, vertical: row.vertical, model: row.model,
           labelTruncated: row.label_truncated !== 0, reported: row.reported !== 0,
           inputTokens: row.input_tokens, outputTokens: row.output_tokens }));
