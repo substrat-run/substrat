@@ -4,7 +4,7 @@
  * refuses the service token.
  *
  * - `upload` packs the driver's package from `--dir` and stores it. The control plane names the
- *   release by its sha256 and says whether this repo pins it yet; bytes may go up first.
+ *   release by its sha256; a staff person approves those bytes separately.
  * - `rollout --sha256` moves every vertical to a stored, pinned release, after a canary. A big
  *   fleet takes more than one request: the command says so, and running it again continues.
  * - `rollback` returns the driver to the immediately previous good release.
