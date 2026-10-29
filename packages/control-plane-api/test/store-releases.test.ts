@@ -997,9 +997,10 @@ describe('the release routes: a person stores, approves and rolls out a release 
     expect((await call(app, 'POST', `/store-drivers/graph/releases/${release}/revoke`, person,
       { reason: 'Revoke\u2069release' })).status).toBe(422);
     expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    // Valid shapes, in the repository a written-in-repo basis admits: a 64-hex commit, a `.git` form.
     const valid = { ...body, sourceReferences: [
-      { repository: 'https://example.test/driver.git', commit: release },
-      { repository: 'https://example.test/dependency', commit: COMMIT },
+      { repository: `${STORE_DRIVER_PLATFORM_REPOSITORY}.git`, commit: release },
+      { repository: STORE_DRIVER_PLATFORM_REPOSITORY, commit: COMMIT },
     ] };
     const approved = await call(app, 'POST', path, person, valid);
     expect(approved.status).toBe(201);
@@ -1053,6 +1054,21 @@ describe('the release routes: a person stores, approves and rolls out a release 
       expect(nestedText).toContain('isolationReview.envelopeChecked: unrecognized_key');
     }
     expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+  });
+
+  it('refuses (422) an approval naming another repository under a written-in-repo basis, so it never holds the live slot', async () => {
+    const app = appWith(asPerson);
+    const path = `/store-drivers/graph/releases/${shas[0]}/approvals`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const foreign = { ...reviewed(0), sourceReferences: [{ repository: 'https://github.com/other-org/graph', commit: COMMIT }] };
+    const refused = await call(app, 'POST', path, person, foreign);
+    expect(refused.status).toBe(422);
+    const text = await refused.text();
+    expect(text).toContain('sourceReferences: outside_isolation_basis');
+    expect(text).not.toContain('other-org');
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    // The corrected approval is not blocked by a row that could never run.
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(201);
   });
 
   it('refuses a normal revoke while a script runs the release or its settings are unreadable', async () => {

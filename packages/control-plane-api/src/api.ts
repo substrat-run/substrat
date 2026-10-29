@@ -21,6 +21,7 @@ import {
   assetHash,
   STORE_DRIVERS,
   storeCatalogOperation,
+  storeDriverBasisAdmits,
   channelName,
   connectLinkId,
   connectionActivity,
@@ -12689,6 +12690,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = await byAPerson(c, approvalWords);
     const sha256 = releaseSha(c.req.param('sha256'));
     const body = parseApprovalBody(await readCappedJson(c.req.raw, 64 * 1024));
+    // Refused here, not only by the readers (D-65 §3): a row its basis does not admit could never
+    // run, yet as a live approval it would hold the one slot a corrected approval needs. Fixed text,
+    // no input echoed.
+    if (!storeDriverBasisAdmits(registration.isolationBasis, body.sourceReferences)) {
+      throw new ControlPlaneError(422, 'not a store driver approval: sourceReferences: outside_isolation_basis');
+    }
     const flow = options.storeReleases;
     if (!flow) throw new ControlPlaneError(501, 'this control plane cannot read stored release bytes for approval');
     const approval = await approveStoredDriverRelease({ admin: c.var.admin, actor, bytes: flow.bytes, driver: registration.driver, sha256, approval: body });

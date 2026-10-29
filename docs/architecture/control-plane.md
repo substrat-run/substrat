@@ -580,9 +580,9 @@ and `POST /store-drivers/:driver/rollback` always goes there:
 - A rollback **onto the current release** (undoing a rollout that diverged) does not block a
   rollout. If a script there refuses to go below its schema, that rollback cannot finish, and
   rolling forward is the way out.
-- If the target of an unfinished rollback is no longer pinned, the rollback answers 422 and every
-  rollout 409 until a control plane that pins it again is deployed. Pins take effect at
-  control-plane deploy (D-63), and a pin is never meant to be removed.
+- If the target of an unfinished rollback has had its approval revoked, the rollback answers 422
+  and every rollout 409 until a person approves that release again (D-65). No deploy is needed:
+  approvals are data, and a re-approval carries the facts the first approval fixed.
 
 **A rollback across the store driver rename** (K-53, #2324). The release tables were named
 `store_kind_*`, keyed by `kind`, before the rename, and each start of the control plane moves a

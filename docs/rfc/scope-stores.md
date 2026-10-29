@@ -865,6 +865,9 @@ block it.
    every rollout is refused (409). A rollback onto the current release does not block a rollout,
    since a script's schema can keep it from ever finishing. A target that lost its pin holds the driver
    until a control plane that pins it again is deployed (`control-plane.md` §4.4).
+   *(Amended by step 4b of `store-driver-release-approval.md`, #2297: the pins above are now live
+   approvals recorded by a person, D-65. The upload runs only a release with one, and a target whose
+   approval was revoked holds the driver until a person approves it again, with no deploy.)*
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
