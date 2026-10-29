@@ -9,7 +9,7 @@ import { requestPublish, setListing } from '../src/listing.js';
 import { exchangeLoginCode } from '../src/login.js';
 import { promote } from '../src/promote.js';
 import { createPreview, deletePreview, listPreviews } from '../src/preview.js';
-import { nextVersion, uploadVersion } from '../src/push.js';
+import { nextVersion, uploadSource } from '../src/push.js';
 import {
   adoptScopeServing,
   adoptVerticalServing,
@@ -564,29 +564,25 @@ describe('the version reads behind push', () => {
   });
 });
 
-describe('the push upload', () => {
+describe('the source submission', () => {
   const target = { controlPlaneUrl: CP, authHeader: HEADER, slug: 'acme/crm' };
-  const form = () => {
-    const f = new FormData();
-    f.set('manifest', '{}');
-    return f;
-  };
+  const source = () => ({ version: '1.0.0', revision: 'a'.repeat(40), allowFork: false, allowUnservedUi: false, allowUnsweptSchedules: false, requireDataLossCheck: false });
 
-  it('POSTs the form with the credential map and NO content type (fetch writes the boundary)', async () => {
+  it('POSTs source JSON with the credential map', async () => {
     plane(json({ id: 'v1', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'acme/crm' }));
-    const f = form();
-    await expect(uploadVersion(target, f, 'worker.js (+0 modules)')).resolves.toMatchObject({ id: 'v1' });
+    const f = source();
+    await expect(uploadSource(target, f)).resolves.toMatchObject({ id: 'v1' });
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ url: `${CP}/verticals/acme%2Fcrm/deploy`, method: 'POST', headers: HEADER });
-    expect(seen[0]!.body).toBe(f);
-    expect(out[0]).toBe(`uploading worker.js (+0 modules) → ${CP}/verticals/acme%2Fcrm/deploy`);
+    expect(seen[0]).toMatchObject({ url: `${CP}/verticals/acme%2Fcrm/deploy`, method: 'POST', headers: { ...HEADER, ...JSON_TYPE } });
+    expect(JSON.parse(seen[0]!.body as string)).toEqual(f);
+    expect(out[0]).toBe(`submitting source → ${CP}/verticals/acme%2Fcrm/deploy`);
   });
 
   it('prints the problem document of a refusal, and nudges a stale CLI off it', async () => {
     onTty();
     plane(json({ type: 'about:blank', title: 'Conflict', status: 409, detail: 'fork refused', code: 'conflict', errors: [{ path: 'tenant', message: 'unknown' }] }, 409, STALE));
-    await expect(uploadVersion(target, form(), 'w')).rejects.toThrow(
-      'push failed (409 conflict): fork refused\n  tenant: unknown',
+    await expect(uploadSource(target, source())).rejects.toThrow(
+      'platform build failed (409 conflict): fork refused\n  tenant: unknown',
     );
     expect(err.join('\n')).toMatch(/a newer substrat CLI is available/);
   });
@@ -594,8 +590,8 @@ describe('the push upload', () => {
   it('a network failure is the error fetch threw; a web page names the likely fix', async () => {
     const boom = new TypeError('fetch failed');
     plane(boom);
-    await expect(uploadVersion(target, form(), 'w')).rejects.toBe(boom);
+    await expect(uploadSource(target, source())).rejects.toBe(boom);
     plane(new Response('<html>', { status: 200 }));
-    await expect(uploadVersion(target, form(), 'w')).rejects.toThrow(/got HTML, not JSON/);
+    await expect(uploadSource(target, source())).rejects.toThrow(/got HTML, not JSON/);
   });
 });

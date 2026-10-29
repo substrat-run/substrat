@@ -46,7 +46,8 @@ the diff (`--ack-permissions` / `--ack-migrations`).
 
 One credential principle underpins all of it: **the author never holds a Cloudflare token.**
 The control plane holds the Workers-for-Platforms credential and does the upload; the CLI
-builds locally and POSTs a bundle. (Decision D-34.)
+submits source and the platform builds the release in an isolated container. Repository and
+deployment credentials stay on the platform. (Decisions D-34 and D-66.)
 
 ## Install
 
@@ -329,18 +330,17 @@ that redeems it; the full rule is on the [vertical-auth reference](/reference/ve
 
 A push then:
 
-1. **Builds the bundle** with `wrangler deploy --dry-run --outdir` against the derived config —
-   running your `build` command first. workerd cannot bundle in the isolate, so the build always
-   happens on your side; the endpoint only ever receives a *built* worker.
-2. **Assembles the manifest** that travels with the bundle — your own store classes and
-   bindings, the runtime baseline and flags, the entry module — from the same derived config
-   the bundler consumed, so what you declared and what you shipped cannot drift.
-3. **Computes digests** — manifest, permission (from the bindings), migration (from the DO
-   classes and every SQL migration with its declared moves and discards) — the same digest-diff
-   surface the checkpoints read. The control plane derives the migration digest again from what it
-   stores, and refuses a push whose digest is not that one.
-4. **POSTs the bundle + manifest** to `{cp}/verticals/{slug}/deploy`, authenticated with your
-   own credential.
+1. **Captures source**, including uncommitted and untracked files. Ignored files, local
+   secrets, dependencies and generated output are excluded. A monorepo snapshot includes
+   the selected app, nested UI packages, workspace dependencies and build configuration.
+2. **Persists the revision** in the project's hosted source storage before requesting a
+   build. A CLI-created project appears in the builder's project menu.
+3. **Builds on the platform** in a fresh container: installs from the frozen lockfile,
+   builds workspace dependencies, runs the layer checks, executes your configured build
+   command and bundles the Worker. Keep your lockfile committed and current.
+4. **Assembles the release**: the manifest, permission and migration digests, modules,
+   static assets and source/build provenance. The control plane independently validates
+   the sandbox contract, migration digest and asset hashes before publication.
 
 The endpoint validates your declared bindings against the sandbox contract — a customer bundle
 that tries to declare a `CONTROL_PLANE` binding or a platform secret is refused *before* it

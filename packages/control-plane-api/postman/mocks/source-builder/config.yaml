@@ -1,0 +1,10 @@
+version: 1
+name: Platform source builder
+slug: source-builder
+protocol: http
+port: 4928
+interceptRequests: true
+scenarios:
+  - name: default
+    path: ./default.js
+    default: true

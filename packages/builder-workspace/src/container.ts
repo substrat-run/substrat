@@ -34,6 +34,8 @@ export interface ContainerWorkspaceOptions {
 	/** Absolute project root inside the container, e.g. /workspace/substrat/.builder/projects/x */
 	readonly root: string;
 	readonly id?: string;
+	/** Host-owned checker binaries, outside the disposable source repository. */
+	readonly toolchainRoot?: string;
 	readonly defaultTimeoutMs?: number;
 }
 
@@ -57,10 +59,12 @@ export class ContainerWorkspace implements Workspace {
 	readonly id: string;
 	readonly #sb: SandboxLike;
 	readonly #root: string;
+	readonly #toolchainRoot?: string;
 
 	constructor(opts: ContainerWorkspaceOptions) {
 		this.#sb = opts.sandbox;
 		this.#root = opts.root.replace(/\/+$/, '');
+		this.#toolchainRoot = opts.toolchainRoot?.replace(/\/+$/, '');
 		this.id = opts.id ?? `container:${this.#root}`;
 	}
 
@@ -70,6 +74,17 @@ export class ContainerWorkspace implements Workspace {
 
 	async exec(cmd: string, opts: ExecOptions = {}): Promise<ExecResult> {
 		const cwd = opts.cwd ? resolveWithin(this.#root, opts.cwd) : this.#root;
+		if (this.#toolchainRoot) {
+			const quote = (s: string): string => `'${s.replace(/'/g, `'"'"'`)}'`;
+			const tool = /^pnpm exec tsx tools\/(model-diff|permission-diff|api-diff)\.mts(?=\s|$)/.exec(cmd);
+			if (tool) {
+				cmd = `${quote(`${this.#toolchainRoot}/node_modules/.bin/tsx`)} ${quote(`${this.#toolchainRoot}/tools/${tool[1]}.mts`)}${cmd.slice(tool[0].length)}`;
+			} else if (cmd.startsWith('node packages/boundary-lint/dist/cli.js ')) {
+				cmd = `node ${quote(`${this.#toolchainRoot}/packages/boundary-lint/dist/cli.js`)}${cmd.slice('node packages/boundary-lint/dist/cli.js'.length)}`;
+			} else if (cmd.startsWith('pnpm exec tsc ')) {
+				cmd = `${quote(`${this.#toolchainRoot}/node_modules/.bin/tsc`)}${cmd.slice('pnpm exec tsc'.length)}`;
+			}
+		}
 		// env vars ride the command line: the sandbox exec has no env option in
 		// our structural slice, and the generator never passes secrets (§5.3).
 		const envPrefix = Object.entries(opts.env ?? {})

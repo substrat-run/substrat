@@ -21,6 +21,7 @@ export const PLATFORM_SCRIPT_NAMES: ReadonlySet<string> = new Set([
   ...ROUTER_SCRIPT_NAMES,
   'substrat-auth-server',
   'substrat-builder',
+  'substrat-builder-test',
   'substrat-control-plane',
   'substrat-control-plane-test',
   'substrat-dashboard',

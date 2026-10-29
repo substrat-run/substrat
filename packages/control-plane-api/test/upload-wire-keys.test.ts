@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,6 @@ import {
 } from '@substrat-run/contracts/wire-signing';
 import { ulid } from '@substrat-run/kernel';
 import {
-  createControlPlaneApi,
   createWfpUploader,
   deploymentRefFor,
   DEV_ACTOR_HEADER,

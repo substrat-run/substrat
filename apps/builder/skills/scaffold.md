@@ -39,12 +39,23 @@ it back to the builder — do not invent it here.
 
 ## package.json
 
-`@substrat-run/*` dependencies use version `"workspace:*"` (the project is a
-workspace member — this resolves). Typical set: `contracts`, `kernel`,
-`adapter-sqlite`, plus the engines composed. Scripts: `"typecheck": "tsc -p
-tsconfig.json --noEmit"`, `"test": "vitest run"`, `"dev": "tsx src/server.ts"`.
-devDependencies: `typescript`, `tsx`, `vitest`, `hono`, `@hono/node-server`,
-`@types/node`. Run `pnpm install` via run_command after changing package.json.
+Projects are standalone source repositories. Use published, pinned versions of
+`@substrat-run/*` packages; platform dependencies must not use `workspace:`, `catalog:`,
+`file:` or links to the platform checkout. `pnpm add --save-exact` resolves the available package version.
+Typical dependencies: `contracts`, `kernel`, `adapter-sqlite`, plus the engines composed.
+Scripts: `"typecheck": "tsc -p tsconfig.json --noEmit"`, `"test": "vitest run"`,
+`"dev": "tsx src/server.ts"`. devDependencies: `typescript`, `tsx`, `vitest`, `hono`,
+`@hono/node-server`, `@types/node`. Run `pnpm --ignore-workspace install` from the project
+via run_command after changing package.json, and commit the project's `pnpm-lock.yaml`.
+If `app/` has its own package.json, add a project-owned `pnpm-workspace.yaml` covering
+`.` and `app` so a root install includes the UI. Internal project packages can use
+workspace references; the platform packages still use published versions.
+
+For a hosted release, declare `substrat.runtimeNeeds` with the Worker entry, runtime
+requirements, own stores and asset build command. The Worker entry must use the hosted
+adapter and the vertical host; the local SQLite server remains a development entry.
+A release is built on the platform from saved source with a frozen lockfile, so local
+build outputs and the platform checkout are never deployment inputs.
 
 ## The files
 

@@ -325,15 +325,12 @@ describe('an unlaned build reads what it read on main (#2200 r1)', () => {
 	const skill = (f: string) => readFile(join(root, f), 'utf8');
 	const loaded = new Map(SKILL_MANIFEST.map((e) => [e.file, e.file]));
 
-	it('scaffold.md and ui.md, rejoined, are main\'s scaffold.md byte for byte', async () => {
-		// sha256 of apps/builder/skills/scaffold.md at f2683d45d (main when #682
-		// branched). ui.md is its closing paragraph, split out verbatim, so the
-		// unlaned scaffold carries the same rules in the same order — the only
-		// difference in the prompt is the separator the generator puts between
-		// two skills.
+	it('scaffold.md and ui.md retain the reviewed standalone-project baseline', async () => {
+		// D-66 changes source projects to standalone repos with pinned published
+		// dependencies and their own lockfile. Keep prompt changes deliberate.
 		const rejoined = `${await skill('apps/builder/skills/scaffold.md')}\n${await skill('apps/builder/skills/ui.md')}`;
 		expect(createHash('sha256').update(rejoined).digest('hex')).toBe(
-			'308be40091f0d5071ccd96ffb1aad2be146675e626e45a1de723ab1ee31ef542',
+			'5242b20de057354d6d187d96874d55078596b84d1e32e0fdf28778e01adb8b92',
 		);
 	});
 
@@ -661,7 +658,7 @@ describe('a laned build turn (eval harness, mocked agent)', () => {
 		});
 
 		expect(result.laned).toBe(true);
-		expect(result.passed).toBe(true);
+		expect(result.passed, JSON.stringify(result)).toBe(true);
 		// Turn 1: both lanes, the gates (red), then a repair that is UNLANED. Turn 2:
 		// both lanes again, and the gates go green.
 		expect(log.map((l) => l.lane)).toEqual(['api', 'ui', 'unlaned', 'api', 'ui']);

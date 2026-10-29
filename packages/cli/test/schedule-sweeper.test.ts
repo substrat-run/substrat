@@ -267,7 +267,7 @@ describe.runIf(existsSync(fileURLToPath(new URL('../dist/push.js', import.meta.u
     })};\n`;
     const RUNNER = `
 const [pushJs, dir] = process.argv.slice(2);
-const { push } = await import(pushJs);
+const { buildRelease } = await import(pushJs);
 // A plane from after #1902 lists its features on every answer; PLANE_FEATURES='' plays one from before.
 const features = process.env.PLANE_FEATURES ?? 'scope-sweeper';
 const headers = features ? { 'x-substrat-platform-features': features } : {};
@@ -276,7 +276,8 @@ globalThis.fetch = async (_url, init) => {
   else process.stdout.write('\\nASKED ' + String(_url) + '\\n');
   return new Response(JSON.stringify({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'leave' }), { headers });
 };
-await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true, allowUnsweptSchedules: process.argv.includes('--allow-unswept-schedules') });
+const built = await buildRelease({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true, allowUnsweptSchedules: process.argv.includes('--allow-unswept-schedules') });
+process.stdout.write('\\nMANIFEST ' + built.form.get('manifest') + '\\n');
 `;
 
     function run(dir: string, features?: string, ...flags: string[]): { status: number; stdout: string; stderr: string } {
@@ -309,21 +310,13 @@ await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.i
       expect(manifest.sweeperClasses).toEqual([]);
     });
 
-    it('asks the plane first, and refuses — uploading nothing — when it does not say it supplies one', () => {
+    it('assembles the supplied-sweeper declaration without a client capability probe', () => {
       const dir = tree({ 'package.json': pkg(STORES), 'perms.mjs': PERMS, 'src/worker.ts': 'export default {};\n', ...vertHost(true) });
-      const old = run(dir, '');
-      expect(old.status).not.toBe(0);
-      expect(old.stdout).toContain('ASKED http://cp.invalid/verticals/leave/versions?limit=1');
-      expect(old.stderr).toMatch(/does not say it supplies one.*predates #1902/s);
-      expect(old.stdout).not.toContain('MANIFEST ');
-      // A plane that lists other features, but not this one, is still silence on this one.
-      expect(run(dir, 'something-else').stdout).not.toContain('MANIFEST ');
-      // …and the deliberate way past it says so.
-      const forced = run(dir, '', '--allow-unswept-schedules');
-      expect(forced.status, forced.stderr).toBe(0);
-      expect(forced.stdout).toMatch(/warning: --allow-unswept-schedules — .*predates #1902/s);
-      expect(forced.stdout).toContain('MANIFEST ');
-    }, 15_000);
+      const result = run(dir, '');
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('ASKED ');
+      expect(result.stdout).toContain('MANIFEST ');
+    });
 
     it('does not ask when it leaves nothing to the plane: it brings its own sweeper', () => {
       const own = run(tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'perms.mjs': PERMS, 'src/worker.ts': SWEEPER_ENTRY }), '');

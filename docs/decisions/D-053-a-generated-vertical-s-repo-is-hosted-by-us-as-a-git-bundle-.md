@@ -3,13 +3,18 @@ id: D-53
 date: 2026-08-15
 layer: plan
 title: "A generated vertical's repo is hosted by us as a git bundle in R2, not on GitHub"
-status: accepted
+status: superseded
+superseded-by: D-66
 aliases: []
 tracking: []
 source: docs/architecture/builder/studio.md §13
 ---
 
 # D-53 — A generated vertical's repo is hosted by us as a git bundle in R2, not on GitHub
+
+Superseded by [D-66](./D-066-projects-use-github-or-artifacts-and-the-platform-builds-every-release.md):
+GitHub and Cloudflare Artifacts are the source backends, with no migration requirement for
+existing builder projects. The text below records the previous decision.
 
 > **Ratified 2026-08-19.** Transcribed from docs/architecture/builder/studio.md §13 during the Phase-2 log
 > split, which found this decision built but never written into the log. The text is

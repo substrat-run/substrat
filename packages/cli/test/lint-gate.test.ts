@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { assertLayerRules, push } from '../src/push.js';
+import { assertLayerRules, buildRelease as push } from '../src/push.js';
 
 /**
  * The push gate (#955).
@@ -110,7 +110,7 @@ describe('assertLayerRules — the layer rules, run on the way out', () => {
   });
 });
 
-describe('push() — the gate is ON the push path, before anything is built', () => {
+describe('platform release assembly runs the gate before building', () => {
   it('rejects a violating tree without building or uploading', async () => {
     captureLog();
     // No wrangler is spawned and no fetch is made: the refusal lands first, which is the

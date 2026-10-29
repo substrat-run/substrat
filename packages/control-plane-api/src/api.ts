@@ -1,3 +1,4 @@
+import { sourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 import { connectionBindingOptions } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
@@ -512,6 +513,10 @@ export interface ControlPlaneApiOptions {
    * 501s. See `deploy.ts`.
    */
   deployVertical?: DeployVerticalFn;
+  /** Hosted deployments accept source only. The private build service returns release parts. */
+  sourceBuilds?: SourceBuildService;
+  githubRepositoryAccess?: (tenantId: string, owner: string, repo: string, installationId: string, scope: 'read' | 'write') => Promise<{ remote: string; token: string }>;
+
   /**
    * Uploads the store script for each declared scope store before the vertical's own
    * upload (#2210). Absent ⇒ a push that declares a store and has a registered driver is
@@ -2099,6 +2104,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
+    { method: 'GET', re: /\/projects$/ },
+    { method: 'POST', re: /\/projects$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/deploy$/ },
     // A builder REQUESTS publication of a vertical it owns (marketplace-publish.md §5); the
     // `listing` flip stays staff-only. Ownership is checked in the handler.
@@ -9678,12 +9685,83 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // pointing at a deployment that is not there. The version lands PENDING — except a
   // PRIVATE vertical's, which self-admits below the seam (its blast radius is its own
   // tenant); for everything else admission still gates serving.
+  app.all('/projects', async (c) => {
+    if (!options.sourceBuilds) return refuseStatus(c, 501, 'source builds are not configured');
+    const p = c.get('principal');
+    if (p.kind !== 'builder' && p.kind !== 'staff') return refuse(c, 'forbidden', 'forbidden');
+    const tenant = p.kind === 'builder' ? p.tenantId : c.req.query('tenant');
+    if (!tenant) return refuse(c, 'validation_failed', 'tenant id is required');
+    const tenants = await c.var.admin.listTenants(c.get('actor'));
+    if (!tenants.some((t) => t.id === tenant)) return refuse(c, 'not_found', 'unknown workspace');
+    let body: string | undefined;
+    if (c.req.method === 'POST') {
+      const input = z.object({ slug: z.string().min(1), name: z.string().min(1), repository: z.unknown().optional() }).parse(await c.req.json());
+      const team = tenants.find((t) => t.id === tenant)!;
+      const slug = await ownerOf(c.get('actor'), input.slug) === tenant || input.slug.startsWith(`${team.slug}/`) ? input.slug : `${team.slug}/${input.slug}`;
+      verticalSlug.parse(slug);
+      const owner = await ownerOf(c.get('actor'), slug);
+      if (owner !== undefined && owner !== tenant) return refuse(c, 'forbidden', 'forbidden');
+      body = JSON.stringify({ ...input, slug });
+    } else if (c.req.method !== 'GET') return refuseStatus(c, 405, 'method not allowed');
+    return options.sourceBuilds.projects(tenant, new Request('https://source/projects', {
+      method: c.req.method, ...(body ? { headers: { 'content-type': 'application/json' }, body } : {}),
+    }));
+  });
+
+  app.post('/source/github-access', async (c) => {
+    if (c.get('principal').kind !== 'staff') return refuse(c, 'forbidden', 'forbidden');
+    if (!options.githubRepositoryAccess) return refuseStatus(c, 501, 'GitHub source access is not configured');
+    const input = z.object({ tenantId: tenantIdSchema, owner: z.string().regex(/^[\w-]+$/), repo: z.string().regex(/^[\w.-]+$/), scope: z.enum(['read', 'write']).default('read') }).parse(await c.req.json());
+    const connection = await c.var.admin.openConnection(input.tenantId, 'dashboard', 'github', input.owner);
+    const installationId = connection?.secret.installationId;
+    if (typeof installationId !== 'string') return refuse(c, 'not_found', 'no connected GitHub installation for this tenant and owner');
+    return c.json(await options.githubRepositoryAccess(input.tenantId, input.owner, input.repo, installationId, input.scope));
+  });
+
   app.post('/verticals/:slug/deploy', async (c) => {
     if (!options.deployVertical) {
       return refuseStatus(c, 501, 'deploy is not configured on this control plane');
     }
     const p = c.get('principal');
-    const form = await c.req.formData();
+    let built: BuiltSource | undefined;
+    let requestedVersion: string | undefined;
+    let form: FormData;
+    if (options.sourceBuilds) {
+      if (!c.req.header('content-type')?.startsWith('application/json')) {
+        return refuseStatus(c, 415, 'submit source JSON; client-built module uploads are no longer accepted');
+      }
+      const input = sourceBuildRequest.parse(await c.req.json());
+      const bare = c.req.param('slug');
+      let sourceSlug = bare;
+      let sourceTenant: string | null = null;
+      if (p.kind === 'builder') {
+        if (input.tenant && input.tenant !== p.tenantId && input.tenant !== p.tenantSlug) {
+          return refuse(c, 'forbidden', `push is pinned to workspace '${input.tenant}' but this session acts for '${p.tenantSlug}'`);
+        }
+        sourceTenant = p.tenantId;
+        sourceSlug = effectiveSlug(p, bare);
+      } else if (input.tenant) {
+        const tenant = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.id === input.tenant || t.slug === input.tenant);
+        if (!tenant) return refuse(c, 'not_found', 'unknown workspace');
+        sourceTenant = tenant.id;
+        sourceSlug = bare.startsWith(`${tenant.slug}/`) || await ownerOf(c.get('actor'), bare) === tenant.id ? bare : `${tenant.slug}/${bare}`;
+      }
+      const owner = await ownerOf(c.get('actor'), sourceSlug);
+      if (sourceTenant && owner !== undefined && owner !== sourceTenant) return refuse(c, 'forbidden', 'forbidden');
+      sourceTenant ??= owner ?? null;
+      verticalSlug.parse(sourceSlug);
+      if (platformScriptCollision(sourceSlug)) return refuseStatus(c, 422, 'reserved platform script name');
+      requestedVersion = input.version;
+      built = await options.sourceBuilds.build(sourceTenant ?? 'platform', sourceSlug, input);
+      form = built.form;
+      // Addressing is the authenticated caller's, never a field emitted by project code.
+      form.delete('tenant');
+      if (input.tenant) form.set('tenant', input.tenant);
+      form.delete('allowFork');
+      if (input.allowFork) form.set('allowFork', '1');
+    } else {
+      return refuseStatus(c, 501, 'platform source builds are not configured');
+    }
     const raw = form.get('manifest');
     if (typeof raw !== 'string') return refuse(c, 'validation_failed', 'missing manifest part');
     const parsed: unknown = JSON.parse(raw);
@@ -9691,6 +9769,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuse(c, 'validation_failed', 'manifest registry: required when modules are present');
     }
     const manifest = deployManifest.parse(parsed);
+    if (requestedVersion && manifest.version !== requestedVersion) return refuseStatus(c, 502, 'build service produced a different release version');
     const moduleProblems = pushedModuleRegistryProblems(manifest.modules, manifest.registry);
     if (moduleProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.permissions: ${moduleProblems.join('; ')}`);
     // #2430: an owner grant is a person's, so it holds no key the registry reserves.
@@ -9761,7 +9840,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // Otherwise the claim lands under the tenant prefix, exactly like a builder push —
       // same namespace, no claim race with other workspaces' bare names.
       const bareOwner = await ownerOf(c.get('actor'), bare);
-      slug = bareOwner === workspace.id ? bare : `${workspace.slug}/${bare}`;
+      slug = bare.startsWith(`${workspace.slug}/`) || bareOwner === workspace.id ? bare : `${workspace.slug}/${bare}`;
       const existingOwner = slug === bare ? bareOwner : await ownerOf(c.get('actor'), slug);
       if (existingOwner !== undefined && existingOwner !== workspace.id) {
         return refuse(c, 'forbidden', `vertical '${slug}' is not owned by workspace '${pin}'`);
@@ -10057,7 +10136,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     }
     const version = await c.var.admin.getVersion(c.get('actor'), id, slug);
-    return c.json({ ...version, ...(warnings.length ? { warnings } : {}) }, 201);
+    return c.json({ ...version, ...(built ? { projectId: built.projectId, revision: built.revision, dataLoss: built.dataLoss } : {}), ...(warnings.length ? { warnings } : {}) }, 201);
   });
 
   // -- where this platform runs (ops ergonomics) -----------------------------
@@ -12464,7 +12543,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     { message: 'must be printable text' });
   const reviewEvidence = z.object({ met: z.boolean(), evidence: auditText }).strict();
   const checkedEvidence = z.object({ checked: z.literal(true), evidence: auditText }).strict();
-  // D-65 stores the reviewer's exact references: one HTTPS repository URL and one hex revision.
+  // D-66 stores the reviewer's exact references: one HTTPS repository URL and one hex revision.
   const repositoryReference = z.string().min(1).max(1024).refine((value) => {
     if (!value.startsWith('https://') || /[\s\\?#]/u.test(value) || nonPrinting.test(value)) return false;
     try {

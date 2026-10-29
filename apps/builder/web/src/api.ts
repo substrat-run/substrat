@@ -14,6 +14,8 @@ export type BuildPhase = Extract<BuildEvent, { type: 'phase' }>['phase'];
 export interface ProjectInfo {
 	id: string;
 	name: string;
+	slug?: string;
+	repository?: { kind: 'github' | 'artifacts' };
 	nameSource: 'auto' | 'ai' | 'user';
 	dir: string;
 	createdAt: string;
@@ -21,6 +23,7 @@ export interface ProjectInfo {
 }
 
 export interface SessionInfo {
+	sourceProjects?: boolean;
 	root: string;
 	vertical: string;
 	project: Pick<ProjectInfo, 'id' | 'name' | 'nameSource'>;
@@ -169,12 +172,16 @@ export const api = {
 		f('/api/history').then((r) => j<Array<{ role: 'user' | 'assistant'; text: string }>>(r)),
 	projects: () =>
 		f('/api/projects').then((r) => j<{ current: string; projects: ProjectInfo[] }>(r)),
-	createProject: (name?: string) =>
+	createProject: (name?: string, source?: { slug?: string; repository?: { kind: 'github'; owner: string; repo: string; branch: string; directory: string } }) =>
 		f('/api/projects', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ name }),
+			body: JSON.stringify({ name, ...source }),
 		}).then((r) => j<ProjectInfo>(r)),
+	verticals: () => f('/api/verticals').then((r) => j<{ entries: Array<{ slug: string; name: string }> }>(r)),
+	buildRelease: (version: string) => f('/api/release', {
+		method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ version }),
+	}).then((r) => j<{ id: string; admission: string }>(r)),
 	selectProject: (id: string) =>
 		f('/api/projects/select', {
 			method: 'POST',

@@ -2,7 +2,7 @@
   "name": "@substrat-run/builder",
   "version": "0.7.20",
   "private": true,
-  "description": "The builder studio — chat → vertical. Terminal driver today; Worker + chat pane to come (builder-studio.md §7).",
+  "description": "The builder studio \u2014 chat \u2192 vertical. Terminal driver today; Worker + chat pane to come (builder-studio.md \u00a77).",
   "type": "module",
   "scripts": {
     "dev": "tsx src/dev.ts",
@@ -14,13 +14,15 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json",
     "cf:deploy": "pnpm --filter @substrat-run/builder-web build && node ../../tools/wrangler-config.mjs --app builder && wrangler deploy -c wrangler.generated.jsonc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cf:deploy:test": "pnpm --filter @substrat-run/builder-web build && node ../../tools/wrangler-config.mjs --app builder --env test && wrangler deploy -c wrangler.generated.jsonc --env test"
   },
   "dependencies": {
     "@cloudflare/sandbox": "0.12.14",
     "@substrat-run/adapter-cloudflare": "workspace:*",
     "@substrat-run/builder-generator": "workspace:*",
     "@substrat-run/builder-workspace": "workspace:*",
+    "@substrat-run/cli": "workspace:*",
     "@substrat-run/contracts": "workspace:*",
     "@substrat-run/control-plane-api": "workspace:*",
     "@substrat-run/engine-metering": "workspace:*",

@@ -56,13 +56,8 @@
 		}
 	],
 
-	// D-52 (#627): one bare repo per project, as ULID-keyed git bundles in R2 —
-	// the durable tier that survives container sleep. R2 has NO object
-	// versioning (verified), so the rollback trail is app-level: last N bundles
-	// kept per project, pruned on save.
-	"r2_buckets": [
-		{ "binding": "PROJECT_REPOS", "bucket_name": "substrat-builder-repos" }
-	],
+	// D-66: Git-compatible hosted source. Project/session metadata stays in the agent DO.
+	"artifacts": [{ "binding": "ARTIFACTS", "namespace": "substrat-projects" }],
 
 	// The control plane's auth DB — READ-ONLY roster lookups (staff_actor).
 	// Same database the console consults; the builder never writes to it.
@@ -72,7 +67,24 @@
 			"database_name": "substrat-control-plane-auth",
 			"database_id": "${CF_D1_AUTH_DB_ID}"
 		}
-	]
+	],
+
+	// The source build service has an isolated test environment; it never reaches prod repos.
+	"env": {
+		"test": {
+			"routes": [],
+			"workers_dev": true,
+			"services": [{ "binding": "CONTROL_PLANE_SVC", "service": "substrat-control-plane-test" }],
+			"durable_objects": { "bindings": [
+				{ "name": "BUILDER_AGENT", "class_name": "BuilderAgent" },
+				{ "name": "Sandbox", "class_name": "Sandbox" },
+				{ "name": "SCOPE", "class_name": "ScopeDO" }
+			] },
+			"containers": [{ "class_name": "Sandbox", "image": "../../builder.Dockerfile", "instance_type": "standard-3", "max_instances": 4 }],
+			"artifacts": [{ "binding": "ARTIFACTS", "namespace": "substrat-projects-test" }],
+			"d1_databases": [{ "binding": "AUTH_DB", "database_name": "substrat-control-plane-auth-test", "database_id": "${CF_D1_AUTH_DB_ID_TEST}" }]
+		}
+	}
 
 	// Secrets (scripts/secrets.mjs, secrets/platform.<env>.env):
 	//   OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, SESSION_SECRET,

@@ -103,6 +103,13 @@ export function turnFailure(err: unknown): string {
 	return TURN_FAILED;
 }
 
+/** Reviewed source-operation failures may include the tenant's compiler diagnostics. */
+export class SourceBuildError extends Error {}
+
+export function sourceBuildFailure(err: unknown): string {
+	return err instanceof SourceBuildError ? err.message : 'the source build stopped unexpectedly; the cause is in the server log';
+}
+
 /** A problem on the wire — the one place both runtimes take the media type from. */
 function problemWire(problem: Problem): {
 	status: number;
@@ -145,6 +152,7 @@ export function refuse(status: number, detail: string): Response {
  * and the document discloses nothing of it.
  */
 export function unhandledProblem(err: unknown): Problem {
+	if (err instanceof SourceBuildError) return refusalProblem(422, err.message);
 	// The node server's answer to a body that is not JSON, as before #113: the 500 and the
 	// parser's sentence, which describes the caller's own input and nothing of ours.
 	if (err instanceof MalformedBody) return refusalProblem(500, err.message);

@@ -6,6 +6,14 @@ description: The untrusted trust model and the sandbox contract.
 
 # Self-serve vertical deploy — the untrusted trust model
 
+**Source builds (D-66):** the public deploy route accepts a source snapshot or a pinned
+project revision as JSON. The platform persists source, runs checks and builds in a fresh
+container, then feeds the produced manifest, modules and assets into the admission and
+upload checks below. Client-built module uploads are refused. The builder's GitHub and
+Artifacts repositories share this path; see [studio §4.6](builder/studio.md#46-platform-builds).
+The model-B discussion below records the previous opaque-bundle boundary; platform builds
+replace its client-supplied lint receipt with checks over the submitted source.
+
 **Status:** foundation **built** (§7.1 / §8) — `substrat push` + the deploy endpoint land a
 version under D-36's admission rules; the `substrat` CLI (`packages/cli`) ships it and every pushed
 vertical deploys through it. The untrusted-builder models B/A (§3) remain design. Extends

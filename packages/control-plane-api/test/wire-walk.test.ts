@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 /**
  * RFC wire-signing follow-on 4, the fleet walk: `POST /wire-auth/walk` brings every deployed script's
  * key lists, audience and state to what the control plane gives now, a pass at a time. Driven through
@@ -15,7 +16,6 @@ import { generateScopeStoreKeyPair, scopeStoreKeyId } from '@substrat-run/contra
 import { WIRE_AUDIENCE_VAR, WIRE_PLATFORM_KEYS_VAR, WIRE_ROUTER_KEYS_VAR, WIRE_STATE_VAR } from '@substrat-run/contracts/wire-signing';
 import { ulid } from '@substrat-run/kernel';
 import {
-  createControlPlaneApi,
   createWfpUploader,
   deploymentRefFor,
   DEV_ACTOR_HEADER,

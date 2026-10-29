@@ -103,15 +103,27 @@ describe.runIf(built && kernelBuilt)('push --check refuses the same tree', () =>
 /**
  * The commands themselves, not `push()`: `substrat push` and `substrat preview create` each read
  * the switch off their own argv, and a command that forgot to pass it would push permissively
- * while the other refused. `--version` skips the registry round-trip, and the control plane is an
- * address nothing listens on, so a test that reaches the network fails there, after the check.
+ * while the other refused. The platform fixture refuses an unchecked build only when the
+ * serialized source request requires the check; command callers must forward that policy.
  */
 describe.runIf(built)('the commands pass the strict switch to the push', () => {
   const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
   const command = (args: string[], env: NodeJS.ProcessEnv = {}) => {
     // The vertical's own (fake) wrangler builds it: `vertical()` installs one.
     const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-cmd-'));
-    const r = spawnSync(process.execPath, [cli, ...args, '--skip-lint'], {
+    const r = spawnSync(process.execPath, ['--input-type=module'], {
+      input: `
+        process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(args)}, '--skip-lint'];
+        globalThis.fetch = async (url, init) => {
+          if (String(url).endsWith('/deploy')) {
+            const source = JSON.parse(init.body);
+            if (source.requireDataLossCheck) return Response.json({ detail: '--require-data-loss-check (or SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1) refuses a push it could not fully check' }, { status: 422 });
+            return Response.json({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'helpdesk', dataLoss: { status: 'skipped', why: 'fixture has no kernel' } });
+          }
+          return Response.json({ tag: 'pr-1', scopeId: 's', versionId: 'v', url: 'https://preview.example.test' });
+        };
+        await import(${JSON.stringify(new URL('../dist/cli.js', import.meta.url).href)});
+      `,
       env: {
         ...process.env,
         HOME: scratch,
@@ -140,8 +152,8 @@ describe.runIf(built)('the commands pass the strict switch to the push', () => {
       expect(strict.out).toMatch(REFUSED);
       expect(strict.out).not.toContain('uploading');
       const permissive = command(args(unchecked()));
-      expect(permissive.out).toContain('⚠ data-loss check: SKIPPED');
-      expect(permissive.out).toContain('uploading');
+      expect(permissive.out).toContain('data-loss check: SKIPPED');
+      expect(permissive.out).toContain('submitting source');
       expect(permissive.out).not.toMatch(REFUSED);
     });
 

@@ -1,0 +1,6 @@
+simulation: source-builds
+routing: path
+mocks:
+  - name: source-builder
+    routeKey: builder
+    path: packages/control-plane-api/postman/mocks/source-builder/config.yaml

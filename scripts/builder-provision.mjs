@@ -7,14 +7,12 @@
  * Safe to run MANY times: every step checks current state before acting and
  * reports ✓ (already correct) or → (changed it now). Exists because multi-step
  * manual ops drift — the platform's own 08-01 rotation incident is the proof —
- * and because "does that bucket exist, are the secrets there?" should be a
+ * and because "is source storage configured, are the secrets there?" should be a
  * question this script answers, not a memory.
  *
  * Steps:
- *   1. R2 bucket `substrat-builder-repos` exists       (wrangler; D-52)
- *   2. Rollback trail: reports that it is APP-LEVEL bundle history — R2 has
- *      NO object versioning (verified by probing the v4 API; step 2 below
- *      only says so, it enables nothing)
+ *   1. Check the Artifacts namespace (D-66); first repository creation can create it.
+ *   2. Existing Git bundles and builder projects are not migrated.
  *   3. Builder secrets present in the env file          (names only, never values)
  *   4. Push builder secrets                             (delegates: secrets.mjs
  *      push --env <env> --only builder)
@@ -25,7 +23,6 @@
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 
-const BUCKET = 'substrat-builder-repos';
 const HOST = 'https://builder.substrat.net';
 
 const argv = process.argv.slice(2);
@@ -35,6 +32,7 @@ const flag = (n) => {
 };
 const has = (n) => argv.includes(`--${n}`);
 const ENV = flag('env') ?? 'prod';
+const NAMESPACE = ENV === 'test' ? 'substrat-projects-test' : 'substrat-projects';
 const DRY = has('dry-run');
 
 const ok = (m) => console.log(`  ✓ ${m}`);
@@ -72,46 +70,13 @@ const secrets = readEnvFile(envFile);
 
 console.log(`builder provision · env=${ENV}${DRY ? ' · DRY RUN (no changes)' : ''}\n`);
 
-// ── 1. bucket ────────────────────────────────────────────────────────────────
-console.log('R2 bucket');
-let bucketExists = false;
+// ── 1. source repository backend ─────────────────────────────────────────
+console.log('Cloudflare Artifacts');
 try {
-	sh(`npx wrangler r2 bucket info ${BUCKET}`, { cwd: 'apps/builder' });
-	bucketExists = true;
-	ok(`${BUCKET} exists`);
+	sh(`npx wrangler artifacts namespaces get ${NAMESPACE}`, { cwd: 'apps/builder' });
+	ok(`${NAMESPACE} exists`);
 } catch {
-	if (DRY) act(`would create ${BUCKET}`);
-	else {
-		sh(`npx wrangler r2 bucket create ${BUCKET}`, { cwd: 'apps/builder' });
-		bucketExists = true;
-		act(`created ${BUCKET}`);
-	}
-}
-
-// ── 2. versioning (dashboard-only: the v4 API has NO versioning endpoint —
-// learned by probing; R2 versioning is managed via the S3 API or the dash) ──
-console.log('Object versioning (the D-52 rollback trail)');
-const token = secrets.BUILDER_CF_API_TOKEN || secrets.CF_API_TOKEN;
-const account = secrets.CF_ACCOUNT_ID;
-if (!secrets.BUILDER_CF_API_TOKEN && secrets.CF_API_TOKEN) {
-	warn('using the control plane CF_API_TOKEN for R2 (no BUILDER_CF_API_TOKEN set) —');
-	warn('prefer a dedicated token with only Workers R2 Storage:Edit.');
-}
-if (!token || !account) {
-	warn(`no R2-capable token in ${envFile} — cannot verify the bucket at all.`);
-} else {
-	const r = await fetch(
-		`https://api.cloudflare.com/client/v4/accounts/${account}/r2/buckets`,
-		{ headers: { authorization: `Bearer ${token}` } },
-	);
-	const body = await r.json().catch(() => null);
-	const names = (body?.result?.buckets ?? []).map((b) => b.name);
-	if (body?.success && names.includes(BUCKET)) {
-		ok(`token verified against R2 (bucket visible)`);
-	} else {
-		warn(`token cannot list R2 buckets (HTTP ${r.status}) — check its permissions.`);
-	}
-	ok('rollback trail: app-level bundle history (R2 has NO object versioning — verified)');
+	warn(`${NAMESPACE} is created with the first repository. If a jurisdiction is required, provision the namespace with that jurisdiction before first use.`);
 }
 
 // ── 3. secrets present (names only) ─────────────────────────────────────────
@@ -154,12 +119,13 @@ else {
 }
 
 // ── 5. deploy ────────────────────────────────────────────────────────────────
+const deployCommand = `pnpm --filter @substrat-run/builder cf:deploy${ENV === 'test' ? ':test' : ''}`;
 console.log('Deploy');
 if (has('skip-deploy')) warn('skipped (--skip-deploy)');
-else if (DRY) act('would run: pnpm --filter @substrat-run/builder cf:deploy');
+else if (DRY) act(`would run: ${deployCommand}`);
 else {
 	act('deploying (first run builds the container image — slow is normal)…');
-	execSync('pnpm --filter @substrat-run/builder cf:deploy', {
+	execSync(deployCommand, {
 		stdio: 'inherit',
 		env: { ...process.env, ...(secrets.CF_ACCOUNT_ID ? { CLOUDFLARE_ACCOUNT_ID: secrets.CF_ACCOUNT_ID } : {}) },
 	});

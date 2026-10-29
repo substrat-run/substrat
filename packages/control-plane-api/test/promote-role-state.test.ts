@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,6 @@ import { ulid, type RoleState } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import {
-  createControlPlaneApi,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   SERVICE_TOKEN_HEADER,

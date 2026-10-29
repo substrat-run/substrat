@@ -7,10 +7,10 @@ import { installFakeWrangler } from './fake-wrangler.js';
 import type { DeployManifest } from '@substrat-run/contracts';
 
 /**
- * A vertical pushed through the real `push()` — the only place the deploy manifest, and the
+ * A vertical passed through the real platform `buildRelease()` — the only place the deploy manifest, and the
  * digests the promotion gate compares, are assembled (#1677, #1995).
  *
- * The BUILT push, in a plain node child: the push imports a module it bundles on the fly,
+ * The compiled assembler, in a plain node child: the push imports a module it bundles on the fly,
  * which vitest's module runner cannot load (the `--check` suite in push.test.ts runs the
  * built CLI for the same reason). The wrangler build is a fake `wrangler` package in the
  * vertical's node_modules (fake-wrangler.ts) that writes one module where wrangler would, and
@@ -94,12 +94,10 @@ export function vertical(
 
 const RUNNER = `
 const [pushJs, dir, extra] = process.argv.slice(2);
-const { push } = await import(pushJs);
-globalThis.fetch = async (_url, init) => {
-  process.stdout.write('\\nMANIFEST ' + init.body.get('manifest') + '\\n');
-  return new Response(JSON.stringify({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'helpdesk' }));
-};
-const v = await push({ dir, slug: 'helpdesk', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true, ...JSON.parse(extra) });
+const { buildRelease } = await import(pushJs);
+globalThis.fetch = async () => { throw new Error('release assembly must not call the control plane'); };
+const v = await buildRelease({ dir, slug: 'helpdesk', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true, ...JSON.parse(extra) });
+process.stdout.write('\\nMANIFEST ' + v.form.get('manifest') + '\\n');
 process.stdout.write('\\nDATALOSS ' + JSON.stringify(v.dataLoss) + '\\n');
 `;
 

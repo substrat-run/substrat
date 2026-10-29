@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +11,6 @@ import { denialLogQuery } from '../src/api.js';
 import { takeNonProblemRefusals } from './setup/problem-tripwire.js';
 import { heldManifest, heldVersion } from './held-manifest.js';
 import {
-  createControlPlaneApi,
   ControlPlaneError,
   DeployUploadError,
   DEV_ACTOR_HEADER,

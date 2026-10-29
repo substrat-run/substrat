@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 /**
  * RFC wire-signing follow-on 4, the readiness report: `POST /wire-auth/readiness` and its gate
  * predicates (what blocks `signed-only`, a key drop and the withdrawal of the shared credential).
@@ -15,7 +16,7 @@ import { LIST_PAGE_MAX, platformActorId, tenantId, type DeploymentWireAuth } fro
 import { generateScopeStoreKeyPair, scopeStoreKeyId } from '@substrat-run/contracts/scope-store-envelope';
 import { WIRE_UNSIGNED_ROUTES } from '@substrat-run/contracts/wire-signing';
 import { ulid } from '@substrat-run/kernel';
-import { createControlPlaneApi, createWfpUploader, deploymentRefFor, DEV_ACTOR_HEADER, stableDeploymentRefFor, UNSAFE_devPlatformActorAuth } from '../src/index.js';
+import { createWfpUploader, deploymentRefFor, DEV_ACTOR_HEADER, stableDeploymentRefFor, UNSAFE_devPlatformActorAuth } from '../src/index.js';
 import { PLATFORM_ENTRY_MODULE } from '../src/platform-entry.js';
 import {
   WIRE_CONFIRM_ROWS_MAX,
