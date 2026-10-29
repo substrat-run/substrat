@@ -4,8 +4,8 @@ The `substrat` command — authenticated deploy tooling for
 [Substrat](https://github.com/substrat-run/substrat). It pushes a vertical to the
 platform, then manages its versions and release channels.
 
-A vertical is uploaded once and promoted deliberately: `push` uploads an immutable,
-content-addressed version; `promote` binds a channel (e.g. a scope's production
+A vertical is built on the platform and promoted deliberately: `push` submits source for an
+immutable release; `promote` binds a channel (e.g. a scope's production
 pointer) to a version; `publish`/`unpublish` control the marketplace catalog. Nothing
 goes live as a side effect of uploading.
 
@@ -19,13 +19,20 @@ pnpm dlx @substrat-run/cli push ./my-vertical
 pnpm add -D @substrat-run/cli
 ```
 
+`push` captures the working tree, including uncommitted and untracked files. It excludes
+ignored files, local credentials, dependencies and generated output. For pnpm monorepos,
+it includes the selected app, nested UI packages, workspace dependencies and root build
+configuration. The platform installs with a frozen lockfile, runs checks and builds the
+release. `push --check` remains the local verification command. Promotion and rollback
+reuse built outputs without rebuilding source.
+
 ## Commands
 
 ```sh
 substrat login                 # authenticate against the control plane
 substrat dev [dir]             # run the project's dev script with local request traces
 substrat whoami                # show the current identity + reachable tenants
-substrat push <dir>            # upload a vertical as a new immutable version
+substrat push <dir>            # submit source for a platform-built release
 substrat versions <slug>       # list a vertical's uploaded versions
 substrat promote <slug> <ver>  # point a channel at a version (the deliberate go-live)
 substrat publish <slug>        # list the vertical in the marketplace catalog

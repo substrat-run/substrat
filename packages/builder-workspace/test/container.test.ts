@@ -45,6 +45,20 @@ function fake(): { sb: SandboxLike; calls: string[] } {
 }
 
 describe('ContainerWorkspace (§3 seam, mode C)', () => {
+	it('runs host checkers from the toolchain while resolving project arguments in the source repo', async () => {
+		const { sb, calls } = fake();
+		const ws = new ContainerWorkspace({ sandbox: sb, root: '/source', toolchainRoot: '/platform toolchain' });
+		await ws.exec('pnpm exec tsx tools/model-diff.mts --root "." --check');
+		await ws.exec('node packages/boundary-lint/dist/cli.js --root .');
+		await ws.exec('pnpm exec tsc --noEmit spec/model.ts');
+		await ws.exec('pnpm install --frozen-lockfile');
+		expect(calls).toEqual([
+			'exec:\'/platform toolchain/node_modules/.bin/tsx\' \'/platform toolchain/tools/model-diff.mts\' --root "." --check@/source',
+			'exec:node \'/platform toolchain/packages/boundary-lint/dist/cli.js\' --root .@/source',
+			'exec:\'/platform toolchain/node_modules/.bin/tsc\' --noEmit spec/model.ts@/source',
+			'exec:pnpm install --frozen-lockfile@/source',
+		]);
+	});
 	it('confines paths exactly like LocalWorkspace — escapes throw', async () => {
 		const { sb } = fake();
 		const ws = new ContainerWorkspace({ sandbox: sb, root: '/w/p' });

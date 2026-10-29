@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,6 @@ import {
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
-  createControlPlaneApi,
   createWfpUploader,
   createScopeStoreEnsurer,
   deploymentRefFor,

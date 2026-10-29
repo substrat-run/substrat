@@ -150,6 +150,8 @@ export const PLATFORM_FEATURES_HEADER = 'x-substrat-platform-features';
 
 /** The platform supplies the scope sweeper to a version that declares schedules and brings none (#1902). */
 export const PLATFORM_FEATURE_SCOPE_SWEEPER = 'scope-sweeper';
+/** Releases are built from persisted source; client-built uploads are retired (D-66). */
+export const PLATFORM_FEATURE_SOURCE_BUILDS = 'source-builds';
 
 /**
  * The names the platform's scope sweeper takes in an upload (#1902): its Durable Object class

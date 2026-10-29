@@ -12,6 +12,15 @@ secrets/*.env
 .env
 **/.env
 **/.dev.vars
+**/.dev.vars.*
+**/.env.*
+.aws
+.ssh
+.codex
+.agents
+**/.npmrc
+**/*.pem
+**/*.key
 
 # Rebuilt by `pnpm -r build`
 **/dist

@@ -6,15 +6,13 @@
  * keys mirroring the local `.builder/` files. Execution runs in the Sandbox
  * container (builder.Dockerfile — the monorepo, warm): the DO builds a
  * `ContainerWorkspace` over the sandbox stub and reuses the SAME turn loop the
- * local server runs — ensureVerticalRepo, generator over a project-rooted
+ * local server runs — generator over a project-rooted
  * workspace, runTurn with standalone gates, commit-per-turn. The skills arrive
  * from the image (the container has `.claude/skills/`), read once and cached.
  *
- * Durability (D-52, #627): the container's disk is a CACHE — it resets on
- * sleep (§4.2). The durable tier is one git bundle per project in R2:
- * restored on wake (clone at HEAD, §4.5), re-bundled after every commit —
- * one ULID-keyed bundle per save, pruned app-side to the last N (R2 has no
- * object versioning; see #saveBundle). History and names live in DO storage.
+ * Source lives in tenant-owned GitHub or Cloudflare Artifacts repositories (D-66).
+ * The container is disposable; source is pushed after commits. Project and session
+ * metadata, plus disposable editor snapshots, live in this tenant's agent DO.
  *
  * Honest limit: /api/dev (preview) stays 503 — background processes want the
  * SDK's process API + exposePort wiring, a named follow-up of #626.
@@ -30,7 +28,6 @@ import {
 } from '@substrat-run/builder-generator';
 import {
 	ContainerWorkspace,
-	ensureVerticalRepo,
 	modelEmitWarning,
 	runGates,
 	runTurn,
@@ -50,6 +47,8 @@ import {
 	providerRefusal,
 	refuse,
 	turnFailure,
+	sourceBuildFailure,
+	SourceBuildError,
 } from './problem.js';
 import type { BuildPhase } from './phase.js';
 import {
@@ -72,14 +71,18 @@ import {
 } from './providers-worker.js';
 import { reportTurnUsage } from './metering.js';
 import { underProject, withinProject } from './project-path.js';
+import { sourceBuildRequest, projectRepository, type SourceBuildRequest, type ProjectRepository } from '@substrat-run/contracts';
+import { checkedExec, checkoutRepository, repositoryAccess, saveRepository, shellQuote } from './repositories.js';
 
-const REPO = '/workspace/substrat';
-const PROJECTS = '.builder/projects';
+const REPO = '/workspace';
+const TOOLCHAIN = '/workspace/substrat';
+const PROJECTS = 'projects';
 
 interface Env extends ProviderSecrets {
 	Sandbox: DurableObjectNamespace<Sandbox>;
-	/** D-52 (#627): one git bundle per project — the durable tier. */
-	PROJECT_REPOS: R2Bucket;
+	ARTIFACTS: Artifacts;
+	CONTROL_PLANE_SVC: Fetcher;
+	CP_SERVICE_TOKEN?: string;
 	/** The studio's own kernel scope (#646) — usage metering lives here. */
 	SCOPE: DurableObjectNamespace;
 }
@@ -88,6 +91,10 @@ interface ProjectEntry {
 	id: string;
 	name: string;
 	nameSource: 'auto' | 'ai' | 'user';
+	slug: string;
+	repository: ProjectRepository;
+	directory: string;
+	revision?: string;
 	dir: string;
 	createdAt: string;
 	updatedAt: string;
@@ -121,10 +128,10 @@ function ulid(now = Date.now()): string {
 }
 
 /** Bridge the real sandbox stub to the structural slice ContainerWorkspace takes. */
-function sandboxLike(sb: Sandbox): SandboxLike {
+function sandboxLike(sb: Sandbox, timeout?: number): SandboxLike {
 	return {
 		exec: async (cmd, opts) => {
-			const r = await sb.exec(cmd, opts?.cwd ? { cwd: opts.cwd } : undefined);
+			const r = await sb.exec(cmd, { ...(opts?.cwd ? { cwd: opts.cwd } : {}), ...(timeout ? { timeout } : {}) });
 			return { stdout: r.stdout, stderr: r.stderr, exitCode: r.exitCode };
 		},
 		readFile: async (path) => {
@@ -159,7 +166,7 @@ export class BuilderAgent extends DurableObject<Env> {
 
 	async #registry(): Promise<Registry> {
 		return (
-			((await this.ctx.storage.get('registry')) as Registry | undefined) ?? {
+			((await this.ctx.storage.get('source-registry')) as Registry | undefined) ?? {
 				currentId: null,
 				projects: [],
 			}
@@ -167,7 +174,7 @@ export class BuilderAgent extends DurableObject<Env> {
 	}
 
 	async #save(reg: Registry): Promise<void> {
-		await this.ctx.storage.put('registry', reg);
+		await this.ctx.storage.put('source-registry', reg);
 	}
 
 	async #state(id: string): Promise<ProjectState> {
@@ -183,18 +190,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		const reg = await this.#registry();
 		let entry = reg.projects.find((p) => p.id === reg.currentId) ?? reg.projects[0];
 		if (!entry) {
-			const now = new Date().toISOString();
-			entry = {
-				id: ulid(),
-				name: 'Untitled',
-				nameSource: 'auto',
-				dir: `${PROJECTS}/untitled`,
-				createdAt: now,
-				updatedAt: now,
-			};
-			reg.projects.push(entry);
-			reg.currentId = entry.id;
-			await this.#save(reg);
+			entry = await this.#createProject('Untitled', `${this.#tenantSlug || this.#tenant}/draft-${ulid().toLowerCase()}`);
+			return { reg: await this.#registry(), entry };
 		}
 		return { reg, entry };
 	}
@@ -202,10 +199,9 @@ export class BuilderAgent extends DurableObject<Env> {
 	// ── execution plumbing ────────────────────────────────────────────────────
 
 	/** One sandbox per project — its DO id is the project ULID (§7.1). The raw
-	 * stub is kept alongside the bridged slice: bundle transfer needs the SDK's
-	 * base64 file encoding, which is DO plumbing, not generator surface. */
+	 * stub is kept alongside the bridged slice for file transfer and container lifecycle. */
 	#sandboxPair(projectId: string): { sb: SandboxLike; raw: Sandbox } {
-		const raw = getSandbox(this.env.Sandbox, `project:${projectId}`);
+		const raw = getSandbox(this.env.Sandbox, `source-project:${projectId}`);
 		return { sb: sandboxLike(raw), raw };
 	}
 
@@ -213,117 +209,171 @@ export class BuilderAgent extends DurableObject<Env> {
 		return this.#sandboxPair(projectId).sb;
 	}
 
-	// ── D-52: git bundles in R2 — restore on wake, save after every commit ────
+	// ── D-66: one source repository per project ────────────────────────────
 
-	/** Bundle HISTORY, not a single overwritten object: R2 has no object
-	 * versioning (verified against docs + API — bucket locks and lifecycles,
-	 * yes; versioning, no), so the rollback trail is ours: one ULID-keyed
-	 * bundle per save (lexicographic = chronological), pruned to the last N.
-	 * A corrupted newest bundle leaves every prior one intact. */
-	#bundlePrefix(entry: ProjectEntry): string {
-		return `projects/${entry.id}/`;
-	}
-
-	async #newestBundle(entry: ProjectEntry): Promise<string | null> {
-		const listed = await this.env.PROJECT_REPOS.list({ prefix: this.#bundlePrefix(entry) });
-		const keys = listed.objects.map((o) => o.key).sort();
-		if (keys.length > 0) return keys[keys.length - 1] as string;
-		// Legacy single-key layout from the pre-history deployments.
-		const legacy = `projects/${entry.id}.bundle`;
-		return (await this.env.PROJECT_REPOS.head(legacy)) ? legacy : null;
-	}
-
-	/**
-	 * The wake path (§4.5): clone at HEAD, not restore a disk. If the container's
-	 * disk lost the project (sleep) and a bundle exists, clone it back — full
-	 * history, exactly what the last completed turn committed. No bundle + no
-	 * dir = genuinely new project; ensureVerticalRepo inits it.
-	 */
-	async #restoreProject(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
-		const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${REPO}/${entry.dir}/.git`)}`);
-		if (probe.exitCode === 0) return; // container still has it
-
-		const key = await this.#newestBundle(entry);
-		const obj = key ? await this.env.PROJECT_REPOS.get(key) : null;
-		if (!obj) return; // nothing durable yet — first turn will init
-
-		// Chunked: spreading a multi-MB bundle into fromCharCode blows the arg limit.
-		const bytes = new Uint8Array(await obj.arrayBuffer());
-		let bin = '';
-		for (let i = 0; i < bytes.length; i += 0x8000) {
-			bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	async #createProject(name: string, slug: string, repository?: ProjectRepository, select = true): Promise<ProjectEntry> {
+		let reg = await this.#registry();
+		if (reg.projects.some((p) => p.slug === slug)) throw new SourceBuildError('project already exists for this vertical');
+		const id = ulid();
+		if (!repository) {
+			const created = await this.env.ARTIFACTS.create(`project-${id.toLowerCase()}`, { setDefaultBranch: 'main' });
+			repository = { kind: 'artifacts', name: created.name, remote: created.remote, branch: 'main' };
 		}
-		const b64 = btoa(bin);
-		const tmp = `/tmp/${entry.id}.bundle`;
-		await pair.raw.writeFile(tmp, b64, { encoding: 'base64' });
-		const clone = await pair.sb.exec(
-			`mkdir -p ${JSON.stringify(`${REPO}/${PROJECTS}`)} && git clone -q ${JSON.stringify(tmp)} ${JSON.stringify(`${REPO}/${entry.dir}`)} && rm -f ${JSON.stringify(tmp)}`,
-		);
-		if (clone.exitCode !== 0) {
-			throw new Error(`bundle restore failed for ${entry.id}: ${clone.stderr || clone.stdout}`);
-		}
+		const directory = repository.kind === 'github' ? repository.directory : '.';
+		const now = new Date().toISOString();
+		const entry: ProjectEntry = {
+			id, name, slug, nameSource: name === 'Untitled' ? 'auto' : 'user', repository, directory,
+			dir: `${PROJECTS}/${id}${directory === '.' ? '' : `/${directory}`}`,
+			createdAt: now, updatedAt: now,
+		};
+		reg = await this.#registry();
+		if (reg.projects.some((p) => p.slug === slug)) throw new SourceBuildError('project already exists for this vertical');
+		reg.projects.push(entry);
+		if (select) reg.currentId = id;
+		await this.#save(reg);
+		return entry;
 	}
 
-	/** The save path: after a commit, the repo IS the durable state — bundle it
-	 * whole (few MB) as one more ULID-keyed object; the rollback trail is the
-	 * bundle history below, pruned app-side (R2 has no object versioning). */
-	async #saveBundle(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
-		const tmp = `/tmp/${entry.id}.bundle`;
-		const made = await pair.sb.exec(`git bundle create ${JSON.stringify(tmp)} --all`, {
-			cwd: `${REPO}/${entry.dir}`,
+	async #access(entry: ProjectEntry, scope: 'read' | 'write', tenant: string) {
+		return repositoryAccess(this.env.ARTIFACTS, entry.repository, scope, async (owner, repo, permission) => {
+			const response = await this.env.CONTROL_PLANE_SVC.fetch('https://control-plane/api/source/github-access', {
+				method: 'POST', headers: { 'content-type': 'application/json', 'x-service-token': this.env.CP_SERVICE_TOKEN ?? '' },
+				body: JSON.stringify({ tenantId: tenant, owner, repo, scope: permission }),
+			});
+			if (!response.ok) throw new SourceBuildError(`GitHub repository access refused (${response.status}); check the team connection and repository permissions`);
+			return response.json() as Promise<{ remote: string; token: string }>;
 		});
-		if (made.exitCode !== 0) {
-			throw new Error(`git bundle failed for ${entry.id}: ${made.stderr || made.stdout}`);
-		}
-		const r = await pair.raw.readFile(tmp, { encoding: 'base64' });
-		const b64 = typeof r === 'string' ? r : (r as { content: string }).content;
-		const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-		await this.env.PROJECT_REPOS.put(`${this.#bundlePrefix(entry)}${ulid()}.bundle`, bytes);
-		await pair.sb.exec(`rm -f ${JSON.stringify(tmp)}`);
-		// Prune to the last N — each bundle is complete (git bundle --all), so
-		// history depth is a rollback budget, not a chain.
-		const KEEP = 10;
-		const listed = await this.env.PROJECT_REPOS.list({ prefix: this.#bundlePrefix(entry) });
-		const keys = listed.objects.map((o) => o.key).sort();
-		for (const k of keys.slice(0, Math.max(0, keys.length - KEEP))) {
-			await this.env.PROJECT_REPOS.delete(k);
+	}
+
+	#tenant = '';
+	#tenantSlug = '';
+	#repoRoot(entry: ProjectEntry): string { return `${REPO}/${PROJECTS}/${entry.id}`; }
+
+	async #restoreProject(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
+		await checkoutRepository(pair.sb, await this.#access(entry, 'read', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
+		const head = await pair.sb.exec('git rev-parse --verify HEAD', { cwd: this.#repoRoot(entry) });
+		if (head.exitCode === 0 && entry.revision !== head.stdout.trim()) {
+			entry.revision = head.stdout.trim();
+			const reg = await this.#registry();
+			reg.projects = reg.projects.map((p) => p.id === entry.id ? entry : p);
+			await this.#save(reg);
 		}
 	}
 
-	// ── tree snapshots — the container-free read path for the SPA ─────────────
-
-	/** One JSON object of the working tree next to the bundles: rebuilt at
-	 * commit time, patched on studio saves, served whole by GET /api/snapshot.
-	 * Overwritten in place (unlike bundles) — history lives in the bundles. */
-	#snapshotKey(entry: ProjectEntry): string {
-		return `${this.#bundlePrefix(entry)}snapshot.json`;
+	async #saveSource(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
+		entry.revision = await saveRepository(pair.sb, await this.#access(entry, 'write', this.#tenant), this.#repoRoot(entry), entry.repository.branch);
+		entry.updatedAt = new Date().toISOString();
+		const reg = await this.#registry();
+		reg.projects = reg.projects.map((p) => p.id === entry.id ? entry : p);
+		await this.#save(reg);
 	}
 
-	/** Best-effort by design: the snapshot is a read cache over the committed
-	 * tree — a failed rebuild must never fail the turn that produced the commit. */
+	#snapshotKey(entry: ProjectEntry): string { return `snapshot:${entry.id}`; }
+
 	async #saveSnapshot(sb: SandboxLike, entry: ProjectEntry): Promise<void> {
 		try {
-			const snap = await snapshotWorkspace(this.#rootWs(sb), entry.dir);
-			await this.env.PROJECT_REPOS.put(
-				this.#snapshotKey(entry),
-				JSON.stringify({
-					dir: entry.dir,
-					generatedAt: new Date().toISOString(),
-					files: snap.files,
-					skipped: snap.skipped,
-				}),
-			);
-		} catch {
-			/* the per-file fallback endpoints still work */
+			const snap = await snapshotWorkspace(this.#sourceWs(sb, entry), entry.directory);
+			// A disposable editor cache. Source durability comes from the Git push above.
+			await this.ctx.storage.put(this.#snapshotKey(entry), JSON.stringify({ dir: entry.dir, generatedAt: new Date().toISOString(), ...snap }));
+		} catch { /* file endpoints remain available */ }
+	}
+
+	async #build(slug: string, request: SourceBuildRequest): Promise<Response> {
+		if (this.#busy) return refuse(409, 'project operation already in progress');
+		this.#busy = true;
+		const buildId = ulid();
+		const raw = getSandbox(this.env.Sandbox, `build:${buildId}`);
+		const sb = sandboxLike(raw, 600_000);
+		let entry: ProjectEntry | undefined;
+		let revision: string | undefined;
+		try {
+			entry = (await this.#registry()).projects.find((p) => p.slug === slug);
+			if (!entry && !request.snapshot) return refuse(404, 'this vertical has no source repository; submit source or connect GitHub first');
+			entry ??= await this.#createProject(request.name ?? slug, slug, undefined, false);
+			const root = '/build/source';
+			await checkedExec(sb, 'mkdir -p /build');
+			await checkoutRepository(sb, await this.#access(entry, 'read', this.#tenant), root, entry.repository.branch);
+			if (request.snapshot) {
+				await raw.writeFile('/build/snapshot.json', JSON.stringify(request.snapshot));
+				await checkedExec(sb, 'node --import tsx /workspace/substrat/apps/builder/src/stage-source.ts /build/source /build/snapshot.json', TOOLCHAIN);
+				await checkedExec(sb, "git -c core.hooksPath=/dev/null add -A && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=build@substrat.invalid commit --allow-empty -m 'Source snapshot'", root);
+				if (entry.repository.kind === 'artifacts') {
+					entry.directory = request.snapshot.directory;
+					revision = await saveRepository(sb, await this.#access(entry, 'write', this.#tenant), root, entry.repository.branch);
+					entry.revision = revision;
+				} else {
+					// Local work on a GitHub project is durable in a separate snapshot repo.
+					const snapshot = await this.env.ARTIFACTS.create(`snapshot-${buildId.toLowerCase()}`, { setDefaultBranch: 'main' });
+					const repo: ProjectEntry = { ...entry, repository: { kind: 'artifacts', name: snapshot.name, remote: snapshot.remote, branch: 'main' } };
+					revision = await saveRepository(sb, await this.#access(repo, 'write', this.#tenant), root, 'main');
+					await this.ctx.storage.put(`build-source:${buildId}`, repo.repository);
+				}
+			} else {
+				// The request pins a commit, not a moving branch. Fetch that commit explicitly.
+				const access = await this.#access(entry, 'read', this.#tenant);
+				const { repositoryGit } = await import('./repositories.js');
+				await repositoryGit(sb, access, ['fetch', access.remote, request.revision!], root);
+				await checkedExec(sb, `git -c core.hooksPath=/dev/null checkout --detach ${shellQuote(request.revision!)}`, root);
+				revision = await checkedExec(sb, 'git rev-parse HEAD', root);
+				entry.revision = revision;
+			}
+			const directory = request.snapshot?.directory ?? entry.directory;
+			entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
+			const reg = await this.#registry();
+			reg.projects = reg.projects.map((p) => p.id === entry!.id ? entry! : p);
+			await this.#save(reg);
+			await this.ctx.storage.delete(this.#snapshotKey(entry));
+			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'building', startedAt: new Date().toISOString() });
+			const toolchain = await checkedExec(sb, 'cat /workspace/substrat/.toolchain-id');
+			const input = { root: directory === '.' ? root : `${root}/${directory}`, slug, request: { ...request, snapshot: undefined, revision } };
+			await raw.writeFile('/build/request.json', JSON.stringify(input));
+			// Source code and dependency hooks run without repository or control-plane credentials.
+			await checkedExec(sb, 'chown -R substrat-build:substrat-build /build');
+			const install = "cd /build/source && pnpm install --frozen-lockfile";
+			const run = 'cd /workspace/substrat && node --import tsx apps/builder/src/build-runner.ts /build/request.json /build/result.json';
+			await checkedExec(sb, `su -s /bin/sh substrat-build -c ${shellQuote(`${install} && ${run}`)}`);
+			const outputBytes = Number(await checkedExec(sb, 'wc -c < /build/result.json'));
+			if (!Number.isFinite(outputBytes) || outputBytes > 24 * 1024 * 1024) throw new SourceBuildError('release output exceeds the build transfer limit');
+			const resultFile = await raw.readFile('/build/result.json');
+			const result = JSON.parse(typeof resultFile === 'string' ? resultFile : resultFile.content) as { parts: Array<{ name: string; text?: string; base64?: string; type?: string }>; dataLoss: unknown };
+			const form = new FormData();
+			for (const part of result.parts) {
+				if (part.text !== undefined) form.set(part.name, part.text);
+				else form.set(part.name, new Blob([Uint8Array.from(atob(part.base64!), (c) => c.charCodeAt(0))], { type: part.type }), part.name);
+			}
+			const gate = JSON.parse(form.get('origin') as string)?.gate;
+			const origin = entry.repository.kind === 'github' && !request.snapshot
+				? { source: 'git', gitRepo: `${entry.repository.owner}/${entry.repository.repo}`, gitCommit: revision, gitRef: entry.repository.branch }
+				: request.origin ?? { source: 'cli' };
+			form.set('origin', JSON.stringify({ ...origin, gate }));
+			const manifest = JSON.parse(form.get('manifest') as string);
+			manifest.build = { id: buildId, projectId: entry.id, revision, toolchain };
+			form.set('manifest', JSON.stringify(manifest));
+			form.set('buildResult', JSON.stringify({ projectId: entry.id, revision, dataLoss: result.dataLoss }));
+			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry.id, revision, state: 'built', completedAt: new Date().toISOString() });
+			return new Response(form);
+		} catch (error) {
+			const detail = sourceBuildFailure(error);
+			console.error('source.build.failed', { buildId, error });
+			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry?.id, state: 'failed', detail, completedAt: new Date().toISOString() });
+			return refuse(error instanceof SourceBuildError ? 422 : 500, `platform build failed: ${detail}`);
+		} finally {
+			this.#busy = false;
+			await raw.destroy().catch(() => undefined);
 		}
 	}
 
-	#rootWs(sb: SandboxLike): Workspace {
-		return new ContainerWorkspace({ sandbox: sb, root: REPO, id: 'container:repo' });
+	async #cachedSnapshot(entry: ProjectEntry): Promise<Response | null> {
+		const value = await this.ctx.storage.get<string>(this.#snapshotKey(entry));
+		return value ? new Response(value, { headers: { 'content-type': 'application/json' } }) : null;
+	}
+
+	#sourceWs(sb: SandboxLike, entry: ProjectEntry): Workspace {
+		return new ContainerWorkspace({ sandbox: sb, root: this.#repoRoot(entry), id: `source:${entry.id}`, toolchainRoot: TOOLCHAIN });
 	}
 
 	#projectWs(sb: SandboxLike, dir: string): Workspace {
-		return new ContainerWorkspace({ sandbox: sb, root: `${REPO}/${dir}`, id: `container:${dir}` });
+		return new ContainerWorkspace({ sandbox: sb, root: `${REPO}/${dir}`, id: `container:${dir}`, toolchainRoot: TOOLCHAIN });
 	}
 
 	/** Skills come from the image — the builder-distilled set that phase.ts's
@@ -388,10 +438,9 @@ export class BuilderAgent extends DurableObject<Env> {
 
 		const pair = this.#sandboxPair(entry.id);
 		const sb = pair.sb;
-		const rootWs = this.#rootWs(sb);
 		// Validate the provider config EARLY so a missing secret is a 422, not a
 		// mid-stream error. The generator itself is built inside run(), AFTER the
-		// R2 restore — phase detection reads the workspace, and a slept
+		// Repository checkout — phase detection reads the workspace, and a slept
 		// container's disk is empty until restore (detecting before it loaded
 		// interview skills for mature projects).
 		try {
@@ -422,16 +471,18 @@ export class BuilderAgent extends DurableObject<Env> {
 
 		const run = async (): Promise<void> => {
 			try {
-				// The container's disk may be fresh (slept): restore from the R2
-				// bundle first (clone at HEAD, §4.5), then ensure — both idempotent.
+				// A slept container reopens the authoritative Git branch.
 				await this.#restoreProject(pair, entry);
-				await ensureVerticalRepo(rootWs, entry.dir);
+				if (entry.directory === '.') {
+					const head = await sb.exec('git rev-parse HEAD', { cwd: this.#repoRoot(entry) });
+					if (head.exitCode !== 0) await checkedExec(sb, "git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=builder@substrat.invalid commit --allow-empty -m 'Project created'", this.#repoRoot(entry));
+				}
 				const projectWs = this.#projectWs(sb, entry.dir);
 				// Post-restore on purpose — the phase is a workspace fact, and the
 				// workspace only exists now. Emitted so the UI stepper shows real state.
 				const phase = await detectPhase(projectWs);
 				emit({ type: 'phase', phase });
-				const allSkills = await this.#loadSkills(rootWs);
+				const allSkills = await this.#loadSkills(new ContainerWorkspace({ sandbox: sb, root: TOOLCHAIN, id: 'toolchain' }));
 				// `<provider>:auto` becomes concrete per phase (model-pairs.ts) —
 				// fast for interview, strong for build turns.
 				const generator = await this.#generator(
@@ -439,7 +490,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					skillsForPhase(allSkills, phase),
 					phase,
 				);
-				const concept = await buildContext(projectWs, phase);
+				const concept = `${await buildContext(projectWs, phase)}\n\nHosted project identity: ${entry.slug}. Keep package.json substrat.slug pinned to ${entry.slug.split('/').pop()} and substrat.tenant pinned to ${this.#tenantSlug || this.#tenant}; these identify the same project when exported and pushed with the CLI. A display-name change does not change this identity.`;
 
 				// Same shape as the local server's handleTurn: pass → checks → capped
 				// repair loop (H5; the policy constants live in gates.ts so the hosts
@@ -454,7 +505,7 @@ export class BuilderAgent extends DurableObject<Env> {
 						verticalDir: '.',
 						concept,
 						message: text,
-						workspaceBrief: await workspaceBrief(rootWs, entry.dir).catch(() => undefined),
+						workspaceBrief: await workspaceBrief(this.#sourceWs(sb, entry), entry.directory).catch(() => undefined),
 						...(carriedReport ? { gateReport: carriedReport } : {}),
 						// Text-only history is lean by design; cap it so decade-long
 						// sessions do not grow the per-step bill without bound.
@@ -504,10 +555,10 @@ export class BuilderAgent extends DurableObject<Env> {
 				};
 
 				const runChecks = async (label: string): Promise<TurnResult> => {
-					const turn = await runTurn(rootWs, {
-						verticalDir: entry.dir,
+					const turn = await runTurn(this.#sourceWs(sb, entry), {
+						verticalDir: entry.directory,
 						message: label,
-						gates: standaloneGates(entry.dir),
+						gates: standaloneGates(entry.directory),
 						onGateResult: (result) => emit({ type: 'check', result }),
 					});
 					// A failed model emit leaves the PREVIOUS model.json in the tree, so the
@@ -517,9 +568,8 @@ export class BuilderAgent extends DurableObject<Env> {
 					emit({ type: 'gates', run: turn.gates });
 					if (turn.commit) {
 						emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });
-						// The commit is only durable once bundled (§4.5): container disk
-						// is the cache, R2 is where the repo rests.
-						await this.#saveBundle(pair, entry);
+						// The commit is durable once pushed to the authoritative repository.
+						await this.#saveSource(pair, entry);
 						// The SPA's container-free read path — refresh it while the
 						// container is provably awake and at the commit it just made.
 						await this.#saveSnapshot(pair.sb, entry);
@@ -574,10 +624,28 @@ export class BuilderAgent extends DurableObject<Env> {
 	}
 
 	async #route(req: Request): Promise<Response> {
+		this.#tenant = req.headers.get('x-substrat-tenant') ?? '';
+		this.#tenantSlug = req.headers.get('x-substrat-tenant-slug') ?? '';
+		if (!this.#tenant) return refuse(400, 'tenant context is required');
 		const url = new URL(req.url);
+		if (url.pathname === '/internal/build' && req.method === 'POST') {
+			const { slug, request } = await req.json() as { slug: string; request: unknown };
+			return this.#build(slug, sourceBuildRequest.parse(request));
+		}
 		const route = `${req.method} ${url.pathname}`;
 
 		switch (route) {
+			case 'GET /api/project-source': {
+				if (this.#busy) return refuse(409, 'project operation already in progress');
+				this.#busy = true;
+				try {
+					const { entry } = await this.#current();
+					// Resolve the remote before pinning a release, including a newly connected
+					// GitHub project that has not had a studio turn yet.
+					await this.#restoreProject(this.#sandboxPair(entry.id), entry);
+					return json(200, entry);
+				} finally { this.#busy = false; }
+			}
 			case 'GET /api/session': {
 				const { entry } = await this.#current();
 				const state = await this.#state(entry.id);
@@ -595,7 +663,8 @@ export class BuilderAgent extends DurableObject<Env> {
 					root: REPO,
 					vertical: entry.dir,
 					project: { id: entry.id, name: entry.name, nameSource: entry.nameSource },
-					repoMode: 'project',
+					repoMode: entry.directory === '.' ? 'project' : 'scoped',
+					sourceProjects: true,
 					// Last phase persisted by a turn. Truthful without booting the
 					// container: only turns mutate the workspace, so the value can't
 					// be stale — null just means "no turn yet" (UI hides the stepper).
@@ -608,7 +677,7 @@ export class BuilderAgent extends DurableObject<Env> {
 					busy: this.#busy,
 					turns: state.turnNo,
 					foreign: [],
-					mode: 'hosted — execution in the sandbox container; repos durable as R2 bundles (D-52)',
+					mode: 'hosted — execution in the sandbox container; source in GitHub or Artifacts (D-66)',
 				});
 			}
 			case 'POST /api/turn':
@@ -616,36 +685,35 @@ export class BuilderAgent extends DurableObject<Env> {
 			case 'POST /api/abort':
 				// Stops the MODEL, not the turn: the running pass ends, the repair
 				// loop stops, but gates + commit still run so the work done so far
-				// lands in the R2 bundle (same contract as the local server).
+				// lands in its source repository (same contract as the local server).
 				this.#abort?.abort();
 				return json(200, { ok: true });
 			case 'POST /api/gates': {
 				const { entry } = await this.#current();
 				const pair = this.#sandboxPair(entry.id);
-				const rootWs = this.#rootWs(pair.sb);
 				await this.#restoreProject(pair, entry);
-				await ensureVerticalRepo(rootWs, entry.dir);
-				return json(200, await runGates(rootWs, entry.dir, standaloneGates(entry.dir)));
+				// Source checkout already established the repository boundary.
+				return json(200, await runGates(this.#sourceWs(pair.sb, entry), entry.directory, standaloneGates(entry.directory)));
 			}
 			case 'GET /api/snapshot': {
-				// The whole working tree in ONE response, served from R2 — the sandbox
+				// The whole working tree in ONE response, served from the editor cache — the sandbox
 				// container stays asleep. Miss (legacy project, or none committed since
 				// this landed) → build once from the container and cache it; a project
 				// with no repo at all is an honest 404 and the SPA falls back to the
 				// per-directory endpoints below.
 				const { entry } = await this.#current();
-				const cached = await this.env.PROJECT_REPOS.get(this.#snapshotKey(entry));
+				const cached = await this.#cachedSnapshot(entry);
 				if (cached) {
 					return new Response(cached.body, {
 						headers: { 'content-type': 'application/json' },
 					});
 				}
 				const pair = this.#sandboxPair(entry.id);
-				await this.#restoreProject(pair, entry).catch(() => undefined);
-				const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${REPO}/${entry.dir}/.git`)}`);
+				await this.#restoreProject(pair, entry);
+				const probe = await pair.sb.exec(`test -d ${JSON.stringify(`${this.#repoRoot(entry)}/.git`)}`);
 				if (probe.exitCode !== 0) return refuse(404, 'no snapshot yet');
 				await this.#saveSnapshot(pair.sb, entry);
-				const built = await this.env.PROJECT_REPOS.get(this.#snapshotKey(entry));
+				const built = await this.#cachedSnapshot(entry);
 				if (!built) return refuse(404, 'no snapshot yet');
 				return new Response(built.body, { headers: { 'content-type': 'application/json' } });
 			}
@@ -658,7 +726,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				const rel = underProject(path, entry.dir);
 				if (rel === null) return refuse(403, `reads are limited to ${entry.dir}/`);
 				const pair = this.#sandboxPair(entry.id);
-				await this.#restoreProject(pair, entry).catch(() => undefined);
+				await this.#restoreProject(pair, entry);
 				// Through the PROJECT-rooted workspace, so the read is confined twice. NOTE
 				// the asymmetry with the local server: `ContainerWorkspace.resolveWithin` is
 				// purely lexical — the files live in the container, so it cannot realpath the
@@ -705,19 +773,28 @@ export class BuilderAgent extends DurableObject<Env> {
 				// Through the PROJECT-rooted workspace, so the write is confined twice: once
 				// by the check above, and again by that workspace's own jail, which is also
 				// what judges a symlink pointing out of the project.
-				await this.#projectWs(this.#sandbox(entry.id), entry.dir).writeFile(rel, content);
+				if (this.#busy) return refuse(409, 'project operation already in progress');
+				this.#busy = true;
+				try {
+					const pair = this.#sandboxPair(entry.id);
+					await this.#restoreProject(pair, entry);
+					await this.#projectWs(pair.sb, entry.dir).writeFile(rel, content);
+					const sourcePath = entry.directory === '.' ? rel : `${entry.directory}/${rel}`;
+					await checkedExec(pair.sb, `git -c core.hooksPath=/dev/null add -- ${shellQuote(sourcePath)} && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=builder@substrat.invalid commit --allow-empty -m 'Save source'`, this.#repoRoot(entry));
+					await this.#saveSource(pair, entry);
+				} finally { this.#busy = false; }
 				// Patch the stored snapshot so a reload before the next commit still
 				// shows this save. Best-effort: absent snapshot → next commit builds it.
 				try {
 					const key = this.#snapshotKey(entry);
-					const obj = await this.env.PROJECT_REPOS.get(key);
+					const obj = await this.#cachedSnapshot(entry);
 					if (obj) {
 						const snap = (await obj.json()) as { files: Record<string, string> };
 						// `rel`, not a slice of the raw path: the slice of a traversal path
 						// keyed the snapshot under `../../…`, so the entry a reload read back
 						// was not the file that had been written.
 						snap.files[rel] = content;
-						await this.env.PROJECT_REPOS.put(key, JSON.stringify(snap));
+						await this.ctx.storage.put(key, JSON.stringify(snap));
 					}
 				} catch {
 					/* read path falls back to per-file endpoints */
@@ -752,29 +829,25 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, (await this.#state(entry.id)).history);
 			}
 			case 'GET /api/projects': {
-				const { reg, entry } = await this.#current();
+				const reg = await this.#registry();
 				const sorted = [...reg.projects].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-				return json(200, { current: entry.id, projects: sorted });
+				return json(200, { current: reg.currentId, projects: sorted });
 			}
 			case 'POST /api/projects': {
-				const { name } = (await req.json().catch(() => ({}))) as { name?: string };
-				const reg = await this.#registry();
-				const now = new Date().toISOString();
-				const projectName = name?.trim() || 'Untitled';
-				const entry: ProjectEntry = {
-					id: ulid(),
-					name: projectName,
-					nameSource: name ? 'user' : 'auto',
-					dir: `${PROJECTS}/${projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'project'}`,
-					createdAt: now,
-					updatedAt: now,
-				};
-				reg.projects.push(entry);
-				reg.currentId = entry.id;
-				await this.#save(reg);
-				return json(200, entry);
+				if (this.#busy) return refuse(409, 'project operation already in progress');
+				this.#busy = true;
+				try {
+					const body = await req.json() as { name?: string; slug?: string; repository?: unknown };
+					const name = body.name?.trim() || 'Untitled';
+					const repository = body.repository === undefined ? undefined : projectRepository.parse(body.repository);
+					if (repository && repository.kind !== 'github') return refuse(400, 'hosted repositories are created by the platform');
+					if (repository) await this.#access({ repository } as ProjectEntry, 'read', this.#tenant);
+					const slug = body.slug ?? `${this.#tenantSlug || this.#tenant}/draft-${ulid().toLowerCase()}`;
+					return json(200, await this.#createProject(name, slug, repository));
+				} finally { this.#busy = false; }
 			}
 			case 'POST /api/projects/select': {
+				if (this.#busy) return refuse(409, 'project operation already in progress');
 				const { id } = (await req.json().catch(() => ({}))) as { id?: string };
 				const reg = await this.#registry();
 				const entry = reg.projects.find((p) => p.id === id);
@@ -784,6 +857,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, entry);
 			}
 			case 'PUT /api/project': {
+				if (this.#busy) return refuse(409, 'project operation already in progress');
 				const { name } = (await req.json().catch(() => ({}))) as { name?: string };
 				if (!name?.trim()) return refuse(400, 'name required');
 				const { reg, entry } = await this.#current();

@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,6 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, substratError, tenantId, type TenantId } from '@substrat-run/contracts';
 import {
-  createControlPlaneApi,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
   SERVICE_TOKEN_HEADER,

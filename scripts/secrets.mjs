@@ -135,6 +135,9 @@ const MANIFEST = {
       // deliberately NOT the dashboard's key (different stores, independent rotation).
       SECRET_BOX_KEY: 'CP_SECRET_BOX_KEY',
       SECRET_BOX_KEY_ID: 'CP_SECRET_BOX_KEY_ID',
+      GITHUB_APP_ID: 'GITHUB_APP_ID',
+      GITHUB_APP_SLUG: 'GITHUB_APP_SLUG',
+      GITHUB_APP_PRIVATE_KEY: 'GITHUB_APP_PRIVATE_KEY',
       CF_API_TOKEN: 'CF_API_TOKEN',
       CF_ACCOUNT_ID: 'CF_ACCOUNT_ID',
       CF_SAAS_ZONE_ID: 'CF_SAAS_ZONE_ID',

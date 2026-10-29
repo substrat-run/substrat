@@ -183,6 +183,7 @@
 	// fails (the connection's sweep row and the intent's journal say so); a FRESH environment has
 	// no `substrat-router` yet, so deploy the router once before the control plane there.
 	"services": [
+		{ "binding": "SOURCE_BUILDER", "service": "substrat-builder" },
 		{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay" },
 		{ "binding": "CONNECTOR_CALLS", "service": "substrat-router", "entrypoint": "ConnectorCalls" }
 	],
@@ -351,6 +352,7 @@
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test
 			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
 			"services": [
+				{ "binding": "SOURCE_BUILDER", "service": "substrat-builder-test" },
 				{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay-test" },
 				{ "binding": "CONNECTOR_CALLS", "service": "substrat-router-test", "entrypoint": "ConnectorCalls" }
 			], // differs

@@ -45,6 +45,7 @@ import {
   type RuntimeNeeds,
   type VersionOrigin,
   type DeployManifest,
+  type SourceBuildRequest,
   assertDeclaredScopeStores,
   storeNamesOfBindings,
   manifestStoresOf,
@@ -65,6 +66,7 @@ import { checkMigrationDataLoss, type DataLossCheck, type ReplayInputs } from '.
 import { parseJsonBody } from './http.js';
 import { readPublishedConcept } from './published-concept.js';
 import { planeFor } from './plane.js';
+import { collectSourceSnapshot } from './source-snapshot.js';
 import { failureMessage } from './problem.js';
 import { assertWorkerNodeImports } from './worker-node-imports.js';
 import {
@@ -1822,9 +1824,19 @@ export async function prepareWorkerBundle(
   }
 }
 
-export async function push(
+/** Submit source; the authoritative build runs on the platform (D-66). */
+export async function push(opts: PushOptions): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[]; dataLoss: DataLossCheck }> {
+  const snapshot = collectSourceSnapshot(opts.dir);
+  return uploadSource(opts, {
+    version: opts.version, name: opts.name, tenant: opts.tenant, snapshot, origin: pushOrigin(),
+    allowFork: Boolean(opts.allowFork), allowUnservedUi: Boolean(opts.allowUnservedUi),
+    allowUnsweptSchedules: Boolean(opts.allowUnsweptSchedules), requireDataLossCheck: Boolean(opts.requireDataLossCheck),
+  });
+}
+
+export async function buildRelease(
   opts: PushOptions,
-): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[]; dataLoss: DataLossCheck }> {
+): Promise<{ form: FormData; dataLoss: DataLossCheck }> {
   const concept = readPublishedConcept(opts.dir);
   // The layer rules, before anything is built or uploaded (#955). First, because it reads
   // the source tree and needs nothing else — a violation is refused in a second rather than
@@ -1930,7 +1942,7 @@ export async function push(
   // plane itself, before the build is uploaded — a plane that predates it would accept the
   // version and never run its schedules.
   if (schedules?.length && sweeperClasses?.length === 0) {
-    await assertPlaneSuppliesSweeper(opts, opts.allowUnsweptSchedules);
+    // The platform supplies and validates its sweeper during release publication.
   }
 
   if (migrations.omitted) {
@@ -2093,41 +2105,22 @@ export async function push(
     form.set(part, new Blob([a.content], { type: a.entry.contentType }), part);
   }
 
-  const uploaded = await uploadVersion(
-    opts,
-    form,
-    `${entry} (+${modules.length - 1} modules${assets.length ? `, ${assets.length} assets` : ''})`,
-  );
-  return { ...uploaded, dataLoss };
+  return { form, dataLoss };
 }
 
-/**
- * POST the assembled bundle to `/verticals/<slug>/deploy` and read the control plane's answer.
- *
- * The multipart upload is the one request the typed client cannot express — its body is a
- * form whose boundary `fetch` writes, so no content type may be set — and it needs the raw
- * exchange: the CLI reads the answer's status, headers and text itself. It still goes through
- * the client, for the addressing and the credential map, with the stale-CLI nudge off the
- * answer (success or refusal) as it always was.
- */
-export async function uploadVersion(
+/** Submit persisted source input; the platform returns the release after building it. */
+export async function uploadSource(
   opts: { controlPlaneUrl: string; authHeader: Record<string, string>; slug: string },
-  form: FormData,
-  what: string,
-): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
+  input: SourceBuildRequest,
+): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[]; dataLoss: DataLossCheck }> {
   const plane = planeFor(opts.controlPlaneUrl, opts.authHeader, { advisory: true });
   const path = `/verticals/${encodeURIComponent(opts.slug)}/deploy`;
   const url = plane.urlFor(path);
-  console.log(`uploading ${what} → ${url}`);
-  const res = await plane.request(path, { method: 'POST', body: form });
+  console.log(`submitting source → ${url}`);
+  const res = await plane.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
   const body = await res.text();
-  if (!res.ok) {
-    // Surface what the control plane said — its problem document's `detail`, `code` and
-    // field errors (#971), or the older `{ error }` line — so e.g. the #388 fork refusal
-    // reads as guidance, not as a wall of escaped JSON.
-    throw new Error(failureMessage('push failed', res.status, body));
-  }
-  return parseJsonBody<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }>(body, url);
+  if (!res.ok) throw new Error(failureMessage('platform build failed', res.status, body));
+  return parseJsonBody(body, url);
 }
 
 /** Push defaults read from a vertical's package.json, so `substrat push` needs no flags. */

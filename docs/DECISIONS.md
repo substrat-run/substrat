@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-123 decisions · 65 plan · 58 kernel
+124 decisions · 66 plan · 58 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -101,7 +101,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-50](decisions/D-050-the-llm-is-pluggable-at-the-generator-seam-and-running-any-p.md) | 2026-08-15 | plan | The LLM is pluggable at the generator seam, and running any provider is a requirement |  |
 | [D-51](decisions/D-051-regression-safety-comes-from-an-acceptance-ledger-the-user-a.md) | 2026-08-15 | plan | Regression safety comes from an acceptance ledger the user authored |  |
 | [D-52](decisions/D-052-the-generator-itself-is-regression-tested-against-frozen-con.md) | 2026-08-15 | plan | The generator itself is regression-tested against frozen concept fixtures (`evals/`) |  |
-| [D-53](decisions/D-053-a-generated-vertical-s-repo-is-hosted-by-us-as-a-git-bundle-.md) | 2026-08-15 | plan | A generated vertical's repo is hosted by us as a git bundle in R2, not on GitHub |  |
+| [D-53](decisions/D-053-a-generated-vertical-s-repo-is-hosted-by-us-as-a-git-bundle-.md) | 2026-08-15 | plan | A generated vertical's repo is hosted by us as a git bundle in R2, not on GitHub <br>*superseded by D-66* |  |
 | [D-54](decisions/D-054-the-generated-vertical-is-the-customer-s-code-the-studio-is-.md) | 2026-08-15 | plan | The generated vertical is the customer's code; the studio is a tool, not the author |  |
 | [D-55](decisions/D-055-the-generator-s-skills-are-builder-distilled-documents-owned.md) | 2026-08-15 | plan | The generator's skills are builder-distilled documents owned by the studio |  |
 | [D-56](decisions/D-056-which-skills-ride-a-turn-is-decided-by-a-phase-ladder-derive.md) | 2026-08-15 | plan | Which skills ride a turn is decided by a phase ladder derived from workspace facts |  |
@@ -135,3 +135,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-58](decisions/K-058-a-call-from-the-platform-to-a-vertical-carries-an-ed25519-envelope-and-a-deployed-vertical-holds-public-keys-only.md) | 2026-10-23 | kernel | A call from the platform to a vertical carries an Ed25519 envelope, a deployed vertical holds public keys only, and its calls up to the control plane give way to its outbox <br>*awaiting ratification* |  |
 | [D-64](decisions/D-064-a-vertical-may-define-its-own-connector-and-it-runs-in-the-vertical-s-worker.md) | 2026-10-26 | plan | A vertical may define its own connector, and it runs in the vertical's worker with a capability narrowed to one connection <br>*awaiting ratification* <br>*amends D-18* | #2614 |
 | [D-65](decisions/D-065-a-store-driver-release-runs-after-a-person-approves-its-uploaded-bytes.md) | 2026-10-28 | plan | A store driver release runs after a person approves its uploaded bytes <br>*amends D-63* | #2210, #2297 |
+| [D-66](decisions/D-066-projects-use-github-or-artifacts-and-the-platform-builds-every-release.md) | 2026-10-28 | plan | Projects use GitHub or Cloudflare Artifacts and the platform builds every release <br>*supersedes D-53* |  |

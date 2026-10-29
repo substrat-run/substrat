@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -5,7 +6,7 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { createControlPlaneApi, createWfpUploader, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth } from '../src/index.js';
+import { createWfpUploader, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth } from '../src/index.js';
 
 /**
  * #2430: the deploy manifest's `ownerGrants` (package.json `substrat.ownerGrants`) are granted to a

@@ -2,7 +2,7 @@
 
 The `substrat` CLI — authenticated deploy tooling. You **push** a vertical to the platform,
 then manage its versions and channels. It is the client half of the
-[self-serve deploy](/guide/deploying) flow: it builds your worker locally and POSTs a bundle;
+[self-serve deploy](/guide/deploying) flow: it submits source and the platform builds an immutable release;
 the [control plane](/platform/control-plane) holds the Cloudflare credential and does the
 upload, so **you never hold a platform token** (decision D-34).
 
@@ -276,7 +276,7 @@ input defaults from the project; flags override each:
 | version | the registry's latest for the slug, patch-bumped (seeded from `package.json` `version` on the very first push) | `--version` |
 | workspace | `"substrat": { "tenant" }` in `package.json` — the **pin** | `--tenant`, `SUBSTRAT_TENANT` |
 | UI served? | refuse if `app/index.html` exists and nothing in the manifest would serve it | `--allow-unserved-ui` |
-| layer rules | refuse if [boundary-lint](/concepts/modules) finds a violation in your module code | `--skip-lint` |
+| layer rules | the platform refuses [boundary-lint](/concepts/modules) violations | `--skip-lint` skips only the local preflight |
 | schedules run? | refuse if a module declares `schedules` and they would still go unrun: your own `defineScopeSweeperDO` unbound, the platform's `SWEEPER`/`SweeperDO` names taken, or a `@substrat-run/vertical-host` too old for the platform's sweeper | `--allow-unswept-schedules` |
 | permission surface | derived from `"substrat": { "permissions" }` and shipped in the manifest | check it without pushing: [`--check`](#push-check-the-local-gate-without-pushing) |
 
@@ -327,7 +327,7 @@ one:
   was checked, but R5 (another module's tables are private) has no ownership map to check
   against, so it passed over your SQL without looking.
 
-`--skip-lint` pushes ungated deliberately, and prints that it did.
+`--skip-lint` skips the local preflight. Platform builds still run the authoritative layer checks.
 
 **The platform runs your schedules.** On a hosted deploy, a vertical's declared `schedules`
 need a timer inside its own deployment: a
@@ -411,9 +411,9 @@ egress worker refuses such a call at run time. `--strict` makes it an error. A d
 literal names is only a `note:`. It is best effort: a host built at runtime or read from config is
 not found. See [declared outbound hosts](/guide/deploying#declared-outbound-hosts).
 
-The push builds the bundle (`wrangler deploy --dry-run`, running your own `build.command`),
-reads the declared surface (your own DO classes, D1 databases, compatibility date/flags, entry
-module), computes the three digests, and POSTs to `{cp}/verticals/{slug}/deploy`. The slug is
+The CLI POSTs a source snapshot to `{cp}/verticals/{slug}/deploy`. The platform persists
+its revision, installs with a frozen lockfile, runs your configured build command and
+bundles the Worker. It reads the declared surface and computes the release digests. The slug is
 **bare** — the control plane forms the registry id `<workspace>/<slug>` from the workspace you
 push as (see [the prefix](/guide/deploying#the-workspace-prefix)). The version lands
 **pending**; admission is a separate, human step.

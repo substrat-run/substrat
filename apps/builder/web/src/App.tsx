@@ -307,6 +307,7 @@ export function App() {
 				{session ? (
 					<ProjectMenu
 						name={session.project.name}
+						sourceProjects={session.sourceProjects ?? false}
 						dir={session.vertical}
 						busy={busy}
 						onChanged={reloadProject}

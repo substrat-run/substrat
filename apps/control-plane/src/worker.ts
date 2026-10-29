@@ -1,3 +1,4 @@
+import { sourceBuildService, githubConfig, installationToken, gh } from '@substrat-run/control-plane-api';
 /**
  * The shared control plane as a deployable Cloudflare Worker — now the whole
  * **portal**: it serves the console SPA, the audited control-plane API, and staff
@@ -325,6 +326,10 @@ export { ObservabilityCacheDO };
 export { RelayGateway } from './relay-gateway.js';
 
 interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
+  SOURCE_BUILDER?: Fetcher;
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_SLUG?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /** The staff roster's D1 store (#42). Absent in the workerd test (dev-actor path only). */
@@ -3466,6 +3471,15 @@ export default {
         ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
+        sourceBuilds: sourceBuildService(env.SOURCE_BUILDER, env.SERVICE_TOKEN),
+        githubRepositoryAccess: async (_tenantId, owner, repo, installationId, scope) => {
+          const cfg = githubConfig(env);
+          if (!cfg) throw new ControlPlaneError(503, 'GitHub source access is not configured');
+          const token = await installationToken(cfg, installationId, { name: repo, write: scope === 'write' });
+          const response = await gh(cfg, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, `Bearer ${token}`);
+          if (!response.ok) throw new ControlPlaneError(404, 'repository is not accessible through this tenant connection');
+          return { remote: `https://github.com/${owner}/${repo}.git`, token };
+        },
         // RFC wire-signing step 2 (follow-on 3): what both uploads give a deployment's verifier.
         wireUpload: { rollout: env.WIRE_KEYS_ROLLOUT, routerKeys: env.WIRE_ROUTER_PUBLIC_KEYS, platformKeys: env.WIRE_PLATFORM_PUBLIC_KEYS },
         ...(wireSettings ? { wireSettings } : {}),

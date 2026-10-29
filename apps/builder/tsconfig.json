@@ -17,6 +17,7 @@
     "src/staff.ts",
     "src/agent.ts",
     "src/providers-worker.ts",
-    "src/metering.ts"
+    "src/metering.ts",
+    "src/repositories.ts"
   ]
 }

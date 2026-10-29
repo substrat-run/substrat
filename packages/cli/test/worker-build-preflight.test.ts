@@ -40,7 +40,7 @@ function pushWithGeneratedFile(generated: string, forgedReceipt = false): { stat
           uploads++;
           return Response.json({ id: 'v', admission: 'accepted', deploymentRef: 'r', verticalSlug: 'board' });
         };
-        const { push } = await import(${JSON.stringify(new URL('../dist/push.js', import.meta.url).href)});
+        const { buildRelease: push } = await import(${JSON.stringify(new URL('../dist/push.js', import.meta.url).href)});
         try {
           await push({ dir, slug: 'board', version: '1.0.0', controlPlaneUrl: 'https://cp.example/api', authHeader: {},
             linted: { root: dir, gate: 'passed' },
@@ -64,7 +64,7 @@ it('checks a generated import after the build command, running it once', () => {
   const result = pushWithGeneratedFile('export const ready = true;');
   expect(result.status, result.output).toBe(0);
   expect(result.output).toContain('RESULT:passed');
-  expect(result.output).toContain('BUILDS:1 UPLOADS:1');
+  expect(result.output).toContain('BUILDS:1 UPLOADS:0');
 });
 
 it('refuses a builtin in a generated import before upload', () => {
@@ -109,8 +109,9 @@ function commandWithBuiltin(flags: string[], command: 'push' | 'preview'): { sta
           return Buffer.from('');
         };
         syncBuiltinESMExports();
-        globalThis.fetch = async () => {
+        globalThis.fetch = async (_url, init) => {
           writeFileSync(${JSON.stringify(marker)}, 'called');
+          if (init?.method === 'POST' && String(_url).endsWith('/deploy')) return Response.json({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'board', dataLoss: { status: 'passed', authored: 0 } });
           return Response.json({ entries: [], nextCursor: null });
         };
         await import(${JSON.stringify(cli)});
@@ -122,18 +123,17 @@ function commandWithBuiltin(flags: string[], command: 'push' | 'preview'): { sta
   }
 }
 
-it.each(['push', 'preview'] as const)('the %s command refuses a builtin before auth or a registry request', (command) => {
+it.each(['push', 'preview'] as const)('%s submits source and delegates builtin checks without a local build', (command) => {
   const result = commandWithBuiltin([], command);
-  expect(result.status).not.toBe(0);
-  expect(result.output).toContain('node:crypto');
-  expect(result.networkCalled).toBe(false);
-  expect(result.builds).toBe(1);
+  expect(result.networkCalled, result.output).toBe(true);
+  expect(result.builds).toBe(0);
 });
 
-it('allows the same command path when nodejs_compat is declared and builds once', () => {
+it('push with nodejs_compat also leaves the build to the platform', () => {
   const result = commandWithBuiltin(['nodejs_compat'], 'push');
   expect(result.networkCalled, result.output).toBe(true);
-  expect(result.builds).toBe(1);
+  expect(result.status, result.output).toBe(0);
+  expect(result.builds).toBe(0);
 });
 
 it.each([false, true])('push --check --json stays parseable with a configured build: %s', (withBuild) => {

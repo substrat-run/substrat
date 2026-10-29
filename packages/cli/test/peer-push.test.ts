@@ -31,15 +31,16 @@ it.each([undefined, [], ['acme/crm']])('push sends an explicit calls declaration
           return Buffer.from('');
         };
         syncBuiltinESMExports();
-        const { push, readVerticalMeta } = await import(${JSON.stringify(new URL('../dist/push.js', import.meta.url).href)});
+        const { buildRelease: push, readVerticalMeta } = await import(${JSON.stringify(new URL('../dist/push.js', import.meta.url).href)});
         globalThis.fetch = async (_url, init) => {
           console.log('MANIFEST:' + init.body.get('manifest'));
           return Response.json({ id: 'v', admission: 'accepted', deploymentRef: 'board-v', verticalSlug: 'board' });
         };
         const dir = ${JSON.stringify(dir)};
         try {
-          await push({ dir, slug: 'board', version: '1.0.0', controlPlaneUrl: 'https://cp.example/api', authHeader: {},
+          const built = await push({ dir, slug: 'board', version: '1.0.0', controlPlaneUrl: 'https://cp.example/api', authHeader: {},
             calls: readVerticalMeta(dir).calls, linted: { root: dir, gate: 'passed' } });
+          console.log('MANIFEST:' + built.form.get('manifest'));
         } finally { if (bundleDir) rmSync(bundleDir, { recursive: true, force: true }); }
       `,
     });

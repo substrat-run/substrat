@@ -130,6 +130,21 @@ function deniedPage(detail: string): string {
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Private source service. Runs before browser auth and accepts only the platform token.
+// The forwarded tenant comes from the control plane's ownership check, never browser input.
+app.all('/internal/*', async (c) => {
+	const supplied = c.req.header('x-service-token');
+	if (!c.env.CP_SERVICE_TOKEN || supplied !== c.env.CP_SERVICE_TOKEN) return refuse(403, 'forbidden');
+	const tenant = c.req.header('x-substrat-tenant');
+	if (!tenant) return refuse(400, 'tenant context is required');
+	const path = new URL(c.req.url).pathname;
+	if (path !== '/internal/build' && path !== '/internal/projects') return refuse(404, 'not found');
+	const url = new URL(c.req.url);
+	if (path === '/internal/projects') url.pathname = '/api/projects';
+	const request = new Request(url, c.req.raw);
+	return c.env.BUILDER_AGENT.get(c.env.BUILDER_AGENT.idFromName(tenant)).fetch(request);
+});
+
 // A throw no route caught — the agent DO's included, since the dispatch below awaits
 // the stub — answers the same problem document the node server does, not Hono's
 // text/plain default.
@@ -237,7 +252,35 @@ app.all('/api/*', async (c) => {
 	const team = teams.find((t) => t.id === selected);
 	if (!team) return refuse(403, `not a member of team '${selected}'`);
 	const id = c.env.BUILDER_AGENT.idFromName(team.id);
-	return await c.env.BUILDER_AGENT.get(id).fetch(c.req.raw);
+	const headers = new Headers(c.req.raw.headers);
+	headers.set(TENANT_HEADER, team.id);
+	headers.set('x-substrat-tenant-slug', team.slug);
+	headers.delete('x-service-token');
+	if (c.req.path === '/api/release' && c.req.method === 'POST') {
+		const projectResponse = await c.env.BUILDER_AGENT.get(id).fetch(new Request('https://agent/api/project-source', { headers }));
+		if (!projectResponse.ok) return projectResponse;
+		const project = await projectResponse.json() as { slug: string; revision?: string };
+		if (!project.revision) return refuse(409, 'save source before building a release');
+		const { version } = await c.req.json() as { version?: string };
+		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api/verticals/${encodeURIComponent(project.slug)}/deploy`, {
+			method: 'POST', headers: { 'content-type': 'application/json', 'x-service-token': c.env.CP_SERVICE_TOKEN ?? '' },
+			body: JSON.stringify({ version, revision: project.revision, tenant: team.id }),
+		});
+	}
+	if (c.req.path === '/api/verticals' && c.req.method === 'GET') {
+		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api/verticals?ownerTenant=${encodeURIComponent(team.id)}&limit=200`, {
+			headers: { 'x-service-token': c.env.CP_SERVICE_TOKEN ?? '' },
+		});
+	}
+	if (c.req.path === '/api/projects' && c.req.method === 'POST') {
+		const body = await c.req.json() as { slug?: string; name?: string; [key: string]: unknown };
+		body.name = body.name?.trim() || 'Untitled';
+		body.slug ??= body.name === 'Untitled' ? `draft-${crypto.randomUUID()}` : body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `draft-${crypto.randomUUID()}`;
+		return c.env.CONTROL_PLANE_SVC.fetch(`https://control-plane/api/projects?tenant=${encodeURIComponent(team.id)}`, {
+			method: 'POST', headers: { 'content-type': 'application/json', 'x-service-token': c.env.CP_SERVICE_TOKEN ?? '' }, body: JSON.stringify(body),
+		});
+	}
+	return await c.env.BUILDER_AGENT.get(id).fetch(new Request(c.req.raw, { headers }));
 });
 
 /** Everything else is the SPA — already behind the gate above. */

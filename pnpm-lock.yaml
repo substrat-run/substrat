@@ -105,6 +105,9 @@ importers:
       '@substrat-run/builder-workspace':
         specifier: workspace:*
         version: link:../../packages/builder-workspace
+      '@substrat-run/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
       '@substrat-run/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

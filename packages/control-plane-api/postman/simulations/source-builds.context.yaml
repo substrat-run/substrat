@@ -1,0 +1,11 @@
+name: Platform source build transport
+scope: Private control-plane to builder service HTTP seam
+contract:
+  - POST /internal/build accepts slug and a source build request with a pinned revision or snapshot.
+  - A successful result is multipart, with manifest, module files and a buildResult JSON part.
+  - The platform token and authenticated tenant context are required on every request.
+  - Build failures return 422 problem JSON; unavailable capacity returns 503.
+verified_by: node packages/control-plane-api/postman/check-source-builds.mjs http://127.0.0.1:4928/builder
+limits:
+  - The mock exercises actual HTTP serialization, binary multipart parsing and error propagation.
+  - It does not verify the Cloudflare Artifacts binding, Sandbox RPC, GitHub permissions or a deployed platform.

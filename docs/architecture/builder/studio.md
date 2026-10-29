@@ -283,106 +283,58 @@ nothing to do, and spend the real optimisation effort on prompt caching (§5.4).
 bug to avoid, inherited from [generated-verticals](../../strategy/generated-verticals.md) §6.4: a
 regenerate-per-keystroke loop. Debouncing is a design input.
 
-### 4.5 Persistence: git is the durable tier, R2 is a cache
+### 4.5 Source persistence
 
-The container's disk is ephemeral (§4.2), which invites an obvious-looking fix: back the
-filesystem with R2 so files survive. **Don't.** It is the wrong layer, for reasons that are
-design-level rather than mechanical:
+A tenant-owned project has one authoritative Git repository, in Cloudflare Artifacts or
+in the tenant's connected GitHub account ([D-66](../../decisions/D-066-projects-use-github-or-artifacts-and-the-platform-builds-every-release.md)).
+The builder, CLI and GitHub source builds share that project identity. The builder's
+project menu lists source projects, including CLI-created verticals, and can associate
+an existing tenant-owned vertical with a connected GitHub repository.
 
-- **We already have durable storage with better properties.** The repo gives history, diffs,
-  branches, review, rollback and an offboarding story. R2-as-filesystem gives a bag of bytes with
-  none of that, and then we would own the sync logic that git already implements correctly.
-- **It would fight commit-per-turn.** §4.2's discipline exists precisely so that ephemeral disk
-  is survivable. A second persistence path makes "what is the real state of this vertical" a
-  question with two answers, which is how the durable tier stops being durable.
-- **Mechanically it is also awkward.** R2 is object storage with an S3 API, not a filesystem;
-  mounting it wants FUSE and a privilege level a managed container will not give you. Even where
-  a sync tool works, you have re-invented `git clone` with worse semantics.
+The container is disposable. Source workspaces live outside the platform checkout, so
+each repository installs its own dependencies and lockfile. The host runs its checkers
+from the image toolchain; ancestor contract types support the model phase before a
+project has its own package manifest. Opening a project clones its branch into a project-specific
+workspace; a clean existing checkout advances only by fast-forward. Turns and editor saves
+commit and push source. A concurrent remote writer causes a refused push rather than an
+overwrite. The repository interface owns Git access; the builder uses the same workflow
+for either provider. GitHub access is scoped to a repository in the tenant's active
+installation connection. Artifacts tokens are repo-scoped and expire after ten minutes.
+Credentials are transient and are not stored in Git remotes.
 
-So the resume path is: **clone at `HEAD`, not restore a disk.** Session start clones the repo
-into the fresh container; every turn commits; a slept-and-woken session re-clones. Losing the
-container costs a boot, never work — which is §2's tier model doing its job rather than being
-worked around.
+Project metadata, conversation history and disposable editor snapshots live in the tenant's
+BuilderAgent DO. The registry uses a new storage key. Existing builder projects and R2 Git
+bundles have no import, migration or restore fallback. The worker has no project R2 binding.
 
-**R2 is genuinely useful here, as a cache — never as the source of truth:**
+### 4.6 Platform builds
 
-| Use | Why R2 fits |
-|---|---|
-| pnpm store / `node_modules` tarball | Large, regenerable, no history wanted. Cuts cold-start install. |
-| Session artifacts (build output, screenshots, logs) | Write-once blobs the repo should not carry. |
-| Warm-start snapshot of the workspace | Optional fast-resume *optimisation*; the clone remains the correct path, and the snapshot must never be authoritative. |
+`substrat push` submits selected source files, including uncommitted and untracked files.
+For a monorepo member, selection includes nested UI packages, workspace dependencies,
+root configuration and build tools. Ignored files, credentials, dependencies and generated
+outputs are excluded. Source snapshots preserve binary contents and executable modes;
+symlinks and paths that escape the repository are refused.
 
-The test for whether something belongs in R2: **if losing it would lose work, it is in the wrong
-place.** A cache you can delete at any time without consequence is the only thing that belongs
-there. Note the image already carries prebuilt `node_modules` (§4.1), so the R2 cache is a
-second-order optimisation — measure the cold start before building it.
+The control plane checks tenant ownership before invoking the private build service in
+the builder worker. The service persists the snapshot in Artifacts and pins its Git commit
+before building. A GitHub project's CLI snapshot is stored separately from its authoritative
+branch. A revision build fetches the requested commit from the project's repository.
 
-### 4.6 Where the generated repo lives
+Each release build gets a fresh Sandbox container. Git access finishes before project
+installation or build scripts execute. These run as an unprivileged user without platform
+credentials or write access to the image's toolchain. Installation uses a frozen lockfile;
+workspace dependencies build before the vertical's release assembly. The platform runs the
+layer checks and assembles the same manifest, module and asset parts that the existing
+sandbox contract, admission and deployment path validate.
 
-Generated verticals do **not** live in this monorepo. §4.5 settles that git is the durable tier;
-this settles where the remote is, which is a different and more consequential question because it
-decides who is custodian of customer code.
+Release manifests record the build ID, project ID, source revision and toolchain fingerprint.
+Public deployment requests accept source JSON; module uploads and an unconfigured source
+service fail closed. Promotion and rollback continue to use the stored release outputs.
+Building a release does not promote a channel or waive migration and permission review.
 
-The premise throughout is §2.1: **this is the customer's code**, and we are holding it for them.
-
-**Not our GitHub org, as the default.** It is the obvious choice and it is wrong for three
-reasons, in ascending order of how hard they are to undo:
-
-1. **Operational scale.** One repo per generated vertical means thousands of repos we administer,
-   under one org's limits, App rate limits and billing.
-2. **Custodianship.** A private repo of a customer's business logic, held in our org, makes us
-   the custodian of their IP with an offboarding story we would have to invent (K-21: tombstone,
-   never silently reassign).
-3. **Jurisdiction — the non-obvious one, and the reason this is a real decision.** A tenant's
-   data has a jurisdiction (`eu`/`us`/`global`) that the platform takes seriously. Putting that
-   tenant's *code* in a US SaaS while their *data* is EU-resident is an inconsistency we would
-   have to explain to exactly the buyer the trust moat is aimed at. **Code should live where the
-   data lives**, under the same tenancy and residency controls.
-
-**Recommended: a bare git repo per vertical, stored in R2 as a `git bundle`.**
-
-`git bundle create <file> --all` is a single file holding the complete repository with history,
-and `git clone` accepts one directly. So the flow is: session start fetches the bundle from R2 and
-clones it into the fresh container; every turn commits (§4.2); the turn ends by re-bundling and
-uploading. Full history, no git host, no third party, and it sits under the same account and
-jurisdiction as the tenant's data.
-
-Why this does **not** contradict §4.5's "R2 is a cache, never the source of truth": the
-distinction there was between R2 holding *loose files* (no history, competing with git) and R2
-holding **git objects** (structured, history-preserving, git remains the interface). Here git is
-still the durable tier — R2 is merely where its objects rest. If work would be lost by deleting
-it, it is git data and gets versioning; if not, it is cache.
-
-What makes it tractable rather than clever:
-
-- **Single writer, for free.** The `BuilderAgent` DO (§7.1) is the only thing that touches a given
-  vertical's bundle, so there is no locking problem to solve — the DO *is* the lock.
-- **Durable.** R2 has NO object versioning (verified against docs and API — an earlier draft
-  claimed otherwise), so the rollback trail is app-level: ULID-keyed bundle per save
-  (lexicographic = chronological), pruned to the last N. Each bundle is complete, so history
-  depth is a rollback budget, not a chain.
-- **Small.** A vertical's history is a few MB. Bundle-per-turn is cheap.
-- **Zero lock-in, and this is the deciding property.** Moving to any git host later is
-  `git clone <bundle> && git remote add … && git push`. Choosing this forecloses nothing.
-
-**"Publish to my GitHub" is a one-way export, not a transfer.** When a builder wants their code on
-their own GitHub, we push the history into a repo *they* own, through *their* App installation —
-we never transfer a repo out of our org, because we never had one. The existing App
-(`apps/dashboard/src/github.ts`) already does installation tokens, repo listing and one-click CI
-setup for customer-owned repos; the gap is repo *creation*, which is one API call.
-
-**The reversibility argument, since this is a judgement call.** Starting on R2 bundles and later
-adopting GitHub is a push. Starting on our GitHub org and later moving customers off means
-transferring or deleting repos we have become custodian of, plus unwinding whatever expectations
-formed around them. The asymmetry is the argument; the cost of being wrong is low either way
-because it is all just git.
-
-**Alternatives considered:** self-hosted Gitea/Forgejo gives a real web UI and PR flow, at the cost
-of infrastructure to operate that is not Cloudflare-native — worth revisiting only if the *review*
-surface (§6) turns out to want PRs rather than the in-studio diff. GitLab/Bitbucket carry the same
-custodianship and jurisdiction issues as GitHub with less existing integration. A git smart-HTTP
-server as a Worker over R2 is the "proper" version of the bundle approach and is a project in
-itself; bundles get the same durability for a day of work.
+The builder's **Build release** action uses the current saved revision through this same
+control-plane route. Builds serialize with turns and source writes for the tenant. Build
+failures retain a bounded diagnostic record in the agent DO. The private service requires
+the platform service token and the tenant context checked by its caller.
 
 ## 5. The provider seam
 
@@ -880,19 +832,9 @@ provenance; the log is authoritative.
   compares structural outcomes. Rationale: the skills are the product, so a prompt edit is a
   fleet-wide behaviour change with no reviewable diff — this is what `packages/contract-tests` is
   for adapters, applied to the thing that writes every future vertical.
-- **D-52 — A generated vertical's repo is hosted by us as a git bundle in R2, not on GitHub; a
-  builder's own GitHub is a one-way export target.** One bare repo per vertical, written only by
-  that vertical's `BuilderAgent` DO, stored under the tenant's namespace with R2 object versioning.
-  Rationale: the code is the customer's (§2.1) and we merely hold it, so code should live where
-  the data lives — a tenant with EU-resident data whose business logic sits in a US SaaS is an
-  inconsistency aimed squarely at the buyer the trust moat targets — and hosting customer repos in
-  our own org would make us custodian of their IP at a scale (thousands of repos) with an
-  offboarding story we would have to invent. The decision is also
-  asymmetrically reversible: bundles → any git host is a `git push`, while our-org → elsewhere
-  means transferring repos we should never have held. §4.5's "R2 is a cache" still holds, because
-  git objects are not loose files: git remains the durable tier and R2 is only where it rests.
-  (Correction, post-implementation: R2 has no object versioning — rollback is app-level ULID-keyed
-  bundle history, not a bucket feature.)
+- **Historical D-52 proposal (recorded as D-53), superseded by D-66.** GitHub and
+  Cloudflare Artifacts are the source backends; R2 Git bundles and existing builder projects
+  have no preservation requirement. See §4.5–4.6 for the implementation.
 - **D-53 — The generated vertical is the customer's code; the studio is a tool, not the author.**
   Export is available from day one rather than at offboarding, we hold the repo as custodian by
   arrangement (D-52), the model provider is a disclosed subprocessor the tenant may constrain, and

@@ -2334,6 +2334,13 @@ export const publishedConcept = z.string().trim().min(1).refine(
 );
 
 export const deployManifest = z.object({
+  /** Platform-emitted provenance for a release built from persisted source (D-66). */
+  build: z.object({
+    id: z.string().min(1),
+    projectId: z.string().min(1),
+    revision: z.string().regex(/^[0-9a-f]{40}$/),
+    toolchain: z.string().min(1),
+  }).optional(),
   version: z.string().min(1),
   /** Display name for a first-time register; defaults to the slug. */
   name: z.string().min(1).optional(),

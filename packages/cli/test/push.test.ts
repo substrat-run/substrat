@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, isAbsolute, resolve } from 'node:path';
 import { FAILING_WRANGLER, installFakeWrangler } from './fake-wrangler.js';
 import {
@@ -1291,9 +1291,9 @@ describe('resolveDeclaredEnvSpec — the code declaration wins, drift refuses (#
  * on every push, which makes this the path most likely to meet the check.
  *
  * It has to drive the real binary: `cli.ts` runs `main()` on import, so the only place the
- * flag→option wiring exists is a child process. Nothing is uploaded — the run stops at the UI
- * preflight (without the flag) or at the build (with it), both before any network call, and
- * `--version` skips the one registry read `preview create` would otherwise do first.
+ * flag→option wiring exists is a child process. The fixture platform checks the serialized
+ * source request's override. No local build or real deployment runs; `--version` skips the
+ * registry read `preview create` would otherwise do first.
  */
 describe('substrat preview create — push overrides reach the same push (#1209)', () => {
   const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
@@ -1334,8 +1334,19 @@ describe('substrat preview create — push overrides reach the same push (#1209)
     };
     const r = spawnSync(
       process.execPath,
-      [cli, 'preview', 'create', dir, '--tag', 'pr-1', '--version', '0.0.1-pr-1.1', '--skip-lint', ...args],
-      { env, encoding: 'utf8' },
+      ['--input-type=module'],
+      { env, encoding: 'utf8', input: `
+        process.argv = [process.execPath, ${JSON.stringify(cli)}, ...${JSON.stringify(['preview', 'create', dir, '--tag', 'pr-1', '--version', '0.0.1-pr-1.1', '--skip-lint', ...args])}];
+        globalThis.fetch = async (url, init) => {
+          if (String(url).endsWith('/deploy')) {
+            const source = JSON.parse(init.body);
+            if (!source.allowUnservedUi) return Response.json({ detail: 'nothing in the push would serve this UI; use --allow-unserved-ui deliberately' }, { status: 422 });
+            return Response.json({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'helpdesk', dataLoss: { status: 'passed', authored: 0 } });
+          }
+          return Response.json({ tag: 'pr-1', scopeId: 's', versionId: 'v', url: 'https://preview.example.test' });
+        };
+        await import(${JSON.stringify(pathToFileURL(cli).href)});
+      ` },
     );
     return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
   }
@@ -1349,8 +1360,10 @@ describe('substrat preview create — push overrides reach the same push (#1209)
 
   it.runIf(built)('and --allow-unserved-ui is honoured rather than silently dropped', () => {
     const r = runPreview(verticalWithUnservedUi(), '--allow-unserved-ui');
-    // Past the preflight: it reached the build (the failing fake wrangler), so the flag arrived.
+    // The platform accepted the override; the CLI itself still did not build.
     expect(r.stderr).not.toMatch(/nothing in the push would serve/);
-    expect(r.stdout).toMatch(/building Worker/);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain('submitting source');
+    expect(r.stdout).not.toContain('building Worker');
   });
 });

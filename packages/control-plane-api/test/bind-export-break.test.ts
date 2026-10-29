@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,6 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import {
-  createControlPlaneApi,
   firstBuilderAuth,
   mintPushToken,
   pushActorFor,

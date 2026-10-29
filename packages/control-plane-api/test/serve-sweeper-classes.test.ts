@@ -1,3 +1,4 @@
+import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,6 @@ import { ulid } from '@substrat-run/kernel';
 import { PLATFORM_SWEEP_HOST_KEY, platformActorId, tenantId } from '@substrat-run/contracts';
 import { heldManifest } from './held-manifest.js';
 import {
-  createControlPlaneApi,
   createWfpUploader,
   DEV_ACTOR_HEADER,
   stableDeploymentRefFor,
