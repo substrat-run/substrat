@@ -611,10 +611,6 @@ export class TenantNarrowedControlPlane {
     );
   }
 
-  /**
-   * Send a test message through a mail connection (#2343), the probe mail has. A refusal is a
-   * 200 with `ok: false` in the connector's words; a provider with no sender is a 501.
-   */
   /** The addresses a mail connection may send as (#2343), whole — what a send test's `from` may be. */
   async connectionSenders(connectionId: string): Promise<string[]> {
     return (await this.call<ConnectionSenders>(
@@ -622,6 +618,10 @@ export class TenantNarrowedControlPlane {
     )).senders;
   }
 
+  /**
+   * Send a test message through a mail connection (#2343), the probe mail has. A refusal is a
+   * 200 with `ok: false` in the connector's words; a provider with no sender is a 501.
+   */
   sendConnectionTest(connectionId: string, input: ConnectionSendTest): Promise<ConnectionSendTestResult> {
     return this.post<ConnectionSendTestResult>(
       `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/send-test`,
