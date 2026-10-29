@@ -402,12 +402,10 @@ jobs:
       # attachment-writers' function reading.
       - run: pnpm test:role-seat-paths
       - run: pnpm lint:role-seat-paths
-      # Store-driver release approval (#2297): every typed read of a registration's release pins,
-      # in every member that can hold one, the scaffold template included, held to the baseline step
-      # 4b switches; and every public workspace manifest held to the platform repository. Both read
-      # the whole workspace, so they run here on every PR, not as READS rows: those select a
-      # reader with all its dependents, close to a full run on nearly any change. Needs the build.
-      - run: pnpm lint:store-driver-readers
+      # Store-driver release approval (#2297): every public workspace manifest held to the platform
+      # repository, which a `writtenInRepo` isolation basis admits approvals by. It reads the whole
+      # workspace, so it runs here on every PR, not as a READS row: that would select contracts with
+      # all its dependents, close to a full run on nearly any change.
       - run: pnpm lint:store-driver-repository
       # The review checklist (plugin/substrat/review/checklist.md, #2365) names, per item, the gates
       # that already refuse it, and a review runner trusts that list instead of re-reading what a

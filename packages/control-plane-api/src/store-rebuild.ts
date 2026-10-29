@@ -33,8 +33,8 @@ import type { PlatformActorId, ScopeStoreNeed, StoreDriverRegistration } from '@
 import { SCOPE_STORE_CANARY } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ulid, type HostAdmin, type StoreDriverRebuildFailure, type StoreDriverRebuildRecord } from '@substrat-run/kernel';
-import { PUSH_HOLD_TTL_MS, storedReleaseLoader, type StoreReleaseBytes } from './store-releases.js';
-import type { ScopeStoreEnsurerOptions } from './store-script.js';
+import { PUSH_HOLD_TTL_MS, readStoreDriverApprovals, storedReleaseLoader, type StoreReleaseBytes } from './store-releases.js';
+import type { ScopeStoreEnsurerOptions, StoreDriverApprovals } from './store-script.js';
 
 type LoadRelease = ScopeStoreEnsurerOptions['loadRelease'];
 
@@ -98,15 +98,19 @@ interface StoreFleetRebuildDeps {
   /** What the platform builds every script from now (`storePlatformFingerprint`). */
   fingerprint: string;
   bytes: StoreReleaseBytes;
-  /** Rebuild one vertical's scripts of a driver at the release each runs, existing scripts only. */
+  /**
+   * Rebuild one vertical's scripts of a driver at the release each runs, existing scripts only,
+   * judged against the driver's approvals as this pass read them under its hold.
+   */
   ensure: (input: {
     vertical: string;
     stores: readonly ScopeStoreNeed[];
     existingOnly: true;
     loadRelease: LoadRelease;
+    approvals: StoreDriverApprovals;
   }) => Promise<void | { uploaded: number }>;
   /** Rebuild the driver's canary script the same way. */
-  ensureCanary: (input: { driver: string; existingOnly: true; loadRelease: LoadRelease }) => Promise<{ uploaded: boolean }>;
+  ensureCanary: (input: { driver: string; existingOnly: true; loadRelease: LoadRelease; approvals: StoreDriverApprovals }) => Promise<{ uploaded: boolean }>;
   /** The most scripts this pass walks, across drivers. */
   budget: number;
   /**
@@ -214,6 +218,9 @@ async function rebuildDriver(
   try {
     held = await admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS });
     if (!held) return result('held', rebuild);
+    // Read under the hold, so a revoke written before it is seen and none lands during the walk. A
+    // script running a revoked release is then not rebuilt, and is reported until a rollout moves it.
+    const approvals = await readStoreDriverApprovals(admin, actor, registration);
     const declared = await admin.storeDriverDeclarations(actor, driver);
     const byVertical = new Map(declared.verticals.map((v) => [v.vertical, v.stores.map((s) => ({ binding: s.binding, driver }))]));
     // A vertical whose stores cannot be named may still run a script of this driver. Its name is the
@@ -245,8 +252,8 @@ async function rebuildDriver(
       walked.push(step.key);
       try {
         const up = step.key === SCOPE_STORE_CANARY
-          ? (await deps.ensureCanary({ driver, existingOnly: true, loadRelease })).uploaded
-          : await deps.ensure({ vertical: step.key, stores: byVertical.get(step.key)!, existingOnly: true, loadRelease }).then((r) => (r ? r.uploaded > 0 : true));
+          ? (await deps.ensureCanary({ driver, existingOnly: true, loadRelease, approvals })).uploaded
+          : await deps.ensure({ vertical: step.key, stores: byVertical.get(step.key)!, existingOnly: true, loadRelease, approvals }).then((r) => (r ? r.uploaded > 0 : true));
         if (up) uploaded.push(step.key);
         failures.delete(step.key);
       } catch (e) {
