@@ -342,6 +342,42 @@ describe('declared connection landings (#2316)', () => {
     }
   });
 
+  it.each([
+    ['ledger succeeds', 'ledger/record-period', 'ok'],
+    ['ledger fails', 'ledger/missing', 'failed'],
+  ])('keeps the invoice limitation visible when a mixed connection %s', async (_label, operation, outcome) => {
+    const id = await connect('fortnox');
+    const invoiceScope = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: invoiceScope, jurisdiction: 'eu', vertical: SLUG });
+    await host.admin.activateScope(staff, t, invoiceScope);
+    const ledger = [{ provider: 'fortnox', operation, permission: 'ledger:record', declaredBy: ['@acme/crm'] }];
+    const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(ledger)));
+    await host.admin.bindScopeVersion(staff, t, invoiceScope, await publish(manifestDeclaring(invoice)));
+
+    await pass();
+
+    expect(lastRun(id)).toMatchObject({ outcome, error: expect.stringContaining('supplier-invoice polling is unavailable') });
+    expect((await listFortnoxBindings(host, id))).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scopeId: s, operation }),
+      expect.objectContaining({ scopeId: invoiceScope, kind: 'supplier-invoice' }),
+    ]));
+    expect(ledgerPages).toHaveLength(outcome === 'ok' ? 1 : 0);
+    const calls = fortnox.calls.length;
+    const rows = runs.length;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 1000));
+      await host.admin.recordSweepRun({ kind: 'connector', unit: id, outcome: outcome as 'ok' | 'failed', tenantId: t, vertical: SLUG, connectionId: id });
+      vi.advanceTimersByTime(60 * 60_000);
+      await pass({ fortnox: 120 });
+      expect(fortnox.calls).toHaveLength(calls);
+      expect(runs).toHaveLength(rows);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lands beside a directory row in the tenant that does not read as a scope, which the pass names once", async () => {
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
     const unreadable = scopeId.parse(ulid());

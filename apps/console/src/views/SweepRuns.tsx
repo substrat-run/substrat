@@ -27,6 +27,24 @@ const OUTCOME_BADGE: Record<string, 'success' | 'danger' | 'warning'> = {
   unsupported: 'warning',
 };
 
+/** Expanded receipt detail; a neutral limitation on a successful poll is not a failure. */
+export function SweepRunDetail({ entry }: { entry: SweepRunEntry }) {
+  if (!entry.error) return null;
+  const mixedFailure = entry.outcome === 'failed' && entry.error.startsWith('Unsupported bindings: ')
+    ? entry.error.indexOf('\n') : -1;
+  const style = { fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const };
+  return mixedFailure >= 0 ? (
+    <>
+      <div style={{ ...style, color: 'var(--text-tertiary)' }}>{entry.error.slice(0, mixedFailure)}</div>
+      <div style={{ ...style, color: 'var(--status-danger-fg)' }}>{entry.error.slice(mixedFailure + 1)}</div>
+    </>
+  ) : (
+    <div style={{ ...style, color: entry.outcome === 'failed' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
+      {entry.error}
+    </div>
+  );
+}
+
 /**
  * Operations → Sweeps (#1232): the fleet-wide sweep record — every connection
  * polled, every schedule fired or skipped, every freshness verdict, newest
@@ -240,11 +258,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
                   <tr id={`sweep-detail-${e.id}`}>
                     <td colSpan={6} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
-                        {e.error && (
-                          <div style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--status-danger-fg)' }}>
-                            {e.error}
-                          </div>
-                        )}
+                        <SweepRunDetail entry={e} />
                         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
                           <span>unit {e.unit}</span>
                           {e.scopeId && <span>scope {e.scopeId}</span>}

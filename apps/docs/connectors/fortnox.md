@@ -106,10 +106,13 @@ pushing and promoting the version that declares it is enough, and the next pass 
 hour) grants and binds every company connected so far. A binding written by hand before bindings
 recorded the company is re-written once on that pass.
 
-Each pass writes one row per connection, shown in Health › Connections: **ok** when every bound
-scope synced or was unchanged, **skipped** when the connection has no binding, **unsupported**
-when an invoice binding awaits its sweep, and **failed**, naming the scope, when a scope could not be landed in or a declared landing could not be granted or
-bound.
+Each due pass writes one row per connection, shown in Health › Connections: **ok** when the
+polled ledger bindings synced or were unchanged, **skipped** when the connection has no binding,
+**unsupported** when every binding awaits the invoice sweep, and **failed**, naming the scope,
+when a scope could not be landed in or a declared landing could not be granted or bound. A
+connection with ledger and invoice bindings in separate scopes reports the ledger poll's outcome
+and keeps the unsupported invoice scope in the row detail. The unsupported-only row obeys the
+same configured cadence as a ledger poll.
 
 ### Bind a hosted connection by hand
 

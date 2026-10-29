@@ -2006,7 +2006,7 @@ export async function runPlatformSweep(
     // #2316: the row is the connection's tenant's to read, so it says what became of the sweep, in
     // the platform's words with counts, under one reference; the text (a provider's answer, a landing
     // refusal) is staff's row under the same reference, or the report's when nothing files one.
-    const fail = (said: string[], raw: string[]) => {
+    const fail = (said: string[], raw: string[], neutralDetail?: string) => {
       const reference = ulid();
       if (options.recordFailure) {
         options.recordFailure(
@@ -2020,7 +2020,8 @@ export async function runPlatformSweep(
       } else {
         for (const r of raw) report.errors.push({ kind: 'sweep', id: c.id, error: r });
       }
-      record('failed', { error: `${said.join('; ')} (reference ${reference})`, elapsedMs: Date.now() - started });
+      const failureText = `${said.join('; ')} (reference ${reference})`;
+      record('failed', { error: neutralDetail ? `Unsupported bindings: ${neutralDetail}\n${failureText}` : failureText, elapsedMs: Date.now() - started });
     };
     const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
     const scoped = (fs: readonly { scopeId: string; error: string }[]) => fs.map((f) => `scope ${f.scopeId}: ${f.error}`);
@@ -2065,20 +2066,23 @@ export async function runPlatformSweep(
     }
     // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
     // landing the platform could not seat, fails the row; a poll that found nothing to poll is
-    // `skipped`, which a console reads as "nothing polls this connection".
+    // `skipped`, which a console reads as "nothing polls this connection". A mixed connection
+    // records the result of its polled bindings and keeps unsupported bindings in the detail.
     const pollFailed = answer?.failed ?? [];
     const unsupported = answer?.unsupported ?? [];
+    const unsupportedDetail = unsupported.map((u) => `scope ${u.scopeId}: ${u.reason}`).join('; ');
     if (landingFailed.length > 0 || pollFailed.length > 0) {
       fail(
         [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land`] : [])],
         scoped([...landingFailed, ...pollFailed]),
+        unsupportedDetail || undefined,
       );
     } else if (answer && answer.found === 0) {
       record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
-    } else if (unsupported.length > 0) {
-      record('unsupported', { error: unsupported.map((u) => `scope ${u.scopeId}: ${u.reason}`).join('; '), elapsedMs: Date.now() - started });
+    } else if (unsupported.length > 0 && answer?.found === unsupported.length) {
+      record('unsupported', { error: unsupportedDetail, elapsedMs: Date.now() - started });
     } else {
-      record('ok', { elapsedMs: Date.now() - started });
+      record('ok', { ...(unsupportedDetail ? { error: unsupportedDetail } : {}), elapsedMs: Date.now() - started });
     }
   });
 

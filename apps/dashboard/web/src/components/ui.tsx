@@ -285,8 +285,8 @@ export interface SweepTick {
   error: string | null;
 }
 
-function sweepSuffix(outcome: string, skippedNote: string): string {
-  if (outcome === 'ok') return '';
+function sweepSuffix(outcome: string, skippedNote: string, detail: string | null): string {
+  if (outcome === 'ok') return detail ? ` — ${detail}` : '';
   if (outcome === 'skipped') return ` — ${skippedNote}`;
   return ` — ${outcome}`;
 }
@@ -346,7 +346,7 @@ export function SweepStrip({
       </span>
       <span>
         {label} {relativeTime(last.at)}
-        {sweepSuffix(last.outcome, skippedNote)}
+        {sweepSuffix(last.outcome, skippedNote, last.error)}
       </span>
     </div>
   );
