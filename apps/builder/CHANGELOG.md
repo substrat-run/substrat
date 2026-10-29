@@ -1,5 +1,18 @@
 # @substrat-run/builder
 
+## 0.7.22
+
+### Patch Changes
+
+- Updated dependencies [9499b29]
+  - @substrat-run/cli@0.52.0
+  - @substrat-run/contracts@0.166.0
+  - @substrat-run/control-plane-api@0.166.0
+  - @substrat-run/adapter-cloudflare@0.166.0
+  - @substrat-run/engine-metering@0.6.50
+  - @substrat-run/kernel@0.166.0
+  - @substrat-run/model-providers@0.5.56
+
 ## 0.7.21
 
 ### Patch Changes
