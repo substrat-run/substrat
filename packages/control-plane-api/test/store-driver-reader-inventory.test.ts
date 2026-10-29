@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { API, SymbolFlags, TypeFlags } from 'typescript/unstable/sync';
 import type { Node as TSNode } from 'typescript/unstable/ast';
@@ -85,12 +85,20 @@ function relevantWorkspaceProjects(): { configs: string[]; roots: string[] } {
   return { configs, roots };
 }
 
-function inRoots(fileName: string, roots: readonly string[]): boolean {
+/**
+ * Whether a project scans a file: its own member's source, not a nested member's, never a
+ * declaration file (another member's `dist` is that member's to scan, from its source), and no test.
+ */
+function ownSource(fileName: string, projectRoot: string, roots: readonly string[]): boolean {
   const absolute = resolve(fileName).replaceAll('\\', '/');
-  const root = roots.find((candidate) => absolute.startsWith(`${resolve(ROOT, candidate).replaceAll('\\', '/')}/`));
-  if (!root) return false;
-  const relativeFile = absolute.slice(resolve(ROOT, root).replaceAll('\\', '/').length + 1);
-  return !relativeFile.split('/').some((part) => ['test', 'tests', '__tests__', 'fixture', 'fixtures'].includes(part)) &&
+  const owner = roots
+    .map((root) => resolve(ROOT, root).replaceAll('\\', '/'))
+    .filter((root) => absolute.startsWith(`${root}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  if (owner !== resolve(projectRoot).replaceAll('\\', '/')) return false;
+  const relativeFile = absolute.slice(owner.length + 1);
+  return !/\.d\.[cm]?ts$/.test(relativeFile) &&
+    !relativeFile.split('/').some((part) => ['node_modules', 'test', 'tests', '__tests__', 'fixture', 'fixtures'].includes(part)) &&
     !/\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(relativeFile);
 }
 
@@ -100,7 +108,7 @@ function inRoots(fileName: string, roots: readonly string[]): boolean {
  */
 function registrationTypeOf(project: Project): TSCompilerType | undefined {
   for (const fileName of project.program.getSourceFileNames()) {
-    if (fileName.includes('/node_modules/') && !fileName.includes('/@substrat-run/')) continue;
+    if (!/\/(?:packages\/contracts\/(?:src|dist)|store-driver-reader-inventory)\//.test(fileName)) continue;
     const source = project.program.getSourceFile(fileName);
     if (!source || !/\b(?:type|interface)\s+StoreDriverRegistration\b/.test(source.text)) continue;
     const symbol = project.checker.resolveName('StoreDriverRegistration', SymbolFlags.Type, source);
@@ -109,18 +117,28 @@ function registrationTypeOf(project: Project): TSCompilerType | undefined {
   return undefined;
 }
 
-function isRegistrationBearingType(type: TSCompilerType | undefined, registration: TSCompilerType, project: Project): boolean {
-  // `any` is assignable both ways to everything; an untyped read is not a typed pin read.
-  if (!type || type.flags & (TypeFlags.Any | TypeFlags.Unknown)) return false;
-  if (project.checker.isTypeAssignableTo(type, registration) && project.checker.isTypeAssignableTo(registration, type)) return true;
-  // A projection through a type alias (`Pick<StoreDriverRegistration, 'releases'>`, `Partial<…>`, `Omit<…>`).
-  if (type.getAliasTypeArguments().some((part) => isRegistrationBearingType(part, registration, project))) return true;
-  if (type.isUnionType() || type.isIntersectionType()) return (type.getTypes() ?? []).some((part) => isRegistrationBearingType(part, registration, project));
-  if (type.isTypeParameter()) return isRegistrationBearingType(type.getConstraint(), registration, project);
-  if (project.checker.isArrayType(type)) {
-    return project.checker.getTypeArguments(type).some((part) => isRegistrationBearingType(part, registration, project));
-  }
-  return false;
+const MAYBE_REGISTRATION = TypeFlags.Object | TypeFlags.Union | TypeFlags.Intersection | TypeFlags.TypeParameter;
+
+/** Whether a type is, or carries, a registration; memoised per project by type id. */
+function registrationBearing(registration: TSCompilerType, project: Project): (type: TSCompilerType | undefined) => boolean {
+  const memo = new Map<number, boolean>();
+  const bearing = (type: TSCompilerType | undefined): boolean => {
+    // `any` is assignable both ways to everything; an untyped read is not a typed pin read.
+    if (!type || !(type.flags & MAYBE_REGISTRATION)) return false;
+    const known = memo.get(type.id);
+    if (known !== undefined) return known;
+    memo.set(type.id, false); // a recursive type answers false while it is being judged
+    const result =
+      (project.checker.isTypeAssignableTo(type, registration) && project.checker.isTypeAssignableTo(registration, type)) ||
+      // A projection through a type alias (`Pick<StoreDriverRegistration, 'releases'>`, `Partial<…>`, `Omit<…>`).
+      type.getAliasTypeArguments().some(bearing) ||
+      ((type.isUnionType() || type.isIntersectionType()) && (type.getTypes() ?? []).some(bearing)) ||
+      (type.isTypeParameter() && bearing(type.getConstraint())) ||
+      (project.checker.isArrayType(type) && project.checker.getTypeArguments(type).some(bearing));
+    memo.set(type.id, result);
+    return result;
+  };
+  return bearing;
 }
 
 function keyName(node: TSNode | undefined): string | undefined {
@@ -149,14 +167,17 @@ function functionOwner(node: TSNode): string {
   return '<module>';
 }
 
-function bindingSourceType(node: TSNode, project: Project): TSCompilerType | undefined {
+/** The node whose type an object binding pattern destructures: a variable's initializer or a parameter. */
+function bindingSource(node: TSNode): TSNode | undefined {
   let pattern: TSNode = node.parent;
   while (isObjectBindingPattern(pattern) && isBindingElement(pattern.parent)) pattern = pattern.parent.parent;
-  if (isObjectBindingPattern(pattern) && isVariableDeclaration(pattern.parent) && pattern.parent.initializer) {
-    return project.checker.getTypeAtLocation(pattern.parent.initializer);
-  }
-  if (isObjectBindingPattern(pattern) && isParameterDeclaration(pattern.parent)) return project.checker.getTypeAtLocation(pattern.parent);
+  if (isObjectBindingPattern(pattern) && isVariableDeclaration(pattern.parent) && pattern.parent.initializer) return pattern.parent.initializer;
+  if (isObjectBindingPattern(pattern) && isParameterDeclaration(pattern.parent)) return pattern.parent;
   return undefined;
+}
+
+function isPinKey(key: string | undefined): key is PinKey {
+  return PIN_KEYS.includes(key as PinKey);
 }
 
 function findPinReads(projects: readonly Project[], roots: readonly string[]): PinRead[] {
@@ -164,36 +185,41 @@ function findPinReads(projects: readonly Project[], roots: readonly string[]): P
   for (const project of projects) {
     const registration = registrationTypeOf(project);
     if (!registration) continue;
-    const sourceNames = project.program.getSourceFileNames().filter((fileName) => inRoots(fileName, roots));
-    for (const fileName of sourceNames) {
+    // Collected syntactically, then typed in one batched request: one per node is too slow at workspace scale.
+    const candidates: { file: string; node: TSNode; at: TSNode; keys: readonly PinKey[] }[] = [];
+    const projectRoot = dirname(project.configFileName);
+    for (const fileName of project.program.getSourceFileNames().filter((name) => ownSource(name, projectRoot, roots))) {
       const source = project.program.getSourceFile(fileName);
       if (!source) continue;
       const file = relative(ROOT, source.fileName).replaceAll('\\', '/');
-      const add = (node: TSNode, key: PinKey) => {
-        const read = { file, owner: functionOwner(node), key };
-        found.set(`${read.file}\0${read.owner}\0${read.key}`, read);
-      };
       const visit = (node: TSNode): void => {
-        if (isPropertyAccessExpression(node) && PIN_KEYS.includes(node.name.text as PinKey) && isRegistrationBearingType(project.checker.getTypeAtLocation(node.expression), registration, project)) {
-          add(node, node.name.text as PinKey);
-        } else if (isElementAccessExpression(node) && PIN_KEYS.includes(keyName(node.argumentExpression) as PinKey) && isRegistrationBearingType(project.checker.getTypeAtLocation(node.expression), registration, project)) {
-          add(node, keyName(node.argumentExpression) as PinKey);
-        } else if (isBindingElement(node) && isObjectBindingPattern(node.parent) && isRegistrationBearingType(bindingSourceType(node, project), registration, project)) {
-          if (node.dotDotDotToken) {
-            for (const key of PIN_KEYS) add(node, key);
-          } else {
-            const key = keyName(node.propertyName ?? node.name);
-            if (key && PIN_KEYS.includes(key as PinKey)) add(node, key as PinKey);
-          }
-        } else if (isSpreadAssignment(node) && isRegistrationBearingType(project.checker.getTypeAtLocation(node.expression), registration, project)) {
-          for (const key of PIN_KEYS) add(node, key);
-        } else if (isSpreadElement(node) && isRegistrationBearingType(project.checker.getTypeAtLocation(node.expression), registration, project)) {
-          for (const key of PIN_KEYS) add(node, key);
+        if (isPropertyAccessExpression(node) && isPinKey(node.name.text)) {
+          candidates.push({ file, node, at: node.expression, keys: [node.name.text] });
+        } else if (isElementAccessExpression(node)) {
+          const key = keyName(node.argumentExpression);
+          if (isPinKey(key)) candidates.push({ file, node, at: node.expression, keys: [key] });
+        } else if (isBindingElement(node) && isObjectBindingPattern(node.parent)) {
+          const at = bindingSource(node);
+          const key = keyName(node.propertyName ?? node.name);
+          if (at && node.dotDotDotToken) candidates.push({ file, node, at, keys: PIN_KEYS });
+          else if (at && isPinKey(key)) candidates.push({ file, node, at, keys: [key] });
+        } else if (isSpreadAssignment(node) || isSpreadElement(node)) {
+          candidates.push({ file, node, at: node.expression, keys: PIN_KEYS });
         }
         node.forEachChild(visit);
       };
       source.forEachChild(visit);
     }
+    if (candidates.length === 0) continue;
+    const bearing = registrationBearing(registration, project);
+    const types = project.checker.getTypeAtLocation(candidates.map((candidate) => candidate.at));
+    candidates.forEach(({ file, node, keys }, index) => {
+      if (!bearing(types[index])) return;
+      for (const key of keys) {
+        const read = { file, owner: functionOwner(node), key };
+        found.set(`${read.file}\0${read.owner}\0${read.key}`, read);
+      }
+    });
   }
   return [...found.values()].sort((a, b) => `${a.file}\0${a.owner}\0${a.key}`.localeCompare(`${b.file}\0${b.owner}\0${b.key}`));
 }
@@ -241,7 +267,7 @@ describe('store driver release reader inventory (RFC §5 step 4)', () => {
       snapshot.dispose();
       api.close();
     }
-  }, 30_000);
+  }, 300_000);
 
   it('keeps the files with test-only pin reads listed for the 4b migration', () => {
     for (const path of TEST_PIN_READERS) expect(existsSync(join(ROOT, path)), path).toBe(true);
