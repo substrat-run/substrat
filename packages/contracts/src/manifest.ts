@@ -444,8 +444,18 @@ export const moduleManifest = z.object({
   // Optional: additive-only surface (D-28) — every earlier manifest still parses.
   connections: z
     .array(connectionLandingSpec)
-    .refine((ls) => new Set(ls.map((l) => l.provider)).size === ls.length, {
-      message: 'a module declares at most one landing per provider — a connection binds one operation per scope',
+    .superRefine((ls, ctx) => {
+      const seen = new Map<string, (typeof ls)[number]>();
+      for (const landing of ls) {
+        const prior = seen.get(landing.provider);
+        if (prior) {
+          const mixedFortnox = landing.provider === 'fortnox' &&
+            (prior.options?.kind ?? 'ledger') !== (landing.options?.kind ?? 'ledger');
+          ctx.addIssue({ code: 'custom', message: mixedFortnox
+            ? 'one Fortnox landing kind per scope; use a separate scope for the other kind'
+            : 'a module declares at most one landing per provider — a connection binds one operation per scope' });
+        } else seen.set(landing.provider, landing);
+      }
     })
     .optional(),
   // FRESHNESS EXPECTATIONS (#1232): event types this module expects to keep

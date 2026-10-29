@@ -30,9 +30,9 @@ import { ulid } from './ulid.js';
  *   scope does not hold it, read from the scope's own enforced tuples, not the directory.
  * - **The binding** is written (the connector's own `bind`, which still refuses a connection that
  *   does not hold the key, then audited) only when the connection has none for the scope or the one
- *   it has names a different operation, key, or declared option. An option the declaration does not
- *   name is left as it is, so an operator's narrower binding (one Planima organization, say)
- *   survives a declaration that is silent about it.
+ *   it has names a different operation, key, or declared option. A provider may retain an option
+ *   the declaration does not name (one Planima organization, say), or give it a fixed default
+ *   (Fortnox's ledger kind).
  *
  * Nothing is unbound. A version that stops declaring a landing leaves its bindings in place, and a
  * pass that lands through an operation the version no longer has reports the refusal on the
@@ -56,7 +56,8 @@ export interface ConnectionBinder {
   /**
    * The provider's options, validated, from what a declaration carries. Throws with a reason a
    * person can act on; a provider that takes none refuses any. Absent means the provider takes none.
-   * When `current` is supplied, preserve its provider options unless `raw` overrides them.
+   * When `current` is supplied, a provider may preserve its options unless `raw` overrides them,
+   * or refuse a change to an immutable option. This runs before a new permission is granted.
    * Do not copy binding metadata (including the sync cursor) into the options.
    */
   options?(
@@ -145,7 +146,11 @@ export class LandingPass {
       const landing = t.fact.rows.find((r) => r.provider === connection.provider);
       if (!landing) continue;
       try {
-        const options = binder.options ? binder.options(landing.options) : {};
+        existing ??= await binder.list(this.host, connection);
+        const current = existing.find((b) => b.scopeId === scopeId);
+        // Validate the effective target against the held binding before granting any new key.
+        // Providers may refuse a kind change even when the declaration omits its default kind.
+        const bindingOptions = binder.options ? binder.options(landing.options, current) : {};
         const grants = await this.grantsIn(connection.tenantId, scopeId);
         if (!grants.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
           await this.host.admin.grantToConnection(this.actor, {
@@ -156,10 +161,7 @@ export class LandingPass {
           });
           out.granted.push(scopeId);
         }
-        existing ??= await binder.list(this.host, connection);
-        const current = existing.find((b) => b.scopeId === scopeId);
-        if (current && sameLanding(current, landing.operation, landing.permission, options) && !binder.stale?.(current, connection)) continue;
-        const bindingOptions = binder.options ? binder.options(landing.options, current) : options;
+        if (current && sameLanding(current, landing.operation, landing.permission, bindingOptions) && !binder.stale?.(current, connection)) continue;
         const operationId = ulid();
         const audit = {
           tenantId: connection.tenantId,

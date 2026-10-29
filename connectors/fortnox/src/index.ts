@@ -265,7 +265,7 @@ export async function bindFortnoxScope(
   const scope = scopeIdSchema.parse(input.scopeId);
   const current = (await listFortnoxBindings(host, input.connectionId)).find((b) => b.scopeId === input.scopeId);
   if (current && (current.kind ?? 'ledger') !== (input.kind ?? 'ledger')) {
-    throw new Error(`Fortnox binding kind for scope ${input.scopeId} is immutable (${current.kind ?? 'ledger'}); unbind it before binding ${input.kind ?? 'ledger'}`);
+    throw new Error(`one Fortnox landing kind per scope; use a separate scope for the other kind (${current.kind ?? 'ledger'} to ${input.kind ?? 'ledger'} on scope ${input.scopeId})`);
   }
 
   // On the host, not `admin`: this is the same projection the permission checker reads,

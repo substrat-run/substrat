@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -177,7 +177,13 @@ describe('declared connection landings (#2316)', () => {
       list: (h, row) => listFortnoxBindings(h, row.id),
       bind: (h, row, target) =>
         bindFortnoxScope(h, { ...(target as Parameters<typeof bindFortnoxScope>[1]), connectionId: row.id, externalAccountRef: row.externalAccountRef }),
-      options: (raw) => connectionBindingOptions('fortnox').parse(raw ?? {}),
+      options: (raw, current) => {
+        const parsed = connectionBindingOptions('fortnox').parse(raw ?? {});
+        const oldKind = (current as { kind?: string } | undefined)?.kind ?? 'ledger';
+        const newKind = parsed.kind ?? 'ledger';
+        if (current && oldKind !== newKind) throw new Error(`one Fortnox landing kind per scope; use a separate scope for the other kind (${oldKind} to ${newKind})`);
+        return { kind: parsed.kind };
+      },
       stale: (binding, row) => ((binding as { externalAccountRef?: string | null }).externalAccountRef ?? null) !== row.externalAccountRef,
     },
     planima: {
@@ -287,6 +293,53 @@ describe('declared connection landings (#2316)', () => {
     expect(lastRun(id)).toMatchObject({ outcome: 'unsupported', error: expect.stringContaining('upgrade') });
     expect(ledgerPages).toEqual([]);
     expect(fortnox.calls).toEqual([]);
+  });
+
+  it.each([
+    ['unchanged operation', 'invoices/record'],
+    ['changed operation', 'ledger/record-period'],
+  ])('refuses an omitted kind after an invoice binding with %s', async (_label, operation) => {
+    const id = await connect('fortnox');
+    const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(invoice)));
+    await pass();
+    const before = await host.connectionGrantsInScope(t, s);
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring([
+      { provider: 'fortnox', operation, permission: 'plan:record', declaredBy: ['@acme/crm'] },
+    ])));
+
+    const report = await pass();
+
+    expect(report.connectionLandings).toMatchObject({ granted: 0, bound: 0, failed: 1 });
+    expect(report.errors).toEqual([expect.objectContaining({ error: expect.stringContaining('one Fortnox landing kind per scope; use a separate scope for the other kind') })]);
+    expect(await host.connectionGrantsInScope(t, s)).toEqual(before);
+    expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record', permission: 'ledger:record' });
+  });
+
+  it('does not record another unsupported sweep inside the cadence window', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-06-15T12:00:00.000Z'));
+      const id = await connect('fortnox');
+      const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
+      await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(invoice)));
+      await pass({ fortnox: 120 });
+      expect(lastRun(id)).toMatchObject({ outcome: 'unsupported' });
+      await host.admin.recordSweepRun({ kind: 'connector', unit: id, outcome: 'unsupported', tenantId: t, vertical: SLUG, connectionId: id });
+      const first = runs.length;
+      vi.advanceTimersByTime(60 * 60_000);
+
+      const skipped = await pass({ fortnox: 120 });
+
+      expect(skipped.connectionsSkipped).toBe(1);
+      expect(runs).toHaveLength(first);
+      vi.advanceTimersByTime(61 * 60_000);
+      await pass({ fortnox: 120 });
+      expect(runs).toHaveLength(first + 1);
+      expect(lastRun(id)).toMatchObject({ outcome: 'unsupported' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lands beside a directory row in the tenant that does not read as a scope, which the pass names once", async () => {

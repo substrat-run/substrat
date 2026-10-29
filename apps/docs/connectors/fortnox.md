@@ -75,8 +75,11 @@ connections: [
 ],
 ```
 
-The platform validates the option before binding. A binding's kind cannot change in place;
-unbind the old binding before switching the same connection and scope to another kind. Ledger
+The platform validates the option before binding. A connection can have **one Fortnox landing
+kind per scope**. An omitted kind means `ledger`, including when a scope is already bound for
+invoices. A declaration or staff bind that asks for the other kind is refused before a new
+permission is granted: use a separate scope for the other kind. A single scope cannot declare
+both kinds at once. Ledger
 polling reads only ledger bindings. The invoice sweep, when available, reads only invoice
 bindings. Until that sweep ships, an invoice binding remains visible as **unsupported** with
 upgrade guidance; no ledger data is fetched or delivered to its operation. An unrecognized

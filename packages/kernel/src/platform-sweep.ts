@@ -2027,13 +2027,14 @@ export async function runPlatformSweep(
     const everyMinutes = options.sweepEveryMinutes?.[c.provider];
     if (everyMinutes) {
       try {
-        const [ok, failed] = await Promise.all([
+        const [ok, failed, unsupported] = await Promise.all([
           host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'ok', limit: 1 }),
           host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'failed', limit: 1 }),
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'unsupported', limit: 1 }),
         ]);
         // Ignore skipped rows and future-dated receipts: neither proves a poll inside this interval.
         const now = Date.now();
-        const lastAttempt = Math.max(0, ...[ok[0], failed[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
+        const lastAttempt = Math.max(0, ...[ok[0], failed[0], unsupported[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
         if (now - lastAttempt < everyMinutes * 60_000) {
           if (landingFailed.length > 0) fail(landingSaid, scoped(landingFailed));
           report.connectionsSkipped += 1;

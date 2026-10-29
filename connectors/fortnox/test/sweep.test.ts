@@ -229,7 +229,8 @@ describe('fortnox connector — inbound sync', () => {
     await bindFortnoxScope(host, { connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast',
       operation: 'invoices/record', permission: LEDGER_RECORD, kind: 'supplier-invoice' });
     expect((await listFortnoxBindings(host, connId))[0]?.kind).toBe('supplier-invoice');
-    await expect(bind()).rejects.toThrow(/kind.*immutable/);
+    await expect(bind()).rejects.toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    expect((await listFortnoxBindings(host, connId))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record' });
 
     const result = await sweepFortnoxLedger(host, connId, options());
     expect(result.unsupported).toHaveLength(1);

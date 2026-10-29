@@ -540,10 +540,21 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
       const binder: ConnectionBinder = {
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
-        options: (raw, current) => options.parse({
-          ...(current ? options.strip().parse(current) : {}),
-          ...(raw ?? {}),
-        }),
+        options: (raw, current) => {
+          if (c.provider === 'fortnox') {
+            const parsed = options.parse(raw ?? {}) as { kind?: 'ledger' | 'supplier-invoice' };
+            const oldKind = (current as { kind?: string } | undefined)?.kind ?? 'ledger';
+            const newKind = parsed.kind ?? 'ledger';
+            if (current && oldKind !== newKind) {
+              throw new Error(`one Fortnox landing kind per scope; use a separate scope for the other kind (${oldKind} to ${newKind})`);
+            }
+            return { kind: parsed.kind };
+          }
+          return options.parse({
+            ...(current ? options.strip().parse(current) : {}),
+            ...(raw ?? {}),
+          });
+        },
         ...(c.accountOnBinding
           ? {
               // A binding written before it recorded the company opens whichever connection
