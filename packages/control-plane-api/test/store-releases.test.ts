@@ -986,7 +986,10 @@ describe('the release routes: a person stores, approves and rolls out a release 
       { repository: 'https://example.test/driver.git', commit: `${COMMIT.slice(0, -1)}\u0085` },
     ];
     for (const source of invalid) {
-      expect((await call(app, 'POST', path, person, { ...body, sourceReferences: [source] })).status).toBe(422);
+      const res = await call(app, 'POST', path, person, { ...body, sourceReferences: [source] });
+      expect(res.status, JSON.stringify(source)).toBe(422);
+      // Refused by the shape parse itself, not by the isolation basis, which would refuse these too.
+      expect(await res.text(), JSON.stringify(source)).toMatch(/sourceReferences\.0\.(repository|commit): (invalid_value|invalid_format|out_of_range)/);
     }
     for (const field of ['reason', 'isolationReview'] as const) {
       const bad = field === 'reason'
