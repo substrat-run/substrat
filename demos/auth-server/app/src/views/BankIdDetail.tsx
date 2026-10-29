@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { bankidSettings, removeBankid, type BankIdSettings } from '../api';
 import { navigate } from '../console/router';
-import { BANKID_PATH } from '../console/routes';
+import { PROVIDERS_PATH } from '../console/routes';
 import { BankIdEditor } from './BankId';
 
 /**
@@ -46,9 +46,9 @@ export function BankIdDetailView() {
       <button
         className="btn link"
         style={{ justifySelf: 'start', padding: 0 }}
-        onClick={() => navigate(BANKID_PATH)}
+        onClick={() => navigate(PROVIDERS_PATH)}
       >
-        ← BankID
+        ← Sign-in providers
       </button>
       {err && <p className="error">{err}</p>}
       {/* A failed read is an error state, not a pending one. */}
