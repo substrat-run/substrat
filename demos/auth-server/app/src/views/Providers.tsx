@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
+  bankidSettings,
+  type BankIdSettings,
   identityProviders,
   saveIdentityProvider,
   type ConfiguredProvider,
@@ -9,6 +11,7 @@ import {
 import { Field } from '../primitives';
 import { navigate } from '../console/router';
 import { PROVIDERS_PATH } from '../console/routes';
+import { BankIdSettingsLink } from './BankId';
 
 /* ---- the upstream identity providers ---- */
 
@@ -29,6 +32,8 @@ import { PROVIDERS_PATH } from '../console/routes';
 export function ProvidersPanel({ issuer }: { issuer: string | null }) {
   const [catalogue, setCatalogue] = useState<ProviderCatalogueEntry[] | null>(null);
   const [providers, setProviders] = useState<ConfiguredProvider[]>([]);
+  const [bankid, setBankid] = useState<BankIdSettings | null>();
+  const [bankidError, setBankidError] = useState<string | null>(null);
   const [addingCustom, setAddingCustom] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -45,6 +50,9 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
 
   useEffect(() => {
     void reload();
+    void bankidSettings().then(setBankid).catch((e: unknown) => {
+      setBankidError(e instanceof Error ? e.message : String(e));
+    });
   }, [reload]);
 
   const configured = (id: string) => providers.find((p) => p.id === id);
@@ -55,19 +63,20 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
       <div className="panel-head"><h2>Sign-in providers</h2></div>
       {err && <p className="error">{err}</p>}
       {!catalogue ? (
-        <p className="muted">Loading providers…</p>
+        !err && <p className="muted">Loading providers…</p>
       ) : (
         <>
           <p className="muted">
-            Directories this issuer signs people in through. Enabling one adds a “Continue with
+            Services this issuer signs people in through. Enabling one adds a “Continue with
             …” button to the login screen — including for people a relying party sent here.
-            “Custom (OIDC)” takes any standards-compliant issuer by URL — Keycloak, Okta,
-            Auth0, or another auth server like this one.
+            BankID uses a certificate for Swedish e-ID sign-in. “Custom (OIDC)” takes any
+            standards-compliant issuer by URL — Keycloak, Okta, Auth0, or another auth server
+            like this one.
           </p>
-          {providers.length > 0 && (
+          {(providers.length > 0 || Boolean(bankid)) && (
             <table className="grid">
               <thead>
-                <tr><th>Provider</th><th>Client ID</th><th>Status</th></tr>
+                <tr><th>Provider</th><th>Configuration</th><th>Status</th></tr>
               </thead>
               <tbody>
                 {providers.map((provider) => {
@@ -92,9 +101,24 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
                     </tr>
                   );
                 })}
+                {bankid && (
+                  <tr>
+                    <td>
+                      <BankIdSettingsLink>BankID</BankIdSettingsLink>
+                      {bankid.allowSignup && <span className="tag">creates accounts</span>}
+                    </td>
+                    <td>
+                      {bankid.environment === 'production' ? 'Production' : 'Test'}
+                      {' · '}{bankid.certSet ? 'Certificate stored' : 'No certificate'}
+                    </td>
+                    <td>{bankid.disabled ? 'Disabled' : 'Enabled'}</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           )}
+          {bankidError && <p className="error">Could not load BankID: {bankidError}</p>}
+          {bankid === undefined && !bankidError && <p className="muted">Loading BankID…</p>}
           {!addingCustom && (
             <div className="add-provider">
               {/* A catalogue entry already HAS its id, so enabling it is the same screen as
@@ -104,6 +128,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
                   + {entry.label}
                 </ProviderLink>
               ))}
+              {bankid === null && <BankIdSettingsLink className="btn">+ BankID</BankIdSettingsLink>}
               <button className="btn" onClick={() => setAddingCustom(true)}>+ Custom (OIDC)</button>
             </div>
           )}
@@ -121,7 +146,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
               }}
             />
           )}
-          {providers.length > 0 && (
+          {(providers.length > 0 || Boolean(bankid)) && (
             <p className="muted small">
               Open a provider to change its credentials, disable it or remove it. Removing one
               leaves the people who signed in with it needing another way in.
