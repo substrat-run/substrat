@@ -210,6 +210,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
   const staff = platformActorId.parse(ulid());
   const registration: StoreDriverRegistration = {
     driver: 'graph',
+    isolationBasis: { kind: 'writtenInRepo' },
     releases: [
       { sha256: sha('1'), sourceCommit: COMMIT, schema: 0 },
       { sha256: sha('2'), sourceCommit: COMMIT, schema: 0 },
@@ -785,6 +786,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     shas = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2)), await storeDriverReleaseDigest(bundle(3))];
     registration = {
       driver: 'graph',
+      isolationBasis: { kind: 'writtenInRepo' },
       // Three releases of different schema: 1 is schema 0, 2 and 3 are schema 1.
       releases: [
         { sha256: shas[0]!, sourceCommit: COMMIT, schema: 0 },
@@ -1411,6 +1413,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     const [s1, s2] = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2))];
     const registration: StoreDriverRegistration = {
       driver: 'graph',
+      isolationBasis: { kind: 'writtenInRepo' },
       releases: [
         { sha256: s1, sourceCommit: COMMIT, schema: 0 },
         { sha256: s2, sourceCommit: COMMIT, schema: 1 },

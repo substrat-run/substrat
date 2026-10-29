@@ -167,6 +167,7 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     // A test fixture, not a release: the digest and commit are placeholders.
     const fixture: StoreDriverRegistration = {
       driver: 'graph',
+      isolationBasis: { kind: 'writtenInRepo' },
       releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'Store',
       operations: [],
@@ -182,6 +183,7 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     expect(() =>
       storeDriverRegistration.parse({
         driver: 'graph',
+        isolationBasis: { kind: 'writtenInRepo' },
         releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['read'],
@@ -193,6 +195,7 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
   it('holds a driver id to [a-z0-9]+ (L20), at the registration and in every registered driver', () => {
     const registration = (driver: string) => ({
       driver,
+      isolationBasis: { kind: 'writtenInRepo' },
       releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'Store',
       operations: ['read'],
@@ -214,6 +217,7 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     expect(() =>
       storeDriverRegistration.parse({
         driver: 'graph',
+        isolationBasis: { kind: 'writtenInRepo' },
         releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['substrat.wipe'],
@@ -226,6 +230,7 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
 describe('a store driver release is pinned by sha256 and source commit (D-63)', () => {
   const registration = (releases: unknown) => ({
     driver: 'graph',
+    isolationBasis: { kind: 'writtenInRepo' },
     releases,
     className: 'GraphStore',
     operations: [],
@@ -235,6 +240,7 @@ describe('a store driver release is pinned by sha256 and source commit (D-63)', 
 
   it('admits a list of pins, and refuses an empty list, a repeated pin, and a malformed one', () => {
     expect(storeDriverRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64), schema: 3 }])).success).toBe(true);
+    expect(storeDriverRegistration.safeParse({ ...registration([pin]), isolationBasis: undefined }).success).toBe(false);
     for (const releases of [
       [],
       [pin, { ...pin }],
@@ -349,6 +355,7 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
   it('holds a driver registration\'s catalog to the same rule', () => {
     const registration = (operations: string[]) => ({
       driver: 'graph',
+      isolationBasis: { kind: 'writtenInRepo' },
       releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'GraphStore',
       operations,
@@ -364,6 +371,7 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   const graph: StoreDriverRegistration = {
     driver: 'graph',
+    isolationBasis: { kind: 'writtenInRepo' },
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],

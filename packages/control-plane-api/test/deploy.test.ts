@@ -166,6 +166,7 @@ describe('assertSandboxContract', () => {
     // A test fixture, not a release: the digest and commit are placeholders.
     const fixture: StoreDriverRegistration = {
       driver: 'graph',
+      isolationBasis: { kind: 'writtenInRepo' },
       releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'Store',
       operations: [],
@@ -230,6 +231,7 @@ describe('scope store upload plan (#2210)', () => {
   const pinOf = (release: string) => ({ sha256: (release === '1.0.0' ? 'a' : 'b').repeat(64), sourceCommit: 'c'.repeat(40), schema: 0 });
   const driver = (release: string): StoreDriverRegistration => ({
     driver: 'graph',
+    isolationBasis: { kind: 'writtenInRepo' },
     releases: [pinOf(release)],
     className: 'Store',
     operations: ['read'],
