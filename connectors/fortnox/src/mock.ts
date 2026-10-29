@@ -214,7 +214,7 @@ export class FortnoxMock {
       if (!entry) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
       return this.json({ SupplierInvoice: entry.invoice });
     }
-    const sieMatch =/\/sie\/4\?financialyear=(\d+)$/.exec(path);
+    const sieMatch = /\/sie\/4\?financialyear=(\d+)$/.exec(path);
     if (sieMatch) {
       const id = Number(sieMatch[1]);
       const text = this.sie[id];

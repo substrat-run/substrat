@@ -7,6 +7,7 @@ import { decodeSie } from './sie4.js';
 declare const TextDecoder: new (label?: string) => { decode(input: ArrayBuffer | Uint8Array): string };
 declare const btoa: (data: string) => string;
 declare const URL: new (input: string) => { searchParams: { set(k: string, v: string): void }; toString(): string };
+
 /**
  * A thin, typed client over the Fortnox REST API and its OAuth2 token endpoint.
  *
@@ -156,7 +157,7 @@ const fortnoxNumber = z.union([z.number(), z.string().min(1)]).transform(String)
  * One supplier invoice, as `GET /3/supplierinvoices/{GivenNumber}` returns it. Only the fields
  * the invoice landing carries are read; the rest are ignored.
  */
-export const fortnoxSupplierInvoice = z.object({
+const fortnoxSupplierInvoice = z.object({
   /** Fortnox's own sequence number for the invoice in this company — the key a landing upserts by. */
   GivenNumber: fortnoxNumber,
   SupplierNumber: fortnoxText(),

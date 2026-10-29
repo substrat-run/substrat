@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import {
   addDecimal,
-  mulDecimal,
   connectionActivity,
   connectionId as connectionIdSchema,
   instant,
   money,
+  mulDecimal,
   scopeId as scopeIdSchema,
   tenantId as tenantIdSchema,
   type ConnectionActivity,
@@ -625,7 +625,7 @@ export async function syncFortnoxSupplierInvoices(
     .filter((n) => Number(n) > through)
     .sort((a, b) => Number(a) - Number(b));
   const budget = options.budget ?? { details: INVOICE_DETAILS_PER_PASS };
-  const batch = changed.slice(0, Math.max(0, budget.details));
+  const batch = changed.slice(0, budget.details);
   if (batch.length === 0) return { scopeId: binding.scopeId, landed: 0, pending: changed.length > 0 };
   budget.details -= batch.length;
 
