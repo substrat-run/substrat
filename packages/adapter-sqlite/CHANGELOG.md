@@ -1,5 +1,13 @@
 # @substrat-run/adapter-sqlite
 
+## 0.166.0
+
+### Patch Changes
+
+- Updated dependencies [9499b29]
+  - @substrat-run/contracts@0.166.0
+  - @substrat-run/kernel@0.166.0
+
 ## 0.165.0
 
 ### Patch Changes
@@ -7116,7 +7124,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

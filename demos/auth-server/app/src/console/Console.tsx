@@ -6,7 +6,6 @@ import { AccessPanel } from '../views/Access';
 import { AccountView } from '../views/Account';
 import { ApplicationDetailView } from '../views/ApplicationDetail';
 import { ClientsPanel } from '../views/Applications';
-import { BankIdPanel } from '../views/BankId';
 import { BankIdDetailView } from '../views/BankIdDetail';
 import { IssuerPanel } from '../views/Issuer';
 import { ProviderDetailView } from '../views/ProviderDetail';
@@ -114,20 +113,24 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
   const providerId = visible.some((r) => r.path === PROVIDERS_PATH) ? providerDetailId(pathname) : null;
   // BankID's second screen carries no id — there is one configuration per issuer — so this is
   // the only one of the four that is a path rather than something parsed out of one.
-  const bankIdSettings = visible.some((r) => r.path === BANKID_PATH) && isBankIdSettingsPath(pathname);
+  const bankIdSettings = visible.some((r) => r.path === PROVIDERS_PATH) && isBankIdSettingsPath(pathname);
+  const bankIdRoute = bankIdSettings || pathname === BANKID_PATH
+    ? visible.find((r) => r.path === PROVIDERS_PATH)
+    : undefined;
   const active =
     visible.find((r) => r.path === pathname) ??
     (userId ? visible.find((r) => r.path === USERS_PATH)! : null) ??
     (clientId ? visible.find((r) => r.path === APPLICATIONS_PATH)! : null) ??
     (providerId ? visible.find((r) => r.path === PROVIDERS_PATH)! : null) ??
-    (bankIdSettings ? visible.find((r) => r.path === BANKID_PATH)! : null) ??
+    bankIdRoute ??
     (pathname === '/' ? home : null);
 
   useEffect(() => {
     // Replace rather than push: the back button should not have to step through a redirect
     // that was never a place the person had been.
     if (pathname === '/') navigate(home.path, { replace: true });
-  }, [pathname, home]);
+    if (admin && pathname === BANKID_PATH) navigate(PROVIDERS_PATH, { replace: true });
+  }, [pathname, home, admin]);
 
   return (
     // The dark stratum: the panels underneath are dark, so the branded tokens are asked for
@@ -235,8 +238,6 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
             <ClientsPanel />
           ) : active.path === '/providers' ? (
             <ProvidersPanel issuer={disc?.issuer ?? null} />
-          ) : active.path === '/bankid' ? (
-            <BankIdPanel />
           ) : active.path === '/access' ? (
             <AccessPanel />
           ) : active.path === '/sign-in-log' ? (

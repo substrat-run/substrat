@@ -18,7 +18,7 @@ export const APPLICATIONS_PATH = '/applications';
 /** And for `/providers/<provider id>` and Sign-in providers. */
 export const PROVIDERS_PATH = '/providers';
 
-/** BankID's section — one status screen, and the configuration screen below it. */
+/** Legacy BankID section URL; the console redirects it to Sign-in providers. */
 export const BANKID_PATH = '/bankid';
 
 /**

@@ -1,5 +1,20 @@
 # @substrat-run/cli
 
+## 0.52.0
+
+### Minor Changes
+
+- 9499b29: Build releases on the platform from tenant projects stored in GitHub or Cloudflare Artifacts. CLI push and preview submit source snapshots, and builder projects use the same repository and release pipeline with pinned source and toolchain provenance.
+
+  This changes the deploy protocol: client-built module uploads and the builder's R2 Git bundles are no longer supported. Deploy the source builder and control plane together, then update the CLI. Existing builder projects are not migrated.
+
+### Patch Changes
+
+- Updated dependencies [9499b29]
+  - @substrat-run/contracts@0.166.0
+  - @substrat-run/control-plane-client@0.3.17
+  - @substrat-run/model-view@0.6.13
+
 ## 0.51.0
 
 ### Minor Changes
