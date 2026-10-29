@@ -354,7 +354,8 @@ export class BuilderAgent extends DurableObject<Env> {
 			return new Response(form);
 		} catch (error) {
 			const detail = sourceBuildFailure(error);
-			console.error('source.build.failed', { buildId, error });
+			// The error as its own argument: nested in an object it serialises to `{}`.
+			console.error('source.build.failed', { buildId }, error);
 			await this.ctx.storage.put(`build:${buildId}`, { projectId: entry?.id, state: 'failed', detail, completedAt: new Date().toISOString() });
 			return refuse(error instanceof SourceBuildError ? 422 : 500, `platform build failed: ${detail}`);
 		} finally {
