@@ -240,6 +240,77 @@ export function IntentLedger({
 }
 
 /**
+ * A test message through a mail connection (#2343). Mail cannot be tested without sending, so
+ * this sends one from a chosen sender address to the signed-in person's own address (the server
+ * takes it from the session; there is nothing to type). A refusal is shown in the connector's
+ * words, and a success marks that address verified.
+ */
+function SendTest({
+  teamId,
+  provider,
+  scopeId,
+  connectionId,
+  senders,
+  onSent,
+}: {
+  teamId: string;
+  provider: string;
+  scopeId: string;
+  connectionId: string;
+  senders: string[];
+  onSent: () => void;
+}) {
+  const [from, setFrom] = useState('');
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; error: string | null } | null>(null);
+  const chosen = from || senders[0] || '';
+  if (senders.length === 0) return null;
+
+  const send = async () => {
+    if (sending) return;
+    setSending(true);
+    setResult(null);
+    try {
+      const r = DEV_MOCK
+        ? { ok: true, error: null }
+        : await teamApi(teamId).sendTestAppConnection({ scopeId, provider, connectionId, from: chosen });
+      setResult(r);
+      if (r.ok) onSent();
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+    setSending(false);
+  };
+
+  return (
+    <div style={{ ...card, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>Send a test message</div>
+      <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+        Mail is verified by sending. This sends one short message to your own address.
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+        <Select
+          label="From"
+          options={senders.map((s) => ({ value: s, label: s }))}
+          value={chosen}
+          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setFrom(e.target.value)}
+          style={{ width: 320 }}
+        />
+        <Button variant="secondary" size="sm" onClick={send} disabled={sending}>
+          {sending ? 'Sending…' : 'Send test'}
+        </Button>
+      </div>
+      {result && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Pill kind={result.ok ? 'success' : 'danger'}>{result.ok ? 'Sent' : 'Refused'}</Pill>
+          {result.error && <span style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{result.error}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * The integration detail (#605) — what a connected provider is, what it may do, and
  * what it has actually done.
  *
@@ -266,7 +337,7 @@ function IntegrationDetail({
   onClose,
 }: {
   teamId: string;
-  provider: { provider: string; name: string; monogram: string; description: string };
+  provider: { provider: string; name: string; monogram: string; description: string; sendsMail?: boolean };
   /** The app whose vertical owns the connection — the routes are per-app by design. */
   scopeId: string;
   connection: ConnectionView;
@@ -288,6 +359,8 @@ function IntegrationDetail({
   const [live, setLive] = useState(false);
   // Which question the list is answering: what we sent, or what the provider holds.
   const [source, setSource] = useState<'ledger' | 'provider'>('ledger');
+  // Bumped after a send test, so the credential view re-reads which senders are verified.
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
     if (DEV_MOCK) {
@@ -311,7 +384,7 @@ function IntegrationDetail({
     return () => {
       alive = false;
     };
-  }, [teamId, scopeId, provider.provider, connection.id, live, source]);
+  }, [teamId, scopeId, provider.provider, connection.id, live, source, refresh]);
 
   const verify = async () => {
     if (probing) return;
@@ -381,6 +454,20 @@ function IntegrationDetail({
               </div>
             )}
           </div>
+        )}
+
+        {provider.sendsMail && (
+          <SendTest
+            teamId={teamId}
+            provider={provider.provider}
+            scopeId={scopeId}
+            connectionId={connection.id}
+            senders={(activity?.credential.find((f) => f.key === 'senders')?.value ?? '')
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)}
+            onSent={() => setRefresh((n) => n + 1)}
+          />
         )}
 
         {/* The stored credential. Identifiers whole — an identifier that cannot be read

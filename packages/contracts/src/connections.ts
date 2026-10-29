@@ -303,6 +303,25 @@ export const connectionProbe = z.object({
 export type ConnectionProbe = z.infer<typeof connectionProbe>;
 
 /**
+ * A test message through a connection that sends mail (#2343): from one of its sender
+ * addresses to one recipient. Mail cannot be probed without sending, so this is the probe.
+ */
+export const connectionSendTest = z.object({
+  from: z.string().email().max(320),
+  to: z.string().email().max(320),
+});
+export type ConnectionSendTest = z.infer<typeof connectionSendTest>;
+
+/** What came of it: like a probe, a refusal is the provider's answer, in the connector's words. */
+export const connectionSendTestResult = z.object({
+  ok: z.boolean(),
+  /** The provider's numeric status when it refused (403 out of scope, 429 throttled). */
+  status: z.number().int().nullable(),
+  error: z.string().max(600).nullable(),
+});
+export type ConnectionSendTestResult = z.infer<typeof connectionSendTestResult>;
+
+/**
  * One thing a connection **did** (#605) — a projection of the connector's own dispatch
  * ledger (`listConnectorState`), which is the only durable record that an outbound call
  * ever happened. The audit log deliberately holds none of this (`openConnection` is

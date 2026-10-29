@@ -3498,6 +3498,8 @@ export default {
         // box, and the sanctioned egress. Keyed by provider, so `control-plane-api`
         // learns no Scrive vocabulary and an unwired provider 501s honestly.
         connectionInspectors: connectionInspectorsFor(env),
+        // #2343: a mail connection's send test, through the senders the email relay uses.
+        mailSenders: mailSendersFor(env),
         // vertical-connectors.md §6.4: a vertical-defined provider, answered by its vertical's code.
         verticalConnectorInspector: (provider, context) =>
           verticalConnectorInspector(verticalConnectorDepsFor(env, hostFor(env), SERVICE_ACTOR), provider, context),

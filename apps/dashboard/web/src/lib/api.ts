@@ -1078,6 +1078,8 @@ export interface AppIntegration {
    * consent adds a row rather than rotating one.
    */
   multiAccount: boolean;
+  /** #2343: the connection sends mail as the tenant, so its detail offers a send test. */
+  sendsMail: boolean;
   required: boolean;
   /** The single-connection answer (the null-ref row, else the newest). */
   connection: ConnectionView | null;
@@ -1102,6 +1104,8 @@ export interface AccountIntegration {
   connectFlow: 'redirect' | null;
   /** See {@link AppIntegration.multiAccount}. */
   multiAccount?: boolean;
+  /** See {@link AppIntegration.sendsMail}. */
+  sendsMail?: boolean;
   connections: Array<
     ConnectionView & {
       vertical: string;

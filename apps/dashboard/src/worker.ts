@@ -2774,6 +2774,8 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
   // A connection per external account (#1267): a bureau connects one Fortnox company per
   // client, so the UI lists a fleet and keeps offering "connect another" instead of rotate.
   multiAccount: spec.accountRefField !== undefined,
+  // #2343: the detail view offers a send test only for a provider that sends mail.
+  sendsMail: spec.sendsMail === true,
 });
 
 async function appIntegrationTarget({ host, node }: TeamContext, appScopeId: string) {
@@ -3017,6 +3019,22 @@ async function verifyAppIntegrationIn(ctx: TeamContext, appScopeId: string, prov
   // fleet, "the provider's connection" is another company's row.
   const live = await reread();
   return { ...probe, ...(live ? { connection: connectionView(live) } : {}) };
+}
+
+/**
+ * Send a test message through a mail connection (#2343), behind the same gate as Test connection.
+ * The recipient is the signed-in person's own verified address, read from the session and never
+ * from the request: the message leaves the tenant's mailbox, so the door does not take an address.
+ */
+async function sendTestAppConnectionIn(ctx: TeamContext, appScopeId: string, provider: string, id: string, from: string) {
+  const { connectionId, cp } = await inspectableConnection(ctx, appScopeId, provider, id);
+  const user = await verifySession(ctx.c.env, getCookie(ctx.c, SESSION_COOKIE));
+  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
+  const me = identifyEmail(ctx.c.env, user);
+  if (me.refused || !me.email) {
+    throw new HTTPException(400, { message: `a send test goes to your own verified email address: ${emailRefusalMessage(me.refused ?? 'no-email')}` });
+  }
+  return cp.sendConnectionTest(connectionId, { from, to: me.email });
 }
 
 /**
@@ -5708,6 +5726,8 @@ const routeHandlers = {
     verifyAppIntegrationIn(ctx, app, provider),
   'dashboard/verify-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>
     verifyAppIntegrationIn(ctx, app, provider, id),
+  'dashboard/send-test-app-connection': async (ctx, { scopeId: app, provider, connectionId: id, from }) =>
+    sendTestAppConnectionIn(ctx, app, provider, id, from),
   'dashboard/get-app-integration-activity': async (ctx, { scopeId: app, provider, live, source }) =>
     getAppIntegrationActivityIn(ctx, app, provider, undefined, live === '1', source === 'provider' ? 'provider' : 'ledger'),
   'dashboard/get-app-connection-activity': async (ctx, { scopeId: app, provider, connectionId: id, live, source }) =>

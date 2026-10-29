@@ -81,16 +81,25 @@ const conn = {
   vertical: 'desk',
   provider: 'microsoft365',
 } as unknown as Connection;
-/** A host whose live connection holds `secret`, recording each use the connector settles. */
+/** A host whose live connection holds `secret`, recording each use the connector settles and the state it keeps. */
 const hostWith = (secret: Record<string, string>) => {
   const uses: { ok: boolean }[] = [];
+  const state = new Map<string, unknown>();
+  const writes: string[] = [];
   const host = {
     admin: {
       openConnection: async () => ({ ...conn, secret }),
       recordConnectionUse: async (_id: string, u: { ok: boolean }) => void uses.push(u),
+      getConnectorState: async (_id: string, key: string) => state.get(key),
+      putConnectorState: async (_id: string, key: string, value: unknown) => {
+        writes.push(key);
+        state.set(key, value);
+      },
+      listConnectorState: async (_id: string, prefix = '') =>
+        [...state].filter(([k]) => k.startsWith(prefix)).map(([key, value]) => ({ key, value })),
     },
   } as unknown as ScopeHost;
-  return { host, uses };
+  return { host, uses, state, writes };
 };
 const mail = (over: object = {}) => ({
   from: { email: 'office@acme.example', name: 'Acme' },
@@ -476,6 +485,55 @@ describe('a connection: summary, certificate and mail', () => {
     await expect(
       microsoft365MailSender({ fetch: microsoft({}).fetchImpl }).senders(hostWith(await withCert()).host, other),
     ).rejects.toThrow(/not the live/);
+  });
+});
+
+/** #2343: mail cannot be probed, so a send is the evidence, recorded per sender address. */
+describe('mail verified by a send', () => {
+  const KEY = 'microsoft365:mail-verified:office@acme.example';
+  const sent = { ...tokenOk, '/sendMail': { status: 202, body: {} } };
+  const sendAt = async (h: ReturnType<typeof hostWith>, at: Date, routes: Routes = sent) =>
+    microsoft365MailSender({ fetch: microsoft(routes).fetchImpl, now: () => at }).send(h.host, conn, mail({ attachments: [] }));
+
+  it('records the sender on a send, and writes again only once the record is a day old', async () => {
+    const h = hostWith(await withCert());
+    await sendAt(h, NOW);
+    await sendAt(h, new Date(NOW.getTime() + 86_400_000 - 1));
+    expect(h.writes).toEqual([KEY]);
+    expect(h.state.get(KEY)).toEqual({ at: NOW.toISOString() });
+    await sendAt(h, new Date(NOW.getTime() + 86_400_000));
+    expect(h.writes).toEqual([KEY, KEY]);
+  });
+
+  it('a refused send writes nothing and clears nothing', async () => {
+    const h = hostWith(await withCert());
+    h.state.set(KEY, { at: NOW.toISOString() });
+    const refused = { ...tokenOk, '/sendMail': { status: 403, body: { error: { code: 'ErrorAccessDenied', message: 'x' } } } };
+    await expect(sendAt(h, new Date(NOW.getTime() + 2 * 86_400_000), refused)).rejects.toThrow(/outside the scope/);
+    expect(h.writes).toEqual([]);
+    expect(h.state.get(KEY)).toEqual({ at: NOW.toISOString() });
+  });
+
+  it('a record that cannot be written does not fail the send it records', async () => {
+    const h = hostWith(await withCert());
+    (h.host.admin as unknown as { putConnectorState: () => Promise<void> }).putConnectorState = async () => {
+      throw new Error('directory unavailable');
+    };
+    expect(await sendAt(h, NOW)).toEqual({ delivered: [], queued: ['customer@example.com'], bounced: [] });
+  });
+
+  it('Test connection and the credential view name the verified sender and its day, and the rest as not verified', async () => {
+    const h = hostWith(await withCert());
+    h.state.set(KEY, { at: NOW.toISOString() });
+    // A sender the tenant has since removed is not shown.
+    h.state.set('microsoft365:mail-verified:gone@acme.example', { at: NOW.toISOString() });
+    const probe = await probeMicrosoft365Connection(h.host, conn, { fetch: microsoft({ ...tokenOk, ...siteOk }).fetchImpl, now: () => NOW });
+    expect(probe.facts).toEqual(expect.arrayContaining([
+      { label: 'Mail verified', value: 'office@acme.example (2026-10-07)' },
+      { label: 'Mail not verified', value: 'noreply@acme.example — until the first send or a send test' },
+    ]));
+    const summary = await microsoft365CredentialSummary(h.host, conn);
+    expect(summary.fields.find((f) => f.key === 'mailVerified')!.value).toBe('office@acme.example (2026-10-07)');
   });
 });
 

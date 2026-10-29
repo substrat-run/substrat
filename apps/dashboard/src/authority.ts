@@ -9,6 +9,8 @@ import type {
   ConnectionCredential,
   ConnectionGrantRecord,
   ConnectionProbe,
+  ConnectionSendTest,
+  ConnectionSendTestResult,
   DeployAssets,
   DeployManifest,
   DeclaredOperationOutput,
@@ -605,6 +607,17 @@ export class TenantNarrowedControlPlane {
   verifyConnection(connectionId: string): Promise<ConnectionProbe> {
     return this.post<ConnectionProbe>(
       `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/verify`,
+    );
+  }
+
+  /**
+   * Send a test message through a mail connection (#2343), the probe mail has. A refusal is a
+   * 200 with `ok: false` in the connector's words; a provider with no sender is a 501.
+   */
+  sendConnectionTest(connectionId: string, input: ConnectionSendTest): Promise<ConnectionSendTestResult> {
+    return this.post<ConnectionSendTestResult>(
+      `/tenants/${this.tenantId}/connections/${encodeURIComponent(connectionId)}/send-test`,
+      input,
     );
   }
 

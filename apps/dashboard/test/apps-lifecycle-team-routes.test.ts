@@ -358,6 +358,8 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/edges/move dashboard/move-app-edge',
       'POST /apps/{scopeId}/email-sender dashboard/set-app-email-sender',
       'POST /apps/{scopeId}/integrations/{provider} dashboard/connect-app-integration',
+      // #2343: the mail send test; its gate and recipient are held in send-test-door.test.ts.
+      'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/send-test dashboard/send-test-app-connection',
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify dashboard/verify-app-connection',
       'POST /apps/{scopeId}/integrations/{provider}/verify dashboard/verify-app-integration',
       'POST /apps/{scopeId}/members dashboard/app-invite-member',
