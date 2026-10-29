@@ -125,6 +125,33 @@ jobs:
           else
             echo "gates passed:$RAN"
           fi
+      - name: Wait for the deployed source protocol
+        # The CLI below is built from this checkout, so it can be ahead of the deployed platform:
+        # it submits source (D-66), which a control plane from before source builds cannot read,
+        # and answers with a bare 500. release.yml deploys the builder and the control plane on
+        # the same push, so wait for the plane to advertise `source-builds` rather than race it.
+        env:
+          SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
+        run: |
+          set -euo pipefail
+          HEADERS="$RUNNER_TEMP/substrat-capabilities.headers"
+          for attempt in $(seq 1 50); do
+            # Use an existing builder-readable route: old planes default-deny unknown routes.
+            if curl --fail --silent --show-error --max-time 30 --output /dev/null \
+              --dump-header "$HEADERS" \
+              --header "x-service-token: $SUBSTRAT_SERVICE_TOKEN" \
+              'https://console.substrat.net/api/verticals?limit=1' \
+              && tr -d '\r' < "$HEADERS" \
+              | grep -i '^x-substrat-platform-features:' | cut -d: -f2- | tr ',' '\n' \
+              | grep -Eq '^[[:space:]]*source-builds[[:space:]]*$'; then
+              echo "control plane advertises source-builds"
+              exit 0
+            fi
+            echo "control plane does not advertise source-builds yet (attempt $attempt/50) — waiting for release.yml's deploy"
+            sleep 30
+          done
+          echo "::error::the deployed control plane still does not advertise source-builds after 25 minutes. Deploy the builder and the control plane (release.yml), then re-run this job."
+          exit 1
       - name: Release to prod
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
