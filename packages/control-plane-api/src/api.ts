@@ -43,6 +43,9 @@ import {
   CONNECTION_EXPIRY_WARNING_DAYS,
   CONNECTION_STALE_DAYS,
   connectionProbe,
+  connectionSendTest,
+  connectionSendTestResult,
+  connectionSenders,
   createTenantInput,
   entitlementGrantInput,
   hostname as hostnameSchema,
@@ -168,7 +171,7 @@ import type {
 } from '@substrat-run/contracts';
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
 import { ENGINE_ENTITLEMENT_KEYS, bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
-import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
+import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, MailSender, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
@@ -395,6 +398,9 @@ export interface ConnectionInspector {
    */
   certificate?: (host: ScopeHost, connection: Connection) => Promise<ConnectionCertificate | null>;
 }
+
+/** The body of a connection's test message (#2343), plain enough to be the same in HTML and text. */
+const SEND_TEST_TEXT = 'This is a test message from a mail connection. It reached you, so its sender address can send.';
 
 export interface ControlPlaneApiOptions {
   /** Monotonic clock for the bounded tenant usage composition (injectable in tests). */
@@ -679,6 +685,12 @@ export interface ControlPlaneApiOptions {
    * verify a Fortnox key yet" is a true statement; "your Fortnox key is fine" is not.
    */
   connectionInspectors?: Record<string, ConnectionInspector>;
+  /**
+   * The mail sender each provider that sends as a tenant's own addresses registers (#2098), by
+   * provider — the same `{ provider → sender }` the email relay routes through. Behind
+   * `POST …/connections/:id/send-test` (#2343); a provider absent here 501s there.
+   */
+  mailSenders?: Readonly<Record<string, MailSender>>;
   /**
    * The inspector for a vertical-defined provider (`<namespace>.<name>`, vertical-connectors.md
    * §6.4), which `connectionInspectors` never names: built per (tenant, vertical), since its code
@@ -1541,6 +1553,9 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // #2100: the PUBLIC certificate a connection signs in with — same pin as the credential view.
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/certificate$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/verify$/, pin: 'path' },
+  // #2343: a mail connection's test send. The dashboard sends it only to the signed-in person.
+  { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/send-test$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/senders$/, pin: 'path' },
   // A vertical's mailed connect links (connections.md §3.5.4): the consent landing's liveness
   // read, the callback's spend and its undo, and the integrations card's list and revoke.
   { method: 'GET', re: /\/tenants\/[^/]+\/connect-links$/, pin: 'path' },
@@ -3509,6 +3524,66 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 501, `no probe registered for provider '${row.provider}'`);
     }
     return c.json(connectionProbe.parse(await probe(c.var.host, row)));
+  });
+
+  /** The addresses a mail connection may send as (#2343) — the send test's picker, whole and uncut. */
+  app.get('/tenants/:tenantId/connections/:id/senders', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const sender = options.mailSenders?.[row.provider];
+    if (!sender) return refuseStatus(c, 501, `no mail sender registered for provider '${row.provider}'`);
+    return c.json(connectionSenders.parse({ senders: await sender.senders(c.var.host, row) }));
+  });
+
+  /**
+   * **Send a test message through a connection** (#2343) — the probe for mail, which cannot be
+   * probed without sending. From one of the connection's own senders, to one recipient; the
+   * dashboard's door sends only to the signed-in person's own address.
+   *
+   * Like `/verify`, a refusal is `200 { ok: false, error }` in the connector's own words (outside
+   * the granted scope, throttled, sign-in failed), and the send rides the connector's recorded
+   * egress, so health is written as for any send. A success is recorded by the connector as that
+   * sender's verification. Not an audited admin-log mutation, the same class as a probe; who
+   * asked is logged on the request record instead, never the recipient.
+   */
+  app.post('/tenants/:tenantId/connections/:id/send-test', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const sender = options.mailSenders?.[row.provider];
+    if (!sender) return refuseStatus(c, 501, `no mail sender registered for provider '${row.provider}'`);
+    const body = connectionSendTest.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return refuse(c, 'validation_failed', 'from and to must each be one email address');
+    const { from, to } = body.data;
+    const senders = await sender.senders(c.var.host, row);
+    if (!senders.some((s) => s.toLowerCase() === from.toLowerCase())) {
+      return refuse(c, 'validation_failed', `'${from}' is not one of this connection's sender addresses`);
+    }
+    const principal = c.get('principal');
+    console.log('connection.send-test', {
+      tenantId: row.tenantId,
+      connectionId: row.id,
+      provider: row.provider,
+      actor: c.get('actor'),
+      onBehalfOf: principal.kind === 'tenant' ? (principal.onBehalfOf?.principal ?? null) : null,
+    });
+    try {
+      await sender.send(c.var.host, row, {
+        from: { email: from },
+        to: [{ email: to }],
+        subject: 'Substrat test message',
+        html: `<p>${SEND_TEST_TEXT}</p>`,
+        text: SEND_TEST_TEXT,
+        attachments: [],
+      });
+      return c.json(connectionSendTestResult.parse({ ok: true, status: null, error: null }));
+    } catch (e) {
+      const status = (e as { status?: unknown } | null)?.status;
+      return c.json(connectionSendTestResult.parse({
+        ok: false,
+        status: typeof status === 'number' ? status : null,
+        error: (e instanceof Error ? e.message : String(e)).slice(0, 600),
+      }));
+    }
   });
 
   /**

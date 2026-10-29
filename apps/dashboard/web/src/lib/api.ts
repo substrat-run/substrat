@@ -1078,6 +1078,8 @@ export interface AppIntegration {
    * consent adds a row rather than rotating one.
    */
   multiAccount: boolean;
+  /** #2343: the connection sends mail as the tenant, so its detail offers a send test. */
+  sendsMail: boolean;
   required: boolean;
   /** The single-connection answer (the null-ref row, else the newest). */
   connection: ConnectionView | null;
@@ -1102,6 +1104,8 @@ export interface AccountIntegration {
   connectFlow: 'redirect' | null;
   /** See {@link AppIntegration.multiAccount}. */
   multiAccount?: boolean;
+  /** See {@link AppIntegration.sendsMail}. */
+  sendsMail?: boolean;
   connections: Array<
     ConnectionView & {
       vertical: string;
@@ -1236,6 +1240,8 @@ export interface ConnectionActivityView {
   live: boolean;
   grants: string[];
   credential: ConnectionCredentialFieldView[];
+  /** #2343: every address a send test may go from, whole; empty or absent for a provider that sends no mail. */
+  mailSenders?: string[];
   /**
    * #2100: the public certificate the connection signs in with, for the tenant to upload on
    * the provider's side. Absent or null when the provider or this connection uses none.

@@ -2774,6 +2774,8 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
   // A connection per external account (#1267): a bureau connects one Fortnox company per
   // client, so the UI lists a fleet and keeps offering "connect another" instead of rotate.
   multiAccount: spec.accountRefField !== undefined,
+  // #2343: the detail view offers a send test only for a provider that sends mail.
+  sendsMail: spec.sendsMail === true,
 });
 
 async function appIntegrationTarget({ host, node }: TeamContext, appScopeId: string) {
@@ -3020,6 +3022,22 @@ async function verifyAppIntegrationIn(ctx: TeamContext, appScopeId: string, prov
 }
 
 /**
+ * Send a test message through a mail connection (#2343), behind the same gate as Test connection.
+ * The recipient is the signed-in person's own verified address, read from the session and never
+ * from the request: the message leaves the tenant's mailbox, so the door does not take an address.
+ */
+async function sendTestAppConnectionIn(ctx: TeamContext, appScopeId: string, provider: string, id: string, from: string) {
+  const { connectionId, cp } = await inspectableConnection(ctx, appScopeId, provider, id);
+  const user = await verifySession(ctx.c.env, getCookie(ctx.c, SESSION_COOKIE));
+  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
+  const me = identifyEmail(ctx.c.env, user);
+  if (me.refused || !me.email) {
+    throw new HTTPException(400, { message: `a send test goes to your own verified email address: ${emailRefusalMessage(me.refused ?? 'no-email')}` });
+  }
+  return cp.sendConnectionTest(connectionId, { from, to: me.email });
+}
+
+/**
  * What this integration has done, and what it is allowed to do (#605): the connector's
  * projected dispatch ledger plus the connection's live grants — the readable "a leaked
  * provider token could invoke exactly these". `?live=1` also asks the provider for
@@ -3034,7 +3052,7 @@ async function getAppIntegrationActivityIn(
   source: 'provider' | 'ledger' = 'ledger',
 ) {
   const { connectionId, cp, connection, spec } = await inspectableConnection(ctx, appScopeId, provider, wantedId);
-  const [activity, grants, credential, intents, sweepRuns, certificate] = await Promise.all([
+  const [activity, grants, credential, intents, sweepRuns, certificate, mailSenders] = await Promise.all([
     cp.connectionActivity(connectionId, { live, source }),
     // Best-effort, all of them: a plane too old to serve grants, the credential view or the
     // intent journal must not cost the activity itself.
@@ -3050,6 +3068,8 @@ async function getAppIntegrationActivityIn(
     cp.listSweepRuns({ kind: 'connector', connectionId, limit: 20 }),
     // #2100: only for a provider whose door says it can sign in with a generated certificate.
     spec.certificate ? cp.connectionCertificate(connectionId) : Promise.resolve(null),
+    // #2343: the send test's picker, as a list (a display field is cut short). Best-effort too.
+    spec.sendsMail ? cp.connectionSenders(connectionId).catch((): string[] => []) : Promise.resolve([]),
   ]);
   return {
     ...activity,
@@ -3058,6 +3078,7 @@ async function getAppIntegrationActivityIn(
     credential: credential.fields,
     // Public: the certificate the tenant uploads to the provider. The key never leaves the plane.
     certificate,
+    mailSenders,
     // Current health, read in this request. The list page's copy can be minutes old.
     connection: connectionView(connection),
     // #1232: newest first — the strip renders it verbatim.
@@ -5708,6 +5729,8 @@ const routeHandlers = {
     verifyAppIntegrationIn(ctx, app, provider),
   'dashboard/verify-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>
     verifyAppIntegrationIn(ctx, app, provider, id),
+  'dashboard/send-test-app-connection': async (ctx, { scopeId: app, provider, connectionId: id, from }) =>
+    sendTestAppConnectionIn(ctx, app, provider, id, from),
   'dashboard/get-app-integration-activity': async (ctx, { scopeId: app, provider, live, source }) =>
     getAppIntegrationActivityIn(ctx, app, provider, undefined, live === '1', source === 'provider' ? 'provider' : 'ledger'),
   'dashboard/get-app-connection-activity': async (ctx, { scopeId: app, provider, connectionId: id, live, source }) =>

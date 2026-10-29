@@ -26,6 +26,7 @@ import {
   connectionActivity,
   connectionCredentialField,
   connectionProbe,
+  connectionSendTestResult,
   causeChain,
   deadLetter,
   defineRoutes,
@@ -111,6 +112,8 @@ const integrationActivity = connectionActivity.extend({
     pem: z.string(), thumbprint: z.string(), notAfter: z.string(),
     next: z.object({ pem: z.string(), thumbprint: z.string(), notAfter: z.string() }).optional(),
   }).nullable(),
+  /** #2343: the addresses a send test may go from; empty for a provider that sends no mail. */
+  mailSenders: z.array(z.string()),
   connection: integrationConnection,
   sweepRuns: z.array(z.object({
     id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable(),
@@ -1214,7 +1217,7 @@ export const dashboardRoutes = defineRoutes({
         key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
         optional: z.boolean().optional(), toggle: z.boolean().optional(),
       })),
-      connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), required: z.boolean(),
+      connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), sendsMail: z.boolean(), required: z.boolean(),
       connection: integrationConnection.nullable(), connections: z.array(integrationConnection),
     })) }),
     http: { method: 'GET', path: '/apps/{scopeId}/integrations' },
@@ -1251,6 +1254,14 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1) }),
     output: integrationProbe,
     http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify' },
+  },
+  'dashboard/send-test-app-connection': {
+    summary: "Send a test message from one of a mail connection's sender addresses to the signed-in person",
+    input: z.object({
+      scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1), from: z.string().min(1),
+    }),
+    output: connectionSendTestResult,
+    http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/send-test' },
   },
   'dashboard/get-app-integration-activity': {
     summary: 'Read the current connection activity and masked credential fields',

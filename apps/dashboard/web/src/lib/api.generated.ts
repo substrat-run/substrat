@@ -611,7 +611,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/activity` — `dashboard/get-app-connection-activity`
    */
-  getAppConnectionActivity(input: { scopeId: string; provider: string; connectionId: string; live?: string; source?: string }): Promise<{ source: string; entries: ({ key: string; title: string; reference: string | null; status: string; at: string | null; facts?: { label: string; value: string }[] })[]; live: boolean; grants: string[]; credential: { key: string; label: string; value: string; masked: boolean }[]; certificate: { pem: string; thumbprint: string; notAfter: string; next?: { pem: string; thumbprint: string; notAfter: string } } | null; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string }; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[]; intents: ({ id: string; status: string; attempts: number; lastError: string | null; failure: { origin: string; code: string | null; permission: string | null } | null; requestedAt: string; settledAt: string | null; eventType: string })[]; unreadableIntents: ({ id: string | null; status: string | null; requestedAt: string | null; decodeError: string })[] }>;
+  getAppConnectionActivity(input: { scopeId: string; provider: string; connectionId: string; live?: string; source?: string }): Promise<{ source: string; entries: ({ key: string; title: string; reference: string | null; status: string; at: string | null; facts?: { label: string; value: string }[] })[]; live: boolean; grants: string[]; credential: { key: string; label: string; value: string; masked: boolean }[]; certificate: { pem: string; thumbprint: string; notAfter: string; next?: { pem: string; thumbprint: string; notAfter: string } } | null; mailSenders: string[]; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string }; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[]; intents: ({ id: string; status: string; attempts: number; lastError: string | null; failure: { origin: string; code: string | null; permission: string | null } | null; requestedAt: string; settledAt: string | null; eventType: string })[]; unreadableIntents: ({ id: string | null; status: string | null; requestedAt: string | null; decodeError: string })[] }>;
 
   /**
    * One app's declared environment and its stored values; secrets are write-only
@@ -660,14 +660,14 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/integrations/{provider}/activity` — `dashboard/get-app-integration-activity`
    */
-  getAppIntegrationActivity(input: { scopeId: string; provider: string; live?: string; source?: string }): Promise<{ source: string; entries: ({ key: string; title: string; reference: string | null; status: string; at: string | null; facts?: { label: string; value: string }[] })[]; live: boolean; grants: string[]; credential: { key: string; label: string; value: string; masked: boolean }[]; certificate: { pem: string; thumbprint: string; notAfter: string; next?: { pem: string; thumbprint: string; notAfter: string } } | null; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string }; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[]; intents: ({ id: string; status: string; attempts: number; lastError: string | null; failure: { origin: string; code: string | null; permission: string | null } | null; requestedAt: string; settledAt: string | null; eventType: string })[]; unreadableIntents: ({ id: string | null; status: string | null; requestedAt: string | null; decodeError: string })[] }>;
+  getAppIntegrationActivity(input: { scopeId: string; provider: string; live?: string; source?: string }): Promise<{ source: string; entries: ({ key: string; title: string; reference: string | null; status: string; at: string | null; facts?: { label: string; value: string }[] })[]; live: boolean; grants: string[]; credential: { key: string; label: string; value: string; masked: boolean }[]; certificate: { pem: string; thumbprint: string; notAfter: string; next?: { pem: string; thumbprint: string; notAfter: string } } | null; mailSenders: string[]; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string }; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[]; intents: ({ id: string; status: string; attempts: number; lastError: string | null; failure: { origin: string; code: string | null; permission: string | null } | null; requestedAt: string; settledAt: string | null; eventType: string })[]; unreadableIntents: ({ id: string | null; status: string | null; requestedAt: string | null; decodeError: string })[] }>;
 
   /**
    * One app's declared providers and live connection metadata
    *
    * `GET /apps/{scopeId}/integrations` — `dashboard/get-app-integrations`
    */
-  getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[] })[] }>;
+  getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[] })[] }>;
 
   /**
    * Migration, failure and stale markers over one app's traffic
@@ -1097,6 +1097,13 @@ export interface DashboardClient {
   rewindApp(input: { scopeId: string; bookmark: string }): Promise<{ rewindingTo: string }>;
 
   /**
+   * Send a test message from one of a mail connection's sender addresses to the signed-in person
+   *
+   * `POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/send-test` — `dashboard/send-test-app-connection`
+   */
+  sendTestAppConnection(input: { scopeId: string; provider: string; connectionId: string; from: string }): Promise<{ ok: boolean; status: number | null; error: string | null }>;
+
+  /**
    * Save one app's identity choice and attempt live delivery
    *
    * `PUT /apps/{scopeId}/auth` — `dashboard/set-app-auth`
@@ -1483,6 +1490,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}`, "DELETE", undefined, omit(input, ["invitationId"])),
     rewindApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/rewind`, "POST", omit(input, ["scopeId"]), undefined),
+    sendTestAppConnection: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/send-test`, "POST", omit(input, ["scopeId","provider","connectionId"]), undefined),
     setAppAuth: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/auth`, "PUT", omit(input, ["scopeId"]), undefined),
     setAppEmailSender: (input: Args) =>

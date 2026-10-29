@@ -53,6 +53,7 @@ import {
   type Microsoft365Secret,
 } from './credential.js';
 import { GraphError, readSite, sendMail } from './graph.js';
+import { mailLines, mailVerifiedOf, recordMailVerified } from './mail-verified.js';
 import { certificatePem, thumbprintSha1Hex } from './x509.js';
 
 export {
@@ -126,7 +127,8 @@ export async function probeMicrosoft365Secret(
     const fields = parsed.error.issues.map((i) => i.path.join('.')).join(', ');
     return probeOf({ ok: false, refused: true, error: `incomplete credential: ${fields}` });
   }
-  return probeWith(options.fetch, parsed.data, options);
+  // Nothing stored yet, so nothing has sent.
+  return probeWith(options.fetch, parsed.data, options, sendersOf(parsed.data).map((s) => [s, null]));
 }
 
 /** Check the live connection's credential — **Test connection**. */
@@ -136,13 +138,15 @@ export async function probeMicrosoft365Connection(
   options: Microsoft365Options,
 ): Promise<ConnectionProbe> {
   const conn = await openMicrosoft365Connection(host.admin, options, connection);
-  return probeWith(conn.fetch, conn.secret, options);
+  const mail = await mailVerifiedOf(host.admin, conn.id, sendersOf(conn.secret));
+  return probeWith(conn.fetch, conn.secret, options, mail);
 }
 
 async function probeWith(
   fetchImpl: FetchLike,
   secret: Microsoft365Secret,
   options: Microsoft365Options,
+  mail: [string, string | null][],
 ): Promise<ConnectionProbe> {
   // The certificate that signs a send right now, and no fallback: before a lapse that is the current
   // one, and the successor is judged by `successorFacts`, unrecorded, so a rotation's expected "not
@@ -155,9 +159,14 @@ async function probeWith(
     requestToken(fetchImpl, signing, { now, ...loginOf(options) }),
     lapsed ? [] : successorFacts(secret, options),
   ]);
+  // Mail cannot be probed without sending (the app deliberately cannot read a mailbox): what the
+  // probe can say about it is which senders have sent.
+  const { verified, unverified } = mailLines(mail);
   const facts = [
     { label: 'Signs in with', value: authMethodOf(secret) === 'certificate' ? 'certificate' : 'client secret' },
     { label: 'Sends as', value: sendersOf(secret).join(', ').slice(0, 400) },
+    ...(verified ? [{ label: 'Mail verified', value: verified.slice(0, 400) }] : []),
+    ...(unverified ? [{ label: 'Mail not verified', value: unverified.slice(0, 400) }] : []),
     ...(secret.certificateNotAfter
       ? [{ label: 'Certificate expires', value: secret.certificateNotAfter.slice(0, 10) }]
       : []),
@@ -179,8 +188,7 @@ async function probeWith(
       ok: true,
       accountRef: site.id || null,
       accountLabel: site.displayName || site.webUrl,
-      // Mail cannot be probed without sending: the app deliberately cannot read a mailbox.
-      facts: [...facts, { label: 'Mail', value: 'not verified until the first send' }],
+      facts,
     });
   } catch (e) {
     if (e instanceof GraphError && (e.status === 401 || e.status === 403)) {
@@ -224,11 +232,18 @@ export async function microsoft365CredentialSummary(
   host: ScopeHost,
   connection: ConnectionRef,
 ): Promise<ConnectionCredential> {
-  const { secret } = await openSecret(host.admin, connection);
+  const { open, secret } = await openSecret(host.admin, connection);
+  const { verified } = mailLines(await mailVerifiedOf(host.admin, open.id, sendersOf(secret)));
   const fields = [
     { key: 'tenantId', label: 'Directory (tenant) ID', value: secret.tenantId, masked: false },
     { key: 'clientId', label: 'Application (client) ID', value: secret.clientId, masked: false },
     { key: 'senders', label: 'Sends as', value: sendersOf(secret).join(', ').slice(0, 200), masked: false },
+    {
+      key: 'mailVerified',
+      label: 'Mail verified',
+      value: (verified ?? 'none yet — until the first send or a send test').slice(0, 200),
+      masked: false,
+    },
     { key: 'siteUrl', label: 'SharePoint site', value: secret.siteUrl.slice(0, 200), masked: false },
   ];
   if (authMethodOf(secret) === 'client-secret') {
@@ -309,8 +324,9 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
     send: async (host, connection, mail) => {
       const conn = await openMicrosoft365Connection(host.admin, options, connection);
       const client = await signedInGraph(conn, options);
+      let result;
       try {
-        return await sendMail(client, mail);
+        result = await sendMail(client, mail);
       } catch (e) {
         // Exchange's RBAC for Applications scope is the tenant's fence; say that, not "403".
         // Reworded, never re-typed: the status and `Retry-After` are what the platform's retry
@@ -333,6 +349,12 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
         }
         throw e;
       }
+      // #2343: the address has now sent. Best-effort: the message is already with Microsoft, and
+      // a throw here would read as a failed send that the relay retries into a second copy.
+      await recordMailVerified(host.admin, conn.id, mail.from.email, nowOf(options)).catch((e: unknown) =>
+        console.warn('microsoft365.mail-verified.unrecorded', { connectionId: conn.id, error: String(e) }),
+      );
+      return result;
     },
   };
 }
