@@ -1,5 +1,15 @@
 # @substrat-run/demo-auth-server
 
+## 0.16.1
+
+### Patch Changes
+
+- 3016d61: Show configured BankID alongside other sign-in providers, with its environment and enabled status. Offer BankID in the providers that can be added when it is unconfigured. Keep its certificate editor and redirect old BankID section links to Sign-in providers.
+- Updated dependencies [9499b29]
+  - @substrat-run/contracts@0.166.0
+  - @substrat-run/kernel@0.166.0
+  - @substrat-run/vertical-host@0.166.0
+
 ## 0.16.0
 
 ### Minor Changes
