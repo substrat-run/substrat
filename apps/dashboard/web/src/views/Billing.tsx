@@ -28,6 +28,7 @@ function UsageCards({ usage }: { usage: Usage }) {
   const storageLowerBound = !isExactUsageFigure({ truncated: storage.lowerBound, reason: storage.truncatedReason, coverage: storage.state, estimated: storage.estimated, complete: storage.basis === 'scope-databases' && storage.sampled === storage.total && storage.failing === 0 });
   const requestsLowerBound = !isExactUsageFigure({ truncated: requests.lowerBound, reason: requests.truncatedReason, coverage: requests.state, estimated: requests.estimated, complete: requests.coveredDays === requests.totalDays });
   const modelsLowerBound = !isExactUsageFigure({ truncated: models.lowerBound, reason: models.truncatedReason, coverage: models.state, estimated: models.estimated });
+  const modelTokensLowerBound = !isExactUsageFigure({ truncated: models.lowerBound, reason: models.truncatedReason, coverage: models.state, estimated: models.estimated, complete: models.calls !== null && models.reportedCalls === models.calls });
   const section = { ...card, padding: 20, marginTop: 12 };
   return (
     <>
@@ -49,10 +50,18 @@ function UsageCards({ usage }: { usage: Usage }) {
       </div>
       <div style={section}>
         <h3>Model usage</h3>
-        <p>{models.calls === null ? models.state === 'empty' ? 'No model usage recorded in this window.' : 'not available' : `${modelsLowerBound ? 'At least ' : ''}${number(models.calls)} recorded calls · ${models.inputTokens === null ? 'not available' : `${modelsLowerBound ? 'at least ' : ''}${number(models.inputTokens)}`} input and ${models.outputTokens === null ? 'not available' : `${modelsLowerBound ? 'at least ' : ''}${number(models.outputTokens)}`} output tokens`}</p>
+        <p>{models.calls === null ? models.state === 'empty' ? 'No model usage recorded in this window.' : 'not available' : `${modelsLowerBound ? 'At least ' : ''}${number(models.calls)} recorded calls`}</p>
+        {models.calls !== null && <p>{models.reportedCalls} of {models.calls} calls reported usage</p>}
+        <p>{models.inputTokens === null || models.outputTokens === null ? models.reportedCalls === 0 && models.calls !== null ? 'Tokens not reported' : 'Token totals not available' : `${modelTokensLowerBound ? 'At least ' : ''}${number(models.inputTokens)} input and ${number(models.outputTokens)} output tokens as reported`}</p>
         <p>Coverage: recorded model-usage lines from {date(models.since)} to {date(models.until)} · {coverage(models.state, modelStates)}{modelsLowerBound ? `; lower bound from available lines, oldest included ${date(models.oldestRecordedAt)}` : ''}{models.truncatedReason === 'time-budget' ? '; stopped at the read time budget' : models.truncatedReason === 'page-cap' ? '; page cap reached' : reasonLabel(models.truncatedReason)}{oddTruncationLabel(models.lowerBound)}. Calls without a recorded line are not represented.</p>
         <p>Estimate: {models.estimated === false && !modelsLowerBound ? 'no; tokens are as reported by providers' : 'unknown or estimated; treat this figure as an estimate'}.{oddEstimateLabel(models.estimated)} Freshness: last recorded line {date(models.newestRecordedAt)}.</p>
-        {models.byVerticalModel.length > 0 && <ul>{models.byVerticalModel.map((row) => <li key={`${row.vertical}:${row.model}`}>{row.vertical} · {row.model}: {modelsLowerBound ? 'at least ' : ''}{number(row.calls)} calls, {row.inputTokens === null ? 'not available' : `${modelsLowerBound ? 'at least ' : ''}${number(row.inputTokens)}`} input and {row.outputTokens === null ? 'not available' : `${modelsLowerBound ? 'at least ' : ''}${number(row.outputTokens)}`} output tokens as reported</li>)}</ul>}
+        {models.byVerticalModel.length > 0 && <ul>{models.byVerticalModel.map((row) => {
+          const rowTokensLowerBound = !isExactUsageFigure({ truncated: models.lowerBound, reason: models.truncatedReason, coverage: models.state, estimated: models.estimated, complete: row.reportedCalls === row.calls });
+          const tokens = row.inputTokens === null || row.outputTokens === null
+            ? row.reportedCalls === 0 ? 'tokens not reported' : 'token totals not available'
+            : `${rowTokensLowerBound ? 'at least ' : ''}${number(row.inputTokens)} input and ${number(row.outputTokens)} output tokens as reported`;
+          return <li key={`${row.vertical}:${row.model}`}>{row.vertical} · {row.model}: {modelsLowerBound ? 'at least ' : ''}{number(row.calls)} calls; {row.reportedCalls} of {row.calls} calls reported usage, {tokens}</li>;
+        })}</ul>}
         {models.breakdownTruncated && <p>App and model breakdown truncated to 50 entries.</p>}
         <p>Model usage records are kept {usage.retention.modelDays} days.</p>
       </div>

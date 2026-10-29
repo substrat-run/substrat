@@ -2714,6 +2714,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const models = {
       state: typeof admin.listTenantModelUsageMeter !== 'function' || modelSkipped ? 'unavailable' : calls === 0 ? 'empty' : truncated ? 'truncated' : 'complete',
       calls: calls > 0 ? calls : null,
+      reportedCalls,
       inputTokens: reportedCalls > 0 ? inputTokens : null,
       outputTokens: reportedCalls > 0 ? outputTokens : null,
       estimated: false,
@@ -2723,7 +2724,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       until: `${until}T00:00:00Z`,
       oldestRecordedAt,
       newestRecordedAt,
-      byVerticalModel: modelGroups.slice(0, 50).map((row) => ({ vertical: row.vertical, model: row.model, calls: row.calls, inputTokens: row.reportedCalls > 0 ? row.inputTokens : null, outputTokens: row.reportedCalls > 0 ? row.outputTokens : null })),
+      byVerticalModel: modelGroups.slice(0, 50).map((row) => ({ vertical: row.vertical, model: row.model, calls: row.calls, reportedCalls: row.reportedCalls, inputTokens: row.reportedCalls > 0 ? row.inputTokens : null, outputTokens: row.reportedCalls > 0 ? row.outputTokens : null })),
       breakdownTruncated: modelGroups.length > 50 || labelsTruncated,
     };
     return c.json({

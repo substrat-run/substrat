@@ -5542,13 +5542,13 @@ const routeHandlers = {
         breakdownTruncated: raw.requests.breakdownTruncated,
       },
       models: {
-        state: projectPlaneScalar(raw.models.state), calls: raw.models.calls, inputTokens: raw.models.inputTokens,
+        state: projectPlaneScalar(raw.models.state), calls: raw.models.calls, reportedCalls: raw.models.reportedCalls, inputTokens: raw.models.inputTokens,
         outputTokens: raw.models.outputTokens, estimated: projectPlaneScalar(raw.models.estimated),
         lowerBound: projectPlaneScalar(raw.models.lowerBound), truncatedReason: projectPlaneScalar(raw.models.truncatedReason),
         since: raw.models.since, until: raw.models.until,
         oldestRecordedAt: raw.models.oldestRecordedAt, newestRecordedAt: raw.models.newestRecordedAt,
         byVerticalModel: raw.models.byVerticalModel.map((row) => ({
-          vertical: row.vertical, model: row.model, calls: row.calls,
+          vertical: row.vertical, model: row.model, calls: row.calls, reportedCalls: row.reportedCalls,
           inputTokens: row.inputTokens, outputTokens: row.outputTokens,
         })),
         breakdownTruncated: raw.models.breakdownTruncated,

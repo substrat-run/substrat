@@ -757,11 +757,11 @@ export const meteredUsageOut = z.object({
   models: z.object({
     // Plane-owned coverage; currently unavailable/empty/complete/truncated.
     state: planeScalar,
-    calls: z.number().int().nullable(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
+    calls: z.number().int().nullable(), reportedCalls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
     estimated: planeScalar, lowerBound: planeScalar, since: z.string(), until: z.string(),
     truncatedReason: planeScalar,
     oldestRecordedAt: z.string().nullable(), newestRecordedAt: z.string().nullable(),
-    byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
+    byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), reportedCalls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
     breakdownTruncated: z.boolean(),
   }),
 });

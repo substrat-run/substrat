@@ -68,12 +68,38 @@ it('projects stored usage with coverage and age, with no price or person or scop
   const body = await response.json();
   expect(body.storage).toMatchObject({ bytes: 65_536, sampled: 1, total: 1, estimated: false });
   expect(body.requests).toMatchObject({ requests: 7, estimated: true, coveredDays: 1 });
-  expect(body.models).toMatchObject({ state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false });
-  expect(body.models.byVerticalModel).toContainEqual(expect.objectContaining({ vertical: 'app', model: 'provider:model', calls: 1 }));
+  expect(body.models).toMatchObject({ state: 'complete', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false });
+  expect(body.models.byVerticalModel).toContainEqual(expect.objectContaining({ vertical: 'app', model: 'provider:model', calls: 1, reportedCalls: 1 }));
   expect(body.retention).toMatchObject({ storageMonths: 13, modelDays: 400, requestMonths: null });
   expect(JSON.stringify(body)).not.toMatch(/price|margin|usd|cost|amount|tenantId|scopeId|principal|person|listUsd|billedUsd/i);
   expect(JSON.stringify(body)).not.toContain(scope);
   expect(JSON.stringify(body)).not.toContain(other);
+});
+
+it('reports mixed provider usage coverage without counting unreported tokens as zero', async () => {
+  const mixedTenant = tenantId.parse(ulid());
+  await host.admin.createTenant(actor, { id: mixedTenant, slug: 'mixed-usage', name: 'Mixed usage' });
+  const at = new Date(Date.now() - 86_400_000).toISOString();
+  for (const [requestId, model, reported, inputTokens, outputTokens] of [
+    ['mixed-reported', 'provider:reported', true, 14, 7],
+    ['mixed-unreported', 'provider:unreported', false, 0, 0],
+  ] as const) {
+    await host.admin.recordModelUsage({ requestId, line: {
+      attribution: { tenant: mixedTenant, scope, vertical: 'mixed-app', version: '1', operation: 'ask' },
+      model, provider: 'provider', modelId: model, reported,
+      inputTokens, outputTokens, cachedInputTokens: 0, cacheWriteTokens: 0,
+      listUsd: null, at, elapsedMs: 10,
+    } });
+  }
+  const mixedHeaders = { [SERVICE_TOKEN_HEADER]: await mintTenantToken(secret, { tenantId: mixedTenant }) };
+  const response = await app.request(`/tenants/${mixedTenant}/metered-usage`, { headers: mixedHeaders });
+  expect(response.status, await response.clone().text()).toBe(200);
+  const body = await response.json();
+  expect(body.models).toMatchObject({ state: 'complete', calls: 2, reportedCalls: 1, inputTokens: 14, outputTokens: 7, lowerBound: false });
+  expect(body.models.byVerticalModel).toEqual(expect.arrayContaining([
+    expect.objectContaining({ model: 'provider:reported', calls: 1, reportedCalls: 1, inputTokens: 14, outputTokens: 7 }),
+    expect.objectContaining({ model: 'provider:unreported', calls: 1, reportedCalls: 0, inputTokens: null, outputTokens: null }),
+  ]));
 });
 
 it('labels a capped model ledger scan as an at-least lower bound', async () => {
@@ -177,8 +203,8 @@ it('keeps provider-unreported token counts unavailable instead of displaying zer
   const response = await app.request(`/tenants/${other}/metered-usage`, { headers: asOther });
   expect(response.status, await response.clone().text()).toBe(200);
   const body = await response.json();
-  expect(body.models).toMatchObject({ calls: 1, inputTokens: null, outputTokens: null });
-  expect(body.models.byVerticalModel).toContainEqual(expect.objectContaining({ calls: 1, inputTokens: null, outputTokens: null }));
+  expect(body.models).toMatchObject({ calls: 1, reportedCalls: 0, inputTokens: null, outputTokens: null });
+  expect(body.models.byVerticalModel).toContainEqual(expect.objectContaining({ calls: 1, reportedCalls: 0, inputTokens: null, outputTokens: null }));
 });
 
 it('caps model labels in the reader and omits long labels from the breakdown', async () => {

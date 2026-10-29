@@ -23,7 +23,7 @@ beforeEach(() => {
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
     storage: { state: 'unavailable', bytes: null, estimated: false, basis: 'scope-databases', sampled: 0, total: 0, failing: 0, oldestReadAt: null, excluded: ['attachments', 'tenant-stores', 'lake'] },
     requests: { state: 'unavailable', requests: null, estimated: true, lowerBound: false, coveredDays: 0, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: null, byVertical: [], breakdownTruncated: false },
-    models: { state: 'empty', calls: null, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false },
+    models: { state: 'empty', calls: null, reportedCalls: 0, inputTokens: null, outputTokens: null, estimated: false, lowerBound: false, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: null, newestRecordedAt: null, byVerticalModel: [], breakdownTruncated: false },
   });
   container = document.createElement('div');
   document.body.append(container);
@@ -35,6 +35,14 @@ afterEach(() => {
 });
 
 const render = async (canRead = true) => act(async () => { root.render(<Billing teamId="team-a" canRead={canRead} />); });
+
+const modelUsagePayload = (models: object) => ({
+  readAt: '2026-10-29T00:00:00Z',
+  retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+  storage: { state: 'unavailable', bytes: null, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 0, total: 0, failing: 0, oldestReadAt: null, excluded: [] },
+  requests: { state: 'unavailable', requests: null, estimated: true, lowerBound: false, coveredDays: 0, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: null, byVertical: [], breakdownTruncated: false },
+  models,
+});
 
 it('shows unavailable when the entitlement read fails, with no sample plan or invoice', async () => {
   read.mockRejectedValue(new Error('unavailable'));
@@ -82,7 +90,7 @@ it('shows metered usage coverage, estimate and freshness without prices', async 
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
     storage: { state: 'complete', bytes: 65_536, estimated: false, basis: 'scope-databases', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments', 'tenant-stores', 'lake'] },
     requests: { state: 'partial', requests: 7, estimated: true, lowerBound: true, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [{ vertical: 'app', requests: 7 }], breakdownTruncated: false },
-    models: { state: 'truncated', calls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: true, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [{ vertical: 'app', model: 'provider:model', calls: 1, inputTokens: 11, outputTokens: 3 }], breakdownTruncated: false },
+    models: { state: 'truncated', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: true, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [{ vertical: 'app', model: 'provider:model', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3 }], breakdownTruncated: false },
   });
   await render();
   expect(container.textContent).toContain('65,536');
@@ -97,6 +105,31 @@ it('shows metered usage coverage, estimate and freshness without prices', async 
   expect(container.textContent).not.toMatch(/price|margin|usd|cost|amount|invoice|checkout|payment/i);
 });
 
+it.each([
+  { name: 'mixed', calls: 2, reportedCalls: 1, inputTokens: 14, outputTokens: 7, tokens: 'At least 14 input', expectedLabel: '1 of 2 calls reported usage', exact: false },
+  { name: 'all reported', calls: 2, reportedCalls: 2, inputTokens: 20, outputTokens: 10, tokens: '20 input', expectedLabel: '2 of 2 calls reported usage', exact: true },
+  { name: 'none reported', calls: 1, reportedCalls: 0, inputTokens: null, outputTokens: null, tokens: 'Tokens not reported', expectedLabel: '0 of 1 calls reported usage', exact: false },
+])('shows $name model token coverage without turning unreported calls into zeroes', async ({ calls, reportedCalls, inputTokens, outputTokens, tokens, expectedLabel, exact }) => {
+  read.mockResolvedValue([]);
+  readUsage.mockResolvedValue(modelUsagePayload({
+    state: 'complete', calls, reportedCalls, inputTokens, outputTokens,
+    estimated: false, lowerBound: false, truncatedReason: null,
+    since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z',
+    byVerticalModel: [{ vertical: 'app', model: 'provider:model', calls, reportedCalls, inputTokens, outputTokens }], breakdownTruncated: false,
+  }));
+  await render();
+  const text = container.textContent ?? '';
+  const modelText = text.slice(text.indexOf('Model usage'));
+  expect(modelText).toContain(`${calls} recorded calls`);
+  expect(modelText).toContain(expectedLabel);
+  expect(modelText).toContain(tokens);
+  expect(modelText).toContain(`${reportedCalls} of ${calls} calls reported usage`);
+  expect(modelText).toContain(`app · provider:model: ${calls} calls; ${reportedCalls} of ${calls} calls reported usage`);
+  if (exact) expect(modelText).not.toContain('At least');
+  else if (reportedCalls > 0) expect(modelText).toContain('At least');
+  if (reportedCalls === 0) expect(modelText).not.toMatch(/0 input|0 output/);
+});
+
 it('labels new plane vocabulary as unknown and treats its figures as estimates and lower bounds', async () => {
   read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
@@ -104,7 +137,7 @@ it('labels new plane vocabulary as unknown and treats its figures as estimates a
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
     storage: { state: 'new-storage-state', bytes: 8, estimated: 'new-estimate-mode', basis: 'scope-databases', lowerBound: false, truncatedReason: 'new-storage-reason', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: ['attachments', 'new-exclusion'] },
     requests: { state: 'new-request-state', requests: 7, estimated: 'new-estimate-mode', lowerBound: false, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
-    models: { state: 'new-model-state', calls: 1, inputTokens: 11, outputTokens: 3, estimated: 'new-estimate-mode', lowerBound: false, truncatedReason: 'new-model-reason', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+    models: { state: 'new-model-state', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3, estimated: 'new-estimate-mode', lowerBound: false, truncatedReason: 'new-model-reason', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
   });
   await render();
   expect(container.textContent).toContain('unknown (new-storage-state)');
@@ -125,13 +158,13 @@ it('shows numeric figures as lower bounds when coverage is incomplete or a new t
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
     storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: 'new-storage-limit', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
     requests: { state: 'partial', requests: 7, estimated: true, lowerBound: false, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
-    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false, truncatedReason: 'new-model-limit', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+    models: { state: 'complete', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false, truncatedReason: 'new-model-limit', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
   });
   await render();
   expect(container.textContent).toContain('At least 8 bytes');
   expect(container.textContent).toContain('At least 7 estimated request counts');
   expect(container.textContent).toContain('At least 1 recorded calls');
-  expect(container.textContent).toContain('at least 11 input');
+  expect(container.textContent).toContain('At least 11 input');
   expect(container.textContent).toContain('new-storage-limit');
   expect(container.textContent).toContain('new-model-limit');
   expect(container.textContent).not.toContain('Estimate: no;');
@@ -164,7 +197,7 @@ it('shows whitespace truncation reasons as limited lower bounds', async () => {
     readAt: '2026-10-29T00:00:00Z', retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
     storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: ' ', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
     requests: { state: 'complete', requests: 7, estimated: false, lowerBound: false, coveredDays: 30, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
-    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false, truncatedReason: ' ', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+    models: { state: 'complete', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false, truncatedReason: ' ', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
   });
   await render();
   expect(container.textContent).toContain('At least 8 bytes');
@@ -182,7 +215,7 @@ it.each([null, 0] as const)('treats absent, null, or numeric estimate metadata (
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
     storage: { state: 'complete', bytes: 8, estimated: estimate, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
     requests: { state: 'complete', requests: 7, ...(estimate === null ? {} : { estimated: estimate }), lowerBound: false, coveredDays: 30, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
-    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: estimate, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+    models: { state: 'complete', calls: 1, reportedCalls: 1, inputTokens: 11, outputTokens: 3, estimated: estimate, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
   });
   await render();
   expect(container.textContent).toContain('At least 8 bytes');
