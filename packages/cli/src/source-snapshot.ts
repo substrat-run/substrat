@@ -1,11 +1,11 @@
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { excludedSourcePath, sourceSnapshot, SOURCE_BYTES_MAX, type SourceSnapshot } from '@substrat-run/contracts';
 
 /** Include workspace manifests and local packages when pushing a monorepo member. */
 export function collectSourceSnapshot(directory: string): SourceSnapshot {
-  const dir = realpathSync(resolve(directory));
+  const dir = realpathSync.native(resolve(directory));
   let root = dir;
   let parent = dir;
   while (true) {
@@ -24,10 +24,13 @@ export function collectSourceSnapshot(directory: string): SourceSnapshot {
     // A constant shell command also resolves pnpm.cmd on Windows; no project input is interpolated.
     const members = JSON.parse(execSync('pnpm -r list --depth -1 --json',
       { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })) as Array<{ name?: string; path: string }>;
-    // pnpm may report forward slashes on Windows; compare canonical native paths.
-    for (const member of members) member.path = resolve(member.path);
+    // Resolve Windows short-name aliases as well as separators before comparing paths.
+    for (const member of members) member.path = realpathSync.native(resolve(member.path));
     const byName = new Map(members.filter((m) => m.name).map((m) => [m.name!, m]));
-    const selected = new Set(members.filter((m) => m.path === dir || m.path.startsWith(`${dir}${sep}`)).map((m) => m.path));
+    const selected = new Set(members.filter((m) => {
+      const child = relative(dir, m.path);
+      return child === '' || (!isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`));
+    }).map((m) => m.path));
     selected.add(dir);
     const queue = [...selected];
     for (const path of queue) {
@@ -73,7 +76,7 @@ export function collectSourceSnapshot(directory: string): SourceSnapshot {
     const stat = lstatSync(absolute);
     if (stat.isSymbolicLink()) throw new Error(`source snapshot refuses symlink: ${path}`);
     if (!stat.isFile()) continue;
-    const real = realpathSync(absolute);
+    const real = realpathSync.native(absolute);
     if (!real.startsWith(`${root}${sep}`)) throw new Error(`source path escapes the project: ${path}`);
     bytes += Math.ceil(stat.size / 3) * 4;
     if (bytes > SOURCE_BYTES_MAX) throw new Error('source snapshot exceeds the upload limit');

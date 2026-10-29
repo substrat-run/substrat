@@ -128,6 +128,7 @@ import {
   capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
+  PLATFORM_FEATURE_SOURCE_BUILDS,
   type ScopeStoreNeed,
   type StoreErasure,
   type StoreDriverRegistration,
@@ -2015,7 +2016,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const advisory = options.cliAdvisory;
   app.use('*', async (c, next) => {
     await next();
-    c.header(PLATFORM_FEATURES_HEADER, PLATFORM_FEATURE_SCOPE_SWEEPER);
+    c.header(PLATFORM_FEATURES_HEADER, [PLATFORM_FEATURE_SCOPE_SWEEPER, ...(options.sourceBuilds ? [PLATFORM_FEATURE_SOURCE_BUILDS] : [])].join(','));
     if (advisory?.minVersion) c.header(CLI_MIN_VERSION_HEADER, advisory.minVersion);
     if (advisory?.latestVersion) c.header(CLI_LATEST_VERSION_HEADER, advisory.latestVersion);
   });
@@ -9685,9 +9686,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // pointing at a deployment that is not there. The version lands PENDING — except a
   // PRIVATE vertical's, which self-admits below the seam (its blast radius is its own
   // tenant); for everything else admission still gates serving.
-  // Protocol discovery lets pre-release clients avoid sending source to an older plane.
-  app.get('/source/capabilities', (c) => c.json({ protocol: 'source-v1', builds: Boolean(options.sourceBuilds) }));
-
   app.all('/projects', async (c) => {
     if (!options.sourceBuilds) return refuseStatus(c, 501, 'source builds are not configured');
     const p = c.get('principal');

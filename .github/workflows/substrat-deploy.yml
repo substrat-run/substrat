@@ -232,18 +232,18 @@ jobs:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
         run: |
           set -euo pipefail
-          STATUS=$(curl --silent --show-error --max-time 30 --output source-capabilities.json --write-out '%{http_code}' \
+          # Use an existing builder-readable route: old planes default-deny unknown routes.
+          curl --fail --silent --show-error --max-time 30 --output /dev/null \
+            --dump-header "$RUNNER_TEMP/substrat-capabilities.headers" \
             --header "x-service-token: $SUBSTRAT_SERVICE_TOKEN" \
-            https://console.substrat.net/api/source/capabilities)
-          if [ "$STATUS" = 404 ]; then
-            echo 'ready=false' >> "$GITHUB_OUTPUT"
-            echo 'Preview deferred: deploy the source-builder/control-plane protocol before using this CLI.' >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$STATUS" = 200 ]; then
-            node -e "const c=require('./source-capabilities.json'); if(c.protocol!=='source-v1'||!c.builds) process.exit(1)"
+            'https://console.substrat.net/api/verticals?limit=1'
+          if tr -d '\r' < "$RUNNER_TEMP/substrat-capabilities.headers" \
+            | grep -i '^x-substrat-platform-features:' | cut -d: -f2- | tr ',' '\n' \
+            | grep -Eq '^[[:space:]]*source-builds[[:space:]]*$'; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
           else
-            echo "Source protocol check failed (HTTP $STATUS)" >&2
-            exit 1
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Preview deferred: deploy the source-builder/control-plane protocol before using this CLI.' >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Create/update the preview
         if: steps.source-protocol.outputs.ready == 'true'
