@@ -123,8 +123,11 @@ twice. A pass with no changes makes no call to the operation.
   per request. The pacing sees only this pass. A ledger connection to the same company, or the
   company's own integrations, spend from the same limit, and their share is absorbed by the
   retry rather than prevented. A pass reads at most 200 invoices per connection, about 40 seconds
-  at the limit. A larger change set (a first pass over a busy company) lands 200 a pass, oldest
-  number first, until it is through.
+  at the limit, and starts no new read after **90 seconds**. When it stops, the invoices read so
+  far land and the next pass resumes after them. A read already under way still finishes its own
+  retries, so a Fortnox that is both throttling and timing out can stretch one pass by a few
+  minutes past that, never more. A larger change set (a first pass over a busy company) lands
+  over several passes, oldest number first, until it is through.
 - **A read that fails.** Invoices read before it still land, and the cursor moves past them. An
   invoice deleted between the list and its read (`404`) is stepped over. Any other failure (a
   `429` past its retries, a server error, an invoice the connector cannot read) fails the
