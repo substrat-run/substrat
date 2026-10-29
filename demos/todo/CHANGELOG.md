@@ -1,5 +1,16 @@
 # @substrat-run/demo-todo
 
+## 0.3.83
+
+### Patch Changes
+
+- Updated dependencies [9499b29]
+  - @substrat-run/contracts@0.166.0
+  - @substrat-run/adapter-sqlite@0.166.0
+  - @substrat-run/dev-issuer@0.2.48
+  - @substrat-run/kernel@0.166.0
+  - @substrat-run/vertical-host@0.166.0
+
 ## 0.3.82
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @substrat-run/contracts
 
+## 0.166.0
+
+### Minor Changes
+
+- 9499b29: Build releases on the platform from tenant projects stored in GitHub or Cloudflare Artifacts. CLI push and preview submit source snapshots, and builder projects use the same repository and release pipeline with pinned source and toolchain provenance.
+
+  This changes the deploy protocol: client-built module uploads and the builder's R2 Git bundles are no longer supported. Deploy the source builder and control plane together, then update the CLI. Existing builder projects are not migrated.
+
 ## 0.165.0
 
 ### Minor Changes
@@ -7230,7 +7238,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

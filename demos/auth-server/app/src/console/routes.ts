@@ -40,10 +40,8 @@ export interface Route {
  * The route table. Two groupings are deliberate rather than inherited from the order the
  * panels happened to grow in:
  *
- * - **BankID is a sign-in method, beside the OAuth providers** — not a section of its own
- *   because it is exotic. It is separate from "Sign-in providers" only because it is
- *   configured on completely different terms (an mTLS certificate and an environment, no
- *   client id and no redirect URI to register), so one editor could not serve both.
+ * - **BankID belongs in Sign-in providers.** Its certificate editor is separate from the
+ *   OAuth editors, while its configured status and add link share the same list.
  * - **Access sits with them, not with the issuer's settings.** It reads as a lone toggle
  *   between two registries today; it is in fact the answer to "who may get in at all",
  *   which is the same question the providers list answers one upstream at a time.
@@ -56,7 +54,6 @@ export const ROUTES: Route[] = [
   { path: '/users', label: 'Users', icon: SubIcons.users, group: 'Directory', adminOnly: true },
   { path: '/applications', label: 'Applications', icon: SubIcons.layers, group: 'Directory', adminOnly: true },
   { path: '/providers', label: 'Sign-in providers', icon: SubIcons.globe, group: 'Sign-in', adminOnly: true },
-  { path: '/bankid', label: 'BankID', icon: SubIcons.box, group: 'Sign-in', adminOnly: true },
   { path: '/access', label: 'Access', icon: SubIcons.sliders, group: 'Sign-in', adminOnly: true },
   // Beside the providers it explains rather than under the issuer's settings: it is read in the
   // same minute as the panel it sends an operator back to.
@@ -80,6 +77,8 @@ export const ROUTES: Route[] = [
  * are where the browser already is, never where it should be sent next.
  */
 export function returnTarget(pathname: string): string {
+  // Keep old BankID bookmarks working after folding its list into Sign-in providers.
+  if (pathname === '/bankid') return '/providers';
   if (ROUTES.some((r) => r.path === pathname)) return pathname;
   // A detail URL is the kind of path outside the table worth surviving a sign-in: it is the
   // link an operator pastes into a support conversation, and it is exactly where the person
