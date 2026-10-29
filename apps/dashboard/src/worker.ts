@@ -6040,15 +6040,15 @@ app.get('/api/github/workflow-preview', async (c) => {
  * status this app is RELAYING rather than raising gets no taxonomy code, because putting
  * ours on the plane's refusal — or on a message pattern — would be a claim we cannot make.
  */
-const problem = (c: Context, status: number, detail?: string): Response =>
-  c.body(JSON.stringify(withRequestIdOf(problemForStatus(status, detail), c)), status as ContentfulStatusCode, {
+const problem = (c: Context, status: number, detail?: string, extra: object = {}): Response =>
+  c.body(JSON.stringify(withRequestIdOf({ ...problemForStatus(status, detail), ...extra }, c)), status as ContentfulStatusCode, {
     'content-type': PROBLEM_CONTENT_TYPE,
   });
 
 app.onError((err, c) => {
   const m = err instanceof Error ? err.message : String(err);
   if (err instanceof IntegrationConnectRefused) {
-    return c.json({ error: m, ...(err.probe ? { probe: err.probe } : {}) }, 422);
+    return problem(c, 422, m, err.probe ? { probe: err.probe } : {});
   }
   // This deployment cannot seal a credential (#603) — the local (no control-plane) store
   // path; the plane's own refusal arrives as a ControlPlaneError 503 below. Either way it
@@ -6058,7 +6058,7 @@ app.onError((err, c) => {
   // #1756: an Update or a Bind refused for the apps it would break — which are the team's own,
   // so the refusal carries them for the confirm to name.
   if (err instanceof ExportBreakRefused) {
-    return c.json(withRequestIdOf({ error: m, detail: m, exportBreaks: { affected: err.breaks } }, c), 409);
+    return problem(c, 409, m, { exportBreaks: { affected: err.breaks } });
   }
   // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
   // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
