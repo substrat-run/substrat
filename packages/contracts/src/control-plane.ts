@@ -1213,7 +1213,7 @@ export type SweepRunKind = z.infer<typeof sweepRunKind>;
 /** `skipped` is a first-class outcome: "swept, nothing to do" and "bound but no
  *  sweeper registered" are the facts a freshness view needs most, and the ones
  *  nothing recorded before this table existed. */
-export const sweepRunOutcome = z.enum(['ok', 'failed', 'skipped']);
+export const sweepRunOutcome = z.enum(['ok', 'failed', 'skipped', 'unsupported']);
 export type SweepRunOutcome = z.infer<typeof sweepRunOutcome>;
 
 /**

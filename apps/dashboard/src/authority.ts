@@ -145,7 +145,7 @@ export interface SweepRunRead {
   connectionId?: string;
   scopeId?: string;
   unit?: string;
-  outcome?: 'ok' | 'failed' | 'skipped';
+  outcome?: 'ok' | 'failed' | 'skipped' | 'unsupported';
   since?: string;
   /**
    * The upper bound — what makes "the verdict in force when the window began" one

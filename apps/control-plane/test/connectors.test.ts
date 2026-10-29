@@ -54,6 +54,14 @@ describe('connector registry', () => {
     expect(() => binder.options!({ horizonYear: 10 }, current)).toThrow();
   });
 
+  it('validates Fortnox landing kinds and rejects unknown options', () => {
+    const options = connectionBindersFor(ENV)['fortnox']!.options!;
+    expect(options(undefined)).toEqual({});
+    expect(options({ kind: 'supplier-invoice' })).toEqual({ kind: 'supplier-invoice' });
+    expect(() => options({ kind: 'future-kind' })).toThrow();
+    expect(() => options({ typo: 'supplier-invoice' })).toThrow();
+  });
+
   it('takes the declared grants from the connector, never a second list', () => {
     // The failure this reproduces (#716/#841): a hand-kept copy beside the connector
     // that drifted for months. `toBe` on the identity, not `toEqual` on the contents.

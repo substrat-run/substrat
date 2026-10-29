@@ -15,6 +15,8 @@ export function connectionBindingOptions(provider: string) {
   // (vertical-connectors.md §6.1); the stored binding bounds their count.
   if (isVerticalConnectorProvider(provider)) return z.object({}).catchall(z.unknown());
   switch (provider) {
+    case 'fortnox':
+      return z.object({ kind: z.enum(['ledger', 'supplier-invoice']).optional() }).strict();
     case 'planima':
       return z
         .object({

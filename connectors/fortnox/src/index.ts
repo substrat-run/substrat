@@ -149,6 +149,8 @@ export interface FortnoxBinding {
    * authority of this binding without opening the vertical's source.
    */
   permission: string;
+  /** Absent on pre-kind bindings, which are ledger bindings. */
+  kind?: 'ledger' | 'supplier-invoice';
   /**
    * WHICH company's connection reads the books (#2316): the connection's `externalAccountRef`.
    *
@@ -253,6 +255,7 @@ export async function bindFortnoxScope(
     vertical: string;
     operation: string;
     permission: string;
+    kind?: 'ledger' | 'supplier-invoice';
     /** The connection's `externalAccountRef` — the company. See {@link FortnoxBinding.externalAccountRef}. */
     externalAccountRef?: string | null;
     now?: () => number;
@@ -260,6 +263,10 @@ export async function bindFortnoxScope(
 ): Promise<FortnoxBinding> {
   const tenant = tenantIdSchema.parse(input.tenantId);
   const scope = scopeIdSchema.parse(input.scopeId);
+  const current = (await listFortnoxBindings(host, input.connectionId)).find((b) => b.scopeId === input.scopeId);
+  if (current && (current.kind ?? 'ledger') !== (input.kind ?? 'ledger')) {
+    throw new Error(`Fortnox binding kind for scope ${input.scopeId} is immutable (${current.kind ?? 'ledger'}); unbind it before binding ${input.kind ?? 'ledger'}`);
+  }
 
   // On the host, not `admin`: this is the same projection the permission checker reads,
   // so a binding is verified against the tuples that will actually gate the invoke —
@@ -283,6 +290,7 @@ export async function bindFortnoxScope(
     vertical: input.vertical,
     operation: input.operation,
     permission: input.permission,
+    ...(input.kind ? { kind: input.kind } : {}),
     ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
     boundAt: new Date(input.now?.() ?? Date.now()).toISOString(),
   };
@@ -351,6 +359,9 @@ export async function syncFortnoxScope(
   binding: FortnoxBinding,
   options: FortnoxConnectorOptions & { period?: { from: string; to: string } },
 ): Promise<FortnoxSyncResult> {
+  if (binding.kind !== undefined && binding.kind !== 'ledger') {
+    throw new Error(`ledger sync cannot use Fortnox binding kind '${String(binding.kind)}'`);
+  }
   const admin = host.admin;
   const conn = await openFortnoxConnection(
     admin,
@@ -482,6 +493,7 @@ export interface FortnoxSweepResult {
   synced: FortnoxSyncResult[];
   unchanged: number;
   failed: { scopeId: string; error: string }[];
+  unsupported: { scopeId: string; reason: string }[];
 }
 
 /**
@@ -502,13 +514,21 @@ export async function sweepFortnoxLedger(
   options: FortnoxConnectorOptions & { period?: { from: string; to: string } },
 ): Promise<FortnoxSweepResult> {
   const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
-  const result: FortnoxSweepResult = { found: 0, synced: [], unchanged: 0, failed: [] };
+  const result: FortnoxSweepResult = { found: 0, synced: [], unchanged: 0, failed: [], unsupported: [] };
 
   for (const { value } of rows) {
     // A tombstoned binding (`unbindFortnoxScope`) — present as a row, not a target.
     if (value === null || typeof value !== 'object') continue;
     const binding = value as FortnoxBinding;
     result.found += 1;
+    if (binding.kind === 'supplier-invoice') {
+      result.unsupported.push({ scopeId: binding.scopeId, reason: 'supplier-invoice polling is unavailable; upgrade to a platform and Fortnox connector release with the invoice sweep' });
+      continue;
+    }
+    if (binding.kind !== undefined && binding.kind !== 'ledger') {
+      result.failed.push({ scopeId: binding.scopeId, error: `unknown Fortnox binding kind '${String(binding.kind)}'; upgrade this platform before polling this binding` });
+      continue;
+    }
     try {
       const r = await syncFortnoxScope(host, connectionId, binding, options);
       if (r.changed) result.synced.push(r);

@@ -65,6 +65,29 @@ connections: [
 ],
 ```
 
+The optional `options.kind` selects the data the operation receives: `ledger` (the default,
+including existing declarations) or `supplier-invoice`. For an invoice landing, declare:
+
+```ts
+connections: [
+  { provider: 'fortnox', operation: 'invoices/record', permission: 'invoices:record',
+    options: { kind: 'supplier-invoice' } },
+],
+```
+
+The platform validates the option before binding. A binding's kind cannot change in place;
+unbind the old binding before switching the same connection and scope to another kind. Ledger
+polling reads only ledger bindings. The invoice sweep, when available, reads only invoice
+bindings. Until that sweep ships, an invoice binding remains visible as **unsupported** with
+upgrade guidance; no ledger data is fetched or delivered to its operation. An unrecognized
+stored kind fails closed, naming the kind, without delivering ledger data.
+
+This option requires the platform and `@substrat-run/connector-fortnox` release containing
+this change (see their release changelogs). Older platforms reject `kind` as an unknown
+binding option: the connection's sweep row says its declared landing could not be bound,
+and the staff failure names the invalid option. An invoice binding also needs a later
+release with the invoice sweep before it can receive invoices.
+
 Each client company is its own connection, told apart by its `externalAccountRef`. On the connector
 pass after a company's connection appears — through the dashboard's Connect, a connect link the
 vertical mailed, or the vertical's own relay — the platform grants that connection `ledger:record`
@@ -81,7 +104,8 @@ hour) grants and binds every company connected so far. A binding written by hand
 recorded the company is re-written once on that pass.
 
 Each pass writes one row per connection, shown in Health › Connections: **ok** when every bound
-scope synced or was unchanged, **skipped** when the connection has no binding, and **failed**,
+scope synced or was unchanged, **skipped** when the connection has no binding, **unsupported**
+when an invoice binding awaits its sweep, and **failed**,
 naming the scope, when a scope could not be landed in or a declared landing could not be granted or
 bound.
 
@@ -382,7 +406,7 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
    timer. Without `startPlatformSweeper` or `definePlatformSweeperDO` wired, a binding is inert.
 
 4. **Supplier invoices and their PDFs.** The platform's Connect flow requests `supplierinvoice` at
-   consent, but this connector has no supplier invoice read or approve code yet: nothing here uses
-   the scope. The `archive` and `connectfile` scopes are not requested, and because scopes cannot be
+   consent and the manifest can declare an invoice binding, but this connector has no supplier
+   invoice read or approve code yet: the binding reports unsupported. The `archive` and `connectfile` scopes are not requested, and because scopes cannot be
    widened after consent, a deployment that expects to want them should ask for them in the *first*
    consent round.

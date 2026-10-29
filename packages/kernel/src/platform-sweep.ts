@@ -87,15 +87,20 @@ export interface ConnectorSweeper {
 export interface ConnectorSweepAnswer {
   found: number;
   failed: readonly { scopeId: string; error: string }[];
+  unsupported?: readonly { scopeId: string; reason: string }[];
 }
 
 /** {@link ConnectorSweepAnswer} out of whatever a sweeper resolved with, or null when it says neither. */
 export function connectorSweepAnswerOf(result: unknown): ConnectorSweepAnswer | null {
   if (typeof result !== 'object' || result === null) return null;
-  const { found, failed } = result as { found?: unknown; failed?: unknown };
+  const { found, failed, unsupported } = result as { found?: unknown; failed?: unknown; unsupported?: unknown };
   if (typeof found !== 'number' || !Array.isArray(failed)) return null;
   return {
     found,
+    unsupported: Array.isArray(unsupported)
+      ? unsupported.filter((u): u is { scopeId: unknown; reason: unknown } => typeof u === 'object' && u !== null)
+          .map((u) => ({ scopeId: String(u.scopeId), reason: String(u.reason) }))
+      : [],
     failed: failed
       .filter((f): f is { scopeId: unknown; error: unknown } => typeof f === 'object' && f !== null)
       .map((f) => ({ scopeId: String(f.scopeId), error: String(f.error) })),
@@ -1961,7 +1966,7 @@ export async function runPlatformSweep(
   await mapBounded(connections, concurrency, async (c) => {
     // #1232: the connection's durable sweep record. A connection row carries no
     // scope (a connection spans scopes by construction) and no version.
-    const record = (outcome: 'ok' | 'failed' | 'skipped', extra?: Partial<SweepRunInput>) =>
+    const record = (outcome: 'ok' | 'failed' | 'skipped' | 'unsupported', extra?: Partial<SweepRunInput>) =>
       options.recordSweepRun?.({
         kind: 'connector',
         unit: c.id,
@@ -2057,6 +2062,7 @@ export async function runPlatformSweep(
     // landing the platform could not seat, fails the row; a poll that found nothing to poll is
     // `skipped`, which a console reads as "nothing polls this connection".
     const pollFailed = answer?.failed ?? [];
+    const unsupported = answer?.unsupported ?? [];
     if (landingFailed.length > 0 || pollFailed.length > 0) {
       fail(
         [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land`] : [])],
@@ -2064,6 +2070,8 @@ export async function runPlatformSweep(
       );
     } else if (answer && answer.found === 0) {
       record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
+    } else if (unsupported.length > 0) {
+      record('unsupported', { error: unsupported.map((u) => `scope ${u.scopeId}: ${u.reason}`).join('; '), elapsedMs: Date.now() - started });
     } else {
       record('ok', { elapsedMs: Date.now() - started });
     }

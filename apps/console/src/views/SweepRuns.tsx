@@ -20,10 +20,11 @@ export interface SweepRunsProps {
   tenants: Map<TenantId, Tenant>;
 }
 
-const OUTCOME_BADGE: Record<SweepRunEntry['outcome'], 'success' | 'danger' | 'warning'> = {
+const OUTCOME_BADGE: Record<string, 'success' | 'danger' | 'warning'> = {
   ok: 'success',
   failed: 'danger',
   skipped: 'warning',
+  unsupported: 'warning',
 };
 
 /**
@@ -42,7 +43,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
 
   const [tenantFilter, setTenantFilter] = useState('all');
   const [kindFilter, setKindFilter] = useState<'all' | SweepRunKind>('all');
-  const [outcomeFilter, setOutcomeFilter] = useState<'all' | 'ok' | 'failed' | 'skipped'>('all');
+  const [outcomeFilter, setOutcomeFilter] = useState<'all' | SweepRunEntry['outcome']>('all');
   const [unitInput, setUnitInput] = useState('');
   // Server-side narrowing is EXACT match (the unit key) — debounced so typing
   // doesn't refetch per keystroke. Free-text stays client-side.
@@ -154,6 +155,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
             { value: 'ok', label: 'ok' },
             { value: 'failed', label: 'failed' },
             { value: 'skipped', label: 'skipped' },
+            { value: 'unsupported', label: 'unsupported' },
           ]}
           value={outcomeFilter}
           onChange={(e) => setOutcomeFilter(e.target.value as typeof outcomeFilter)}
@@ -221,7 +223,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
                     </button>
                   </td>
                   <td style={td}>
-                    <Badge status={OUTCOME_BADGE[e.outcome]}>{e.outcome}</Badge>
+                    <Badge status={OUTCOME_BADGE[e.outcome] ?? 'warning'}>{e.outcome}</Badge>
                   </td>
                   <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
                     {e.tenantId ? (

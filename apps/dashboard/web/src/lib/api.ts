@@ -1327,7 +1327,7 @@ export interface AppSchedulesView {
 /** One sweep outcome for a connection (#1232) — what the recent-runs strip renders. */
 export interface SweepRunView {
   id: string;
-  outcome: 'ok' | 'failed' | 'skipped';
+  outcome: string;
   at: string;
   error: string | null;
   elapsedMs: number | null;

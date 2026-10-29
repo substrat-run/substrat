@@ -280,7 +280,7 @@ export function RowActions() {
 /** One tick of a recent-runs strip (#1232) — the shape both sweep surfaces share. */
 export interface SweepTick {
   id: string;
-  outcome: 'ok' | 'failed' | 'skipped';
+  outcome: string;
   at: string;
   error: string | null;
 }
@@ -309,10 +309,11 @@ export function SweepStrip({
 }) {
   if (runs.length === 0) return null;
   const last = runs[0]!;
-  const COLOR: Record<SweepTick['outcome'], string> = {
+  const COLOR: Record<string, string> = {
     ok: 'var(--status-success-fg)',
     failed: 'var(--status-danger-fg)',
     skipped: 'var(--status-warning-fg)',
+    unsupported: 'var(--text-tertiary)',
   };
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
@@ -329,7 +330,7 @@ export function SweepStrip({
               width: 5,
               height: 12,
               borderRadius: 1,
-              background: COLOR[r.outcome],
+              background: COLOR[r.outcome] ?? 'var(--text-tertiary)',
               display: 'inline-block',
               // The ring is the cursor's answer: THIS tick is the one the click named.
               ...(ringed?.has(r.id) ? { boxShadow: '0 0 0 2px var(--brand-500)' } : {}),
@@ -339,7 +340,7 @@ export function SweepStrip({
       </span>
       <span>
         {label} {relativeTime(last.at)}
-        {last.outcome === 'failed' ? ' — failed' : last.outcome === 'skipped' ? ` — ${skippedNote}` : ''}
+        {last.outcome === 'failed' ? ' — failed' : last.outcome === 'skipped' ? ` — ${skippedNote}` : last.outcome === 'unsupported' ? ' — unsupported' : last.outcome === 'ok' ? '' : ` — ${last.outcome}`}
       </span>
     </div>
   );
