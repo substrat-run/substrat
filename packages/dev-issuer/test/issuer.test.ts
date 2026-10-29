@@ -220,6 +220,8 @@ describe('the non-interactive door', () => {
       }),
     );
     expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(await res.json()).toMatchObject({ code: 'validation_failed', detail: expect.stringContaining('dev|nobody') });
   });
 });
 
