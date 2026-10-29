@@ -26,3 +26,6 @@ function helperParameter(value: StoreDriverRegistration) {
 function arrayElement(registrations: readonly StoreDriverRegistration[]) {
   return registrations[0]?.releases;
 }
+export function pickProjection(registration: Pick<StoreDriverRegistration, 'releases'>) {
+  return registration.releases;
+}
