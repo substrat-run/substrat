@@ -167,7 +167,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     expect(await updatedLines()).toBe(0);
   });
 
-  it('the refusal carries the request id it was answered under (#2192), and nothing else beside the apps', async () => {
+  it('the refusal carries the request id it was answered under (#2192), and nothing else beside the problem members and the apps', async () => {
     const res = await app.request(
       `/api/teams/${tenant}/apps/${appScope}/update`,
       { method: 'POST', headers: { 'content-type': 'application/json', cookie: `sb_session=${OWNER_SUB}` }, body: '{}' },
@@ -175,7 +175,8 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     );
     const body = (await res.json()) as Record<string, unknown>;
     expect(res.status).toBe(409);
-    expect(Object.keys(body).sort()).toEqual(['detail', 'error', 'exportBreaks', 'requestId']);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(Object.keys(body).sort()).toEqual(['detail', 'error', 'exportBreaks', 'requestId', 'status', 'title', 'type']);
     expect(body.requestId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(body.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
   });

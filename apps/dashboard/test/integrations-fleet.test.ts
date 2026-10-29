@@ -453,6 +453,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
       body: JSON.stringify({ secret: { apiKey: 'bad', archive: 'archive' } }),
     }, env);
     expect(res.status).toBe(422);
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
     expect(await res.json()).toMatchObject({ error: 'Provider refused the credential', probe: { ok: false, refused: true, error: 'Invalid credential' } });
   });
 
