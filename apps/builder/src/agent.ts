@@ -636,7 +636,15 @@ export class BuilderAgent extends DurableObject<Env> {
 
 		switch (route) {
 			case 'GET /api/project-source': {
-				return json(200, (await this.#current()).entry);
+				if (this.#busy) return refuse(409, 'project operation already in progress');
+				this.#busy = true;
+				try {
+					const { entry } = await this.#current();
+					// Resolve the remote before pinning a release, including a newly connected
+					// GitHub project that has not had a studio turn yet.
+					await this.#restoreProject(this.#sandboxPair(entry.id), entry);
+					return json(200, entry);
+				} finally { this.#busy = false; }
 			}
 			case 'GET /api/session': {
 				const { entry } = await this.#current();
