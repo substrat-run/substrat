@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { excludedSourcePath, sourceSnapshot, SOURCE_BYTES_MAX, type SourceSnapshot } from '@substrat-run/contracts';
@@ -21,8 +21,11 @@ export function collectSourceSnapshot(directory: string): SourceSnapshot {
   if (root !== dir) {
     // Resolve the workspace graph without installing or building anything. Include
     // nested browser packages as well as the vertical's declared dependencies.
-    const members = JSON.parse(execFileSync('pnpm', ['-r', 'list', '--depth', '-1', '--json'],
+    // A constant shell command also resolves pnpm.cmd on Windows; no project input is interpolated.
+    const members = JSON.parse(execSync('pnpm -r list --depth -1 --json',
       { cwd: root, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })) as Array<{ name?: string; path: string }>;
+    // pnpm may report forward slashes on Windows; compare canonical native paths.
+    for (const member of members) member.path = resolve(member.path);
     const byName = new Map(members.filter((m) => m.name).map((m) => [m.name!, m]));
     const selected = new Set(members.filter((m) => m.path === dir || m.path.startsWith(`${dir}${sep}`)).map((m) => m.path));
     selected.add(dir);

@@ -821,9 +821,9 @@ export class BuilderAgent extends DurableObject<Env> {
 				return json(200, (await this.#state(entry.id)).history);
 			}
 			case 'GET /api/projects': {
-				const { reg, entry } = await this.#current();
+				const reg = await this.#registry();
 				const sorted = [...reg.projects].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-				return json(200, { current: entry.id, projects: sorted });
+				return json(200, { current: reg.currentId, projects: sorted });
 			}
 			case 'POST /api/projects': {
 				if (this.#busy) return refuse(409, 'project operation already in progress');

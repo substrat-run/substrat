@@ -69,7 +69,14 @@ export async function checkoutRepository(sb: SandboxLike, access: RepositoryAcce
     const dirty = await checkedExec(sb, 'git status --porcelain', root);
     if (dirty) return; // preserve edits; the eventual push detects a concurrent writer
     const head = await sb.exec('git rev-parse --verify HEAD', { cwd: root });
-    if (head.exitCode !== 0) return; // freshly created, empty repository
+    if (head.exitCode !== 0) {
+      // Another writer may have initialized the branch since this empty clone was opened.
+      const refs = await repositoryGit(sb, access, ['ls-remote', '--heads', access.remote, `refs/heads/${branch}`], root);
+      if (!refs) return;
+      await repositoryGit(sb, access, ['fetch', access.remote, `refs/heads/${branch}`], root);
+      await checkedExec(sb, `git -c core.hooksPath=/dev/null checkout -B ${shellQuote(branch)} FETCH_HEAD`, root);
+      return;
+    }
     await repositoryGit(sb, access, ['fetch', access.remote, `refs/heads/${branch}`], root);
     await checkedExec(sb, 'git -c core.hooksPath=/dev/null merge --ff-only FETCH_HEAD', root);
     return;

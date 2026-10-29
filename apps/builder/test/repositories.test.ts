@@ -34,6 +34,8 @@ describe('project repositories', () => {
     const access = { remote, authorization: 'Bearer fixture-token' };
     const a = join(root, 'a'), b = join(root, 'b');
     await checkoutRepository(sandbox, access, a, 'main');
+    // The studio can open an empty repo before the CLI publishes its first snapshot.
+    await checkoutRepository(sandbox, access, b, 'main');
     commit(a, 'app.ts', 'first');
     const first = await saveRepository(sandbox, access, a, 'main');
     await checkoutRepository(sandbox, access, b, 'main');

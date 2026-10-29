@@ -226,7 +226,27 @@ jobs:
           else
             echo "gates passed:$RAN"
           fi
+      - name: Check the deployed source protocol
+        id: source-protocol
+        env:
+          SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
+        run: |
+          set -euo pipefail
+          STATUS=$(curl --silent --show-error --max-time 30 --output source-capabilities.json --write-out '%{http_code}' \
+            --header "x-service-token: $SUBSTRAT_SERVICE_TOKEN" \
+            https://console.substrat.net/api/source/capabilities)
+          if [ "$STATUS" = 404 ]; then
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Preview deferred: deploy the source-builder/control-plane protocol before using this CLI.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$STATUS" = 200 ]; then
+            node -e "const c=require('./source-capabilities.json'); if(c.protocol!=='source-v1'||!c.builds) process.exit(1)"
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Source protocol check failed (HTTP $STATUS)" >&2
+            exit 1
+          fi
       - name: Create/update the preview
+        if: steps.source-protocol.outputs.ready == 'true'
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
@@ -238,7 +258,7 @@ jobs:
           # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
           grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
       - name: Create the per-build preview
-        if: vars.SUBSTRAT_PER_BUILD_PREVIEW != ''
+        if: steps.source-protocol.outputs.ready == 'true' && vars.SUBSTRAT_PER_BUILD_PREVIEW != ''
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
@@ -251,6 +271,7 @@ jobs:
             --tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true
       - name: Comment the preview URLs
+        if: steps.source-protocol.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

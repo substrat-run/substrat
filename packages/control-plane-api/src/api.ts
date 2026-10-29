@@ -9685,6 +9685,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // pointing at a deployment that is not there. The version lands PENDING — except a
   // PRIVATE vertical's, which self-admits below the seam (its blast radius is its own
   // tenant); for everything else admission still gates serving.
+  // Protocol discovery lets pre-release clients avoid sending source to an older plane.
+  app.get('/source/capabilities', (c) => c.json({ protocol: 'source-v1', builds: Boolean(options.sourceBuilds) }));
+
   app.all('/projects', async (c) => {
     if (!options.sourceBuilds) return refuseStatus(c, 501, 'source builds are not configured');
     const p = c.get('principal');

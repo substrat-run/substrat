@@ -47,6 +47,12 @@ describe('platform source releases', () => {
   afterEach(async () => { await host.close(); rmSync(root, { recursive: true, force: true }); });
   const push = (input: unknown, headers = builderHeaders) => app.request('/verticals/demo/deploy', { method: 'POST', headers, body: JSON.stringify(input) });
 
+  it('advertises the source-only protocol to authenticated clients', async () => {
+    const response = await app.request('/source/capabilities', { headers: { [DEV_ACTOR_HEADER]: staff } });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ protocol: 'source-v1', builds: true });
+  });
+
   it('builds for the authenticated owner and publishes the resulting release through the existing admission path', async () => {
     const response = await push({ version: '1.0.0', revision });
     expect(response.status, await response.clone().text()).toBe(201);

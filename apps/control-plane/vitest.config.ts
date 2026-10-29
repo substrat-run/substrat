@@ -33,6 +33,7 @@ export default defineConfig({
         // stub, workerd refuses to start at all. It answers 501 so a test that
         // reaches it fails loudly rather than silently provisioning nothing.
         serviceBindings: {
+          SOURCE_BUILDER: () => Response.json({ detail: 'source builder not available in tests' }, { status: 503 }),
           VERTICAL_FSM: () =>
             new Response(JSON.stringify({ error: 'vertical not available in tests' }), {
               status: 501,
