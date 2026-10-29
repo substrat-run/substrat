@@ -24,6 +24,7 @@
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
+import { PROBLEM_CONTENT_TYPE, substratError, toProblem } from '@substrat-run/contracts';
 import { SignJWT, jwtVerify, importJWK, type JWTPayload } from 'jose';
 import { DEV_ALG, DEV_KID, DEV_PRIVATE_JWK, DEV_PUBLIC_JWK } from './keys.js';
 import type { DevPersona } from './personas.js';
@@ -328,7 +329,9 @@ export function createDevIssuer(opts: DevIssuerOptions): Hono {
     const audience = typeof body.audience === 'string' ? body.audience : DEV_CLIENT_ID;
     const persona = personaOf(sub);
     if (!persona) {
-      return c.json({ error: `unknown sub '${sub}' — known: ${personas.map((p) => p.sub).join(', ')}` }, 400);
+      const known = personas.map((p) => p.sub).join(', ');
+      const refusal = toProblem(substratError('validation_failed', `unknown sub '${sub}' — known: ${known}`), c.req.path);
+      return c.body(JSON.stringify(refusal), 400, { 'content-type': PROBLEM_CONTENT_TYPE });
     }
     const base = { iss: issuerOf(c), aud: audience, ...claimsFor(persona) };
     const [idToken, accessToken] = await Promise.all([sign(base, ttl), sign({ ...base, typ: 'access' }, ttl)]);
