@@ -15,7 +15,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { LocalWorkspace } from '@substrat-run/builder-workspace';
+import { LocalWorkspace, type ExecOptions, type ExecResult } from '@substrat-run/builder-workspace';
 import {
 	workspaceTools,
 	type BuildEvent,
@@ -608,7 +608,19 @@ describe('a laned build turn (eval harness, mocked agent)', () => {
 	it('runs API then UI, each confined to its side, gates after both, and the gap reaches the next turn', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'builder-lanes-'));
 		roots.push(root);
-		const ws = new LocalWorkspace({ root });
+		// This fixture scripts the agent and its typecheck gate; its model is
+		// context text, and its scratch workspace has no emitter toolchain.
+		// Real emission and failed-import gate rechecks are covered by
+		// builder-workspace/test/model-emit.test.ts.
+		class LaneWorkspace extends LocalWorkspace {
+			override async exec(cmd: string, opts?: ExecOptions): Promise<ExecResult> {
+				if (cmd.startsWith('pnpm exec tsx tools/model-diff.mts --root ')) {
+					return { stdout: '', stderr: '', exitCode: 0 };
+				}
+				return super.exec(cmd, opts);
+			}
+		}
+		const ws = new LaneWorkspace({ root });
 		await ws.exec('git init -q && git config gc.auto 0 && git config maintenance.auto false');
 		const fixture = { name: 'lanes', concept: LANED_CONCEPT, expect: { files: ['app/turn2.txt'] } };
 		const dir = `${EVAL_PROJECT_PREFIX}${fixture.name}`;
