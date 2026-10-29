@@ -35,9 +35,12 @@ export async function mailVerifiedOf(
   return senders.map((s) => [s, at.get(keyOf(s)) ?? null]);
 }
 
-/** The two lines the probe and the credential view show: verified senders with their day, and the rest. */
+/**
+ * The two lines the probe and the credential view show: verified senders, and the rest. A day is
+ * "as of", not "last sent": the record is refreshed at most once a day, so it can trail by one.
+ */
 export function mailLines(senders: readonly [string, string | null][]) {
-  const verified = senders.filter(([, at]) => at).map(([s, at]) => `${s} (${at})`);
+  const verified = senders.filter(([, at]) => at).map(([s, at]) => `${s} (as of ${at})`);
   const unverified = senders.filter(([, at]) => !at).map(([s]) => s);
   return {
     verified: verified.length ? verified.join(', ') : null,

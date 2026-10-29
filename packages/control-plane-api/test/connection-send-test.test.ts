@@ -11,6 +11,7 @@ import { createControlPlaneApi, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth } 
  * `POST /tenants/:t/connections/:id/send-test` (#2343) — mail's probe, which has to send. The
  * route is transport over the provider's `MailSender`: it admits only one of the connection's
  * own senders, and carries the connector's answer back as `ok: false` in the connector's words.
+ * `GET …/senders` is the list its picker offers, read from the same `senders()`.
  */
 describe('a connection send test (#2343)', () => {
   const staff = platformActorId.parse(ulid());
@@ -22,8 +23,10 @@ describe('a connection send test (#2343)', () => {
 
   const sent: OutboundMail[] = [];
   let outcome: () => Promise<void> = async () => {};
+  /** Far more than a display field holds: the picker must still get every one. */
+  const senders = ['Office@acme.example', ...Array.from({ length: 40 }, (_, i) => `sender-${i}@acme.example`)];
   const sender: MailSender = {
-    senders: async () => ['Office@acme.example'],
+    senders: async () => senders,
     send: async (_h, _row, mail) => {
       sent.push(mail);
       await outcome();
@@ -73,7 +76,19 @@ describe('a connection send test (#2343)', () => {
     expect(sent).toEqual([]);
   });
 
-  it('a provider with no mail sender answers 501', async () => {
+  it('lists every sender address whole, however long the list, and the last of them can send', async () => {
+    const res = await createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), mailSenders: { mailer: sender } })
+      .request(`/tenants/${acme}/connections/${id}/senders`, { headers });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ senders });
+    outcome = async () => {};
+    expect(await (await sendTest({ from: senders.at(-1), to: 'me@example.com' })).json()).toMatchObject({ ok: true });
+  });
+
+  it('a provider with no mail sender answers 501, to the send and to the senders read', async () => {
     expect((await sendTest({ from: 'office@acme.example', to: 'me@example.com' }, {})).status).toBe(501);
+    const read = await createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), mailSenders: {} })
+      .request(`/tenants/${acme}/connections/${id}/senders`, { headers });
+    expect(read.status).toBe(501);
   });
 });

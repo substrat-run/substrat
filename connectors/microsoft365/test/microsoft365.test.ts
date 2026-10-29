@@ -529,11 +529,11 @@ describe('mail verified by a send', () => {
     h.state.set('microsoft365:mail-verified:gone@acme.example', { at: NOW.toISOString() });
     const probe = await probeMicrosoft365Connection(h.host, conn, { fetch: microsoft({ ...tokenOk, ...siteOk }).fetchImpl, now: () => NOW });
     expect(probe.facts).toEqual(expect.arrayContaining([
-      { label: 'Mail verified', value: 'office@acme.example (2026-10-07)' },
+      { label: 'Mail verified', value: 'office@acme.example (as of 2026-10-07)' },
       { label: 'Mail not verified', value: 'noreply@acme.example — until the first send or a send test' },
     ]));
     const summary = await microsoft365CredentialSummary(h.host, conn);
-    expect(summary.fields.find((f) => f.key === 'mailVerified')!.value).toBe('office@acme.example (2026-10-07)');
+    expect(summary.fields.find((f) => f.key === 'mailVerified')!.value).toBe('office@acme.example (as of 2026-10-07)');
   });
 });
 

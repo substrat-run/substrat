@@ -117,8 +117,9 @@ yet" or "no access to the site yet" mean a step above is still to do; the connec
 either way.
 
 Mail cannot be tested without sending, because the app cannot read a mailbox. So each sender
-address reads **not verified** until a message from it goes out, and then **verified**, with the
-day of its last send. To check an address before your app sends anything, open the connection and
+address reads **not verified** until a message from it goes out, and then **verified as of** a
+date. That date is refreshed at most once a day, so it can trail the address's latest send by up
+to a day. To check an address before your app sends anything, open the connection and
 use **Send a test message**: pick a sender address, and one short message goes from it to your own
 address. If Exchange refuses it, the connection says why: the address is outside the scope you
 granted (or the grant has not taken effect yet), the mailbox is being throttled, or the sign-in

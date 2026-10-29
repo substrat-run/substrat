@@ -312,6 +312,10 @@ export const connectionSendTest = z.object({
 });
 export type ConnectionSendTest = z.infer<typeof connectionSendTest>;
 
+/** The addresses a mail connection may send as (#2343): exactly the `from` a send test admits. */
+export const connectionSenders = z.object({ senders: z.array(z.string()) });
+export type ConnectionSenders = z.infer<typeof connectionSenders>;
+
 /** What came of it: like a probe, a refusal is the provider's answer, in the connector's words. */
 export const connectionSendTestResult = z.object({
   ok: z.boolean(),

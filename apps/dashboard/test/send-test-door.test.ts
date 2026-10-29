@@ -49,6 +49,8 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 };
 
 const VERTICAL = 'acme/desk';
+/** More addresses than any display field holds (#2343 review): the picker must get every one. */
+const SENDERS = Array.from({ length: 40 }, (_, i) => `sender-${i}@acme.example`);
 const staff = platformActorId.parse(ulid());
 
 describe('the Send test door on a mail connection (#2343)', () => {
@@ -106,6 +108,9 @@ describe('the Send test door on a mail connection (#2343)', () => {
               lastErrorAt: null, createdAt: '2026-10-01T09:00:00.000Z',
             }]);
           }
+          if (path === `/tenants/${tenant}/connections/${connection}/senders`) return Response.json({ senders: SENDERS });
+          if (path === `/tenants/${tenant}/connections/${connection}/activity`) return Response.json({ source: 'ledger', live: false, entries: [] });
+          if (path === '/sweep-runs') return Response.json({ entries: [], nextCursor: null });
           if (path === `/tenants/${tenant}/connections/${connection}/send-test`) {
             sends.push(JSON.parse(String(init?.body)));
             return Response.json({ ok: false, status: 403, error: "Exchange refused to send as 'office@acme.example'" });
@@ -133,6 +138,14 @@ describe('the Send test door on a mail connection (#2343)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: false, status: 403, error: "Exchange refused to send as 'office@acme.example'" });
     expect(sends).toEqual([{ from: 'office@acme.example', to: 'owner@example.com' }]);
+  });
+
+  it('the connection’s detail hands the picker every sender address as a list, however long', async () => {
+    const res = await app.request(`/api/teams/${tenant}/apps/${appScope}/integrations/microsoft365/connections/${connection}/activity`, {
+      headers: { cookie: 'sb_session=owner' },
+    }, env);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { mailSenders: string[] }).mailSenders).toEqual(SENDERS);
   });
 
   it('a session whose address the issuer did not verify is refused, and nothing is sent', async () => {

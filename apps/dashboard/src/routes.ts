@@ -112,6 +112,8 @@ const integrationActivity = connectionActivity.extend({
     pem: z.string(), thumbprint: z.string(), notAfter: z.string(),
     next: z.object({ pem: z.string(), thumbprint: z.string(), notAfter: z.string() }).optional(),
   }).nullable(),
+  /** #2343: the addresses a send test may go from; empty for a provider that sends no mail. */
+  mailSenders: z.array(z.string()),
   connection: integrationConnection,
   sweepRuns: z.array(z.object({
     id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable(),

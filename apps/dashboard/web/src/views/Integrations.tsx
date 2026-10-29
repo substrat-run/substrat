@@ -462,10 +462,7 @@ function IntegrationDetail({
             provider={provider.provider}
             scopeId={scopeId}
             connectionId={connection.id}
-            senders={(activity?.credential.find((f) => f.key === 'senders')?.value ?? '')
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean)}
+            senders={activity?.mailSenders ?? []}
             onSent={() => setRefresh((n) => n + 1)}
           />
         )}

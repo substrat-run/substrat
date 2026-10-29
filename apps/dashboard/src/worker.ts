@@ -3052,7 +3052,7 @@ async function getAppIntegrationActivityIn(
   source: 'provider' | 'ledger' = 'ledger',
 ) {
   const { connectionId, cp, connection, spec } = await inspectableConnection(ctx, appScopeId, provider, wantedId);
-  const [activity, grants, credential, intents, sweepRuns, certificate] = await Promise.all([
+  const [activity, grants, credential, intents, sweepRuns, certificate, mailSenders] = await Promise.all([
     cp.connectionActivity(connectionId, { live, source }),
     // Best-effort, all of them: a plane too old to serve grants, the credential view or the
     // intent journal must not cost the activity itself.
@@ -3068,6 +3068,8 @@ async function getAppIntegrationActivityIn(
     cp.listSweepRuns({ kind: 'connector', connectionId, limit: 20 }),
     // #2100: only for a provider whose door says it can sign in with a generated certificate.
     spec.certificate ? cp.connectionCertificate(connectionId) : Promise.resolve(null),
+    // #2343: the send test's picker, as a list (a display field is cut short). Best-effort too.
+    spec.sendsMail ? cp.connectionSenders(connectionId).catch((): string[] => []) : Promise.resolve([]),
   ]);
   return {
     ...activity,
@@ -3076,6 +3078,7 @@ async function getAppIntegrationActivityIn(
     credential: credential.fields,
     // Public: the certificate the tenant uploads to the provider. The key never leaves the plane.
     certificate,
+    mailSenders,
     // Current health, read in this request. The list page's copy can be minutes old.
     connection: connectionView(connection),
     // #1232: newest first — the strip renders it verbatim.

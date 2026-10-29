@@ -1240,6 +1240,8 @@ export interface ConnectionActivityView {
   live: boolean;
   grants: string[];
   credential: ConnectionCredentialFieldView[];
+  /** #2343: every address a send test may go from, whole; empty or absent for a provider that sends no mail. */
+  mailSenders?: string[];
   /**
    * #2100: the public certificate the connection signs in with, for the tenant to upload on
    * the provider's side. Absent or null when the provider or this connection uses none.

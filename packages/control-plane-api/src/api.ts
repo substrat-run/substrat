@@ -44,6 +44,7 @@ import {
   connectionProbe,
   connectionSendTest,
   connectionSendTestResult,
+  connectionSenders,
   createTenantInput,
   entitlementGrantInput,
   hostname as hostnameSchema,
@@ -1551,6 +1552,7 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/verify$/, pin: 'path' },
   // #2343: a mail connection's test send. The dashboard sends it only to the signed-in person.
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/send-test$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/senders$/, pin: 'path' },
   // A vertical's mailed connect links (connections.md §3.5.4): the consent landing's liveness
   // read, the callback's spend and its undo, and the integrations card's list and revoke.
   { method: 'GET', re: /\/tenants\/[^/]+\/connect-links$/, pin: 'path' },
@@ -3519,6 +3521,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 501, `no probe registered for provider '${row.provider}'`);
     }
     return c.json(connectionProbe.parse(await probe(c.var.host, row)));
+  });
+
+  /** The addresses a mail connection may send as (#2343) — the send test's picker, whole and uncut. */
+  app.get('/tenants/:tenantId/connections/:id/senders', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const sender = options.mailSenders?.[row.provider];
+    if (!sender) return refuseStatus(c, 501, `no mail sender registered for provider '${row.provider}'`);
+    return c.json(connectionSenders.parse({ senders: await sender.senders(c.var.host, row) }));
   });
 
   /**
