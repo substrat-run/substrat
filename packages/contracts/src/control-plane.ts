@@ -1212,9 +1212,8 @@ export type IssueEntry = z.infer<typeof issueEntry>;
  */
 export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness', 'vertical-events', 'platform-request']);
 export type SweepRunKind = z.infer<typeof sweepRunKind>;
-/** `skipped` is a first-class outcome: "swept, nothing to do" and "bound but no
- *  sweeper registered" are the facts a freshness view needs most, and the ones
- *  nothing recorded before this table existed. */
+/** `skipped` records a pass with nothing to poll; `unsupported` records a known binding
+ * awaiting a connector capability, without counting it as a failed poll. */
 export const sweepRunOutcome = z.enum(['ok', 'failed', 'skipped', 'unsupported']);
 export type SweepRunOutcome = z.infer<typeof sweepRunOutcome>;
 

@@ -90,7 +90,7 @@ release with the invoice sweep before it can receive invoices.
 
 Each client company is its own connection, told apart by its `externalAccountRef`. On the connector
 pass after a company's connection appears — through the dashboard's Connect, a connect link the
-vertical mailed, or the vertical's own relay — the platform grants that connection `ledger:record`
+vertical mailed, or the vertical's own relay — the platform grants that connection the declared permission
 on every primary, active install of the vertical in the tenant and binds it, through
 `bindFortnoxScope` and its grant check. A bureau with ten companies gets ten bindings into the same
 install, and each one is swept with its own company's credential: the binding records the company,
@@ -105,8 +105,7 @@ recorded the company is re-written once on that pass.
 
 Each pass writes one row per connection, shown in Health › Connections: **ok** when every bound
 scope synced or was unchanged, **skipped** when the connection has no binding, **unsupported**
-when an invoice binding awaits its sweep, and **failed**,
-naming the scope, when a scope could not be landed in or a declared landing could not be granted or
+when an invoice binding awaits its sweep, and **failed**, naming the scope, when a scope could not be landed in or a declared landing could not be granted or
 bound.
 
 ### Bind a hosted connection by hand
@@ -407,6 +406,7 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
 
 4. **Supplier invoices and their PDFs.** The platform's Connect flow requests `supplierinvoice` at
    consent and the manifest can declare an invoice binding, but this connector has no supplier
-   invoice read or approve code yet: the binding reports unsupported. The `archive` and `connectfile` scopes are not requested, and because scopes cannot be
+   invoice read or approve code yet: the binding reports unsupported. The `archive` and
+   `connectfile` scopes are not requested, and because scopes cannot be
    widened after consent, a deployment that expects to want them should ask for them in the *first*
    consent round.

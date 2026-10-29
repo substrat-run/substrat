@@ -285,6 +285,12 @@ export interface SweepTick {
   error: string | null;
 }
 
+function sweepSuffix(outcome: string, skippedNote: string): string {
+  if (outcome === 'ok') return '';
+  if (outcome === 'skipped') return ` — ${skippedNote}`;
+  return ` — ${outcome}`;
+}
+
 /**
  * The recent-runs strip (#1232): one tick per recorded pass, newest last (reading
  * order = time order), red carrying its error in the tick's label. Shared by the
@@ -340,7 +346,7 @@ export function SweepStrip({
       </span>
       <span>
         {label} {relativeTime(last.at)}
-        {last.outcome === 'failed' ? ' — failed' : last.outcome === 'skipped' ? ` — ${skippedNote}` : last.outcome === 'unsupported' ? ' — unsupported' : last.outcome === 'ok' ? '' : ` — ${last.outcome}`}
+        {sweepSuffix(last.outcome, skippedNote)}
       </span>
     </div>
   );
