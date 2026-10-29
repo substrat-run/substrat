@@ -66,6 +66,18 @@ const WIRE: Record<string, [(c: ControlPlaneBuilderClient) => Promise<unknown>, 
   setListing: [(c) => c.setListing('v', false), 'POST', '/verticals/v/listing', '{"listed":false}'],
   getStoreDriver: [(c) => c.getStoreDriver('graph'), undefined, '/store-drivers/graph', undefined],
   uploadStoreDriverRelease: [(c) => c.uploadStoreDriverRelease('graph', { entry: 'x' }), 'PUT', '/store-drivers/graph/releases', '{"entry":"x"}'],
+  approveStoreDriverRelease: [
+    (c) => c.approveStoreDriverRelease('graph', 'a/b', {
+      reason: 'reviewed', sourceReferences: [], isolationReview: {
+        separateScriptPerTenant: { met: false, evidence: 'e' }, noOutboundAccess: { met: false, evidence: 'e' },
+        envelopeVerifiedOutsideDriver: { met: true, evidence: 'e' }, envelopeChecked: { checked: true, evidence: 'e' },
+        reservedOperationsChecked: { checked: true, evidence: 'e' }, noModuleStateChecked: { checked: true, evidence: 'e' },
+      }, schema: 1, className: 'Store', operations: [],
+    }),
+    'POST', '/store-drivers/graph/releases/a%2Fb/approvals',
+    '{"reason":"reviewed","sourceReferences":[],"isolationReview":{"separateScriptPerTenant":{"met":false,"evidence":"e"},"noOutboundAccess":{"met":false,"evidence":"e"},"envelopeVerifiedOutsideDriver":{"met":true,"evidence":"e"},"envelopeChecked":{"checked":true,"evidence":"e"},"reservedOperationsChecked":{"checked":true,"evidence":"e"},"noModuleStateChecked":{"checked":true,"evidence":"e"}},"schema":1,"className":"Store","operations":[]}',
+  ],
+  revokeStoreDriverRelease: [(c) => c.revokeStoreDriverRelease('graph', 'a/b', { reason: 'incident', emergency: true }), 'POST', '/store-drivers/graph/releases/a%2Fb/revoke', '{"reason":"incident","emergency":true}'],
   rollOutStoreDriver: [(c) => c.rollOutStoreDriver('graph', 'ab'), 'POST', '/store-drivers/graph/rollouts', '{"sha256":"ab"}'],
   rollBackStoreDriver: [(c) => c.rollBackStoreDriver('graph'), 'POST', '/store-drivers/graph/rollback', undefined],
   rebuildStoreDriver: [(c) => c.rebuildStoreDriver('graph'), 'POST', '/store-drivers/graph/rebuild', undefined],

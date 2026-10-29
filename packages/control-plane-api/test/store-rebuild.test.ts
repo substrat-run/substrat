@@ -78,7 +78,20 @@ describe('the fleet rebuild (#2309)', () => {
   const settingsReads: string[] = [];
   const failPut = new Set<string>();
   const releaseBytes = new Map<string, Uint8Array>();
-  const bytes = { get: async (k: string) => releaseBytes.get(k), put: async (k: string, b: Uint8Array) => void releaseBytes.set(k, b) };
+  const bytes = {
+    get: async (k: string) => releaseBytes.get(k),
+    put: async (k: string, b: Uint8Array) => { releaseBytes.set(k, b); },
+    head: async (k: string) => {
+      const value = releaseBytes.get(k);
+      return value ? { size: value.byteLength } : undefined;
+    },
+    open: async (k: string) => {
+      const value = releaseBytes.get(k);
+      return value ? { size: value.byteLength, body: new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(value); controller.close(); },
+      }) } : undefined;
+    },
+  };
   let registration: StoreDriverRegistration;
   let s1: string;
   let s2: string;

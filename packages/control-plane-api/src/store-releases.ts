@@ -20,6 +20,8 @@
 import {
   STORE_RELEASE_MAX_BYTES,
   scopeStoreCanaryObjectName,
+  scopeStoreCanaryScriptName,
+  scopeStoreScriptName,
   storeDriverReleaseDigest,
   storeDriverReleaseUpload,
   type PlatformActorId,
@@ -30,8 +32,10 @@ import {
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import {
   createUlid,
+  runtimeSha256,
   ulid,
   type HostAdmin,
+  type StoreDriverApprovalRecord,
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,
   type StoreDriverRolloutTarget,
@@ -43,7 +47,13 @@ import type { ScopeStoreEnsurerOptions, StoreDriverReleaseArtifact } from './sto
 export interface StoreReleaseBytes {
   get(key: string): Promise<Uint8Array | undefined>;
   put(key: string, bytes: Uint8Array): Promise<void>;
+  /** Object metadata is read before opening approval bytes. */
+  head(key: string): Promise<{ size: number } | undefined>;
+  open(key: string): Promise<{ size: number; body: ReadableStream<Uint8Array> } | undefined>;
 }
+
+/** The JSON/base64 envelope around at most STORE_RELEASE_MAX_BYTES of module bytes. */
+export const STORE_RELEASE_STORED_MAX_BYTES = Math.ceil((STORE_RELEASE_MAX_BYTES * 4) / 3) + 1024 * 1024;
 
 /** The key a release's bytes are stored under. */
 export const storeReleaseKey = (driver: string, sha256: string): string => `${driver}/${sha256}`;
@@ -70,6 +80,104 @@ export const ROLLOUT_VERTICALS_PER_REQUEST = 100;
  * converges them.
  */
 export const ROLLOUT_WALKS_PER_REQUEST = 300;
+
+export interface StoreDriverRevokeResult {
+  approval: StoreDriverApprovalRecord;
+  complete: boolean;
+  remaining: number;
+}
+
+/** Walk the scripts' own settings under the driver's exclusive hold before a normal revoke. */
+export async function runStoreDriverRevoke(input: {
+  admin: HostAdmin; actor: PlatformActorId; driver: string; sha256: string;
+  reason: string; emergency: boolean;
+  readScriptRelease: (scriptName: string) => Promise<{ exists: boolean; release?: string }>;
+  ensureCanary: (sha256: string) => Promise<unknown>;
+  perRequestWalks?: number;
+}): Promise<StoreDriverRevokeResult> {
+  const { admin, actor, driver, sha256 } = input;
+  const holder = ulid();
+  if (!(await admin.holdStoreDriver(actor, { driver, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS }))) {
+    throw new ControlPlaneError(409, `driver '${driver}' is held by a rollout or push; try the revoke again shortly`);
+  }
+  try {
+    const approval = await admin.liveStoreDriverApproval(actor, driver, sha256);
+    if (!approval) throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has no live approval to revoke`);
+    const state = await admin.storeDriverState(actor, driver);
+    if (!input.emergency && state.current?.sha256 === sha256) {
+      throw new ControlPlaneError(409, `release ${sha256} is current for '${driver}'; an emergency revoke with a reason is required`);
+    }
+    if (input.emergency) {
+      return {
+        approval: await admin.revokeStoreDriverRelease(actor, { approvalId: approval.approvalId, driver, sha256, holder, reason: input.reason, emergency: true }),
+        complete: true, remaining: 0,
+      };
+    }
+    const declarations = await admin.storeDriverDeclarations(actor, driver);
+    if (declarations.unreadable.length > 0) {
+      throw new ControlPlaneError(409, `driver '${driver}' cannot be revoked: ${declarations.unreadable.join(', ')} cannot name its store scripts; roll it out first`);
+    }
+    const rolloutSeq = state.rollouts.at(-1)?.seq ?? 0;
+    const prior = await admin.storeDriverRevokeWalk(actor, approval.approvalId);
+    const cursor = prior?.actor === actor && prior.reason === input.reason && prior.rolloutSeq === rolloutSeq ? prior.cursor : null;
+    const verticals = declarations.verticals.map((v) => v.vertical).sort();
+    const pending = verticals.filter((v) => cursor === null || v > cursor);
+    const limit = input.perRequestWalks ?? ROLLOUT_WALKS_PER_REQUEST;
+    if (!(Number.isInteger(limit) && limit > 0 && limit <= ROLLOUT_WALKS_PER_REQUEST)) {
+      throw new ControlPlaneError(422, 'a revoke page needs a positive bounded walk limit');
+    }
+    const page = pending.slice(0, limit);
+    const renew = async () => {
+      const held = await admin.holdStoreDriver(actor, { driver, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS, renew: true });
+      if (!held) throw new ControlPlaneError(409, `the hold on driver '${driver}' lapsed; post the revoke again`);
+    };
+    for (const vertical of page) {
+      await renew();
+      const script = scopeStoreScriptName(vertical, driver);
+      let running: { exists: boolean; release?: string };
+      try {
+        running = await input.readScriptRelease(script);
+      } catch {
+        throw new ControlPlaneError(409, `store script '${script}' settings are unreadable; roll it out before revoking ${sha256}`);
+      }
+      if (running.exists && !running.release) {
+        throw new ControlPlaneError(409, `store script '${script}' records no release; roll it out before revoking ${sha256}`);
+      }
+      if (running.release === sha256) {
+        throw new ControlPlaneError(409, `store script '${script}' still runs ${sha256}; roll it out before revoking`);
+      }
+    }
+    const remaining = pending.length - page.length;
+    if (remaining > 0) {
+      await admin.recordStoreDriverRevokeWalk(actor, { approvalId: approval.approvalId, driver, holder, cursor: page.at(-1)!, reason: input.reason, rolloutSeq });
+      return { approval, complete: false, remaining };
+    }
+    await renew();
+    const canary = scopeStoreCanaryScriptName(driver);
+    let runningCanary: { exists: boolean; release?: string };
+    try {
+      runningCanary = await input.readScriptRelease(canary);
+    } catch {
+      throw new ControlPlaneError(409, `store canary '${canary}' settings are unreadable; roll it out before revoking ${sha256}`);
+    }
+    if (runningCanary.exists && !runningCanary.release) {
+      throw new ControlPlaneError(409, `store canary '${canary}' records no release; roll it out before revoking ${sha256}`);
+    }
+    if (runningCanary.release === sha256 && state.current) {
+      if (!(await admin.liveStoreDriverApproval(actor, driver, state.current.sha256))) {
+        throw new ControlPlaneError(409, `current release ${state.current.sha256} of '${driver}' has no live approval for a canary move`);
+      }
+      await renew();
+      await input.ensureCanary(state.current.sha256);
+    }
+    return {
+      approval: await admin.revokeStoreDriverRelease(actor, { approvalId: approval.approvalId, driver, sha256, holder, reason: input.reason, emergency: false }),
+      complete: true, remaining: 0,
+    };
+  } finally {
+    await admin.releaseStoreDriverHold(actor, { driver, holder }).catch(() => undefined);
+  }
+}
 
 type LoadRelease = ScopeStoreEnsurerOptions['loadRelease'];
 
@@ -160,14 +268,81 @@ export function storedReleaseLoader(input: { admin: HostAdmin; actor: PlatformAc
     if (!wanted) return undefined;
     const raw = await input.bytes.get(storeReleaseKey(driver, wanted));
     if (!raw) return undefined;
-    let json: unknown;
-    try {
-      json = JSON.parse(new TextDecoder().decode(raw));
-    } catch {
-      throw new ControlPlaneError(422, `driver '${driver}' release ${wanted} is stored as something other than a release`);
-    }
-    return { ...decodeStoreDriverRelease(json), sha256: wanted };
+    return { ...decodeStoredReleaseBytes(raw, driver, wanted), sha256: wanted };
   };
+}
+
+function decodeStoredReleaseBytes(raw: Uint8Array, driver: string, sha256: string) {
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    throw new ControlPlaneError(422, `driver '${driver}' release ${sha256} is stored as something other than a release`);
+  }
+  return decodeStoreDriverRelease(json);
+}
+
+/** Verify the named stored bundle before an approval can be recorded. */
+export async function approveStoredDriverRelease(input: {
+  admin: HostAdmin; actor: PlatformActorId; bytes: StoreReleaseBytes;
+  driver: string; sha256: string;
+  approval: Omit<Parameters<HostAdmin['approveStoreDriverRelease']>[1], 'driver' | 'sha256'>;
+}) {
+  const { admin, actor, bytes, driver, sha256 } = input;
+  const stored = await admin.getStoreDriverRelease(actor, driver, sha256);
+  if (!stored) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' is not stored`);
+  const key = storeReleaseKey(driver, sha256);
+  const head = await bytes.head(key);
+  if (!head) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' has no stored bytes`);
+  if (!Number.isSafeInteger(head.size) || head.size < 0 || head.size > STORE_RELEASE_STORED_MAX_BYTES) {
+    throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+  }
+  const opened = await bytes.open(key);
+  if (!opened) throw new ControlPlaneError(404, `release ${sha256} of '${driver}' has no stored bytes`);
+  if (opened.size !== head.size) {
+    await opened.body.cancel();
+    throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+  }
+  const reader = opened.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > head.size || size > STORE_RELEASE_STORED_MAX_BYTES) {
+        throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    await reader.cancel().catch(() => undefined);
+    throw e;
+  } finally {
+    reader.releaseLock();
+  }
+  if (size !== head.size) throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+  const raw = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    raw.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let release: ReturnType<typeof decodeStoredReleaseBytes>;
+  try {
+    release = decodeStoredReleaseBytes(raw, driver, sha256);
+  } catch (e) {
+    if (e instanceof ControlPlaneError && e.status === 422) {
+      throw new ControlPlaneError(409, `release ${sha256} of '${driver}' has unverifiable stored bytes`);
+    }
+    throw e;
+  }
+  const digest = await storeDriverReleaseDigest(release, runtimeSha256()).catch(() => undefined);
+  if (digest !== sha256 || release.sourceCommit !== stored.sourceCommit) {
+    throw new ControlPlaneError(409, `release ${sha256} of '${driver}' differs from its stored digest or source commit`);
+  }
+  return admin.approveStoreDriverRelease(actor, { driver, sha256, ...input.approval });
 }
 
 /** The reserved calls a canary makes, at the canary script. */

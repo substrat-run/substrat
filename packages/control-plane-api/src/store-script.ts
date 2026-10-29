@@ -24,6 +24,21 @@ export const STORE_RELEASE_VAR = `${STORE_RESERVED_BINDING_PREFIX}_RELEASE`;
  */
 export const STORE_BUILD_VAR = `${STORE_RESERVED_BINDING_PREFIX}_BUILD`;
 
+/** The script's own release setting, shared by uploads and the D-65 revoke guard. */
+export async function readStoreScriptSettings(
+  opts: Pick<ScopeStoreEnsurerOptions, 'accountId' | 'namespace' | 'apiToken'>,
+  scriptName: string,
+): Promise<{ exists: boolean; release?: string; build?: string }> {
+  const url = `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
+    `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(scriptName)}`;
+  const res = await fetch(`${url}/settings`, { headers: { authorization: `Bearer ${opts.apiToken}` } });
+  if (res.status === 404) return { exists: false };
+  if (!res.ok) throw new ControlPlaneError(502, `store script settings failed (${res.status})`);
+  const body = (await res.json()) as { result?: { bindings?: { name?: string; text?: string }[] } };
+  const text = (name: string) => body.result?.bindings?.find((b) => b.name === name)?.text;
+  return { exists: true, release: text(STORE_RELEASE_VAR), build: text(STORE_BUILD_VAR) };
+}
+
 /** One release of a driver's code, as the publish flow stores it (#2297). */
 export interface StoreDriverReleaseArtifact extends PythonStoreDriverRelease {
   /** The commit the bundle was built from. A reviewer reads it; the upload checks the sha256. */
@@ -157,7 +172,7 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
   return async (script: EnsuredScript, to: string | undefined, rule: { anySchema?: boolean; existingOnly?: boolean } = {}): Promise<boolean> => {
-    const current = await recorded(scriptUrl(script.scriptName));
+    const current = await readStoreScriptSettings(opts, script.scriptName);
     if (rule.existingOnly && !current.exists) return false;
     if (current.exists && !current.release) {
       // Not an upload of this code. Which release it runs cannot be told, so it is not guessed.
@@ -224,15 +239,6 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     await put(scriptUrl(script.scriptName), script.scriptName, built, { sha256, build, first: !current.exists });
     return true;
   };
-  async function recorded(url: string): Promise<{ exists: boolean; release?: string; build?: string }> {
-    const res = await fetch(`${url}/settings`, { headers: { authorization: `Bearer ${opts.apiToken}` } });
-    if (res.status === 404) return { exists: false };
-    if (!res.ok) throw new ControlPlaneError(502, `store script settings failed (${res.status})`);
-    const body = (await res.json()) as { result?: { bindings?: { name?: string; text?: string }[] } };
-    const text = (name: string) => body.result?.bindings?.find((b) => b.name === name)?.text;
-    return { exists: true, release: text(STORE_RELEASE_VAR), build: text(STORE_BUILD_VAR) };
-  }
-
   async function put(
     url: string,
     scriptName: string,

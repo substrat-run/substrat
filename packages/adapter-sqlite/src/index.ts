@@ -587,6 +587,7 @@ import {
   driverDeclarationsOf,
   verticalScopeStoresOf,
   STORE_DRIVER_RELEASES_DDL,
+  approveStoreDriverReleaseIn,
   legacyStoreDriverConflict,
   legacyStoreDriverRenames,
   beginStoreDriverRolloutIn,
@@ -596,7 +597,12 @@ import {
   claimStoreDriverRebuildIn,
   storeDriverRebuildIn,
   recordStoreDriverReleaseIn,
+  recordStoreDriverRevokeWalkIn,
   releaseStoreDriverHoldIn,
+  revokeStoreDriverReleaseIn,
+  liveStoreDriverApprovalIn,
+  storeDriverApprovalsIn,
+  storeDriverRevokeWalkIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
   storeDriverRolloutPendingIn,
@@ -11719,6 +11725,44 @@ export class SqliteScopeHost implements ScopeHost {
       getStoreDriverRelease: async (actor, driver, sha256) => {
         const record = storeDriverReleaseIn(switchSqlOf(this.directory), driver, sha256);
         this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      storeDriverApprovals: async (actor, driver) => {
+        const records = storeDriverApprovalsIn(switchSqlOf(this.directory), driver);
+        this.recordAccess(actor, 'storeDriverApprovals', { tenantId: null }, { driver }, records.length);
+        return records;
+      },
+      liveStoreDriverApproval: async (actor, driver, sha256) => {
+        const record = liveStoreDriverApprovalIn(switchSqlOf(this.directory), driver, sha256);
+        this.recordAccess(actor, 'liveStoreDriverApproval', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      approveStoreDriverRelease: async (actor, input) => {
+        const at = this.clock();
+        let record!: ReturnType<typeof approveStoreDriverReleaseIn>;
+        this.directoryWriteAndAudit(() => {
+          record = approveStoreDriverReleaseIn(switchSqlOf(this.directory), { ...input, approvalId: ulid(), actor, at });
+          return true;
+        }, () => this.recordAdmin(actor, 'approveStoreDriverRelease', { tenantId: null }, null, record, at));
+        return record;
+      },
+      storeDriverRevokeWalk: async (actor, approvalId) => {
+        const record = storeDriverRevokeWalkIn(switchSqlOf(this.directory), approvalId);
+        this.recordAccess(actor, 'storeDriverRevokeWalk', { tenantId: null }, { approvalId }, record ? 1 : 0);
+        return record;
+      },
+      recordStoreDriverRevokeWalk: async (actor, input) => this.directory.transaction(() =>
+        recordStoreDriverRevokeWalkIn(switchSqlOf(this.directory), { ...input, actor, nowMs: Date.parse(this.clock()) }),
+      )(),
+      revokeStoreDriverRelease: async (actor, input) => {
+        const at = this.clock();
+        let before: ReturnType<typeof liveStoreDriverApprovalIn> | null = null;
+        let record!: ReturnType<typeof revokeStoreDriverReleaseIn>;
+        this.directoryWriteAndAudit(() => {
+          before = liveStoreDriverApprovalIn(switchSqlOf(this.directory), input.driver, input.sha256) ?? null;
+          record = revokeStoreDriverReleaseIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) });
+          return true;
+        }, () => this.recordAdmin(actor, 'revokeStoreDriverRelease', { tenantId: null }, before, record, at));
         return record;
       },
       storeDriverState: async (actor, driver) => {

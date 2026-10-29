@@ -25,6 +25,9 @@ import type {
   ScopeRecord,
   ScopeRow,
   StoreDriverReleaseView,
+  StoreDriverApprovalBody,
+  StoreDriverApprovalResultView,
+  StoreDriverRevokeResultView,
   StoreDriverRolloutResultView,
   StoreDriverView,
   StoreDriverRebuildPassView,
@@ -259,6 +262,16 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   /** Store a release bundle (`storeDriverReleaseUpload`); the control plane names it by its sha256. */
   uploadStoreDriverRelease(driver: string, body: unknown): Promise<{ release: StoreDriverReleaseView; pinned: boolean; approved?: boolean }> {
     return this.read(`/store-drivers/${seg(driver)}/releases`, this.write('PUT', body));
+  }
+
+  /** Approve already uploaded bytes in a separate, person-only write. */
+  approveStoreDriverRelease(driver: string, sha256: string, body: StoreDriverApprovalBody): Promise<StoreDriverApprovalResultView> {
+    return this.read(`/store-drivers/${seg(driver)}/releases/${seg(sha256)}/approvals`, this.write('POST', body));
+  }
+
+  /** Revoke a live approval; post again when a guarded walk returns incomplete. */
+  revokeStoreDriverRelease(driver: string, sha256: string, body: { reason: string; emergency?: boolean }): Promise<StoreDriverRevokeResultView> {
+    return this.read(`/store-drivers/${seg(driver)}/releases/${seg(sha256)}/revoke`, this.write('POST', body));
   }
 
   /** Roll a stored, pinned release out: canary first, then every vertical. Post again to resume. */

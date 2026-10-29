@@ -265,7 +265,25 @@ export interface StoreDriverReleaseView {
   uploadedAt: string;
 }
 
-/** D-65 approval data, before any route reads or writes it. */
+/** D-65 approval review and durable facts. */
+export interface StoreDriverIsolationReview {
+  separateScriptPerTenant: { met: boolean; evidence: string };
+  noOutboundAccess: { met: boolean; evidence: string };
+  envelopeVerifiedOutsideDriver: { met: boolean; evidence: string };
+  envelopeChecked: { checked: true; evidence: string };
+  reservedOperationsChecked: { checked: true; evidence: string };
+  noModuleStateChecked: { checked: true; evidence: string };
+}
+
+export interface StoreDriverApprovalBody {
+  reason: string;
+  sourceReferences: { repository: string; commit: string }[];
+  isolationReview: StoreDriverIsolationReview;
+  schema: number;
+  className: string;
+  operations: string[];
+}
+
 export interface StoreDriverApprovalView {
   approvalId: string;
   driver: string;
@@ -275,8 +293,7 @@ export interface StoreDriverApprovalView {
   approvedAt: string;
   reason: string;
   sourceReferences: { repository: string; commit: string }[];
-  /** The review of D-63's conditions and required checks; its validated shape ships with the writer. */
-  isolationReview: Record<string, unknown>;
+  isolationReview: StoreDriverIsolationReview;
   schema: number;
   className: string;
   operations: string[];
@@ -286,10 +303,16 @@ export interface StoreDriverApprovalView {
   revokedEmergency: boolean | null;
 }
 
-/** The proposed approval response also shows the schema of the current good release. */
+/** Approval response also shows the schema of the current good release. */
 export interface StoreDriverApprovalResultView {
   approval: StoreDriverApprovalView;
   currentSchema: number | null;
+}
+
+export interface StoreDriverRevokeResultView {
+  approval: StoreDriverApprovalView;
+  complete: boolean;
+  remaining: number;
 }
 
 /** One attempt to move every script of a driver to a release. */
@@ -310,7 +333,7 @@ export interface StoreDriverRolloutView {
 export interface StoreDriverView {
   driver: string;
   pins: { sha256: string; sourceCommit: string; schema: number }[];
-  /** Added by the approval status route; absent until it ships. */
+  /** Present on approval-aware status responses. */
   approvals?: StoreDriverApprovalView[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
   rollouts: StoreDriverRolloutView[];

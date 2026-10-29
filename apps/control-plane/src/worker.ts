@@ -99,6 +99,7 @@ import {
   createWfpUploader,
   createScopeStoreEnsurer,
   createStoreCanaryEnsurer,
+  readStoreScriptSettings,
   runStoreFleetRebuild,
   storePlatformFingerprint,
   storeRebuildBudget,
@@ -807,12 +808,21 @@ function storeReleasesFor(env: Env) {
         const object = await bucket.get(key);
         return object ? new Uint8Array(await object.arrayBuffer()) : undefined;
       },
+      head: async (key: string) => {
+        const object = await bucket.head(key);
+        return object ? { size: object.size } : undefined;
+      },
+      open: async (key: string) => {
+        const object = await bucket.get(key);
+        return object ? { size: object.size, body: object.body } : undefined;
+      },
       put: async (key: string, bytes: Uint8Array) => {
         await bucket.put(key, bytes);
       },
     },
     ensureCanary: async ({ loadRelease, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
       createStoreCanaryEnsurer({ ...(await options()), loadRelease })(input),
+    readScriptRelease: async (scriptName: string) => readStoreScriptSettings(await options(), scriptName),
     // #2309: what every store script is built from now; the fleet rebuild converges on it.
     fingerprint: async () => storePlatformFingerprint(await options()),
     ...settleOf(env),

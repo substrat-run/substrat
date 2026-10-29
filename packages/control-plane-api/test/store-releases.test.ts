@@ -18,6 +18,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   canaryStoreRelease,
+  approveStoredDriverRelease,
   decodeStoreDriverRelease,
   createControlPlaneApi,
   createScopeStoreEnsurer,
@@ -28,9 +29,25 @@ import {
   ROLLOUT_WALKS_PER_REQUEST,
   ROLLOUT_HOLD_TTL_MS,
   runStoreDriverRollout,
+  runStoreDriverRevoke,
   UNSAFE_devPlatformActorAuth,
   type CanaryCall,
 } from '../src/index.js';
+
+const storedBytes = (objects: Map<string, Uint8Array>) => ({
+  get: async (key: string) => objects.get(key),
+  put: async (key: string, value: Uint8Array) => { objects.set(key, value); },
+  head: async (key: string) => {
+    const value = objects.get(key);
+    return value ? { size: value.byteLength } : undefined;
+  },
+  open: async (key: string) => {
+    const value = objects.get(key);
+    return value ? { size: value.byteLength, body: new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(value); controller.close(); },
+    }) } : undefined;
+  },
+});
 
 /**
  * A store driver's release flow (D-63, #2300): the canary on the platform's own object, the rollout
@@ -697,10 +714,27 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     entry: b.entry,
     modules: b.modules.map((m) => ({ name: m.name, contentBase64: btoa(String.fromCharCode(...m.content)) })),
   });
+  const reviewed = (schema: number) => ({
+    reason: 'Reviewed the release bundle and migration',
+    sourceReferences: [{ repository: 'https://example.test/driver.git', commit: COMMIT }],
+    isolationReview: {
+      separateScriptPerTenant: { met: false, evidence: 'One script per vertical today' },
+      noOutboundAccess: { met: false, evidence: 'Network access is not isolated yet' },
+      envelopeVerifiedOutsideDriver: { met: true, evidence: 'Verifier is outside the bundle' },
+      envelopeChecked: { checked: true, evidence: 'Read the envelope path' },
+      reservedOperationsChecked: { checked: true, evidence: 'Read every reserved operation' },
+      noModuleStateChecked: { checked: true, evidence: 'Read the modules' },
+    },
+    schema,
+    className: 'Store',
+    operations: [],
+  });
   let shas: string[];
   let registration: StoreDriverRegistration;
   const bytes = new Map<string, Uint8Array>();
   const moves: string[] = [];
+  const scripts = new Map<string, string | undefined>();
+  const unreadableScripts = new Set<string>();
   /** Moves that fail, as `<vertical>:<release n>`. */
   const failMoves = new Set<string>();
 
@@ -720,8 +754,15 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
         moves.push(move);
       },
       storeReleases: {
-        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
-        ensureCanary: async () => ({ scriptName: 'substrat-store-graph--canary' }),
+        bytes: storedBytes(bytes),
+        ensureCanary: async ({ to }) => {
+          scripts.set('substrat-store-graph--canary', to);
+          return { scriptName: 'substrat-store-graph--canary' };
+        },
+        readScriptRelease: async (scriptName) => {
+          if (unreadableScripts.has(scriptName)) throw new Error('settings unavailable');
+          return scripts.has(scriptName) ? { exists: true, release: scripts.get(scriptName) } : { exists: false };
+        },
         callCanary: canaryStore().call,
       },
     });
@@ -738,6 +779,8 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     host = new SqliteScopeHost({ dir });
     bytes.clear();
     moves.length = 0;
+    scripts.clear();
+    unreadableScripts.clear();
     failMoves.clear();
     shas = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2)), await storeDriverReleaseDigest(bundle(3))];
     registration = {
@@ -787,8 +830,302 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect((await call(other, 'PUT', '/store-drivers/graph/releases', service, wire(bundle(1)))).status).toBe(403);
     expect(bytes.size).toBe(0);
     expect(await host.admin.getStoreDriverRelease(person, 'graph', shas[0]!)).toBeUndefined();
-    // Reading the state is any staff's.
-    expect((await call(appWith(asPerson), 'GET', '/store-drivers/graph', service)).status).toBe(200);
+    // Approval status is also person-only.
+    expect((await call(appWith(asPerson), 'GET', '/store-drivers/graph', service)).status).toBe(403);
+  });
+
+  it('approves only stored bytes for a staff person, reports them, and preserves first facts on reapproval', async () => {
+    const app = appWith(asPerson);
+    const path = `/store-drivers/graph/releases/${shas[0]}/approvals`;
+    const body = reviewed(0);
+    expect((await call(app, 'POST', path, person, body)).status).toBe(404);
+    expect((await call(app, 'POST', path, service, body)).status).toBe(403);
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    expect((await call(app, 'POST', path, person, { ...body, isolationReview: {} })).status).toBe(422);
+    expect((await call(app, 'POST', path, person, body, { origin: 'https://another.example' })).status).toBe(403);
+    const first = await call(app, 'POST', path, person, body);
+    expect(first.status, await first.clone().text()).toBe(201);
+    expect(await first.json()).toMatchObject({ approval: { driver: 'graph', sha256: shas[0], sourceCommit: COMMIT, ...body }, currentSchema: null });
+    expect((await call(app, 'POST', path, person, body)).status).toBe(409);
+    const status = await call(app, 'GET', '/store-drivers/graph', person);
+    expect((await status.json()).approvals).toMatchObject([{ driver: 'graph', sha256: shas[0], revokedAt: null }]);
+    expect((await call(app, 'GET', '/store-drivers/graph', service)).status).toBe(403);
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/revoke`, service, { reason: 'Stop' })).status).toBe(403);
+    const revoked = await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/revoke`, person, { reason: 'Stop future uploads', emergency: true });
+    expect(revoked.status, await revoked.clone().text()).toBe(200);
+    expect(await revoked.json()).toMatchObject({ approval: { revokedBy: person, revokedReason: 'Stop future uploads', revokedEmergency: true }, complete: true, remaining: 0 });
+    expect((await call(app, 'POST', path, person, { ...body, schema: 1 })).status).toBe(409);
+    const again = await call(app, 'POST', path, person, body);
+    expect(again.status, await again.clone().text()).toBe(201);
+    const listed = await call(app, 'GET', '/store-drivers/graph', person);
+    expect(((await listed.json()).approvals as unknown[]).length).toBe(2);
+  });
+
+  it('refuses approval when the stored release is missing or has a different digest', async () => {
+    const app = appWith(asPerson);
+    const release = shas[0]!;
+    const path = `/store-drivers/graph/releases/${release}/approvals`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const saved = bytes.get(`graph/${release}`)!;
+    bytes.delete(`graph/${release}`);
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(404);
+    bytes.set(`graph/${release}`, new TextEncoder().encode(JSON.stringify(wire(bundle(2)))));
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(409);
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    bytes.set(`graph/${release}`, saved);
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(201);
+  });
+
+  it('bounds the stored release before opening it for approval', async () => {
+    const driver = 'graph';
+    const sha256 = shas[0]!;
+    await host.admin.recordStoreDriverRelease(person, { driver, sha256, sourceCommit: COMMIT });
+    const raw = new TextEncoder().encode(JSON.stringify(wire(bundle(1))));
+    const key = `${driver}/${sha256}`;
+    const limit = Math.ceil((STORE_RELEASE_MAX_BYTES * 4) / 3) + 1024 * 1024;
+    let object = new Uint8Array(limit + 1);
+    let openedSize = raw.byteLength;
+    const open = vi.fn(async () => ({ size: openedSize, body: new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(object); controller.close(); },
+    }) }));
+    const get = vi.fn(async () => object);
+    let headSize = object.byteLength;
+    const storedBytes = {
+      get, put: async () => undefined,
+      head: async (name: string) => name === key ? { size: headSize } : undefined,
+      open,
+    };
+    const approve = () => approveStoredDriverRelease({ admin: host.admin, actor: person, bytes: storedBytes,
+      driver, sha256, approval: reviewed(0) });
+    expect(await refusal(approve())).toMatchObject({ status: 409 });
+    expect(open).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    object = raw;
+    headSize = raw.byteLength + 1;
+    expect(await refusal(approve())).toMatchObject({ status: 409 });
+    headSize = raw.byteLength - 1;
+    openedSize = headSize;
+    expect(await refusal(approve())).toMatchObject({ status: 409 });
+    expect(await host.admin.storeDriverApprovals(person, driver)).toEqual([]);
+  });
+
+  it('validates repository and commit shapes in approval references', async () => {
+    const app = appWith(asPerson);
+    const release = shas[0]!;
+    const path = `/store-drivers/graph/releases/${release}/approvals`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const body = reviewed(0);
+    const missing = await call(app, 'POST', path, person, {});
+    expect(missing.status).toBe(422);
+    expect(await missing.text()).toMatch(/sourceReferences:/);
+    const missingRevoke = await call(app, 'POST', `/store-drivers/graph/releases/${release}/revoke`, person, {});
+    expect(missingRevoke.status).toBe(422);
+    expect(await missingRevoke.text()).toMatch(/reason:/);
+    const invalid = [
+      { repository: 'x', commit: COMMIT },
+      { repository: 'http://example.test/driver.git', commit: COMMIT },
+      { repository: 'https://name@example.test/driver.git', commit: COMMIT },
+      { repository: 'https://example.test/driver.git?view=1', commit: COMMIT },
+      { repository: 'https://example.test/driver.git#readme', commit: COMMIT },
+      { repository: 'https://example.test/', commit: COMMIT },
+      { repository: 'https://example.test/driver\\branch', commit: COMMIT },
+      { repository: 'https://example.test/driver git', commit: COMMIT },
+      { repository: 'https://example.test/driver\u0085git', commit: COMMIT },
+      { repository: 'https://example.test/driver\u202egit', commit: COMMIT },
+      { repository: 'https://example.test/driver\u2066git', commit: COMMIT },
+      { repository: 'https://example.test/driver\u2028git', commit: COMMIT },
+      { repository: 'https://example.test/driver\ufeffgit', commit: COMMIT },
+      { repository: `https://example.test/driver${'x'.repeat(1024)}`, commit: COMMIT },
+      { repository: 'https://example.test/driver.git', commit: 'abc' },
+      { repository: 'https://example.test/driver.git', commit: COMMIT.toUpperCase() },
+      { repository: 'https://example.test/driver.git', commit: `${COMMIT.slice(0, -1)}\u0085` },
+    ];
+    for (const source of invalid) {
+      expect((await call(app, 'POST', path, person, { ...body, sourceReferences: [source] })).status).toBe(422);
+    }
+    for (const field of ['reason', 'isolationReview'] as const) {
+      const bad = field === 'reason'
+        ? { ...body, reason: `Reviewed\u0085release` }
+        : { ...body, isolationReview: { ...body.isolationReview, noModuleStateChecked: { checked: true, evidence: `Read\u202emodules` } } };
+      expect((await call(app, 'POST', path, person, bad)).status).toBe(422);
+    }
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${release}/revoke`, person,
+      { reason: 'Revoke\u2069release' })).status).toBe(422);
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    const valid = { ...body, sourceReferences: [
+      { repository: 'https://example.test/driver.git', commit: release },
+      { repository: 'https://example.test/dependency', commit: COMMIT },
+    ] };
+    const approved = await call(app, 'POST', path, person, valid);
+    expect(approved.status).toBe(201);
+    expect(await approved.json()).toMatchObject({ approval: { sourceReferences: valid.sourceReferences } });
+  });
+
+  it('rejects non-printing approval identifiers and never reflects unknown input keys in validation errors', async () => {
+    const app = appWith(asPerson);
+    const release = shas[0]!;
+    const path = `/store-drivers/graph/releases/${release}/approvals`;
+    const revokePath = `/store-drivers/graph/releases/${release}/revoke`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const body = reviewed(0);
+    for (const mark of ['\u0085', '\u202e', '\u200b', '\u2028']) {
+      const cases = [
+        { ...body, className: `Sto${mark}re` },
+        { ...body, operations: [`re${mark}ad`] },
+        { ...body, reason: `review${mark}ed` },
+        { ...body, sourceReferences: [{ repository: `https://example.test/driver${mark}`, commit: COMMIT }] },
+        { ...body, sourceReferences: [{ repository: 'https://example.test/driver', commit: `${COMMIT.slice(0, -1)}${mark}` }] },
+        { ...body, isolationReview: { ...body.isolationReview, envelopeChecked: { checked: true, evidence: `rea${mark}d` } } },
+      ];
+      for (const candidate of cases) expect((await call(app, 'POST', path, person, candidate)).status).toBe(422);
+      expect((await call(app, 'POST', revokePath, person, { reason: `revoke${mark}` })).status).toBe(422);
+    }
+    for (const className of ['9Store', 'Store.Name', 'Store Name']) {
+      expect((await call(app, 'POST', path, person, { ...body, className })).status).toBe(422);
+    }
+    expect((await call(app, 'POST', path, person, { ...body, operations: ['read:name'] })).status).toBe(422);
+    for (const unknown of ['token=abc', `token\u0085abc`]) {
+      const approval = await call(app, 'POST', path, person, { ...body, [unknown]: 'value' });
+      expect(approval.status).toBe(422);
+      const approvalText = await approval.text();
+      expect(approvalText).not.toContain(unknown);
+      expect(approvalText).toContain('unrecognized_key');
+      const revoke = await call(app, 'POST', revokePath, person, { reason: 'Reviewed', [unknown]: 'value' });
+      expect(revoke.status).toBe(422);
+      const revokeText = await revoke.text();
+      expect(revokeText).not.toContain(unknown);
+      expect(revokeText).toContain('unrecognized_key');
+      const nested = await call(app, 'POST', path, person, {
+        ...body,
+        isolationReview: {
+          ...body.isolationReview,
+          envelopeChecked: { ...body.isolationReview.envelopeChecked, [unknown]: 'value' },
+        },
+      });
+      expect(nested.status).toBe(422);
+      const nestedText = await nested.text();
+      expect(nestedText).not.toContain(unknown);
+      expect(nestedText).toContain('isolationReview.envelopeChecked: unrecognized_key');
+    }
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+  });
+
+  it('refuses a normal revoke while a script runs the release or its settings are unreadable', async () => {
+    const app = appWith(asPerson);
+    const release = shas[0]!;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${release}/approvals`, person, reviewed(0))).status).toBe(201);
+    const revoke = (body: unknown = { reason: 'Review withdrawn' }) =>
+      call(app, 'POST', `/store-drivers/graph/releases/${release}/revoke`, person, body);
+    scripts.set('substrat-store-graph-va', release);
+    const running = await revoke();
+    expect(running.status).toBe(409);
+    expect(await running.text()).toMatch(/still runs/);
+    unreadableScripts.add('substrat-store-graph-va');
+    expect((await revoke()).status).toBe(409);
+    unreadableScripts.clear();
+    scripts.set('substrat-store-graph-va', undefined);
+    expect((await revoke()).status).toBe(409);
+    scripts.set('substrat-store-graph-va', shas[1]);
+    const done = await revoke();
+    expect(done.status, await done.clone().text()).toBe(200);
+    expect(await done.json()).toMatchObject({ complete: true, approval: { revokedEmergency: false } });
+  });
+
+  it('guards the current release and returns a failed canary to the current good release', async () => {
+    const app = appWith(asPerson);
+    for (const n of [1, 2]) {
+      expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)))).status).toBe(201);
+    }
+    expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[1] })).status).toBe(200);
+    const approved = await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/approvals`, person, reviewed(0));
+    expect(approved.status).toBe(201);
+    expect(await approved.json()).toMatchObject({ currentSchema: 1 });
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/approvals`, person, reviewed(1))).status).toBe(201);
+    const current = await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/revoke`, person, { reason: 'Stop' });
+    expect(current.status).toBe(409);
+    expect(await current.text()).toMatch(/is current/);
+    scripts.set('substrat-store-graph--canary', shas[0]);
+    const back = await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/revoke`, person, { reason: 'Stop' });
+    expect(back.status, await back.clone().text()).toBe(200);
+    expect(scripts.get('substrat-store-graph--canary')).toBe(shas[1]);
+    const emergency = await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/revoke`, person, { reason: 'Incident', emergency: true });
+    expect(emergency.status, await emergency.clone().text()).toBe(200);
+    expect(await emergency.json()).toMatchObject({ approval: { revokedEmergency: true } });
+  });
+
+  it('refuses a canary move when the current release has no live approval', async () => {
+    const app = appWith(asPerson);
+    for (const n of [1, 2]) {
+      expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)))).status).toBe(201);
+      expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[n - 1]}/approvals`, person, reviewed(n - 1))).status).toBe(201);
+    }
+    expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[1] })).status).toBe(200);
+    scripts.set('substrat-store-graph--canary', shas[0]);
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/revoke`, person, { reason: 'Withdraw', emergency: true })).status).toBe(200);
+    const refused = await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/revoke`, person, { reason: 'Withdraw' });
+    expect(refused.status).toBe(409);
+    expect(scripts.get('substrat-store-graph--canary')).toBe(shas[0]);
+    expect(await host.admin.liveStoreDriverApproval(person, 'graph', shas[0]!)).toBeDefined();
+  });
+
+  it('pages the revoke walk and restarts when the person, reason or rollout sequence changes', async () => {
+    const driver = 'graph';
+    const sha256 = shas[0]!;
+    await host.admin.recordStoreDriverRelease(person, { driver, sha256, sourceCommit: COMMIT });
+    const approval = await host.admin.approveStoreDriverRelease(person, { driver, sha256, ...reviewed(0) });
+    await host.admin.registerVertical(person, { slug: 'vb', name: 'vb', source: 'cli' });
+    const id = ulid();
+    await host.admin.publishVersion(person, {
+      id, verticalSlug: 'vb', version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', driver }] }),
+    });
+    const reads: string[] = [];
+    const walk = (actor: PlatformActorId, reason: string) => runStoreDriverRevoke({
+      admin: host.admin, actor, driver, sha256, reason, emergency: false, perRequestWalks: 1,
+      readScriptRelease: async (name) => { reads.push(name); return { exists: false }; },
+      ensureCanary: async () => undefined,
+    });
+    expect(await walk(person, 'first')).toMatchObject({ complete: false, remaining: 1 });
+    expect(await host.admin.storeDriverRevokeWalk(person, approval.approvalId)).toMatchObject({ cursor: 'va', reason: 'first', rolloutSeq: 0 });
+    const another = platformActorId.parse(ulid());
+    expect(await walk(another, 'second')).toMatchObject({ complete: false, remaining: 1 });
+    expect(await host.admin.storeDriverRevokeWalk(person, approval.approvalId)).toMatchObject({ cursor: 'va', actor: another, reason: 'second' });
+    await host.admin.recordStoreDriverRelease(person, { driver, sha256: shas[1]!, sourceCommit: COMMIT });
+    const holder = ulid();
+    expect(await host.admin.holdStoreDriver(person, { driver, holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    const row = await host.admin.beginStoreDriverRollout(person, { driver, sha256: shas[1]!, action: 'rollout', holder });
+    await host.admin.finishStoreDriverRollout(person, { driver, seq: row.seq, holder, state: 'failed', detail: null });
+    await host.admin.releaseStoreDriverHold(person, { driver, holder });
+    expect(await walk(another, 'second')).toMatchObject({ complete: false, remaining: 1 });
+    expect(await host.admin.storeDriverRevokeWalk(person, approval.approvalId)).toMatchObject({ cursor: 'va', rolloutSeq: row.seq });
+    expect(await walk(another, 'second')).toMatchObject({ complete: true, remaining: 0, approval: { revokedAt: expect.any(String) } });
+    expect(await host.admin.storeDriverRevokeWalk(person, approval.approvalId)).toBeUndefined();
+    expect(reads).toEqual([
+      'substrat-store-graph-va', 'substrat-store-graph-va', 'substrat-store-graph-va',
+      'substrat-store-graph-vb', 'substrat-store-graph--canary',
+    ]);
+  });
+
+  it('writes no revoke or cursor progress after the exclusive hold is lost', async () => {
+    const driver = 'graph';
+    const sha256 = shas[0]!;
+    await host.admin.recordStoreDriverRelease(person, { driver, sha256, sourceCommit: COMMIT });
+    const approval = await host.admin.approveStoreDriverRelease(person, { driver, sha256, ...reviewed(0) });
+    const readScriptRelease = vi.fn(async () => ({ exists: false }));
+    const admin = {
+      ...host.admin,
+      holdStoreDriver: async (...args: Parameters<typeof host.admin.holdStoreDriver>) =>
+        args[1].renew ? false : host.admin.holdStoreDriver(...args),
+    };
+    const stopped = await refusal(runStoreDriverRevoke({
+      admin, actor: person, driver, sha256, reason: 'Withdraw', emergency: false,
+      readScriptRelease, ensureCanary: async () => undefined,
+    }));
+    expect(stopped).toMatchObject({ status: 409, message: expect.stringMatching(/hold.*lapsed/) });
+    expect(readScriptRelease).not.toHaveBeenCalled();
+    expect(await host.admin.liveStoreDriverApproval(person, driver, sha256)).toEqual(approval);
+    expect(await host.admin.storeDriverRevokeWalk(person, approval.approvalId)).toBeUndefined();
   });
 
   it(`pages a rollout past ${ROLLOUT_WALKS_PER_REQUEST} verticals, and a refused caller between posts moves nothing (#2312)`, async () => {
@@ -817,7 +1154,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
         return { uploaded: 1 };
       },
       storeReleases: {
-        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
+        bytes: storedBytes(bytes),
         ensureCanary: async () => ({ scriptName: 'substrat-store-graph--canary' }),
         callCanary: canaryStore().call,
       },
@@ -902,7 +1239,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     // So is a rollout to it.
     expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[0] })).status).toBe(409);
     expect(moves.at(-1)).toBe('va:2');
-    const view = await (await call(app, 'GET', '/store-drivers/graph', service)).json();
+    const view = await (await call(app, 'GET', '/store-drivers/graph', person)).json();
     expect(view.current).toMatchObject({ sha256: shas[1], previousGoodSha256: shas[0] });
     expect(view.rollouts.map((r: { action: string; state: string }) => `${r.action}:${r.state}`)).toEqual([
       'rollout:good',
@@ -928,7 +1265,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     failMoves.add('vb:3');
     failMoves.add('va:2');
     expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[2] })).status).toBe(502);
-    const view = async () => (await call(app, 'GET', '/store-drivers/graph', service)).json();
+    const view = async () => (await call(app, 'GET', '/store-drivers/graph', person)).json();
     expect((await view()).rollouts.at(-1).state).toBe('diverged');
     // Undoing it goes back onto 2, the release the fleet was healthy on, not to 2's previous one.
     expect((await view()).rollbackTarget).toBe(shas[1]);
@@ -1100,7 +1437,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
       humanStaffActor: async () => person,
       ensureScopeStores: ({ loadRelease, ...input }) => createScopeStoreEnsurer({ ...ensurerOptions, loadRelease })(input),
       storeReleases: {
-        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
+        bytes: storedBytes(bytes),
         ensureCanary: ({ loadRelease, ...input }) => createStoreCanaryEnsurer({ ...ensurerOptions, loadRelease })(input),
         callCanary: canaryStore().call,
       },
@@ -1120,7 +1457,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     failPut.clear();
     // A push of either vertical meanwhile rebuilds its script at the release it runs: va stays on
     // 2, vb on 1. The schema rule refuses moves, and a push makes none.
-    const push = createScopeStoreEnsurer({ ...ensurerOptions, loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: { get: async (k) => bytes.get(k), put: async () => undefined } }) });
+    const push = createScopeStoreEnsurer({ ...ensurerOptions, loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: storedBytes(bytes) }) });
     for (const vertical of ['va', 'vb']) await push({ vertical, stores: [{ binding: 'GRAPH', driver: 'graph' }] });
     expect([release('substrat-store-graph-va'), release('substrat-store-graph-vb')]).toEqual([s2, s1]);
     // Re-posting the current release would move va from schema 1 back to 0: the ensurer refuses.

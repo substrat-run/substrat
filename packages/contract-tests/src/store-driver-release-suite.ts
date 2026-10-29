@@ -75,6 +75,43 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       expect(rows[0]).toMatchObject({ actor: staff, vertical: null, after: { sha256: sha('a'), sourceCommit: commit('1') } });
     });
 
+    it('keeps approval facts through revocation and reapproval, with one audit row per write', async () => {
+      const driver = freshDriver();
+      const sha256 = sha('e');
+      const review = { separateScriptPerTenant: { met: false, evidence: 'reviewed' } };
+      const body = {
+        driver, sha256, reason: 'Read the bundle',
+        sourceReferences: [{ repository: 'https://example.test/driver.git', commit: commit('c') }],
+        isolationReview: review, schema: 1, className: 'Store', operations: ['read'],
+      };
+      await expectRefusal(host.admin.approveStoreDriverRelease(staff, body), 'not_found');
+      await host.admin.recordStoreDriverRelease(staff, { driver, sha256, sourceCommit: commit('c') });
+      const first = await host.admin.approveStoreDriverRelease(staff, body);
+      expect(first).toMatchObject({ driver, sha256, sourceCommit: commit('c'), approvedBy: staff, revokedAt: null });
+      await expectRefusal(host.admin.approveStoreDriverRelease(staff, body), 'conflict');
+      const holder = ulid();
+      expect(await host.admin.holdStoreDriver(staff, { driver, holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+      await host.admin.recordStoreDriverRevokeWalk(staff, { approvalId: first.approvalId, driver, holder, cursor: 'va', reason: 'Withdraw', rolloutSeq: 0 });
+      expect(await host.admin.storeDriverRevokeWalk(staff, first.approvalId)).toMatchObject({ cursor: 'va', reason: 'Withdraw' });
+      const revoked = await host.admin.revokeStoreDriverRelease(staff, { approvalId: first.approvalId, driver, sha256, holder, reason: 'Withdraw', emergency: false });
+      expect(revoked).toMatchObject({ revokedBy: staff, revokedReason: 'Withdraw', revokedEmergency: false });
+      expect(await host.admin.storeDriverRevokeWalk(staff, first.approvalId)).toBeUndefined();
+      await expectRefusal(host.admin.approveStoreDriverRelease(staff, { ...body, schema: 2 }), 'conflict');
+      const second = await host.admin.approveStoreDriverRelease(staff, body);
+      expect(second.approvalId).not.toBe(first.approvalId);
+      expect(await host.admin.storeDriverApprovals(staff, driver)).toEqual([revoked, second]);
+      expect(await host.admin.liveStoreDriverApproval(staff, driver, sha256)).toEqual(second);
+      const approvals = (await host.admin.auditLog(staff, { action: 'approveStoreDriverRelease' })).filter(
+        (r) => (r.after as { driver?: string } | null)?.driver === driver,
+      );
+      const revokes = (await host.admin.auditLog(staff, { action: 'revokeStoreDriverRelease' })).filter(
+        (r) => (r.after as { driver?: string } | null)?.driver === driver,
+      );
+      expect(approvals).toHaveLength(2);
+      expect(revokes).toHaveLength(1);
+      await host.admin.releaseStoreDriverHold(staff, { driver, holder });
+    });
+
     it('rolls back to the immediately previous good release, then the one before it', async () => {
       const driver = freshDriver();
       const holder = ulid();

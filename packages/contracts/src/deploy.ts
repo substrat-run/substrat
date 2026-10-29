@@ -348,7 +348,7 @@ export const storeOperationName = z
   .max(STORE_OPERATION_NAME_MAX)
   .regex(/^[^@:\s]+$/, { message: 'a store operation name is a fixed label: no @, no whitespace, no :' });
 
-const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWith('substrat.'), {
+export const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWith('substrat.'), {
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 
@@ -583,7 +583,7 @@ const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
 export async function storeDriverReleaseDigest(release: {
   readonly entry: string;
   readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
-}): Promise<string> {
+}, makeDigest?: () => { update(chunk: Uint8Array): void | Promise<void>; hex(): Promise<string> }): Promise<string> {
   const encode = (name: string) => {
     if (!RELEASE_DIGEST_NAME.test(name)) {
       throw new Error(`a release name must be printable ASCII without spaces: ${JSON.stringify(name)}`);
@@ -602,6 +602,11 @@ export async function storeDriverReleaseDigest(release: {
     const length = new Uint8Array(8);
     new DataView(length.buffer).setBigUint64(0, BigInt(module.content.byteLength));
     parts.push(name, zero, length, module.content);
+  }
+  if (makeDigest) {
+    const digest = makeDigest();
+    for (const part of parts) await digest.update(part);
+    return digest.hex();
   }
   const framed = new Uint8Array(parts.reduce((n, part) => n + part.byteLength, 0));
   let offset = 0;

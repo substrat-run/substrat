@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   HISTORIC_ADMIN_ACTIONS,
   RESERVED_STORE_OPERATIONS,
@@ -267,6 +268,19 @@ describe('a store driver release is pinned by sha256 and source commit (D-63)', 
     // order: 'driver_graph/__init__.py\000' + 8 zero bytes, 'driver_graph/store.py\000' + 7 zero
     // bytes + '\033' + the 27 bytes of the module, piped to `shasum -a 256`.
     expect(await storeDriverReleaseDigest(bundle)).toBe('2a4399c86cd301f2944ac96cfcd9774c9fd3d12058df13a2ab20c46d51163038');
+  });
+
+  it('digests the same frames incrementally without a full framed copy', async () => {
+    let frames = 0;
+    const digest = await storeDriverReleaseDigest(bundle, () => {
+      const hash = createHash('sha256');
+      return {
+        update: (chunk: Uint8Array) => { frames++; hash.update(chunk); },
+        hex: async () => hash.digest('hex'),
+      };
+    });
+    expect(frames).toBeGreaterThan(1);
+    expect(digest).toBe(await storeDriverReleaseDigest(bundle));
   });
 
   it('is the same digest in any order, and another for any other bytes, name, split or entry', async () => {

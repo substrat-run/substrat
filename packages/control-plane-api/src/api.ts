@@ -19,7 +19,7 @@ import {
   ASSET_PART_PREFIX,
   assetHash,
   STORE_DRIVERS,
-  STORE_RELEASE_MAX_BYTES,
+  storeCatalogOperation,
   channelName,
   connectLinkId,
   connectionActivity,
@@ -212,7 +212,7 @@ import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-s
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
 import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
-import { PUSH_HOLD_TTL_MS, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
+import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -531,6 +531,8 @@ export interface ControlPlaneApiOptions {
     bytes: StoreReleaseBytes;
     ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }): Promise<{ scriptName: string; uploaded: boolean }>;
     callCanary: CanaryCall;
+    /** The same script settings release read the ensurer uses; required for a guarded revoke. */
+    readScriptRelease?: (scriptName: string) => Promise<{ exists: boolean; release?: string }>;
     /**
      * What the platform builds every store script from now (`storePlatformFingerprint`, #2309).
      * Absent ⇒ no fleet rebuild: the status reports none and the rebuild route answers 501.
@@ -12265,13 +12267,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * `text/plain` beacon cannot set it without a CORS preflight, 415) and refuse a request a
    * browser marks as from another origin (403). A request with neither header is the CLI's.
    */
-  const byAPerson = async (
-    c: Context<{ Variables: Vars }>,
-    words: { readonly write: string; readonly person: string } = { write: 'a store driver release write', person: 'a store driver release is published by a person' },
-  ): Promise<PlatformActorId> => {
-    if (!/^application\/json\s*(;|$)/i.test(c.req.header('content-type') ?? '')) {
-      throw new ControlPlaneError(415, `${words.write} takes application/json`);
-    }
+  const staffPerson = async (c: Context<{ Variables: Vars }>, words: { readonly write: string; readonly person: string }): Promise<PlatformActorId> => {
     const origin = c.req.header('origin');
     const site = c.req.header('sec-fetch-site');
     if ((origin && origin !== new URL(c.req.url).origin) || (site && site !== 'same-origin' && site !== 'none')) {
@@ -12283,6 +12279,85 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       throw new ControlPlaneError(403, `${words.person}: this takes a staff sign-in, not a service token`);
     }
     return actor;
+  };
+  const byAPerson = async (
+    c: Context<{ Variables: Vars }>,
+    words: { readonly write: string; readonly person: string } = { write: 'a store driver release write', person: 'a store driver release is published by a person' },
+  ): Promise<PlatformActorId> => {
+    if (!/^application\/json\s*(;|$)/i.test(c.req.header('content-type') ?? '')) {
+      throw new ControlPlaneError(415, `${words.write} takes application/json`);
+    }
+    return staffPerson(c, words);
+  };
+  const approvalWords = { write: 'a store driver release approval', person: 'a store driver release is approved by a person' };
+  const revokeWords = { write: 'a store driver release revoke', person: 'a store driver release is revoked by a person' };
+  const statusWords = { write: 'store driver release status', person: 'store driver release status is read by a person' };
+  const nonPrinting = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
+  const auditText = z.string().min(1).max(2048).refine((value) => value.trim().length > 0 && !nonPrinting.test(value),
+    { message: 'must be printable text' });
+  const reviewEvidence = z.object({ met: z.boolean(), evidence: auditText }).strict();
+  const checkedEvidence = z.object({ checked: z.literal(true), evidence: auditText }).strict();
+  // D-65 stores the reviewer's exact references: one HTTPS repository URL and one hex revision.
+  const repositoryReference = z.string().min(1).max(1024).refine((value) => {
+    if (!value.startsWith('https://') || /[\s\\?#]/u.test(value) || nonPrinting.test(value)) return false;
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && !!url.hostname && !url.username && !url.password &&
+        !url.search && !url.hash && url.pathname.split('/').some(Boolean);
+    } catch {
+      return false;
+    }
+  }, { message: 'a source repository is an HTTPS URL with a host and path' });
+  const sourceCommit = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, { message: 'a source commit is 40 or 64 lowercase hex characters' });
+  // The release entry loads a Python class by identifier; catalog names keep their existing
+  // fixed-label grammar and additionally exclude characters that cannot safely appear in audit.
+  const approvalClassName = z.string().min(1).max(256).regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+  const approvalOperation = storeCatalogOperation.refine((name) => !nonPrinting.test(name));
+  const approvalBody = z.object({
+    reason: auditText,
+    sourceReferences: z.array(z.object({ repository: repositoryReference, commit: sourceCommit }).strict()).min(1).max(64),
+    isolationReview: z.object({
+      separateScriptPerTenant: reviewEvidence,
+      noOutboundAccess: reviewEvidence,
+      envelopeVerifiedOutsideDriver: reviewEvidence,
+      envelopeChecked: checkedEvidence,
+      reservedOperationsChecked: checkedEvidence,
+      noModuleStateChecked: checkedEvidence,
+    }).strict(),
+    schema: z.number().int().min(0),
+    className: approvalClassName,
+    operations: z.array(approvalOperation).max(256),
+  }).strict();
+  const revokeBody = z.object({ reason: auditText, emergency: z.boolean().optional() }).strict();
+  const approvalPathParts = new Set([
+    'reason', 'sourceReferences', 'repository', 'commit', 'isolationReview', 'separateScriptPerTenant',
+    'noOutboundAccess', 'envelopeVerifiedOutsideDriver', 'envelopeChecked', 'reservedOperationsChecked',
+    'noModuleStateChecked', 'met', 'checked', 'evidence', 'schema', 'className', 'operations', 'emergency',
+  ]);
+  const issueCodes: Record<string, string> = {
+    unrecognized_keys: 'unrecognized_key', invalid_type: 'invalid_type', too_small: 'out_of_range',
+    too_big: 'out_of_range', invalid_format: 'invalid_format', custom: 'invalid_value',
+  };
+  const safeIssue = (issue: z.ZodIssue): string => {
+    const knownPath = issue.path.every((part) =>
+      (typeof part === 'number' && Number.isSafeInteger(part) && part >= 0) ||
+      (typeof part === 'string' && approvalPathParts.has(part)));
+    const path = knownPath && issue.path.length ? issue.path.join('.') : '(body)';
+    return `${path}: ${issueCodes[issue.code] ?? 'invalid_value'}`;
+  };
+  const releaseSha = (value: string): string => {
+    if (!/^[0-9a-f]{64}$/.test(value)) throw new ControlPlaneError(422, 'a release sha256 is 64 lowercase hex characters');
+    return value;
+  };
+  const parseApprovalBody = (raw: unknown) => {
+    const parsed = approvalBody.safeParse(raw);
+    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver approval: ${parsed.error.issues.map(safeIssue).join('; ')}`);
+    return parsed.data;
+  };
+  const parseRevokeBody = (raw: unknown) => {
+    const parsed = revokeBody.safeParse(raw);
+    if (!parsed.success) throw new ControlPlaneError(422, `not a store driver revoke: ${parsed.error.issues.map(safeIssue).join('; ')}`);
+    return parsed.data;
   };
   /** The pin a release is run under, or a refusal: the platform runs only what this repo pins. */
   const pinOf = async (c: Context<{ Variables: Vars }>, registration: StoreDriverRegistration, sha256: string) => {
@@ -12341,10 +12416,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   app.get('/store-drivers/:driver', async (c) => {
+    await staffPerson(c, statusWords);
     const registration = registeredDriver(c.req.param('driver'));
-    const state = await c.var.admin.storeDriverState(c.get('actor'), registration.driver);
+    const [state, approvals] = await Promise.all([
+      c.var.admin.storeDriverState(c.get('actor'), registration.driver),
+      c.var.admin.storeDriverApprovals(c.get('actor'), registration.driver),
+    ]);
     const rebuild = await rebuildView(c.var.admin, c.get('actor'), registration.driver);
-    return c.json({ driver: registration.driver, pins: registration.releases, ...state, ...(rebuild ? { rebuild } : {}) });
+    return c.json({ driver: registration.driver, pins: registration.releases, approvals, ...state, ...(rebuild ? { rebuild } : {}) });
   });
 
   // Store a release's bytes, before or after its pin lands (D-63). Idempotent per bundle.
@@ -12355,6 +12434,51 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const body = await readCappedJson(c.req.raw, STORE_RELEASE_REQUEST_MAX_BYTES);
     const release = await storeDriverRelease({ admin: c.var.admin, actor, bytes: flow.bytes, driver: registration.driver, body });
     return c.json({ release, pinned: registration.releases.some((p) => p.sha256 === release.sha256 && p.sourceCommit === release.sourceCommit) }, 201);
+  });
+
+  // The approval is a second, person-only write over bytes the platform already named by digest.
+  app.post('/store-drivers/:driver/releases/:sha256/approvals', async (c) => {
+    const registration = registeredDriver(c.req.param('driver'));
+    const actor = await byAPerson(c, approvalWords);
+    const sha256 = releaseSha(c.req.param('sha256'));
+    const body = parseApprovalBody(await readCappedJson(c.req.raw, 64 * 1024));
+    const flow = options.storeReleases;
+    if (!flow) throw new ControlPlaneError(501, 'this control plane cannot read stored release bytes for approval');
+    const approval = await approveStoredDriverRelease({ admin: c.var.admin, actor, bytes: flow.bytes, driver: registration.driver, sha256, approval: body });
+    const state = await c.var.admin.storeDriverState(actor, registration.driver);
+    const approvals = state.current ? await c.var.admin.storeDriverApprovals(actor, registration.driver) : [];
+    const currentSchema = state.current
+      ? approvals.find((a) => a.sha256 === state.current!.sha256)?.schema
+        ?? registration.releases.find((p) => p.sha256 === state.current!.sha256)?.schema
+        ?? null
+      : null;
+    return c.json({ approval, currentSchema }, 201);
+  });
+
+  app.post('/store-drivers/:driver/releases/:sha256/revoke', async (c) => {
+    const registration = registeredDriver(c.req.param('driver'));
+    const actor = await byAPerson(c, revokeWords);
+    const sha256 = releaseSha(c.req.param('sha256'));
+    const body = parseRevokeBody(await readCappedJson(c.req.raw, 8 * 1024));
+    const flow = options.storeReleases;
+    if (!body.emergency && !flow?.readScriptRelease) {
+      throw new ControlPlaneError(501, 'this control plane cannot read store script releases for a guarded revoke');
+    }
+    const result = await runStoreDriverRevoke({
+      admin: c.var.admin,
+      actor,
+      driver: registration.driver,
+      sha256,
+      reason: body.reason,
+      emergency: body.emergency === true,
+      readScriptRelease: flow?.readScriptRelease ?? (async () => ({ exists: false })),
+      ensureCanary: async (to) => {
+        if (!flow) throw new ControlPlaneError(501, 'this control plane cannot move the store canary');
+        const loadRelease = storedReleaseLoader({ admin: c.var.admin, actor, bytes: flow.bytes });
+        await flow.ensureCanary({ driver: registration.driver, to, loadRelease });
+      },
+    });
+    return c.json(result, result.complete ? 200 : 202);
   });
 
   // Roll a stored, pinned release out: the canary, then every vertical that ever declared the
@@ -12573,7 +12697,7 @@ const WIRE_WALK_REQUEST_MAX_BYTES = 64 * 1024;
  * The most a release upload's body may be: the decoded cap, as base64 (4 bytes per 3), plus room
  * for the JSON around it. A bigger body is refused (413) before it is read whole.
  */
-const STORE_RELEASE_REQUEST_MAX_BYTES = Math.ceil((STORE_RELEASE_MAX_BYTES * 4) / 3) + 1024 * 1024;
+const STORE_RELEASE_REQUEST_MAX_BYTES = STORE_RELEASE_STORED_MAX_BYTES;
 
 /** A JSON body read to at most `max` bytes: a declared length over it, or a stream past it, is 413. */
 async function readCappedJson(request: Request, max: number): Promise<unknown> {
