@@ -62,6 +62,30 @@ export async function checkedExec(sb: SandboxLike, command: string, cwd?: string
   return r.stdout.trim();
 }
 
+/**
+ * A sandbox write is one Workers RPC, and workerd refuses an RPC argument over 32 MiB
+ * serialised. A submitted source tree may be larger (`SOURCE_BYTES_MAX`), so it is
+ * written in parts and joined inside the container. 8 Mi chars stay under the limit
+ * even as a two-byte string.
+ */
+export async function writeSandboxFile(sb: SandboxLike, path: string, content: string, chunk = 8 * 1024 * 1024): Promise<void> {
+  if (content.length <= chunk) {
+    await sb.writeFile(path, content);
+    return;
+  }
+  const parts: string[] = [];
+  for (let start = 0; start < content.length;) {
+    let end = Math.min(start + chunk, content.length);
+    // A part ending on a high surrogate would write each half of the pair as U+FFFD.
+    if (end < content.length && /[\uD800-\uDBFF]/.test(content[end - 1]!)) end--;
+    const part = `${path}.part${parts.length}`;
+    await sb.writeFile(part, content.slice(start, end));
+    parts.push(shellQuote(part));
+    start = end;
+  }
+  await checkedExec(sb, `cat ${parts.join(' ')} > ${shellQuote(path)} && rm -f ${parts.join(' ')}`);
+}
+
 export async function checkoutRepository(sb: SandboxLike, access: RepositoryAccess, root: string, branch: string): Promise<void> {
   await checkedExec(sb, `git check-ref-format --branch ${shellQuote(branch)}`);
   const probe = await sb.exec(`test -d ${shellQuote(`${root}/.git`)}`);

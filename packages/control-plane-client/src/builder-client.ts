@@ -274,7 +274,7 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
     return this.read(`/store-drivers/${seg(driver)}/releases/${seg(sha256)}/revoke`, this.write('POST', body));
   }
 
-  /** Roll a stored, pinned release out: canary first, then every vertical. Post again to resume. */
+  /** Roll a stored, approved release out: canary first, then every vertical. Post again to resume. */
   rollOutStoreDriver(driver: string, sha256: string): Promise<StoreDriverRolloutResultView> {
     return this.read(`/store-drivers/${seg(driver)}/rollouts`, this.write('POST', { sha256 }));
   }

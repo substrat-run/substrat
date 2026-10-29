@@ -18,6 +18,7 @@ import {
   scopeStoreBindingName,
   scopeStoreNeed,
   SCOPE_STORE_KIND_RENAMED,
+  storeCatalogOperation,
   storeDriverId,
   storeDriverRegistration,
   storeDriverReleaseDigest,
@@ -164,43 +165,15 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
 
   it('judges against the registry a caller passes: a test fixture holding graph admits it', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
-    // A test fixture, not a release: the digest and commit are placeholders.
-    const fixture: StoreDriverRegistration = {
-      driver: 'graph',
-      isolationBasis: { kind: 'writtenInRepo' },
-      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-      className: 'Store',
-      operations: [],
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    };
+    // A test fixture, not a registered driver.
+    const fixture: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
     expect(() => assertScopeStoresRegistered(stores, [fixture])).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [fixture] })).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [] })).toThrow(/not registered/);
   });
 
-  it('refuses a registration that does not answer substrat.erase', () => {
-    const reserved = RESERVED_STORE_OPERATIONS.filter((op) => op !== 'substrat.erase');
-    expect(() =>
-      storeDriverRegistration.parse({
-        driver: 'graph',
-        isolationBasis: { kind: 'writtenInRepo' },
-        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-        className: 'Store',
-        operations: ['read'],
-        platformOperations: reserved,
-      }),
-    ).toThrow(/substrat.erase/);
-  });
-
   it('holds a driver id to [a-z0-9]+ (L20), at the registration and in every registered driver', () => {
-    const registration = (driver: string) => ({
-      driver,
-      isolationBasis: { kind: 'writtenInRepo' },
-      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-      className: 'Store',
-      operations: ['read'],
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    });
+    const registration = (driver: string) => ({ driver, isolationBasis: { kind: 'writtenInRepo' } });
     for (const driver of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
       expect(storeDriverId.safeParse(driver).success, driver).toBe(false);
       const parsed = storeDriverRegistration.safeParse(registration(driver));
@@ -214,54 +187,11 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
   });
 
   it('refuses a catalog operation on the reserved prefix', () => {
-    expect(() =>
-      storeDriverRegistration.parse({
-        driver: 'graph',
-        isolationBasis: { kind: 'writtenInRepo' },
-        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-        className: 'Store',
-        operations: ['substrat.wipe'],
-        platformOperations: [...RESERVED_STORE_OPERATIONS],
-      }),
-    ).toThrow(/substrat/);
+    expect(storeCatalogOperation.safeParse('substrat.wipe').success).toBe(false);
   });
 });
 
-describe('a store driver release is pinned by sha256 and source commit (D-63)', () => {
-  const registration = (releases: unknown) => ({
-    driver: 'graph',
-    isolationBasis: { kind: 'writtenInRepo' },
-    releases,
-    className: 'GraphStore',
-    operations: [],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
-  });
-  const pin = { sha256: 'c'.repeat(64), sourceCommit: 'd'.repeat(40), schema: 0 };
-
-  it('admits a list of pins, and refuses an empty list, a repeated pin, and a malformed one', () => {
-    expect(storeDriverRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64), schema: 3 }])).success).toBe(true);
-    expect(storeDriverRegistration.safeParse({ ...registration([pin]), isolationBasis: undefined }).success).toBe(false);
-    for (const releases of [
-      [],
-      [pin, { ...pin }],
-      [{ ...pin, sha256: 'C'.repeat(64) }],
-      [{ ...pin, sha256: 'c'.repeat(63) }],
-      [{ ...pin, sourceCommit: 'd'.repeat(39) }],
-      [{ sha256: pin.sha256 }],
-      // The schema a release migrates to is part of its pin (#2300): required, an integer, not negative.
-      [{ sha256: pin.sha256, sourceCommit: pin.sourceCommit }],
-      [{ ...pin, schema: 1.5 }],
-      [{ ...pin, schema: -1 }],
-      [{ ...pin, schema: '1' }],
-      [{ ...pin, release: '1.0.0' }],
-      '1.0.0',
-    ]) {
-      expect(storeDriverRegistration.safeParse(registration(releases)).success, JSON.stringify(releases)).toBe(false);
-    }
-    // The registration that named a release by label is no longer one.
-    expect(storeDriverRegistration.safeParse({ ...registration([pin]), releases: undefined, release: '1.0.0' }).success).toBe(false);
-  });
-
+describe('a store driver release is named by the sha256 of its bytes (D-63)', () => {
   const text = (value: string) => new TextEncoder().encode(value);
   const modules = [
     { name: 'driver_graph/store.py', content: text('class GraphStore:\n    pass\n') },
@@ -352,31 +282,16 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
     }
   });
 
-  it('holds a driver registration\'s catalog to the same rule', () => {
-    const registration = (operations: string[]) => ({
-      driver: 'graph',
-      isolationBasis: { kind: 'writtenInRepo' },
-      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-      className: 'GraphStore',
-      operations,
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    });
-    expect(storeDriverRegistration.safeParse(registration(['increment'])).success).toBe(true);
-    expect(storeDriverRegistration.safeParse(registration(['look:up'])).success).toBe(false);
+  it('holds a release\'s approved catalog to the same rule', () => {
+    expect(storeCatalogOperation.safeParse('increment').success).toBe(true);
+    expect(storeCatalogOperation.safeParse('look:up').success).toBe(false);
   });
 });
 
 // #2242: subject erasure destroys the key once the stores answer, so "cannot tell" must
 // never read as "holds none". The gate is the registry: no registered driver, no store.
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
-  const graph: StoreDriverRegistration = {
-    driver: 'graph',
-    isolationBasis: { kind: 'writtenInRepo' },
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-    className: 'GraphStore',
-    operations: [],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
-  };
+  const graph: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
   const manifest = (scopeStores?: unknown[]) =>
     JSON.stringify({
       version: '1.0.0',
