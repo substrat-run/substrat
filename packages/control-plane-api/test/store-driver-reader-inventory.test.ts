@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { API, SymbolFlags, TypeFlags } from 'typescript/unstable/sync';
@@ -23,7 +23,10 @@ import {
   isVariableDeclaration,
 } from 'typescript/unstable/ast/is';
 import type { Project, Type as TSCompilerType } from 'typescript/unstable/sync';
+import type { FileSystem } from 'typescript/unstable/fs';
 import { describe, expect, it } from 'vitest';
+// The tsconfig `tools/template-sync.mjs` writes for the template's copy, from the module a scaffold is written from.
+import { TSCONFIG } from '../../create-substrat/project-files.js';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const PIN_KEYS = ['releases', 'className', 'operations', 'platformOperations'] as const;
@@ -54,6 +57,59 @@ const TEST_PIN_READERS = [
 const FIXTURE_TSCONFIG = 'packages/control-plane-api/test/fixtures/store-driver-reader-inventory/tsconfig.json';
 
 /**
+ * The scaffold template's workspace copy (#878). Only its package.json is checked in:
+ * `tools/template-sync.mjs` writes the rest when that member typechecks or tests, so a run here may
+ * find it empty, or have the sync delete it underneath. It is scanned through an in-memory view of
+ * what the sync writes, from the template itself, so nothing is written and nothing races.
+ */
+const TEMPLATE_CHECK = 'packages/template-check';
+const TEMPLATE = join(ROOT, 'packages/create-substrat/template');
+
+function templateCheckFs(): FileSystem {
+  const check = join(ROOT, TEMPLATE_CHECK);
+  const tsconfig = join(check, 'tsconfig.json');
+  // The template path a materialized path stands for, as `syncTemplate` copies it.
+  const source = (path: string): string | undefined => {
+    const rel = relative(check, path).replaceAll('\\', '/');
+    return /^(?:src|test)(?:\/|$)|^tsconfig\.worker\.json$/.test(rel) ? join(TEMPLATE, rel) : undefined;
+  };
+  const kind = (path: string) => (existsSync(path) ? statSync(path) : undefined);
+  return {
+    readFile: (path) => {
+      if (resolve(path) === tsconfig) return TSCONFIG;
+      const from = source(path);
+      return from === undefined ? undefined : kind(from)?.isFile() ? readFileSync(from, 'utf8') : null;
+    },
+    fileExists: (path) => {
+      if (resolve(path) === tsconfig) return true;
+      const from = source(path);
+      return from === undefined ? undefined : Boolean(kind(from)?.isFile());
+    },
+    directoryExists: (path) => {
+      const from = source(path);
+      return from === undefined ? undefined : Boolean(kind(from)?.isDirectory());
+    },
+    getAccessibleEntries: (path) => {
+      if (resolve(path) === check) {
+        // The member's own directory: its real entries (package.json, node_modules) plus the copy.
+        const real = readdirSync(check, { withFileTypes: true });
+        return {
+          files: [...new Set([...real.filter((e) => e.isFile()).map((e) => e.name), 'tsconfig.json', 'tsconfig.worker.json'])],
+          directories: [...new Set([...real.filter((e) => e.isDirectory()).map((e) => e.name), 'src', 'test'])],
+        };
+      }
+      const from = source(path);
+      if (from === undefined || !kind(from)?.isDirectory()) return undefined;
+      const entries = readdirSync(from, { withFileTypes: true });
+      return {
+        files: entries.filter((e) => e.isFile()).map((e) => e.name),
+        directories: entries.filter((e) => e.isDirectory()).map((e) => e.name),
+      };
+    },
+  };
+}
+
+/**
  * Every workspace member that declares a dependency through which a registration can be typed,
  * read off the committed lockfile's importers: the checked-in member list (`lint:lockfile` keeps
  * builder scratch projects out of it), so a new reader package joins the scan by declaring the dep.
@@ -75,14 +131,12 @@ function relevantWorkspaceProjects(): { configs: string[]; roots: string[] } {
   for (const [directory, deps] of importers) {
     // The root importer is the repo's tools, which run nothing in the control plane.
     if (directory === '.') continue;
-    // A copy of the scaffold template that `tools/template-sync.mjs` writes at typecheck time (#878):
-    // nothing but its package.json is checked in, so a test run may find it empty. It is a vertical,
-    // and runs nothing in the control plane either.
-    if (directory === 'packages/template-check') continue;
     // contracts declares the type, so it is a reader without depending on itself.
     if (directory !== 'packages/contracts' && !deps.has('@substrat-run/contracts') && !deps.has('@substrat-run/control-plane-api')) continue;
     const tsconfig = join(directory, 'tsconfig.json');
-    if (!existsSync(join(ROOT, tsconfig))) throw new Error(`${directory}: package can import store-driver registration but has no production tsconfig.json`);
+    if (directory !== TEMPLATE_CHECK && !existsSync(join(ROOT, tsconfig))) {
+      throw new Error(`${directory}: package can import store-driver registration but has no production tsconfig.json`);
+    }
     configs.push(tsconfig);
     roots.push(join(ROOT, directory));
   }
@@ -228,12 +282,21 @@ function findPinReads(projects: readonly Project[], roots: readonly string[]): P
   return [...found.values()].sort((a, b) => `${a.file}\0${a.owner}\0${a.key}`.localeCompare(`${b.file}\0${b.owner}\0${b.key}`));
 }
 
+/** Every project, the template's copy on its own API: its file system is served in memory, and that costs a callback per read. */
 function openProjects() {
-  const api = new API({ cwd: ROOT });
   const workspace = relevantWorkspaceProjects();
+  const templateConfig = resolve(ROOT, TEMPLATE_CHECK, 'tsconfig.json');
   const configs = [...workspace.configs.map((path) => resolve(ROOT, path)), resolve(ROOT, FIXTURE_TSCONFIG)];
-  const snapshot = api.updateSnapshot({ openProjects: configs });
-  return { api, snapshot, projects: snapshot.getProjects(), workspace };
+  const apis = [new API({ cwd: ROOT }), new API({ cwd: ROOT, fs: templateCheckFs() })];
+  const snapshots = [
+    apis[0]!.updateSnapshot({ openProjects: configs.filter((config) => config !== templateConfig) }),
+    apis[1]!.updateSnapshot({ openProjects: configs.filter((config) => config === templateConfig) }),
+  ];
+  const close = () => {
+    for (const snapshot of snapshots) snapshot.dispose();
+    for (const api of apis) api.close();
+  };
+  return { close, projects: snapshots.flatMap((snapshot) => snapshot.getProjects()), workspace };
 }
 
 function sortedReaders(readers: readonly PinRead[]): PinRead[] {
@@ -242,10 +305,13 @@ function sortedReaders(readers: readonly PinRead[]): PinRead[] {
 
 describe('store driver release reader inventory (RFC §5 step 4)', () => {
   it('holds every typed production pin read to the explicit 4a baseline and tests known escape forms', () => {
-    const { api, snapshot, projects, workspace } = openProjects();
+    const { close, projects, workspace } = openProjects();
     try {
       const production = projects.filter((project) => workspace.configs.some((path) => resolve(project.configFileName) === resolve(ROOT, path)));
       expect(workspace.configs).toContain('packages/cli/tsconfig.json');
+      // The template's copy is scanned from its in-memory view whether or not a sync has run.
+      const template = production.find((project) => resolve(project.configFileName) === resolve(ROOT, TEMPLATE_CHECK, 'tsconfig.json'));
+      expect(template?.program.getSourceFileNames().some((name) => name.includes(`/${TEMPLATE_CHECK}/src/`))).toBe(true);
       const actual = findPinReads(production, workspace.roots);
       expect(actual).toEqual(sortedReaders(PIN_READERS));
 
@@ -268,8 +334,7 @@ describe('store driver release reader inventory (RFC §5 step 4)', () => {
         { file: 'packages/control-plane-api/test/fixtures/store-driver-reader-inventory/readers.tsx', owner: 'view', key: 'className' },
       ]));
     } finally {
-      snapshot.dispose();
-      api.close();
+      close();
     }
     // Over the node budget by design: it type-checks every member that can hold a registration
     // (about fifty programs): 12–50 s locally on a loaded machine.
