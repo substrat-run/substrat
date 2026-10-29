@@ -623,6 +623,26 @@ describe('members & invites under /api/teams/:teamId (#2170)', () => {
     expect(paths).not.toContain(`/api/tenants/${a.tenant}/metered-usage`);
   });
 
+  it('accepts null and absent estimate metadata from the plane', async () => {
+    const t = await team('sub-owner');
+    env.CONTROL_PLANE_SVC = { fetch: async (url: string | URL | Request) => {
+      if (new URL(String(url)).pathname === '/api/tenant-tokens') return Response.json({ token: 'test-token' }, { status: 201 });
+      return Response.json({
+        readAt: '2026-10-29T00:00:00Z',
+        retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+        storage: { state: 'complete', bytes: 8, estimated: null, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
+        requests: { state: 'complete', requests: 7, lowerBound: false, coveredDays: 30, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
+        models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: null, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+      });
+    } };
+    const res = await req('GET', inTeam(t, '/metered-usage'));
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = await res.json() as { storage: { estimated: unknown }; requests: { estimated?: unknown }; models: { estimated: unknown } };
+    expect(body.storage.estimated).toBeNull();
+    expect(body.requests).not.toHaveProperty('estimated');
+    expect(body.models.estimated).toBeNull();
+  });
+
   it('refuses metered usage to a member before calling the plane, while an admin may read it', async () => {
     const t = await team('sub-owner');
     await join_(t, 'sub-member', 'member');

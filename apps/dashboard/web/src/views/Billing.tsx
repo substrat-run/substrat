@@ -14,6 +14,7 @@ const storageStates = new Set(['unavailable', 'empty', 'not-sampled', 'complete'
 const requestStates = new Set(['unavailable', 'empty', 'complete', 'partial', 'truncated']);
 const modelStates = new Set(['unavailable', 'empty', 'complete', 'truncated']);
 const coverage = (state: string, known: Set<string>) => known.has(state) ? state : `unknown (${state})`;
+const hasTruncationReason = (reason: string | null) => Boolean(reason?.trim());
 
 function UsageCards({ usage }: { usage: Usage }) {
   const storage = usage.storage;
@@ -22,9 +23,9 @@ function UsageCards({ usage }: { usage: Usage }) {
   const storageUnknown = !storageStates.has(storage.state) || storage.basis !== 'scope-databases';
   const requestsUnknown = !requestStates.has(requests.state);
   const modelsUnknown = !modelStates.has(models.state);
-  const storageLowerBound = storage.lowerBound || storageUnknown || storage.estimated !== false;
-  const requestsLowerBound = requests.lowerBound || requestsUnknown || requests.estimated !== true;
-  const modelsLowerBound = models.lowerBound || modelsUnknown || models.estimated !== false;
+  const storageLowerBound = storage.lowerBound || hasTruncationReason(storage.truncatedReason) || storage.state !== 'complete' || storage.sampled < storage.total || storageUnknown || storage.estimated !== false;
+  const requestsLowerBound = requests.lowerBound || requests.state !== 'complete' || requests.coveredDays < requests.totalDays || requestsUnknown || requests.estimated !== true;
+  const modelsLowerBound = models.lowerBound || hasTruncationReason(models.truncatedReason) || models.state !== 'complete' || modelsUnknown || models.estimated !== false;
   const section = { ...card, padding: 20, marginTop: 12 };
   return (
     <>
@@ -32,7 +33,7 @@ function UsageCards({ usage }: { usage: Usage }) {
         <h3>Stored bytes</h3>
         <p>{storage.bytes === null ? storage.state === 'empty' ? 'No scope database storage recorded.' : 'not available' : `${storageLowerBound ? 'At least ' : ''}${number(storage.bytes)} bytes`}</p>
         <p>Coverage: {storage.state === 'unavailable' ? 'not available' : `${storage.sampled} of ${storageLowerBound ? 'at least ' : ''}${storage.total} scopes sampled · ${coverage(storage.state, storageStates)}`}{storage.failing > 0 ? ` · ${storage.failing} latest reads failed` : ''}{storage.truncatedReason === 'scope-cap' ? ' Scope scan capped at 500; this is a lower bound.' : storage.truncatedReason ? ` Other truncation reason (${storage.truncatedReason}).` : ''}{storage.basis !== 'scope-databases' ? ` Basis unknown (${storage.basis}).` : ''}</p>
-        <p>Estimate: {storage.estimated === false && !storageUnknown ? 'no; scope database samples only' : 'unknown or estimated; treat this figure as an estimate'}. Freshness: oldest sample {date(storage.oldestReadAt)}.</p>
+        <p>Estimate: {storage.estimated === false && !storageLowerBound ? 'no; scope database samples only' : 'unknown or estimated; treat this figure as an estimate'}. Freshness: oldest sample {date(storage.oldestReadAt)}.</p>
         <p>{storage.state === 'unavailable' ? 'Storage exclusions are not available.' : `Excludes ${storage.excluded.map((item) => exclusions[item] ?? `other (${item})`).join(', ') || 'none'}.`} Storage day rows are kept {usage.retention.storageMonths} months.</p>
       </div>
       <div style={section}>
@@ -48,7 +49,7 @@ function UsageCards({ usage }: { usage: Usage }) {
         <h3>Model usage</h3>
         <p>{models.calls === null ? models.state === 'empty' ? 'No model usage recorded in this window.' : 'not available' : `${modelsLowerBound ? 'At least ' : ''}${number(models.calls)} recorded calls · ${models.inputTokens === null ? 'not available' : `${modelsLowerBound ? 'at least ' : ''}${number(models.inputTokens)}`} input and ${models.outputTokens === null ? 'not available' : `${modelsLowerBound ? 'at least ' : ''}${number(models.outputTokens)}`} output tokens`}</p>
         <p>Coverage: recorded model-usage lines from {date(models.since)} to {date(models.until)} · {coverage(models.state, modelStates)}{modelsLowerBound ? `; partial ledger scan through ${date(models.oldestRecordedAt)}` : ''}{models.truncatedReason === 'time-budget' ? '; stopped at the read time budget' : models.truncatedReason && models.truncatedReason !== 'page-cap' ? `; other truncation reason (${models.truncatedReason})` : ''}. Calls without a recorded line are not represented.</p>
-        <p>Estimate: {models.estimated === false && !modelsUnknown ? 'no; tokens are as reported by providers' : 'unknown or estimated; treat this figure as an estimate'}. Freshness: last recorded line {date(models.newestRecordedAt)}.</p>
+        <p>Estimate: {models.estimated === false && !modelsLowerBound ? 'no; tokens are as reported by providers' : 'unknown or estimated; treat this figure as an estimate'}. Freshness: last recorded line {date(models.newestRecordedAt)}.</p>
         {models.byVerticalModel.length > 0 && <ul>{models.byVerticalModel.map((row) => <li key={`${row.vertical}:${row.model}`}>{row.vertical} · {row.model}: {number(row.calls)} calls, {row.inputTokens === null ? 'not available' : number(row.inputTokens)} input and {row.outputTokens === null ? 'not available' : number(row.outputTokens)} output tokens as reported</li>)}</ul>}
         {models.breakdownTruncated && <p>App and model breakdown truncated to 50 entries.</p>}
         <p>Model usage records are kept {usage.retention.modelDays} days.</p>

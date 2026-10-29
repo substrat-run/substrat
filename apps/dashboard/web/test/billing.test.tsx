@@ -117,6 +117,42 @@ it('labels new plane vocabulary as unknown and treats its figures as estimates a
   expect(container.textContent).not.toContain('· complete');
 });
 
+it('shows numeric figures as lower bounds when coverage is incomplete or a new truncation reason is present', async () => {
+  read.mockResolvedValue([]);
+  readUsage.mockResolvedValue({
+    readAt: '2026-10-29T00:00:00Z',
+    retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+    storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: 'new-storage-limit', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
+    requests: { state: 'partial', requests: 7, estimated: true, lowerBound: false, coveredDays: 1, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
+    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false, truncatedReason: 'new-model-limit', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+  });
+  await render();
+  expect(container.textContent).toContain('At least 8 bytes');
+  expect(container.textContent).toContain('At least 7 estimated request counts');
+  expect(container.textContent).toContain('At least 1 recorded calls');
+  expect(container.textContent).toContain('at least 11 input');
+  expect(container.textContent).toContain('new-storage-limit');
+  expect(container.textContent).toContain('new-model-limit');
+  expect(container.textContent).not.toContain('Estimate: no;');
+});
+
+it('treats absent or null estimate metadata as estimated lower bounds', async () => {
+  read.mockResolvedValue([]);
+  readUsage.mockResolvedValue({
+    readAt: '2026-10-29T00:00:00Z',
+    retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+    storage: { state: 'complete', bytes: 8, estimated: null, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
+    requests: { state: 'complete', requests: 7, lowerBound: false, coveredDays: 30, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
+    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: null, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+  });
+  await render();
+  expect(container.textContent).toContain('At least 8 bytes');
+  expect(container.textContent).toContain('At least 7 estimated request counts');
+  expect(container.textContent).toContain('At least 1 recorded calls');
+  expect(container.textContent).toContain('Estimate: unknown or estimated; treat this figure as an estimate');
+  expect(container.textContent).not.toContain('Estimate: no;');
+});
+
 it('shows usage unavailable on read failure and recognizes a handwritten 403 refusal', async () => {
   read.mockResolvedValue([]);
   readUsage.mockRejectedValue(new Error('offline'));

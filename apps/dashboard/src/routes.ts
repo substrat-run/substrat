@@ -737,7 +737,7 @@ export const meteredUsageOut = z.object({
   storage: z.object({
     // Plane-owned vocabulary: currently unavailable/empty/not-sampled/complete/partial/stale/failing/truncated.
     state: z.string(),
-    bytes: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]), basis: z.string(),
+    bytes: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]).nullable().optional(), basis: z.string(),
     lowerBound: z.boolean(), truncatedReason: z.string().nullable(),
     sampled: z.number().int(), total: z.number().int(), failing: z.number().int(),
     oldestReadAt: z.string().nullable(), excluded: z.array(z.string()),
@@ -745,7 +745,7 @@ export const meteredUsageOut = z.object({
   requests: z.object({
     // Plane-owned coverage and estimate status; currently unavailable/empty/complete/partial/truncated.
     state: z.string(),
-    requests: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]), lowerBound: z.boolean(),
+    requests: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]).nullable().optional(), lowerBound: z.boolean(),
     coveredDays: z.number().int(), totalDays: z.number().int(), sinceDay: z.string(), untilDay: z.string(),
     lastReadAt: z.string().nullable(),
     byVertical: z.array(z.object({ vertical: z.string().nullable(), requests: z.number().int() })),
@@ -755,7 +755,7 @@ export const meteredUsageOut = z.object({
     // Plane-owned coverage; currently unavailable/empty/complete/truncated.
     state: z.string(),
     calls: z.number().int().nullable(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
-    estimated: z.union([z.boolean(), z.string()]), lowerBound: z.boolean(), since: z.string(), until: z.string(),
+    estimated: z.union([z.boolean(), z.string()]).nullable().optional(), lowerBound: z.boolean(), since: z.string(), until: z.string(),
     truncatedReason: z.string().nullable(),
     oldestRecordedAt: z.string().nullable(), newestRecordedAt: z.string().nullable(),
     byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
