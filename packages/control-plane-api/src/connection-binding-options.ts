@@ -39,6 +39,9 @@ export function connectionBindingOptions(provider: string) {
   }
 }
 
+/** Whether {@link bindingChangeRefusal} can refuse anything for `provider`, so a door reads the held binding only then. */
+export const refusesBindingChange = (provider: string): boolean => provider === 'fortnox';
+
 /**
  * Why a scope's held binding cannot take `next` in place, or `undefined` (#2704). Both doors that
  * bind ask it before writing: the staff route answers it as a 409, and the connector pass reports
@@ -46,7 +49,7 @@ export function connectionBindingOptions(provider: string) {
  * rather than rewriting what the scope's data was landed as.
  */
 export function bindingChangeRefusal(provider: string, held: { kind?: string | null } | undefined, next: { kind?: string | null }): string | undefined {
-  if (provider !== 'fortnox' || !held) return undefined;
+  if (!refusesBindingChange(provider) || !held) return undefined;
   const from = held.kind ?? 'ledger';
   const to = next.kind ?? 'ledger';
   return from === to ? undefined : `one Fortnox landing kind per scope; use a separate scope for the other kind (${from} to ${to})`;

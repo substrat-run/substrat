@@ -1,6 +1,6 @@
 import { sourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
-import { bindingChangeRefusal, connectionBindingOptions } from './connection-binding-options.js';
+import { bindingChangeRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
 import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
@@ -3464,7 +3464,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 409, `connection does not hold '${input.permission}' on scope ${scopeId}; grant it through the tenant's authorized connection flow, then bind`);
     }
     // A change the held binding cannot take in place is the operator's to act on, not a failed write.
-    const held = (await inspectorOf(row)?.bindings?.(c.var.host, row))?.find((b) => b.scopeId === scopeId);
+    const held = refusesBindingChange(row.provider)
+      ? (await inspectorOf(row)?.bindings?.(c.var.host, row))?.find((b) => b.scopeId === scopeId)
+      : undefined;
     const changeRefused = bindingChangeRefusal(row.provider, held as { kind?: string } | undefined, input as { kind?: string });
     if (changeRefused) return refuseStatus(c, 409, changeRefused);
     const operationId = ulid();
