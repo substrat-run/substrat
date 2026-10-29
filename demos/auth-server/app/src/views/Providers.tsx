@@ -62,97 +62,92 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
     <section className="panel">
       <div className="panel-head"><h2>Sign-in providers</h2></div>
       {err && <p className="error">{err}</p>}
-      {!catalogue ? (
-        !err && <p className="muted">Loading providers…</p>
-      ) : (
-        <>
-          <p className="muted">
-            Services this issuer signs people in through. Enabling one adds a “Continue with
-            …” button to the login screen — including for people a relying party sent here.
-            BankID uses a certificate for Swedish e-ID sign-in. “Custom (OIDC)” takes any
-            standards-compliant issuer by URL — Keycloak, Okta, Auth0, or another auth server
-            like this one.
-          </p>
-          {(providers.length > 0 || Boolean(bankid)) && (
-            <table className="grid">
-              <thead>
-                <tr><th>Provider</th><th>Configuration</th><th>Status</th></tr>
-              </thead>
-              <tbody>
-                {providers.map((provider) => {
-                  const entry = catalogue.find((e) => e.id === provider.id);
-                  return (
-                    <tr key={provider.id}>
-                      <td>
-                        <div>
-                          <ProviderLink id={provider.id}>
-                            {entry?.label ?? provider.label ?? provider.id}
-                          </ProviderLink>
-                          {provider.platform && <span className="tag">provided by Substrat</span>}
-                          {provider.issuer && !entry && !provider.platform && <span className="tag">custom OIDC</span>}
-                          {provider.allowSignup && <span className="tag">creates accounts</span>}
-                          {provider.trustEmail && <span className="tag">trusted email</span>}
-                        </div>
-                        {provider.tenantId && <code className="client-id">{provider.tenantId}</code>}
-                        {provider.issuer && <code className="client-id">{provider.issuer}</code>}
-                      </td>
-                      <td><code>{provider.clientId}</code></td>
-                      <td>{provider.disabled ? 'Disabled' : provider.attention ? 'Not offered — save again' : 'Enabled'}</td>
-                    </tr>
-                  );
-                })}
-                {bankid && (
-                  <tr>
-                    <td>
-                      <BankIdSettingsLink>BankID</BankIdSettingsLink>
-                      {bankid.allowSignup && <span className="tag">creates accounts</span>}
-                    </td>
-                    <td>
-                      {bankid.environment === 'production' ? 'Production' : 'Test'}
-                      {' · '}{bankid.certSet ? 'Certificate stored' : 'No certificate'}
-                    </td>
-                    <td>{bankid.disabled ? 'Disabled' : 'Enabled'}</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
-          {bankidError && <p className="error">Could not load BankID: {bankidError}</p>}
-          {bankid === undefined && !bankidError && <p className="muted">Loading BankID…</p>}
-          {!addingCustom && (
-            <div className="add-provider">
-              {/* A catalogue entry already HAS its id, so enabling it is the same screen as
-                  editing it — and therefore a link rather than a button that unfolds a form. */}
-              {unconfigured.map((entry) => (
-                <ProviderLink key={entry.id} id={entry.id} className="btn">
-                  + {entry.label}
-                </ProviderLink>
-              ))}
-              {bankid === null && <BankIdSettingsLink className="btn">+ BankID</BankIdSettingsLink>}
-              <button className="btn" onClick={() => setAddingCustom(true)}>+ Custom (OIDC)</button>
-            </div>
-          )}
-          {addingCustom && (
-            <ProviderEditor
-              issuer={issuer}
-              entry={null}
-              provider={null}
-              onCancel={() => setAddingCustom(false)}
-              onSaved={(id) => {
-                setAddingCustom(false);
-                // Straight to the screen the new provider now has: it has an id, so from here
-                // on it is edited where a link can point, like every other row.
-                navigate(`${PROVIDERS_PATH}/${id}`);
-              }}
-            />
-          )}
-          {(providers.length > 0 || Boolean(bankid)) && (
-            <p className="muted small">
-              Open a provider to change its credentials, disable it or remove it. Removing one
-              leaves the people who signed in with it needing another way in.
-            </p>
-          )}
-        </>
+      {!catalogue && !err && <p className="muted">Loading providers…</p>}
+      <p className="muted">
+        Services this issuer signs people in through. Enabling one adds a “Continue with
+        …” button to the login screen — including for people a relying party sent here.
+        BankID uses a certificate for Swedish e-ID sign-in. “Custom (OIDC)” takes any
+        standards-compliant issuer by URL — Keycloak, Okta, Auth0, or another auth server
+        like this one.
+      </p>
+      {(providers.length > 0 || Boolean(bankid)) && (
+        <table className="grid">
+          <thead>
+            <tr><th>Provider</th><th>Configuration</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {providers.map((provider) => {
+              const entry = catalogue?.find((e) => e.id === provider.id);
+              return (
+                <tr key={provider.id}>
+                  <td>
+                    <div>
+                      <ProviderLink id={provider.id}>
+                        {entry?.label ?? provider.label ?? provider.id}
+                      </ProviderLink>
+                      {provider.platform && <span className="tag">provided by Substrat</span>}
+                      {provider.issuer && !entry && !provider.platform && <span className="tag">custom OIDC</span>}
+                      {provider.allowSignup && <span className="tag">creates accounts</span>}
+                      {provider.trustEmail && <span className="tag">trusted email</span>}
+                    </div>
+                    {provider.tenantId && <code className="client-id">{provider.tenantId}</code>}
+                    {provider.issuer && <code className="client-id">{provider.issuer}</code>}
+                  </td>
+                  <td><code>{provider.clientId}</code></td>
+                  <td>{provider.disabled ? 'Disabled' : provider.attention ? 'Not offered — save again' : 'Enabled'}</td>
+                </tr>
+              );
+            })}
+            {bankid && (
+              <tr>
+                <td>
+                  <BankIdSettingsLink>BankID</BankIdSettingsLink>
+                  {bankid.allowSignup && <span className="tag">creates accounts</span>}
+                </td>
+                <td>
+                  {bankid.environment === 'production' ? 'Production' : 'Test'}
+                  {' · '}{bankid.certSet ? 'Certificate stored' : 'No certificate'}
+                </td>
+                <td>{bankid.disabled ? 'Disabled' : 'Enabled'}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      )}
+      {bankidError && <p className="error">Could not load BankID: {bankidError}</p>}
+      {bankid === undefined && !bankidError && <p className="muted">Loading BankID…</p>}
+      {!addingCustom && (
+        <div className="add-provider">
+          {/* A catalogue entry already HAS its id, so enabling it is the same screen as
+              editing it — and therefore a link rather than a button that unfolds a form. */}
+          {unconfigured.map((entry) => (
+            <ProviderLink key={entry.id} id={entry.id} className="btn">
+              + {entry.label}
+            </ProviderLink>
+          ))}
+          {bankid === null && <BankIdSettingsLink className="btn">+ BankID</BankIdSettingsLink>}
+          {catalogue && <button className="btn" onClick={() => setAddingCustom(true)}>+ Custom (OIDC)</button>}
+        </div>
+      )}
+      {addingCustom && (
+        <ProviderEditor
+          issuer={issuer}
+          entry={null}
+          provider={null}
+          onCancel={() => setAddingCustom(false)}
+          onSaved={(id) => {
+            setAddingCustom(false);
+            // Straight to the screen the new provider now has: it has an id, so from here
+            // on it is edited where a link can point, like every other row.
+            navigate(`${PROVIDERS_PATH}/${id}`);
+          }}
+        />
+      )}
+      {(providers.length > 0 || Boolean(bankid)) && (
+        <p className="muted small">
+          Open a provider to change its credentials, disable it or remove it. Removing one
+          leaves the people who signed in with it needing another way in.
+        </p>
       )}
     </section>
   );
