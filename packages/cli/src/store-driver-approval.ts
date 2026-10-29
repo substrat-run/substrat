@@ -17,6 +17,8 @@ const reviewKeys = [
   'envelopeChecked', 'reservedOperationsChecked', 'noModuleStateChecked',
 ] as const;
 const MAX_REVIEW_FILE_BYTES = 128 * 1024;
+/** CLI backstop: one release walk should not require more than 10,000 page requests. */
+export const STORE_DRIVER_REVOKE_MAX_PAGES = 10_000;
 
 const record = (value: unknown, field: string): Record<string, unknown> => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${field}: expected an object`);
@@ -148,8 +150,15 @@ export async function revokeStoreDriverUntilComplete(input: {
   driver: string; sha256: string; reason: string; emergency: boolean;
   progress: (line: string) => void;
 }): Promise<StoreDriverRevokeResultView> {
-  let result: StoreDriverRevokeResultView;
-  do {
+  let pages = 0;
+  let previousRemaining: number | undefined;
+  let unchangedPages = 0;
+  while (true) {
+    if (pages >= STORE_DRIVER_REVOKE_MAX_PAGES) {
+      throw new Error(`revoke walk exceeded the ${STORE_DRIVER_REVOKE_MAX_PAGES}-page CLI limit; run the same command again, or check store-driver status`);
+    }
+    pages += 1;
+    let result: StoreDriverRevokeResultView;
     try {
       result = await input.client.revokeStoreDriverRelease(input.driver, input.sha256,
         { reason: input.reason, ...(input.emergency ? { emergency: true } : {}) });
@@ -162,6 +171,13 @@ export async function revokeStoreDriverUntilComplete(input: {
     input.progress(result.complete
       ? `✓ revoked approval ${result.approval.approvalId} for ${input.driver} ${input.sha256}`
       : `  revoke walk paused: ${result.remaining} script(s) remaining; continuing`);
-  } while (!result.complete);
-  return result;
+    if (result.complete) return result;
+    unchangedPages = previousRemaining !== undefined && result.remaining >= previousRemaining
+      ? unchangedPages + 1
+      : 0;
+    previousRemaining = result.remaining;
+    if (unchangedPages >= 3) {
+      throw new Error(`revoke walk remains at ${result.remaining} script(s) remaining; run the same command again, or check store-driver status`);
+    }
+  }
 }

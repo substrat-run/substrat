@@ -98,20 +98,31 @@ describe('store-driver approval CLI output and revoke continuation', () => {
 
   it('posts every revoke page with the same reason and reports remaining progress', async () => {
     const results: StoreDriverRevokeResultView[] = [
-      { approval: approval(), complete: false, remaining: 3 },
+      { approval: approval(), complete: false, remaining: 2 },
+      { approval: approval(), complete: false, remaining: 1 },
       { approval: approval(true), complete: true, remaining: 0 },
     ];
     const call = vi.fn(async () => results.shift()!);
     const lines: string[] = [];
     await revokeStoreDriverUntilComplete({ client: { revokeStoreDriverRelease: call }, driver: 'graph', sha256,
       reason: 'Reviewed rollback', emergency: false, progress: (line) => lines.push(line) });
-    expect(call).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenCalledTimes(3);
     expect(call).toHaveBeenNthCalledWith(1, 'graph', sha256, { reason: 'Reviewed rollback' });
     expect(call).toHaveBeenNthCalledWith(2, 'graph', sha256, { reason: 'Reviewed rollback' });
+    expect(call).toHaveBeenNthCalledWith(3, 'graph', sha256, { reason: 'Reviewed rollback' });
     expect(lines).toEqual([
-      '  revoke walk paused: 3 script(s) remaining; continuing',
+      '  revoke walk paused: 2 script(s) remaining; continuing',
+      '  revoke walk paused: 1 script(s) remaining; continuing',
       `✓ revoked approval approval-2 for graph ${sha256}`,
     ]);
+  });
+
+  it('stops after three consecutive pages without decreasing remaining', async () => {
+    const call = vi.fn(async () => ({ approval: approval(), complete: false, remaining: 5 }));
+    await expect(revokeStoreDriverUntilComplete({ client: { revokeStoreDriverRelease: call }, driver: 'graph', sha256,
+      reason: 'Reviewed rollback', emergency: false, progress: vi.fn() }))
+      .rejects.toThrow(/5 script\(s\) remaining; run the same command again, or check store-driver status/);
+    expect(call).toHaveBeenCalledTimes(4);
   });
 
   it('shows the server 403 unchanged and gives a retry for a lost hold', async () => {
