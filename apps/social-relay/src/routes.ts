@@ -27,6 +27,8 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
+import { PROBLEM_CONTENT_TYPE, problemForStatus } from '@substrat-run/contracts';
+import { MtlsFailure, type MtlsRequest, type MtlsResponse, type MtlsStage } from './mtls-client.js';
 import type { ClientRecord, RelayStore } from './do-contract.js';
 import { PROVIDERS, providerOf, type UpstreamCredentials, type UpstreamProvider } from './providers.js';
 import { publicJwkOf, randomToken, sha256b64url, signJwt, verifyJwt } from './jwt.js';
@@ -53,6 +55,8 @@ export interface Env {
   APPLE_PRIVATE_KEY?: string;
   /** Authorizations per client per minute. Absent ⇒ the default below. */
   AUTHORIZE_RATE_LIMIT?: string;
+  /** BankID hop calls per client per minute. Absent ⇒ the default below. */
+  MTLS_RATE_LIMIT?: string;
 }
 
 /** How long a started authorization may take to come back from the upstream. */
@@ -68,6 +72,64 @@ export interface AppOptions {
   fetchImpl?: typeof globalThis.fetch;
   /** Injected so tests are explicit about expiry instead of sleeping. */
   now?: () => number;
+  /**
+   * The BankID hop's transport (`mtls-client.ts` over `mtls-socket.ts`), injected by
+   * `worker.ts` so this file never loads `cloudflare:sockets` or the WASM module. Absent, the
+   * hop answers 503: a relay that cannot open a socket says so instead of pretending.
+   */
+  mtls?: (request: MtlsRequest) => Promise<MtlsResponse>;
+}
+
+/**
+ * The BankID hop (docs/rfc/mtls-hop.md): the two hosts it reaches, fixed here. The caller
+ * names an environment and a path under `/rp/v6.0/`, never a host or a port.
+ */
+const BANKID_HOSTS = { test: 'appapi2.test.bankid.com', production: 'appapi2.bankid.com' } as const;
+const BANKID_PATH = /^\/rp\/v6\.0\/[a-z]+(?:\/[a-z]+)*$/;
+/** Hop calls per client per minute. A sign-in polls `collect` every two seconds, so one person is 30. */
+const DEFAULT_MTLS_RATE_LIMIT = 600;
+/** The whole call, matching the install's own `BANKID_TIMEOUT_MS`. */
+export const MTLS_DEADLINE_MS = 15_000;
+/** BankID's answers are a few hundred bytes; a `collect` with a full completion is a few KB. */
+export const MTLS_MAX_RESPONSE_BYTES = 64 * 1024;
+
+const PEM_MAX = 16 * 1024;
+const hopInput = z
+  .object({
+    certPem: z.string().min(1).max(PEM_MAX),
+    keyPem: z.string().min(1).max(PEM_MAX),
+    caPem: z.string().min(1).max(PEM_MAX),
+    body: z.unknown(),
+  })
+  .strict();
+/** The JSON body BankID is sent, serialized. Its largest request (`sign` with visible data) is well under this. */
+const HOP_BODY_MAX = 16 * 1024;
+
+/** `client_secret_basic`, or empty strings: malformed is a failed authentication, never a 500. */
+function basicCredentials(authorization: string): { clientId: string; clientSecret: string } {
+  if (!authorization.toLowerCase().startsWith('basic ')) return { clientId: '', clientSecret: '' };
+  // Both `atob` and `decodeURIComponent` throw on input that is merely malformed, and a
+  // malformed credential is a failed authentication — a 401 the caller can read — never a
+  // 500 that reads as the relay being broken.
+  try {
+    const decoded = atob(authorization.slice(6).trim());
+    const separator = decoded.indexOf(':');
+    if (separator <= 0) return { clientId: '', clientSecret: '' };
+    return {
+      clientId: decodeURIComponent(decoded.slice(0, separator)),
+      clientSecret: decodeURIComponent(decoded.slice(separator + 1)),
+    };
+  } catch {
+    return { clientId: '', clientSecret: '' };
+  }
+}
+
+/** A refusal of the hop's own, as RFC 9457 problem+json, naming the stage it stopped at. */
+function hopProblem(status: number, stage: string, detail: string, stages: MtlsStage[] = []): Response {
+  return new Response(JSON.stringify({ ...problemForStatus(status, detail), stage, stages }), {
+    status,
+    headers: { 'content-type': PROBLEM_CONTENT_TYPE },
+  });
 }
 
 /** The store stub for this request. One instance: the registry is global to the relay. */
@@ -193,9 +255,9 @@ function acceptableRedirectUri(value: string): boolean {
  * outcome this setting exists to prevent — and an empty string as `0`, which refuses every
  * sign-in. Anything that is not a positive number means "the default", never "no limit".
  */
-export function rateLimitOf(configured: string | undefined): number {
+export function rateLimitOf(configured: string | undefined, fallback = DEFAULT_RATE_LIMIT): number {
   const parsed = Number(configured);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RATE_LIMIT;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 export function createApp(options: AppOptions = {}) {
@@ -222,6 +284,78 @@ export function createApp(options: AppOptions = {}) {
       return { id: p.id, label: p.label, issuer: endpoints.issuer, endpoints };
     });
     return c.json({ providers: live });
+  });
+
+  /**
+   * The BankID hop (docs/rfc/mtls-hop.md). An Auth Server install cannot present its BankID
+   * certificate — a dispatched script has neither a client-certificate fetch nor a socket — so
+   * it sends the certificate here with the call, and the relay opens the socket and runs the
+   * TLS. Everything BankID MEANS stays in the install; this route knows two hosts and a path
+   * prefix.
+   *
+   * Authenticated by the install's own relay client, the credential the platform issues it for
+   * social sign-in, so a call made from inside the install's Durable Object is still known to be
+   * that install's. The kill switch applies here as it does at `/authorize` and `/token`.
+   *
+   * The certificate and key are used for this one handshake and kept nowhere. Neither they nor
+   * BankID's answer — which carries a person's personal number — are logged: the line below
+   * names the client, the environment, the path, the status and the timings, and nothing else.
+   */
+  app.post('/mtls/bankid/:environment/*', async (c) => {
+    const environment = c.req.param('environment');
+    const host = BANKID_HOSTS[environment as keyof typeof BANKID_HOSTS];
+    const path = new URL(c.req.url).pathname.slice(`/mtls/bankid/${environment}`.length);
+    if (!host || !BANKID_PATH.test(path)) {
+      return hopProblem(404, 'target', 'the hop reaches BankID test or production, under /rp/v6.0/');
+    }
+
+    const { clientId, clientSecret } = basicCredentials(c.req.header('authorization') ?? '');
+    const store = storeOf(c.env);
+    if (!clientId || !clientSecret || !(await store.verifyClientSecret(clientId, clientSecret))) {
+      return hopProblem(401, 'client', 'client authentication failed');
+    }
+    if ((await store.getClient(clientId))?.disabled !== false) {
+      return hopProblem(403, 'client', 'the platform relay is suspended for this application');
+    }
+    // Its own window, apart from `/authorize`'s: a sign-in polls here every two seconds.
+    if ((await store.countAuthorize(`mtls:${clientId}`, now())) > rateLimitOf(c.env.MTLS_RATE_LIMIT, DEFAULT_MTLS_RATE_LIMIT)) {
+      return hopProblem(429, 'client', 'too many BankID calls; try again shortly');
+    }
+
+    const parsed = hopInput.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) {
+      return hopProblem(400, 'request', 'the body is { certPem, keyPem, caPem, body } — the certificate, its key, BankID\'s root and BankID\'s own request');
+    }
+    const body = JSON.stringify(parsed.data.body ?? {});
+    if (new TextEncoder().encode(body).length > HOP_BODY_MAX) {
+      return hopProblem(413, 'request', `BankID's request is larger than ${HOP_BODY_MAX} bytes`);
+    }
+    if (!options.mtls) return hopProblem(503, 'tcp.open', 'this deployment of the relay cannot open sockets');
+
+    try {
+      const answer = await options.mtls({
+        host,
+        method: 'POST',
+        path,
+        body,
+        rootPem: parsed.data.caPem,
+        certPem: parsed.data.certPem,
+        keyPem: parsed.data.keyPem,
+      });
+      console.log(JSON.stringify({ msg: 'mtls.bankid', clientId, environment, path, status: answer.status, stages: answer.stages }));
+      let json: unknown;
+      try {
+        json = answer.text ? JSON.parse(answer.text) : undefined;
+      } catch {
+        json = undefined;
+      }
+      return c.json({ status: answer.status, body: json, stages: answer.stages });
+    } catch (e) {
+      if (!(e instanceof MtlsFailure)) throw e;
+      console.log(JSON.stringify({ msg: 'mtls.bankid', clientId, environment, path, failed: e.stage, error: e.message, stages: e.stages }));
+      // A certificate or key that does not parse is the caller's to fix; the rest is the way to BankID.
+      return hopProblem(e.stage === 'tls.config' ? 400 : 502, e.stage, e.message, e.stages);
+    }
   });
 
   app.get('/:provider/.well-known/openid-configuration', (c) => {
@@ -430,22 +564,7 @@ export function createApp(options: AppOptions = {}) {
     let clientId = form.get('client_id') ?? '';
     let clientSecret = form.get('client_secret') ?? '';
     const authorization = c.req.raw.headers.get('authorization') ?? '';
-    if (authorization.toLowerCase().startsWith('basic ')) {
-      // Both `atob` and `decodeURIComponent` throw on input that is merely malformed, and
-      // a malformed credential is a failed authentication — a 401 the caller can read —
-      // never a 500 that reads as the relay being broken.
-      try {
-        const decoded = atob(authorization.slice(6).trim());
-        const separator = decoded.indexOf(':');
-        if (separator > 0) {
-          clientId = decodeURIComponent(decoded.slice(0, separator));
-          clientSecret = decodeURIComponent(decoded.slice(separator + 1));
-        }
-      } catch {
-        clientId = '';
-        clientSecret = '';
-      }
-    }
+    if (authorization.toLowerCase().startsWith('basic ')) ({ clientId, clientSecret } = basicCredentials(authorization));
     const store = storeOf(c.env);
     if (!clientId || !clientSecret || !(await store.verifyClientSecret(clientId, clientSecret))) {
       return c.json({ error: 'invalid_client', error_description: 'client authentication failed' }, 401);
@@ -614,4 +733,3 @@ export function createApp(options: AppOptions = {}) {
   return app;
 }
 
-export default createApp();

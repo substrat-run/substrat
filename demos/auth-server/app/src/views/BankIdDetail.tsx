@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { bankidSettings, removeBankid, type BankIdSettings } from '../api';
+import { bankidSettings, removeBankid, testBankid, type BankIdSettings } from '../api';
 import { navigate } from '../console/router';
 import { PROVIDERS_PATH } from '../console/routes';
-import { BankIdEditor } from './BankId';
+import { BankIdEditor, bankIdStatus } from './BankId';
 
 /**
  * `/bankid/settings` — the one BankID configuration this issuer has.
@@ -57,6 +57,7 @@ export function BankIdDetailView() {
       ) : (
         <>
           {settings && <BankIdFacts settings={settings} />}
+          {settings && <BankIdConnection settings={settings} onTested={setSettings} />}
           <section className="panel">
             <div className="panel-head">
               <h2>{settings ? 'Certificate and environment' : 'Enable BankID'}</h2>
@@ -115,7 +116,7 @@ function BankIdFacts({ settings }: { settings: BankIdSettings }) {
         </dd>
         <dt>Status</dt>
         <dd>
-          {settings.disabled ? <span className="tag warn">disabled</span> : 'enabled'}
+          {settings.disabled ? <span className="tag warn">disabled</span> : bankIdStatus(settings)}
           {settings.allowSignup && <span className="tag">creates accounts</span>}
         </dd>
         <dt>Certificate</dt>
@@ -136,6 +137,84 @@ function BankIdFacts({ settings }: { settings: BankIdSettings }) {
             unknown date, so there is no missing case to render here. */}
         <dd>{new Date(settings.updatedAt).toLocaleString()}</dd>
       </dl>
+    </section>
+  );
+}
+
+/* ---- whether BankID accepts the certificate ---- */
+
+const TRANSPORT_LABEL: Record<BankIdSettings['transport'], string> = {
+  direct: 'presented by this deployment itself',
+  hop: "presented by the platform's sign-in relay, which this deployment sends it to with each call",
+  none: 'cannot be presented: this deployment has no certificate binding and no platform relay client',
+};
+
+/**
+ * The connection test: BankID's `collect` for an order that does not exist, through the same
+ * transport a sign-in uses. A pass is BankID accepting the handshake and this certificate; a
+ * failure names the stage it stopped at, which is the difference between "the key does not match
+ * the certificate" (`tls.config`), "BankID refused it" (`tls.handshake`) and "BankID is not
+ * reachable" (`tcp.open`). Run on every save of a certificate; this button re-runs it.
+ */
+function BankIdConnection({ settings, onTested }: { settings: BankIdSettings; onTested: (s: BankIdSettings) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const { probe } = settings;
+
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Connection</h2></div>
+      <dl className="kv">
+        <dt>Certificate</dt>
+        <dd>{TRANSPORT_LABEL[settings.transport]}</dd>
+        <dt>Last test</dt>
+        <dd>
+          {!probe ? (
+            'not run since the certificate was saved'
+          ) : probe.ok ? (
+            <>BankID accepted the certificate · {new Date(probe.at).toLocaleString()}</>
+          ) : (
+            <>
+              <span className="tag warn">failed at {probe.stage ?? 'an unknown stage'}</span> {probe.detail}
+              {' · '}{new Date(probe.at).toLocaleString()}
+            </>
+          )}
+        </dd>
+        {probe?.stages && probe.stages.length > 0 && (
+          <>
+            <dt>Stages</dt>
+            <dd>
+              {probe.stages.map((s) => (
+                <span key={s.stage} className="tag">
+                  {s.stage} {s.ms} ms{s.protocol ? ` ${s.protocol}` : ''}{s.status ? ` ${s.status}` : ''}
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
+      </dl>
+      {err && <p className="error">{err}</p>}
+      <div className="row">
+        <button
+          className="btn"
+          disabled={busy || settings.transport === 'none'}
+          onClick={() =>
+            void (async () => {
+              setBusy(true);
+              setErr(null);
+              try {
+                onTested(await testBankid());
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e));
+              } finally {
+                setBusy(false);
+              }
+            })()
+          }
+        >
+          {busy ? 'Testing…' : 'Test connection'}
+        </button>
+      </div>
     </section>
   );
 }

@@ -134,9 +134,28 @@ const storedConfig = z.object({
   allowSignup: z.boolean(),
   disabled: z.boolean(),
   updatedAt: z.number(),
+  /** The last connection test (`probeBankId`), recorded on save and on Test connection. */
+  probe: z.lazy(() => bankIdProbe).optional(),
 });
 
 export type BankIdConfig = z.infer<typeof storedConfig>;
+
+/** One stage of a call through the relay's hop, as the hop reports it. */
+const probeStage = z.object({ stage: z.string(), ms: z.number(), protocol: z.string().optional(), status: z.number().optional() });
+
+/**
+ * A connection test's outcome: whether BankID accepted this certificate, and if not, the stage
+ * the call stopped at and why. Stored on the config row, so the panel and the login screen read
+ * the same answer.
+ */
+export const bankIdProbe = z.object({
+  ok: z.boolean(),
+  at: z.number(),
+  stage: z.string().optional(),
+  detail: z.string().optional(),
+  stages: z.array(probeStage).optional(),
+});
+export type BankIdProbe = z.infer<typeof bankIdProbe>;
 
 export function readBankIdConfig(sql: SqlExec): BankIdConfig | undefined {
   const row = sql.exec('SELECT value FROM config WHERE key = ?', CONFIG_KEY).toArray()[0] as
@@ -170,7 +189,28 @@ export function putBankIdConfig(sql: SqlExec, input: BankIdInput, existing?: Ban
     allowSignup: input.allowSignup,
     disabled: input.disabled,
     updatedAt: Date.now(),
+    // A new certificate has not been tested; anything else keeps the last answer.
+    ...(input.clientCert === undefined && existing?.probe ? { probe: existing.probe } : {}),
   };
+  sql.exec('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', CONFIG_KEY, JSON.stringify(next));
+  return next;
+}
+
+/** The test a runtime with no transport records: there is no call to make, and the panel should say so. */
+export function untestableBankId(now = Date.now()): BankIdProbe {
+  return {
+    ok: false,
+    at: now,
+    stage: 'transport',
+    detail: 'this deployment cannot present a client certificate: it has no mTLS binding and no platform relay client',
+  };
+}
+
+/** Record a connection test on the stored config. Nothing to record against when none is stored. */
+export function recordBankIdProbe(sql: SqlExec, probe: BankIdProbe): BankIdConfig | undefined {
+  const cfg = readBankIdConfig(sql);
+  if (!cfg) return undefined;
+  const next = { ...cfg, probe };
   sql.exec('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', CONFIG_KEY, JSON.stringify(next));
   return next;
 }
@@ -188,21 +228,72 @@ export function toWireBankId(cfg: BankIdConfig) {
     allowSignup: cfg.allowSignup,
     disabled: cfg.disabled,
     updatedAt: cfg.updatedAt,
+    probe: cfg.probe ?? null,
   };
 }
 
 /**
+ * How this runtime presents the client certificate, if it can:
+ *
+ * - `direct` — it presents the certificate itself: Node always, a standalone worker with an
+ *   mTLS-certificate binding.
+ * - `hop` — it sends the certificate with each call to the platform relay, which presents it
+ *   (`bankid-transport-hop.ts`). A hosted install, once the platform has registered it there.
+ * - `none` — it cannot, and BankID stays parked.
+ */
+export type BankIdTransportKind = 'direct' | 'hop' | 'none';
+
+/**
  * The signed-out login screen's view, shaped like the OAuth providers' entries so the wire
- * format stays one list. `transportAvailable` is the runtime's word that it can actually
- * present the client certificate (Node always can; the worker only with an mTLS binding) —
- * a button that starts a flow the runtime cannot finish must not be drawn.
+ * format stays one list. A button that starts a flow the runtime cannot finish must not be
+ * drawn, so this needs a transport — and, through the hop, a connection test that passed: the
+ * hop takes any certificate to BankID, and the test is the one place a wrong one shows.
  */
 export function publicBankIdFrom(
   cfg: BankIdConfig | undefined,
-  transportAvailable: boolean,
+  transport: BankIdTransportKind,
 ): { id: string; label: string } | undefined {
-  if (!cfg || cfg.disabled || !transportAvailable) return undefined;
+  if (!cfg || cfg.disabled || transport === 'none') return undefined;
+  if (transport === 'hop' && cfg.probe?.ok !== true) return undefined;
   return { id: 'bankid', label: 'BankID' };
+}
+
+/** The order reference BankID never issued: `collect` of it is the cheapest call that needs a certificate. */
+const PROBE_ORDER_REF = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Test the connection: BankID's `collect` for an order that does not exist. A `400
+ * invalidParameters` is BankID having accepted the TLS handshake and this certificate and then
+ * refused only the order — so it starts nothing and needs no person. Anything else is a failure,
+ * reported at the stage it happened when the transport says (`BankIdHopError`).
+ */
+export async function probeBankId(transport: BankIdTransport, apiUrl: string, now = Date.now()): Promise<BankIdProbe> {
+  try {
+    const res = await transport(`${apiUrl}/collect`, { orderRef: PROBE_ORDER_REF });
+    const parsed = apiError.safeParse(res.body);
+    if (res.status === 400 && parsed.success && parsed.data.errorCode === 'invalidParameters') {
+      return { ok: true, at: now };
+    }
+    return {
+      ok: false,
+      at: now,
+      stage: 'http.response',
+      detail:
+        res.status === 403
+          ? 'BankID refused the connection: this certificate is not accepted for this environment'
+          : `BankID answered ${res.status}${parsed.success ? ` ${parsed.data.errorCode}` : ''}`,
+    };
+  } catch (e) {
+    const stage = typeof (e as { stage?: unknown }).stage === 'string' ? (e as { stage: string }).stage : 'transport';
+    const stages = (e as { stages?: unknown }).stages;
+    return {
+      ok: false,
+      at: now,
+      stage,
+      detail: e instanceof Error ? e.message : String(e),
+      ...(Array.isArray(stages) ? { stages: stages as BankIdProbe['stages'] } : {}),
+    };
+  }
 }
 
 /* ---- the RP API v6.0 client ---- */

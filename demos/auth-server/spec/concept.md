@@ -392,8 +392,13 @@ The **mTLS client certificate** is the runtime seam. Configuration is one JSON r
 by the dump). The Node dev server presents those PEMs directly (`src/bankid-transport-node.ts`,
 pinning BankID's own root CAs — their API servers are not publicly trusted); a standalone
 worker presents a `mtls_certificates` binding (`BANKID`, see wrangler.jsonc), workerd's fetch
-having no per-request client cert. No binding ⇒ the button is not offered — a configured flow
-the runtime cannot finish stays parked rather than half-working.
+having no per-request client cert. A **hosted** install has neither — a dispatched script has no
+binding of that type and no `connect()` — so it sends the certificate with each call to the
+platform's sign-in relay, which opens the socket and runs the TLS (`src/bankid-transport-hop.ts`,
+[docs/rfc/mtls-hop.md](../../../docs/rfc/mtls-hop.md)); the relay keeps nothing. Through the relay
+BankID is offered only once the panel's **Test connection** — BankID's `collect` for an order
+that does not exist — has passed; saving a new certificate runs it. No transport at all ⇒ the
+button is not offered, and the panel says why.
 
 Trying it: the **test environment** takes the shared `FPTestcert5` certificate from
 [bankid.com/en/utvecklare/test](https://www.bankid.com/en/utvecklare/test) (passphrase

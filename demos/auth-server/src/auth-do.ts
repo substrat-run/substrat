@@ -30,7 +30,10 @@ import {
   publicBankIdFrom,
   readBankIdConfig,
   type BankIdConfig,
+  type BankIdTransport,
+  type BankIdTransportKind,
 } from './bankid.js';
+import { hopBankIdTransport } from './bankid-transport-hop.js';
 import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
@@ -38,7 +41,7 @@ import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './
 import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './places.js';
 import { authenticateClient, servePlaces, serveReport } from './places-http.js';
 import { isDelegationsEntry, parseDelegationsEntry, syncDelegations } from './delegations.js';
-import { isSocialRelayEntry, parseSocialRelayEntry, syncSocialRelay } from './social-relay.js';
+import { isSocialRelayEntry, parseSocialRelayEntry, relayHop, syncSocialRelay } from './social-relay.js';
 import { exchangeToken } from './token-exchange.js';
 import {
   PreviewClientRefusal,
@@ -98,7 +101,9 @@ export interface AuthServerDoEnv {
   /** A Cloudflare mTLS-certificate binding (`mtls_certificates` in wrangler.jsonc) holding the
    *  BankID RP client certificate — the worker's only way to present one, since workerd's
    *  `fetch` takes no per-request client cert. STANDALONE deploys only; absent (every hosted
-   *  dispatch instance), BankID stays configured-but-unoffered rather than half-working. */
+   *  dispatch instance), BankID goes through the platform relay's hop instead
+   *  (`bankid-transport-hop.ts`), or stays configured-but-unoffered if this install has no
+   *  relay client. */
   BANKID?: { fetch(input: string, init?: RequestInit): Promise<Response> };
 }
 
@@ -231,19 +236,39 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 
   /** BankID for `buildAuth` — only when configured, enabled, AND this worker can present the
-   *  client certificate (the mTLS binding above). The binding's certificate is fixed at deploy
-   *  time; the panel's environment choice still decides which API it is presented to. */
+   *  client certificate (`bankidTransport`). The binding's certificate is fixed at deploy time;
+   *  the panel's environment choice still decides which API it is presented to. */
   private bankid(cfg: BankIdConfig | undefined) {
-    const binding = this.env.BANKID;
-    if (!cfg || cfg.disabled || !binding) return undefined;
+    if (!cfg || cfg.disabled) return undefined;
+    const transport = this.bankidTransport(cfg);
+    if (!transport) return undefined;
     return {
       apiUrl: bankIdApiUrl(cfg.environment),
-      transport: fetchBankIdTransport((url, init) => binding.fetch(url, init)),
+      transport: transport.transport,
       allowSignup: cfg.allowSignup,
       // Set by Cloudflare's edge on every request and not forgeable through it — the one
       // address this worker can honestly report to BankID as the end user's.
       clientIpHeader: 'cf-connecting-ip',
     };
+  }
+
+  /**
+   * How this instance presents BankID's certificate: the mTLS binding of a standalone deploy,
+   * else the platform relay's hop for a hosted install the platform has registered there, else
+   * not at all. One answer, read by the sign-in plugin, the login screen and the console's
+   * connection test alike.
+   */
+  private bankidTransportKind(): BankIdTransportKind {
+    if (this.env.BANKID) return 'direct';
+    return relayHop(this.ctx.storage.sql) ? 'hop' : 'none';
+  }
+
+  private bankidTransport(cfg: BankIdConfig): { kind: BankIdTransportKind; transport: BankIdTransport } | undefined {
+    const binding = this.env.BANKID;
+    if (binding) return { kind: 'direct', transport: fetchBankIdTransport((url, init) => binding.fetch(url, init)) };
+    const hop = relayHop(this.ctx.storage.sql);
+    if (hop) return { kind: 'hop', transport: hopBankIdTransport(hop, cfg, (input, init) => globalThis.fetch(input, init)) };
+    return undefined;
   }
 
   /**
@@ -579,7 +604,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * cannot come to disagree about what exists.
    */
   private offeredProviders(): { id: string; label: string }[] {
-    const bankid = publicBankIdFrom(readBankIdConfig(this.ctx.storage.sql), Boolean(this.env.BANKID));
+    const bankid = publicBankIdFrom(readBankIdConfig(this.ctx.storage.sql), this.bankidTransportKind());
     return [...publicProvidersFrom(readProviders(this.ctx.storage.sql)), ...(bankid ? [bankid] : [])];
   }
 
@@ -671,6 +696,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
           // (`console-client.ts`) judges a policy against what this runtime can actually
           // offer — BankID's mTLS binding included, which no SQL read could know about.
           offeredProviders: () => this.offeredProviders(),
+          bankidTransport: (cfg) => this.bankidTransport(cfg),
           transaction: (fn) => this.ctx.storage.transactionSync(fn),
         }),
       );

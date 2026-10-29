@@ -14,6 +14,7 @@
     "lint:generated-marks": "node tools/generated-marks.mjs",
     "lint:spine-ddl": "node tools/spine-ddl-drift.mjs",
     "lint:lake-schema": "node tools/lake-schema-emit.mjs",
+    "lint:mtls-wasm": "node tools/mtls-wasm-emit.mjs",
     "lint:bound-fetch": "node tools/bound-fetch.mjs",
     "lint:vite-proxy": "node tools/vite-proxy-host.mjs",
     "lint:like-pattern": "node tools/like-pattern-length.mjs",

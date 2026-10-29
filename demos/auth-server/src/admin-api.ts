@@ -37,7 +37,19 @@ import {
 import { resolveIssuerEndpoints } from './provider-discovery.js';
 import { isPlatformRow, relayClientId } from './social-relay.js';
 import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
-import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
+import {
+  bankIdApiUrl,
+  deleteBankIdConfig,
+  probeBankId,
+  putBankIdConfig,
+  readBankIdConfig,
+  recordBankIdProbe,
+  toWireBankId,
+  untestableBankId,
+  type BankIdConfig,
+  type BankIdTransport,
+  type BankIdTransportKind,
+} from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
 import { importBody, importUsers } from './user-import.js';
 
@@ -116,6 +128,12 @@ export interface AdminApiDeps {
    * legitimate policy or wave through the one that strands its author.
    */
   offeredProviders(): { id: string; label: string }[];
+  /**
+   * How this runtime would present BankID's certificate for `cfg`, or undefined when it cannot —
+   * so the panel's connection test runs the call a sign-in would, through the same transport.
+   * Absent means the runtime has none.
+   */
+  bankidTransport?(cfg: BankIdConfig): { kind: BankIdTransportKind; transport: BankIdTransport } | undefined;
   /**
    * Run `fn` as one transaction — the DO's `storage.transactionSync`, better-sqlite3's
    * `transaction` on node. Required rather than defaulted: the one caller today is the user
@@ -717,11 +735,28 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   /**
    * BankID is configured beside the OAuth upstreams but not among them (`src/bankid.ts` for
    * why: no client id, no redirect — a certificate and two decisions). One read, one PUT, one
-   * DELETE, singleton by nature. The key material goes in and never comes back out.
+   * DELETE, singleton by nature, and a connection test. The key material goes in and never
+   * comes back out.
+   *
+   * `transport` is how this runtime presents the certificate — `direct`, through the platform
+   * relay's `hop`, or `none` — so the panel can say why BankID is not offered instead of
+   * claiming it is.
    */
+  const bankidView = (cfg: BankIdConfig) => ({
+    ...toWireBankId(cfg),
+    transport: deps.bankidTransport?.(cfg)?.kind ?? 'none',
+  });
+
+  /** Run the connection test against `cfg` and record it. A runtime with no transport records that. */
+  const testBankId = async (cfg: BankIdConfig) => {
+    const transport = deps.bankidTransport?.(cfg);
+    const probe = transport ? await probeBankId(transport.transport, bankIdApiUrl(cfg.environment)) : untestableBankId();
+    return recordBankIdProbe(deps.sql, probe) ?? cfg;
+  };
+
   app.get('/bankid', (c) => {
     const cfg = readBankIdConfig(deps.sql);
-    return c.json({ bankid: cfg ? toWireBankId(cfg) : null });
+    return c.json({ bankid: cfg ? bankidView(cfg) : null });
   });
 
   app.put('/bankid', async (c) => {
@@ -738,8 +773,19 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     if (!input.clientCert && !existing) {
       throw new HTTPException(400, { message: 'a client certificate and key are required to enable BankID' });
     }
-    const saved = putBankIdConfig(deps.sql, input, existing);
-    return c.json(toWireBankId(saved), existing ? 200 : 201);
+    let saved = putBankIdConfig(deps.sql, input, existing);
+    // A new certificate, or a new environment for the old one, is tested as it is saved: the
+    // answer shows on the page now rather than at the first person's sign-in, and through the
+    // relay BankID is not offered until it passes.
+    if (input.clientCert !== undefined || input.environment !== existing?.environment) saved = await testBankId(saved);
+    return c.json(bankidView(saved), existing ? 200 : 201);
+  });
+
+  /** Test the connection with the stored certificate: the call a sign-in makes, minus the order. */
+  app.post('/bankid/test', async (c) => {
+    const cfg = readBankIdConfig(deps.sql);
+    if (!cfg) throw new HTTPException(404, { message: 'BankID is not configured' });
+    return c.json(bankidView(await testBankId(cfg)));
   });
 
   app.delete('/bankid', (c) => {
