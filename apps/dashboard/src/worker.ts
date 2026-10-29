@@ -5502,6 +5502,12 @@ async function assertMayReadBilling(ctx: TeamContext): Promise<void> {
   }
 }
 
+/** Keep the projection literal and turn unexpected structured status data into unknown. */
+function projectPlaneScalar(value: unknown): string | number | boolean | null | undefined {
+  if (value === undefined || value === null) return value;
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null;
+}
+
 const routeHandlers = {
   'dashboard/list-entitlements': async (ctx) => {
     await assertMayReadBilling(ctx);
@@ -5521,24 +5527,24 @@ const routeHandlers = {
       readAt: raw.readAt,
       retention: { storageMonths: raw.retention.storageMonths, modelDays: raw.retention.modelDays, requestMonths: raw.retention.requestMonths },
       storage: {
-        state: raw.storage.state, bytes: raw.storage.bytes, estimated: raw.storage.estimated,
-        basis: raw.storage.basis, lowerBound: raw.storage.lowerBound, truncatedReason: raw.storage.truncatedReason,
+        state: projectPlaneScalar(raw.storage.state), bytes: raw.storage.bytes, estimated: projectPlaneScalar(raw.storage.estimated),
+        basis: projectPlaneScalar(raw.storage.basis), lowerBound: projectPlaneScalar(raw.storage.lowerBound), truncatedReason: projectPlaneScalar(raw.storage.truncatedReason),
         sampled: raw.storage.sampled, total: raw.storage.total,
         failing: raw.storage.failing, oldestReadAt: raw.storage.oldestReadAt,
-        excluded: raw.storage.excluded,
+        excluded: raw.storage.excluded.map(projectPlaneScalar),
       },
       requests: {
-        state: raw.requests.state, requests: raw.requests.requests, estimated: raw.requests.estimated,
-        lowerBound: raw.requests.lowerBound, coveredDays: raw.requests.coveredDays,
+        state: projectPlaneScalar(raw.requests.state), requests: raw.requests.requests, estimated: projectPlaneScalar(raw.requests.estimated),
+        lowerBound: projectPlaneScalar(raw.requests.lowerBound), truncatedReason: projectPlaneScalar((raw.requests as typeof raw.requests & { truncatedReason?: unknown }).truncatedReason), coveredDays: raw.requests.coveredDays,
         totalDays: raw.requests.totalDays, sinceDay: raw.requests.sinceDay,
         untilDay: raw.requests.untilDay, lastReadAt: raw.requests.lastReadAt,
         byVertical: raw.requests.byVertical.map((row) => ({ vertical: row.vertical, requests: row.requests })),
         breakdownTruncated: raw.requests.breakdownTruncated,
       },
       models: {
-        state: raw.models.state, calls: raw.models.calls, inputTokens: raw.models.inputTokens,
-        outputTokens: raw.models.outputTokens, estimated: raw.models.estimated,
-        lowerBound: raw.models.lowerBound, truncatedReason: raw.models.truncatedReason,
+        state: projectPlaneScalar(raw.models.state), calls: raw.models.calls, inputTokens: raw.models.inputTokens,
+        outputTokens: raw.models.outputTokens, estimated: projectPlaneScalar(raw.models.estimated),
+        lowerBound: projectPlaneScalar(raw.models.lowerBound), truncatedReason: projectPlaneScalar(raw.models.truncatedReason),
         since: raw.models.since, until: raw.models.until,
         oldestRecordedAt: raw.models.oldestRecordedAt, newestRecordedAt: raw.models.newestRecordedAt,
         byVerticalModel: raw.models.byVerticalModel.map((row) => ({

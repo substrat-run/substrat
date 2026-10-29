@@ -731,21 +731,24 @@ const appReleaseSide = z.object({
 // than this dashboard. Preserve its value for the person reading the record.
 const historyEntryOut = historyEntry.extend({ piiClass: z.string() });
 const eventDeliveryOut = eventDelivery.extend({ state: z.string() });
+// Plane-owned status tokens may change independently of this dashboard. Accept
+// JSON scalars only; the view treats anything except known-good values as limited.
+const planeScalar = z.union([z.string(), z.number(), z.boolean()]).nullable().optional();
 export const meteredUsageOut = z.object({
   readAt: z.string(),
   retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), requestMonths: z.number().int().nullable() }),
   storage: z.object({
     // Plane-owned vocabulary: currently unavailable/empty/not-sampled/complete/partial/stale/failing/truncated.
-    state: z.string(),
-    bytes: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]).nullable().optional(), basis: z.string(),
-    lowerBound: z.boolean(), truncatedReason: z.string().nullable(),
+    state: planeScalar,
+    bytes: z.number().int().nullable(), estimated: planeScalar, basis: planeScalar,
+    lowerBound: planeScalar, truncatedReason: planeScalar,
     sampled: z.number().int(), total: z.number().int(), failing: z.number().int(),
-    oldestReadAt: z.string().nullable(), excluded: z.array(z.string()),
+    oldestReadAt: z.string().nullable(), excluded: z.array(planeScalar),
   }),
   requests: z.object({
     // Plane-owned coverage and estimate status; currently unavailable/empty/complete/partial/truncated.
-    state: z.string(),
-    requests: z.number().int().nullable(), estimated: z.union([z.boolean(), z.string()]).nullable().optional(), lowerBound: z.boolean(),
+    state: planeScalar,
+    requests: z.number().int().nullable(), estimated: planeScalar, lowerBound: planeScalar, truncatedReason: planeScalar,
     coveredDays: z.number().int(), totalDays: z.number().int(), sinceDay: z.string(), untilDay: z.string(),
     lastReadAt: z.string().nullable(),
     byVertical: z.array(z.object({ vertical: z.string().nullable(), requests: z.number().int() })),
@@ -753,10 +756,10 @@ export const meteredUsageOut = z.object({
   }),
   models: z.object({
     // Plane-owned coverage; currently unavailable/empty/complete/truncated.
-    state: z.string(),
+    state: planeScalar,
     calls: z.number().int().nullable(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
-    estimated: z.union([z.boolean(), z.string()]).nullable().optional(), lowerBound: z.boolean(), since: z.string(), until: z.string(),
-    truncatedReason: z.string().nullable(),
+    estimated: planeScalar, lowerBound: planeScalar, since: z.string(), until: z.string(),
+    truncatedReason: planeScalar,
     oldestRecordedAt: z.string().nullable(), newestRecordedAt: z.string().nullable(),
     byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
     breakdownTruncated: z.boolean(),

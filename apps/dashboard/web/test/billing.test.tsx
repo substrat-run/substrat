@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/lib/api';
+import { isExactUsageFigure } from '../src/lib/usage-precision';
 import { Billing } from '../src/views/Billing';
 
 const read = vi.hoisted(() => vi.fn());
@@ -136,20 +137,59 @@ it('shows numeric figures as lower bounds when coverage is incomplete or a new t
   expect(container.textContent).not.toContain('Estimate: no;');
 });
 
-it('treats absent or null estimate metadata as estimated lower bounds', async () => {
+const signalValues = ['', ' ', 'x', 0, false, null, undefined, 'maybe', true] as const;
+const exactSignals = { truncated: false, reason: null, coverage: 'complete', estimated: false } as const;
+const expectedExact: Record<keyof typeof exactSignals, readonly boolean[]> = {
+  truncated: [false, false, false, false, true, false, false, false, false],
+  reason: [false, false, false, false, false, true, true, false, false],
+  coverage: [false, false, false, false, false, false, false, false, false],
+  estimated: [false, false, false, false, true, false, false, false, false],
+};
+it('shows an exact figure only when all signals are positively known-good', () => {
+  expect(isExactUsageFigure(exactSignals)).toBe(true);
+  expect(isExactUsageFigure({ ...exactSignals, complete: false })).toBe(false);
+});
+for (const field of Object.keys(exactSignals) as (keyof typeof exactSignals)[]) {
+  signalValues.forEach((value, index) => {
+    it(`requires positively known-good ${field}=${String(value)} for an exact figure`, () => {
+      const signals = { ...exactSignals, [field]: value };
+      expect(isExactUsageFigure(signals)).toBe(expectedExact[field][index]);
+    });
+  });
+}
+
+it('shows whitespace truncation reasons as limited lower bounds', async () => {
+  read.mockResolvedValue([]);
+  readUsage.mockResolvedValue({
+    readAt: '2026-10-29T00:00:00Z', retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
+    storage: { state: 'complete', bytes: 8, estimated: false, basis: 'scope-databases', lowerBound: false, truncatedReason: ' ', sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
+    requests: { state: 'complete', requests: 7, estimated: false, lowerBound: false, coveredDays: 30, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
+    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: false, lowerBound: false, truncatedReason: ' ', since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+  });
+  await render();
+  expect(container.textContent).toContain('At least 8 bytes');
+  expect(container.textContent).toContain('At least 1 recorded calls');
+  expect(container.textContent).toContain('limited');
+  const text = container.textContent ?? '';
+  expect(text.slice(text.indexOf('Stored bytes'), text.indexOf('Router requests'))).not.toContain('Estimate: no;');
+  expect(text.slice(text.indexOf('Model usage'))).not.toContain('Estimate: no;');
+});
+
+it.each([null, 0] as const)('treats absent, null, or numeric estimate metadata (%s) as estimated lower bounds', async (estimate) => {
   read.mockResolvedValue([]);
   readUsage.mockResolvedValue({
     readAt: '2026-10-29T00:00:00Z',
     retention: { storageMonths: 13, modelDays: 400, requestMonths: null },
-    storage: { state: 'complete', bytes: 8, estimated: null, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
-    requests: { state: 'complete', requests: 7, lowerBound: false, coveredDays: 30, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
-    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: null, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
+    storage: { state: 'complete', bytes: 8, estimated: estimate, basis: 'scope-databases', lowerBound: false, truncatedReason: null, sampled: 1, total: 1, failing: 0, oldestReadAt: '2026-10-28T00:00:00Z', excluded: [] },
+    requests: { state: 'complete', requests: 7, ...(estimate === null ? {} : { estimated: estimate }), lowerBound: false, coveredDays: 30, totalDays: 30, sinceDay: '2026-09-29', untilDay: '2026-10-28', lastReadAt: '2026-10-29T00:00:00Z', byVertical: [], breakdownTruncated: false },
+    models: { state: 'complete', calls: 1, inputTokens: 11, outputTokens: 3, estimated: estimate, lowerBound: false, truncatedReason: null, since: '2026-09-29T00:00:00Z', until: '2026-10-29T00:00:00Z', oldestRecordedAt: '2026-10-28T12:00:00Z', newestRecordedAt: '2026-10-28T12:00:00Z', byVerticalModel: [], breakdownTruncated: false },
   });
   await render();
   expect(container.textContent).toContain('At least 8 bytes');
   expect(container.textContent).toContain('At least 7 estimated request counts');
   expect(container.textContent).toContain('At least 1 recorded calls');
   expect(container.textContent).toContain('Estimate: unknown or estimated; treat this figure as an estimate');
+  if (estimate === 0) expect(container.textContent).toContain('unknown (0)');
   expect(container.textContent).not.toContain('Estimate: no;');
 });
 
