@@ -331,6 +331,42 @@ describe('fortnox connector — inbound sync', () => {
       expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['12']]);
     });
 
+    it('gives up on a read after three 429s and fails naming the invoice', async () => {
+      await bindInvoices();
+      invoice('12', '2026-06-10 09:00');
+      fortnox.rateLimitOn = '/supplierinvoices/';
+      fortnox.rateLimitNext = 4;
+      const sleeps: number[] = [];
+
+      const result = await sweepFortnoxLedger(host, connId, { ...at(NOW), sleep: async (ms) => void sleeps.push(ms) });
+
+      expect(sleeps).toEqual([2000, 2000, 2000]);
+      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 12:') }]);
+      expect(invoicesLanded).toEqual([]);
+    });
+
+    it('stops starting reads after 90 seconds, lands them, and resumes next pass', async () => {
+      await bindInvoices();
+      for (let n = 1; n <= 20; n += 1) invoice(String(n), '2026-06-10 09:00');
+      let clock = NOW;
+      // A slow Fortnox: every REST request takes ten seconds.
+      const fetch: typeof fortnox.fetch = (input, init) => {
+        if (!String(input).includes('/oauth-v1/')) clock += 10_000;
+        return fortnox.fetch(input, init);
+      };
+      const slow = () => ({ ...options(), fetch, now: () => clock });
+
+      const first = await sweepFortnoxLedger(host, connId, slow());
+
+      // The list at 10 s, then reads until 90 s had passed: eight of them.
+      expect(first.failed).toEqual([]);
+      expect(first.invoices).toEqual([{ scopeId: s, landed: 8, pending: true }]);
+      expect(invoicesLanded[0]!.invoices.map((i) => i.givenNumber)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
+
+      await sweepFortnoxLedger(host, connId, slow());
+      expect(invoicesLanded[1]!.invoices[0]!.givenNumber).toBe('9');
+    });
+
     it('paces a burst of reads to 25 requests in any 5 seconds', async () => {
       await bindInvoices();
       for (let n = 1; n <= 40; n += 1) invoice(String(n), '2026-06-10 09:00');

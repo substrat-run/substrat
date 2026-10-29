@@ -118,6 +118,8 @@ export class FortnoxMock {
 
   /** REST requests still to be answered 429 with `Retry-After: 2`, counting down. */
   rateLimitNext = 0;
+  /** Only requests whose path contains this count toward {@link rateLimitNext}. */
+  rateLimitOn = '';
 
   /** Add or change a supplier invoice — how a test simulates "an invoice was booked". */
   setSupplierInvoice(entry: FortnoxMockSupplierInvoice): void {
@@ -193,7 +195,7 @@ export class FortnoxMock {
       return this.json({ ErrorInformation: { message: 'invalid token' } }, 401);
     }
     this.calls.push(path);
-    if (this.rateLimitNext > 0) {
+    if (this.rateLimitNext > 0 && path.includes(this.rateLimitOn)) {
       this.rateLimitNext -= 1;
       return this.json({ message: 'Too many requests' }, 429, { 'Retry-After': '2' });
     }

@@ -202,7 +202,7 @@ const RATE_LIMIT_RETRIES = 3;
  * window. Capped, so a provider answering an hour cannot hang a sweep.
  */
 function retryAfterMs(header: string | null): number {
-  const seconds = header === null ? Number.NaN : Number(header);
+  const seconds = header === null || header.trim() === '' ? Number.NaN : Number(header);
   if (!Number.isFinite(seconds) || seconds < 0) return RATE_LIMIT_WINDOW_MS;
   return Math.min(seconds * 1000, RATE_LIMIT_WINDOW_MS * 3);
 }

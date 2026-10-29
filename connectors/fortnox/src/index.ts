@@ -297,6 +297,12 @@ export type FortnoxSupplierInvoicePage = z.infer<typeof fortnoxSupplierInvoicePa
  * larger change set resumes on the next pass.
  */
 const INVOICE_DETAILS_PER_PASS = 200;
+/**
+ * How long one binding's pass keeps starting invoice reads. Pacing alone puts 200 reads at about
+ * 40 seconds, but every 429 adds its wait, and a sweep holds one of a few concurrent slots while
+ * it runs. Past this, what was read lands and the next pass resumes after it.
+ */
+const INVOICE_PASS_DEADLINE_MS = 90_000;
 /** How far back a binding's first pass reads. */
 const INVOICE_FIRST_LOOKBACK_MS = 90 * 86_400_000;
 /**
@@ -673,6 +679,8 @@ export async function syncFortnoxSupplierInvoices(
       }
     }
     handled += 1;
+    // Checked after a read, so every pass makes progress however slow the list was.
+    if ((options.now?.() ?? Date.now()) - nowMs >= INVOICE_PASS_DEADLINE_MS) break;
   }
   if (handled === 0) throw failure!;
 
