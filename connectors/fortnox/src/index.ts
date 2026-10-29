@@ -26,6 +26,8 @@ import {
   FORTNOX_API_BASE,
   FORTNOX_OAUTH_BASE,
   fortnoxSecret,
+  type FortnoxApiOptions,
+  type FortnoxSupplierInvoice,
 } from './api.js';
 import { financialYearFor, summarizeLedger } from './aggregate.js';
 import { parseSie4 } from './sie4.js';
@@ -46,6 +48,7 @@ export {
   type FortnoxCompany,
   type FortnoxFinancialYear,
   type FortnoxSecret,
+  type FortnoxApiOptions,
   type FortnoxSupplierInvoice,
 } from './api.js';
 export {
@@ -289,9 +292,9 @@ export const fortnoxSupplierInvoicePage = z.object({
 export type FortnoxSupplierInvoicePage = z.infer<typeof fortnoxSupplierInvoicePage>;
 
 /**
- * Invoice details read per connection per pass. Fortnox allows 300 calls a minute per client and
- * company, and a ledger connection to the same company spends from that too. A larger change
- * set resumes on the next pass.
+ * Invoice details read per connection per pass. The client paces every read to Fortnox's limit,
+ * so this bounds how long one pass runs (about 40 seconds at the limit) rather than the rate. A
+ * larger change set resumes on the next pass.
  */
 const INVOICE_DETAILS_PER_PASS = 200;
 /** How far back a binding's first pass reads. */
@@ -312,10 +315,21 @@ const STOCKHOLM = new Intl.DateTimeFormat('en-CA', {
   hourCycle: 'h23',
 });
 
-/** An instant as Fortnox's `lastmodified` filter reads it: `YYYY-MM-DD HH:MM`, Swedish local time. */
+/** An instant as Swedish wall time to the minute: `YYYY-MM-DD HH:MM`. */
 const stockholmMinute = (ms: number): string => {
   const p = Object.fromEntries(STOCKHOLM.formatToParts(new Date(ms)).map((part) => [part.type, part.value]));
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+};
+
+/**
+ * The `lastmodified` filter for a cursor. Fortnox filters by wall time, and the autumn change
+ * repeats an hour: a cursor in the FIRST 02:xx would hide a change made in the second 02:xx at
+ * an earlier minute. So inside the first pass of a repeated hour, the filter starts at that
+ * hour's beginning; the landing upserts, so the extra minutes cost only resends.
+ */
+const lastModifiedFilter = (ms: number): string => {
+  const wall = stockholmMinute(ms);
+  return stockholmMinute(ms + 3_600_000) === wall ? `${wall.slice(0, 14)}00` : wall;
 };
 
 export interface FortnoxConnectorOptions {
@@ -325,7 +339,20 @@ export interface FortnoxConnectorOptions {
   timeoutMs?: number;
   /** Injected so a test can assert elapsed time without sleeping. */
   now?: () => number;
+  /** Injected for the same reason: the rate-limit waits go through this. */
+  sleep?: (ms: number) => Promise<void>;
+  /** One window for every client of a pass; see {@link FortnoxApiOptions.rateWindow}. */
+  rateWindow?: number[];
 }
+
+/** The client options a sync builds its `FortnoxApi` with. */
+const apiOptions = (options: FortnoxConnectorOptions): FortnoxApiOptions => ({
+  apiBase: options.apiBase,
+  oauthBase: options.oauthBase,
+  now: options.now,
+  sleep: options.sleep,
+  rateWindow: options.rateWindow,
+});
 
 /**
  * Declare that a connection should sync one scope — the one-time setup a poll-only
@@ -465,11 +492,7 @@ export async function syncFortnoxScope(
     options.timeoutMs ?? 30_000,
     { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
   );
-  const api = new FortnoxApi(conn, {
-    apiBase: options.apiBase,
-    oauthBase: options.oauthBase,
-    now: options.now,
-  });
+  const api = new FortnoxApi(conn, apiOptions(options));
 
   // The period defaults to the calendar year containing "now", which is the sane
   // default for a recurring sync; a caller back-filling names its own.
@@ -615,13 +638,13 @@ export async function syncFortnoxSupplierInvoices(
     options.timeoutMs ?? 30_000,
     { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
   );
-  const api = new FortnoxApi(conn, { apiBase: options.apiBase, oauthBase: options.oauthBase, now: options.now });
+  const api = new FortnoxApi(conn, apiOptions(options));
 
   const nowMs = options.now?.() ?? Date.now();
   const cursor = binding.invoiceSync;
   const since = cursor ? Date.parse(cursor.since) : nowMs - INVOICE_FIRST_LOOKBACK_MS;
   const through = cursor?.pending ? Number(cursor.pending.through) : -Infinity;
-  const changed = [...new Set(await api.supplierInvoicesModifiedSince(stockholmMinute(since - INVOICE_OVERLAP_MS)))]
+  const changed = [...new Set(await api.supplierInvoicesModifiedSince(lastModifiedFilter(since - INVOICE_OVERLAP_MS)))]
     .filter((n) => Number(n) > through)
     .sort((a, b) => Number(a) - Number(b));
   const budget = options.budget ?? { details: INVOICE_DETAILS_PER_PASS };
@@ -629,50 +652,76 @@ export async function syncFortnoxSupplierInvoices(
   if (batch.length === 0) return { scopeId: binding.scopeId, landed: 0, pending: changed.length > 0 };
   budget.details -= batch.length;
 
-  const invoices = [];
+  // Read in number order, stopping at the first read that fails. What was read before it still
+  // lands and the cursor moves past it, so a failure costs the pass the rest of its batch, never
+  // the progress already made. A 404 is an invoice deleted between the list and the read: there
+  // is nothing to land, so it is stepped over. Any other failure (a 429 past its retries, a 5xx,
+  // an invoice our schema cannot read) ends the pass naming the invoice, and the next pass
+  // starts from it. An invoice that can never be read therefore fails every pass by number
+  // instead of being dropped, because a skipped one would not reach the vertical until someone
+  // edited it in Fortnox.
+  const invoices: FortnoxSupplierInvoicePage['invoices'] = [];
+  let handled = 0;
+  let failure: Error | null = null;
   for (const givenNumber of batch) {
-    const invoice = await api.supplierInvoice(givenNumber);
-    invoices.push({
-      givenNumber: invoice.GivenNumber,
-      supplierNumber: invoice.SupplierNumber,
-      supplierName: invoice.SupplierName,
-      invoiceNumber: invoice.InvoiceNumber,
-      invoiceDate: invoice.InvoiceDate,
-      dueDate: invoice.DueDate,
-      total: { amount: invoice.Total, currency: invoice.Currency },
-      booked: invoice.Booked,
-      cancelled: invoice.Cancelled,
-      rows: invoice.SupplierInvoiceRows.map((row) => ({
-        account: row.Account,
-        costCentre: row.CostCenter || null,
-        amount: { amount: addDecimal(row.Debit, mulDecimal('-1', row.Credit)), currency: 'SEK' },
-      })),
-    });
+    try {
+      invoices.push(landedInvoice(await api.supplierInvoice(givenNumber)));
+    } catch (err) {
+      if (!(err instanceof FortnoxApiError && err.status === 404)) {
+        failure = new Error(`supplier invoice ${givenNumber}: ${err instanceof Error ? err.message : String(err)}`);
+        break;
+      }
+    }
+    handled += 1;
   }
-  const company = await api.companyInformation();
-  const payload = fortnoxSupplierInvoicePage.parse({
-    connectionId,
-    company: { name: company.CompanyName, organizationNumber: company.OrganizationNumber },
-    invoices,
-  });
-  // The connection acting as itself (#97), gated on the grant the binding was seated with.
-  const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
-  await scope.invoke(binding.operation, payload);
+  if (handled === 0) throw failure!;
 
-  const more = changed.length > batch.length;
+  if (invoices.length > 0) {
+    const company = await api.companyInformation();
+    const payload = fortnoxSupplierInvoicePage.parse({
+      connectionId,
+      company: { name: company.CompanyName, organizationNumber: company.OrganizationNumber },
+      invoices,
+    });
+    // The connection acting as itself (#97), gated on the grant the binding was seated with.
+    const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
+    await scope.invoke(binding.operation, payload);
+  }
+
+  const more = changed.length > handled;
   const startedAt = cursor?.pending?.startedAt ?? new Date(nowMs).toISOString();
   const synced: FortnoxBinding = {
     ...binding,
     invoiceSync: {
       since: more ? new Date(since).toISOString() : startedAt,
       syncedAt: new Date(nowMs).toISOString(),
-      landed: batch.length,
-      ...(more ? { pending: { startedAt, through: batch[batch.length - 1]! } } : {}),
+      landed: invoices.length,
+      ...(more ? { pending: { startedAt, through: batch[handled - 1]! } } : {}),
     },
   };
   await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), synced);
-  return { scopeId: binding.scopeId, landed: batch.length, pending: more };
+  if (failure) throw failure;
+  return { scopeId: binding.scopeId, landed: invoices.length, pending: more };
 }
+
+/** One Fortnox invoice as the page carries it, parsed here so a bad one is named by number. */
+const landedInvoice = (invoice: FortnoxSupplierInvoice): FortnoxSupplierInvoicePage['invoices'][number] =>
+  fortnoxSupplierInvoicePage.shape.invoices.element.parse({
+    givenNumber: invoice.GivenNumber,
+    supplierNumber: invoice.SupplierNumber,
+    supplierName: invoice.SupplierName,
+    invoiceNumber: invoice.InvoiceNumber,
+    invoiceDate: invoice.InvoiceDate,
+    dueDate: invoice.DueDate,
+    total: { amount: invoice.Total, currency: invoice.Currency },
+    booked: invoice.Booked,
+    cancelled: invoice.Cancelled,
+    rows: invoice.SupplierInvoiceRows.map((row) => ({
+      account: row.Account,
+      costCentre: row.CostCenter || null,
+      amount: { amount: addDecimal(row.Debit, mulDecimal('-1', row.Credit)), currency: 'SEK' },
+    })),
+  });
 
 /** What one sweep pass over a connection did. */
 export interface FortnoxSweepResult {
@@ -706,8 +755,9 @@ export async function sweepFortnoxLedger(
 ): Promise<FortnoxSweepResult> {
   const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
   const result: FortnoxSweepResult = { found: 0, synced: [], invoices: [], unchanged: 0, failed: [] };
-  // One budget per pass: invoice bindings on this connection read the same company.
+  // One budget and one rate window per pass: every binding on this connection reads the same company.
   const budget = { details: INVOICE_DETAILS_PER_PASS };
+  const pass = { ...options, rateWindow: options.rateWindow ?? [] };
 
   for (const { value } of rows) {
     // A tombstoned binding (`unbindFortnoxScope`) — present as a row, not a target.
@@ -720,12 +770,12 @@ export async function sweepFortnoxLedger(
     }
     try {
       if (binding.kind === 'supplier-invoice') {
-        const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...options, budget });
+        const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...pass, budget });
         if (r.landed > 0) result.invoices.push(r);
         else result.unchanged += 1;
         continue;
       }
-      const r = await syncFortnoxScope(host, connectionId, binding, options);
+      const r = await syncFortnoxScope(host, connectionId, binding, pass);
       if (r.changed) result.synced.push(r);
       else result.unchanged += 1;
     } catch (err) {

@@ -118,9 +118,19 @@ twice. A pass with no changes makes no call to the operation.
   configurable.
 - **The cursor** moves only after the operation accepted the page. An operation that throws
   leaves it in place, and the next pass reads the same invoices again.
-- **Rate.** A pass reads at most 200 invoices per connection, inside Fortnox's limit of 300
-  calls a minute per company. A larger change set (a first pass over a busy company) lands
-  200 a pass, oldest number first, until it is through.
+- **Rate.** Every read of a pass is paced to Fortnox's documented limit, 25 requests in any
+  5 seconds, and a `429` is waited out for as long as its `Retry-After` says, up to three times
+  per request. The pacing sees only this pass. A ledger connection to the same company, or the
+  company's own integrations, spend from the same limit, and their share is absorbed by the
+  retry rather than prevented. A pass reads at most 200 invoices per connection, about 40 seconds
+  at the limit. A larger change set (a first pass over a busy company) lands 200 a pass, oldest
+  number first, until it is through.
+- **A read that fails.** Invoices read before it still land, and the cursor moves past them. An
+  invoice deleted between the list and its read (`404`) is stepped over. Any other failure (a
+  `429` past its retries, a server error, an invoice the connector cannot read) fails the
+  scope's row naming the invoice number, and the next pass starts from that invoice. One that
+  can never be read fails every pass by its number rather than being skipped, because a skipped
+  invoice would not reach the operation until someone edited it in Fortnox.
 - **Read-only.** This sweep writes nothing to Fortnox. Invoice files (the scanned PDF) and
   writing an approval back are not part of it yet.
 

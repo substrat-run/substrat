@@ -44,6 +44,8 @@ export interface FortnoxMockOptions {
 export interface FortnoxMockSupplierInvoice {
   invoice: { GivenNumber: string } & Record<string, unknown>;
   modified: string;
+  /** Listed, but its detail answers 404: deleted between the list and the read. */
+  gone?: boolean;
 }
 
 /**
@@ -114,6 +116,9 @@ export class FortnoxMock {
 
   private readonly supplierInvoices = new Map<string, FortnoxMockSupplierInvoice>();
 
+  /** REST requests still to be answered 429 with `Retry-After: 2`, counting down. */
+  rateLimitNext = 0;
+
   /** Add or change a supplier invoice — how a test simulates "an invoice was booked". */
   setSupplierInvoice(entry: FortnoxMockSupplierInvoice): void {
     this.supplierInvoices.set(entry.invoice.GivenNumber, entry);
@@ -124,11 +129,12 @@ export class FortnoxMock {
     this.sie[financialYearId] = text;
   }
 
-  private json(body: unknown, status = 200): Awaited<ReturnType<FetchLike>> {
+  private json(body: unknown, status = 200, headers: Record<string, string> = {}): Awaited<ReturnType<FetchLike>> {
     const text = JSON.stringify(body);
     return {
       ok: status >= 200 && status < 300,
       status,
+      headers: { get: (name: string) => headers[name] ?? null },
       text: async () => text,
       arrayBuffer: async () => pc8Bytes(text).buffer as ArrayBuffer,
     } as Awaited<ReturnType<FetchLike>>;
@@ -187,6 +193,10 @@ export class FortnoxMock {
       return this.json({ ErrorInformation: { message: 'invalid token' } }, 401);
     }
     this.calls.push(path);
+    if (this.rateLimitNext > 0) {
+      this.rateLimitNext -= 1;
+      return this.json({ message: 'Too many requests' }, 429, { 'Retry-After': '2' });
+    }
 
     if (path.endsWith('/companyinformation')) {
       return this.json({ CompanyInformation: this.company });
@@ -211,7 +221,7 @@ export class FortnoxMock {
     const invoiceMatch = /\/supplierinvoices\/([^/?]+)$/.exec(url.pathname);
     if (invoiceMatch) {
       const entry = this.supplierInvoices.get(decodeURIComponent(invoiceMatch[1]!));
-      if (!entry) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
+      if (!entry || entry.gone) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
       return this.json({ SupplierInvoice: entry.invoice });
     }
     const sieMatch = /\/sie\/4\?financialyear=(\d+)$/.exec(path);

@@ -318,6 +318,76 @@ describe('fortnox connector — inbound sync', () => {
       expect(invoicesLanded.at(-1)!.invoices.map((i) => i.givenNumber)).toEqual(['1']);
     });
 
+    it('waits out a 429 for as long as Fortnox says, then lands', async () => {
+      await bindInvoices();
+      invoice('12', '2026-06-10 09:00');
+      fortnox.rateLimitNext = 1;
+      const sleeps: number[] = [];
+
+      const result = await sweepFortnoxLedger(host, connId, { ...at(NOW), sleep: async (ms) => void sleeps.push(ms) });
+
+      expect(result.failed).toEqual([]);
+      expect(sleeps).toEqual([2000]);
+      expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['12']]);
+    });
+
+    it('paces a burst of reads to 25 requests in any 5 seconds', async () => {
+      await bindInvoices();
+      for (let n = 1; n <= 40; n += 1) invoice(String(n), '2026-06-10 09:00');
+      let clock = NOW;
+      const sent: number[] = [];
+      const fetch: typeof fortnox.fetch = (input, init) => {
+        if (!String(input).includes('/oauth-v1/')) sent.push(clock);
+        return fortnox.fetch(input, init);
+      };
+
+      await sweepFortnoxLedger(host, connId, { ...options(), fetch, now: () => clock, sleep: async (ms) => void (clock += ms) });
+
+      expect(invoicesLanded[0]!.invoices).toHaveLength(40);
+      expect(sent).toHaveLength(42); // the list, 40 details, the company
+      expect(Math.max(...sent.map((t) => sent.filter((u) => u >= t && u < t + 5_000).length))).toBe(25);
+    });
+
+    it('steps over an invoice deleted between the list and its read', async () => {
+      await bindInvoices();
+      for (const n of ['1', '2', '3']) invoice(n, '2026-06-10 09:00');
+      fortnox.setSupplierInvoice({ invoice: { GivenNumber: '2' }, modified: '2026-06-10 09:00', gone: true });
+
+      const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(result.failed).toEqual([]);
+      expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['1', '3']]);
+      expect((await binding()).invoiceSync?.pending).toBeUndefined();
+    });
+
+    it('lands what it read before an unreadable invoice, then fails by its number without re-landing', async () => {
+      await bindInvoices();
+      for (const n of ['1', '2', '3']) invoice(n, '2026-06-10 09:00', n === '2' ? { Booked: 'yes' } : {});
+
+      const first = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(first.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 2:') }]);
+      expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['1']]);
+      expect((await binding()).invoiceSync?.pending?.through).toBe('1');
+
+      const second = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+      expect(second.failed).toEqual([{ scopeId: s, error: expect.stringContaining('supplier invoice 2:') }]);
+      expect(invoicesLanded).toHaveLength(1);
+    });
+
+    it('reads a repeated autumn hour from its start, so a change in its second pass is not hidden', async () => {
+      await bindInvoices();
+      // 00:45Z on 2026-10-25 is the FIRST 02:45 in Stockholm; less the overlap, the first 02:40.
+      const b = await binding();
+      await host.admin.putConnectorState(connId, `fortnox:binding:${s}`, {
+        ...b, invoiceSync: { since: '2026-10-25T00:45:00.000Z', syncedAt: '2026-10-25T00:45:00.000Z', landed: 1 },
+      });
+
+      await sweepFortnoxLedger(host, connId, at(Date.parse('2026-10-25T01:30:00.000Z')));
+
+      expect(fortnox.calls[0]).toBe('/3/supplierinvoices?lastmodified=2026-10-25%2002%3A00&limit=500&page=1');
+    });
+
     it('keeps ledger and invoice bindings of one connection apart', async () => {
       await bind();
       const invoiceScope = scopeId.parse(ulid());
