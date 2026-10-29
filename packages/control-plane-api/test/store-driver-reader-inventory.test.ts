@@ -75,6 +75,10 @@ function relevantWorkspaceProjects(): { configs: string[]; roots: string[] } {
   for (const [directory, deps] of importers) {
     // The root importer is the repo's tools, which run nothing in the control plane.
     if (directory === '.') continue;
+    // A copy of the scaffold template that `tools/template-sync.mjs` writes at typecheck time (#878):
+    // nothing but its package.json is checked in, so a test run may find it empty. It is a vertical,
+    // and runs nothing in the control plane either.
+    if (directory === 'packages/template-check') continue;
     // contracts declares the type, so it is a reader without depending on itself.
     if (directory !== 'packages/contracts' && !deps.has('@substrat-run/contracts') && !deps.has('@substrat-run/control-plane-api')) continue;
     const tsconfig = join(directory, 'tsconfig.json');
