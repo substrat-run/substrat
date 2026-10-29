@@ -50,7 +50,7 @@ describe('deriveConnectionSweep (#1234)', () => {
     expect(v.rows.every((r) => r.lastSweptAt === null)).toBe(true);
   });
 
-  it('does not count a `skipped` run as a use', () => {
+  it('does not count a skipped or unsupported run as a use', () => {
     // A skip is the sweep saying "bound, but no sweeper registered": nothing went
     // through the connection. Rendering its timestamp as "last used" would tell a
     // builder an integration is working that nothing has ever polled.
@@ -58,6 +58,7 @@ describe('deriveConnectionSweep (#1234)', () => {
       connections: [conn('c1', 'planima')],
       sightings: [
         { connectionId: 'c1', at: '2026-09-13T00:00:00Z', outcome: 'skipped' },
+        { connectionId: 'c1', at: '2026-09-14T00:00:00Z', outcome: 'unsupported' },
         { connectionId: 'c1', at: '2026-09-12T00:00:00Z', outcome: 'skipped' },
       ],
       now: NOW,
@@ -65,6 +66,16 @@ describe('deriveConnectionSweep (#1234)', () => {
     expect(v.rows[0]!.lastSweptAt).toBeNull();
     expect(v.rows[0]!.lastOutcomeFailed).toBeNull();
     expect(v.rows[0]!.idle).toBe(true);
+  });
+
+  it('counts a mixed sweep that polled its ledger as a use', () => {
+    const v = deriveConnectionSweep({
+      connections: [conn('c1', 'fortnox')],
+      sightings: [{ connectionId: 'c1', at: '2026-09-14T00:00:00Z', outcome: 'ok' }],
+      now: NOW,
+    });
+    expect(v.rows[0]!.lastSweptAt).toBe('2026-09-14T00:00:00Z');
+    expect(v.rows[0]!.idle).toBe(false);
   });
 
   it('applies the window itself, against the clock it is handed', () => {

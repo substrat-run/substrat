@@ -20,11 +20,30 @@ export interface SweepRunsProps {
   tenants: Map<TenantId, Tenant>;
 }
 
-const OUTCOME_BADGE: Record<SweepRunEntry['outcome'], 'success' | 'danger' | 'warning'> = {
+const OUTCOME_BADGE: Record<string, 'success' | 'danger' | 'warning'> = {
   ok: 'success',
   failed: 'danger',
   skipped: 'warning',
+  unsupported: 'warning',
 };
+
+/** Expanded receipt detail; a neutral limitation on a successful poll is not a failure. */
+export function SweepRunDetail({ entry }: { entry: SweepRunEntry }) {
+  if (!entry.error) return null;
+  const mixedFailure = entry.outcome === 'failed' && entry.error.startsWith('Unsupported bindings: ')
+    ? entry.error.indexOf('\n') : -1;
+  const style = { fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap' as const, wordBreak: 'break-word' as const };
+  return mixedFailure >= 0 ? (
+    <>
+      <div style={{ ...style, color: 'var(--text-tertiary)' }}>{entry.error.slice(0, mixedFailure)}</div>
+      <div style={{ ...style, color: 'var(--status-danger-fg)' }}>{entry.error.slice(mixedFailure + 1)}</div>
+    </>
+  ) : (
+    <div style={{ ...style, color: entry.outcome === 'failed' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)' }}>
+      {entry.error}
+    </div>
+  );
+}
 
 /**
  * Operations → Sweeps (#1232): the fleet-wide sweep record — every connection
@@ -42,7 +61,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
 
   const [tenantFilter, setTenantFilter] = useState('all');
   const [kindFilter, setKindFilter] = useState<'all' | SweepRunKind>('all');
-  const [outcomeFilter, setOutcomeFilter] = useState<'all' | 'ok' | 'failed' | 'skipped'>('all');
+  const [outcomeFilter, setOutcomeFilter] = useState<'all' | SweepRunEntry['outcome']>('all');
   const [unitInput, setUnitInput] = useState('');
   // Server-side narrowing is EXACT match (the unit key) — debounced so typing
   // doesn't refetch per keystroke. Free-text stays client-side.
@@ -154,6 +173,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
             { value: 'ok', label: 'ok' },
             { value: 'failed', label: 'failed' },
             { value: 'skipped', label: 'skipped' },
+            { value: 'unsupported', label: 'unsupported' },
           ]}
           value={outcomeFilter}
           onChange={(e) => setOutcomeFilter(e.target.value as typeof outcomeFilter)}
@@ -221,7 +241,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
                     </button>
                   </td>
                   <td style={td}>
-                    <Badge status={OUTCOME_BADGE[e.outcome]}>{e.outcome}</Badge>
+                    <Badge status={OUTCOME_BADGE[e.outcome] ?? 'warning'}>{e.outcome}</Badge>
                   </td>
                   <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)' }}>
                     {e.tenantId ? (
@@ -238,11 +258,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
                   <tr id={`sweep-detail-${e.id}`}>
                     <td colSpan={6} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
-                        {e.error && (
-                          <div style={{ fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--status-danger-fg)' }}>
-                            {e.error}
-                          </div>
-                        )}
+                        <SweepRunDetail entry={e} />
                         <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
                           <span>unit {e.unit}</span>
                           {e.scopeId && <span>scope {e.scopeId}</span>}

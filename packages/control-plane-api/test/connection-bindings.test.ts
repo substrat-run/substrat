@@ -136,6 +136,20 @@ describe('poll connector binding door', () => {
     expect(response.status).toBe(200);
     expect(await host.admin.getConnectorState(fortnox, 'unrelated')).toEqual({ keep: true });
   });
+  it('refuses a Fortnox kind change on a held binding as a 409, before any write or audit', async () => {
+    const own = scopeId.parse(ulid());
+    await host.provisionScope(actor, { tenantId: tenant, scopeId: own, vertical: 'acme-crm' });
+    await host.admin.activateScope(actor, tenant, own);
+    await host.admin.grantToConnection(actor, { connectionId: fortnox, permission: permissionKey.parse('ledger:record'), node: { tenantId: tenant, scopeId: own }, grantedBy: actor });
+    await host.admin.putConnectorState(fortnox, `fortnox:binding:${own}`, { scopeId: own, operation: 'ledger/record-period', permission: 'ledger:record' });
+    const before = bind.mock.calls.length;
+    const audited = (await host.admin.auditLog(actor, { tenantId: tenant })).length;
+    const response = await write({ operation: 'invoices/record', permission: 'ledger:record', kind: 'supplier-invoice' }, path(fortnox, tenant, own));
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain('one Fortnox landing kind per scope; use a separate scope for the other kind (ledger to supplier-invoice)');
+    expect(bind.mock.calls.length).toBe(before);
+    expect((await host.admin.auditLog(actor, { tenantId: tenant })).length).toBe(audited);
+  });
   // #2101: a Microsoft 365 binding names its channel folder, and only it may.
   it('requires a folder for Microsoft 365, refuses one elsewhere, and hands it to the connector', async () => {
     await host.admin.grantToConnection(actor, { connectionId: m365, permission: permissionKey.parse('docs:land'), node: { tenantId: tenant, scopeId: scope }, grantedBy: actor });

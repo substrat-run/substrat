@@ -106,7 +106,7 @@ export function deriveConnectionSweep(input: {
   // are stored as text.
   const newest = new Map<string, SweepSighting>();
   for (const s of sightings) {
-    if (s.outcome === 'skipped' || s.at < cutoff) continue;
+    if (s.outcome === 'skipped' || s.outcome === 'unsupported' || s.at < cutoff) continue;
     const held = newest.get(s.connectionId);
     if (held === undefined || s.at > held.at) newest.set(s.connectionId, s);
   }

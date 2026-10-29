@@ -87,15 +87,20 @@ export interface ConnectorSweeper {
 export interface ConnectorSweepAnswer {
   found: number;
   failed: readonly { scopeId: string; error: string }[];
+  unsupported?: readonly { scopeId: string; reason: string }[];
 }
 
 /** {@link ConnectorSweepAnswer} out of whatever a sweeper resolved with, or null when it says neither. */
 export function connectorSweepAnswerOf(result: unknown): ConnectorSweepAnswer | null {
   if (typeof result !== 'object' || result === null) return null;
-  const { found, failed } = result as { found?: unknown; failed?: unknown };
+  const { found, failed, unsupported } = result as { found?: unknown; failed?: unknown; unsupported?: unknown };
   if (typeof found !== 'number' || !Array.isArray(failed)) return null;
   return {
     found,
+    unsupported: Array.isArray(unsupported)
+      ? unsupported.filter((u): u is { scopeId: unknown; reason: unknown } => typeof u === 'object' && u !== null)
+          .map((u) => ({ scopeId: String(u.scopeId), reason: String(u.reason) }))
+      : [],
     failed: failed
       .filter((f): f is { scopeId: unknown; error: unknown } => typeof f === 'object' && f !== null)
       .map((f) => ({ scopeId: String(f.scopeId), error: String(f.error) })),
@@ -1961,7 +1966,7 @@ export async function runPlatformSweep(
   await mapBounded(connections, concurrency, async (c) => {
     // #1232: the connection's durable sweep record. A connection row carries no
     // scope (a connection spans scopes by construction) and no version.
-    const record = (outcome: 'ok' | 'failed' | 'skipped', extra?: Partial<SweepRunInput>) =>
+    const record = (outcome: 'ok' | 'failed' | 'skipped' | 'unsupported', extra?: Partial<SweepRunInput>) =>
       options.recordSweepRun?.({
         kind: 'connector',
         unit: c.id,
@@ -2001,7 +2006,7 @@ export async function runPlatformSweep(
     // #2316: the row is the connection's tenant's to read, so it says what became of the sweep, in
     // the platform's words with counts, under one reference; the text (a provider's answer, a landing
     // refusal) is staff's row under the same reference, or the report's when nothing files one.
-    const fail = (said: string[], raw: string[]) => {
+    const fail = (said: string[], raw: string[], neutralDetail?: string) => {
       const reference = ulid();
       if (options.recordFailure) {
         options.recordFailure(
@@ -2015,20 +2020,22 @@ export async function runPlatformSweep(
       } else {
         for (const r of raw) report.errors.push({ kind: 'sweep', id: c.id, error: r });
       }
-      record('failed', { error: `${said.join('; ')} (reference ${reference})`, elapsedMs: Date.now() - started });
+      const failureText = `${said.join('; ')} (reference ${reference})`;
+      record('failed', { error: neutralDetail ? `Unsupported bindings: ${neutralDetail}\n${failureText}` : failureText, elapsedMs: Date.now() - started });
     };
     const landingSaid = landingFailed.length > 0 ? [`${counted(landingFailed.length, 'declared landing')} could not be granted or bound`] : [];
     const scoped = (fs: readonly { scopeId: string; error: string }[]) => fs.map((f) => `scope ${f.scopeId}: ${f.error}`);
     const everyMinutes = options.sweepEveryMinutes?.[c.provider];
     if (everyMinutes) {
       try {
-        const [ok, failed] = await Promise.all([
+        const [ok, failed, unsupported] = await Promise.all([
           host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'ok', limit: 1 }),
           host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'failed', limit: 1 }),
+          host.admin.listSweepRuns(options.actor, { kind: 'connector', unit: c.id, outcome: 'unsupported', limit: 1 }),
         ]);
         // Ignore skipped rows and future-dated receipts: neither proves a poll inside this interval.
         const now = Date.now();
-        const lastAttempt = Math.max(0, ...[ok[0], failed[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
+        const lastAttempt = Math.max(0, ...[ok[0], failed[0], unsupported[0]].filter((row) => row !== undefined).map((row) => Date.parse(row.at)).filter((at) => at <= now));
         if (now - lastAttempt < everyMinutes * 60_000) {
           if (landingFailed.length > 0) fail(landingSaid, scoped(landingFailed));
           report.connectionsSkipped += 1;
@@ -2052,20 +2059,31 @@ export async function runPlatformSweep(
       return;
     }
     const answer = options.connectionLandings && binderOf(options.connectionLandings, c) ? connectorSweepAnswerOf(result) : null;
-    report.connectionsSwept += 1;
+    // Skipped only when the row below is `unsupported`: a failed landing makes it `failed`, and swept.
+    if (answer && answer.found > 0 && answer.unsupported?.length === answer.found && answer.failed.length === 0 && landingFailed.length === 0) {
+      report.connectionsSkipped += 1;
+    } else {
+      report.connectionsSwept += 1;
+    }
     // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
     // landing the platform could not seat, fails the row; a poll that found nothing to poll is
-    // `skipped`, which a console reads as "nothing polls this connection".
+    // `skipped`, which a console reads as "nothing polls this connection". A mixed connection
+    // records the result of its polled bindings and keeps unsupported bindings in the detail.
     const pollFailed = answer?.failed ?? [];
+    const unsupported = answer?.unsupported ?? [];
+    const unsupportedDetail = unsupported.map((u) => `scope ${u.scopeId}: ${u.reason}`).join('; ');
     if (landingFailed.length > 0 || pollFailed.length > 0) {
       fail(
         [...landingSaid, ...(pollFailed.length > 0 ? [`${pollFailed.length} of ${counted(answer!.found, 'binding')} did not land`] : [])],
         scoped([...landingFailed, ...pollFailed]),
+        unsupportedDetail || undefined,
       );
     } else if (answer && answer.found === 0) {
       record('skipped', { error: NO_BINDING, elapsedMs: Date.now() - started });
+    } else if (unsupported.length > 0 && answer?.found === unsupported.length) {
+      record('unsupported', { error: unsupportedDetail, elapsedMs: Date.now() - started });
     } else {
-      record('ok', { elapsedMs: Date.now() - started });
+      record('ok', { ...(unsupportedDetail ? { error: unsupportedDetail } : {}), elapsedMs: Date.now() - started });
     }
   });
 

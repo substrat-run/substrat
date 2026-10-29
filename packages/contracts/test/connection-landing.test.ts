@@ -37,6 +37,16 @@ describe('connection landings in the module manifest (#2316)', () => {
     expect(() => manifest('@acme/crm', [PLAN], [LANDING, { ...LANDING, operation: 'maintenance/other' }])).toThrow(/at most one landing per provider/);
   });
 
+  it('refuses a mixed Fortnox landing in one scope with an actionable error', () => {
+    const ledger = { provider: 'fortnox', operation: 'ledger/record', permission: 'plan:record' };
+    const invoice = { ...ledger, operation: 'invoices/record', options: { kind: 'supplier-invoice' } };
+    expect(() => manifest('@acme/crm', [PLAN], [ledger, invoice])).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    expect(() => buildPermissionRegistry({ modules: [
+      { manifest: manifest('@acme/a', [PLAN], [ledger]) },
+      { manifest: manifest('@acme/b', [], [invoice]) },
+    ], roles: [] })).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+  });
+
   it('refuses an operation that is not module/operation, and an unknown field', () => {
     expect(() => manifest('@acme/crm', [PLAN], [{ ...LANDING, operation: 'record-plan' }])).toThrow(/module\/operation/);
     expect(() => manifest('@acme/crm', [PLAN], [{ ...LANDING, scope: 'x' }])).toThrow();

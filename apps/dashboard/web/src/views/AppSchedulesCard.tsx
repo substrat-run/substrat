@@ -127,7 +127,7 @@ const MARK: Record<keyof typeof FRESHNESS_VERDICT, { glyph: string; color: strin
 };
 
 /** One strip slot: grey for a run, red for a failure, a dashed outline where no run is recorded. */
-function slot(outcome: 'ok' | 'failed' | 'skipped' | null): CSSProperties {
+function slot(outcome: string | null): CSSProperties {
   const base: CSSProperties = { width: 8, height: 14, borderRadius: 2, boxSizing: 'border-box', display: 'inline-block', flexShrink: 0 };
   if (outcome === 'ok') return { ...base, background: 'var(--text-tertiary)' };
   if (outcome === 'failed') return { ...base, background: 'var(--status-danger-fg)' };

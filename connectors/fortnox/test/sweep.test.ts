@@ -209,6 +209,47 @@ describe('fortnox connector — inbound sync', () => {
     expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=2']);
   });
 
+  it('keeps legacy ledger and invoice bindings isolated in one sweep', async () => {
+    await bind(); // No kind: the existing manifest/binding shape remains ledger.
+    const invoiceScope = scopeId.parse(ulid());
+    await host.admin.putConnectorState(connId, `fortnox:binding:${invoiceScope}`, {
+      scopeId: invoiceScope, tenantId: t, vertical: 'forecast', operation: 'invoices/record',
+      permission: LEDGER_RECORD, kind: 'supplier-invoice', boundAt: new Date().toISOString(),
+    });
+
+    const result = await sweepFortnoxLedger(host, connId, options());
+    expect(result.synced).toHaveLength(1);
+    expect(result.unsupported).toEqual([{ scopeId: invoiceScope, reason: expect.stringContaining('upgrade') }]);
+    expect(result.failed).toEqual([]);
+    expect(landed).toHaveLength(1);
+    expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=2']);
+  });
+
+  it('reports an invoice-only binding as unsupported without polling or changing its kind', async () => {
+    await bindFortnoxScope(host, { connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast',
+      operation: 'invoices/record', permission: LEDGER_RECORD, kind: 'supplier-invoice' });
+    expect((await listFortnoxBindings(host, connId))[0]?.kind).toBe('supplier-invoice');
+    await expect(bind()).rejects.toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    expect((await listFortnoxBindings(host, connId))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record' });
+
+    const result = await sweepFortnoxLedger(host, connId, options());
+    expect(result.unsupported).toHaveLength(1);
+    expect(result.failed).toEqual([]);
+    expect(fortnox.calls).toEqual([]);
+    expect(landed).toEqual([]);
+  });
+
+  it('fails closed for a stored kind from a newer platform', async () => {
+    await host.admin.putConnectorState(connId, `fortnox:binding:${s}`, {
+      scopeId: s, tenantId: t, vertical: 'forecast', operation: OPERATION,
+      permission: LEDGER_RECORD, kind: 'future-kind', boundAt: new Date().toISOString(),
+    });
+    const result = await sweepFortnoxLedger(host, connId, options());
+    expect(result.failed).toEqual([{ scopeId: s, error: expect.stringContaining("unknown Fortnox binding kind 'future-kind'") }]);
+    expect(fortnox.calls).toEqual([]);
+    expect(landed).toEqual([]);
+  });
+
   it('skips a second sweep when the books have not changed', async () => {
     await bind();
     const first = await sweepFortnoxLedger(host, connId, options());

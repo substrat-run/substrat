@@ -54,6 +54,21 @@ describe('connector registry', () => {
     expect(() => binder.options!({ horizonYear: 10 }, current)).toThrow();
   });
 
+  it('validates Fortnox landing kinds and rejects unknown options', () => {
+    const fortnox = connectionBindersFor(ENV)['fortnox']!;
+    expect(fortnox.bindBeforeGrant).toBeTypeOf('function');
+    const options = fortnox.options!;
+    expect(options(undefined)).toEqual({ kind: undefined });
+    expect(options({ kind: 'supplier-invoice' })).toEqual({ kind: 'supplier-invoice' });
+    const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };
+    expect(() => options(undefined, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    expect(() => options({ kind: 'ledger' }, invoice)).toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    const legacy = { ...invoice, kind: undefined };
+    expect(options(undefined, legacy)).toEqual({ kind: undefined });
+    expect(() => options({ kind: 'future-kind' })).toThrow();
+    expect(() => options({ typo: 'supplier-invoice' })).toThrow();
+  });
+
   it('takes the declared grants from the connector, never a second list', () => {
     // The failure this reproduces (#716/#841): a hand-kept copy beside the connector
     // that drifted for months. `toBe` on the identity, not `toEqual` on the contents.

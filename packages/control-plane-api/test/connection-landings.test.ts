@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -177,12 +177,21 @@ describe('declared connection landings (#2316)', () => {
       list: (h, row) => listFortnoxBindings(h, row.id),
       bind: (h, row, target) =>
         bindFortnoxScope(h, { ...(target as Parameters<typeof bindFortnoxScope>[1]), connectionId: row.id, externalAccountRef: row.externalAccountRef }),
-      options: (raw) => connectionBindingOptions('fortnox').parse(raw ?? {}),
+      bindBeforeGrant: (h, row, target) =>
+        bindFortnoxScope(h, { ...(target as Parameters<typeof bindFortnoxScope>[1]), connectionId: row.id, externalAccountRef: row.externalAccountRef, grantPreflighted: true }),
+      options: (raw, current) => {
+        const parsed = connectionBindingOptions('fortnox').parse(raw ?? {});
+        const oldKind = (current as { kind?: string } | undefined)?.kind ?? 'ledger';
+        const newKind = parsed.kind ?? 'ledger';
+        if (current && oldKind !== newKind) throw new Error(`one Fortnox landing kind per scope; use a separate scope for the other kind (${oldKind} to ${newKind})`);
+        return { kind: parsed.kind };
+      },
       stale: (binding, row) => ((binding as { externalAccountRef?: string | null }).externalAccountRef ?? null) !== row.externalAccountRef,
     },
     planima: {
       list: (h, row) => listPlanimaBindings(h, row.id),
       bind: (h, row, target) => bindPlanimaScope(h, { ...(target as Parameters<typeof bindPlanimaScope>[1]), connectionId: row.id }),
+      bindBeforeGrant: (h, row, target) => bindPlanimaScope(h, { ...(target as Parameters<typeof bindPlanimaScope>[1]), connectionId: row.id, grantPreflighted: true }),
       options: (raw, current) => {
         const schema = connectionBindingOptions('planima');
         return schema.parse({ ...(current ? schema.strip().parse(current) : {}), ...(raw ?? {}) });
@@ -249,6 +258,7 @@ describe('declared connection landings (#2316)', () => {
 
     const report = await pass();
 
+    expect(report.errors).toEqual([]);
     expect(report.connectionLandings).toEqual({ granted: 3, bound: 3, failed: 0 });
     const held = await host.connectionGrantsInScope(t, s);
     expect(held.map((g) => `${g.connectionId} ${g.permission}`).sort()).toEqual(
@@ -269,6 +279,158 @@ describe('declared connection landings (#2316)', () => {
     for (const id of [companyA, companyB, plan]) expect(lastRun(id)).toMatchObject({ outcome: 'ok' });
     expect(await audited('grantToConnection')).toBe(3);
     expect(await audited('bindConnectionScope')).toBe(3);
+  });
+
+  it('seats an invoice declaration but records unsupported without a failed sweep', async () => {
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring([
+      { provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record',
+        options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] },
+    ])));
+    const id = await connect('fortnox', '111111');
+    const report = await pass();
+
+    expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record' });
+    expect(report.errors).toEqual([]);
+    expect(report.connectionLandings?.failed).toBe(0);
+    expect(report.connectionsSkipped).toBe(1);
+    expect(report.connectionsSwept).toBe(0);
+    expect(lastRun(id)).toMatchObject({ outcome: 'unsupported', error: expect.stringContaining('upgrade') });
+    expect(ledgerPages).toEqual([]);
+    expect(fortnox.calls).toEqual([]);
+  });
+
+  it('counts an invoice-only connection whose landing failed as swept, beside its failed row', async () => {
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring([
+      { provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record',
+        options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] },
+    ])));
+    const id = await connect('fortnox', '111111');
+    vi.spyOn(host.admin, 'grantToConnection').mockRejectedValueOnce(new Error('injected grant failure'));
+
+    const report = await pass();
+
+    expect(report.connectionLandings).toMatchObject({ bound: 1, failed: 1 });
+    expect(report.connectionsSkipped).toBe(0);
+    expect(report.connectionsSwept).toBe(1);
+    expect(lastRun(id)).toMatchObject({ outcome: 'failed' });
+  });
+
+  it.each([
+    ['unchanged operation', 'invoices/record'],
+    ['changed operation', 'ledger/record-period'],
+  ])('refuses an omitted kind after an invoice binding with %s', async (_label, operation) => {
+    const id = await connect('fortnox');
+    const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(invoice)));
+    await pass();
+    const before = await host.connectionGrantsInScope(t, s);
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring([
+      { provider: 'fortnox', operation, permission: 'plan:record', declaredBy: ['@acme/crm'] },
+    ])));
+
+    const report = await pass();
+
+    expect(report.connectionLandings).toMatchObject({ granted: 0, bound: 0, failed: 1 });
+    expect(report.errors).toEqual([expect.objectContaining({ error: expect.stringContaining('one Fortnox landing kind per scope; use a separate scope for the other kind') })]);
+    expect(await host.connectionGrantsInScope(t, s)).toEqual(before);
+    expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record', permission: 'ledger:record' });
+  });
+
+  it('audits a staged binding whose grant fails, then converges on retry without a second audit', async () => {
+    const id = await connect('fortnox');
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    const grant = vi.spyOn(host.admin, 'grantToConnection').mockRejectedValueOnce(new Error('injected grant failure'));
+    try {
+      const interrupted = await pass();
+      expect(interrupted.connectionLandings).toMatchObject({ granted: 0, bound: 1, failed: 1 });
+      expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ scopeId: s, operation: 'ledger/record-period' });
+      expect(await host.connectionGrantsInScope(t, s)).toEqual([]);
+    } finally {
+      grant.mockRestore();
+    }
+    const retried = await pass();
+    expect(retried.connectionLandings).toEqual({ granted: 1, bound: 0, failed: 0 });
+    expect(await host.connectionGrantsInScope(t, s)).toEqual([expect.objectContaining({ connectionId: id, permission: 'ledger:record' })]);
+    expect((await listFortnoxBindings(host, id))).toHaveLength(1);
+    expect(await audited('bindConnectionScope')).toBe(1);
+  });
+
+  it('writes no grant when the binding write fails', async () => {
+    const id = await connect('fortnox');
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    const original = binders.fortnox!.bindBeforeGrant!;
+    binders.fortnox!.bindBeforeGrant = async () => { throw new Error('injected bind failure'); };
+    try {
+      const report = await pass();
+      expect(report.connectionLandings).toMatchObject({ granted: 0, bound: 0, failed: 1 });
+      expect(await listFortnoxBindings(host, id)).toEqual([]);
+      expect(await host.connectionGrantsInScope(t, s)).toEqual([]);
+    } finally {
+      binders.fortnox!.bindBeforeGrant = original;
+    }
+  });
+
+  it('does not record another unsupported sweep inside the cadence window', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-06-15T12:00:00.000Z'));
+      const id = await connect('fortnox');
+      const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
+      await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(invoice)));
+      await pass({ fortnox: 120 });
+      expect(lastRun(id)).toMatchObject({ outcome: 'unsupported' });
+      await host.admin.recordSweepRun({ kind: 'connector', unit: id, outcome: 'unsupported', tenantId: t, vertical: SLUG, connectionId: id });
+      const first = runs.length;
+      vi.advanceTimersByTime(60 * 60_000);
+
+      const skipped = await pass({ fortnox: 120 });
+
+      expect(skipped.connectionsSkipped).toBe(1);
+      expect(runs).toHaveLength(first);
+      vi.advanceTimersByTime(61 * 60_000);
+      await pass({ fortnox: 120 });
+      expect(runs).toHaveLength(first + 1);
+      expect(lastRun(id)).toMatchObject({ outcome: 'unsupported' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['ledger succeeds', 'ledger/record-period', 'ok'],
+    ['ledger fails', 'ledger/missing', 'failed'],
+  ])('keeps the invoice limitation visible when a mixed connection %s', async (_label, operation, outcome) => {
+    const id = await connect('fortnox');
+    const invoiceScope = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: invoiceScope, jurisdiction: 'eu', vertical: SLUG });
+    await host.admin.activateScope(staff, t, invoiceScope);
+    const ledger = [{ provider: 'fortnox', operation, permission: 'ledger:record', declaredBy: ['@acme/crm'] }];
+    const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(ledger)));
+    await host.admin.bindScopeVersion(staff, t, invoiceScope, await publish(manifestDeclaring(invoice)));
+
+    await pass();
+
+    expect(lastRun(id)).toMatchObject({ outcome, error: expect.stringContaining('supplier-invoice polling is unavailable') });
+    if (outcome === 'failed') expect(lastRun(id)?.error).toContain('\n1 of 2 bindings did not land');
+    expect((await listFortnoxBindings(host, id))).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scopeId: s, operation }),
+      expect.objectContaining({ scopeId: invoiceScope, kind: 'supplier-invoice' }),
+    ]));
+    expect(ledgerPages).toHaveLength(outcome === 'ok' ? 1 : 0);
+    const calls = fortnox.calls.length;
+    const rows = runs.length;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(Date.now() + 1000));
+      await host.admin.recordSweepRun({ kind: 'connector', unit: id, outcome: outcome as 'ok' | 'failed', tenantId: t, vertical: SLUG, connectionId: id });
+      vi.advanceTimersByTime(60 * 60_000);
+      await pass({ fortnox: 120 });
+      expect(fortnox.calls).toHaveLength(calls);
+      expect(runs).toHaveLength(rows);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("lands beside a directory row in the tenant that does not read as a scope, which the pass names once", async () => {

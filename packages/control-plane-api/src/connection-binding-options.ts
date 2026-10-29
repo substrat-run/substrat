@@ -15,6 +15,8 @@ export function connectionBindingOptions(provider: string) {
   // (vertical-connectors.md §6.1); the stored binding bounds their count.
   if (isVerticalConnectorProvider(provider)) return z.object({}).catchall(z.unknown());
   switch (provider) {
+    case 'fortnox':
+      return z.object({ kind: z.enum(['ledger', 'supplier-invoice']).optional() }).strict();
     case 'planima':
       return z
         .object({
@@ -35,4 +37,20 @@ export function connectionBindingOptions(provider: string) {
     default:
       return z.object({}).strict();
   }
+}
+
+/** Whether {@link bindingChangeRefusal} can refuse anything for `provider`, so a door reads the held binding only then. */
+export const refusesBindingChange = (provider: string): boolean => provider === 'fortnox';
+
+/**
+ * Why a scope's held binding cannot take `next` in place, or `undefined` (#2704). Both doors that
+ * bind ask it before writing: the staff route answers it as a 409, and the connector pass reports
+ * it on the connection's sweep row. Fortnox lands one kind per scope, so a kind change is refused
+ * rather than rewriting what the scope's data was landed as.
+ */
+export function bindingChangeRefusal(provider: string, held: { kind?: string | null } | undefined, next: { kind?: string | null }): string | undefined {
+  if (!refusesBindingChange(provider) || !held) return undefined;
+  const from = held.kind ?? 'ledger';
+  const to = next.kind ?? 'ledger';
+  return from === to ? undefined : `one Fortnox landing kind per scope; use a separate scope for the other kind (${from} to ${to})`;
 }

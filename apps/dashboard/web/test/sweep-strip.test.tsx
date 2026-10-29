@@ -1,0 +1,27 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it } from 'vitest';
+import { SweepStrip } from '../src/components/ui';
+
+describe('connection sweep status', () => {
+  it('renders an unsupported plane outcome neutrally with its guidance', () => {
+    const html = renderToStaticMarkup(<SweepStrip
+      runs={[{ id: 'run', outcome: 'unsupported', at: '2026-10-29T00:00:00Z', error: 'upgrade the invoice sweep' }]}
+      skippedNote="nothing polls this connection"
+    />);
+    expect(html).toContain('unsupported: upgrade the invoice sweep');
+    expect(html).toContain('— unsupported: upgrade the invoice sweep</span>');
+    expect(html).toContain('var(--text-tertiary)');
+    expect(html).not.toContain('var(--status-success-fg)');
+  });
+
+  it('keeps a mixed successful sweep green and shows its invoice limitation as neutral detail', () => {
+    const html = renderToStaticMarkup(<SweepStrip
+      runs={[{ id: 'run', outcome: 'ok', at: '2026-10-29T00:00:00Z', error: 'scope invoice: supplier-invoice polling is unavailable' }]}
+      skippedNote="nothing polls this connection"
+    />);
+    expect(html).toContain('var(--status-success-fg)');
+    expect(html).toContain('supplier-invoice polling is unavailable');
+    expect(html).toContain('— scope invoice: supplier-invoice polling is unavailable</span>');
+    expect(html).toContain('var(--text-tertiary)');
+  });
+});

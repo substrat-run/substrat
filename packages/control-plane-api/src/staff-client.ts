@@ -47,6 +47,7 @@ import type {
   VerticalOwnersReading,
   SweepRunEntry,
   SweepRunKind,
+  SweepRunOutcome,
   SystemGrantsStatusEntry,
   SystemSwitchRecord,
   SystemSwitchResult,
@@ -221,7 +222,7 @@ export interface AuditLogQuery extends PageQuery {
 export interface SweepRunsQuery extends PageQuery {
   kind?: SweepRunKind;
   unit?: string;
-  outcome?: 'ok' | 'failed' | 'skipped';
+  outcome?: SweepRunOutcome;
   tenantId?: TenantId;
   scopeId?: ScopeId;
   vertical?: string;

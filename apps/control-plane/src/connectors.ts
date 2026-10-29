@@ -7,7 +7,7 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
-import { connectionBindingOptions } from '@substrat-run/control-plane-api';
+import { bindingChangeRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
   SCRIVE_CONNECTION_GRANTS,
@@ -540,10 +540,24 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
       const binder: ConnectionBinder = {
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
-        options: (raw, current) => options.parse({
-          ...(current ? options.strip().parse(current) : {}),
-          ...(raw ?? {}),
-        }),
+        ...(['fortnox', 'planima'].includes(c.provider)
+          ? {
+              bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>
+                bindScope(h, row, { ...target, grantPreflighted: true } as Parameters<typeof bindScope>[2]),
+            }
+          : {}),
+        options: (raw, current) => {
+          if (c.provider === 'fortnox') {
+            const parsed = options.parse(raw ?? {}) as { kind?: 'ledger' | 'supplier-invoice' };
+            const refusal = bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
+            if (refusal) throw new Error(refusal);
+            return { kind: parsed.kind };
+          }
+          return options.parse({
+            ...(current ? options.strip().parse(current) : {}),
+            ...(raw ?? {}),
+          });
+        },
         ...(c.accountOnBinding
           ? {
               // A binding written before it recorded the company opens whichever connection

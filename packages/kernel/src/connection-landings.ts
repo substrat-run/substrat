@@ -26,13 +26,15 @@ import { ulid } from './ulid.js';
  * It writes only what is missing or different, so a pass over a settled connection writes nothing
  * and logs nothing:
  *
+ * - **The binding** is written only when the connection has none for the scope or the one it has
+ *   names a different operation, key, or declared option. A provider may retain an option the
+ *   declaration does not name (one Planima organization, say), or give it a fixed default
+ *   (Fortnox's ledger kind). Built-in poll connectors can stage it before the grant; without the
+ *   grant, it cannot invoke the landing operation.
  * - **The key** is granted (`grantToConnection`, audited, delivered to the scope) only when the
- *   scope does not hold it, read from the scope's own enforced tuples, not the directory.
- * - **The binding** is written (the connector's own `bind`, which still refuses a connection that
- *   does not hold the key, then audited) only when the connection has none for the scope or the one
- *   it has names a different operation, key, or declared option. An option the declaration does not
- *   name is left as it is, so an operator's narrower binding (one Planima organization, say)
- *   survives a declaration that is silent about it.
+ *   scope does not hold it, read from the scope's own enforced tuples, not the directory. For a
+ *   staged binding this follows its write, so an interrupted pass leaves no new authority without
+ *   its landing.
  *
  * Nothing is unbound. A version that stops declaring a landing leaves its bindings in place, and a
  * pass that lands through an operation the version no longer has reports the refusal on the
@@ -54,9 +56,20 @@ export interface ConnectionBinder {
     target: { tenantId: TenantId; scopeId: ScopeId; vertical: string; operation: string; permission: string } & Record<string, unknown>,
   ): Promise<unknown>;
   /**
+   * Stage a durable binding without its grant. Implementations use this only when the landing pass
+   * has validated the declaration; the grant is written immediately afterward. A failure between
+   * these writes leaves a harmless binding that cannot invoke without its grant.
+   */
+  bindBeforeGrant?(
+    host: ScopeHost,
+    connection: Connection,
+    target: { tenantId: TenantId; scopeId: ScopeId; vertical: string; operation: string; permission: string } & Record<string, unknown>,
+  ): Promise<unknown>;
+  /**
    * The provider's options, validated, from what a declaration carries. Throws with a reason a
    * person can act on; a provider that takes none refuses any. Absent means the provider takes none.
-   * When `current` is supplied, preserve its provider options unless `raw` overrides them.
+   * When `current` is supplied, a provider may preserve its options unless `raw` overrides them,
+   * or refuse a change to an immutable option. This runs before a binding or new permission grant.
    * Do not copy binding metadata (including the sync cursor) into the options.
    */
   options?(
@@ -145,21 +158,12 @@ export class LandingPass {
       const landing = t.fact.rows.find((r) => r.provider === connection.provider);
       if (!landing) continue;
       try {
-        const options = binder.options ? binder.options(landing.options) : {};
-        const grants = await this.grantsIn(connection.tenantId, scopeId);
-        if (!grants.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
-          await this.host.admin.grantToConnection(this.actor, {
-            connectionId: connection.id,
-            permission: landing.permission,
-            node: { tenantId: connection.tenantId, scopeId },
-            grantedBy: this.actor,
-          });
-          out.granted.push(scopeId);
-        }
         existing ??= await binder.list(this.host, connection);
         const current = existing.find((b) => b.scopeId === scopeId);
-        if (current && sameLanding(current, landing.operation, landing.permission, options) && !binder.stale?.(current, connection)) continue;
-        const bindingOptions = binder.options ? binder.options(landing.options, current) : options;
+        // Validate the effective target against the held binding before granting any new key.
+        // Providers may refuse a kind change even when the declaration omits its default kind.
+        const bindingOptions = binder.options ? binder.options(landing.options, current) : {};
+        const needsBind = !current || !sameLanding(current, landing.operation, landing.permission, bindingOptions) || !!binder.stale?.(current, connection);
         const operationId = ulid();
         const audit = {
           tenantId: connection.tenantId,
@@ -171,18 +175,39 @@ export class LandingPass {
           permission: landing.permission,
           ...bindingOptions,
         };
-        await binder.bind(this.host, connection, {
+        const target = {
           ...bindingOptions,
           tenantId: connection.tenantId,
           scopeId,
           vertical: connection.vertical,
           operation: landing.operation,
           permission: landing.permission,
-        });
-        // After the write, as the staff door's `applied` row: a bind that threw is reported on the
-        // sweep row instead, and is retried by the next pass.
-        await this.host.admin.recordConnectionBindingChange(this.actor, { ...audit, phase: 'applied' });
-        out.bound.push(scopeId);
+        };
+        // Each bind is audited right after its write, as the staff door's `applied` row: a bind that
+        // threw is reported on the sweep row instead, and is retried by the next pass. A staged
+        // binding is audited before its grant, because a pass after a failed grant sees the binding
+        // already in place and does not bind (or audit) it again.
+        const applied = () => this.host.admin.recordConnectionBindingChange(this.actor, { ...audit, phase: 'applied' });
+        if (needsBind && binder.bindBeforeGrant) {
+          await binder.bindBeforeGrant(this.host, connection, target);
+          out.bound.push(scopeId);
+          await applied();
+        }
+        const grants = await this.grantsIn(connection.tenantId, scopeId);
+        if (!grants.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
+          await this.host.admin.grantToConnection(this.actor, {
+            connectionId: connection.id,
+            permission: landing.permission,
+            node: { tenantId: connection.tenantId, scopeId },
+            grantedBy: this.actor,
+          });
+          out.granted.push(scopeId);
+        }
+        if (needsBind && !binder.bindBeforeGrant) {
+          await binder.bind(this.host, connection, target);
+          out.bound.push(scopeId);
+          await applied();
+        }
       } catch (err) {
         out.failed.push({ scopeId, error: message(err) });
       }

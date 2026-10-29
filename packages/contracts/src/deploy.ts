@@ -2033,7 +2033,11 @@ function connectionRowsOf(
       } else if (same(row, l)) {
         row.declaredBy = [...new Set([...row.declaredBy, m.manifest.id])].sort((a, b) => a.localeCompare(b));
       } else {
-        problems.push(`${where}: declares a different landing for '${l.provider}' than ${row.declaredBy.join(', ')}`);
+        const mixedFortnox = l.provider === 'fortnox' &&
+          (row.options?.kind ?? 'ledger') !== (l.options?.kind ?? 'ledger');
+        problems.push(mixedFortnox
+          ? `${where}: one Fortnox landing kind per scope; use a separate scope for the other kind`
+          : `${where}: declares a different landing for '${l.provider}' than ${row.declaredBy.join(', ')}`);
       }
     }
   }

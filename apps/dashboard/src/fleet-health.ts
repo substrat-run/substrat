@@ -188,7 +188,7 @@ function unitStanding(rows: SweepRunEntry[]): { failing: number; recovered: numb
   const newest = new Map<string, SweepRunEntry>();
   const everFailed = new Set<string>();
   for (const r of rows) {
-    if (r.kind === 'freshness' || r.outcome === 'skipped') continue;
+    if (r.kind === 'freshness' || r.outcome === 'skipped' || r.outcome === 'unsupported') continue;
     if (r.outcome === 'failed') everFailed.add(r.unit);
     const prev = newest.get(r.unit);
     if (prev === undefined || r.at > prev.at || (r.at === prev.at && r.id > prev.id)) newest.set(r.unit, r);

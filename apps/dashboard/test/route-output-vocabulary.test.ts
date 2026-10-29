@@ -125,6 +125,10 @@ function closedIn(schema: unknown, path: string, found: string[], active = new S
 }
 
 describe('the declared routes’ outputs (#2401)', () => {
+  it('accepts a newer plane sweep outcome in the integration activity route', () => {
+    const runs = dashboardRoutes['dashboard/get-app-integration-activity'].output.shape.sweepRuns;
+    expect(runs.parse([{ id: 'run', outcome: 'unsupported', at: '2026-10-29T00:00:00Z', error: 'invoice sweep unavailable', elapsedMs: 0 }])[0]?.outcome).toBe('unsupported');
+  });
   const closed = Object.entries(dashboardRoutes).flatMap(([name, route]) =>
     'output' in route && route.output !== undefined ? [...new Set(closedIn(route.output, '', []))].map((p) => `${name} ${p}`) : [],
   );
