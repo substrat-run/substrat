@@ -301,10 +301,10 @@ export interface PlanimaConnectorOptions {
  * Declare that a connection should sync one scope — the one-time setup a poll-only
  * connector needs in place of a dispatch.
  *
- * **Refuses a binding whose grant is missing**, which is the whole reason this is a
- * function rather than a config object. The alternative — write the binding, discover
- * at sweep time that the connection cannot invoke the operation — fails in the worst
- * possible place: after a whole maintenance plan has been fetched against a
+ * **Refuses a binding whose grant is missing**, except for the automatic landing pass
+ * after it has validated the declaration and before it writes that grant. The alternative —
+ * write the binding, discover at sweep time that the connection cannot invoke the operation —
+ * fails in the worst possible place: after a whole maintenance plan has been fetched against a
  * 10-request-per-10-seconds budget, in a background timer nobody is watching. Here it
  * fails in the operator's hands, naming the permission to grant.
  */
@@ -321,6 +321,8 @@ export async function bindPlanimaScope(
     currency?: string;
     window?: { fromYear: number; toYear: number } | null;
     horizonYears?: number;
+    /** Internal automatic-pass path: the declaration was checked and its grant follows this write. */
+    grantPreflighted?: boolean;
     now?: () => number;
   },
 ): Promise<PlanimaBinding> {
@@ -341,8 +343,8 @@ export async function bindPlanimaScope(
   // On the host, not `admin`: this is the same projection the permission checker reads,
   // so a binding is verified against the tuples that will actually gate the invoke —
   // not against a directory row that may not have reached the scope yet.
-  const granted = await host.connectionGrantsInScope(tenant, scope);
-  const held = granted.some(
+  const granted = input.grantPreflighted ? [] : await host.connectionGrantsInScope(tenant, scope);
+  const held = input.grantPreflighted || granted.some(
     (g: { connectionId: string; permission: string }) =>
       g.connectionId === input.connectionId && g.permission === input.permission,
   );

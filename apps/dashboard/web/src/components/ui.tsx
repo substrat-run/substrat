@@ -287,6 +287,7 @@ export interface SweepTick {
 
 function sweepSuffix(outcome: string, skippedNote: string, detail: string | null): string {
   if (outcome === 'ok') return detail ? ` — ${detail}` : '';
+  if (outcome === 'unsupported') return detail ? ` — unsupported: ${detail}` : ' — unsupported';
   if (outcome === 'skipped') return ` — ${skippedNote}`;
   return ` — ${outcome}`;
 }

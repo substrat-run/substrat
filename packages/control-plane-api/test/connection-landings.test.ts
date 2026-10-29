@@ -177,6 +177,8 @@ describe('declared connection landings (#2316)', () => {
       list: (h, row) => listFortnoxBindings(h, row.id),
       bind: (h, row, target) =>
         bindFortnoxScope(h, { ...(target as Parameters<typeof bindFortnoxScope>[1]), connectionId: row.id, externalAccountRef: row.externalAccountRef }),
+      bindBeforeGrant: (h, row, target) =>
+        bindFortnoxScope(h, { ...(target as Parameters<typeof bindFortnoxScope>[1]), connectionId: row.id, externalAccountRef: row.externalAccountRef, grantPreflighted: true }),
       options: (raw, current) => {
         const parsed = connectionBindingOptions('fortnox').parse(raw ?? {});
         const oldKind = (current as { kind?: string } | undefined)?.kind ?? 'ledger';
@@ -189,6 +191,7 @@ describe('declared connection landings (#2316)', () => {
     planima: {
       list: (h, row) => listPlanimaBindings(h, row.id),
       bind: (h, row, target) => bindPlanimaScope(h, { ...(target as Parameters<typeof bindPlanimaScope>[1]), connectionId: row.id }),
+      bindBeforeGrant: (h, row, target) => bindPlanimaScope(h, { ...(target as Parameters<typeof bindPlanimaScope>[1]), connectionId: row.id, grantPreflighted: true }),
       options: (raw, current) => {
         const schema = connectionBindingOptions('planima');
         return schema.parse({ ...(current ? schema.strip().parse(current) : {}), ...(raw ?? {}) });
@@ -255,6 +258,7 @@ describe('declared connection landings (#2316)', () => {
 
     const report = await pass();
 
+    expect(report.errors).toEqual([]);
     expect(report.connectionLandings).toEqual({ granted: 3, bound: 3, failed: 0 });
     const held = await host.connectionGrantsInScope(t, s);
     expect(held.map((g) => `${g.connectionId} ${g.permission}`).sort()).toEqual(
@@ -316,6 +320,43 @@ describe('declared connection landings (#2316)', () => {
     expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record', permission: 'ledger:record' });
   });
 
+  it('leaves a staged binding without a grant after a post-write error, then converges on retry', async () => {
+    const id = await connect('fortnox');
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    const original = binders.fortnox!.bindBeforeGrant!;
+    binders.fortnox!.bindBeforeGrant = async (...args) => {
+      await original(...args);
+      throw new Error('injected failure after binding write');
+    };
+    try {
+      const interrupted = await pass();
+      expect(interrupted.connectionLandings).toMatchObject({ granted: 0, failed: 1 });
+      expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ scopeId: s, operation: 'ledger/record-period' });
+      expect(await host.connectionGrantsInScope(t, s)).toEqual([]);
+    } finally {
+      binders.fortnox!.bindBeforeGrant = original;
+    }
+    const retried = await pass();
+    expect(retried.connectionLandings).toEqual({ granted: 1, bound: 0, failed: 0 });
+    expect(await host.connectionGrantsInScope(t, s)).toEqual([expect.objectContaining({ connectionId: id, permission: 'ledger:record' })]);
+    expect((await listFortnoxBindings(host, id))).toHaveLength(1);
+  });
+
+  it('writes no grant when the binding write fails', async () => {
+    const id = await connect('fortnox');
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    const original = binders.fortnox!.bindBeforeGrant!;
+    binders.fortnox!.bindBeforeGrant = async () => { throw new Error('injected bind failure'); };
+    try {
+      const report = await pass();
+      expect(report.connectionLandings).toMatchObject({ granted: 0, bound: 0, failed: 1 });
+      expect(await listFortnoxBindings(host, id)).toEqual([]);
+      expect(await host.connectionGrantsInScope(t, s)).toEqual([]);
+    } finally {
+      binders.fortnox!.bindBeforeGrant = original;
+    }
+  });
+
   it('does not record another unsupported sweep inside the cadence window', async () => {
     vi.useFakeTimers();
     try {
@@ -358,6 +399,7 @@ describe('declared connection landings (#2316)', () => {
     await pass();
 
     expect(lastRun(id)).toMatchObject({ outcome, error: expect.stringContaining('supplier-invoice polling is unavailable') });
+    if (outcome === 'failed') expect(lastRun(id)?.error).toContain('\n1 of 2 bindings did not land');
     expect((await listFortnoxBindings(host, id))).toEqual(expect.arrayContaining([
       expect.objectContaining({ scopeId: s, operation }),
       expect.objectContaining({ scopeId: invoiceScope, kind: 'supplier-invoice' }),

@@ -9,7 +9,7 @@ describe('connection sweep status', () => {
       skippedNote="nothing polls this connection"
     />);
     expect(html).toContain('unsupported: upgrade the invoice sweep');
-    expect(html).toContain('— unsupported');
+    expect(html).toContain('— unsupported: upgrade the invoice sweep</span>');
     expect(html).toContain('var(--text-tertiary)');
     expect(html).not.toContain('var(--status-success-fg)');
   });

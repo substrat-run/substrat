@@ -55,7 +55,9 @@ describe('connector registry', () => {
   });
 
   it('validates Fortnox landing kinds and rejects unknown options', () => {
-    const options = connectionBindersFor(ENV)['fortnox']!.options!;
+    const fortnox = connectionBindersFor(ENV)['fortnox']!;
+    expect(fortnox.bindBeforeGrant).toBeTypeOf('function');
+    const options = fortnox.options!;
     expect(options(undefined)).toEqual({ kind: undefined });
     expect(options({ kind: 'supplier-invoice' })).toEqual({ kind: 'supplier-invoice' });
     const invoice = { scopeId: 'scope', operation: 'invoices/record', permission: 'invoices:record', kind: 'supplier-invoice' };

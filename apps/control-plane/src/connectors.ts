@@ -540,6 +540,12 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
       const binder: ConnectionBinder = {
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
+        ...(['fortnox', 'planima'].includes(c.provider)
+          ? {
+              bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>
+                bindScope(h, row, { ...target, grantPreflighted: true } as Parameters<typeof bindScope>[2]),
+            }
+          : {}),
         options: (raw, current) => {
           if (c.provider === 'fortnox') {
             const parsed = options.parse(raw ?? {}) as { kind?: 'ledger' | 'supplier-invoice' };
