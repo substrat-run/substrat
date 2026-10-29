@@ -63,6 +63,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   beforeAll(async () => {
     testDriver = {
       driver: 'graph',
+      isolationBasis: { kind: 'writtenInRepo' },
       releases: [{ sha256: await storeDriverReleaseDigest(release), sourceCommit: release.sourceCommit, schema: 0 }],
       className: 'Store',
       operations: ['read'],

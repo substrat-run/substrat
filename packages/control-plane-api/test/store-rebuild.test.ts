@@ -166,6 +166,7 @@ describe('the fleet rebuild (#2309)', () => {
     [s1, s2] = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2))];
     registration = {
       driver: 'graph',
+      isolationBasis: { kind: 'writtenInRepo' },
       releases: [
         { sha256: s1, sourceCommit: COMMIT, schema: 0 },
         { sha256: s2, sourceCommit: COMMIT, schema: 0 },

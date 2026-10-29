@@ -376,15 +376,49 @@ export const storeDriverRelease = z
   .strict();
 export type StoreDriverRelease = z.infer<typeof storeDriverRelease>;
 
+/** A decision-record lift must be admitted here in a reviewed change before it can register a driver. */
+export const STORE_DRIVER_ADMITTED_ISOLATION_LIFTS = [] as const satisfies readonly `D-${number}`[];
+
+/** Normalized canonical identity shared by every published workspace package. */
+export const STORE_DRIVER_PLATFORM_REPOSITORY = 'https://github.com/substrat-run/substrat';
+
+/** Normalize package-manager repository URLs without changing the case of their path. */
+export function normalizeStoreDriverRepositoryUrl(value: string): string | undefined {
+  const source = value.startsWith('git+') ? value.slice(4) : value;
+  let url: URL;
+  try {
+    url = new URL(source);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password || url.search || url.hash) return undefined;
+  const path = url.pathname.replace(/\/+$/, '').replace(/\.git$/, '').replace(/\/+$/, '');
+  return `${url.protocol}//${url.host}${path}`;
+}
+
+export function storeDriverRepositoryIsPlatformRepository(value: string): boolean {
+  return normalizeStoreDriverRepositoryUrl(value) === STORE_DRIVER_PLATFORM_REPOSITORY;
+}
+
+const admittedIsolationLift = z.string().refine(
+  (value) => (STORE_DRIVER_ADMITTED_ISOLATION_LIFTS as readonly string[]).includes(value),
+  { message: 'the decision record has not been admitted as an isolation lift' },
+);
+
+export const storeDriverIsolationBasis = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('writtenInRepo') }).strict(),
+  z.object({ kind: z.literal('decisionRecord'), decisionRecord: admittedIsolationLift }).strict(),
+]);
+export type StoreDriverIsolationBasis = z.infer<typeof storeDriverIsolationBasis>;
+
 /**
- * A store driver, registered in this repo and pinned (D-63): every release the platform may run,
- * the class it runs, the catalog a vertical may call, and every reserved operation. A release is
- * pinned by a reviewed change to this list, and a pin is never removed, a superseded release
- * included. The list itself is {@link STORE_DRIVERS}. Empty until a driver is reviewed in.
+ * A store driver, registered in this repo (D-63/D-65). Step 4a retains the pin fields until the
+ * atomic reader switch; the registry remains empty until a driver is admitted after that switch.
  */
 export const storeDriverRegistration = z.object({
   // Held to the driver-id grammar first (L20), so a second driver cannot be added outside it.
   driver: storeDriverId.pipe(z.literal('graph')),
+  isolationBasis: storeDriverIsolationBasis,
   releases: z
     .array(storeDriverRelease)
     .min(1)

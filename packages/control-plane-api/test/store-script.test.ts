@@ -107,6 +107,7 @@ function ensurer(input: {
     drivers: [
       {
         driver: 'graph',
+        isolationBasis: { kind: 'writtenInRepo' },
         releases: input.releases ?? pins,
         className: 'Store',
         operations: ['read'],
@@ -215,7 +216,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => v2,
     });
     expect(await refusal(swapped(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -238,7 +239,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => moved,
     });
     expect(await refusal(entryMoved(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -320,7 +321,7 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => v2,
     });
     expect(await refusal(swapped({ ...need, to: pins[0]!.sha256 }))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -331,7 +332,7 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => ({ ...v2, sha256: pins[0]!.sha256 }),
     });
     expect(await refusal(claimed(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -347,7 +348,7 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async ({ sha256 }) => (sha256 === pins[1]!.sha256 ? v2 : undefined),
     });
     // The fleet rebuild (#2309) creates no canary script where there is none.
@@ -401,7 +402,7 @@ describe('a script never moves to a release with a lower schema than the one it 
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', releases: ranked, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: ranked, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async ({ sha256 }) => (sha256 === pins[0]!.sha256 ? v1 : v2),
     });
     await canary({ driver: 'graph', to: pins[0]!.sha256 });
