@@ -267,7 +267,9 @@ describe('store driver release reader inventory (RFC §5 step 4)', () => {
       snapshot.dispose();
       api.close();
     }
-  }, 300_000);
+    // Over the node budget by design: it type-checks every member that can hold a registration
+    // (about fifty programs), 12–25 s locally under load.
+  }, 120_000);
 
   it('keeps the files with test-only pin reads listed for the 4b migration', () => {
     for (const path of TEST_PIN_READERS) expect(existsSync(join(ROOT, path)), path).toBe(true);

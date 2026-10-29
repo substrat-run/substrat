@@ -26,6 +26,12 @@ function helperParameter(value: StoreDriverRegistration) {
 function arrayElement(registrations: readonly StoreDriverRegistration[]) {
   return registrations[0]?.releases;
 }
-export function pickProjection(registration: Pick<StoreDriverRegistration, 'releases'>) {
+
+function pickProjection(registration: Pick<StoreDriverRegistration, 'releases'>) {
   return registration.releases;
+}
+
+// `any` is mutually assignable with the registration, and is not one: no read is reported here.
+function untyped(value: any) {
+  return { ...value, className: value.className };
 }
