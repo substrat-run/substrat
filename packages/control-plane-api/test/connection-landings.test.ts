@@ -271,6 +271,24 @@ describe('declared connection landings (#2316)', () => {
     expect(await audited('bindConnectionScope')).toBe(3);
   });
 
+  it('seats an invoice declaration but records unsupported without a failed sweep', async () => {
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring([
+      { provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record',
+        options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] },
+    ])));
+    const id = await connect('fortnox', '111111');
+    const report = await pass();
+
+    expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record' });
+    expect(report.errors).toEqual([]);
+    expect(report.connectionLandings?.failed).toBe(0);
+    expect(report.connectionsSkipped).toBe(1);
+    expect(report.connectionsSwept).toBe(0);
+    expect(lastRun(id)).toMatchObject({ outcome: 'unsupported', error: expect.stringContaining('upgrade') });
+    expect(ledgerPages).toEqual([]);
+    expect(fortnox.calls).toEqual([]);
+  });
+
   it("lands beside a directory row in the tenant that does not read as a scope, which the pass names once", async () => {
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
     const unreadable = scopeId.parse(ulid());

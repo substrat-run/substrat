@@ -2057,7 +2057,11 @@ export async function runPlatformSweep(
       return;
     }
     const answer = options.connectionLandings && binderOf(options.connectionLandings, c) ? connectorSweepAnswerOf(result) : null;
-    report.connectionsSwept += 1;
+    if (answer && answer.found > 0 && answer.unsupported?.length === answer.found && answer.failed.length === 0) {
+      report.connectionsSkipped += 1;
+    } else {
+      report.connectionsSwept += 1;
+    }
     // #2316: a resolved sweep is not a landed one. A binding the connector could not land, or a
     // landing the platform could not seat, fails the row; a poll that found nothing to poll is
     // `skipped`, which a console reads as "nothing polls this connection".

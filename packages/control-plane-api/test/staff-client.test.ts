@@ -204,6 +204,11 @@ describe('ControlPlaneStaffClient — credentials', () => {
 });
 
 describe('ControlPlaneStaffClient — answers and refusals', () => {
+  it('passes through a newer plane sweep outcome for callers to render neutrally', async () => {
+    const { fetch } = spy(() => Response.json({ entries: [{ outcome: 'unsupported', error: 'invoice sweep unavailable' }], nextCursor: null }));
+    const page = await make(fetch).listSweepRuns();
+    expect(page.entries[0]?.outcome).toBe('unsupported');
+  });
   it('reads a 204 as undefined, never a JSON parse of nothing', async () => {
     const { fetch } = spy(() => new Response(null, { status: 204 }));
     await expect(make(fetch).unbindHostname('a.example')).resolves.toBeUndefined();

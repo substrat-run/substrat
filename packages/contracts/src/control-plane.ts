@@ -761,6 +761,8 @@ export const connectionBindingAudit = z.object({
   provider: z.string().min(1),
   operation: z.string().min(1),
   permission: permissionKey,
+  /** Fortnox landing kind; absence is the legacy ledger binding. */
+  kind: z.enum(['ledger', 'supplier-invoice']).optional(),
   organizationId: z.number().int().positive().nullable().optional(),
   currency: z.string().regex(/^[A-Z]{3}$/).optional(),
   window: z.object({ fromYear: z.number().int(), toYear: z.number().int() }).nullable().optional(),

@@ -26,7 +26,7 @@ const SWEEPER_SILENT_AFTER_MS = 2 * SWEEP_WINDOW_MINUTES * 60_000;
 
 export interface ScheduleRunView {
   id: string;
-  outcome: 'ok' | 'failed' | 'skipped';
+  outcome: string;
   at: string;
   error: string | null;
   elapsedMs: number | null;
