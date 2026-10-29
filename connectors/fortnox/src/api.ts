@@ -7,7 +7,6 @@ import { decodeSie } from './sie4.js';
 declare const TextDecoder: new (label?: string) => { decode(input: ArrayBuffer | Uint8Array): string };
 declare const btoa: (data: string) => string;
 declare const URL: new (input: string) => { searchParams: { set(k: string, v: string): void }; toString(): string };
-
 /**
  * A thin, typed client over the Fortnox REST API and its OAuth2 token endpoint.
  *
@@ -149,6 +148,41 @@ export const fortnoxCompany = z.object({
   CountryCode: fortnoxText(),
 });
 export type FortnoxCompany = z.infer<typeof fortnoxCompany>;
+
+/** A number Fortnox may send as a JSON number or as a string. Kept as a string: never arithmetic on floats. */
+const fortnoxNumber = z.union([z.number(), z.string().min(1)]).transform(String);
+
+/**
+ * One supplier invoice, as `GET /3/supplierinvoices/{GivenNumber}` returns it. Only the fields
+ * the invoice landing carries are read; the rest are ignored.
+ */
+export const fortnoxSupplierInvoice = z.object({
+  /** Fortnox's own sequence number for the invoice in this company — the key a landing upserts by. */
+  GivenNumber: fortnoxNumber,
+  SupplierNumber: fortnoxText(),
+  SupplierName: fortnoxText(),
+  InvoiceNumber: fortnoxText(),
+  InvoiceDate: fortnoxText(),
+  DueDate: fortnoxText(),
+  Currency: fortnoxText('SEK'),
+  Total: fortnoxNumber,
+  Booked: z.boolean(),
+  Cancelled: z.boolean(),
+  SupplierInvoiceRows: z
+    .array(
+      z.object({
+        Account: fortnoxNumber,
+        CostCenter: fortnoxText(),
+        Debit: fortnoxNumber.default('0'),
+        Credit: fortnoxNumber.default('0'),
+      }),
+    )
+    .default([]),
+});
+export type FortnoxSupplierInvoice = z.infer<typeof fortnoxSupplierInvoice>;
+
+/** How many list entries one `GET /3/supplierinvoices` page asks for — Fortnox's maximum. */
+const LIST_LIMIT = 500;
 
 const tokenResponse = z.object({
   access_token: z.string().min(1),
@@ -331,6 +365,34 @@ export class FortnoxApi {
   async financialYears(): Promise<FortnoxFinancialYear[]> {
     const raw = (await this.getJson('/financialyears')) as { FinancialYears?: unknown };
     return z.array(fortnoxFinancialYear).parse(raw.FinancialYears ?? []);
+  }
+
+  /**
+   * The `GivenNumber` of every supplier invoice changed at or after `lastModified` — Fortnox's
+   * `YYYY-MM-DD HH:MM`, in Swedish local time. Every list page is read: the list carries no rows,
+   * so it is the cheap half, and the caller decides how many details to spend.
+   */
+  async supplierInvoicesModifiedSince(lastModified: string): Promise<string[]> {
+    const page = z.object({
+      MetaInformation: z.object({ '@TotalPages': z.number() }).optional(),
+      SupplierInvoices: z.array(z.object({ GivenNumber: fortnoxNumber })).default([]),
+    });
+    const numbers: string[] = [];
+    for (let current = 1, total = 1; current <= total; current += 1) {
+      const query = `lastmodified=${encodeURIComponent(lastModified)}&limit=${LIST_LIMIT}&page=${current}`;
+      const parsed = page.parse(await this.getJson(`/supplierinvoices?${query}`));
+      numbers.push(...parsed.SupplierInvoices.map((i) => i.GivenNumber));
+      total = parsed.MetaInformation?.['@TotalPages'] ?? 1;
+    }
+    return numbers;
+  }
+
+  /** One supplier invoice with its rows. */
+  async supplierInvoice(givenNumber: string): Promise<FortnoxSupplierInvoice> {
+    const raw = (await this.getJson(`/supplierinvoices/${encodeURIComponent(givenNumber)}`)) as {
+      SupplierInvoice?: unknown;
+    };
+    return fortnoxSupplierInvoice.parse(raw.SupplierInvoice ?? raw);
   }
 
   /**

@@ -7,8 +7,8 @@ declare const URLSearchParams: new (init: string) => { get(name: string): string
 declare const btoa: (data: string) => string;
 
 /**
- * Fortnox in memory — the token endpoint and the three REST reads, enough to run the
- * whole sweep without a provider account.
+ * Fortnox in memory — the token endpoint and the REST reads the sweep makes, enough to run
+ * it without a provider account.
  *
  * **What a mock proves:** that our shape works — the client-credentials mint, the
  * PC8/CP437 decode, the year-overlap pick, the paging, the unchanged-hash skip.
@@ -38,6 +38,12 @@ export interface FortnoxMockOptions {
    * reloaded-callback-tab case a connect flow must survive.
    */
   consentCode?: string;
+}
+
+/** A supplier invoice as the mock serves its detail, plus when it last changed (`YYYY-MM-DD HH:MM`, Swedish local). */
+export interface FortnoxMockSupplierInvoice {
+  invoice: { GivenNumber: string } & Record<string, unknown>;
+  modified: string;
 }
 
 /**
@@ -104,6 +110,13 @@ export class FortnoxMock {
     this.sie = options.sie ?? {};
     this.expiresIn = options.expiresIn ?? 3600;
     this.consentCode = options.consentCode;
+  }
+
+  private readonly supplierInvoices = new Map<string, FortnoxMockSupplierInvoice>();
+
+  /** Add or change a supplier invoice — how a test simulates "an invoice was booked". */
+  setSupplierInvoice(entry: FortnoxMockSupplierInvoice): void {
+    this.supplierInvoices.set(entry.invoice.GivenNumber, entry);
   }
 
   /** Replace one year's SIE payload — how a test simulates "the books changed". */
@@ -181,7 +194,27 @@ export class FortnoxMock {
     if (path.endsWith('/financialyears')) {
       return this.json({ FinancialYears: this.years });
     }
-    const sieMatch = /\/sie\/4\?financialyear=(\d+)$/.exec(path);
+    if (url.pathname.endsWith('/supplierinvoices')) {
+      // `lastmodified` is inclusive and to the minute, so string order is time order.
+      const query = new URLSearchParams(url.search.slice(1));
+      const since = query.get('lastmodified') ?? '';
+      const limit = Number(query.get('limit') ?? 100);
+      const page = Number(query.get('page') ?? 1);
+      const matching = [...this.supplierInvoices.values()].filter((e) => e.modified >= since);
+      return this.json({
+        MetaInformation: { '@TotalPages': Math.max(1, Math.ceil(matching.length / limit)), '@CurrentPage': page },
+        SupplierInvoices: matching
+          .slice((page - 1) * limit, page * limit)
+          .map((e) => ({ GivenNumber: e.invoice.GivenNumber })),
+      });
+    }
+    const invoiceMatch = /\/supplierinvoices\/([^/?]+)$/.exec(url.pathname);
+    if (invoiceMatch) {
+      const entry = this.supplierInvoices.get(decodeURIComponent(invoiceMatch[1]!));
+      if (!entry) return this.json({ ErrorInformation: { message: 'no such supplier invoice' } }, 404);
+      return this.json({ SupplierInvoice: entry.invoice });
+    }
+    const sieMatch =/\/sie\/4\?financialyear=(\d+)$/.exec(path);
     if (sieMatch) {
       const id = Number(sieMatch[1]);
       const text = this.sie[id];

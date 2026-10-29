@@ -27,8 +27,10 @@ import {
   listFortnoxBindings,
   sweepFortnoxLedger,
   syncFortnoxScope,
+  syncFortnoxSupplierInvoices,
   unbindFortnoxScope,
   type FortnoxLedgerPage,
+  type FortnoxSupplierInvoicePage,
 } from '../src/index.js';
 import { SIE_FIXTURE } from './fixture.js';
 
@@ -47,6 +49,7 @@ describe('fortnox connector — inbound sync', () => {
   const LEDGER_RECORD = permissionKey.parse('ledger:record');
   const OPERATION = 'ledger/record-period';
   const REFUSING_OPERATION = 'ledger/refuse-period';
+  const INVOICE_OPERATION = 'invoices/record';
 
   let dir: string;
   let host: SqliteScopeHost;
@@ -57,6 +60,7 @@ describe('fortnox connector — inbound sync', () => {
   let connId = connectionId.parse(ulid());
   /** Every page the landing operation received, in order — the assertion surface. */
   let landed: FortnoxLedgerPage[] = [];
+  let invoicesLanded: FortnoxSupplierInvoicePage[] = [];
 
   /**
    * A stand-in for the consuming vertical: it owns the landing operation and the
@@ -81,6 +85,11 @@ describe('fortnox connector — inbound sync', () => {
         landed.push(input);
         return { ok: true };
       }) as OperationHandler<never, unknown>,
+      [INVOICE_OPERATION]: (async (ctx, input: FortnoxSupplierInvoicePage) => {
+        assertAllowed(await ctx.check(LEDGER_RECORD));
+        invoicesLanded.push(input);
+        return { ok: true };
+      }) as OperationHandler<never, unknown>,
       // A landing operation that refuses — a consumer whose own invariant rejects the
       // page. Gated on the same permission, so what fails is the landing, not the
       // authority: the connector must treat both the same way.
@@ -100,6 +109,7 @@ describe('fortnox connector — inbound sync', () => {
     s = scopeId.parse(ulid());
     connId = connectionId.parse(ulid());
     landed = [];
+    invoicesLanded = [];
 
     host = new SqliteScopeHost({
       dir,
@@ -144,6 +154,17 @@ describe('fortnox connector — inbound sync', () => {
       vertical: 'forecast',
       operation,
       permission: LEDGER_RECORD,
+    });
+
+  const bindInvoices = (operation: string = INVOICE_OPERATION, scope: string = s) =>
+    bindFortnoxScope(host, {
+      connectionId: connId,
+      tenantId: t,
+      scopeId: scope,
+      vertical: 'forecast',
+      operation,
+      permission: LEDGER_RECORD,
+      kind: 'supplier-invoice',
     });
 
   const options = () => ({
@@ -209,34 +230,111 @@ describe('fortnox connector — inbound sync', () => {
     expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=2']);
   });
 
-  it('keeps legacy ledger and invoice bindings isolated in one sweep', async () => {
-    await bind(); // No kind: the existing manifest/binding shape remains ledger.
-    const invoiceScope = scopeId.parse(ulid());
-    await host.admin.putConnectorState(connId, `fortnox:binding:${invoiceScope}`, {
-      scopeId: invoiceScope, tenantId: t, vertical: 'forecast', operation: 'invoices/record',
-      permission: LEDGER_RECORD, kind: 'supplier-invoice', boundAt: new Date().toISOString(),
-    });
-
-    const result = await sweepFortnoxLedger(host, connId, options());
-    expect(result.synced).toHaveLength(1);
-    expect(result.unsupported).toEqual([{ scopeId: invoiceScope, reason: expect.stringContaining('upgrade') }]);
-    expect(result.failed).toEqual([]);
-    expect(landed).toHaveLength(1);
-    expect(fortnox.calls).toEqual(['/3/financialyears', '/3/sie/4?financialyear=2']);
+  it('refuses to turn an invoice binding into a ledger one', async () => {
+    await bindInvoices();
+    await expect(bind()).rejects.toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
+    expect((await listFortnoxBindings(host, connId))[0]).toMatchObject({ kind: 'supplier-invoice', operation: INVOICE_OPERATION });
   });
 
-  it('reports an invoice-only binding as unsupported without polling or changing its kind', async () => {
-    await bindFortnoxScope(host, { connectionId: connId, tenantId: t, scopeId: s, vertical: 'forecast',
-      operation: 'invoices/record', permission: LEDGER_RECORD, kind: 'supplier-invoice' });
-    expect((await listFortnoxBindings(host, connId))[0]?.kind).toBe('supplier-invoice');
-    await expect(bind()).rejects.toThrow('one Fortnox landing kind per scope; use a separate scope for the other kind');
-    expect((await listFortnoxBindings(host, connId))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record' });
+  describe('supplier invoices (#2422)', () => {
+    const NOW = Date.parse('2026-06-15T12:00:00.000Z');
+    const invoice = (givenNumber: string, modified: string, extra: Record<string, unknown> = {}) =>
+      fortnox.setSupplierInvoice({
+        modified,
+        invoice: {
+          GivenNumber: givenNumber, SupplierNumber: '7', SupplierName: 'Hiss & Lås AB', InvoiceNumber: `F-${givenNumber}`,
+          InvoiceDate: '2026-06-01', DueDate: '2026-07-01', Currency: 'SEK', Total: 1250, Booked: true, Cancelled: false,
+          SupplierInvoiceRows: [
+            { Account: 4160, CostCenter: '2001', Debit: 1000, Credit: 0 },
+            { Account: 2641, CostCenter: null, Debit: 250, Credit: 0 },
+            { Account: 2440, CostCenter: '', Debit: 0, Credit: 1250.5 },
+          ],
+          ...extra,
+        },
+      });
+    const at = (ms: number) => ({ ...options(), now: () => ms });
+    const binding = async () => (await listFortnoxBindings(host, connId)).find((b) => b.kind === 'supplier-invoice')!;
 
-    const result = await sweepFortnoxLedger(host, connId, options());
-    expect(result.unsupported).toHaveLength(1);
-    expect(result.failed).toEqual([]);
-    expect(fortnox.calls).toEqual([]);
-    expect(landed).toEqual([]);
+    it('lands changed invoices with their rows, then reads nothing new on an idle pass', async () => {
+      await bindInvoices();
+      invoice('12', '2026-06-10 09:00');
+
+      const first = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(first.invoices).toEqual([{ scopeId: s, landed: 1, pending: false }]);
+      // 90 days back, less the overlap, in Swedish local time: winter time (UTC+1) in March.
+      expect(fortnox.calls[0]).toBe('/3/supplierinvoices?lastmodified=2026-03-17%2012%3A55&limit=500&page=1');
+      expect(invoicesLanded).toHaveLength(1);
+      expect(invoicesLanded[0]).toEqual({
+        connectionId: connId,
+        company: { name: 'Testbolaget AB', organizationNumber: '556677-8899' },
+        invoices: [{
+          givenNumber: '12', supplierNumber: '7', supplierName: 'Hiss & Lås AB', invoiceNumber: 'F-12',
+          invoiceDate: '2026-06-01', dueDate: '2026-07-01', total: { amount: '1250', currency: 'SEK' },
+          booked: true, cancelled: false,
+          rows: [
+            { account: '4160', costCentre: '2001', amount: { amount: '1000', currency: 'SEK' } },
+            { account: '2641', costCentre: null, amount: { amount: '250', currency: 'SEK' } },
+            { account: '2440', costCentre: null, amount: { amount: '-1250.5', currency: 'SEK' } },
+          ],
+        }],
+      });
+      expect((await binding()).invoiceSync).toEqual({ since: new Date(NOW).toISOString(), syncedAt: new Date(NOW).toISOString(), landed: 1 });
+
+      fortnox.calls.length = 0;
+      const idle = await sweepFortnoxLedger(host, connId, at(NOW + 15 * 60_000));
+      expect(idle.unchanged).toBe(1);
+      // Summer time (UTC+2): the cursor, less the overlap.
+      expect(fortnox.calls).toEqual(['/3/supplierinvoices?lastmodified=2026-06-15%2013%3A55&limit=500&page=1']);
+      expect(invoicesLanded).toHaveLength(1);
+    });
+
+    it('leaves the cursor when the landing refuses, so the next pass reads the invoice again', async () => {
+      await bindInvoices(REFUSING_OPERATION);
+      invoice('12', '2026-06-10 09:00');
+
+      const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/ledger closed for the period/) }]);
+      expect((await binding()).invoiceSync).toBeUndefined();
+    });
+
+    it('resumes a change set larger than the budget, and re-reads an invoice that changed mid-run', async () => {
+      await bindInvoices();
+      for (const n of ['3', '1', '2']) invoice(n, '2026-06-10 09:00');
+      const run = async (ms: number) => syncFortnoxSupplierInvoices(host, connId, await binding(), { ...at(ms), budget: { details: 2 } });
+
+      expect(await run(NOW)).toEqual({ scopeId: s, landed: 2, pending: true });
+      expect((await binding()).invoiceSync?.pending).toEqual({ startedAt: new Date(NOW).toISOString(), through: '2' });
+      invoice('1', '2026-06-15 14:10'); // changed again after the run began
+
+      expect(await run(NOW + 15 * 60_000)).toEqual({ scopeId: s, landed: 1, pending: false });
+      expect(invoicesLanded.map((p) => p.invoices.map((i) => i.givenNumber))).toEqual([['1', '2'], ['3']]);
+      // Drained: the cursor moves to when the run began, not to now, so the mid-run change is read.
+      expect((await binding()).invoiceSync).toMatchObject({ since: new Date(NOW).toISOString() });
+      expect((await binding()).invoiceSync?.pending).toBeUndefined();
+
+      expect(await run(NOW + 30 * 60_000)).toEqual({ scopeId: s, landed: 1, pending: false });
+      expect(invoicesLanded.at(-1)!.invoices.map((i) => i.givenNumber)).toEqual(['1']);
+    });
+
+    it('keeps ledger and invoice bindings of one connection apart', async () => {
+      await bind();
+      const invoiceScope = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: invoiceScope, jurisdiction: 'eu', vertical: 'forecast' });
+      await host.admin.activateScope(staff, t, invoiceScope);
+      await host.admin.grantToConnection(staff, { connectionId: connId, permission: LEDGER_RECORD, node: { tenantId: t, scopeId: invoiceScope }, grantedBy: staff });
+      await bindInvoices(INVOICE_OPERATION, invoiceScope);
+      invoice('12', '2026-06-10 09:00');
+
+      const result = await sweepFortnoxLedger(host, connId, at(NOW));
+
+      expect(result.failed).toEqual([]);
+      expect(result.synced.map((r) => r.scopeId)).toEqual([s]);
+      expect(result.invoices.map((r) => r.scopeId)).toEqual([invoiceScope]);
+      expect(landed).toHaveLength(1);
+      expect(invoicesLanded).toHaveLength(1);
+    });
   });
 
   it('fails closed for a stored kind from a newer platform', async () => {

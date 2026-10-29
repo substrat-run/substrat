@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import {
+  addDecimal,
+  mulDecimal,
   connectionActivity,
   connectionId as connectionIdSchema,
   instant,
@@ -44,6 +46,7 @@ export {
   type FortnoxCompany,
   type FortnoxFinancialYear,
   type FortnoxSecret,
+  type FortnoxSupplierInvoice,
 } from './api.js';
 export {
   parseSie4,
@@ -64,7 +67,7 @@ export {
   type LedgerBalance,
   type LedgerSummary,
 } from './aggregate.js';
-export { FortnoxMock, type FortnoxMockOptions } from './mock.js';
+export { FortnoxMock, type FortnoxMockOptions, type FortnoxMockSupplierInvoice } from './mock.js';
 export { completeFortnoxConsent, type FortnoxConsentCompletion } from './connect.js';
 
 /**
@@ -175,6 +178,20 @@ export interface FortnoxBinding {
     contentHash: string;
     balances: number;
   };
+  /** An invoice binding's cursor (#2422), written only after a landing succeeded. */
+  invoiceSync?: {
+    /** Invoices changed at or after this instant, less {@link INVOICE_OVERLAP_MS}, are read next pass. */
+    since: string;
+    syncedAt: string;
+    /** How many invoices the last landing carried. */
+    landed: number;
+    /**
+     * A change set larger than one pass's budget: when the run began, and the last `GivenNumber`
+     * landed. `since` stays put until the run drains, then moves to `startedAt`, so an invoice
+     * that changed again mid-run is read again rather than skipped.
+     */
+    pending?: { startedAt: string; through: string };
+  };
 }
 
 /**
@@ -225,6 +242,81 @@ export type FortnoxLedgerPage = z.infer<typeof fortnoxLedgerPage>;
 
 /** How many balance rows ride one `invoke`. */
 const PAGE_SIZE = 500;
+
+/**
+ * The supplier invoices an invoice binding lands (#2422) — one page per pass that found changes.
+ *
+ * Parsed on the way OUT, like {@link fortnoxLedgerPage}, and frozen the same way: fields are only
+ * ever added. Neutral provider facts; what an invoice means to its reader is the vertical's.
+ */
+export const fortnoxSupplierInvoicePage = z.object({
+  connectionId: z.string().min(1),
+  /** The company the invoices belong to — a bureau lands many companies into one install. */
+  company: z.object({
+    name: z.string(),
+    organizationNumber: z.string(),
+  }),
+  invoices: z
+    .array(
+      z.object({
+        /**
+         * Fortnox's own number for the invoice in this company. With `connectionId`, the key a
+         * landing upserts by: a later page resends an invoice whenever it changes, and the
+         * cursor's overlap can resend one that did not.
+         */
+        givenNumber: z.string().min(1),
+        supplierNumber: z.string(),
+        supplierName: z.string(),
+        invoiceNumber: z.string(),
+        invoiceDate: z.string(),
+        dueDate: z.string(),
+        /** In the invoice's own currency. */
+        total: money,
+        booked: z.boolean(),
+        cancelled: z.boolean(),
+        /** The invoice's accounting rows: debit-positive, in SEK, as the ledger page states them. */
+        rows: z.array(
+          z.object({
+            account: z.string(),
+            costCentre: z.string().nullable(),
+            amount: money,
+          }),
+        ),
+      }),
+    )
+    .min(1),
+});
+export type FortnoxSupplierInvoicePage = z.infer<typeof fortnoxSupplierInvoicePage>;
+
+/**
+ * Invoice details read per connection per pass. Fortnox allows 300 calls a minute per client and
+ * company, and a ledger connection to the same company spends from that too. A larger change
+ * set resumes on the next pass.
+ */
+const INVOICE_DETAILS_PER_PASS = 200;
+/** How far back a binding's first pass reads. */
+const INVOICE_FIRST_LOOKBACK_MS = 90 * 86_400_000;
+/**
+ * Read back from each cursor. Fortnox's filter is to the minute in Swedish local time, and the
+ * landing upserts, so re-reading a few minutes costs a resend and missing them costs an invoice.
+ */
+const INVOICE_OVERLAP_MS = 5 * 60_000;
+
+const STOCKHOLM = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Stockholm',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** An instant as Fortnox's `lastmodified` filter reads it: `YYYY-MM-DD HH:MM`, Swedish local time. */
+const stockholmMinute = (ms: number): string => {
+  const p = Object.fromEntries(STOCKHOLM.formatToParts(new Date(ms)).map((part) => [part.type, part.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+};
 
 export interface FortnoxConnectorOptions {
   fetch: FetchLike;
@@ -489,18 +581,115 @@ export async function syncFortnoxScope(
   };
 }
 
+/** What one invoice binding's pass did. */
+export interface FortnoxInvoiceSyncResult {
+  scopeId: string;
+  /** Invoices landed this pass; 0 when nothing changed or the pass's budget was spent. */
+  landed: number;
+  /** True when changed invoices are left for a later pass. */
+  pending: boolean;
+}
+
+/**
+ * Sync ONE invoice binding (#2422): list the supplier invoices changed since its cursor, read
+ * each one's rows, and land them in one page through the binding's operation as the connection.
+ *
+ * Read-only toward Fortnox. Reads at most `budget.details` invoices, oldest number first, and
+ * spends from the budget so bindings sharing a pass share Fortnox's rate limit. The cursor is
+ * written only after the landing succeeded, so a refused page is read again next pass.
+ */
+export async function syncFortnoxSupplierInvoices(
+  host: ScopeHost,
+  connectionId: ConnectionId,
+  binding: FortnoxBinding,
+  options: FortnoxConnectorOptions & { budget?: { details: number } },
+): Promise<FortnoxInvoiceSyncResult> {
+  if (binding.kind !== 'supplier-invoice') {
+    throw new Error(`supplier-invoice sync cannot use Fortnox binding kind '${String(binding.kind ?? 'ledger')}'`);
+  }
+  const conn = await openFortnoxConnection(
+    host.admin,
+    options.fetch,
+    binding.tenantId,
+    binding.vertical,
+    options.timeoutMs ?? 30_000,
+    { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
+  );
+  const api = new FortnoxApi(conn, { apiBase: options.apiBase, oauthBase: options.oauthBase, now: options.now });
+
+  const nowMs = options.now?.() ?? Date.now();
+  const cursor = binding.invoiceSync;
+  const since = cursor ? Date.parse(cursor.since) : nowMs - INVOICE_FIRST_LOOKBACK_MS;
+  const through = cursor?.pending ? Number(cursor.pending.through) : -Infinity;
+  const changed = [...new Set(await api.supplierInvoicesModifiedSince(stockholmMinute(since - INVOICE_OVERLAP_MS)))]
+    .filter((n) => Number(n) > through)
+    .sort((a, b) => Number(a) - Number(b));
+  const budget = options.budget ?? { details: INVOICE_DETAILS_PER_PASS };
+  const batch = changed.slice(0, Math.max(0, budget.details));
+  if (batch.length === 0) return { scopeId: binding.scopeId, landed: 0, pending: changed.length > 0 };
+  budget.details -= batch.length;
+
+  const invoices = [];
+  for (const givenNumber of batch) {
+    const invoice = await api.supplierInvoice(givenNumber);
+    invoices.push({
+      givenNumber: invoice.GivenNumber,
+      supplierNumber: invoice.SupplierNumber,
+      supplierName: invoice.SupplierName,
+      invoiceNumber: invoice.InvoiceNumber,
+      invoiceDate: invoice.InvoiceDate,
+      dueDate: invoice.DueDate,
+      total: { amount: invoice.Total, currency: invoice.Currency },
+      booked: invoice.Booked,
+      cancelled: invoice.Cancelled,
+      rows: invoice.SupplierInvoiceRows.map((row) => ({
+        account: row.Account,
+        costCentre: row.CostCenter || null,
+        amount: { amount: addDecimal(row.Debit, mulDecimal('-1', row.Credit)), currency: 'SEK' },
+      })),
+    });
+  }
+  const company = await api.companyInformation();
+  const payload = fortnoxSupplierInvoicePage.parse({
+    connectionId,
+    company: { name: company.CompanyName, organizationNumber: company.OrganizationNumber },
+    invoices,
+  });
+  // The connection acting as itself (#97), gated on the grant the binding was seated with.
+  const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
+  await scope.invoke(binding.operation, payload);
+
+  const more = changed.length > batch.length;
+  const startedAt = cursor?.pending?.startedAt ?? new Date(nowMs).toISOString();
+  const synced: FortnoxBinding = {
+    ...binding,
+    invoiceSync: {
+      since: more ? new Date(since).toISOString() : startedAt,
+      syncedAt: new Date(nowMs).toISOString(),
+      landed: batch.length,
+      ...(more ? { pending: { startedAt, through: batch[batch.length - 1]! } } : {}),
+    },
+  };
+  await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), synced);
+  return { scopeId: binding.scopeId, landed: batch.length, pending: more };
+}
+
 /** What one sweep pass over a connection did. */
 export interface FortnoxSweepResult {
   found: number;
+  /** Ledger bindings whose books changed and landed. */
   synced: FortnoxSyncResult[];
+  /** Invoice bindings that landed invoices. */
+  invoices: FortnoxInvoiceSyncResult[];
   unchanged: number;
   failed: { scopeId: string; error: string }[];
-  unsupported: { scopeId: string; reason: string }[];
 }
 
 /**
  * Poll Fortnox for every scope this connection is bound to — the {@link ConnectorSweeper}
- * a deployment schedules.
+ * a deployment schedules. A ledger binding syncs its year of books
+ * ({@link syncFortnoxScope}); an invoice binding lands the supplier invoices changed since its
+ * cursor ({@link syncFortnoxSupplierInvoices}). The name predates invoices and is kept.
  *
  * A timer calls this; it holds no timer itself. That keeps the trigger a deployment
  * concern (`startPlatformSweeper` on node, `definePlatformSweeperDO`'s alarm on
@@ -516,22 +705,26 @@ export async function sweepFortnoxLedger(
   options: FortnoxConnectorOptions & { period?: { from: string; to: string } },
 ): Promise<FortnoxSweepResult> {
   const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
-  const result: FortnoxSweepResult = { found: 0, synced: [], unchanged: 0, failed: [], unsupported: [] };
+  const result: FortnoxSweepResult = { found: 0, synced: [], invoices: [], unchanged: 0, failed: [] };
+  // One budget per pass: invoice bindings on this connection read the same company.
+  const budget = { details: INVOICE_DETAILS_PER_PASS };
 
   for (const { value } of rows) {
     // A tombstoned binding (`unbindFortnoxScope`) — present as a row, not a target.
     if (value === null || typeof value !== 'object') continue;
     const binding = value as FortnoxBinding;
     result.found += 1;
-    if (binding.kind === 'supplier-invoice') {
-      result.unsupported.push({ scopeId: binding.scopeId, reason: 'supplier-invoice polling is unavailable; upgrade to a platform and Fortnox connector release with the invoice sweep' });
-      continue;
-    }
-    if (binding.kind !== undefined && binding.kind !== 'ledger') {
+    if (binding.kind !== undefined && binding.kind !== 'ledger' && binding.kind !== 'supplier-invoice') {
       result.failed.push({ scopeId: binding.scopeId, error: `unknown Fortnox binding kind '${String(binding.kind)}'; upgrade this platform before polling this binding` });
       continue;
     }
     try {
+      if (binding.kind === 'supplier-invoice') {
+        const r = await syncFortnoxSupplierInvoices(host, connectionId, binding, { ...options, budget });
+        if (r.landed > 0) result.invoices.push(r);
+        else result.unchanged += 1;
+        continue;
+      }
       const r = await syncFortnoxScope(host, connectionId, binding, options);
       if (r.changed) result.synced.push(r);
       else result.unchanged += 1;
@@ -677,8 +870,8 @@ export async function fortnoxConnectionActivity(
         key,
         title: `${b.vertical} — ${b.scopeId}`,
         reference: b.lastSync ? String(b.lastSync.financialYearId) : null,
-        status: b.lastSync ? 'synced' : 'bound — not yet synced',
-        at: instant.parse(b.lastSync?.syncedAt ?? b.boundAt),
+        status: b.lastSync || b.invoiceSync ? 'synced' : 'bound — not yet synced',
+        at: instant.parse(b.lastSync?.syncedAt ?? b.invoiceSync?.syncedAt ?? b.boundAt),
         facts: [
           { label: 'Lands through', value: b.operation },
           { label: 'Permission', value: b.permission },
