@@ -6,7 +6,6 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox, type HostAdmin } from '@substrat-run/kernel';
 import {
   MCP_RESOURCES_CONFIG_PREFIX,
-  RESERVED_STORE_OPERATIONS,
   platformActorId,
   scopeId,
   tenantId,
@@ -38,10 +37,6 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-    className: 'GraphStore',
-    operations: [],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
   };
 
   beforeAll(async () => {

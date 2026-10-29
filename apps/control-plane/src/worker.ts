@@ -108,6 +108,7 @@ import {
   callPlatformScopeStoreAt,
   type ScopeStoreEnsurerOptions,
   type StoreCanaryTarget,
+  type StoreDriverApprovals,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createWfpWireSettingsApi,
@@ -773,8 +774,8 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
 function ensureScopeStoresFor(env: Env) {
   const options = storeEnsurerOptionsOf(env);
   if (!options) return undefined;
-  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
-    createScopeStoreEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input);
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }) =>
+    createScopeStoreEnsurer({ ...(await options()), loadRelease: input.loadRelease, approvals: input.approvals })(input);
 }
 
 /** What every store script upload is built with, the key lists read when an upload runs. */
@@ -825,8 +826,8 @@ function storeReleasesFor(env: Env) {
         await bucket.put(key, bytes);
       },
     },
-    ensureCanary: async ({ loadRelease, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
-      createStoreCanaryEnsurer({ ...(await options()), loadRelease })(input),
+    ensureCanary: async ({ loadRelease, approvals, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }) =>
+      createStoreCanaryEnsurer({ ...(await options()), loadRelease, approvals })(input),
     readScriptRelease: async (scriptName: string) => readStoreScriptSettings(await options(), scriptName),
     // #2309: what every store script is built from now; the fleet rebuild converges on it.
     fingerprint: async () => storePlatformFingerprint(await options()),

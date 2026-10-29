@@ -8,8 +8,8 @@ import { ulid } from '@substrat-run/kernel';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import {
   platformActorId,
-  RESERVED_STORE_OPERATIONS,
   scopeStoreScriptName,
+  STORE_DRIVER_PLATFORM_REPOSITORY,
   storeDriverReleaseDigest,
   tenantId,
   type StoreDriverRegistration,
@@ -54,25 +54,30 @@ describe('a vertical upload carries no scope-store binding, and its store script
   let rolledOut: typeof release | undefined = release;
 
   /**
-   * One test driver whose pin is the digest of the release above, handed to the control plane and
-   * the store uploader as their registry (`storeDrivers`, `drivers`). The reviewed `STORE_DRIVERS`
-   * is never written to.
+   * One test driver, handed to the control plane and the store uploader as their registry
+   * (`storeDrivers`, `drivers`). The reviewed `STORE_DRIVERS` is never written to. The release above
+   * is recorded and approved in the directory, which is what makes it runnable (D-65).
    */
-  let testDriver: StoreDriverRegistration;
+  const testDriver: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+  let releaseSha: string;
 
   beforeAll(async () => {
-    testDriver = {
-      driver: 'graph',
-      isolationBasis: { kind: 'writtenInRepo' },
-      releases: [{ sha256: await storeDriverReleaseDigest(release), sourceCommit: release.sourceCommit, schema: 0 }],
-      className: 'Store',
-      operations: ['read'],
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    };
+    releaseSha = await storeDriverReleaseDigest(release);
     const caller = await generateScopeStoreKeyPair();
     const platform = await generateScopeStoreKeyPair();
     dir = mkdtempSync(join(tmpdir(), 'cp-upload-scope-store-'));
     host = new SqliteScopeHost({ dir });
+    await host.admin.recordStoreDriverRelease(staff, { driver: 'graph', sha256: releaseSha, sourceCommit: release.sourceCommit });
+    await host.admin.approveStoreDriverRelease(staff, {
+      driver: 'graph',
+      sha256: releaseSha,
+      reason: 'Reviewed the release bundle',
+      sourceReferences: [{ repository: STORE_DRIVER_PLATFORM_REPOSITORY, commit: release.sourceCommit }],
+      isolationReview: {},
+      schema: 0,
+      className: 'Store',
+      operations: ['read'],
+    });
     const common = {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
@@ -84,15 +89,17 @@ describe('a vertical upload carries no scope-store binding, and its store script
     };
     app = createControlPlaneApi({
       ...common,
-      ensureScopeStores: createScopeStoreEnsurer({
+      // The approvals are the ones the push read from the directory under its hold.
+      ensureScopeStores: ({ approvals, ...input }) => createScopeStoreEnsurer({
         accountId: 'acct',
         namespace: 'ns',
         apiToken: 'tok',
         callerPublicKeys: [caller.publicKey],
         platformPublicKeys: [platform.publicKey],
         drivers: [testDriver],
-        loadRelease: async ({ sha256 }) => (sha256 === undefined || sha256 === testDriver.releases[0]!.sha256 ? rolledOut : undefined),
-      }),
+        approvals,
+        loadRelease: async ({ sha256 }) => (sha256 === undefined || sha256 === releaseSha ? rolledOut : undefined),
+      })(input),
     });
     // A control plane with no store uploader configured.
     bare = createControlPlaneApi(common);
@@ -204,7 +211,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
     const store = scopeStoreScriptName(verticalSlug, 'graph');
     expect(puts.slice(before).map((p) => p.script)).toEqual([store, deploymentRefFor(verticalSlug, id)]);
     expect(putTo(store)!.meta.bindings).toEqual(
-      expect.arrayContaining([{ type: 'plain_text', name: STORE_RELEASE_VAR, text: testDriver.releases[0]!.sha256 }]),
+      expect.arrayContaining([{ type: 'plain_text', name: STORE_RELEASE_VAR, text: releaseSha }]),
     );
 
     // A serve puts the store script in place first too: with it gone, the promote re-creates it

@@ -3,7 +3,6 @@ import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.
 import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, permissionDeclaration, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
-import { RESERVED_STORE_OPERATIONS } from './scope-store-envelope.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
@@ -355,27 +354,6 @@ export const storeCatalogOperation = storeOperationName.refine((name) => !name.s
 /** A store driver id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
 export const storeDriverId = z.string().regex(STORE_DRIVER_ID, { message: 'a store driver id is [a-z0-9]+' });
 
-/**
- * One pinned release of a store driver (D-63): the sha256 of the release bundle, which the
- * platform checks at every upload, and the source commit the bundle was built from, which a
- * reviewer reads. The digest is {@link storeDriverReleaseDigest} over the bundle's modules and the
- * module the entry imports.
- *
- * `schema` is the version of the stored data the release migrates an object to when it wakes
- * (D-63, "Rollback against a migrated schema"; proposed in #2300, for the maintainer to confirm).
- * The platform never moves a script to a release with a lower `schema` than the one it leaves:
- * not by a rollout, a rollback, or the restore after a failed rollout. A driver's migrations are
- * forward-only, so a release that changes the stored shape raises it.
- */
-export const storeDriverRelease = z
-  .object({
-    sha256: z.string().regex(/^[0-9a-f]{64}$/, { message: 'a release sha256 is 64 lowercase hex' }),
-    sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
-    schema: z.number().int({ message: 'a release schema is an integer' }).nonnegative({ message: 'a release schema is not negative' }),
-  })
-  .strict();
-export type StoreDriverRelease = z.infer<typeof storeDriverRelease>;
-
 /** A decision-record lift must be admitted here in a reviewed change before it can register a driver. */
 export const STORE_DRIVER_ADMITTED_ISOLATION_LIFTS = [] as const satisfies readonly `D-${number}`[];
 
@@ -412,34 +390,39 @@ export const storeDriverIsolationBasis = z.discriminatedUnion('kind', [
 export type StoreDriverIsolationBasis = z.infer<typeof storeDriverIsolationBasis>;
 
 /**
- * A store driver, registered in this repo (D-63/D-65). Step 4a retains the pin fields until the
- * atomic reader switch; the registry remains empty until a driver is admitted after that switch.
+ * Whether a registration's isolation basis admits an approval with these source references
+ * (D-65). A driver written in this repo admits only references to the platform repository, so an
+ * approval naming any other repository does not count as live under it. A decision record that
+ * lifts D-63's isolation sentence admits the driver's own repositories.
  */
-export const storeDriverRegistration = z.object({
-  // Held to the driver-id grammar first (L20), so a second driver cannot be added outside it.
-  driver: storeDriverId.pipe(z.literal('graph')),
-  isolationBasis: storeDriverIsolationBasis,
-  releases: z
-    .array(storeDriverRelease)
-    .min(1)
-    .refine((releases) => new Set(releases.map((r) => r.sha256)).size === releases.length, {
-      message: 'a release is pinned once',
-    }),
-  // No script name: the platform names the upload `scopeStoreScriptName(vertical, driver)`.
-  className: z.string().min(1),
-  operations: z.array(storeCatalogOperation),
-  platformOperations: z.array(z.enum(RESERVED_STORE_OPERATIONS)).refine(
-    (ops) => RESERVED_STORE_OPERATIONS.every((op) => ops.includes(op)),
-    { message: 'a store driver answers every reserved operation, including substrat.erase' },
-  ),
-});
+export function storeDriverBasisAdmits(
+  basis: StoreDriverIsolationBasis,
+  sourceReferences: readonly { readonly repository: string }[],
+): boolean {
+  if (basis.kind === 'decisionRecord') return true;
+  return sourceReferences.length > 0 && sourceReferences.every((ref) => storeDriverRepositoryIsPlatformRepository(ref.repository));
+}
+
+/**
+ * A store driver, registered in this repo (D-63/D-65): its id and its isolation basis, nothing
+ * about a release. The class name, the operation catalog and the `schema` of each release are
+ * facts of its approval, recorded in the control plane by the person who approved it. Strict, so a
+ * registration still carrying a release pin is refused rather than silently ignored.
+ */
+export const storeDriverRegistration = z
+  .object({
+    // Held to the driver-id grammar first (L20), so a second driver cannot be added outside it.
+    // No script name: the platform names the upload `scopeStoreScriptName(vertical, driver)`.
+    driver: storeDriverId.pipe(z.literal('graph')),
+    isolationBasis: storeDriverIsolationBasis,
+  })
+  .strict();
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
 
 /**
- * Registered store drivers. None yet: a driver is registered by its id once the approval
- * flow in docs/rfc/store-driver-release-approval.md has replaced per-release pins (its step 5),
- * and a third-party driver such as graph also waits for a decision record lifting D-63's
- * isolation requirement for it (#2210, #2394).
+ * Registered store drivers. None yet: a driver is registered by its id once the approval flow in
+ * docs/rfc/store-driver-release-approval.md serves (its step 5), and a third-party driver such as
+ * graph also waits for a decision record lifting D-63's isolation requirement for it (#2210, #2394).
  */
 export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
 
@@ -592,15 +575,15 @@ export const storeDriverReleaseUpload = z
   .strict();
 export type StoreDriverReleaseUpload = z.infer<typeof storeDriverReleaseUpload>;
 
-/** The domain tag a release digest starts with. Another framing is another tag, and a pin migration. */
+/** The domain tag a release digest starts with. Another framing is another tag, and every release uploaded and approved again. */
 export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
 
 /** A name inside a release digest: printable ASCII, no space, so no NUL and no encoding choice. */
 const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
 
 /**
- * The sha256 that pins a store driver's release (D-63), as lowercase hex. It covers everything that
- * decides what runs, apart from the class the registration names: the module the platform's
+ * The sha256 that names a store driver's release (D-63, D-65), as lowercase hex. It covers everything
+ * that decides what runs, apart from the class its approval names: the module the platform's
  * entry imports, and every module's name and bytes, a vendored `python_modules/` file included.
  * Framed as {@link STORE_RELEASE_DIGEST_TAG}
  * and one zero byte, the entry's name and one zero byte, then each module in name order: its
@@ -611,7 +594,7 @@ const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
  * not left to a caller: every name (the entry's included) is non-empty printable ASCII without
  * a space. A NUL would let one name absorb the next module's frame, and a lone surrogate encodes
  * to the same bytes as U+FFFD, so either would let two releases share a digest. ASCII also makes
- * the sort below (UTF-16 code units) the byte order, so a pin computed outside JavaScript agrees.
+ * the sort below (UTF-16 code units) the byte order, so a digest computed outside JavaScript agrees.
  * A module named twice is refused, and so is an entry that is not one of the modules.
  */
 export async function storeDriverReleaseDigest(release: {

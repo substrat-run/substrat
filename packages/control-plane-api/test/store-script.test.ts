@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
-import { RESERVED_STORE_OPERATIONS, storeDriverReleaseDigest, type StoreDriverRegistration } from '@substrat-run/contracts';
+import { STORE_DRIVER_PLATFORM_REPOSITORY, storeDriverReleaseDigest, type StoreDriverRegistration } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
-import { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from '../src/store-script.js';
+import type { StoreDriverApprovalRecord } from '@substrat-run/kernel';
+import { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR, type StoreDriverApprovals } from '../src/store-script.js';
 import {
   STORE_ENTRY_PYTHON_MODULE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
@@ -45,13 +46,43 @@ const artifact = (source: string) => ({
 const v1 = artifact('class Store:\n    pass\n');
 const v2 = artifact('class Store:\n    version = 2\n');
 
-let pins: StoreDriverRegistration['releases'];
+const GRAPH: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+
+/** One approved release, as the facts its approval fixed: live unless `revoked`. */
+type Approved = { sha256: string; schema: number; className?: string; revoked?: true; repository?: string };
+
+/** A driver's approvals as a request reads them (D-65): one row per approved release. */
+function approvalsOf(approved: readonly Approved[]): StoreDriverApprovals {
+  return {
+    registration: GRAPH,
+    records: approved.map((a, i): StoreDriverApprovalRecord => ({
+      approvalId: `approval-${i}`,
+      driver: 'graph',
+      sha256: a.sha256,
+      sourceCommit: 'f'.repeat(40),
+      approvedBy: 'staff',
+      approvedAt: '2026-10-01T00:00:00.000Z',
+      reason: 'reviewed',
+      sourceReferences: [{ repository: a.repository ?? STORE_DRIVER_PLATFORM_REPOSITORY, commit: 'f'.repeat(40) }],
+      isolationReview: {},
+      schema: a.schema,
+      className: a.className ?? 'Store',
+      operations: ['read'],
+      revokedBy: a.revoked ? 'staff' : null,
+      revokedAt: a.revoked ? '2026-10-02T00:00:00.000Z' : null,
+      revokedReason: a.revoked ? 'withdrawn' : null,
+      revokedEmergency: a.revoked ? false : null,
+    })),
+  };
+}
+
+let pins: Approved[];
 let caller: string;
 let platform: string;
 beforeAll(async () => {
   pins = [
-    { sha256: await storeDriverReleaseDigest(v1), sourceCommit: v1.sourceCommit, schema: 0 },
-    { sha256: await storeDriverReleaseDigest(v2), sourceCommit: v2.sourceCommit, schema: 0 },
+    { sha256: await storeDriverReleaseDigest(v1), schema: 0 },
+    { sha256: await storeDriverReleaseDigest(v2), schema: 0 },
   ];
   caller = (await generateScopeStoreKeyPair()).publicKey;
   platform = (await generateScopeStoreKeyPair()).publicKey;
@@ -91,29 +122,19 @@ function cloudflare(options: { settingsStatus?: number; putStatus?: number } = {
   return { scripts, puts, calls };
 }
 
+const keys = () => ({ accountId: 'acct', namespace: 'ns', apiToken: 'tok', callerPublicKeys: [caller], platformPublicKeys: [platform], drivers: [GRAPH] });
+
 function ensurer(input: {
   rolledOut?: ReturnType<typeof artifact> | undefined;
   stored?: ReturnType<typeof artifact>[];
   callerKeys?: string[];
-  releases?: StoreDriverRegistration['releases'];
+  approved?: Approved[];
   asked?: { sha256?: string }[];
 }) {
   return createScopeStoreEnsurer({
-    accountId: 'acct',
-    namespace: 'ns',
-    apiToken: 'tok',
+    ...keys(),
     callerPublicKeys: input.callerKeys ?? [caller],
-    platformPublicKeys: [platform],
-    drivers: [
-      {
-        driver: 'graph',
-        isolationBasis: { kind: 'writtenInRepo' },
-        releases: input.releases ?? pins,
-        className: 'Store',
-        operations: ['read'],
-        platformOperations: [...RESERVED_STORE_OPERATIONS],
-      },
-    ],
+    approvals: approvalsOf(input.approved ?? pins),
     loadRelease: async ({ sha256 }) => {
       input.asked?.push({ ...(sha256 ? { sha256 } : {}) });
       if (sha256 === undefined) return 'rolledOut' in input ? input.rolledOut : v1;
@@ -164,6 +185,13 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     expect(put.parts.get('driver_counter/blob.py')).toEqual({ type: 'text/x-python', bytes: v1.modules[1]!.content });
   });
 
+  it('builds the entry on the class the release\'s approval names (D-65)', async () => {
+    const cf = cloudflare();
+    await ensurer({ approved: [{ ...pins[0]!, className: 'GraphStore' }] })(need);
+    const entry = new TextDecoder().decode(cf.puts[0]!.parts.get(STORE_ENTRY_PYTHON_MODULE)!.bytes);
+    expect(entry).toContain('from driver_counter.store import GraphStore as StoreDriver');
+  });
+
   it('a script built from the same inputs is left alone, and a push never moves its release', async () => {
     const cf = cloudflare();
     await ensurer({})(need);
@@ -172,6 +200,24 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     await ensurer({ rolledOut: v2, asked })(need);
     expect(asked).toEqual([{ sha256: pins[0]!.sha256 }]);
     expect(cf.calls).toEqual([`GET ${SCRIPT}`, `PUT ${SCRIPT}`, `GET ${SCRIPT}`]);
+  });
+
+  it('refuses (422) a push over a script whose release was revoked, even with nothing to upload', async () => {
+    const cf = cloudflare();
+    await ensurer({})(need);
+    // The same script, built the same way: without the approval check this push is a no-op.
+    expect(await refusal(ensurer({ approved: [{ ...pins[0]!, revoked: true }, pins[1]!] })(need))).toMatchObject({
+      status: 422,
+      message: expect.stringMatching(/no live approval/),
+    });
+    expect(cf.puts).toHaveLength(1);
+  });
+
+  it('does not count an approval naming another repository under a written-in-repo basis', async () => {
+    const cf = cloudflare();
+    const approved = [{ ...pins[0]!, repository: 'https://github.com/other-org/graph' }];
+    expect(await refusal(ensurer({ approved })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
+    expect(cf.puts).toEqual([]);
   });
 
   it('a rotated key list rebuilds the script at the release it runs, with no second migration', async () => {
@@ -197,12 +243,12 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     expect(text(cf.puts[1]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
   });
 
-  it('refuses (422) a release whose bytes are not pinned, before anything is sent', async () => {
+  it('refuses (422) a release whose bytes have no approval, before anything is sent', async () => {
     const cf = cloudflare();
-    expect(await refusal(ensurer({ releases: [pins[1]!] })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/not pinned/) });
-    // One byte more than the pinned release is another release.
+    expect(await refusal(ensurer({ approved: [pins[1]!] })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
+    // One byte more than the approved release is another release.
     const tampered = { ...v1, modules: [{ ...v1.modules[0]!, content: bytes('class Store:\n    pass\n ') }, v1.modules[1]!] };
-    expect(await refusal(ensurer({ rolledOut: tampered })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/not pinned/) });
+    expect(await refusal(ensurer({ rolledOut: tampered })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
     expect(cf.puts).toEqual([]);
   });
 
@@ -210,38 +256,22 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     const cf = cloudflare();
     await ensurer({})(need);
     cf.scripts.set(SCRIPT, cf.scripts.get(SCRIPT)!.map((b) => (b.name === STORE_BUILD_VAR ? { ...b, text: 'stale' } : b)));
-    const swapped = createScopeStoreEnsurer({
-      accountId: 'acct',
-      namespace: 'ns',
-      apiToken: 'tok',
-      callerPublicKeys: [caller],
-      platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
-      loadRelease: async () => v2,
-    });
+    const swapped = createScopeStoreEnsurer({ ...keys(), approvals: approvalsOf(pins), loadRelease: async () => v2 });
     expect(await refusal(swapped(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
     expect(cf.puts).toHaveLength(1);
   });
 
-  it('refuses (422) the pinned modules under another entry: the entry is part of the pin', async () => {
+  it('refuses (422) the approved modules under another entry: the entry is part of the digest', async () => {
     const cf = cloudflare();
-    // The same bytes, with the entry importing another of them: not the release that was pinned.
+    // The same bytes, with the entry importing another of them: not the release that was approved.
     const moved = { ...v1, entry: 'driver_counter/blob.py' };
-    expect(await refusal(ensurer({ rolledOut: moved })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/is not pinned/) });
+    expect(await refusal(ensurer({ rolledOut: moved })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
     // And a script that runs v1 is not rebuilt onto the other entry under v1's sha256, even by a
     // loader that hands back v1's bytes with it.
     await ensurer({})(need);
     cf.puts.length = 0;
     cf.scripts.set(SCRIPT, cf.scripts.get(SCRIPT)!.map((b) => (b.name === STORE_BUILD_VAR ? { ...b, text: 'stale' } : b)));
-    const entryMoved = createScopeStoreEnsurer({
-      accountId: 'acct',
-      namespace: 'ns',
-      apiToken: 'tok',
-      callerPublicKeys: [caller],
-      platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
-      loadRelease: async () => moved,
-    });
+    const entryMoved = createScopeStoreEnsurer({ ...keys(), approvals: approvalsOf(pins), loadRelease: async () => moved });
     expect(await refusal(entryMoved(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
     expect(cf.puts).toEqual([]);
   });
@@ -267,8 +297,8 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
   it('refuses (422) a release whose modules break the module rule', async () => {
     const cf = cloudflare();
     const bad = { ...v1, modules: [...v1.modules, { name: 'workers.py', content: bytes('') }] };
-    const releases = [{ sha256: await storeDriverReleaseDigest(bad), sourceCommit: v1.sourceCommit, schema: 0 }];
-    expect(await refusal(ensurer({ rolledOut: bad, releases })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/workers\.py/) });
+    const approved = [{ sha256: await storeDriverReleaseDigest(bad), schema: 0 }];
+    expect(await refusal(ensurer({ rolledOut: bad, approved })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/workers\.py/) });
     expect(cf.puts).toEqual([]);
   });
 
@@ -312,43 +342,23 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
     expect(cf.puts).toHaveLength(2);
   });
 
-  it('refuses (422) a `to` the loader answers with other bytes, and a stored release the pins do not hold', async () => {
+  it('refuses (422) a `to` the loader answers with other bytes, and a stored release with no approval', async () => {
     const cf = cloudflare();
     // The store holds v2's bytes under v1's key.
-    const swapped = createScopeStoreEnsurer({
-      accountId: 'acct',
-      namespace: 'ns',
-      apiToken: 'tok',
-      callerPublicKeys: [caller],
-      platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
-      loadRelease: async () => v2,
-    });
+    const swapped = createScopeStoreEnsurer({ ...keys(), approvals: approvalsOf(pins), loadRelease: async () => v2 });
     expect(await refusal(swapped({ ...need, to: pins[0]!.sha256 }))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
     // A loader's own claim is held too, for a script that does not exist yet.
-    const claimed = createScopeStoreEnsurer({
-      accountId: 'acct',
-      namespace: 'ns',
-      apiToken: 'tok',
-      callerPublicKeys: [caller],
-      platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
-      loadRelease: async () => ({ ...v2, sha256: pins[0]!.sha256 }),
-    });
+    const claimed = createScopeStoreEnsurer({ ...keys(), approvals: approvalsOf(pins), loadRelease: async () => ({ ...v2, sha256: pins[0]!.sha256 }) });
     expect(await refusal(claimed(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
-    expect(await refusal(ensurer({ releases: [pins[0]!] })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({ status: 422, message: expect.stringMatching(/not pinned/) });
+    expect(await refusal(ensurer({ approved: [pins[0]!] })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
     expect(cf.puts).toEqual([]);
   });
 
-  it("uploads the canary to the platform's own script, pinned and built like a vertical's", async () => {
+  it("uploads the canary to the platform's own script, approved and built like a vertical's", async () => {
     const cf = cloudflare();
     const canary = createStoreCanaryEnsurer({
-      accountId: 'acct',
-      namespace: 'ns',
-      apiToken: 'tok',
-      callerPublicKeys: [caller],
-      platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      ...keys(),
+      approvals: approvalsOf(pins),
       loadRelease: async ({ sha256 }) => (sha256 === pins[1]!.sha256 ? v2 : undefined),
     });
     // The fleet rebuild (#2309) creates no canary script where there is none.
@@ -373,21 +383,34 @@ describe('a script never moves to a release with a lower schema than the one it 
       { ...pins[0]!, schema: 1 },
       { ...pins[1]!, schema: 0 },
     ];
-    await ensurer({ releases: ranked })(need);
+    await ensurer({ approved: ranked })(need);
     expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
-    expect(await refusal(ensurer({ releases: ranked })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({
+    expect(await refusal(ensurer({ approved: ranked })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({
       status: 409,
       message: expect.stringMatching(/runs schema 1; release .* has schema 0/),
     });
     expect(cf.puts).toHaveLength(1);
     // The same move is allowed when the schemas agree, or rise.
-    await ensurer({ releases: [{ ...pins[0]!, schema: 1 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[1]!.sha256 });
+    await ensurer({ approved: [{ ...pins[0]!, schema: 1 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[1]!.sha256 });
     expect(text(cf.puts[1]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
-    await ensurer({ releases: [{ ...pins[0]!, schema: 2 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[0]!.sha256 });
+    await ensurer({ approved: [{ ...pins[0]!, schema: 2 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[0]!.sha256 });
     expect(text(cf.puts[2]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
-    // A script on a release its registration no longer pins cannot be judged, so it is not moved.
-    expect(await refusal(ensurer({ releases: [pins[1]!] })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({ status: 409, message: expect.stringMatching(/not pinned, so its schema/) });
+    // A script on a release that was never approved cannot be judged, so it is not moved.
+    expect(await refusal(ensurer({ approved: [pins[1]!] })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({ status: 409, message: expect.stringMatching(/never approved, so its schema/) });
     expect(cf.puts).toHaveLength(3);
+  });
+
+  it('judges the release a script leaves by its approval facts, revoked or not', async () => {
+    const cf = cloudflare();
+    await ensurer({ approved: [{ ...pins[0]!, schema: 1 }] })(need);
+    // v1 is revoked now. Leaving it is still judged by the schema its approval fixed.
+    const left = { ...pins[0]!, schema: 1, revoked: true as const };
+    expect(await refusal(ensurer({ approved: [left, { ...pins[1]!, schema: 0 }] })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/runs schema 1; release .* has schema 0/),
+    });
+    await ensurer({ approved: [left, { ...pins[1]!, schema: 2 }] })({ ...need, to: pins[1]!.sha256 });
+    expect(cf.puts.map((p) => text(p, STORE_RELEASE_VAR))).toEqual([pins[0]!.sha256, pins[1]!.sha256]);
   });
 
   it('lets the canary script move down: its objects are fresh and wiped', async () => {
@@ -397,12 +420,8 @@ describe('a script never moves to a release with a lower schema than the one it 
       { ...pins[1]!, schema: 0 },
     ];
     const canary = createStoreCanaryEnsurer({
-      accountId: 'acct',
-      namespace: 'ns',
-      apiToken: 'tok',
-      callerPublicKeys: [caller],
-      platformPublicKeys: [platform],
-      drivers: [{ driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: ranked, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      ...keys(),
+      approvals: approvalsOf(ranked),
       loadRelease: async ({ sha256 }) => (sha256 === pins[0]!.sha256 ? v1 : v2),
     });
     await canary({ driver: 'graph', to: pins[0]!.sha256 });

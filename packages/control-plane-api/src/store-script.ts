@@ -2,18 +2,19 @@ import {
   SCOPE_STORE_CANARY,
   STORE_DRIVERS,
   scopeStoreCanaryScriptName,
+  storeDriverBasisAdmits,
   storeDriverReleaseDigest,
   type ScopeStoreNeed,
   type StoreDriverRegistration,
-  type StoreDriverRelease,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
+import type { StoreDriverApprovalRecord } from '@substrat-run/kernel';
 import { scopeStoreUploadPlan } from './deploy.js';
 import { STORE_OBJECT_CLASS, STORE_RESERVED_BINDING_PREFIX } from './store-entry.generated.js';
 import { withPythonStoreEntry, type PythonStoreDriverRelease, type PythonStoreScript } from './store-entry.js';
 
 /**
- * The binding that records which pinned release a store script runs: the release bundle's
+ * The binding that records which release a store script runs: the release bundle's
  * sha256 (D-63). In the entry's reserved prefix, so the driver's env never carries it.
  */
 export const STORE_RELEASE_VAR = `${STORE_RESERVED_BINDING_PREFIX}_RELEASE`;
@@ -37,6 +38,34 @@ export async function readStoreScriptSettings(
   const body = (await res.json()) as { result?: { bindings?: { name?: string; text?: string }[] } };
   const text = (name: string) => body.result?.bindings?.find((b) => b.name === name)?.text;
   return { exists: true, release: text(STORE_RELEASE_VAR), build: text(STORE_BUILD_VAR) };
+}
+
+/**
+ * A driver's approvals as one request read them, after taking its hold on the driver (D-65): every
+ * row, revoked ones included, beside the compiled registration that judges them. Read once per
+ * push, serve, rebuild pass or rollout request, never cached across requests.
+ */
+export interface StoreDriverApprovals {
+  readonly registration: StoreDriverRegistration;
+  readonly records: readonly StoreDriverApprovalRecord[];
+}
+
+/**
+ * The approval a move TO a release runs under: not revoked, and admitted by the registration's
+ * isolation basis. A rollout, a rollback, the return after a failed rollout and every upload of a
+ * script need one.
+ */
+export function liveApprovalOf(approvals: StoreDriverApprovals, sha256: string): StoreDriverApprovalRecord | undefined {
+  return approvals.records.find((a) =>
+    a.sha256 === sha256 && a.revokedAt === null && storeDriverBasisAdmits(approvals.registration.isolationBasis, a.sourceReferences));
+}
+
+/**
+ * The facts of a release a script is LEAVING: any of its approval rows, revoked or not. Its facts
+ * are fixed at its first approval, so every row agrees, and a revoked release can still be left.
+ */
+export function approvalFactsOf(approvals: StoreDriverApprovals, sha256: string): StoreDriverApprovalRecord | undefined {
+  return approvals.records.find((a) => a.sha256 === sha256);
 }
 
 /** One release of a driver's code, as the publish flow stores it (#2297). */
@@ -69,6 +98,8 @@ export interface ScopeStoreEnsurerOptions {
     readonly vertical: string;
     readonly sha256?: string;
   }) => Promise<StoreDriverReleaseArtifact | undefined>;
+  /** The driver's approvals, read by the caller under its hold (`readStoreDriverApprovals`). */
+  approvals: StoreDriverApprovals;
 }
 
 /**
@@ -110,11 +141,13 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
  * - `to`: the script is moved to that release, or left alone when it already runs it, built the
  *   same way. Re-running a rollout therefore converges and uploads nothing twice.
  *
- * Every upload hashes the module bytes it is about to send and refuses (422) bytes whose
- * sha256 the driver's registration does not pin, or that are not the release asked for. A driver
- * with no release to run is refused (409). A script is never moved to a release whose pinned
- * `schema` is lower than that of the release it runs (409): its objects may have migrated. The
- * runtime's own failures are 502. Answers how many scripts were uploaded.
+ * Every upload hashes the module bytes it is about to send and refuses (422) bytes whose sha256
+ * has no live approval (D-65), or that are not the release asked for. That holds for a rebuild
+ * where the script stands too, so a script running a revoked release is not uploaded again until a
+ * rollout moves it. A driver with no release to run is refused (409). A script is never moved to a
+ * release whose approved `schema` is lower than that of the release it runs (409), judged from that
+ * release's approval facts, revoked or not: its objects may have migrated. The class the entry loads
+ * is the approval's. The runtime's own failures are 502. Answers how many scripts were uploaded.
  */
 export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
@@ -147,7 +180,7 @@ export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
     if (!driver) throw new ControlPlaneError(403, `scope store driver '${input.driver}' is not registered`);
     const scriptName = scopeStoreCanaryScriptName(driver.driver);
     const uploaded = await ensure(
-      { driver: driver.driver, vertical: SCOPE_STORE_CANARY, scriptName, className: driver.className, releases: driver.releases },
+      { driver: driver.driver, vertical: SCOPE_STORE_CANARY, scriptName },
       'to' in input ? input.to : undefined,
       { anySchema: true, existingOnly: 'existingOnly' in input },
     );
@@ -162,8 +195,6 @@ interface EnsuredScript {
   readonly driver: string;
   readonly vertical: string;
   readonly scriptName: string;
-  readonly className: string;
-  readonly releases: readonly StoreDriverRelease[];
 }
 
 function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
@@ -172,6 +203,9 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
   return async (script: EnsuredScript, to: string | undefined, rule: { anySchema?: boolean; existingOnly?: boolean } = {}): Promise<boolean> => {
+    if (opts.approvals.registration.driver !== script.driver) {
+      throw new ControlPlaneError(500, `store script '${script.scriptName}' was handed the approvals of driver '${opts.approvals.registration.driver}'`);
+    }
     const current = await readStoreScriptSettings(opts, script.scriptName);
     if (rule.existingOnly && !current.exists) return false;
     if (current.exists && !current.release) {
@@ -206,19 +240,19 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     if (asked && sha256 !== asked) {
       throw new ControlPlaneError(422, `driver '${script.driver}' release ${asked} loaded as other bytes (${sha256})`);
     }
-    const pin = script.releases.find((p) => p.sha256 === sha256);
-    if (!pin) {
-      throw new ControlPlaneError(422, `driver '${script.driver}' release ${sha256} is not pinned in its registration`);
+    const approval = liveApprovalOf(opts.approvals, sha256);
+    if (!approval) {
+      throw new ControlPlaneError(422, `driver '${script.driver}' release ${sha256} has no live approval; roll '${script.scriptName}' out to an approved release`);
     }
     if (current.release && current.release !== sha256 && !rule.anySchema) {
-      const running = script.releases.find((p) => p.sha256 === current.release);
+      const running = approvalFactsOf(opts.approvals, current.release);
       if (!running) {
-        throw new ControlPlaneError(409, `store script '${script.scriptName}' runs ${current.release}, which is not pinned, so its schema cannot be judged`);
+        throw new ControlPlaneError(409, `store script '${script.scriptName}' runs ${current.release}, which was never approved, so its schema cannot be judged`);
       }
-      if (pin.schema < running.schema) {
+      if (approval.schema < running.schema) {
         throw new ControlPlaneError(
           409,
-          `store script '${script.scriptName}' runs schema ${running.schema}; release ${sha256} has schema ${pin.schema}, and a script never moves to a lower one. ` +
+          `store script '${script.scriptName}' runs schema ${running.schema}; release ${sha256} has schema ${approval.schema}, and a script never moves to a lower one. ` +
             `To undo a schema-raising rollout that stopped part way, converge it forward: post that rollout again`,
         );
       }
@@ -226,7 +260,7 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     let built: PythonStoreScript;
     try {
       built = withPythonStoreEntry(loaded, {
-        className: script.className,
+        className: approval.className,
         script: script.scriptName,
         callerPublicKeys: opts.callerPublicKeys,
         platformPublicKeys: opts.platformPublicKeys,

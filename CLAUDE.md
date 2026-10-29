@@ -813,13 +813,12 @@ local wrapper of one, before it — in its function or in every caller of the on
 writes), `lint:role-seat-paths` (`tools/role-seat-paths.mjs`, #2447: in the hosts' shipped source, every
 role tuple, role-table write, kernel scope-role writer and ScopeDO role projection has a reserved-key refusal
 before it in its function, or sits in a function its `ALLOWED` list names with the reason — a revoke, or a
-fan-out of definitions already judged; a stale entry is refused too), `lint:store-driver-readers` and
-`lint:store-driver-repository` (#2297: the `*.repo.test.ts` suites of control-plane-api and contracts,
-which their packages' own runs exclude. The first type-checks every member that can hold a store-driver
-registration, the scaffold template included, and holds each typed read of its release pins to the
-baseline step 4b switches. The second holds every public workspace manifest's `repository.url` to the
-platform repository. Both read the whole workspace, so they run in the checks job rather than through
-`READS` rows, which would select a reader with all its dependents on nearly every change), and `lint:operation-tests --base <ref>`, which is advisory and never fails (a
+fan-out of definitions already judged; a stale entry is refused too),
+`lint:store-driver-repository` (#2297: contracts' `*.repo.test.ts` suite, which the package's own run
+excludes. It holds every public workspace manifest's `repository.url` to the platform repository, the
+one a `writtenInRepo` isolation basis admits approvals from. It reads the whole workspace, so it runs in
+the checks job rather than through a `READS` row, which would select contracts with all its dependents
+on nearly every change), and `lint:operation-tests --base <ref>`, which is advisory and never fails (a
 `::warning` for an operation new since the base that no test in its package names) — and
 `lint:changelog --check` — which asserts a hand-written digest accounts
 for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`

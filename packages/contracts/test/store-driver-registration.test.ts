@@ -4,6 +4,7 @@ import {
   STORE_DRIVER_PLATFORM_REPOSITORY,
   normalizeStoreDriverRepositoryUrl,
   storeDriverIsolationBasis,
+  storeDriverRegistration,
   storeDriverRepositoryIsPlatformRepository,
 } from '../src/deploy.js';
 
@@ -14,6 +15,18 @@ describe('store driver registration isolation basis (D-65)', () => {
     expect(storeDriverIsolationBasis.safeParse({ kind: 'decisionRecord', decisionRecord: 'D-63' }).success).toBe(false);
     expect(storeDriverIsolationBasis.safeParse({ kind: 'decisionRecord', decisionRecord: 'D-000' }).success).toBe(false);
     expect(storeDriverIsolationBasis.safeParse({ kind: 'writtenInRepo', extra: true }).success).toBe(false);
+  });
+
+  it('is an id and a basis: a registration still carrying a release pin or its facts is refused', () => {
+    const registration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+    expect(storeDriverRegistration.safeParse(registration).success).toBe(true);
+    for (const pinned of [
+      { releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }] },
+      { className: 'GraphStore' },
+      { operations: [] },
+    ]) {
+      expect(storeDriverRegistration.safeParse({ ...registration, ...pinned }).success, JSON.stringify(pinned)).toBe(false);
+    }
   });
 
   it('normalizes only the platform repo identity and refuses mirrors and look-alikes', () => {

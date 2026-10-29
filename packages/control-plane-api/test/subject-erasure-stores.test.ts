@@ -7,7 +7,6 @@ import { ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ScopeStoreRunner
 import {
   dataSubjectId,
   platformActorId,
-  RESERVED_STORE_OPERATIONS,
   scopeId,
   tenantId,
   type ScopeId,
@@ -46,10 +45,6 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-    className: 'GraphStore',
-    operations: [],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
   };
   const redactOnly = {
     redactSubject: async () => ({

@@ -7,7 +7,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { manualClock, ulid, type ManualClock } from '@substrat-run/kernel';
 import {
   platformActorId,
-  RESERVED_STORE_OPERATIONS,
+  STORE_DRIVER_PLATFORM_REPOSITORY,
   storeDriverReleaseDigest,
   type ReservedStoreOperation,
   type StoreDriverRegistration,
@@ -17,6 +17,7 @@ import {
   createScopeStoreEnsurer,
   createStoreCanaryEnsurer,
   DEV_ACTOR_HEADER,
+  readStoreDriverApprovals,
   runStoreDriverRollout,
   runStoreFleetRebuild,
   STORE_RELEASE_VAR,
@@ -92,7 +93,7 @@ describe('the fleet rebuild (#2309)', () => {
       }) } : undefined;
     },
   };
-  let registration: StoreDriverRegistration;
+  const registration: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
   let s1: string;
   let s2: string;
   let keysA: { caller: string; platform: string };
@@ -106,10 +107,11 @@ describe('the fleet rebuild (#2309)', () => {
     platformPublicKeys: [keys.platform],
     drivers: [registration],
   });
-  const ensureWith = (keys: { caller: string; platform: string }) => ({ loadRelease, ...input }: Parameters<ReturnType<typeof createScopeStoreEnsurer>>[0] & { loadRelease: Parameters<typeof createScopeStoreEnsurer>[0]['loadRelease'] }) =>
-    createScopeStoreEnsurer({ ...optionsWith(keys), loadRelease })(input);
-  const canaryWith = (keys: { caller: string; platform: string }) => async ({ loadRelease, ...input }: { driver: string; existingOnly: true; loadRelease: Parameters<typeof createScopeStoreEnsurer>[0]['loadRelease'] }) =>
-    ({ uploaded: (await createStoreCanaryEnsurer({ ...optionsWith(keys), loadRelease })(input)).uploaded });
+  type PerRequest = Pick<Parameters<typeof createScopeStoreEnsurer>[0], 'loadRelease' | 'approvals'>;
+  const ensureWith = (keys: { caller: string; platform: string }) => ({ loadRelease, approvals, ...input }: Parameters<ReturnType<typeof createScopeStoreEnsurer>>[0] & PerRequest) =>
+    createScopeStoreEnsurer({ ...optionsWith(keys), loadRelease, approvals })(input);
+  const canaryWith = (keys: { caller: string; platform: string }) => async ({ loadRelease, approvals, ...input }: { driver: string; existingOnly: true } & PerRequest) =>
+    ({ uploaded: (await createStoreCanaryEnsurer({ ...optionsWith(keys), loadRelease, approvals })(input)).uploaded });
   const pass = async (keys: { caller: string; platform: string }, budget = 100, reverify: 'always' | 'when-due' = 'when-due') =>
     (
       await runStoreFleetRebuild({
@@ -143,18 +145,19 @@ describe('the fleet rebuild (#2309)', () => {
       registration,
       sha256: sha,
       action: 'rollout',
-      ensure: async (input) => (await createScopeStoreEnsurer({ ...optionsWith(keys), loadRelease })(input)).uploaded > 0,
-      ensureCanary: (to) => createStoreCanaryEnsurer({ ...optionsWith(keys), loadRelease })({ driver: 'graph', to }),
+      ensure: async ({ approvals, ...input }) => (await createScopeStoreEnsurer({ ...optionsWith(keys), loadRelease, approvals })(input)).uploaded > 0,
+      ensureCanary: (to, approvals) => createStoreCanaryEnsurer({ ...optionsWith(keys), loadRelease, approvals })({ driver: 'graph', to }),
       callCanary: canaryCall,
       ...(perRequest ? { perRequest } : {}),
     });
   };
   /** A push of one vertical, with the keys the control plane holds then. */
-  const push = (vertical: string, keys: { caller: string; platform: string }) =>
-    createScopeStoreEnsurer({ ...optionsWith(keys), loadRelease: storedReleaseLoader({ admin: host.admin, actor: staff, bytes }) })({
-      vertical,
-      stores: [{ binding: 'GRAPH', driver: 'graph' }],
-    });
+  const push = async (vertical: string, keys: { caller: string; platform: string }) =>
+    createScopeStoreEnsurer({
+      ...optionsWith(keys),
+      loadRelease: storedReleaseLoader({ admin: host.admin, actor: staff, bytes }),
+      approvals: await readStoreDriverApprovals(host.admin, staff, registration),
+    })({ vertical, stores: [{ binding: 'GRAPH', driver: 'graph' }] });
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-store-rebuild-'));
@@ -164,20 +167,15 @@ describe('the fleet rebuild (#2309)', () => {
     for (const l of [puts, settingsReads]) l.length = 0;
     failPut.clear();
     [s1, s2] = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2))];
-    registration = {
-      driver: 'graph',
-      isolationBasis: { kind: 'writtenInRepo' },
-      releases: [
-        { sha256: s1, sourceCommit: COMMIT, schema: 0 },
-        { sha256: s2, sourceCommit: COMMIT, schema: 0 },
-      ],
-      className: 'Store',
-      operations: [],
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    };
     keysA = { caller: (await generateScopeStoreKeyPair()).publicKey, platform: (await generateScopeStoreKeyPair()).publicKey };
     keysB = { caller: (await generateScopeStoreKeyPair()).publicKey, platform: keysA.platform };
-    for (const n of [1, 2]) await storeDriverRelease({ admin: host.admin, actor: staff, bytes, driver: 'graph', body: wire(bundle(n)) });
+    for (const [n, sha256] of [[1, s1], [2, s2]] as const) {
+      await storeDriverRelease({ admin: host.admin, actor: staff, bytes, driver: 'graph', body: wire(bundle(n)) });
+      await host.admin.approveStoreDriverRelease(staff, {
+        driver: 'graph', sha256, reason: 'reviewed', isolationReview: {}, schema: 0, className: 'Store', operations: [],
+        sourceReferences: [{ repository: STORE_DRIVER_PLATFORM_REPOSITORY, commit: COMMIT }],
+      });
+    }
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: { method?: string; body?: FormData }) => {
@@ -558,7 +556,7 @@ describe('the fleet rebuild (#2309)', () => {
         ensureScopeStores: ensureWith(keys),
         storeReleases: {
           bytes,
-          ensureCanary: ({ loadRelease, ...input }) => createStoreCanaryEnsurer({ ...optionsWith(keys), loadRelease })(input),
+          ensureCanary: ({ loadRelease, approvals, ...input }) => createStoreCanaryEnsurer({ ...optionsWith(keys), loadRelease, approvals })(input),
           callCanary: canaryCall,
           ...(fingerprint ? { fingerprint: () => storePlatformFingerprint({ callerPublicKeys: [keys.caller], platformPublicKeys: [keys.platform] }) } : {}),
         },
@@ -645,7 +643,7 @@ describe('the fleet rebuild (#2309)', () => {
         ensureScopeStores: ensureWith(keysB),
         storeReleases: {
           bytes,
-          ensureCanary: ({ loadRelease, ...input }) => createStoreCanaryEnsurer({ ...optionsWith(keysB), loadRelease })(input),
+          ensureCanary: ({ loadRelease, approvals, ...input }) => createStoreCanaryEnsurer({ ...optionsWith(keysB), loadRelease, approvals })(input),
           callCanary: canaryCall,
           fingerprint: async () => {
             throw new ControlPlaneError(503, 'the store public keys are not usable');
