@@ -299,6 +299,22 @@ describe('declared connection landings (#2316)', () => {
     expect(fortnox.calls).toEqual([]);
   });
 
+  it('counts an invoice-only connection whose landing failed as swept, beside its failed row', async () => {
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring([
+      { provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record',
+        options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] },
+    ])));
+    const id = await connect('fortnox', '111111');
+    vi.spyOn(host.admin, 'grantToConnection').mockRejectedValueOnce(new Error('injected grant failure'));
+
+    const report = await pass();
+
+    expect(report.connectionLandings).toMatchObject({ bound: 1, failed: 1 });
+    expect(report.connectionsSkipped).toBe(0);
+    expect(report.connectionsSwept).toBe(1);
+    expect(lastRun(id)).toMatchObject({ outcome: 'failed' });
+  });
+
   it.each([
     ['unchanged operation', 'invoices/record'],
     ['changed operation', 'ledger/record-period'],
@@ -320,26 +336,23 @@ describe('declared connection landings (#2316)', () => {
     expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record', permission: 'ledger:record' });
   });
 
-  it('leaves a staged binding without a grant after a post-write error, then converges on retry', async () => {
+  it('audits a staged binding whose grant fails, then converges on retry without a second audit', async () => {
     const id = await connect('fortnox');
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
-    const original = binders.fortnox!.bindBeforeGrant!;
-    binders.fortnox!.bindBeforeGrant = async (...args) => {
-      await original(...args);
-      throw new Error('injected failure after binding write');
-    };
+    const grant = vi.spyOn(host.admin, 'grantToConnection').mockRejectedValueOnce(new Error('injected grant failure'));
     try {
       const interrupted = await pass();
-      expect(interrupted.connectionLandings).toMatchObject({ granted: 0, failed: 1 });
+      expect(interrupted.connectionLandings).toMatchObject({ granted: 0, bound: 1, failed: 1 });
       expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ scopeId: s, operation: 'ledger/record-period' });
       expect(await host.connectionGrantsInScope(t, s)).toEqual([]);
     } finally {
-      binders.fortnox!.bindBeforeGrant = original;
+      grant.mockRestore();
     }
     const retried = await pass();
     expect(retried.connectionLandings).toEqual({ granted: 1, bound: 0, failed: 0 });
     expect(await host.connectionGrantsInScope(t, s)).toEqual([expect.objectContaining({ connectionId: id, permission: 'ledger:record' })]);
     expect((await listFortnoxBindings(host, id))).toHaveLength(1);
+    expect(await audited('bindConnectionScope')).toBe(1);
   });
 
   it('writes no grant when the binding write fails', async () => {

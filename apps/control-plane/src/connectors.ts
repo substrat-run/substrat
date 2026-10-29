@@ -7,7 +7,7 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
-import { connectionBindingOptions } from '@substrat-run/control-plane-api';
+import { bindingChangeRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
   SCRIVE_CONNECTION_GRANTS,
@@ -549,11 +549,8 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
         options: (raw, current) => {
           if (c.provider === 'fortnox') {
             const parsed = options.parse(raw ?? {}) as { kind?: 'ledger' | 'supplier-invoice' };
-            const oldKind = (current as { kind?: string } | undefined)?.kind ?? 'ledger';
-            const newKind = parsed.kind ?? 'ledger';
-            if (current && oldKind !== newKind) {
-              throw new Error(`one Fortnox landing kind per scope; use a separate scope for the other kind (${oldKind} to ${newKind})`);
-            }
+            const refusal = bindingChangeRefusal(c.provider, current as { kind?: string } | undefined, parsed);
+            if (refusal) throw new Error(refusal);
             return { kind: parsed.kind };
           }
           return options.parse({

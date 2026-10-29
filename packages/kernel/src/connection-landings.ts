@@ -183,9 +183,15 @@ export class LandingPass {
           operation: landing.operation,
           permission: landing.permission,
         };
+        // Each bind is audited right after its write, as the staff door's `applied` row: a bind that
+        // threw is reported on the sweep row instead, and is retried by the next pass. A staged
+        // binding is audited before its grant, because a pass after a failed grant sees the binding
+        // already in place and does not bind (or audit) it again.
+        const applied = () => this.host.admin.recordConnectionBindingChange(this.actor, { ...audit, phase: 'applied' });
         if (needsBind && binder.bindBeforeGrant) {
           await binder.bindBeforeGrant(this.host, connection, target);
           out.bound.push(scopeId);
+          await applied();
         }
         const grants = await this.grantsIn(connection.tenantId, scopeId);
         if (!grants.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
@@ -200,12 +206,8 @@ export class LandingPass {
         if (needsBind && !binder.bindBeforeGrant) {
           await binder.bind(this.host, connection, target);
           out.bound.push(scopeId);
+          await applied();
         }
-        if (!needsBind) continue;
-        // After the write, as the staff door's `applied` row: a bind that threw is reported on the
-        // sweep row instead, and is retried by the next pass. For a staged binding, its grant was
-        // written after the binding so either interrupted state is safe to retry.
-        await this.host.admin.recordConnectionBindingChange(this.actor, { ...audit, phase: 'applied' });
       } catch (err) {
         out.failed.push({ scopeId, error: message(err) });
       }

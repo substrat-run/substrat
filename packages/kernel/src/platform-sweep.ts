@@ -2059,7 +2059,8 @@ export async function runPlatformSweep(
       return;
     }
     const answer = options.connectionLandings && binderOf(options.connectionLandings, c) ? connectorSweepAnswerOf(result) : null;
-    if (answer && answer.found > 0 && answer.unsupported?.length === answer.found && answer.failed.length === 0) {
+    // Skipped only when the row below is `unsupported`: a failed landing makes it `failed`, and swept.
+    if (answer && answer.found > 0 && answer.unsupported?.length === answer.found && answer.failed.length === 0 && landingFailed.length === 0) {
       report.connectionsSkipped += 1;
     } else {
       report.connectionsSwept += 1;
