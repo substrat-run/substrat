@@ -56,6 +56,7 @@ import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, parseReviewToken, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, rebuildStoreDriver, rollBackStoreDriver, skippedInstallerMarkersOf, sourceCommitOf, rollOutStoreDriver, storeDriverPackLines, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
+import { approvalFromFiles, approvalLines, approvalStatusLines, revokeStoreDriverUntilComplete, storeDriverReviewText, uploadApprovalLine } from './store-driver-approval.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { assertCleanReviewTree, reviewArchive } from './review-archive.js';
@@ -87,6 +88,23 @@ const argv = process.argv.slice(2);
 function flag(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 ? argv[i + 1] : undefined;
+}
+
+function optionValue(name: string): string | undefined {
+  const value = flag(name);
+  return value && !value.startsWith('--') ? value : undefined;
+}
+
+/** Every value of a repeatable flag, for a release's operation catalog. */
+function repeatedFlag(name: string): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== `--${name}`) continue;
+    const value = argv[++i];
+    if (!value || value.startsWith('--')) throw new Error(`--${name} needs a value`);
+    values.push(value);
+  }
+  return values;
 }
 
 /**
@@ -189,10 +207,17 @@ Usage:
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
                                               store a release of a scope-store driver (staff, signed in)
+  substrat store-driver approve --driver <driver> --sha256 <sha256> --reason <text>
+                    --source-references <json-file> --isolation-review <json-file>
+                    --schema <n> --class-name <Class> [--operation <name> ...]
+                                              a staff person approves uploaded bytes; JSON files contain
+                                              source-reference pairs and per-condition review evidence
+  substrat store-driver revoke --driver <driver> --sha256 <sha256> --reason <text> [--emergency]
+                                              revoke a live approval, walking scripts over paged requests
   substrat store-driver rollout --driver <driver> --sha256 <sha256>
                                               canary a stored, pinned release, then roll it out
   substrat store-driver rollback --driver <driver>  return to the previous good release
-  substrat store-driver status --driver <driver>    a driver's current release and rollouts
+  substrat store-driver status --driver <driver> [--json]  approvals, current release and rollouts
   substrat store-driver rebuild --driver <driver> [--deploy-finished]
                                               rebuild every script of the driver now, at
                                               the release it runs (after a key is revoked);
@@ -772,10 +797,14 @@ function reportStoreBackfill(result: PromoteResult): void {
 
 const STORE_DRIVER_USAGE = [
   'usage: substrat store-driver upload   --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]',
+  '       substrat store-driver approve  --driver <driver> --sha256 <sha256> --reason <text> --source-references <json-file> --isolation-review <json-file> --schema <n> --class-name <Class> [--operation <name> ...]',
+  '       substrat store-driver revoke   --driver <driver> --sha256 <sha256> --reason <text> [--emergency]',
   '       substrat store-driver rollout  --driver <driver> --sha256 <sha256>',
   '       substrat store-driver rollback --driver <driver>',
-  '       substrat store-driver status   --driver <driver>',
+  '       substrat store-driver status   --driver <driver> [--json]',
   '       substrat store-driver rebuild  --driver <driver> [--deploy-finished]',
+  '       source-references JSON: [{"repository":"https://host/path","commit":"<40-or-64 lowercase hex>"}]',
+  '       isolation-review JSON: separateScriptPerTenant/noOutboundAccess/envelopeVerifiedOutsideDriver each {met:boolean,evidence:string}; envelopeChecked/reservedOperationsChecked/noModuleStateChecked each {checked:true,evidence:string}',
 ];
 
 async function cmdStoreDriver(): Promise<void> {
@@ -784,14 +813,14 @@ async function cmdStoreDriver(): Promise<void> {
     console.error('--kind was renamed --driver');
     process.exit(1);
   }
-  const driver = flag('driver');
-  if (!['upload', 'rollout', 'rollback', 'status', 'rebuild'].includes(sub ?? '') || !driver) {
+  const driver = optionValue('driver');
+  if (!['upload', 'approve', 'revoke', 'rollout', 'rollback', 'status', 'rebuild'].includes(sub ?? '') || !driver) {
     for (const line of STORE_DRIVER_USAGE) console.error(line);
     process.exit(1);
   }
   const sha256 = flag('sha256');
-  if (sub === 'rollout' && !isReleaseSha(sha256)) {
-    console.error('a rollout names the release by --sha256 <64 lowercase hex>, as `store-driver upload` printed it');
+  if (['rollout', 'approve', 'revoke'].includes(sub!) && !isReleaseSha(sha256)) {
+    console.error(`${sub === 'rollout' ? 'a rollout' : sub === 'approve' ? 'an approval' : 'a revoke'} names the release by --sha256 <64 lowercase hex>, as \`store-driver upload\` printed it`);
     for (const line of STORE_DRIVER_USAGE) console.error(line);
     process.exit(1);
   }
@@ -801,7 +830,39 @@ async function cmdStoreDriver(): Promise<void> {
   const plane = { controlPlaneUrl, header, driver };
   if (sub === 'status') {
     const view = await storeDriverStatus(plane);
+    if (argv.includes('--json')) {
+      console.log(JSON.stringify(view, null, 2));
+      return;
+    }
     for (const line of storeDriverStatusLines(driver, view)) console.log(line);
+    for (const line of approvalStatusLines(view)) console.log(line);
+    return;
+  }
+  if (sub === 'approve') {
+    const reason = optionValue('reason');
+    const sourceReferencesFile = optionValue('source-references');
+    const isolationReviewFile = optionValue('isolation-review');
+    const schema = optionValue('schema');
+    const className = optionValue('class-name');
+    if (!reason || !sourceReferencesFile || !isolationReviewFile || !schema || !className) {
+      for (const line of STORE_DRIVER_USAGE) console.error(line);
+      process.exit(1);
+    }
+    const body = approvalFromFiles({ reason, sourceReferencesFile, isolationReviewFile, schema, className,
+      operations: repeatedFlag('operation') });
+    const result = await planeFor(controlPlaneUrl, header).approveStoreDriverRelease(driver, sha256!, body);
+    for (const line of approvalLines(result)) console.log(line);
+    return;
+  }
+  if (sub === 'revoke') {
+    const reason = optionValue('reason');
+    if (!reason) {
+      for (const line of STORE_DRIVER_USAGE) console.error(line);
+      process.exit(1);
+    }
+    await revokeStoreDriverUntilComplete({ client: planeFor(controlPlaneUrl, header), driver, sha256: sha256!,
+      reason: storeDriverReviewText(reason, 'reason'), emergency: argv.includes('--emergency'),
+      progress: (line) => console.log(line) });
     return;
   }
   if (sub === 'rebuild') {
@@ -822,10 +883,10 @@ async function cmdStoreDriver(): Promise<void> {
     }
     const files = packedFilesOf(dir);
     const body = packStoreDriverDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, files));
-    const { release, pinned } = await uploadStoreDriverRelease({ ...plane, body });
+    const { release } = await uploadStoreDriverRelease({ ...plane, body });
     console.log(`✓ stored ${driver} ${release.sha256} (commit ${release.sourceCommit})`);
     for (const line of storeDriverPackLines({ files, skipped: skippedInstallerMarkersOf(dir), sha256: release.sha256, sourceCommit: release.sourceCommit })) console.log(line);
-    console.log(pinned ? '  pinned: roll it out with `substrat store-driver rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');
+    console.log(uploadApprovalLine(driver, release.sha256));
     return;
   }
   const result =
