@@ -5204,6 +5204,30 @@ export function scopeHostContractSuite(
           billedUsd: '1.5',
         });
       });
+
+      it('reads tenant model usage on millisecond-precise half-open boundaries', async () => {
+        const startMs = new Date(Date.now() - 2 * 86_400_000).setUTCHours(0, 0, 0, 0);
+        const endMs = startMs + 86_400_000;
+        const instantWithoutMillis = (ms: number) => new Date(ms).toISOString().replace('.000Z', 'Z');
+        const since = instantWithoutMillis(startMs);
+        const until = instantWithoutMillis(endMs);
+        for (const [requestId, at] of [
+          ['req-boundary-before', new Date(startMs - 1).toISOString()],
+          ['req-boundary-start', since],
+          ['req-boundary-before-end', new Date(endMs - 1).toISOString()],
+          ['req-boundary-end', until],
+        ] as const) {
+          await host.admin.recordModelUsage({ requestId, line: line(at) });
+        }
+
+        const rows = await host.admin.listTenantModelUsageMeter(staff, {
+          tenantId: t1, since, until, limit: 10,
+        });
+        expect(rows.map((row) => row.at).sort()).toEqual([
+          new Date(startMs).toISOString(),
+          new Date(endMs - 1).toISOString(),
+        ].sort());
+      });
     });
 
     // -- operational failures (#559): the durable record of what the platform could NOT do --

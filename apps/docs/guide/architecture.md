@@ -20,6 +20,9 @@ The invariants this picture encodes:
 - The **only** data path from vertical code to operational data is the scope stub.
   Holding a stub *is* the authorization to talk to that scope — and the scope still
   re-validates every call against its own ACL.
+- A live subscription sends permission-filtered **invalidation hints**, not entity
+  payloads. The client fetches changed data through its declared read operation, with
+  that operation's checks. See [Reads & live updates](/concepts/reads).
 - **Events are emitted below the API surface.** Vertical code cannot emit on another
   scope's behalf, suppress an audit event, or edit its envelope.
 - **Ambient tenancy.** After obtaining a stub, vertical code never passes tenant or
@@ -91,6 +94,10 @@ bundles:
 - **schedules** — recurring work, fired by the deployment's own sweeper under a system actor
   rather than by a cron the module holds.
 
+An authored operation that declares a permission must still call `ctx.check`. The host
+records a finding when such a handler completes without checking; strict test runs can
+refuse that completion. The declaration alone does not grant access.
+
 A vertical increasingly does not *write* most of that. It declares its entities, operations
 and permissions once in [the model](/concepts/model), and the manifest's entity fragments,
 permission list, event list and DDL are **derived** from that declaration — with CI failing on
@@ -134,7 +141,8 @@ system beside the kernel. Instead, the platform says which app is calling:
   recorded outside the scope too, so a restore or a point-in-time rewind to before it does not
   let the peer back in, and a peer whose only access comes from a tenant-wide grant can be
   switched off as well. A caller that has been suspended or uninstalled is refused on its next
-  call.
+  call. The scope also limits a peer to the keys in the **running** declaration, so narrowing or
+  removing that declaration takes effect on the next call even if an older grant row remains.
 
 ### Writing one
 

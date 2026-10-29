@@ -192,6 +192,7 @@ import {
   type ListPage,
   type MeterReading,
   type ScopeStorageSample,
+  type StorageGauge,
   type RequestDay,
   type RequestRollupDay,
   type MeterDay,
@@ -340,6 +341,8 @@ import {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type TenantModelUsageMeterFilter,
+  type TenantModelUsageMeterRow,
   foldModelUsage,
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
@@ -563,6 +566,8 @@ import {
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  type TenantRequestMeterRow,
+  type RequestMeterDayRow,
   type MeterDayFilter,
   type MeterDayTakeFilter,
   type MeterDayTakeInput,
@@ -1073,6 +1078,7 @@ interface ControlPlaneStub {
     /** #2501: the latest attachment sample per non-reaped scope. */
     attachmentStorage: { tenantId: TenantId; bytes: number }[];
   }>;
+  readTenantStorageGauge(tenantId: TenantId, limit: number): Promise<{ gauge: StorageGauge; truncated: boolean }>;
   /** #1524: the stored storage gauge — kernel `storage-gauge.ts`, run inside the directory DO. */
   recordScopeStorage(readings: readonly ScopeStorageReadingInput[]): Promise<{ recorded: number }>;
   listScopeStorage(filter?: ScopeStorageFilter): Promise<ScopeStorageSample[]>;
@@ -1082,6 +1088,8 @@ interface ControlPlaneStub {
   recordRequestDay(input: RequestDayReadInput): Promise<{ recorded: number }>;
   listRequestDays(filter?: RequestDayFilter): Promise<RequestDay[]>;
   listRequestRollupDays(filter?: RequestRollupDayFilter): Promise<RequestRollupDay[]>;
+  listTenantRequestMeter(tenantId: TenantId, since: string, until: string, limit: number): Promise<TenantRequestMeterRow[]>;
+  listRequestMeterDays(since: string, until: string): Promise<RequestMeterDayRow[]>;
   pruneRequestDays(limit: number, retentionMonths: number | null): Promise<number>;
   /** #2501: the daily meter snapshot — kernel `meter-days.ts`, run inside the directory DO. */
   recordMeterDay(input: MeterDayTakeInput): Promise<MeterDayTakeResult>;
@@ -1338,6 +1346,7 @@ interface ControlPlaneStub {
   ): Promise<{ before: unknown; after: unknown } | undefined>;
   recordModelUsage(row: ModelUsageRow): Promise<{ recorded: boolean }>;
   listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
+  listTenantModelUsageMeter(query: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]>;
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
   importDump(tables: ScopeDumpTable[], audit?: AdminEntry): Promise<void>;
@@ -10269,6 +10278,11 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return meterReading.parse(reading);
       },
+      readTenantStorageGauge: async (actor, tenantId, limit) => {
+        const result = await this.cp.readTenantStorageGauge(tenantId, limit);
+        await this.recordAccess(actor, 'readTenantStorageGauge', { tenantId }, { limit }, result.gauge.sampled);
+        return result;
+      },
       registerIdentityPool: async (actor, input: IdentityPool) => {
         const parsed = identityPool.parse(input);
         const created = await this.directory('registerIdentityPoolAndAudit',
@@ -10931,6 +10945,16 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listRequestRollupDays', { tenantId: null }, filter ?? null, rows.length);
         return rows;
       },
+      listTenantRequestMeter: async (actor, tenantId, since, until, limit) => {
+        const rows = await this.cp.listTenantRequestMeter(tenantId, since, until, limit);
+        await this.recordAccess(actor, 'listTenantRequestMeter', { tenantId }, { since, until, limit }, rows.length);
+        return rows;
+      },
+      listRequestMeterDays: async (actor, since, until) => {
+        const rows = await this.cp.listRequestMeterDays(since, until);
+        await this.recordAccess(actor, 'listRequestMeterDays', { tenantId: null }, { since, until }, rows.length);
+        return rows;
+      },
       pruneRequestDays: async (_actor, limit: number, retentionMonths: number | null) =>
         this.cp.pruneRequestDays(assertRowLimit('limit', limit), retentionMonths),
       recordMeterDay: async (_actor, input: MeterDayTakeInput) => this.cp.recordMeterDay(input),
@@ -10979,6 +11003,12 @@ export class CloudflareScopeHost implements ScopeHost {
           rows.length,
         );
         return rows.map(modelUsageEntryOf);
+      },
+      listTenantModelUsageMeter: async (actor, filter: TenantModelUsageMeterFilter): Promise<TenantModelUsageMeterRow[]> => {
+        const rows = await this.cp.listTenantModelUsageMeter(filter);
+        await this.recordAccess(actor, 'listTenantModelUsageMeter', { tenantId: filter.tenantId },
+          { since: filter.since, until: filter.until, limit: filter.limit }, rows.length);
+        return rows;
       },
       summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary> => {
         const rows = await this.cp.listModelUsage({ ...window, order: 'asc' });

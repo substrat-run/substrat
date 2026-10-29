@@ -512,7 +512,7 @@ export {
   type MigrationStep,
   type PendingMigration,
 } from './migration-digest.js';
-export { frozenClock, manualClock } from './clock.js';
+export { canonicalInstant, frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
@@ -1079,6 +1079,8 @@ export {
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
+  type TenantModelUsageMeterFilter,
+  type TenantModelUsageMeterRow,
 } from './model-usage.js';
 export type {
   MeterEntitlementInput,
@@ -1089,6 +1091,7 @@ export type {
 export {
   ATTACHMENT_BYTES_SQL,
   SCOPE_STORAGE_DDL,
+  STORAGE_GAUGE_RETENTION_MONTHS,
   forgetScopeStorage,
   listScopeAttachmentStorageRows,
   retireScopeStorage,
@@ -1096,6 +1099,7 @@ export {
   listScopeStorageRows,
   listScopeStoreStorageRows,
   pruneScopeStorageRows,
+  readBoundedTenantStorageGauge,
   recordScopeStorageRows,
   type ScopeStorageAttempt,
   type ScopeStorageFilter,
@@ -1111,10 +1115,14 @@ export {
   listRequestRollupDayRows,
   pruneRequestDayRows,
   recordRequestDayRows,
+  readRequestMeterDayRows,
+  readTenantRequestMeterRows,
   type RequestDayCount,
   type RequestDayFilter,
   type RequestDayReadInput,
   type RequestRollupDayFilter,
+  type RequestMeterDayRow,
+  type TenantRequestMeterRow,
 } from './request-rollup.js';
 export {
   VERTICAL_OWNERS_BACKFILL,

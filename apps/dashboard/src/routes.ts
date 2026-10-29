@@ -731,6 +731,41 @@ const appReleaseSide = z.object({
 // than this dashboard. Preserve its value for the person reading the record.
 const historyEntryOut = historyEntry.extend({ piiClass: z.string() });
 const eventDeliveryOut = eventDelivery.extend({ state: z.string() });
+// Plane-owned status tokens may change independently of this dashboard. Accept
+// JSON scalars only; the view treats anything except known-good values as limited.
+const planeScalar = z.union([z.string(), z.number(), z.boolean()]).nullable().optional();
+export const meteredUsageOut = z.object({
+  readAt: z.string(),
+  retention: z.object({ storageMonths: z.number().int(), modelDays: z.number().int(), requestMonths: z.number().int().nullable() }),
+  storage: z.object({
+    // Plane-owned vocabulary: currently unavailable/empty/not-sampled/complete/partial/stale/failing/truncated.
+    state: planeScalar,
+    bytes: z.number().int().nullable(), estimated: planeScalar, basis: planeScalar,
+    lowerBound: planeScalar, truncatedReason: planeScalar,
+    sampled: z.number().int(), total: z.number().int(), failing: z.number().int(),
+    oldestReadAt: z.string().nullable(), excluded: z.array(planeScalar),
+  }),
+  requests: z.object({
+    // Plane-owned coverage and estimate status; currently unavailable/empty/complete/partial/truncated.
+    state: planeScalar,
+    requests: z.number().int().nullable(), estimated: planeScalar, lowerBound: planeScalar, truncatedReason: planeScalar,
+    coveredDays: z.number().int(), totalDays: z.number().int(), sinceDay: z.string(), untilDay: z.string(),
+    lastReadAt: z.string().nullable(),
+    byVertical: z.array(z.object({ vertical: z.string().nullable(), requests: z.number().int() })),
+    breakdownTruncated: z.boolean(),
+  }),
+  models: z.object({
+    // Plane-owned coverage; currently unavailable/empty/complete/truncated.
+    state: planeScalar,
+    calls: z.number().int().nullable(), reportedCalls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable(),
+    estimated: planeScalar, lowerBound: planeScalar, since: z.string(), until: z.string(),
+    truncatedReason: planeScalar,
+    oldestRecordedAt: z.string().nullable(), newestRecordedAt: z.string().nullable(),
+    byVerticalModel: z.array(z.object({ vertical: z.string(), model: z.string(), calls: z.number().int(), reportedCalls: z.number().int(), inputTokens: z.number().int().nullable(), outputTokens: z.number().int().nullable() })),
+    breakdownTruncated: z.boolean(),
+  }),
+});
+export type MeteredUsageOut = z.infer<typeof meteredUsageOut>;
 interface EventEffectsOut {
   event: z.infer<typeof historyEntryOut>;
   deliveries: z.infer<typeof eventDeliveryOut>[];
@@ -750,6 +785,11 @@ export const dashboardRoutes = defineRoutes({
       expiresAt: z.string().optional(),
     })),
     http: { method: 'GET', path: '/entitlements' },
+  },
+  'dashboard/read-metered-usage': {
+    summary: "Read this team's persisted metered usage without prices (owner or admin)",
+    output: meteredUsageOut,
+    http: { method: 'GET', path: '/metered-usage' },
   },
   // -- apps: the read side (#2170) --------------------------------------------
   'dashboard/list-apps': {

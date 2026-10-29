@@ -999,6 +999,13 @@ export interface DashboardClient {
   readAppTable(input: { scopeId: string; table: string; limit?: number; offset?: number }): Promise<{ table: string; columns: string[]; rows: unknown[][]; rowCount: number; limit: number; offset: number }>;
 
   /**
+   * Read this team's persisted metered usage without prices (owner or admin)
+   *
+   * `GET /metered-usage` — `dashboard/read-metered-usage`
+   */
+  readMeteredUsage(): Promise<{ readAt: string; retention: { storageMonths: number; modelDays: number; requestMonths: number | null }; storage: { state?: string | number | boolean | null; bytes: number | null; estimated?: string | number | boolean | null; basis?: string | number | boolean | null; lowerBound?: string | number | boolean | null; truncatedReason?: string | number | boolean | null; sampled: number; total: number; failing: number; oldestReadAt: string | null; excluded: (string | number | boolean | null | undefined)[] }; requests: { state?: string | number | boolean | null; requests: number | null; estimated?: string | number | boolean | null; lowerBound?: string | number | boolean | null; truncatedReason?: string | number | boolean | null; coveredDays: number; totalDays: number; sinceDay: string; untilDay: string; lastReadAt: string | null; byVertical: ({ vertical: string | null; requests: number })[]; breakdownTruncated: boolean }; models: { state?: string | number | boolean | null; calls: number | null; reportedCalls: number; inputTokens: number | null; outputTokens: number | null; estimated?: string | number | boolean | null; lowerBound?: string | number | boolean | null; since: string; until: string; truncatedReason?: string | number | boolean | null; oldestRecordedAt: string | null; newestRecordedAt: string | null; byVerticalModel: ({ vertical: string; model: string; calls: number; reportedCalls: number; inputTokens: number | null; outputTokens: number | null })[]; breakdownTruncated: boolean } }>;
+
+  /**
    * Delete one of this team's apps: deprovision its scope and take its hostname offline
    *
    * `DELETE /apps/{id}` — `dashboard/remove-app`
@@ -1448,6 +1455,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/invocation`, "GET", undefined, omit(input, ["scopeId"])),
     readAppTable: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/tables/${encodeURIComponent(String(input.table))}`, "GET", undefined, omit(input, ["scopeId","table"])),
+    readMeteredUsage: () =>
+      send("/metered-usage", "GET", undefined, undefined),
     removeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.id))}`, "DELETE", undefined, omit(input, ["id"])),
     removeAppHostname: (input: Args) =>

@@ -1,5 +1,13 @@
-import { instant, type Instant } from '@substrat-run/contracts';
+import { instant, utcDay, type Instant } from '@substrat-run/contracts';
 import type { Clock } from './scope-host.js';
+
+/** Normalize an instant, or a UTC calendar day, into the millisecond ISO form stored in SQL. */
+export function canonicalInstant(value: string): Instant {
+  const input = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${utcDay.parse(value)}T00:00:00.000Z`
+    : value;
+  return instant.parse(input);
+}
 
 /**
  * Test and replay clocks (#812) — the reason `ctx.now()` is injected rather than
@@ -20,7 +28,7 @@ import type { Clock } from './scope-host.js';
 
 /** A clock stopped at one instant. Every read returns it. */
 export function frozenClock(at: string | Date): Clock {
-  const value = instant.parse(typeof at === 'string' ? at : at.toISOString());
+  const value = canonicalInstant(typeof at === 'string' ? at : at.toISOString());
   return () => value;
 }
 
@@ -51,9 +59,9 @@ export interface ManualClock {
 }
 
 export function manualClock(start: string | Date = '2026-01-01T00:00:00.000Z'): ManualClock {
-  let current = instant.parse(typeof start === 'string' ? start : start.toISOString());
+  let current = canonicalInstant(typeof start === 'string' ? start : start.toISOString());
   const set = (at: string | Date): Instant => {
-    current = instant.parse(typeof at === 'string' ? at : at.toISOString());
+    current = canonicalInstant(typeof at === 'string' ? at : at.toISOString());
     return current;
   };
   return {

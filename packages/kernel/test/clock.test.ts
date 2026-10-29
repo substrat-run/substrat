@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { frozenClock, manualClock } from '../src/clock.js';
+import { canonicalInstant, frozenClock, manualClock } from '../src/clock.js';
 
 /**
  * The test clocks route every value through `instant.parse`, so a caller that
@@ -7,6 +7,18 @@ import { frozenClock, manualClock } from '../src/clock.js';
  * compares wrong against every other instant in the store (#963).
  */
 describe('test clocks normalise what they are given', () => {
+  it.each([
+    ['2026-08-28T10:00:00Z', '2026-08-28T10:00:00.000Z'],
+    ['2026-08-28T10:00:00.1Z', '2026-08-28T10:00:00.100Z'],
+    ['2026-08-28T10:00:00.12Z', '2026-08-28T10:00:00.120Z'],
+    ['2026-08-28T10:00:00.123456Z', '2026-08-28T10:00:00.123Z'],
+    ['2026-08-28T12:34:56.789Z', '2026-08-28T12:34:56.789Z'],
+    ['2026-08-28T10:00:00+00:00', '2026-08-28T10:00:00.000Z'],
+    ['2026-08-28', '2026-08-28T00:00:00.000Z'],
+  ])('canonicalInstant normalises %s', (value, expected) => {
+    expect(canonicalInstant(value)).toBe(expected);
+  });
+
   it('frozenClock normalises an offset start', () => {
     expect(frozenClock('2026-08-28T10:00:00+02:00')()).toBe('2026-08-28T08:00:00.000Z');
   });

@@ -51,6 +51,7 @@ export const REQUEST_ROLLUP_DDL = `
     PRIMARY KEY (day, tenant_id, vertical, scope_id)
   );
   CREATE INDEX IF NOT EXISTS _substrat_request_days_tenant ON _substrat_request_days (tenant_id, day);
+  CREATE INDEX IF NOT EXISTS _substrat_request_days_tenant_meter ON _substrat_request_days (tenant_id, day, vertical, scope_id);
   CREATE TABLE IF NOT EXISTS _substrat_request_day_reads (
     day TEXT PRIMARY KEY,
     attempted_at TEXT NOT NULL,
@@ -160,6 +161,38 @@ export interface RequestDayFilter {
 export interface RequestRollupDayFilter {
   since?: string;
   until?: string;
+}
+
+/** Narrow rows for the tenant usage page; long labels are omitted from its breakdown. */
+export interface TenantRequestMeterRow {
+  day: string;
+  vertical: string | null;
+  labelTruncated: boolean;
+  requests: number;
+}
+export interface RequestMeterDayRow { day: string; readAt: string | null; saturated: boolean }
+
+export function readTenantRequestMeterRows(
+  sql: RedactionSql, tenantId: TenantId, since: string, until: string, limit: number,
+): TenantRequestMeterRow[] {
+  const rows = sql(
+    `SELECT day, substr(vertical, 1, 64) AS vertical_label,
+            CASE WHEN length(vertical) > 64 THEN 1 ELSE 0 END AS label_truncated, requests
+       FROM _substrat_request_days
+      WHERE tenant_id = ? AND day >= ? AND day <= ?
+      ORDER BY tenant_id, day, _substrat_request_days.vertical, scope_id LIMIT ?`,
+    [tenantId, since, until, Math.min(assertRowLimit('limit', limit), REQUEST_ROLLUP_LIMIT_MAX)],
+  ) as { day: string; vertical_label: string; label_truncated: number; requests: number }[];
+  return rows.map((row) => ({ day: row.day, vertical: row.vertical_label === '' ? null : row.vertical_label,
+    labelTruncated: row.label_truncated !== 0, requests: row.requests }));
+}
+
+export function readRequestMeterDayRows(sql: RedactionSql, since: string, until: string): RequestMeterDayRow[] {
+  const rows = sql(
+    `SELECT day, read_at, saturated FROM _substrat_request_day_reads
+      WHERE day >= ? AND day <= ? ORDER BY day`, [since, until],
+  ) as { day: string; read_at: string | null; saturated: number }[];
+  return rows.map((row) => ({ day: row.day, readAt: row.read_at, saturated: row.saturated !== 0 }));
 }
 
 /**

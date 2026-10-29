@@ -226,6 +226,12 @@ still carries a hash). The copy-link affordance remains as the fallback.
 
 ## 9. Out of scope for this line of work
 
-Seat/member-count billing. The Billing view reads this team's directory entitlements
-through its team path for an owner or admin; metered usage is separate work.
-Per-member metering is net-new ([membership.md §7](membership.md)).
+Seat/member-count billing and per-member metering ([membership.md §7](membership.md)).
+The Billing view reads this team's directory entitlements and persisted metered usage
+through its team path for an owner or admin. The control plane's new
+`GET /tenants/:tenantId/metered-usage` is path-pinned to the same tenant and returns
+only scope-database storage samples, estimated daily router requests, and recorded
+model calls and provider-reported tokens. It reads at most 30 closed UTC days,
+10,000 request rows, and 25 pages of 501 model records. Capped totals are labelled
+as partial, with bounded app/model breakdowns. It contains no prices, invoice,
+checkout, payment method, spend limit, or person-level usage.

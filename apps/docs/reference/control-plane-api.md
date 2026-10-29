@@ -179,6 +179,13 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   close; both log routes set `x-substrat-logs-incomplete: 1` beside the list when the page
   may be missing lines) — the permission surface, the append-only audit history, operational failures,
   billable readings, and fleet telemetry.
+- **Tenant metered usage** — `GET /tenants/:tenantId/metered-usage` is a path-pinned,
+  read-only answer for that tenant's dashboard owner or admin. It returns the stored
+  scope-database gauge, estimated daily router requests, and recorded model calls and
+  provider-reported tokens for the last 30 closed UTC days, with coverage and freshness.
+  It exposes no prices, person or scope identifiers. Capped scans and breakdowns are
+  labelled as truncated; an absent source is not returned as zero. The fleet meter and
+  model-usage routes above remain staff-only.
 - **Sweep runs** — `/sweep-runs`: the durable record of what a sweep pass touched, one row
   per unit (a connection swept, skipped or failed, a schedule run, a freshness verdict).
   Staff read fleet-wide; a builder's tenant is forced from the principal, the
