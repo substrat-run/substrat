@@ -131,6 +131,13 @@ export class ContainerWorkspace implements Workspace {
 		return r.exitCode === 0;
 	}
 
+	/** `exec` runs the repo tools from the toolchain root when there is one, so look there. */
+	async hasTool(path: string): Promise<boolean> {
+		if (!this.#toolchainRoot) return await this.exists(path);
+		const r = await this.exec(`test -e ${JSON.stringify(resolveWithin(this.#toolchainRoot, path))}`, { cwd: '.' });
+		return r.exitCode === 0;
+	}
+
 	async exposePort(port: number): Promise<ExposedPort> {
 		const { url } = await this.#sb.exposePort(port);
 		return { port, url };

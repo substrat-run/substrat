@@ -6,11 +6,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ContainerWorkspace, type SandboxLike } from '../src/container.js';
+import { emitProjectModel } from '../src/model.js';
 import { WorkspacePathError } from '../src/workspace.js';
 
-function fake(): { sb: SandboxLike; calls: string[] } {
+function fake(extra: readonly string[] = []): { sb: SandboxLike; calls: string[] } {
 	const calls: string[] = [];
-	const files = new Map<string, string>([['/w/p/src/a.ts', 'A']]);
+	const files = new Map<string, string>([['/w/p/src/a.ts', 'A'], ...extra.map((p) => [p, ''] as const)]);
 	const sb: SandboxLike = {
 		async exec(cmd, opts) {
 			calls.push(`exec:${cmd}@${opts?.cwd ?? ''}`);
@@ -59,6 +60,13 @@ describe('ContainerWorkspace (§3 seam, mode C)', () => {
 			'exec:pnpm install --frozen-lockfile@/source',
 		]);
 	});
+	it('finds the model emitter where exec runs it, not in a source repo that has no tools/', async () => {
+		const { sb, calls } = fake(['/w/p/spec/model.ts', '/tc/tools/model-diff.mts']);
+		const ws = new ContainerWorkspace({ sandbox: sb, root: '/w/p', toolchainRoot: '/tc' });
+		expect(await emitProjectModel(ws, '.')).toEqual({ status: 'emitted', output: '' });
+		expect(calls.at(-1)).toBe('exec:\'/tc/node_modules/.bin/tsx\' \'/tc/tools/model-diff.mts\' --root "."@/w/p');
+	});
+
 	it('confines paths exactly like LocalWorkspace — escapes throw', async () => {
 		const { sb } = fake();
 		const ws = new ContainerWorkspace({ sandbox: sb, root: '/w/p' });

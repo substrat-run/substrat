@@ -42,8 +42,9 @@ export type ModelEmitStatus =
 	 */
 	| 'stale'
 	/**
-	 * The workspace could not run the emitter at all (the exec or the probe threw, a
-	 * container gone mid-turn). Not the declaration's fault, so not the model's to repair.
+	 * The emitter did not run to a verdict (the exec or the probe threw, a container gone
+	 * mid-turn, the tool itself crashed). Not the declaration's fault, so not the model's
+	 * to repair.
 	 */
 	| 'blocked'
 	/** The workspace root holds no emitter: a `--root` outside this monorepo. */
@@ -56,6 +57,8 @@ export interface ModelEmitResult {
 }
 
 const MAX_OUTPUT = 4_000;
+/** The line `tools/model-diff.mts` prints when `--check` finds the artifact stale. */
+const MODEL_STALE = /^model-diff: .+ is stale — re-run /m;
 
 /**
  * Emit `<verticalDir>/model.json` from `<verticalDir>/spec/model.ts`.
@@ -85,7 +88,7 @@ export async function emitProjectModel(
 		if (!(await ws.exists(`${verticalDir}/${MODEL_SOURCE_PATH}`))) {
 			return { status: 'absent', output: '' };
 		}
-		if (!(await ws.exists(MODEL_EMITTER_PATH))) return { status: 'unavailable', output: '' };
+		if (!(await ws.hasTool(MODEL_EMITTER_PATH))) return { status: 'unavailable', output: '' };
 		// The tool runs from the workspace root, where `tools/` and the installed
 		// toolchain are — the same calling convention the standalone permission and
 		// api gates use.
@@ -94,9 +97,15 @@ export async function emitProjectModel(
 		);
 		if (exitCode === 0) return { status: 'emitted', output: '' };
 		const combined = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n').slice(-MAX_OUTPUT);
-		// The emitter's 0/1/2: 1 is drift, which only `--check` can report. A module that
-		// will not load is 2, and stays the declaration's failure.
-		if (opts.check && exitCode === 1) return { status: 'stale', output: combined };
+		// The emitter's 0/1/2: a module that will not load is 2, and stays the declaration's
+		// failure. 1 is drift only when the emitter says so — node exits 1 on any uncaught
+		// throw too (the tool's own failure to load, an unreadable artifact), and reading
+		// that as a stale artifact would pass a check that never ran.
+		if (exitCode === 1) {
+			return opts.check && MODEL_STALE.test(stderr)
+				? { status: 'stale', output: combined }
+				: { status: 'blocked', output: combined };
+		}
 		return { status: 'failed', output: combined };
 	} catch (e) {
 		return { status: 'blocked', output: e instanceof Error ? e.message : String(e) };
