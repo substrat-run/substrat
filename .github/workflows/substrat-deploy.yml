@@ -27,6 +27,9 @@ on:
     # or remove the filter to build on every merge.
     paths:
       - 'demos/ticket0/**'
+      # The CLI built from this checkout is the code that runs inside these jobs (it packages and
+      # submits the source), so a change to it is exercised here.
+      - 'packages/cli/**'
       - '.github/workflows/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -41,6 +44,9 @@ on:
     # or remove the filter to build on every merge.
     paths:
       - 'demos/ticket0/**'
+      # The CLI built from this checkout is the code that runs inside these jobs (it packages and
+      # submits the source), so a change to it is exercised here.
+      - 'packages/cli/**'
       - '.github/workflows/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
