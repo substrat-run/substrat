@@ -17,7 +17,8 @@
  *    several hand-rolled `onError`s answer with, including its top-level `issues` array
  *    (the raw Zod refusal: `{ error: 'invalid request', issues }`, where the `error`
  *    alone names nothing a builder can fix);
- * 3. anything else — a slice of the raw body, which is at least the truth.
+ * 3. an HTML error page — its title and error code;
+ * 4. anything else — a slice of the raw body, which is at least the truth.
  */
 import { problem as problemSchema, problemDetail } from '@substrat-run/contracts';
 import type { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -64,6 +65,19 @@ function legacyIssues(parsed: unknown): Array<{ path: string; message: string }>
 }
 
 /**
+ * An HTML error page — one Cloudflare renders in front of a Worker that failed, say — as its
+ * `<title>` and error code. Its first 300 characters are markup and stop before either, so
+ * the slice named nothing. Undefined for a body that is not HTML or has no title.
+ */
+function htmlPageSummary(body: string): string | undefined {
+  if (!/^<(?:!doctype html|html)\b/i.test(body)) return undefined;
+  const title = /<title[^>]*>([^<]*)<\/title>/i.exec(body)?.[1]?.replace(/\s+/g, ' ').trim();
+  if (!title) return undefined;
+  const code = /cf-error-code[^>]*>\s*(\d+)/i.exec(body)?.[1] ?? /Error code:?\s*(\d+)/i.exec(body)?.[1];
+  return code && !title.includes(code) ? `${title} (error code ${code})` : title;
+}
+
+/**
  * Parse a response body into what it actually says.
  *
  * The strict pass is the published schema (`problem` in `@substrat-run/contracts`) rather
@@ -80,7 +94,7 @@ export function readProblem(body: string): ProblemSummary {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { detail: raw.slice(0, RAW_BODY_LIMIT) };
+    return { detail: htmlPageSummary(raw) ?? raw.slice(0, RAW_BODY_LIMIT) };
   }
 
   // The field complaints, wherever this body happens to carry them: `errors` is the
