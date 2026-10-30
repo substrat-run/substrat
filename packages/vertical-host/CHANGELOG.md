@@ -1,5 +1,21 @@
 # @substrat-run/vertical-host
 
+## 0.170.0
+
+### Minor Changes
+
+- f0e000d: A declared route (`defineRoutes`) can name `responseHeaders`. Its generated client method then answers `{ body, headers }`, and `headers` holds only the headers it names. A GET route's input field declared as an array is read by `mountRoutes` from every repeat of its query key, with each value coerced like the array's element. The generated client sends such a field once per value. A client whose routes declare neither gets the same output as before. Every generated client now answers a failed response whose body is not JSON (an HTML error page from a proxy, say) with an `ApiError` carrying its status, where it used to throw a `SyntaxError`.
+- 0bc0f4a: Add `listBindings` and the `/internal/connections/bindings` relay: a scope reads its own connections bound to it, with the last successful sweep and the last failed one in the platform's words.
+- d449bd5: Add `upsertConnection`, `bindConnection` and `unbindConnection`: a vertical's worker stores a connection, and binds or unbinds a scope's own connection to that scope with its own options, without hand-writing the relay calls.
+
+### Patch Changes
+
+- Updated dependencies [f0e000d]
+- Updated dependencies [0bc0f4a]
+  - @substrat-run/contracts@0.170.0
+  - @substrat-run/kernel@0.170.0
+  - @substrat-run/model-providers@0.5.60
+
 ## 0.169.0
 
 ### Minor Changes

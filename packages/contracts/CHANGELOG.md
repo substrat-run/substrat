@@ -1,5 +1,12 @@
 # @substrat-run/contracts
 
+## 0.170.0
+
+### Minor Changes
+
+- f0e000d: A declared route (`defineRoutes`) can name `responseHeaders`. Its generated client method then answers `{ body, headers }`, and `headers` holds only the headers it names. A GET route's input field declared as an array is read by `mountRoutes` from every repeat of its query key, with each value coerced like the array's element. The generated client sends such a field once per value. A client whose routes declare neither gets the same output as before. Every generated client now answers a failed response whose body is not JSON (an HTML error page from a proxy, say) with an `ApiError` carrying its status, where it used to throw a `SyntaxError`.
+- 0bc0f4a: Add `listBindings` and the `/internal/connections/bindings` relay: a scope reads its own connections bound to it, with the last successful sweep and the last failed one in the platform's words.
+
 ## 0.169.0
 
 ### Minor Changes
@@ -7265,7 +7272,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
