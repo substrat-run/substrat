@@ -191,6 +191,7 @@ describe('the hop route', () => {
 
   it.each([
     ['an environment that is not BankID', '/mtls/bankid/staging/rp/v6.0/auth', {}, 404, 'target'],
+    ['an inherited property name', '/mtls/bankid/constructor/rp/v6.0/auth', {}, 404, 'target'],
     ['a path outside the RP API', '/mtls/bankid/test/admin', {}, 404, 'target'],
     ['no client credential', '/mtls/bankid/test/rp/v6.0/auth', { auth: '' }, 401, 'client'],
     ['a wrong client secret', '/mtls/bankid/test/rp/v6.0/auth', { auth: 'Basic d3Jvbmc6c2VjcmV0' }, 401, 'client'],

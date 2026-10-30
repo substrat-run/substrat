@@ -285,13 +285,14 @@ export async function probeBankId(transport: BankIdTransport, apiUrl: string, no
     };
   } catch (e) {
     const stage = typeof (e as { stage?: unknown }).stage === 'string' ? (e as { stage: string }).stage : 'transport';
-    const stages = (e as { stages?: unknown }).stages;
+    // The relay's word, stored on the config row: one malformed entry there would fail every later read of it.
+    const stages = z.array(probeStage).safeParse((e as { stages?: unknown }).stages);
     return {
       ok: false,
       at: now,
       stage,
       detail: e instanceof Error ? e.message : String(e),
-      ...(Array.isArray(stages) ? { stages: stages as BankIdProbe['stages'] } : {}),
+      ...(stages.success ? { stages: stages.data } : {}),
     };
   }
 }

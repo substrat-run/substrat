@@ -233,6 +233,14 @@ describe('the stored configuration', () => {
       },
       { ok: false, stage: 'tls.handshake', detail: 'tls: invalid peer certificate: UnknownIssuer', stages: [{ stage: 'tls.config', ms: 3 }] },
     ],
+    [
+      // Recorded as is, a malformed stage would fail every later read of the stored config.
+      'the relay reporting a malformed stage',
+      async () => {
+        throw new BankIdHopError('tls.handshake', 'tls: handshake failed', [{ stage: 'tls.config' } as never]);
+      },
+      { ok: false, stage: 'tls.handshake', stages: undefined },
+    ],
   ] as const)('reads a connection test of %s', async (_, transport, expected) => {
     const calls: unknown[] = [];
     const probe = await probeBankId(

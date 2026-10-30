@@ -303,7 +303,7 @@ export function createApp(options: AppOptions = {}) {
    */
   app.post('/mtls/bankid/:environment/*', async (c) => {
     const environment = c.req.param('environment');
-    const host = BANKID_HOSTS[environment as keyof typeof BANKID_HOSTS];
+    const host = Object.hasOwn(BANKID_HOSTS, environment) ? BANKID_HOSTS[environment as keyof typeof BANKID_HOSTS] : undefined;
     const path = new URL(c.req.url).pathname.slice(`/mtls/bankid/${environment}`.length);
     if (!host || !BANKID_PATH.test(path)) {
       return hopProblem(404, 'target', 'the hop reaches BankID test or production, under /rp/v6.0/');
