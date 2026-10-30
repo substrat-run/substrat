@@ -19,7 +19,7 @@ import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
 import { USER_DELEGATED_SCOPES } from './settings.js';
 import { basicCredentialsOf } from './token-exchange.js';
-import { diagnoseSignInCallback, recordSignInException, signInDiagnosticDescription } from './sign-in-diagnostics.js';
+import { diagnoseSignInCallback, recordRefusedCallback, recordSignInException } from './sign-in-diagnostics.js';
 import {
   authorityOf,
   callbackProviderOf,
@@ -848,14 +848,15 @@ function betterAuthFor(deps: AuthDeps) {
         );
         const refusal = errorOfRedirect(location);
         if (location && new URL(location, deps.baseURL).pathname === '/github-email') {
-          record({ method, outcome: 'failed', phase: 'callback', correlation, error: 'email_verification_required', errorDescription: signInDiagnosticDescription(ctx.context, null) });
+          await recordRefusedCallback(ctx.context, null, (errorDescription) => {
+            record({ method, outcome: 'failed', phase: 'callback', correlation, error: 'email_verification_required', errorDescription });
+          }, deps.runInBackground);
           return;
         }
         if (refusal) {
-          record({
-            method, outcome: 'failed', phase: 'callback', correlation, ...refusal,
-            errorDescription: signInDiagnosticDescription(ctx.context, refusal.errorDescription),
-          });
+          await recordRefusedCallback(ctx.context, refusal.errorDescription, (errorDescription) => {
+            record({ method, outcome: 'failed', phase: 'callback', correlation, ...refusal, errorDescription });
+          }, deps.runInBackground);
           return;
         }
         record({

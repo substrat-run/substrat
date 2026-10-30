@@ -8,6 +8,8 @@ class CallbackDiagnostic {
   recorded = false;
   stage = 'Callback received; token exchange not reached';
   emailCheck: string | undefined;
+  /** The GitHub email check while it is still in flight. Never rejects; see `recordRefusedCallback`. */
+  emailCheckPending: Promise<string> | undefined;
 
   describe(): string {
     return [this.stage, this.emailCheck].filter(Boolean).join('. ');
@@ -52,10 +54,11 @@ export function diagnoseSignInCallback(
           : `Token exchange succeeded; profile received; email ${result.user.email ? 'present' : 'absent'}; email verified ${result.user.emailVerified === true ? 'yes' : 'no'}`;
         // Better Auth's GitHub adapter discards the email endpoint's error. Inspect it only
         // when the profile has no email, without changing the result or retrying the sign-in.
+        // Started, not awaited: the person is on their way to `/github-email`, and the check
+        // is for the log row, which `recordRefusedCallback` writes once it settles.
         if (isGithub && result?.user && !result.user.email && tokens.accessToken) {
-          diagnostic.emailCheck = fetcher
-            ? await githubEmailDiagnostic(tokens.accessToken, fetcher)
-            : 'GitHub email check skipped: no diagnostic transport configured';
+          if (fetcher) diagnostic.emailCheckPending = githubEmailDiagnostic(tokens.accessToken, fetcher);
+          else diagnostic.emailCheck = 'GitHub email check skipped: no diagnostic transport configured';
         }
         return result;
       },
@@ -82,17 +85,38 @@ export async function recordSignInException(request: Request, record?: SignInLog
   }
 }
 
-/** The existing admin-only Detail field, bounded as before. Upstream descriptions win. */
-export function signInDiagnosticDescription(context: DiagnosticContext, description: string | null): string | null {
-  if (context.signInDiagnostic) context.signInDiagnostic.recorded = true;
-  if (description) return description;
-  const detail = context.signInDiagnostic?.describe();
-  return [description, detail].filter(Boolean).join('. ').slice(0, DESCRIPTION_MAX) || null;
+/**
+ * Record a refused callback with the admin-only Detail field, bounded as before. Upstream
+ * descriptions win. When the GitHub email check is still in flight, the row waits for it in
+ * the background if the host has one (`runInBackground`), so the redirect is never held for a
+ * log line; without one it is awaited, which only a test or the schema config does.
+ */
+export async function recordRefusedCallback(
+  context: DiagnosticContext,
+  description: string | null,
+  write: (errorDescription: string | null) => void,
+  runInBackground?: (task: Promise<unknown>) => void,
+): Promise<void> {
+  const diagnostic = context.signInDiagnostic;
+  if (diagnostic) diagnostic.recorded = true;
+  const pending = diagnostic?.emailCheckPending;
+  if (description || !diagnostic || !pending) {
+    write(description ?? (diagnostic?.describe().slice(0, DESCRIPTION_MAX) || null));
+    return;
+  }
+  const finish = pending.then((check) => {
+    diagnostic.emailCheck = check;
+    write(diagnostic.describe().slice(0, DESCRIPTION_MAX) || null);
+  });
+  if (runInBackground) runInBackground(finish);
+  else await finish;
 }
 
 /**
  * This is a SECOND read after the adapter returned no email, not a trace of its first read.
- * A fixed URL, no redirects, and a short deadline bound this diagnostic's cost. Only status,
+ * A fixed URL, no redirects, and a short deadline bound this diagnostic's cost. No redirects
+ * means `redirect: 'manual'` and a 3xx treated as unavailable: workerd throws on `'error'`
+ * (#2722), which Node accepts, so only a deployed issuer ever saw it. Only status,
  * permission presence and counts survive; bodies and arbitrary headers never enter the log.
  */
 async function githubEmailDiagnostic(accessToken: string, fetcher: typeof fetch): Promise<string> {
@@ -103,7 +127,7 @@ async function githubEmailDiagnostic(accessToken: string, fetcher: typeof fetch)
         accept: 'application/vnd.github+json',
         'user-agent': 'substrat-auth-diagnostics',
       },
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(1500),
     });
     const prefix = `GitHub email check after missing profile email: HTTP ${response.status}`;
@@ -113,6 +137,7 @@ async function githubEmailDiagnostic(accessToken: string, fetcher: typeof fetch)
         return `${prefix}; check OAuth App user:email scope or GitHub App Email addresses: read permission and re-authorize`;
       }
       if (response.status === 401) return `${prefix}; GitHub rejected the access token`;
+      if (response.status >= 300 && response.status < 400) return `${prefix}; email endpoint redirected, not followed`;
       return `${prefix}; email endpoint unavailable`;
     }
     const emails: unknown = await response.json();
