@@ -558,7 +558,7 @@ async function mirrorBuilderIdentity(env: Env, host: ScopeHost, userId: string, 
     // not the tenant-facing Observability tab: that tab answers only for services
     // the tenant owns (`ownedServiceRefs`), and this line comes from the shared
     // dashboard worker, so it is filtered out before any query runs. The tenant's
-    // own view of the same fact is `GET /api/identity-mirror`.
+    // own view of the same fact is `GET /api/teams/:teamId/identity-mirror`.
     log: (line) => console.error(JSON.stringify(line)),
   });
 }

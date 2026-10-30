@@ -142,11 +142,20 @@ The previously offered assistant reads keep their tool names and descriptions, w
 newly declared reads stay outside the assistant. The SPA calls these through `teamApi(teamId)`.
 
 The deployment and version asset, permissions, model, processes, and schedules reads still
-use the cookie; they form the next app read slice. The team audit and fleet-health reads
-also remain on the cookie as a team-wide read slice, and so does the account-wide
-Integrations list. The catalog keeps
-its anonymous contract, while the identity mirror has no SPA caller to move. OAuth callbacks
-and other teamless or signed-state routes do not take their team from the cookie.
+use the cookie; they form the next app read slice. The catalog keeps its anonymous contract.
+OAuth callbacks and other teamless or signed-state routes do not take their team from the
+cookie.
+
+The team-wide reads followed: the account-wide Integrations list, fleet health, the identity
+mirror and the GitHub workflow preview are declared under the team path, and the team audit
+log, declared earlier, lost its cookie twin. Each is a `404` for a team the caller is not in,
+before any downstream read. The Overview, the Apps health table, the app header's verdict and
+the Audit page read them through `teamApi(teamId)`. On the Integrations page the Connect
+dialog's app list now comes from the same team the dialog connects in, so with the cookie on
+another team Connect no longer answers `404 app not found`. The workflow preview depends on no
+team at all, but it moved too, so every team route keeps the same membership rule. The four new
+reads stay outside the assistant's tools, the audit tool is unchanged, and the cookie routes
+are gone.
 
 The app's peer and edge panels, including the Data tab's scope choices, now use team paths.
 The three peer and edge writes keep the `dashboard:provision-app` gate in the path team's

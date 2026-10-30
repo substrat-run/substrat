@@ -47,7 +47,7 @@ const MORE: AuditEntry[] = [
   e('0B11', '01J2Q8Z3V9K4W7X2M5N6P7STF1', 'restoreScope', HR, 'protocol', null, { bookmark: '0000019a-…-7f3c' }, back(3 * D + 6 * H)),
 ];
 
-/** The team's admin log, newest first — what `GET /api/audit` would page through. */
+/** The team's admin log, newest first — what `GET /api/teams/:teamId/audit` would page through. */
 export const MOCK_AUDIT_LOG: AuditEntry[] = [...MOCK_OVERVIEW_AUDIT, ...MORE].sort((a, b) => b.at.localeCompare(a.at));
 
 const PAGE = 8;
