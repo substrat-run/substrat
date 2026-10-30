@@ -7,8 +7,8 @@ description: Guide a Substrat repository change through a pull request, a per-PR
 
 This workflow is for the Substrat monorepo. Read its `CLAUDE.md` and any applicable
 `AGENTS.md` first. A preview exercises a vertical; it does not publish an npm package or
-turn an app-only change into a release. New PRs do not carry changesets; maintainers write
-release notes when releasing.
+turn an app-only change into a release. A PR carries a changeset for each published
+package it changes; an app-only change to private members needs none.
 
 ## 1. Prepare the reviewable change
 
