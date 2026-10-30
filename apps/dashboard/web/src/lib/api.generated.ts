@@ -614,6 +614,13 @@ export interface DashboardClient {
   getAppConnectionActivity(input: { scopeId: string; provider: string; connectionId: string; live?: string; source?: string }): Promise<{ source: string; entries: ({ key: string; title: string; reference: string | null; status: string; at: string | null; facts?: { label: string; value: string }[] })[]; live: boolean; grants: string[]; credential: { key: string; label: string; value: string; masked: boolean }[]; certificate: { pem: string; thumbprint: string; notAfter: string; next?: { pem: string; thumbprint: string; notAfter: string } } | null; mailSenders: string[]; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string }; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[]; intents: ({ id: string; status: string; attempts: number; lastError: string | null; failure: { origin: string; code: string | null; permission: string | null } | null; requestedAt: string; settledAt: string | null; eventType: string })[]; unreadableIntents: ({ id: string | null; status: string | null; requestedAt: string | null; decodeError: string })[] }>;
 
   /**
+   * One page of this app's vertical versions, its channels, and the version the app runs
+   *
+   * `GET /apps/{scopeId}/deployments` — `dashboard/get-app-deployments`
+   */
+  getAppDeployments(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ slug: string; displaySlug: string; name: string; source: string; listed: boolean; versions: ({ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; schemaChange: boolean; origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null; createdAt: string })[]; channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[]; owned: boolean; boundVersionId: string | null; nextCursor: string | null }>;
+
+  /**
    * One app's declared environment and its stored values; secrets are write-only
    *
    * `GET /apps/{scopeId}/env` — `dashboard/get-app-env`
@@ -670,11 +677,32 @@ export interface DashboardClient {
   getAppIntegrations(input: { scopeId: string }): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; required: boolean; connection: { id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string } | null; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string })[] })[] }>;
 
   /**
+   * The entity model of the version this app scope runs, and of an available update
+   *
+   * `GET /apps/{scopeId}/model` — `dashboard/get-app-model`
+   */
+  getAppModel(input: { scopeId: string }): Promise<{ running: { versionId: string | null; version: string | null; model: unknown }; update: { versionId: string | null; version: string | null; model: unknown } | null }>;
+
+  /**
    * Migration, failure and stale markers over one app's traffic
    *
    * `GET /apps/{scopeId}/overlays` — `dashboard/get-app-overlays`
    */
   getAppOverlays(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<{ unavailableSources?: string[]; incompleteSources?: string[]; markers: ({ at: string; kind: "migration" | "run-failed" | "failure"; label: string; detail: string | null })[]; spans: { from: string; to: string; kind: "stale"; label: string }[]; truncated: boolean }>;
+
+  /**
+   * The permission surface of the version this app runs, and of an available update
+   *
+   * `GET /apps/{scopeId}/permissions` — `dashboard/get-app-permissions`
+   */
+  getAppPermissions(input: { scopeId: string }): Promise<{ running: { versionId: string | null; version: string | null; registry: unknown }; update: { versionId: string | null; version: string | null; registry: unknown } | null }>;
+
+  /**
+   * One app's process map: a declared lifecycle replayed over a period and the one before
+   *
+   * `GET /apps/{scopeId}/processes` — `dashboard/get-app-process-map`
+   */
+  getAppProcessMap(input: { scopeId: string; period?: string; entity?: string }): Promise<{ versionId: string | null; processes: { entity: string; initial: string; states: number; edges: number }[]; entity: string | null; lifecycle: unknown; period: "24h" | "7d" | "30d"; current: unknown; previous: unknown; unavailable: "no-version" | "no-lifecycles" | "not-yet-available" | null }>;
 
   /**
    * Compare this app’s running version with the current prod version
@@ -684,11 +712,25 @@ export interface DashboardClient {
   getAppReleaseComparison(input: { scopeId: string }): Promise<{ running: { versionId: string; version: string | null; requests: number | null; errors: number | null; cpuTimeP50: number | null; cpuTimeP99: number | null } | null; update: { versionId: string; version: string | null; requests: number | null; errors: number | null; cpuTimeP50: number | null; cpuTimeP99: number | null } | null; metricsAvailable: boolean; owned: boolean }>;
 
   /**
+   * Schedule and freshness health for the version this app runs
+   *
+   * `GET /apps/{scopeId}/schedules` — `dashboard/get-app-schedules`
+   */
+  getAppSchedules(input: { scopeId: string }): Promise<{ running: { versionId: string | null; version: string | null }; schedules: ({ operation: string; moduleId: string; everyMinutes: number; permissions: string[]; lastRun: { id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null; observedAt: string | null } | null; nextDueAt: string | null; health: "healthy" | "overdue" | "never-run" | "sweeper-silent"; runs: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null; observedAt: string | null })[] })[] | null; freshness: ({ eventType: string; moduleId: string; withinHours: number; observedAt: string | null; health: "fresh" | "stale" | "never-seen" | "sweeper-silent"; runs: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null; observedAt: string | null })[] })[] | null; lastSweepAt: string | null }>;
+
+  /**
    * One installed app's traffic series and release markers
    *
    * `GET /apps/{scopeId}/traffic` — `dashboard/get-app-traffic`
    */
   getAppTraffic(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<TrafficSeries>;
+
+  /**
+   * The static files one version of this app ships
+   *
+   * `GET /apps/{scopeId}/deployments/{versionId}/assets` — `dashboard/get-app-version-assets`
+   */
+  getAppVersionAssets(input: { scopeId: string; versionId: string }): Promise<{ assets: unknown }>;
 
   /**
    * A vertical's release ledger: each version against its go-live, adoption and health
@@ -1373,6 +1415,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/concept`, "GET", undefined, omit(input, ["scopeId"])),
     getAppConnectionActivity: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connections/${encodeURIComponent(String(input.connectionId))}/activity`, "GET", undefined, omit(input, ["scopeId","provider","connectionId"])),
+    getAppDeployments: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/deployments`, "GET", undefined, omit(input, ["scopeId"])),
     getAppEnv: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/env`, "GET", undefined, omit(input, ["scopeId"])),
     getAppFailures: (input: Args) =>
@@ -1389,12 +1433,22 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/activity`, "GET", undefined, omit(input, ["scopeId","provider"])),
     getAppIntegrations: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppModel: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/model`, "GET", undefined, omit(input, ["scopeId"])),
     getAppOverlays: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/overlays`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppPermissions: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/permissions`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppProcessMap: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/processes`, "GET", undefined, omit(input, ["scopeId"])),
     getAppReleaseComparison: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/release-comparison`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppSchedules: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/schedules`, "GET", undefined, omit(input, ["scopeId"])),
     getAppTraffic: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/traffic`, "GET", undefined, omit(input, ["scopeId"])),
+    getAppVersionAssets: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/deployments/${encodeURIComponent(String(input.versionId))}/assets`, "GET", undefined, omit(input, ["scopeId","versionId"])),
     getDeploymentReleases: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/releases`, "GET", undefined, omit(input, ["slug"])),
     getDeploymentTraffic: (input: Args) =>

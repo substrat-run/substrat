@@ -784,7 +784,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
     let live = true;
     setSearchGaveUp(false);
     api
-      .appDeployments(app.app_scope_id)
+      .appDeployments(teamId, app.app_scope_id)
       .then((d) => live && setDep(d))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     teamApi(teamId)
