@@ -324,7 +324,7 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
   intent payload ever holds the plaintext.
 - **The effect is host-side, gated on the platform secret.** The harness POSTs
   `{tenantId, scopeId, provider, label?, externalAccountRef?, scopes?, expiresAt?, secret,
-  grants?, createdBy}` with the injected `PLATFORM_SECRET`. That shared secret only proves "a
+  grants?, createdBy, owner?}` with the injected `PLATFORM_SECRET`. That shared secret only proves "a
   platform script is calling" — the relay re-derives WHICH vertical from its own scope record
   for `(tenantId, scopeId)`. The `(tenantId, scopeId)` itself is the caller's claim unless the
   call arrives through the control plane's `RelayGateway` entrypoint, which the egress worker
@@ -337,6 +337,13 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
   `createConnection` under a fresh id; one live → `updateConnectionSecret` in place —
   rotation preserves the connection id, and with it every `grantToConnection` tuple. The
   relay is how the tenant rotates a credential without a support ticket.
+- **A scope can own its connection** (#2732). `owner: 'scope'` makes the connection the calling
+  scope's own: the owner joins the live key (`_substrat_connections.owner_scope_id`, in the
+  directory's unique index), so two scopes of one vertical can connect the same account and each
+  hold, and rotate, its own. A scope-owned connection is never landed by the connector pass, is
+  not projected as a sealing key into other scopes, and is opened only by naming its owner
+  (`openConnection`'s `ownerScopeId`); a tenant-level read opens tenant-owned connections alone.
+  `owner` defaults to `tenant`, today's connection, and the dashboard's door always makes one.
 - **Attribution is the tenant principal's** (§3.5.1's law, both sides): `createdBy` lands on
   the connection row at create, and in the audit metadata as `rotatedBy` at rotate
   (`updateConnectionSecret` grew an additive `opts.rotatedBy`). The relay effects under a

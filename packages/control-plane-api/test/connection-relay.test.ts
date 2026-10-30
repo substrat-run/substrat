@@ -482,3 +482,41 @@ describe('relayConnectionUpsert — a provider that prepares its own credential 
     }
   });
 });
+
+describe('relayConnectionUpsert — a scope connects its own (#2732)', () => {
+  it("keys a scope's connection apart from the tenant's and another scope's, on one account", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-conn-relay-owner-'));
+    const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k1', new Uint8Array(32).fill(7)) });
+    try {
+      const staff = platformActorId.parse(ulid());
+      const t = tenantId.parse(ulid());
+      const [a, b] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+      await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
+      for (const s of [a, b]) await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'acme-drive' });
+      const upsert = (scope: typeof a, token: string, owner?: 'scope') =>
+        relayConnectionUpsert(host, staff, {
+          tenantId: t, scopeId: scope, provider: 'planima', secret: { token }, createdBy: principalId.parse(ulid()),
+          ...(owner ? { owner } : {}),
+        });
+
+      const tenantOwned = await upsert(a, 'tenant');
+      const ofA = await upsert(a, 'a', 'scope');
+      const ofB = await upsert(b, 'b', 'scope');
+      // Each scope rotates only its own; the tenant's upsert still rotates the tenant's.
+      const rotatedA = await upsert(a, 'a2', 'scope');
+      const rotatedTenant = await upsert(b, 'tenant2');
+
+      expect([ofA.created, ofB.created, rotatedA.created, rotatedTenant.created]).toEqual([true, true, false, false]);
+      expect(new Set([tenantOwned.connectionId, ofA.connectionId, ofB.connectionId]).size).toBe(3);
+      expect(rotatedA.connectionId).toBe(ofA.connectionId);
+      expect(rotatedTenant.connectionId).toBe(tenantOwned.connectionId);
+      expect((await host.admin.listConnections(staff, { tenantId: t, ownerScopeId: a })).map((c) => c.id)).toEqual([ofA.connectionId]);
+      // A tenant-level read opens the tenant's alone; naming the owner opens that scope's.
+      expect((await host.admin.openConnection(t, 'acme-drive', 'planima'))?.secret).toEqual({ token: 'tenant2' });
+      expect((await host.admin.openConnection(t, 'acme-drive', 'planima', undefined, a))?.secret).toEqual({ token: 'a2' });
+    } finally {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

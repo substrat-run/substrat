@@ -4121,12 +4121,18 @@ export interface HostAdmin {
    * among them. Omitted, the single live connection is returned — and when more
    * than one is live the read **throws** rather than picking one arbitrarily,
    * because acting against the wrong tenant account is worse than failing.
+   *
+   * `ownerScopeId` (#2732) opens that scope's OWN connection. Omitted, only a
+   * tenant-owned connection is opened: a scope-owned one is never what a
+   * tenant-level read meant, and counting it would make an unchanged caller throw
+   * on "several live" the moment a scope connected the same account.
    */
   openConnection(
     tenantId: TenantId,
     vertical: string,
     provider: string,
     externalAccountRef?: string,
+    ownerScopeId?: ScopeId,
   ): Promise<OpenConnection | undefined>;
 
   /**

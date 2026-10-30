@@ -701,6 +701,7 @@ const toConnection = (r: ConnectionDoRow): Connection =>
     createdBy: r.created_by,
     createdAt: r.created_at,
     revokedAt: r.revoked_at,
+    ownerScopeId: r.owner_scope_id,
   });
 
 interface ControlPlaneStub {
@@ -1109,12 +1110,14 @@ interface ControlPlaneStub {
     createdAt: string;
     keyId: string;
     ciphertext: string;
+    ownerScopeId: string | null;
   }, audit?: AdminEntry): Promise<void>;
   listConnections(filter: {
     tenantId?: string;
     vertical?: string;
     provider?: string;
     externalAccountRef?: string;
+    ownerScopeId?: string | null;
     includeRevoked?: boolean;
   }): Promise<ConnectionDoRow[]>;
   readConnection(id: string): Promise<ConnectionDoRow | undefined>;
@@ -1142,6 +1145,7 @@ interface ControlPlaneStub {
     vertical: string,
     provider: string,
     externalAccountRef?: string,
+    ownerScopeId?: string,
   ): Promise<(ConnectionDoRow & { key_id: string; ciphertext: string }) | undefined>;
   updateConnectionSecret(
     id: string,
@@ -10375,6 +10379,7 @@ export class CloudflareScopeHost implements ScopeHost {
           createdAt: now,
           keyId: sealed.keyId,
           ciphertext: sealed.ciphertext,
+          ownerScopeId: input.ownerScopeId ?? null,
         }, this.adminEntry(actor, 'createConnection', { tenantId: input.tenantId, vertical: input.vertical }, null, {
           id: input.id,
           provider: input.provider,
@@ -10382,6 +10387,7 @@ export class CloudflareScopeHost implements ScopeHost {
           scopes: input.scopes,
           externalAccountRef: input.externalAccountRef ?? null,
           createdBy: input.createdBy ?? actor,
+          ...(input.ownerScopeId ? { ownerScopeId: input.ownerScopeId } : {}),
         }));
         // METADATA ONLY — the admin log is append-only, so a credential written
         // here could never be removed.
@@ -10392,8 +10398,9 @@ export class CloudflareScopeHost implements ScopeHost {
       connectionSealingKeys: async (tenantId: TenantId, vertical: string) => {
         // LIVE connections only. A revoked connection's key is KEPT (its pending
         // ciphertext must still open) but stops being projected, so a scope can no
-        // longer seal to a credential that has been withdrawn.
-        const rows = await this.cp.listConnections({ tenantId, vertical });
+        // longer seal to a credential that has been withdrawn. Tenant-owned only (#2732): a
+        // scope's own connection is not projected into every scope of the vertical.
+        const rows = await this.cp.listConnections({ tenantId, vertical, ownerScopeId: null });
         const out: ProjectedConnectionKey[] = [];
         for (const r of rows) out.push(await this.ensureSealingKey(r.id as ConnectionId));
         return out;
@@ -10528,8 +10535,9 @@ export class CloudflareScopeHost implements ScopeHost {
         vertical: string,
         provider: string,
         externalAccountRef?: string,
+        ownerScopeId?: ScopeId,
       ) => {
-        const row = await this.cp.readLiveConnection(tenantId, vertical, provider, externalAccountRef);
+        const row = await this.cp.readLiveConnection(tenantId, vertical, provider, externalAccountRef, ownerScopeId);
         if (!row) return undefined;
         const secret = connectionSecret.parse(
           JSON.parse(

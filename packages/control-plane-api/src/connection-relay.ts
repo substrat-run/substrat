@@ -184,6 +184,10 @@ export async function relayConnectionUpsert(
     grants = found.declaration.grants;
   }
 
+  // #2732: whose connection this upsert creates or rotates. `scope` is the calling scope's own,
+  // keyed apart from the tenant's and every other scope's, so it never rotates theirs.
+  const owner = input.owner === 'scope' ? input.scopeId : null;
+
   // `listConnections` already excludes revoked rows; expired/errored rows are still the
   // live row for this key — rotation is what revives them. The account leg matches
   // exactly (absent matches absent): a multi-account provider's second account is a new
@@ -194,6 +198,7 @@ export async function relayConnectionUpsert(
       tenantId: input.tenantId,
       vertical,
       provider: input.provider,
+      ownerScopeId: owner,
     })
   ).filter((c) => c.externalAccountRef === (input.externalAccountRef ?? null));
 
@@ -205,7 +210,7 @@ export async function relayConnectionUpsert(
   if (prepare) {
     const previous =
       live.length === 1
-        ? (await host.admin.openConnection(input.tenantId, vertical, input.provider, input.externalAccountRef))?.secret
+        ? (await host.admin.openConnection(input.tenantId, vertical, input.provider, input.externalAccountRef, owner ?? undefined))?.secret
         : undefined;
     const prepared = await prepare(input.secret, previous);
     secret = prepared.secret;
@@ -246,6 +251,7 @@ export async function relayConnectionUpsert(
       // §3.5.1 — the authorizing tenant principal, proven by the vertical's own
       // `ctx.check` before the secret ever left the operation.
       createdBy: input.createdBy,
+      ...(owner ? { ownerScopeId: owner } : {}),
     });
     created = true;
   } else if (live.length === 1) {

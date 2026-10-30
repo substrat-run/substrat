@@ -1568,6 +1568,12 @@ export const connectionRelayRequest = z.object({
   grants: z.array(permissionKey).max(16).default([]),
   /** The tenant principal whose permission-checked act authorized this connect/rotation. */
   createdBy: z.string().min(1),
+  /**
+   * Who owns the connection (#2732). `tenant`, the default, is the upsert as it always was. `scope`
+   * creates or rotates the calling scope's OWN connection: keyed by its owner as well, so it never
+   * rotates another scope's or the tenant's, and the connector pass never lands it.
+   */
+  owner: z.enum(['tenant', 'scope']).default('tenant'),
 });
 export type ConnectionRelayRequest = z.infer<typeof connectionRelayRequest>;
 
