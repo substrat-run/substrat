@@ -1110,8 +1110,9 @@ export interface AccountIntegration {
     ConnectionView & {
       vertical: string;
       apps: Array<{ scopeId: string; name: string }>;
-      /** #1232: the last day's sweep outcomes, newest first — the recent-runs strip. */
-      sweepRuns: SweepRunView[];
+      /** #1232: the last day's sweep outcomes, newest first — the recent-runs strip. A connector
+       *  sweep has no freshness evidence, so these rows carry no `observedAt`. */
+      sweepRuns: Omit<SweepRunView, 'observedAt'>[];
     }
   >;
   connectTargets: Array<{ scopeId: string; name: string; vertical: string; connected: boolean }>;
@@ -1741,9 +1742,16 @@ export const api = {
     teamApi(teamId).readAppTable({ scopeId, table, ...opts }),
   appQuery: (teamId: string, scopeId: string, sql: string) => teamApi(teamId).queryAppScope({ scopeId, sql }),
   /** The account-level integrations overview: all providers, connections, and connectable apps.
-   *  The route declares a connection's plane-owned `status` as a string, as the app panel's does. */
-  integrations: async (teamId: string) =>
-    (await teamApi(teamId).listTeamIntegrations()) as unknown as AccountIntegrationsView,
+   *  The route declares a connection's plane-owned `status` as a string; only that field is cast. */
+  integrations: async (teamId: string): Promise<AccountIntegrationsView> => {
+    const { providers } = await teamApi(teamId).listTeamIntegrations();
+    return {
+      providers: providers.map((p) => ({
+        ...p,
+        connections: p.connections.map((c) => ({ ...c, status: c.status as ConnectionView['status'] })),
+      })),
+    };
+  },
   // -- observability (design/observability.md §5, view 2) -------------------
   // Metrics/logs for THIS team's pushed verticals only — the worker narrows by
   // owned deployment refs. 501 = the platform has no observability backend.
