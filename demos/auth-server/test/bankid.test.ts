@@ -239,7 +239,7 @@ describe('the stored configuration', () => {
       async () => {
         throw new BankIdHopError('tls.handshake', 'tls: handshake failed', [{ stage: 'tls.config' } as never]);
       },
-      { ok: false, stage: 'tls.handshake', stages: undefined },
+      { ok: false, stage: 'tls.handshake' },
     ],
   ] as const)('reads a connection test of %s', async (_, transport, expected) => {
     const calls: unknown[] = [];
@@ -252,6 +252,7 @@ describe('the stored configuration', () => {
       7,
     );
     expect(probe).toMatchObject({ at: 7, ...expected });
+    expect('stages' in probe).toBe('stages' in expected);
     // `collect` of an order BankID never issued: it starts nothing and needs no person.
     expect(calls).toEqual([{ url: 'https://appapi2.test.bankid.com/rp/v6.0/collect', body: { orderRef: '00000000-0000-0000-0000-000000000000' } }]);
   });
