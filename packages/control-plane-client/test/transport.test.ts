@@ -434,6 +434,14 @@ describe('problemCode: the code the plane declared, read off the refusal (#113)'
     expect(err.message).toBe('permission denied: dashboard:read');
   });
 
+  it('requestId is the body member, else the response header, else undefined', async () => {
+    const withBody = await refusedWith(() => Response.json({ requestId: 'from-body' }, { status: 500, headers: { 'x-substrat-request-id': 'from-header' } }));
+    expect(withBody.requestId).toBe('from-body');
+    const headerOnly = await refusedWith(() => new Response('oops', { status: 502, headers: { 'x-substrat-request-id': 'from-header' } }));
+    expect(headerOnly.requestId).toBe('from-header');
+    expect((await refusedWith(() => new Response('oops', { status: 502 }))).requestId).toBeUndefined();
+  });
+
   it('is undefined for a body that named none — the sentence alone never decides it', async () => {
     // A route the plane does not have: Hono's plain-text 404.
     expect((await refusedWith(() => new Response('404 Not Found', { status: 404 }))).problemCode).toBeUndefined();

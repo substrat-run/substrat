@@ -93,6 +93,18 @@ function problemCodeOf(body: string | undefined): ErrorCode | undefined {
   return code.success ? code.data : undefined;
 }
 
+/** The id the plane stamped on a refusal: the problem body's `requestId`, else the `x-substrat-request-id` header. */
+function requestIdOf(body: string | undefined, headers: Headers | undefined): string | undefined {
+  let fromBody: unknown;
+  try {
+    fromBody = (JSON.parse(body ?? '') as { requestId?: unknown } | null)?.requestId;
+  } catch {
+    // not JSON: the header is all there is
+  }
+  if (typeof fromBody === 'string' && fromBody) return fromBody;
+  return headers?.get('x-substrat-request-id') || undefined;
+}
+
 /** A non-2xx (or unreachable) control-plane response. `status` is 0 on a transport error. */
 export class ControlPlaneError extends Error {
   constructor(
@@ -114,6 +126,7 @@ export class ControlPlaneError extends Error {
     this.url = detail.url;
     this.malformed = detail.malformed === true;
     this.problemCode = problemCodeOf(detail.body);
+    this.requestId = requestIdOf(detail.body, detail.headers);
     if (detail.code !== undefined) this.code = detail.code;
   }
 
@@ -137,6 +150,8 @@ export class ControlPlaneError extends Error {
    * plane's answer relayed, not a throw that declared itself here. `code` is for the one that did.
    */
   readonly problemCode: ErrorCode | undefined;
+  /** The id of the request the plane refused (#113), for a person to quote; `undefined` when the answer carried none. */
+  readonly requestId: string | undefined;
 }
 
 /** Whether a failed call proves it changed nothing (#2010) — defined in contracts, where the kernel reads it too (#1686). */

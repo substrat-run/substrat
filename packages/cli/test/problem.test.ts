@@ -162,6 +162,14 @@ describe('failureMessage', () => {
     );
   });
 
+  it('ends with the request id the plane stamped, and prints nothing new without one', () => {
+    const body = problemBody('conflict', 'already registered');
+    expect(failureMessage('push failed', 409, body)).not.toContain('request id');
+    expect(failureMessage('push failed', 409, problemBody('conflict', 'already registered', { requestId: '01JREQ' }))).toBe(
+      'push failed (409 conflict): already registered\nrequest id: 01JREQ',
+    );
+  });
+
   it('omits the code and the colon when the body says nothing', () => {
     expect(failureMessage('promote failed', 502, '')).toBe('promote failed (502)');
   });
