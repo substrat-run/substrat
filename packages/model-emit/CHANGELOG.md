@@ -1,5 +1,11 @@
 # @substrat-run/model-emit
 
+## 0.10.24
+
+### Patch Changes
+
+- @substrat-run/contracts@0.167.1
+
 ## 0.10.23
 
 ### Patch Changes
