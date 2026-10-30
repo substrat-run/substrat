@@ -259,10 +259,22 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     expect((await app.request(`/api/teams/${tenant}/apps/${otherApp}/integrations`, {
       headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
     }, env)).status).toBe(404);
+    // The account-wide page's Connect targets are the path team's apps, the team its dialog connects in.
+    const teamWide = await app.request(`/api/teams/${tenant}/integrations`, {
+      headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
+    }, env);
+    expect(teamWide.status).toBe(200);
+    const { providers } = (await teamWide.json()) as { providers: { provider: string; connectTargets: { scopeId: string }[] }[] };
+    expect(providers.find((p) => p.provider === 'fortnox')!.connectTargets.map((t) => t.scopeId)).toEqual([appScope]);
 
     const outside = tenantId.parse(ulid());
     const base = `/api/teams/${outside}/apps/${appScope}/integrations`;
     const before = planeCalls.length;
+    const teamReads = ['/integrations', '/fleet-health', '/identity-mirror', '/audit', '/github/workflow-preview'];
+    for (const path of teamReads) {
+      expect((await app.request(`/api/teams/${outside}${path}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status, path).toBe(404);
+      expect((await app.request(`/api${path}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status, path).toBe(404);
+    }
     for (const [path, method] of [
       ['', 'GET'], ['/acme.docbox', 'POST'], ['/fortnox', 'DELETE'],
       [`/fortnox/connections/${byLabel('Alfa AB').id}`, 'DELETE'],

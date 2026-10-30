@@ -257,10 +257,9 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     });
   });
 
-  it('audit: an empty ?scopeId= is no narrowing on either route — the whole team log', async () => {
+  it('audit: an empty ?scopeId= is no narrowing — the whole team log', async () => {
     const whole = await json(await get(`/api/teams/${tenant}/audit`));
     expect(await json(await get(`/api/teams/${tenant}/audit?scopeId=`))).toEqual(whole);
-    expect(await json(await get('/api/audit?scopeId=', tenant))).toEqual(whole);
   });
 
   it('audit: a foreign scopeId is a 404 even where no control plane is bound; an own one then needs it (503)', async () => {
@@ -270,22 +269,18 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
         waitUntil: () => undefined,
         passThroughOnException: () => undefined,
       });
-    for (const path of [`/api/teams/${tenant}/apps/${secondApp}/audit`, `/api/teams/${tenant}/audit?scopeId=${secondApp}`, `/api/audit?scopeId=${secondApp}`]) {
+    for (const path of [`/api/teams/${tenant}/apps/${secondApp}/audit`, `/api/teams/${tenant}/audit?scopeId=${secondApp}`]) {
       expect((await ask(path)).status, path).toBe(404);
     }
     expect((await ask(`/api/teams/${tenant}/apps/${apps[0]}/audit`)).status).toBe(503);
   });
 
-  it('audit: the team log still matches its cookie route; a foreign app is a 404', async () => {
+  it('audit: the team log reads the path team, not the cookie; a foreign app is a 404', async () => {
     const whole = await json(await get(`/api/teams/${tenant}/audit`, second));
     expect(whole.entries.length).toBeGreaterThan(0);
-    expect(whole).toEqual(await json(await get('/api/audit', tenant)));
     const [a] = apps;
     expect((await get(`/api/teams/${tenant}/apps/${a}/audit`, second)).status).toBe(200);
     expect((await get(`/api/apps/${a}/audit`, tenant)).status).toBe(404);
-    expect(await json(await get(`/api/teams/${tenant}/audit?scopeId=${a}`, second))).toEqual(
-      await json(await get(`/api/audit?scopeId=${a}`, tenant)),
-    );
     expect((await get(`/api/teams/${tenant}/apps/${secondApp}/audit`)).status).toBe(404);
     expect((await get(`/api/teams/${tenant}/audit?scopeId=${secondApp}`)).status).toBe(404);
   });
