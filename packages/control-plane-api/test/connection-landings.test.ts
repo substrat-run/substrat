@@ -609,6 +609,22 @@ describe('declared connection landings (#2316)', () => {
     expect(lastRun(plan)).toMatchObject({ outcome: 'skipped', error: NO_BINDING });
   });
 
+  it("never grants or binds a scope's own connection, beside a tenant-owned one it lands (#2732)", async () => {
+    await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
+    const company = await connect('fortnox', '111111');
+    const own = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, {
+      id: own, tenantId: t, vertical: SLUG, provider: 'planima', label: 'planima', scopes: [],
+      secret: { token: 'planima-test-token' }, ownerScopeId: s,
+    });
+
+    const report = await pass();
+
+    expect(report.connectionLandings).toEqual({ granted: 1, bound: 1, failed: 0 });
+    expect((await host.connectionGrantsInScope(t, s)).map((g) => g.connectionId)).toEqual([company]);
+    expect(await listPlanimaBindings(host, own)).toEqual([]);
+  });
+
   it('reports a declaration the provider refuses on the connection, never binding with a guess', async () => {
     const typo = DECLARED.map((l) => (l.provider === 'planima' ? { ...l, options: { horizonYear: 50 } } : l));
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(typo)));

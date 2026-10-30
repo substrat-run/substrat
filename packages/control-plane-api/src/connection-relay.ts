@@ -188,12 +188,14 @@ export async function relayConnectionUpsert(
   // live row for this key — rotation is what revives them. The account leg matches
   // exactly (absent matches absent): a multi-account provider's second account is a new
   // connection, not a rotation of the first. Read before the probe because a provider that
-  // finishes its own credential (#2100) needs the one this upsert would replace.
+  // finishes its own credential (#2100) needs the one this upsert would replace. The relay
+  // makes tenant-owned connections, so it never rotates a scope's own (#2732).
   const live = (
     await host.admin.listConnections(actor, {
       tenantId: input.tenantId,
       vertical,
       provider: input.provider,
+      ownerScopeId: null,
     })
   ).filter((c) => c.externalAccountRef === (input.externalAccountRef ?? null));
 

@@ -83,6 +83,15 @@ export const connection = z.object({
   createdBy: z.string().min(1),
   createdAt: instant,
   revokedAt: instant.nullable(),
+  /**
+   * The scope that owns this connection, or `null` for the tenant (#2732). A tenant-owned
+   * connection is today's: one live per (tenant, vertical, provider, account), landed by the
+   * connector pass. A SCOPE-owned one is made by a scope for itself through the connection relay,
+   * so two scopes can connect the same account and each hold its own: the owner is part of the
+   * live key, the connector pass never lands it, and only its own scope binds it. Absent reads as
+   * `null`, so a row or answer from before the field is the tenant-owned connection it was.
+   */
+  ownerScopeId: scopeId.nullable().default(null),
 });
 export type Connection = z.infer<typeof connection>;
 
@@ -118,6 +127,8 @@ export const createConnectionInput = z.object({
    * caller's `actor`, so existing platform-driven callers are unchanged.
    */
   createdBy: z.string().min(1).optional(),
+  /** The owning scope (#2732, {@link connection}). Omitted ⇒ tenant-owned, as before. */
+  ownerScopeId: scopeId.optional(),
 });
 export type CreateConnectionInput = z.input<typeof createConnectionInput>;
 
@@ -127,6 +138,11 @@ export const connectionFilter = z.object({
   provider: connectionProvider.optional(),
   /** Narrow to one external account — the multi-namespace provider's selector. */
   externalAccountRef: z.string().optional(),
+  /**
+   * Narrow by owner (#2732): a scope id is that scope's own connections, `null` the tenant-owned
+   * ones. Omitted ⇒ both, so a console still lists every connection a tenant holds.
+   */
+  ownerScopeId: scopeId.nullable().optional(),
   /** Revoked connections are evidence, not roster — excluded unless asked for. */
   includeRevoked: z.boolean().optional(),
 });

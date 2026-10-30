@@ -141,7 +141,7 @@ export async function resolveVerticalConnectorTarget(
   return { declaration, target: { deploymentRef, slug: vertical, tenantId, scopeId, hosts: version.outbound ?? [] } };
 }
 
-type ConnectionRow = Pick<Connection, 'id' | 'tenantId' | 'vertical' | 'provider' | 'externalAccountRef'>;
+type ConnectionRow = Pick<Connection, 'id' | 'tenantId' | 'vertical' | 'provider' | 'externalAccountRef' | 'ownerScopeId'>;
 type CallOutcome = { ok: true; result: unknown } | { ok: false; refused: boolean; error: string };
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -149,11 +149,17 @@ const USE_ERROR_MAX = 600;
 
 /**
  * The live credential for `row`, as a call carries it. Refused when the live connection for its
- * (tenant, vertical, provider, account) is not `row` itself: the credential that is sent and the
- * connection the call's uses and state are recorded against must be the same row.
+ * (tenant, vertical, provider, account, owner) is not `row` itself: the credential that is sent and
+ * the connection the call's uses and state are recorded against must be the same row.
  */
 async function openFor(deps: Pick<VerticalConnectorDeps, 'host'>, row: ConnectionRow): Promise<ConnectorCallConnection> {
-  const open = await deps.host.admin.openConnection(row.tenantId, row.vertical, row.provider, row.externalAccountRef ?? undefined);
+  const open = await deps.host.admin.openConnection(
+    row.tenantId,
+    row.vertical,
+    row.provider,
+    row.externalAccountRef ?? undefined,
+    row.ownerScopeId ?? undefined,
+  );
   if (!open) throw new Error(`no live '${row.provider}' connection for tenant ${row.tenantId} / vertical '${row.vertical}'`);
   if (open.id !== row.id) {
     throw new Error(
@@ -491,7 +497,8 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
           `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
       };
     }
-    const rows = await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider });
+    // Tenant-owned only (#2732): a scope's own connection is not the tenant's dispatch connection.
+    const rows = await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider, ownerScopeId: null });
     if (rows.length !== 1) {
       throw new Error(
         rows.length === 0

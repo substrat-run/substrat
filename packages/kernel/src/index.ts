@@ -102,6 +102,8 @@ export {
   assertRowOffset,
   type TelemetryPruneReport,
 } from './retention.js';
+// #2732: the live-connection key, owner included, as both adapters build it.
+export { CONNECTIONS_LIVE_INDEX, connectionsLiveIndexHasOwner } from './connection-live-index.js';
 export {
   isUpgradeRequest,
   isVouchedWithin,

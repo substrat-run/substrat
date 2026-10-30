@@ -437,6 +437,8 @@ import {
   SWEEP_RUN_RETENTION_DAYS,
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
+  CONNECTIONS_LIVE_INDEX,
+  connectionsLiveIndexHasOwner,
   type FreshnessReport,
   type FreshnessRegistration,
   type AccessLogFilter,
@@ -1618,6 +1620,7 @@ interface ConnectionRow {
   created_by: string;
   created_at: string;
   revoked_at: string | null;
+  owner_scope_id: string | null;
 }
 
 /** Row → contract shape. Never reads the secrets table — that is the point of the split. */
@@ -1638,6 +1641,7 @@ const toConnection = (r: ConnectionRow): Connection =>
     createdBy: r.created_by,
     createdAt: r.created_at,
     revokedAt: r.revoked_at,
+    ownerScopeId: r.owner_scope_id,
   });
 
 interface TenantRow {
@@ -2870,18 +2874,13 @@ export class SqliteScopeHost implements ScopeHost {
         last_error_at        TEXT,
         created_by           TEXT NOT NULL,
         created_at           TEXT NOT NULL,
-        revoked_at           TEXT
+        revoked_at           TEXT,
+        owner_scope_id       TEXT
       );
-      -- One LIVE connection per (tenant, vertical, provider, account). Revoked
-      -- rows are kept as evidence (K-21's tombstone rule) and must not block a
-      -- successor, which is why the index is partial rather than a table
-      -- constraint. The account leg is COALESCEd so providers that never set an
-      -- external_account_ref keep the original singleton semantics (all their
-      -- NULLs collide on ''), while a multi-namespace provider (GitHub) holds
-      -- one live connection PER account — the Vercel git-namespace shape.
-      CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connections_live_account
-        ON _substrat_connections (tenant_id, vertical, provider, COALESCE(external_account_ref, ''))
-        WHERE revoked_at IS NULL;
+      -- One LIVE connection per (tenant, vertical, provider, account, owner): see the
+      -- kernel's fragment. On a directory that already has the index this is a no-op
+      -- (IF NOT EXISTS matches the name), and ensureConnectionsLiveIndex re-keys it.
+      ${CONNECTIONS_LIVE_INDEX}
       -- Sealed credentials, in their own table so that reading a connection's
       -- METADATA never touches ciphertext. Nothing above SecretBox sees plaintext.
       CREATE TABLE IF NOT EXISTS _substrat_connection_secrets (
@@ -12784,8 +12783,8 @@ export class SqliteScopeHost implements ScopeHost {
               `INSERT INTO _substrat_connections
                  (id, tenant_id, vertical, provider, label, status, external_account_ref,
                   scopes, expires_at, last_ok_at, last_error, last_error_at,
-                  created_by, created_at, revoked_at)
-               VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
+                  created_by, created_at, revoked_at, owner_scope_id)
+               VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
             )
             .run(
               input.id,
@@ -12800,15 +12799,17 @@ export class SqliteScopeHost implements ScopeHost {
               // effecting platform actor. See connections.md §3.5.1 / createConnectionInput.
               input.createdBy ?? actor,
               now,
+              input.ownerScopeId ?? null,
             );
           } catch (err) {
           if (/UNIQUE constraint failed/i.test((err as Error).message)) {
             const account = input.externalAccountRef
               ? ` under account '${input.externalAccountRef}'`
               : '';
+            const owner = input.ownerScopeId ? ` owned by scope ${input.ownerScopeId}` : '';
             throw new Error(
               `tenant ${input.tenantId} already has a live '${input.provider}' connection ` +
-                `for vertical '${input.vertical}'${account} — revoke it before connecting another`,
+                `for vertical '${input.vertical}'${account}${owner} — revoke it before connecting another`,
             );
           }
           throw err;
@@ -12836,6 +12837,7 @@ export class SqliteScopeHost implements ScopeHost {
             scopes: input.scopes,
             externalAccountRef: input.externalAccountRef ?? null,
             createdBy: input.createdBy ?? actor,
+            ...(input.ownerScopeId ? { ownerScopeId: input.ownerScopeId } : {}),
           },
         );
         });
@@ -12846,11 +12848,12 @@ export class SqliteScopeHost implements ScopeHost {
       connectionSealingKeys: async (tenantId: TenantId, vertical: string) => {
         // LIVE connections only. A revoked connection's key is kept (its pending
         // ciphertext must still open) but stops being projected, so a scope can no
-        // longer seal to a credential that has been withdrawn.
+        // longer seal to a credential that has been withdrawn. Tenant-owned only (#2732): a
+        // scope's own connection is not projected into every scope of the vertical.
         const rows = this.directory
           .prepare(
             `SELECT id FROM _substrat_connections
-             WHERE tenant_id = ? AND vertical = ? AND revoked_at IS NULL`,
+             WHERE tenant_id = ? AND vertical = ? AND revoked_at IS NULL AND owner_scope_id IS NULL`,
           )
           .all(tenantId, vertical) as { id: string }[];
         const out: ProjectedConnectionKey[] = [];
@@ -12866,6 +12869,8 @@ export class SqliteScopeHost implements ScopeHost {
         if (f.vertical) (where.push('vertical = ?'), params.push(f.vertical));
         if (f.provider) (where.push('provider = ?'), params.push(f.provider));
         if (f.externalAccountRef) (where.push('external_account_ref = ?'), params.push(f.externalAccountRef));
+        if (f.ownerScopeId === null) where.push('owner_scope_id IS NULL');
+        else if (f.ownerScopeId) (where.push('owner_scope_id = ?'), params.push(f.ownerScopeId));
         if (!f.includeRevoked) where.push('revoked_at IS NULL');
         const rows = this.directory
           .prepare(
@@ -13061,18 +13066,24 @@ export class SqliteScopeHost implements ScopeHost {
         vertical: string,
         provider: string,
         externalAccountRef?: string,
+        ownerScopeId?: ScopeId,
       ) => {
+        // #2732: a scope's own connection only when its owner is named; a tenant-level read
+        // never counts one (scope-host.ts).
         const rows = this.directory
           .prepare(
             `SELECT * FROM _substrat_connections
              WHERE tenant_id = ? AND vertical = ? AND provider = ? AND revoked_at IS NULL
              ${externalAccountRef === undefined ? '' : 'AND external_account_ref = ?'}
+             AND ${ownerScopeId === undefined ? 'owner_scope_id IS NULL' : 'owner_scope_id = ?'}
              LIMIT 2`,
           )
           .all(
-            ...(externalAccountRef === undefined
-              ? [tenantId, vertical, provider]
-              : [tenantId, vertical, provider, externalAccountRef]),
+            tenantId,
+            vertical,
+            provider,
+            ...(externalAccountRef === undefined ? [] : [externalAccountRef]),
+            ...(ownerScopeId === undefined ? [] : [ownerScopeId]),
           ) as ConnectionRow[];
         // Several live accounts and no selector: failing beats acting against
         // an arbitrary one of the tenant's provider accounts (scope-host.ts).
@@ -14151,6 +14162,22 @@ export class SqliteScopeHost implements ScopeHost {
     `);
   }
 
+  /**
+   * #2732: `_substrat_connections_live_account` re-keyed on the owner, DROP-then-CREATE in one
+   * transaction as `ensureSweepRunsIntentKind` does, so no committed directory is left without a
+   * live key. The CREATE meets no row it refuses: every existing row has no owner.
+   */
+  private ensureConnectionsLiveIndex(): void {
+    const row = this.directory
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+      .get('_substrat_connections_live_account') as { sql: string } | undefined;
+    if (row && connectionsLiveIndexHasOwner(row.sql)) return;
+    this.rebuildAtomically(`
+      DROP INDEX IF EXISTS _substrat_connections_live_account;
+      ${CONNECTIONS_LIVE_INDEX}
+    `);
+  }
+
   private ensureDirectoryColumns(): void {
     this.ensureIdentityKey();
     this.ensureAdminLogTenantNullable();
@@ -14250,6 +14277,10 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'observed_at', 'observed_at TEXT');
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'platform_requests', 'platform_requests TEXT');
     this.ensureSweepRunsIntentKind();
+    // #2732: the connection's owner, and the live key re-made to include it. Null on every
+    // existing row, which is a tenant-owned connection, keyed exactly as before.
+    this.ensureColumn(this.directory, '_substrat_connections', 'owner_scope_id', 'owner_scope_id TEXT');
+    this.ensureConnectionsLiveIndex();
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,
@@ -14941,6 +14972,7 @@ export class SqliteScopeHost implements ScopeHost {
               .prepare(
                 `SELECT id FROM _substrat_connections
                  WHERE tenant_id = ? AND vertical = ? AND provider = ? AND revoked_at IS NULL
+                   AND owner_scope_id IS NULL
                  ORDER BY created_at LIMIT 1`,
               )
               .get(rt.tenantId, vertical, provider) as { id: string } | undefined)

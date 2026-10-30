@@ -89,6 +89,8 @@ import {
   SWEEP_RUN_RETENTION_DAYS,
   SWEEP_RUNS_INTENT_INDEX,
   sweepRunsIntentHasKind,
+  CONNECTIONS_LIVE_INDEX,
+  connectionsLiveIndexHasOwner,
   PEER_SWITCHES_DDL,
   PEER_BINDINGS_DDL,
   SWITCH_OWED_DDL,
@@ -314,6 +316,7 @@ export interface ConnectionDoRow {
   created_by: string;
   created_at: string;
   revoked_at: string | null;
+  owner_scope_id: string | null;
 }
 
 /** A connection grant as the DO records it (#592) — the gather source for delivery. */
@@ -1153,15 +1156,13 @@ const DIRECTORY_DDL = `
     last_error_at        TEXT,
     created_by           TEXT NOT NULL,
     created_at           TEXT NOT NULL,
-    revoked_at           TEXT
+    revoked_at           TEXT,
+    owner_scope_id       TEXT
   );
-  -- One LIVE connection per (tenant, vertical, provider, account). COALESCEd so
-  -- providers that never set an external_account_ref keep singleton semantics,
-  -- while a multi-namespace provider (GitHub) holds one live connection PER
-  -- account — the Vercel git-namespace shape.
-  CREATE UNIQUE INDEX IF NOT EXISTS _substrat_connections_live_account
-    ON _substrat_connections (tenant_id, vertical, provider, COALESCE(external_account_ref, ''))
-    WHERE revoked_at IS NULL;
+  -- One LIVE connection per (tenant, vertical, provider, account, owner): see the
+  -- kernel's fragment. On a directory that already has the index this is a no-op
+  -- (IF NOT EXISTS matches the name), and ensureConnectionsLiveIndex re-keys it.
+  ${CONNECTIONS_LIVE_INDEX}
   CREATE TABLE IF NOT EXISTS _substrat_connection_secrets (
     connection_id TEXT PRIMARY KEY,
     key_id        TEXT NOT NULL,
@@ -1915,6 +1916,19 @@ export class ControlPlaneDO extends DurableObject {
     this.rebuildAtomically(['DROP INDEX IF EXISTS _substrat_sweep_runs_intent', SWEEP_RUNS_INTENT_INDEX]);
   }
 
+  /**
+   * #2732: `_substrat_connections_live_account` re-keyed on the owner, DROP-then-CREATE in one
+   * `transactionSync` as `ensureSweepRunsIntentKind` does, so no committed directory is left
+   * without a live key. The CREATE meets no row it refuses: every existing row has no owner.
+   */
+  private ensureConnectionsLiveIndex(): void {
+    const row = this.sql
+      .exec("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", '_substrat_connections_live_account')
+      .toArray()[0] as unknown as { sql: string } | undefined;
+    if (row && connectionsLiveIndexHasOwner(row.sql)) return;
+    this.rebuildAtomically(['DROP INDEX IF EXISTS _substrat_connections_live_account', CONNECTIONS_LIVE_INDEX]);
+  }
+
   private ensureDirectoryColumns(): void {
     this.ensureIdentityKey();
     this.ensureAdminLogTenantNullable();
@@ -1973,6 +1987,10 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_sweep_runs', 'observed_at TEXT');
     this.addColumn('_substrat_sweep_runs', 'platform_requests TEXT');
     this.ensureSweepRunsIntentKind();
+    // #2732: the connection's owner, and the live key re-made to include it. Null on every
+    // existing row, which is a tenant-owned connection, keyed exactly as before.
+    this.addColumn('_substrat_connections', 'owner_scope_id TEXT');
+    this.ensureConnectionsLiveIndex();
     // builder-plane.md: which tenant owns a vertical (NULL = platform-owned).
     this.addColumn('verticals', 'owner_tenant TEXT');
     // The vertical's declared env-spec (moduleManifest.envSpec) as JSON, for config forms.
@@ -5084,35 +5102,40 @@ export class ControlPlaneDO extends DurableObject {
     createdAt: string;
     keyId: string;
     ciphertext: string;
+    ownerScopeId: string | null;
   }, audit?: AdminEntryInput): void {
     this.writeAndAudit(() => {
-    // Live-uniqueness is per ACCOUNT (COALESCEd like the index): a provider
+    // Live-uniqueness is per ACCOUNT and OWNER (COALESCEd like the index): a provider
     // without account refs stays a singleton; a multi-namespace provider may
-    // hold one live connection per external account.
+    // hold one live connection per external account; a scope's own connection (#2732)
+    // is keyed apart from the tenant's.
     const live = this.sql
       .exec(
         `SELECT id FROM _substrat_connections
          WHERE tenant_id = ? AND vertical = ? AND provider = ?
-           AND COALESCE(external_account_ref, '') = COALESCE(?, '') AND revoked_at IS NULL`,
+           AND COALESCE(external_account_ref, '') = COALESCE(?, '')
+           AND COALESCE(owner_scope_id, '') = COALESCE(?, '') AND revoked_at IS NULL`,
         row.tenantId,
         row.vertical,
         row.provider,
         row.externalAccountRef,
+        row.ownerScopeId,
       )
       .toArray()[0] as unknown as { id: string } | undefined;
     if (live) {
       const account = row.externalAccountRef ? ` under account '${row.externalAccountRef}'` : '';
+      const owner = row.ownerScopeId ? ` owned by scope ${row.ownerScopeId}` : '';
       throw new Error(
         `tenant ${row.tenantId} already has a live '${row.provider}' connection ` +
-          `for vertical '${row.vertical}'${account} — revoke it before connecting another`,
+          `for vertical '${row.vertical}'${account}${owner} — revoke it before connecting another`,
       );
     }
     this.sql.exec(
       `INSERT INTO _substrat_connections
          (id, tenant_id, vertical, provider, label, status, external_account_ref,
           scopes, expires_at, last_ok_at, last_error, last_error_at,
-          created_by, created_at, revoked_at)
-       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)`,
+          created_by, created_at, revoked_at, owner_scope_id)
+       VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, ?)`,
       row.id,
       row.tenantId,
       row.vertical,
@@ -5123,6 +5146,7 @@ export class ControlPlaneDO extends DurableObject {
       row.expiresAt,
       row.createdBy,
       row.createdAt,
+      row.ownerScopeId,
     );
     this.sql.exec(
       `INSERT INTO _substrat_connection_secrets (connection_id, key_id, ciphertext, updated_at)
@@ -5201,6 +5225,8 @@ export class ControlPlaneDO extends DurableObject {
     vertical?: string;
     provider?: string;
     externalAccountRef?: string;
+    /** A scope id: that scope's own connections; `null`: the tenant-owned ones (#2732). */
+    ownerScopeId?: string | null;
     includeRevoked?: boolean;
   }): ConnectionDoRow[] {
     const where: string[] = [];
@@ -5210,6 +5236,8 @@ export class ControlPlaneDO extends DurableObject {
     if (filter.provider) (where.push('provider = ?'), params.push(filter.provider));
     if (filter.externalAccountRef)
       (where.push('external_account_ref = ?'), params.push(filter.externalAccountRef));
+    if (filter.ownerScopeId === null) where.push('owner_scope_id IS NULL');
+    else if (filter.ownerScopeId) (where.push('owner_scope_id = ?'), params.push(filter.ownerScopeId));
     if (!filter.includeRevoked) where.push('revoked_at IS NULL');
     return this.sql
       .exec(
@@ -5233,7 +5261,9 @@ export class ControlPlaneDO extends DurableObject {
     vertical: string,
     provider: string,
     externalAccountRef?: string,
+    ownerScopeId?: string,
   ): (ConnectionDoRow & { key_id: string; ciphertext: string }) | undefined {
+    // #2732: a scope's own connection only when its owner is named (scope-host.ts).
     const rows = this.sql
       .exec(
         `SELECT c.*, s.key_id, s.ciphertext
@@ -5241,10 +5271,13 @@ export class ControlPlaneDO extends DurableObject {
          JOIN _substrat_connection_secrets s ON s.connection_id = c.id
          WHERE c.tenant_id = ? AND c.vertical = ? AND c.provider = ? AND c.revoked_at IS NULL
          ${externalAccountRef === undefined ? '' : 'AND c.external_account_ref = ?'}
+         AND ${ownerScopeId === undefined ? 'c.owner_scope_id IS NULL' : 'c.owner_scope_id = ?'}
          LIMIT 2`,
-        ...(externalAccountRef === undefined
-          ? [tenantId, vertical, provider]
-          : [tenantId, vertical, provider, externalAccountRef]),
+        tenantId,
+        vertical,
+        provider,
+        ...(externalAccountRef === undefined ? [] : [externalAccountRef]),
+        ...(ownerScopeId === undefined ? [] : [ownerScopeId]),
       )
       .toArray() as unknown as (ConnectionDoRow & { key_id: string; ciphertext: string })[];
     // Several live accounts and no selector: failing beats acting against an

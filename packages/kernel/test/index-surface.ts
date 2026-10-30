@@ -36,6 +36,8 @@ export const INDEX_VALUE_EXPORTS = [
   'CAPABILITY_EXCHANGE_OPERATION',
   'CAPABILITY_SESSION_PRUNE_BATCH',
   'CARRIED_AWAY_KEY',
+  // #2732: the live-connection key, owner included, as both adapters build it.
+  'CONNECTIONS_LIVE_INDEX',
   'CONNECT_LINKS_DDL',
   'CONTINUATION_POSITION_CAP',
   'COPY_BACKFILL_SCOPE_SQL',
@@ -326,6 +328,7 @@ export const INDEX_VALUE_EXPORTS = [
   'collectPeers',
   'condemnLicensedOrphanAttachments',
   'condemnOrphanAttachments',
+  'connectionsLiveIndexHasOwner',
   'connectorCallRecord',
   'connectorUploadBody',
   'consoleInvocationLineSink',
