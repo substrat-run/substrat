@@ -107,6 +107,24 @@ export function relayClientId(sql: SqlExec): string | null {
 }
 
 /**
+ * The relay client this install was given and the relay's origin — what the BankID hop
+ * (`bankid-transport-hop.ts`) authenticates with and calls. The origin is read off a delivered
+ * provider row's issuer, which the platform stated; a row that is switched off still says where
+ * the relay is. Null until the platform has registered this install at the relay.
+ */
+export function relayHop(sql: SqlExec): { origin: string; clientId: string; clientSecret: string } | null {
+  const client = storedClient(sql);
+  if (!client) return null;
+  const row = readProviders(sql).find((r) => isPlatformRow(r, client.clientId) && r.issuer);
+  if (!row?.issuer) return null;
+  try {
+    return { origin: new URL(row.issuer).origin, ...client };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Is this row one the platform delivered? Its id is a relay id and it holds the relay client
  * this install was given. The panel shows such a row as a switch rather than a credential form.
  */

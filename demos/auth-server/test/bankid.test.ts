@@ -7,13 +7,16 @@ import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
+import { BankIdHopError } from '../src/bankid-transport-hop.js';
 import {
   animatedQr,
   bankIdApiUrl,
   deleteBankIdConfig,
+  probeBankId,
   publicBankIdFrom,
   putBankIdConfig,
   readBankIdConfig,
+  recordBankIdProbe,
   toWireBankId,
   type BankIdConfig,
   type BankIdTransport,
@@ -196,6 +199,23 @@ describe('the stored configuration', () => {
     expect(readBankIdConfig(sql)).toBeUndefined();
   });
 
+  it.each([
+    ['a new key', { clientKey: `${PEM_KEY}\n` }],
+    ['a cleared root', { caCert: null }],
+  ] as const)('drops a passed connection test on %s', (_, change) => {
+    putBankIdConfig(sql, { ...input, caCert: PEM_CERT });
+    recordBankIdProbe(sql, { ok: true, at: 1 }, readBankIdConfig(sql)!);
+    putBankIdConfig(sql, { environment: 'test', allowSignup: true, disabled: false, ...change }, readBankIdConfig(sql));
+    expect(readBankIdConfig(sql)?.probe).toBeUndefined();
+  });
+
+  it('records a connection test only while the connection it tested is still stored', () => {
+    const tested = putBankIdConfig(sql, input);
+    putBankIdConfig(sql, { ...input, clientCert: `${PEM_CERT}\n` }, tested);
+    recordBankIdProbe(sql, { ok: true, at: 1 }, tested);
+    expect(readBankIdConfig(sql)?.probe).toBeUndefined();
+  });
+
   it('refuses a first save without both PEMs', () => {
     expect(() => putBankIdConfig(sql, { environment: 'test', clientCert: PEM_CERT, allowSignup: true, disabled: false })).toThrow();
   });
@@ -208,12 +228,51 @@ describe('the stored configuration', () => {
   });
 
   it('offers the login button only when configured, enabled AND the runtime can present the cert', () => {
-    expect(publicBankIdFrom(undefined, true)).toBeUndefined();
+    expect(publicBankIdFrom(undefined, 'direct')).toBeUndefined();
     const cfg = putBankIdConfig(sql, input);
-    expect(publicBankIdFrom(cfg, true)).toEqual({ id: 'bankid', label: 'BankID' });
+    expect(publicBankIdFrom(cfg, 'direct')).toEqual({ id: 'bankid', label: 'BankID' });
     // A worker with no mTLS binding must not draw a button that starts an unfinishable flow.
-    expect(publicBankIdFrom(cfg, false)).toBeUndefined();
-    expect(publicBankIdFrom({ ...cfg, disabled: true }, true)).toBeUndefined();
+    expect(publicBankIdFrom(cfg, 'none')).toBeUndefined();
+    expect(publicBankIdFrom({ ...cfg, disabled: true }, 'direct')).toBeUndefined();
+    // Through the relay, only once a connection test has passed: the hop carries any
+    // certificate to BankID, and the test is where a wrong one shows.
+    expect(publicBankIdFrom(cfg, 'hop')).toBeUndefined();
+    expect(publicBankIdFrom({ ...cfg, probe: { ok: false, at: 1, stage: 'tls.handshake' } }, 'hop')).toBeUndefined();
+    expect(publicBankIdFrom({ ...cfg, probe: { ok: true, at: 1 } }, 'hop')).toEqual({ id: 'bankid', label: 'BankID' });
+  });
+
+  it.each([
+    ['BankID refusing only the order', async () => ({ status: 400, body: { errorCode: 'invalidParameters', details: 'Invalid orderRef' } }), { ok: true }],
+    ['BankID refusing the certificate', async () => ({ status: 403, body: undefined }), { ok: false, stage: 'http.response' }],
+    [
+      'the relay failing the handshake',
+      async () => {
+        throw new BankIdHopError('tls.handshake', 'tls: invalid peer certificate: UnknownIssuer', [{ stage: 'tls.config', ms: 3 }]);
+      },
+      { ok: false, stage: 'tls.handshake', detail: 'tls: invalid peer certificate: UnknownIssuer', stages: [{ stage: 'tls.config', ms: 3 }] },
+    ],
+    [
+      // Recorded as is, a malformed stage would fail every later read of the stored config.
+      'the relay reporting a malformed stage',
+      async () => {
+        throw new BankIdHopError('tls.handshake', 'tls: handshake failed', [{ stage: 'tls.config' } as never]);
+      },
+      { ok: false, stage: 'tls.handshake' },
+    ],
+  ] as const)('reads a connection test of %s', async (_, transport, expected) => {
+    const calls: unknown[] = [];
+    const probe = await probeBankId(
+      async (url, body) => {
+        calls.push({ url, body });
+        return transport();
+      },
+      bankIdApiUrl('test'),
+      7,
+    );
+    expect(probe).toMatchObject({ at: 7, ...expected });
+    expect('stages' in probe).toBe('stages' in expected);
+    // `collect` of an order BankID never issued: it starts nothing and needs no person.
+    expect(calls).toEqual([{ url: 'https://appapi2.test.bankid.com/rp/v6.0/collect', body: { orderRef: '00000000-0000-0000-0000-000000000000' } }]);
   });
 
   it('addresses the right API per environment', () => {
@@ -225,6 +284,8 @@ describe('the stored configuration', () => {
 describe('the admin surface', () => {
   let api: ReturnType<typeof createAdminApi>;
   let adminCookie: string;
+  /** What a connection test meets, per case; absent ⇒ this runtime has no transport. */
+  let probeAnswer: { status: number; body: unknown } | undefined;
 
   beforeEach(async () => {
     // The fixture administrator is created through sign-up, so this instance needs it open —
@@ -247,9 +308,11 @@ describe('the admin surface', () => {
     // Only the console's lock-out guard reads this (`src/console-client.ts`), which no
     // case here exercises — so the issuer's own enabled upstreams are the honest answer.
     offeredProviders: () => publicProvidersFrom(readProviders(sql)),
+    bankidTransport: () => (probeAnswer ? { kind: 'hop', transport: async () => probeAnswer! } : undefined),
     // No case here imports users, the one caller that needs a real transaction.
     transaction: (fn) => fn(),
   });
+    probeAnswer = undefined;
   });
 
   const adminCall = (path: string, init?: RequestInit): Promise<Response> =>
@@ -280,6 +343,29 @@ describe('the admin surface', () => {
     expect((await adminCall('/bankid', { method: 'DELETE' })).status).toBe(200);
     expect(readBankIdConfig(sql)).toBeUndefined();
     expect((await adminCall('/bankid', { method: 'DELETE' })).status).toBe(404);
+  });
+
+  it('tests a new certificate as it is saved, and again on request', async () => {
+    probeAnswer = { status: 403, body: undefined };
+    const saved = await adminCall('/bankid', {
+      method: 'PUT',
+      body: JSON.stringify({ environment: 'test', clientCert: PEM_CERT, clientKey: PEM_KEY, allowSignup: true, disabled: false }),
+    });
+    expect(await saved.json()).toMatchObject({ transport: 'hop', probe: { ok: false, stage: 'http.response' } });
+
+    probeAnswer = { status: 400, body: { errorCode: 'invalidParameters' } };
+    const tested = await adminCall('/bankid/test', { method: 'POST' });
+    expect(await tested.json()).toMatchObject({ transport: 'hop', probe: { ok: true } });
+    expect(readBankIdConfig(sql)?.probe?.ok).toBe(true);
+
+    // An edit that keeps the certificate and its environment keeps the answer, untested again.
+    probeAnswer = { status: 403, body: undefined };
+    await adminCall('/bankid', { method: 'PUT', body: JSON.stringify({ environment: 'test', allowSignup: false, disabled: false }) });
+    expect(readBankIdConfig(sql)?.probe?.ok).toBe(true);
+
+    // A new root is a different connection: tested again as it is saved.
+    await adminCall('/bankid', { method: 'PUT', body: JSON.stringify({ environment: 'test', caCert: PEM_CERT, allowSignup: false, disabled: false }) });
+    expect(readBankIdConfig(sql)?.probe?.ok).toBe(false);
   });
 
   it('refuses a first save without PEMs, and refuses anonymously', async () => {

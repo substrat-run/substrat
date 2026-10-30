@@ -1,0 +1,33 @@
+# The TLS client behind the relay's BankID hop (docs/rfc/mtls-hop.md). rustls does the TLS;
+# src/lib.rs only moves bytes between it and a `cloudflare:sockets` connection.
+#
+# Built by tools/mtls-wasm-emit.mjs inside the pinned image in ./Dockerfile, never on a host
+# toolchain, so CI can rebuild it and refuse a checked-in module that differs by one byte.
+[package]
+name = "mtls-wasm"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pinned exactly: the Dockerfile installs wasm-bindgen-cli at this same version, and the two
+# must agree or the emitted glue does not match the module.
+wasm-bindgen = "=0.2.129"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
+rustls-pki-types = { version = "1", features = ["web", "std"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+# Certificates for the in-memory server `receive` is tested against; never in the module.
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

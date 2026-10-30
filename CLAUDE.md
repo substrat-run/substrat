@@ -614,7 +614,12 @@ in front of every vertical's bundle, #1893, bundled from vertical-host's `withIn
 and the scope sweeper it supplies beside it to a vertical that declares schedules and exports
 none, #1902, bundled from adapter-cloudflare's `defineScopeSweeperDO`),
 `lint:auth-schema`, `lint:lake-schema` (`tools/lake-schema-emit.mjs`: the Tier-2 stream
-schema, derived from the outbox DDL the same way `lint:spine-ddl` reads it).
+schema, derived from the outbox DDL the same way `lint:spine-ddl` reads it), `lint:mtls-wasm`
+(`tools/mtls-wasm-emit.mjs`: the social relay's TLS module, rustls compiled to WebAssembly from
+`apps/social-relay/mtls-wasm/` inside a digest-pinned image as linux/amd64. A `.wasm` is the one
+artifact a reviewer cannot read, so CI's `mtls-wasm` job rebuilds it and refuses one differing
+byte; it runs only when the crate, the module or the emitter changed, and on every push to main.
+Needs Docker, which `pnpm build` does not, so a checkout without it still builds).
 
 A gate must be the thing that **refuses**, and it must be the only thing that touches the
 file. `demos/auth-server`'s schema had marks 1 and 2, and its `--check` lived inside a

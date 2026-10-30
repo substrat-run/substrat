@@ -300,7 +300,8 @@ export const DEFAULT_HARNESS = [
   // is reviewable in one place while the registry stays module code under the full rules.
   'provider-discovery.ts',
   // The auth adapter's BankID pieces — same class as the rest of auth*.ts, imported only
-  // by them. `bankid-transport-node.ts` is a declared network boundary exactly as
+  // by them. `bankid-transport-node.ts` and `bankid-transport-hop.ts` (the hosted path,
+  // through the platform's sign-in relay) are declared network boundaries exactly as
   // `cimd-fetch.ts` is: the issuer IS the relying party calling BankID's mTLS API, with
   // no `ctx` and no connector to delegate to, and the file exists separately so what it
   // can and cannot guarantee is reviewable in one place. The clock reads in the other two
@@ -309,6 +310,7 @@ export const DEFAULT_HARNESS = [
   'bankid.ts',
   'bankid-plugin.ts',
   'bankid-transport-node.ts',
+  'bankid-transport-hop.ts',
   // Better Auth's account invitation, social email and SMS factor adapters. Their verification
   // lifetimes use the issuer's real clock, and their delivery is a server transport,
   // just like the BankID plugin above; neither is reachable from a domain module.

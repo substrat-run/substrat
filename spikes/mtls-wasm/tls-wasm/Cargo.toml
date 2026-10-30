@@ -1,0 +1,22 @@
+[package]
+name = "mtls-wasm"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.129"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
+rustls-pki-types = { version = "1", features = ["web", "std"] }
+getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

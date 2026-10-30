@@ -348,12 +348,13 @@ describe('the round trip', () => {
   const redeem = async (
     over: Partial<Record<'code' | 'redirect_uri' | 'client_secret' | 'code_verifier', string>>,
     round: Awaited<ReturnType<typeof signInThroughGoogle>>,
+    headers: Record<string, string> = {},
   ) =>
     round.app.request(
       'https://id.substrat.net/google/token',
       {
         method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
         body: new URLSearchParams({
           grant_type: 'authorization_code',
           code: round.returned.searchParams.get('code') ?? '',
@@ -395,6 +396,11 @@ describe('the round trip', () => {
     expect(await res.json()).toMatchObject({ error: 'invalid_client' });
     // and the code survives an authentication failure, so a typo costs nobody their sign-in
     expect((await redeem({}, round)).status).toBe(200);
+  });
+
+  it('reads the form credentials past a Basic header that carries no pair', async () => {
+    const round = await signInThroughGoogle();
+    expect((await redeem({}, round, { authorization: `Basic ${btoa('x')}` })).status).toBe(200);
   });
 
   it('completes a flow exactly once, so a replayed callback cannot mint a second code', async () => {

@@ -47,6 +47,8 @@ const COMMENTABLE = new Set(['.ts', '.tsx', '.mts', '.mjs', '.js', '.md', '.css'
  */
 const COMMENTLESS = new Map([
   ['scripts/lake/outbox-stream-schema.generated.json', 'tools/lake-schema-emit.mjs (pnpm lint:lake-schema)'],
+  // The social relay's TLS module: rustls compiled to WebAssembly from apps/social-relay/mtls-wasm/.
+  ['apps/social-relay/src/mtls-wasm/mtls-wasm.generated.wasm', 'tools/mtls-wasm-emit.mjs (pnpm lint:mtls-wasm)'],
 ]);
 
 /** How far in a file the marker may be. Past this it is not "the first line" in any sense. */
@@ -104,7 +106,9 @@ function walk(dir) {
     const rel = toPosix(relative(ROOT, full));
     const name = basename(full);
     const ext = name.slice(name.lastIndexOf('.'));
-    const isSuffixed = /\.generated\.[^.]+$/.test(name);
+    // `.d.ts` is one extension: a declaration file pairs with its `.js` by the name before it,
+    // so `x.generated.d.ts` is the only spelling that types `x.generated.js`.
+    const isSuffixed = /\.generated\.(?:d\.)?[^.]+$/.test(name);
 
     // The suffix is judged BEFORE the extension filter, or a commentless artifact
     // would slip past both checks by being unable to carry the second mark.

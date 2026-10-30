@@ -31,6 +31,24 @@ export function BankIdSettingsLink({ className, children }: { className?: string
 }
 
 /**
+ * Whether BankID is on the login screen, and if not, why — one answer for the providers list
+ * and the BankID page, matching `publicBankIdFrom` on the server: a transport, and through the
+ * relay a connection test that passed.
+ */
+export function bankIdStatus(settings: BankIdSettings): string {
+  if (settings.disabled) return 'Disabled';
+  if (settings.transport === 'none') return 'Not offered — this deployment cannot present the certificate';
+  if (settings.probe?.ok) return 'Enabled';
+  if (settings.probe) {
+    const failed = `connection test failed at ${settings.probe.stage ?? 'an unknown stage'}`;
+    // Only the relay's path waits for a passing test; a deployment presenting the certificate
+    // itself still offers BankID, and the failure is a warning about it.
+    return settings.transport === 'hop' ? `Not offered — ${failed}` : `Enabled — ${failed}`;
+  }
+  return settings.transport === 'hop' ? 'Not offered — test the connection' : 'Enabled — not tested';
+}
+
+/**
  * The certificate, the environment, and the two decisions that come with them.
  *
  * Exported for `BankIdDetail.tsx`, which is the only screen that renders it — the same
