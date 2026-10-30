@@ -244,6 +244,7 @@ import {
   pushedOwnerGrantProblems,
   pushedConnectorProblems,
   pushedModuleRegistryProblems,
+  pushedLandingProblems,
   pushedPermissionRegistry,
   deploymentRefFor,
   stableDeploymentRefFor,
@@ -8800,6 +8801,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (!registry.success) return refuseManifest(registry.error.issues[0]!, ['registry']);
         const moduleProblems = pushedModuleRegistryProblems(checked.data.modules, registry.data);
         if (moduleProblems.length > 0) return refuseManifest({ path: ['registry', 'permissions'], message: moduleProblems.join('; ') });
+        // #2732: a landing's mode as the modules declare it, so an on-request one is never stored as every-install.
+        const landingProblems = pushedLandingProblems(checked.data.modules, registry.data);
+        if (landingProblems.length > 0) return refuseManifest({ path: ['registry', 'connections'], message: landingProblems.join('; ') });
       }
       // #2430: an owner grant is a person's, so it holds no key the registry reserves.
       const ownerGrants = pushedOwnerGrantProblems(checked.data);
@@ -9871,6 +9875,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (requestedVersion && manifest.version !== requestedVersion) return refuseStatus(c, 502, 'build service produced a different release version');
     const moduleProblems = pushedModuleRegistryProblems(manifest.modules, manifest.registry);
     if (moduleProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.permissions: ${moduleProblems.join('; ')}`);
+    const landingProblems = pushedLandingProblems(manifest.modules, manifest.registry);
+    if (landingProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.connections: ${landingProblems.join('; ')}`);
     // #2430: an owner grant is a person's, so it holds no key the registry reserves.
     const ownerGrants = pushedOwnerGrantProblems(manifest);
     if (ownerGrants.length > 0) return refuse(c, 'validation_failed', `manifest ownerGrants: ${ownerGrants.join('; ')}`);
