@@ -354,18 +354,20 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
     grants the key on that scope, in the connector pass's order, and answers `{ connectionId,
     scopeId, options, boundAt }`.
   - **Unbinding.** `POST /internal/connections/unbind` `{ tenantId, scopeId, connectionId,
-    unboundBy }` takes the key back there (`revokeFromConnection`, below) and drops the binding.
-    What the scope landed stays, and binding again resumes. A second unbind answers the same.
+    unboundBy }` takes back every key the connection holds there (`revokeFromConnection`, below)
+    and drops the binding. It needs only ownership, so a version that has since dropped the landing
+    or changed its key still lets the scope unbind. What the scope landed stays, and binding again
+    resumes. A second unbind answers the same.
   - **Rules for both.**
     - They must come from the vertical's worker, on the request it is serving.
     - Any connection but the scope's own answers as an unknown one (404).
-    - A landing that is not `on-request` is refused (409), as are options the connector refuses
-      (422).
+    - Bind refuses a landing that is not `on-request` (409) and options the connector refuses
+      (422); a refused bind leaves no key and no binding behind.
     - A vertical whose vertical-host predates the revoke cannot be unbound yet (503).
   - **What else sees it.** A scope-owned connection is never landed by the connector pass and is not
     projected as a sealing key. It is opened only by naming its owner (`openConnection`'s
     `ownerScopeId`). A vertical connector's routed event is handed its scope's own connection when
-    the scope holds one, else the tenant's, never another scope's.
+    that connection is bound on the scope, else the tenant's, never another scope's.
 - **One key back, on one scope** (#2732). `revokeFromConnection` is `grantToConnection`'s inverse
   for a connection that stays live, the half an unbind needs. It removes the scope's
   `connection:<id>` tuple first: in the scope's own store, or, hosted, through the deployment
