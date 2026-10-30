@@ -150,10 +150,10 @@ export async function relayConnectionBind(
     try {
       bound = await binder.bind(host, connection, target);
     } catch (err) {
-      // With no binding before this call, the key has nothing to land for: take it back whoever
-      // granted it (the revoke is idempotent), so a retry after a revoke that failed clears it. The
-      // connector's reason stays in the answer even when taking the key back fails.
-      if (granted || !current) {
+      // Unless the binding the scope keeps records this very key, the key has nothing to land for:
+      // take it back whoever granted it (the revoke is idempotent), so a retry after a revoke that
+      // failed clears it. The connector's reason stays in the answer even when that fails.
+      if (granted || current?.permission !== landing.permission) {
         try {
           await host.admin.revokeFromConnection(actor, { connectionId: connection.id, permission: landing.permission, node, revokedBy: input.boundBy });
         } catch (revokeErr) {

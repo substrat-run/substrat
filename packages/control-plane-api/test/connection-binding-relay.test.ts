@@ -164,9 +164,9 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await keys()).toEqual([INGEST, LAND].sort());
   });
 
-  it('a refused bind takes back a key a refused bind before it left, once taking it back works again', async () => {
+  it('a refused bind takes back a key a refused bind before it left, once taking it back works again, fresh or on a rebind', async () => {
     await runs('on-request');
-    const conn = await own(a);
+    // The vertical-defined binder's shape: no staged bind, options merged, validated inside `bind`.
     const refusing: ConnectionBinder = {
       list: binder.list,
       options: (raw, current) => ({ ...current, ...raw }),
@@ -175,20 +175,22 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
       },
       unbind: binder.unbind!,
     };
-    // The host as the relay sees it, with its revoke failing once.
-    let failing = true;
+    // The host as the relay sees it, with its `failAt`-th revoke failing.
+    let revokes = 0;
+    let failAt = 1;
     const flaky = new Proxy(host, {
       get(target, prop) {
         if (prop === 'admin') {
           return new Proxy(target.admin, {
             get(admin, key) {
-              if (key === 'revokeFromConnection' && failing) {
-                return async () => {
-                  failing = false;
-                  throw new Error('the scope did not answer');
+              const v = Reflect.get(admin, key);
+              if (key === 'revokeFromConnection') {
+                return async (...args: Parameters<typeof target.admin.revokeFromConnection>) => {
+                  revokes += 1;
+                  if (revokes === failAt) throw new Error('the scope did not answer');
+                  return target.admin.revokeFromConnection(...args);
                 };
               }
-              const v = Reflect.get(admin, key);
               return typeof v === 'function' ? v.bind(admin) : v;
             },
           });
@@ -197,13 +199,28 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
         return typeof v === 'function' ? v.bind(target) : v;
       },
     });
+    const holdsKey = async (conn: ConnectionId, key: string) =>
+      (await host.connectionGrantsInScope(t, a)).some((g) => g.connectionId === conn && g.permission === key);
+    const bindRefused = (conn: ConnectionId) => relayConnectionBind(flaky, relayActor, bindBody(a, conn), landings(true, refusing));
 
-    const first = await relayConnectionBind(flaky, relayActor, bindBody(a, conn), landings(true, refusing)).catch((e: unknown) => e);
-    expect(first).toMatchObject({ status: 503, message: expect.stringContaining('no such folder') });
-    expect(await holds(a, conn)).toBe(true);
+    // A fresh bind: its cleanup revoke (the first) fails, and the retry clears the key.
+    const fresh = await own(a);
+    expect(await bindRefused(fresh).catch((e: unknown) => e)).toMatchObject({ status: 503, message: expect.stringContaining('no such folder') });
+    expect(await holdsKey(fresh, LAND)).toBe(true);
+    expect(await refusal(bindRefused(fresh))).toBe(422);
+    expect(await holdsKey(fresh, LAND)).toBe(false);
 
-    expect(await refusal(relayConnectionBind(flaky, relayActor, bindBody(a, conn), landings(true, refusing)))).toBe(422);
-    expect(await holds(a, conn)).toBe(false);
+    // A rebind under a changed key: bound under LAND, then the version lands with INGEST. The old key
+    // goes first; the cleanup revoke of the new one (the second revoke) fails; the retry clears it,
+    // although the scope's binding still records the old key.
+    await relayConnectionBind(host, relayActor, bindBody(a, fresh), landings());
+    await runs('on-request', INGEST);
+    revokes = 0;
+    failAt = 2;
+    expect(await bindRefused(fresh).catch((e: unknown) => e)).toMatchObject({ status: 503, message: expect.stringContaining('no such folder') });
+    expect(await holdsKey(fresh, INGEST)).toBe(true);
+    expect(await refusal(bindRefused(fresh))).toBe(422);
+    expect([await holdsKey(fresh, INGEST), await holdsKey(fresh, LAND)]).toEqual([false, false]);
   });
 
   it("takes the previous key back on a rebind under a landing whose key changed, so an unbind then leaves nothing", async () => {
