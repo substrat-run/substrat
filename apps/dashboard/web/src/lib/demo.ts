@@ -168,6 +168,7 @@ const FORTNOX = {
   fields: FORTNOX_FIELDS,
   connectFlow: 'redirect' as const,
   multiAccount: true,
+  sendsMail: false,
 };
 
 export const MOCK_APP_INTEGRATIONS: AppIntegrationsView = {
@@ -180,6 +181,7 @@ export const MOCK_APP_INTEGRATIONS: AppIntegrationsView = {
       fields: SCRIVE_FIELDS,
       connectFlow: null,
       multiAccount: false,
+      sendsMail: false,
       required: true,
       connection: null,
       connections: [],

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SandboxLike } from '@substrat-run/builder-workspace/edge';
-import { checkoutRepository, repositoryAccess, saveRepository, type ArtifactRepositories } from '../src/repositories.js';
+import { checkoutRepository, repositoryAccess, saveRepository, writeSandboxFile, type ArtifactRepositories } from '../src/repositories.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -52,6 +52,18 @@ describe('project repositories', () => {
     expect(readFileSync(join(b, 'app.ts'), 'utf8')).toBe('writer-b');
     expect(readFileSync(join(a, '.git/config'), 'utf8')).not.toContain('fixture-token');
     expect(execFileSync('git', ['--git-dir', remote, 'show', 'main:app.ts'], { encoding: 'utf8' })).toBe('writer-a');
+  });
+
+  it('writes a file larger than one sandbox call in parts, never splitting a surrogate pair', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'sandbox-write-'));
+    roots.push(root);
+    const writes: number[] = [];
+    const recording: SandboxLike = { ...sandbox, async writeFile(path, content) { writes.push(content.length); writeFileSync(path, content); } };
+    const content = 'abc😀defgh{"x":1}';
+    await writeSandboxFile(recording, join(root, 'snapshot.json'), content, 4);
+    expect(readFileSync(join(root, 'snapshot.json'), 'utf8')).toBe(content);
+    expect(Math.max(...writes)).toBeLessThanOrEqual(4);
+    expect(execFileSync('ls', [root], { encoding: 'utf8' }).trim()).toBe('snapshot.json');
   });
 
   it('requests a short-lived repo-scoped token and releases the Artifacts capability', async () => {

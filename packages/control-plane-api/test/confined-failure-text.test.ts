@@ -1,6 +1,7 @@
 import { createControlPlaneApi } from './setup/build-fixtures.js';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { Hono } from 'hono';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
@@ -214,6 +215,32 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     const asStaff = await promote(slug, v2.id);
     expect(asStaff.status).toBe(502);
     expect(((await asStaff.json()) as { detail: string }).detail).toBe(leak);
+  });
+
+  it('#113: under a host that minted a request id, the reference IS that id', async () => {
+    const { pin, t, slug } = await setup('serve-id');
+    const v2 = await push(pin, manifest('0.2.0'));
+    const asTenant = await tokenFor('/tenant-tokens', t);
+    captureLog();
+    serveFails = { slug, error: new Error('upstream text') };
+    const requestId = ulid();
+    const hosted = new Hono();
+    hosted.use('*', async (c, next) => {
+      c.set('substratInvocationId', requestId);
+      await next();
+    });
+    // Mounted as the control-plane worker mounts it.
+    hosted.route('/api', app);
+    const res = await hosted.request(`/api/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: asTenant,
+      body: JSON.stringify({ versionId: v2.id, acknowledge: {} }),
+    });
+    expect(res.status).toBe(502);
+    const said = (await res.json()) as { detail: string; reference: string };
+    expect(said.reference).toBe(requestId);
+    expect(said.detail).toContain(`(reference ${requestId})`);
+    expect(logLine(requestId)).toMatchObject({ operation: 'promote.serve' });
   });
 
   it('the store backfill: a confined caller reads that it failed and the reference, staff read why', async () => {

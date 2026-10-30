@@ -41,7 +41,13 @@ import {
   type StoreDriverRolloutTarget,
 } from '@substrat-run/kernel';
 import { assertPythonDriverModules } from './store-entry.js';
-import type { ScopeStoreEnsurerOptions, StoreDriverReleaseArtifact } from './store-script.js';
+import {
+  approvalFactsOf,
+  liveApprovalOf,
+  type ScopeStoreEnsurerOptions,
+  type StoreDriverApprovals,
+  type StoreDriverReleaseArtifact,
+} from './store-script.js';
 
 /** Where a release's bytes are kept: an object store keyed by driver and sha256. */
 export interface StoreReleaseBytes {
@@ -80,6 +86,24 @@ export const ROLLOUT_VERTICALS_PER_REQUEST = 100;
  * converges them.
  */
 export const ROLLOUT_WALKS_PER_REQUEST = 300;
+
+/**
+ * A driver's approvals for one request, read after it takes its hold on the driver (D-65, Q13). A
+ * failed read refuses (503): it never counts as approved, and nothing is cached.
+ */
+export async function readStoreDriverApprovals(
+  admin: HostAdmin,
+  actor: PlatformActorId,
+  registration: StoreDriverRegistration,
+): Promise<StoreDriverApprovals> {
+  let records: readonly StoreDriverApprovalRecord[];
+  try {
+    records = await admin.storeDriverApprovals(actor, registration.driver);
+  } catch {
+    throw new ControlPlaneError(503, `the approvals of scope store driver '${registration.driver}' could not be read; try again shortly`);
+  }
+  return { registration, records };
+}
 
 export interface StoreDriverRevokeResult {
   approval: StoreDriverApprovalRecord;
@@ -393,12 +417,13 @@ export interface StoreDriverRolloutDeps {
   sha256: string;
   action: StoreDriverRolloutAction;
   /**
-   * Move one vertical's scripts of the driver to `to` (the push's ensurer, with `to`). Answers
-   * whether anything was uploaded: false for a script already there, built the same way.
+   * Move one vertical's scripts of the driver to `to` (the push's ensurer, with `to`), judged
+   * against the approvals this request read under its hold. Answers whether anything was
+   * uploaded: false for a script already there, built the same way.
    */
-  ensure: (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to: string }) => Promise<boolean>;
+  ensure: (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to: string; approvals: StoreDriverApprovals }) => Promise<boolean>;
   /** Put `to` in the driver's canary script; answers its name. */
-  ensureCanary: (to: string) => Promise<{ scriptName: string }>;
+  ensureCanary: (to: string, approvals: StoreDriverApprovals) => Promise<{ scriptName: string }>;
   callCanary: CanaryCall;
   /** For a test: a smaller batch than {@link ROLLOUT_VERTICALS_PER_REQUEST}. */
   perRequest?: number;
@@ -417,8 +442,6 @@ export interface StoreDriverRolloutResult {
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const schemaOf = (registration: StoreDriverRegistration, sha256: string | null) =>
-  sha256 === null ? undefined : registration.releases.find((pin) => pin.sha256 === sha256)?.schema;
 
 /** The hold lapsed, or another holder ended the rollout: nothing more may be moved under it. */
 class HoldLost extends ControlPlaneError {
@@ -428,8 +451,11 @@ class HoldLost extends ControlPlaneError {
 }
 
 /**
- * Move every script of a driver to a stored, pinned release (D-63): hold, canary, then each
- * vertical. A failure after a vertical moved returns every vertical the attempt reached to the
+ * Move every script of a driver to a stored, approved release (D-63, D-65): hold, then the
+ * approvals read and judged under it, then the canary, then each vertical. The target needs a live
+ * approval (422), and its `schema` is never below that of the current release, which is judged
+ * from its approval facts even when it has been revoked (409). Both are judged under the exclusive
+ * hold, so a revoke written before it is seen and none can be written during it. A failure after a vertical moved returns every vertical the attempt reached to the
  * release the rollout started from, rehashing those bytes as it uploads them, and ends `failed`.
  * It ends `diverged` instead, naming what is where, when there is nothing to return to (a driver's
  * first rollout), when returning would lower the stored schema, when the attempt reached more
@@ -456,6 +482,22 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
     throw new ControlPlaneError(409, `driver '${driver}' is being rolled out or a vertical declaring it is being pushed; try again shortly`);
   }
   try {
+    if (!(await admin.getStoreDriverRelease(actor, driver, sha256))) {
+      throw new ControlPlaneError(404, `release ${sha256} of '${driver}' is not stored`);
+    }
+    const approvals = await readStoreDriverApprovals(admin, actor, registration);
+    const approved = liveApprovalOf(approvals, sha256);
+    if (!approved) {
+      throw new ControlPlaneError(422, `release ${sha256} of '${driver}' has no live approval; a person approves it first`);
+    }
+    const { current } = await admin.storeDriverState(actor, driver);
+    if (current && current.sha256 !== sha256) {
+      const leaving = approvalFactsOf(approvals, current.sha256);
+      if (!leaving) throw new ControlPlaneError(409, `the current release ${current.sha256} of '${driver}' was never approved, so its schema cannot be judged`);
+      if (approved.schema < leaving.schema) {
+        throw new ControlPlaneError(409, `release ${sha256} has schema ${approved.schema}, below the current release's ${leaving.schema}: objects may already have migrated`);
+      }
+    }
     const walkMax = deps.perRequestWalks ?? ROLLOUT_WALKS_PER_REQUEST;
     const page = await admin.storeDriverRolloutPending(actor, { driver, sha256, action: deps.action, limit: walkMax });
     if (page.unreadable.length > 0) {
@@ -473,7 +515,7 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
     };
 
     try {
-      await deps.ensureCanary(sha256).then(({ scriptName }) => canaryStoreRelease({ call: deps.callCanary, scriptName }));
+      await deps.ensureCanary(sha256, approvals).then(({ scriptName }) => canaryStoreRelease({ call: deps.callCanary, scriptName }));
     } catch (e) {
       // No vertical's script moved in this request; the current release stays. A row the end
       // cannot write (the hold lapsed) reads as diverged, which is what it then is.
@@ -492,11 +534,11 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
         await renew();
         reached.push(target);
         const stores = target.stores.map((s) => ({ binding: s.binding, driver }));
-        if (await deps.ensure({ vertical: target.vertical, stores, to: sha256 })) moved.push(target.vertical);
+        if (await deps.ensure({ vertical: target.vertical, stores, to: sha256, approvals })) moved.push(target.vertical);
       } catch (e) {
         const detail = e instanceof HoldLost
           ? { state: 'diverged' as const, text: `Nothing was returned: ${reachedText(page.walked, reached)} may run ${sha256}.` }
-          : await restore(deps, row, page.walked, reached, renew);
+          : await restore(deps, approvals, row, page.walked, reached, renew);
         await end(detail.state, `${target.vertical}: ${message(e)}. ${detail.text}`).catch(() => undefined);
         throw new ControlPlaneError(e instanceof ControlPlaneError ? e.status : 502, `${deps.action} of '${driver}' to ${sha256} stopped at ${target.vertical} (${message(e)}). ${detail.text}`);
       }
@@ -534,6 +576,7 @@ const reachedText = (before: number, reached: readonly StoreDriverRolloutTarget[
  */
 async function restore(
   deps: StoreDriverRolloutDeps,
+  approvals: StoreDriverApprovals,
   row: StoreDriverRolloutRecord,
   before: number,
   reached: readonly StoreDriverRolloutTarget[],
@@ -545,9 +588,15 @@ async function restore(
   if (from === null) {
     return { state: 'diverged', text: `There is no earlier release to return to; ${all} may run ${deps.sha256}.` };
   }
-  const leaving = schemaOf(deps.registration, deps.sha256);
-  const returning = schemaOf(deps.registration, from);
-  if (leaving === undefined || returning === undefined || returning < leaving) {
+  // Returning is a move TO `from`, so it needs a live approval; the release left is judged from
+  // its approval facts.
+  const returnTo = liveApprovalOf(approvals, from);
+  if (!returnTo) {
+    return { state: 'diverged', text: `${from} has no live approval to return to, so ${all} may run ${deps.sha256}.` };
+  }
+  const leaving = approvalFactsOf(approvals, deps.sha256)?.schema;
+  const returning = returnTo.schema;
+  if (leaving === undefined || returning < leaving) {
     return {
       state: 'diverged',
       text: `Returning to ${from} would lower the stored schema (${leaving} to ${returning}), so ${all} may run ${deps.sha256}.`,
@@ -570,7 +619,7 @@ async function restore(
       return { state: 'diverged', text: `The hold was lost while returning; ${back.slice(i).map((t) => t.vertical).join(', ')} may run ${deps.sha256}.` };
     }
     try {
-      await deps.ensure({ vertical: target.vertical, stores: target.stores.map((s) => ({ binding: s.binding, driver: deps.registration.driver })), to: from });
+      await deps.ensure({ vertical: target.vertical, stores: target.stores.map((s) => ({ binding: s.binding, driver: deps.registration.driver })), to: from, approvals });
     } catch (e) {
       stuck.push(`${target.vertical} (${message(e)})`);
     }

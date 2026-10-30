@@ -24,6 +24,7 @@ declare const crypto: {
   randomUUID(): string;
 };
 
+declare const console: { log(...data: unknown[]): void; warn(...data: unknown[]): void };
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const AbortSignal: { timeout(ms: number): unknown };
 declare function btoa(data: string): string;

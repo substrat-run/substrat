@@ -212,7 +212,8 @@ upstream supplied no description. It distinguishes token exchange failures, miss
 and missing email; unexpected callback exceptions also leave a record. For GitHub profiles
 without an email, a second `/user/emails` read reports HTTP status, first-page address counts and
 email-scope presence, with permission guidance for a 403. Both runtimes inject the HTTP transport.
-This read has a 1.5-second deadline and does not change the sign-in result. Its detail
+This read has a 1.5-second deadline and changes neither the sign-in result nor its timing: the
+redirect is not held for it, and the log row is written once it settles. Its detail
 explicitly identifies it as a follow-up check rather
 than the adapter's original response. These summaries contain no tokens, addresses, profiles
 or raw exception messages, and use the existing bounded log without a schema migration.

@@ -171,7 +171,17 @@ export type {
 } from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
 export { createWfpWireSettingsApi, type WireSettingsApi } from './wire-settings.js';
-export { createScopeStoreEnsurer, createStoreCanaryEnsurer, readStoreScriptSettings, STORE_BUILD_VAR, STORE_RELEASE_VAR, storePlatformFingerprint } from './store-script.js';
+export {
+  approvalFactsOf,
+  createScopeStoreEnsurer,
+  createStoreCanaryEnsurer,
+  liveApprovalOf,
+  readStoreScriptSettings,
+  STORE_BUILD_VAR,
+  STORE_RELEASE_VAR,
+  storePlatformFingerprint,
+  type StoreDriverApprovals,
+} from './store-script.js';
 export {
   STORE_REBUILD_PASS_SUBREQUESTS,
   runStoreFleetRebuild,
@@ -187,6 +197,7 @@ export {
   canaryStoreRelease,
   approveStoredDriverRelease,
   decodeStoreDriverRelease,
+  readStoreDriverApprovals,
   runStoreDriverRollout,
   runStoreDriverRevoke,
   storeDriverRelease,

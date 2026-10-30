@@ -40,13 +40,13 @@ release machinery is implemented, but the empty driver registry still prevents h
 
 A vertical push does not upgrade its store driver. A new store script starts at the driver's
 current good release; an existing script keeps its release, even when the platform rebuilds
-its entry or rotates verification keys. Release bytes are identified by a digest and must
-match a release pinned in the driver registration before upload.
+its entry or rotates verification keys. Release bytes are identified by a digest, and a script
+is uploaded only at a release a person has approved and nobody has revoked since.
 
 An explicit rollout first runs the reserved operations against a fresh canary object, then
 moves the verticals' scripts in bounded batches. A paused rollout resumes when posted again,
 from the verticals it has not reached yet, however many verticals declare the driver.
-A rollback also names a pinned release; it cannot lower the stored schema version. A failure
+A rollback also needs an approved release; it cannot lower the stored schema version. A failure
 can leave the fleet diverged when returning a script would lower its schema or the return
 itself fails. The rollout records that state so an operator can finish recovery rather than
 assuming every script moved together.

@@ -9,7 +9,6 @@ import {
   verticalScriptStem,
   type ScopeStoreNeed,
   type StoreDriverRegistration,
-  type StoreDriverRelease,
 } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeclaredMigration, DeployManifest } from '@substrat-run/contracts';
 import { MIGRATIONS_DIGEST_BINDING, migrationSetDigest } from '@substrat-run/kernel';
@@ -195,12 +194,10 @@ export { scopeStoreScriptName };
 /** One store script to upload. The serving script is not given the namespace or the key. */
 export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
+    /** Which release a script runs, and the class it loads, are its approval's, not the plan's (D-65). */
     readonly driver: string;
-    /** Every pinned release of the driver (D-63). Which one a script runs is not the plan's. */
-    readonly releases: readonly StoreDriverRelease[];
     readonly vertical: string;
     readonly scriptName: string;
-    readonly className: string;
   }[];
   /** Empty (L1). A vertical reaches a store through the platform, not a binding of its own. */
   readonly bindings: readonly [];
@@ -233,10 +230,8 @@ export function scopeStoreUploadPlan(input: {
     seen.add(driver.driver);
     scripts.push({
       driver: driver.driver,
-      releases: driver.releases,
       vertical: input.vertical,
       scriptName: scopeStoreScriptName(input.vertical, driver.driver),
-      className: driver.className,
     });
   }
   return { scripts, bindings: [] };

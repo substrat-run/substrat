@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { errorCodeOf, RESERVED_STORE_OPERATIONS, scopeStoreObjectName } from '@substrat-run/contracts';
+import { errorCodeOf, scopeStoreObjectName } from '@substrat-run/contracts';
 import type { DeclaredBinding, DeployManifest, StoreDriverRegistration } from '@substrat-run/contracts';
 import {
   assertSandboxContract,
@@ -163,15 +163,8 @@ describe('assertSandboxContract', () => {
 
   it('refuses a scope store whose driver is not registered, and admits it against a registry holding that driver', () => {
     const declaring = { ...manifest([]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' as const }] };
-    // A test fixture, not a release: the digest and commit are placeholders.
-    const fixture: StoreDriverRegistration = {
-      driver: 'graph',
-      isolationBasis: { kind: 'writtenInRepo' },
-      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-      className: 'Store',
-      operations: [],
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    };
+    // A test fixture, not a registered driver.
+    const fixture: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
     expect(() => assertSandboxContract(declaring, [fixture])).not.toThrow();
     let thrown: unknown;
     try {
@@ -227,16 +220,7 @@ describe('assertSandboxContract', () => {
 });
 
 describe('scope store upload plan (#2210)', () => {
-  // A release is pinned by sha256 (D-63); the label here only names which test pin it is.
-  const pinOf = (release: string) => ({ sha256: (release === '1.0.0' ? 'a' : 'b').repeat(64), sourceCommit: 'c'.repeat(40), schema: 0 });
-  const driver = (release: string): StoreDriverRegistration => ({
-    driver: 'graph',
-    isolationBasis: { kind: 'writtenInRepo' },
-    releases: [pinOf(release)],
-    className: 'Store',
-    operations: ['read'],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
-  });
+  const graph: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
   const stores = [
     { binding: 'GRAPH' as const, driver: 'graph' as const },
     { binding: 'BLOBS' as const, driver: 'graph' as const },
@@ -253,13 +237,13 @@ describe('scope store upload plan (#2210)', () => {
         vertical: 'acme/crm',
         manifest: { bindings: own, scopeStores: stores },
         platformBindings,
-        drivers: [driver('1.0.0')],
+        drivers: [graph],
       });
       expect(bindings.map((b) => b.name).filter((name) => name.startsWith('SUBSTRAT_STORE_'))).toEqual([]);
       // The twin: the vertical's own bindings and the platform's ledger bindings are still there.
       expect(bindings).toEqual([...own, ...platformBindings]);
     }
-    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [driver('1.0.0')] }).bindings).toEqual([]);
+    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [graph] }).bindings).toEqual([]);
   });
 
   it('an upload refuses a declared driver the registry does not hold, which is every driver today, and admits a registered one', () => {
@@ -267,26 +251,17 @@ describe('scope store upload plan (#2210)', () => {
       verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [] }),
     ).toThrow(/not registered/);
     expect(
-      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [], drivers: [driver('1.0.0')] }).map((b) => b.name),
+      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [], drivers: [graph] }).map((b) => b.name),
     ).toEqual([]);
     expect(verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: [] }, platformBindings: [] })).toEqual([]);
   });
 
-  it('plans one script per driver and vertical, and a new release keeps the name', () => {
-    const first = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [driver('1.0.0')] });
-    const next = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [driver('2.0.0')] });
-    expect(first.scripts).toEqual([
-      {
-        driver: 'graph',
-        releases: [pinOf('1.0.0')],
-        vertical: 'acme/crm',
-        className: 'Store',
-        scriptName: scopeStoreScriptName('acme/crm', 'graph'),
-      },
+  it('plans one script per driver and vertical, named without a release', () => {
+    // The plan names no release and no class: those are the approval's (D-65), so a new release
+    // uploads into the same script.
+    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [graph] }).scripts).toEqual([
+      { driver: 'graph', vertical: 'acme/crm', scriptName: scopeStoreScriptName('acme/crm', 'graph') },
     ]);
-    expect(next.scripts[0]?.scriptName).toBe(first.scripts[0]?.scriptName);
-    // The name carries no release: a new pin uploads into the same script.
-    expect(first.scripts[0]?.scriptName).not.toContain(pinOf('1.0.0').sha256.slice(0, 8));
     expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
   });
 

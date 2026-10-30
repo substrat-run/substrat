@@ -411,6 +411,9 @@ importers:
       '@substrat-run/control-plane-api':
         specifier: workspace:^
         version: link:../../../packages/control-plane-api
+      '@substrat-run/dashboard':
+        specifier: workspace:^
+        version: link:..
       '@types/react':
         specifier: ^18.3.0
         version: 18.3.31

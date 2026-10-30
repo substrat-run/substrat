@@ -73,7 +73,6 @@
     "lint:secret-literals": "node tools/secret-literals.mjs",
     "lint:lifecycle-writes": "node tools/lifecycle-writes.mjs",
     "lint:role-seat-paths": "node tools/role-seat-paths.mjs",
-    "lint:store-driver-readers": "pnpm --filter @substrat-run/control-plane-api exec vitest run --config vitest.repo.config.ts",
     "lint:store-driver-repository": "pnpm --filter @substrat-run/contracts exec vitest run --config vitest.repo.config.ts",
     "lint:floating-promises": "node tools/floating-promises.mjs",
     "test:workerd-rejections": "node --test tools/vitest/workerd-rejections.test.mjs",

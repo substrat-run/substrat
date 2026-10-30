@@ -7,7 +7,6 @@ import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   dataSubjectId,
   platformActorId,
-  RESERVED_STORE_OPERATIONS,
   scopeId,
   tenantId,
   type ScopeDump,
@@ -39,10 +38,6 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
   const graph: StoreDriverRegistration = {
     driver: 'graph',
     isolationBasis: { kind: 'writtenInRepo' },
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
-    className: 'GraphStore',
-    operations: [],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
   };
   const GRAPH = { binding: 'GRAPH', driver: 'graph' };
   const OLD = { binding: 'OLD', driver: 'graph' };

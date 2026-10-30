@@ -1078,6 +1078,8 @@ export interface AppIntegration {
    * consent adds a row rather than rotating one.
    */
   multiAccount: boolean;
+  /** #2343: the connection sends mail as the tenant, so its detail offers a send test. */
+  sendsMail: boolean;
   required: boolean;
   /** The single-connection answer (the null-ref row, else the newest). */
   connection: ConnectionView | null;
@@ -1102,6 +1104,8 @@ export interface AccountIntegration {
   connectFlow: 'redirect' | null;
   /** See {@link AppIntegration.multiAccount}. */
   multiAccount?: boolean;
+  /** See {@link AppIntegration.sendsMail}. */
+  sendsMail?: boolean;
   connections: Array<
     ConnectionView & {
       vertical: string;
@@ -1118,7 +1122,8 @@ export interface ConnectLinkView {
   id: string;
   provider: string;
   appScopeId: string;
-  status: 'outstanding' | 'used' | 'revoked';
+  /** outstanding · used · revoked; the plane owns an app-minted link's status, so it stays open. */
+  status: string;
   createdBy: string;
   createdAt: string;
   expiresAt: string;
@@ -1236,6 +1241,8 @@ export interface ConnectionActivityView {
   live: boolean;
   grants: string[];
   credential: ConnectionCredentialFieldView[];
+  /** #2343: every address a send test may go from, whole; empty or absent for a provider that sends no mail. */
+  mailSenders?: string[];
   /**
    * #2100: the public certificate the connection signs in with, for the tenant to upload on
    * the provider's side. Absent or null when the provider or this connection uses none.
@@ -1736,27 +1743,6 @@ export const api = {
   appTableRows: (teamId: string, scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) =>
     teamApi(teamId).readAppTable({ scopeId, table, ...opts }),
   appQuery: (teamId: string, scopeId: string, sql: string) => teamApi(teamId).queryAppScope({ scopeId, sql }),
-  /**
-   * Mint a consent-round connect link (#1220). The `url` in the answer is both the
-   * Connect button's destination (navigate to it now) and the copyable link for a
-   * provider admin with no dashboard login. Single-use; revocable while outstanding.
-   */
-  mintConnectLink: (scopeId: string, provider: string, input: { ttlMs?: number } = {}) =>
-    call<ConnectLinkView & { url: string }>(
-      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/connect-links`,
-      { method: 'POST', body: JSON.stringify(input) },
-    ),
-  /** The outstanding connect links for this app + provider. */
-  connectLinks: (scopeId: string, provider: string) =>
-    call<{ links: ConnectLinkView[] }>(
-      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/connect-links`,
-    ),
-  /** Revoke an outstanding connect link — the URL it minted stops working. */
-  revokeConnectLink: (scopeId: string, provider: string, linkId: string) =>
-    call<void>(
-      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/connect-links/${encodeURIComponent(linkId)}`,
-      { method: 'DELETE' },
-    ),
   /** The account-level integrations overview: all providers, connections, and connectable apps. */
   integrations: () => call<AccountIntegrationsView>('/integrations'),
   // -- observability (design/observability.md §5, view 2) -------------------

@@ -6,5 +6,5 @@ port: 4917
 interceptRequests: true
 scenarios:
   - name: default
-    path: ./default.js
+    path: ./default.cjs
     default: true

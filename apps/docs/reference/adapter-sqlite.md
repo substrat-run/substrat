@@ -148,7 +148,8 @@ sqlite3 ./data/_directory.sqlite 'SELECT * FROM scopes;'
 ## Notes
 
 - Uses [better-sqlite3](https://www.npmjs.com/package/better-sqlite3) (a native module).
-  With pnpm 10+, allow its build script via `pnpm.onlyBuiltDependencies`.
+  It ships prebuilt binaries: do not list it in `pnpm.onlyBuiltDependencies`, which would make
+  pnpm run a needless `node-gyp rebuild`.
 - **Single-node by design.** It preserves the serialization *semantics*, not the scale-out;
   production scale-out is the Cloudflare adapter's job. That is a deliberate split, not a
   gap — the semantics are what the contract tests pin, and they are identical.

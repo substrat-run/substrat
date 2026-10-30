@@ -21,6 +21,7 @@ import {
   assetHash,
   STORE_DRIVERS,
   storeCatalogOperation,
+  storeDriverBasisAdmits,
   channelName,
   connectLinkId,
   connectionActivity,
@@ -42,6 +43,9 @@ import {
   CONNECTION_EXPIRY_WARNING_DAYS,
   CONNECTION_STALE_DAYS,
   connectionProbe,
+  connectionSendTest,
+  connectionSendTestResult,
+  connectionSenders,
   createTenantInput,
   entitlementGrantInput,
   hostname as hostnameSchema,
@@ -167,7 +171,7 @@ import type {
 } from '@substrat-run/contracts';
 import { upstreamHandleIn, upstreamReferenceOf, withUpstreamReference } from '@substrat-run/contracts';
 import { ENGINE_ENTITLEMENT_KEYS, bareSlug, declarableEntitlementKey, entitlementNamespaceRefusal, grantableEntitlements } from '@substrat-run/contracts';
-import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
+import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, MailSender, OpsFailureInput, ProvisionScopeInput, RoleState, ScopeHost } from '@substrat-run/kernel';
 import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
@@ -215,9 +219,9 @@ import {
 } from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
-import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
+import { liveApprovalOf, type ScopeStoreEnsurerOptions, type StoreCanaryTarget, type StoreDriverApprovals } from './store-script.js';
 import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
-import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
+import { PUSH_HOLD_TTL_MS, STORE_RELEASE_STORED_MAX_BYTES, approveStoredDriverRelease, readStoreDriverApprovals, runStoreDriverRevoke, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -395,6 +399,9 @@ export interface ConnectionInspector {
   certificate?: (host: ScopeHost, connection: Connection) => Promise<ConnectionCertificate | null>;
 }
 
+/** The body of a connection's test message (#2343), plain enough to be the same in HTML and text. */
+const SEND_TEST_TEXT = 'This is a test message from a mail connection. It reached you, so its sender address can send.';
+
 export interface ControlPlaneApiOptions {
   /** Monotonic clock for the bounded tenant usage composition (injectable in tests). */
   meteredUsageNow?: () => number;
@@ -531,6 +538,8 @@ export interface ControlPlaneApiOptions {
     /** The fleet rebuild (#2309): rebuild a script that exists, and create none. */
     existingOnly?: boolean;
     loadRelease: ScopeStoreEnsurerOptions['loadRelease'];
+    /** The driver's approvals, read by the caller under its hold on the driver (D-65). */
+    approvals: StoreDriverApprovals;
     /** How many scripts it uploaded; absent counts as some. */
   }) => Promise<void | { uploaded: number }>;
   /**
@@ -540,7 +549,7 @@ export interface ControlPlaneApiOptions {
    */
   storeReleases?: {
     bytes: StoreReleaseBytes;
-    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }): Promise<{ scriptName: string; uploaded: boolean }>;
+    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }): Promise<{ scriptName: string; uploaded: boolean }>;
     callCanary: CanaryCall;
     /** The same script settings release read the ensurer uses; required for a guarded revoke. */
     readScriptRelease?: (scriptName: string) => Promise<{ exists: boolean; release?: string }>;
@@ -677,6 +686,12 @@ export interface ControlPlaneApiOptions {
    */
   connectionInspectors?: Record<string, ConnectionInspector>;
   /**
+   * The mail sender each provider that sends as a tenant's own addresses registers (#2098), by
+   * provider — the same `{ provider → sender }` the email relay routes through. Behind
+   * `POST …/connections/:id/send-test` (#2343); a provider absent here 501s there.
+   */
+  mailSenders?: Readonly<Record<string, MailSender>>;
+  /**
    * The inspector for a vertical-defined provider (`<namespace>.<name>`, vertical-connectors.md
    * §6.4), which `connectionInspectors` never names: built per (tenant, vertical), since its code
    * runs in that vertical's deployment. Asked only for a dotted provider the record lacks. Absent,
@@ -810,7 +825,15 @@ type Vars = {
   failureReference?: string;
   /** #2540: whose failure `onError` resolved it as (`failureSubject`), so the backstop reads it once. */
   failureSubjectOf?: { vertical: string | null; tenantId: OpsFailureInput['tenantId'] };
+  /**
+   * #113: the id the host worker minted for this request and answers in `requestId` and the
+   * `x-substrat-request-id` header. A failure's reference reuses it, so the caller quotes one id.
+   */
+  substratInvocationId?: string;
 };
+
+/** A failure's reference: the request's own id where the host minted one, else a fresh ULID. */
+const referenceOf = (c: Context<{ Variables: Vars }>): string => c.get('substratInvocationId') ?? ulid();
 
 /** What a helper needs of a request: its actor and the host it writes through (#977). */
 type ReqCtx = { get: (k: 'actor') => PlatformActorId; var: { host: ScopeHost; admin: HostAdmin } };
@@ -1538,6 +1561,9 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   // #2100: the PUBLIC certificate a connection signs in with — same pin as the credential view.
   { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/certificate$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/verify$/, pin: 'path' },
+  // #2343: a mail connection's test send. The dashboard sends it only to the signed-in person.
+  { method: 'POST', re: /\/tenants\/[^/]+\/connections\/[^/]+\/send-test$/, pin: 'path' },
+  { method: 'GET', re: /\/tenants\/[^/]+\/connections\/[^/]+\/senders$/, pin: 'path' },
   // A vertical's mailed connect links (connections.md §3.5.4): the consent landing's liveness
   // read, the callback's spend and its undo, and the integrations card's list and revoke.
   { method: 'GET', re: /\/tenants\/[^/]+\/connect-links$/, pin: 'path' },
@@ -1972,7 +1998,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           // row with no tenant, which only staff read, and to the log line, under the same reference.
           let reference = c.get('failureReference');
           if (!reference) {
-            reference = ulid();
+            reference = referenceOf(c);
             console.error('control-plane.unhandled', { method: c.req.method, path: c.req.path, reference, tenantId, scopeId, detail: raw });
           }
           recordWithheld({ ...base, tenantId, reference }, raw, answered, cause);
@@ -2320,7 +2346,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     cause: unknown,
     answered?: (reference: string) => string,
   ): { reference: string; detail?: string } => {
-    const reference = ulid();
+    const reference = referenceOf(c);
     console.error('control-plane.unhandled', {
       method: c.req.method,
       path: c.req.path,
@@ -2466,7 +2492,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // says what is wrong, and the tail line is what ties it to the request that hit it.
     if (status >= 500) {
       const subject = await subjectOf();
-      const reference = ulid();
+      const reference = referenceOf(c);
       c.set('failureReference', reference);
       console.error('control-plane.unhandled', {
         method: c.req.method,
@@ -3506,6 +3532,66 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 501, `no probe registered for provider '${row.provider}'`);
     }
     return c.json(connectionProbe.parse(await probe(c.var.host, row)));
+  });
+
+  /** The addresses a mail connection may send as (#2343) — the send test's picker, whole and uncut. */
+  app.get('/tenants/:tenantId/connections/:id/senders', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const sender = options.mailSenders?.[row.provider];
+    if (!sender) return refuseStatus(c, 501, `no mail sender registered for provider '${row.provider}'`);
+    return c.json(connectionSenders.parse({ senders: await sender.senders(c.var.host, row) }));
+  });
+
+  /**
+   * **Send a test message through a connection** (#2343) — the probe for mail, which cannot be
+   * probed without sending. From one of the connection's own senders, to one recipient; the
+   * dashboard's door sends only to the signed-in person's own address.
+   *
+   * Like `/verify`, a refusal is `200 { ok: false, error }` in the connector's own words (outside
+   * the granted scope, throttled, sign-in failed), and the send rides the connector's recorded
+   * egress, so health is written as for any send. A success is recorded by the connector as that
+   * sender's verification. Not an audited admin-log mutation, the same class as a probe; who
+   * asked is logged on the request record instead, never the recipient.
+   */
+  app.post('/tenants/:tenantId/connections/:id/send-test', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const sender = options.mailSenders?.[row.provider];
+    if (!sender) return refuseStatus(c, 501, `no mail sender registered for provider '${row.provider}'`);
+    const body = connectionSendTest.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return refuse(c, 'validation_failed', 'from and to must each be one email address');
+    const { from, to } = body.data;
+    const senders = await sender.senders(c.var.host, row);
+    if (!senders.some((s) => s.toLowerCase() === from.toLowerCase())) {
+      return refuse(c, 'validation_failed', `'${from}' is not one of this connection's sender addresses`);
+    }
+    const principal = c.get('principal');
+    console.log('connection.send-test', {
+      tenantId: row.tenantId,
+      connectionId: row.id,
+      provider: row.provider,
+      actor: c.get('actor'),
+      onBehalfOf: principal.kind === 'tenant' ? (principal.onBehalfOf?.principal ?? null) : null,
+    });
+    try {
+      await sender.send(c.var.host, row, {
+        from: { email: from },
+        to: [{ email: to }],
+        subject: 'Substrat test message',
+        html: `<p>${SEND_TEST_TEXT}</p>`,
+        text: SEND_TEST_TEXT,
+        attachments: [],
+      });
+      return c.json(connectionSendTestResult.parse({ ok: true, status: null, error: null }));
+    } catch (e) {
+      const status = (e as { status?: unknown } | null)?.status;
+      return c.json(connectionSendTestResult.parse({
+        ok: false,
+        status: typeof status === 'number' ? status : null,
+        error: (e instanceof Error ? e.message : String(e)).slice(0, 600),
+      }));
+    }
   });
 
   /**
@@ -5503,7 +5589,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           // backstop would file is filed here as a pair, the tenant's row with the sentences only.
           const tenantStores = storeSentences.length ? ` (stores: ${storeSentences.join('; ')})` : '';
           if (e.status >= 500 && e.status !== 501 && tenantStores !== stores) {
-            const reference = ulid();
+            const reference = referenceOf(c);
             recordWithheld(
               {
                 actor,
@@ -5529,7 +5615,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const sentence = (reference: string) => `the reconcile of this scope failed (${e.status})${stores} (reference ${reference})`;
         if (e.status < 500) {
           // A refusal, which the 5xx backstop leaves unrecorded for staff too: logged, no row.
-          const reference = ulid();
+          const reference = referenceOf(c);
           console.warn('control-plane.withheld', {
             method: c.req.method,
             path: c.req.path,
@@ -9067,7 +9153,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             throw new ControlPlaneError(409, `${operation} refused: the hold on scope store driver '${each}' lapsed during the upload; try again`);
           }
         }
-        await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.driver === driver), loadRelease });
+        const registration = (options.storeDrivers ?? STORE_DRIVERS).find((k) => k.driver === driver);
+        if (!registration) throw new ControlPlaneError(403, `scope store driver '${driver}' is not registered`);
+        // Read under the shared hold (D-65): a revoke takes the driver exclusively, so one written
+        // before this read is seen, and none is written until this upload is done.
+        const approvals = await readStoreDriverApprovals(host.admin, actor, registration);
+        await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.driver === driver), loadRelease, approvals });
       }
     } catch (e) {
       recordFailure(
@@ -12612,19 +12703,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!parsed.success) throw new ControlPlaneError(422, `not a store driver revoke: ${parsed.error.issues.map(safeIssue).join('; ')}`);
     return parsed.data;
   };
-  /** The pin a release is run under, or a refusal: the platform runs only what this repo pins. */
-  const pinOf = async (c: Context<{ Variables: Vars }>, registration: StoreDriverRegistration, sha256: string) => {
-    const stored = await c.var.admin.getStoreDriverRelease(c.get('actor'), registration.driver, sha256);
-    if (!stored) throw new ControlPlaneError(404, `release ${sha256} of '${registration.driver}' is not stored`);
-    const pin = registration.releases.find((p) => p.sha256 === sha256);
-    if (!pin) {
-      throw new ControlPlaneError(422, `release ${sha256} of '${registration.driver}' is not pinned in its registration; it runs once a reviewed change pins it and the control plane is deployed`);
-    }
-    if (pin.sourceCommit !== stored.sourceCommit) {
-      throw new ControlPlaneError(422, `release ${sha256} is pinned at ${pin.sourceCommit} and was stored as built from ${stored.sourceCommit}`);
-    }
-    return pin;
-  };
+  // Whether the release is stored, approved and keeps the schema is judged inside
+  // `runStoreDriverRollout`, under its exclusive hold (D-65), never here before it.
   const rollOut = async (
     c: Context<{ Variables: Vars }>,
     registration: StoreDriverRegistration,
@@ -12644,19 +12724,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const result = await ensureScopeStores({ ...input, loadRelease });
         return result ? result.uploaded > 0 : true;
       },
-      ensureCanary: (to) => flow.ensureCanary({ driver: registration.driver, to, loadRelease }),
+      ensureCanary: (to, approvals) => flow.ensureCanary({ driver: registration.driver, to, loadRelease, approvals }),
       callCanary: flow.callCanary,
     });
     return c.json(result, result.complete ? 200 : 202);
-  };
-  /** Neither a rollout nor a rollback lowers the stored schema: a driver migrates forward only. */
-  const assertSchemaKept = (registration: StoreDriverRegistration, from: string | null, to: { sha256: string; schema: number }) => {
-    if (from === null || from === to.sha256) return;
-    const leaving = registration.releases.find((p) => p.sha256 === from);
-    if (!leaving) throw new ControlPlaneError(409, `the current release ${from} of '${registration.driver}' is not pinned, so its schema cannot be judged`);
-    if (to.schema < leaving.schema) {
-      throw new ControlPlaneError(409, `release ${to.sha256} has schema ${to.schema}, below the current release's ${leaving.schema}: objects may already have migrated`);
-    }
   };
 
   /** Where the platform's rebuild of every script of the driver stands (#2309), if it rebuilds them. */
@@ -12673,20 +12744,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const registration = registeredDriver(c.req.param('driver'));
     const [state, approvals] = await Promise.all([
       c.var.admin.storeDriverState(c.get('actor'), registration.driver),
-      c.var.admin.storeDriverApprovals(c.get('actor'), registration.driver),
+      readStoreDriverApprovals(c.var.admin, c.get('actor'), registration),
     ]);
     const rebuild = await rebuildView(c.var.admin, c.get('actor'), registration.driver);
-    return c.json({ driver: registration.driver, pins: registration.releases, approvals, ...state, ...(rebuild ? { rebuild } : {}) });
+    // `pins` stays for released CLIs (RFC §5 step 3): the releases a move may go to now, one per live approval.
+    const pins = approvals.records
+      .filter((a) => liveApprovalOf(approvals, a.sha256) === a)
+      .map((a) => ({ sha256: a.sha256, sourceCommit: a.sourceCommit, schema: a.schema }));
+    return c.json({ driver: registration.driver, pins, approvals: approvals.records, ...state, ...(rebuild ? { rebuild } : {}) });
   });
 
-  // Store a release's bytes, before or after its pin lands (D-63). Idempotent per bundle.
+  // Store a release's bytes, before or after a person approves them (D-65). Idempotent per bundle.
   app.put('/store-drivers/:driver/releases', async (c) => {
     const registration = registeredDriver(c.req.param('driver'));
     const actor = await byAPerson(c);
     const { flow } = releaseFlow();
     const body = await readCappedJson(c.req.raw, STORE_RELEASE_REQUEST_MAX_BYTES);
     const release = await storeDriverRelease({ admin: c.var.admin, actor, bytes: flow.bytes, driver: registration.driver, body });
-    return c.json({ release, pinned: registration.releases.some((p) => p.sha256 === release.sha256 && p.sourceCommit === release.sourceCommit) }, 201);
+    const live = liveApprovalOf(await readStoreDriverApprovals(c.var.admin, actor, registration), release.sha256);
+    const approved = live !== undefined && live.sourceCommit === release.sourceCommit;
+    // `pinned` stays beside `approved` for released CLIs, meaning the same (RFC §5 step 3).
+    return c.json({ release, pinned: approved, approved }, 201);
   });
 
   // The approval is a second, person-only write over bytes the platform already named by digest.
@@ -12695,16 +12773,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = await byAPerson(c, approvalWords);
     const sha256 = releaseSha(c.req.param('sha256'));
     const body = parseApprovalBody(await readCappedJson(c.req.raw, 64 * 1024));
+    // Refused here, not only by the readers (D-65 §3): a row its basis does not admit could never
+    // run, yet as a live approval it would hold the one slot a corrected approval needs. Fixed text,
+    // no input echoed.
+    if (!storeDriverBasisAdmits(registration.isolationBasis, body.sourceReferences)) {
+      throw new ControlPlaneError(422, 'not a store driver approval: sourceReferences: outside_isolation_basis');
+    }
     const flow = options.storeReleases;
     if (!flow) throw new ControlPlaneError(501, 'this control plane cannot read stored release bytes for approval');
     const approval = await approveStoredDriverRelease({ admin: c.var.admin, actor, bytes: flow.bytes, driver: registration.driver, sha256, approval: body });
     const state = await c.var.admin.storeDriverState(actor, registration.driver);
     const approvals = state.current ? await c.var.admin.storeDriverApprovals(actor, registration.driver) : [];
-    const currentSchema = state.current
-      ? approvals.find((a) => a.sha256 === state.current!.sha256)?.schema
-        ?? registration.releases.find((p) => p.sha256 === state.current!.sha256)?.schema
-        ?? null
-      : null;
+    // The current release's approval facts, revoked or not: they are fixed at its first approval.
+    const currentSchema = state.current ? approvals.find((a) => a.sha256 === state.current!.sha256)?.schema ?? null : null;
     return c.json({ approval, currentSchema }, 201);
   });
 
@@ -12728,21 +12809,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ensureCanary: async (to) => {
         if (!flow) throw new ControlPlaneError(501, 'this control plane cannot move the store canary');
         const loadRelease = storedReleaseLoader({ admin: c.var.admin, actor, bytes: flow.bytes });
-        await flow.ensureCanary({ driver: registration.driver, to, loadRelease });
+        // Called under the revoke's exclusive hold, so the approvals read here are the ones it judges.
+        const approvals = await readStoreDriverApprovals(c.var.admin, actor, registration);
+        await flow.ensureCanary({ driver: registration.driver, to, loadRelease, approvals });
       },
     });
     return c.json(result, result.complete ? 200 : 202);
   });
 
-  // Roll a stored, pinned release out: the canary, then every vertical that ever declared the
+  // Roll a stored, approved release out: the canary, then every vertical that ever declared the
   // driver. Posting the same release again converges a rollout that stopped.
   app.post('/store-drivers/:driver/rollouts', async (c) => {
     const registration = registeredDriver(c.req.param('driver'));
     await byAPerson(c);
     const { sha256 } = z.object({ sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(await c.req.json());
-    const pin = await pinOf(c, registration, sha256);
-    const { current } = await c.var.admin.storeDriverState(c.get('actor'), registration.driver);
-    assertSchemaKept(registration, current?.sha256 ?? null, pin);
     return rollOut(c, registration, sha256, 'rollout');
   });
 
@@ -12755,8 +12835,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     await byAPerson(c);
     const { current, rollbackTarget } = await c.var.admin.storeDriverState(c.get('actor'), registration.driver);
     if (!current || !rollbackTarget) throw new ControlPlaneError(409, `driver '${registration.driver}' has no previous good release to roll back to`);
-    const pin = await pinOf(c, registration, rollbackTarget);
-    assertSchemaKept(registration, current.sha256, pin);
     return rollOut(c, registration, rollbackTarget, 'rollback');
   });
 

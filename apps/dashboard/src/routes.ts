@@ -26,6 +26,7 @@ import {
   connectionActivity,
   connectionCredentialField,
   connectionProbe,
+  connectionSendTestResult,
   causeChain,
   deadLetter,
   defineRoutes,
@@ -73,7 +74,7 @@ import {
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
-import { appEvent, appRow, explanationProvenance, installStep, memberRow } from './rows.js';
+import { CONNECT_LINK_MAX_TTL_MS, appEvent, appRow, explanationProvenance, installStep, memberRow } from './rows.js';
 import { ASK_TURN_MAX, ASK_TURNS_MAX } from './ask.js';
 
 // The rows the module shares, declared where module code may import them (`rows.ts`); the
@@ -101,6 +102,17 @@ const integrationConnection = z.object({
   lastErrorAt: z.string().nullable(),
   createdAt: z.string(),
 });
+/** A consent-round connect link as the panel shows it; the signed URL only ever rides the mint answer. */
+const appConnectLink = z.object({
+  id: z.string(),
+  provider: z.string(),
+  appScopeId: z.string(),
+  // outstanding · used · revoked; the plane owns the status of an app-minted link.
+  status: z.string(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+});
 const integrationProbeBody = connectionProbe.extend({ refused: z.boolean().optional() });
 const integrationProbe = integrationProbeBody.extend({ connection: integrationConnection.optional() });
 const integrationActivity = connectionActivity.extend({
@@ -111,6 +123,8 @@ const integrationActivity = connectionActivity.extend({
     pem: z.string(), thumbprint: z.string(), notAfter: z.string(),
     next: z.object({ pem: z.string(), thumbprint: z.string(), notAfter: z.string() }).optional(),
   }).nullable(),
+  /** #2343: the addresses a send test may go from; empty for a provider that sends no mail. */
+  mailSenders: z.array(z.string()),
   connection: integrationConnection,
   sweepRuns: z.array(z.object({
     id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable(),
@@ -1214,7 +1228,7 @@ export const dashboardRoutes = defineRoutes({
         key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
         optional: z.boolean().optional(), toggle: z.boolean().optional(),
       })),
-      connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), required: z.boolean(),
+      connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), sendsMail: z.boolean(), required: z.boolean(),
       connection: integrationConnection.nullable(), connections: z.array(integrationConnection),
     })) }),
     http: { method: 'GET', path: '/apps/{scopeId}/integrations' },
@@ -1252,6 +1266,14 @@ export const dashboardRoutes = defineRoutes({
     output: integrationProbe,
     http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify' },
   },
+  'dashboard/send-test-app-connection': {
+    summary: "Send a test message from one of a mail connection's sender addresses to the signed-in person",
+    input: z.object({
+      scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1), from: z.string().min(1),
+    }),
+    output: connectionSendTestResult,
+    http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/send-test' },
+  },
   'dashboard/get-app-integration-activity': {
     summary: 'Read the current connection activity and masked credential fields',
     input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), live: z.string().optional(), source: z.string().optional() }),
@@ -1263,6 +1285,29 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1), live: z.string().optional(), source: z.string().optional() }),
     output: integrationActivity,
     http: { method: 'GET', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/activity' },
+  },
+  'dashboard/mint-app-connect-link': {
+    summary: "Mint a single-use consent link for one app's redirect-flow provider",
+    input: z.object({
+      scopeId: z.string().min(1), provider: z.string().min(1),
+      ttlMs: z.number().int().positive().max(CONNECT_LINK_MAX_TTL_MS).optional(),
+    }),
+    output: appConnectLink.extend({ url: z.string() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connect-links' },
+    status: 201,
+  },
+  'dashboard/list-app-connect-links': {
+    summary: "The outstanding connect links for one app and provider: the dashboard's own and those the app mailed",
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1) }),
+    output: z.object({ links: z.array(appConnectLink.extend({ source: z.enum(['dashboard', 'app']) })) }),
+    http: { method: 'GET', path: '/apps/{scopeId}/integrations/{provider}/connect-links' },
+  },
+  'dashboard/revoke-app-connect-link': {
+    summary: 'Revoke one outstanding connect link of an app; its URL stops working',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), linkId: z.string().min(1) }),
+    // A declared route owes an output; the cookie route's empty 204 becomes this 200.
+    output: z.object({ revoked: z.string() }),
+    http: { method: 'DELETE', path: '/apps/{scopeId}/integrations/{provider}/connect-links/{linkId}' },
   },
 
   // -- domains (#2170) --------------------------------------------------------

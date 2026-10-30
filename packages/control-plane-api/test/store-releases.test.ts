@@ -9,6 +9,7 @@ import { manualClock, ulid, type ManualClock } from '@substrat-run/kernel';
 import {
   platformActorId,
   RESERVED_STORE_OPERATIONS,
+  STORE_DRIVER_PLATFORM_REPOSITORY,
   STORE_RELEASE_MAX_BYTES,
   STORE_RELEASE_MAX_MODULES,
   storeDriverReleaseDigest,
@@ -28,6 +29,7 @@ import {
   DEV_ACTOR_HEADER,
   ROLLOUT_WALKS_PER_REQUEST,
   ROLLOUT_HOLD_TTL_MS,
+  readStoreDriverApprovals,
   runStoreDriverRollout,
   runStoreDriverRevoke,
   UNSAFE_devPlatformActorAuth,
@@ -72,6 +74,26 @@ async function refusal(p: Promise<unknown>): Promise<{ status?: number; message:
 
 const sha = (c: string) => c.repeat(64);
 const COMMIT = 'c'.repeat(40);
+
+/** The registry these tests hand the control plane: an id and a basis, nothing about a release (D-65). */
+const GRAPH: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
+
+/** A person's review of a stored release, with the facts it fixes. The repository is the platform's. */
+const reviewed = (schema: number) => ({
+  reason: 'Reviewed the release bundle and migration',
+  sourceReferences: [{ repository: STORE_DRIVER_PLATFORM_REPOSITORY, commit: COMMIT }],
+  isolationReview: {
+    separateScriptPerTenant: { met: false, evidence: 'One script per vertical today' },
+    noOutboundAccess: { met: false, evidence: 'Network access is not isolated yet' },
+    envelopeVerifiedOutsideDriver: { met: true, evidence: 'Verifier is outside the bundle' },
+    envelopeChecked: { checked: true, evidence: 'Read the envelope path' },
+    reservedOperationsChecked: { checked: true, evidence: 'Read every reserved operation' },
+    noModuleStateChecked: { checked: true, evidence: 'Read the modules' },
+  },
+  schema,
+  className: 'Store',
+  operations: [],
+});
 
 /** An object store the canary can drive: one table, kept per object name. */
 function canaryStore(fail: Partial<Record<ReservedStoreOperation, (answer: unknown) => unknown>> = {}) {
@@ -208,26 +230,26 @@ describe('a rollout canaries, then moves every vertical that declared the driver
   let dir: string;
   let host: SqliteScopeHost;
   const staff = platformActorId.parse(ulid());
-  const registration: StoreDriverRegistration = {
-    driver: 'graph',
-    isolationBasis: { kind: 'writtenInRepo' },
-    releases: [
-      { sha256: sha('1'), sourceCommit: COMMIT, schema: 0 },
-      { sha256: sha('2'), sourceCommit: COMMIT, schema: 0 },
-      { sha256: sha('3'), sourceCommit: COMMIT, schema: 1 },
-    ],
-    className: 'Store',
-    operations: [],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
-  };
+  const registration = GRAPH;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-store-rollout-'));
     clock = manualClock();
     host = new SqliteScopeHost({ dir, clock: clock.read });
-    for (const s of ['1', '2', '3']) await host.admin.recordStoreDriverRelease(staff, { driver: 'graph', sha256: sha(s), sourceCommit: COMMIT });
+    // 1 and 2 at schema 0, 3 raising it to 1; 4 is stored and never approved.
+    for (const [s, schema] of [['1', 0], ['2', 0], ['3', 1]] as const) {
+      await host.admin.recordStoreDriverRelease(staff, { driver: 'graph', sha256: sha(s), sourceCommit: COMMIT });
+      await host.admin.approveStoreDriverRelease(staff, { driver: 'graph', sha256: sha(s), ...reviewed(schema) });
+    }
+    await host.admin.recordStoreDriverRelease(staff, { driver: 'graph', sha256: sha('4'), sourceCommit: COMMIT });
     for (const slug of ['va', 'vb', 'vc']) await declare(slug);
   });
+  /** An emergency revoke: it skips the walk, so it can revoke a release that is current. */
+  const revoke = (s: string) =>
+    runStoreDriverRevoke({
+      admin: host.admin, actor: staff, driver: 'graph', sha256: sha(s), reason: 'withdrawn', emergency: true,
+      readScriptRelease: async () => ({ exists: false }), ensureCanary: async () => undefined,
+    });
   const declare = async (slug: string) => {
     await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
     const id = ulid();
@@ -697,9 +719,52 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     expect(await refusal(run(f, sha('1')))).toMatchObject({ status: 409, message: expect.stringMatching(/broken has a version whose stores cannot be named/) });
     expect(f.events).toEqual([]);
   });
+
+  it('judges the target under its hold: an unapproved release or a revoked one is refused (422), and nothing begins', async () => {
+    const f = fleet();
+    // Another holder first: the hold is taken before any approval is read.
+    const other = ulid();
+    await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: other, mode: 'shared', ttlMs: 60_000 });
+    expect(await refusal(run(f, sha('4')))).toMatchObject({ status: 409 });
+    await host.admin.releaseStoreDriverHold(staff, { driver: 'graph', holder: other });
+    expect(await refusal(run(f, sha('4')))).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
+    // A rollback to a previous good release that has since been revoked is refused the same way.
+    await run(f, sha('1'));
+    await run(f, sha('2'));
+    await revoke('1');
+    f.events.length = 0;
+    const back = runStoreDriverRollout({
+      admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
+      ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call,
+    });
+    expect(await refusal(back)).toMatchObject({ status: 422, message: expect.stringMatching(/no live approval/) });
+    expect(f.events).toEqual([]);
+    expect((await host.admin.storeDriverState(staff, 'graph')).rollouts.map((r) => r.sha256)).toEqual([sha('1'), sha('2')]);
+  });
+
+  it('refuses (503) when the approvals cannot be read, and moves nothing', async () => {
+    const f = fleet();
+    const down: typeof host.admin = { ...host.admin, storeDriverApprovals: async () => { throw new Error('directory unavailable'); } };
+    expect(await refusal(run(f, sha('1'), { admin: down }))).toMatchObject({ status: 503, message: expect.stringMatching(/could not be read/) });
+    expect(f.events).toEqual([]);
+    expect((await host.admin.storeDriverState(staff, 'graph')).rollouts).toEqual([]);
+  });
+
+  it('ends diverged instead of returning to a release whose approval was revoked', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    // 1 is current, and revoked in an emergency. Leaving it is still allowed, judged by its facts.
+    await revoke('1');
+    f.events.length = 0;
+    f.fail.add('vb:2');
+    expect(await refusal(run(f, sha('2')))).toMatchObject({ message: expect.stringMatching(/1{64} has no live approval to return to, so va, vb may run 2{64}/) });
+    // Nothing was moved back onto the revoked release.
+    expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2']);
+    expect(await lastState()).toBe('diverged');
+  });
 });
 
-describe('the release routes: a person stores and rolls out a pinned release (D-63)', () => {
+describe('the release routes: a person stores, approves and rolls out a release (D-63, D-65)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   const person = platformActorId.parse(ulid());
@@ -715,23 +780,8 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     entry: b.entry,
     modules: b.modules.map((m) => ({ name: m.name, contentBase64: btoa(String.fromCharCode(...m.content)) })),
   });
-  const reviewed = (schema: number) => ({
-    reason: 'Reviewed the release bundle and migration',
-    sourceReferences: [{ repository: 'https://example.test/driver.git', commit: COMMIT }],
-    isolationReview: {
-      separateScriptPerTenant: { met: false, evidence: 'One script per vertical today' },
-      noOutboundAccess: { met: false, evidence: 'Network access is not isolated yet' },
-      envelopeVerifiedOutsideDriver: { met: true, evidence: 'Verifier is outside the bundle' },
-      envelopeChecked: { checked: true, evidence: 'Read the envelope path' },
-      reservedOperationsChecked: { checked: true, evidence: 'Read every reserved operation' },
-      noModuleStateChecked: { checked: true, evidence: 'Read the modules' },
-    },
-    schema,
-    className: 'Store',
-    operations: [],
-  });
   let shas: string[];
-  let registration: StoreDriverRegistration;
+  const registration = GRAPH;
   const bytes = new Map<string, Uint8Array>();
   const moves: string[] = [];
   const scripts = new Map<string, string | undefined>();
@@ -774,6 +824,12 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       headers: { [DEV_ACTOR_HEADER]: actor, 'content-type': 'application/json', ...headers },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+  /** Upload release n and have a person approve it: 1 is schema 0, 2 and 3 are schema 1. */
+  const publish = async (app: ReturnType<typeof createControlPlaneApi>, n: number) => {
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)))).status).toBe(201);
+    const approved = await call(app, 'POST', `/store-drivers/graph/releases/${shas[n - 1]}/approvals`, person, reviewed(n === 1 ? 0 : 1));
+    expect(approved.status, await approved.clone().text()).toBe(201);
+  };
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-store-routes-'));
@@ -784,19 +840,6 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     unreadableScripts.clear();
     failMoves.clear();
     shas = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2)), await storeDriverReleaseDigest(bundle(3))];
-    registration = {
-      driver: 'graph',
-      isolationBasis: { kind: 'writtenInRepo' },
-      // Three releases of different schema: 1 is schema 0, 2 and 3 are schema 1.
-      releases: [
-        { sha256: shas[0]!, sourceCommit: COMMIT, schema: 0 },
-        { sha256: shas[1]!, sourceCommit: COMMIT, schema: 1 },
-        { sha256: shas[2]!, sourceCommit: COMMIT, schema: 1 },
-      ],
-      className: 'Store',
-      operations: [],
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    };
     await host.admin.registerVertical(person, { slug: 'va', name: 'va', source: 'cli' });
     const id = ulid();
     await host.admin.publishVersion(person, {
@@ -943,7 +986,10 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       { repository: 'https://example.test/driver.git', commit: `${COMMIT.slice(0, -1)}\u0085` },
     ];
     for (const source of invalid) {
-      expect((await call(app, 'POST', path, person, { ...body, sourceReferences: [source] })).status).toBe(422);
+      const res = await call(app, 'POST', path, person, { ...body, sourceReferences: [source] });
+      expect(res.status, JSON.stringify(source)).toBe(422);
+      // Refused by the shape parse itself, not by the isolation basis, which would refuse these too.
+      expect(await res.text(), JSON.stringify(source)).toMatch(/sourceReferences\.0\.(repository|commit): (invalid_value|invalid_format|out_of_range)/);
     }
     for (const field of ['reason', 'isolationReview'] as const) {
       const bad = field === 'reason'
@@ -954,9 +1000,10 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect((await call(app, 'POST', `/store-drivers/graph/releases/${release}/revoke`, person,
       { reason: 'Revoke\u2069release' })).status).toBe(422);
     expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    // Valid shapes, in the repository a written-in-repo basis admits: a 64-hex commit, a `.git` form.
     const valid = { ...body, sourceReferences: [
-      { repository: 'https://example.test/driver.git', commit: release },
-      { repository: 'https://example.test/dependency', commit: COMMIT },
+      { repository: `${STORE_DRIVER_PLATFORM_REPOSITORY}.git`, commit: release },
+      { repository: STORE_DRIVER_PLATFORM_REPOSITORY, commit: COMMIT },
     ] };
     const approved = await call(app, 'POST', path, person, valid);
     expect(approved.status).toBe(201);
@@ -1012,6 +1059,21 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
   });
 
+  it('refuses (422) an approval naming another repository under a written-in-repo basis, so it never holds the live slot', async () => {
+    const app = appWith(asPerson);
+    const path = `/store-drivers/graph/releases/${shas[0]}/approvals`;
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const foreign = { ...reviewed(0), sourceReferences: [{ repository: 'https://github.com/other-org/graph', commit: COMMIT }] };
+    const refused = await call(app, 'POST', path, person, foreign);
+    expect(refused.status).toBe(422);
+    const text = await refused.text();
+    expect(text).toContain('sourceReferences: outside_isolation_basis');
+    expect(text).not.toContain('other-org');
+    expect(await host.admin.storeDriverApprovals(person, 'graph')).toEqual([]);
+    // The corrected approval is not blocked by a row that could never run.
+    expect((await call(app, 'POST', path, person, reviewed(0))).status).toBe(201);
+  });
+
   it('refuses a normal revoke while a script runs the release or its settings are unreadable', async () => {
     const app = appWith(asPerson);
     const release = shas[0]!;
@@ -1036,14 +1098,12 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
 
   it('guards the current release and returns a failed canary to the current good release', async () => {
     const app = appWith(asPerson);
-    for (const n of [1, 2]) {
-      expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)))).status).toBe(201);
-    }
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    await publish(app, 2);
     expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[1] })).status).toBe(200);
     const approved = await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/approvals`, person, reviewed(0));
     expect(approved.status).toBe(201);
     expect(await approved.json()).toMatchObject({ currentSchema: 1 });
-    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/approvals`, person, reviewed(1))).status).toBe(201);
     const current = await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/revoke`, person, { reason: 'Stop' });
     expect(current.status).toBe(409);
     expect(await current.text()).toMatch(/is current/);
@@ -1161,7 +1221,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
         callCanary: canaryStore().call,
       },
     });
-    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    await publish(app, 1);
     const post = async (actor: string) => {
       const res = await call(app, 'POST', '/store-drivers/graph/rollouts', actor, { sha256: shas[0] });
       return { status: res.status, body: (await res.json()) as { complete: boolean; remaining: number; moved: string[] } };
@@ -1191,14 +1251,11 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     const app = appWith(asPerson);
     const res = await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)));
     expect(res.status).toBe(201);
-    expect(await res.json()).toMatchObject({ release: { sha256: shas[0], sourceCommit: COMMIT, uploadedBy: person }, pinned: true });
+    expect(await res.json()).toMatchObject({ release: { sha256: shas[0], sourceCommit: COMMIT, uploadedBy: person } });
     expect([...bytes.keys()]).toEqual([`graph/${shas[0]}`]);
     // The same bundle again is the same release.
     expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
     expect(bytes.size).toBe(1);
-    // A bundle no pin names is stored too (bytes may go first), and says it is not pinned.
-    const unpinned = await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(9)));
-    expect(await unpinned.json()).toMatchObject({ pinned: false });
 
     expect((await call(app, 'PUT', '/store-drivers/nokind/releases', person, wire(bundle(1)))).status).toBe(403);
     const big = await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)), { 'content-length': String(3 * STORE_RELEASE_MAX_BYTES) });
@@ -1209,24 +1266,34 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, { ...wire(bundle(1)), releaseId: 'x' })).status).toBe(422);
   });
 
-  it('rolls out only a stored, pinned release, from the commit its pin names', async () => {
+  it('reports pinned and approved, and the status pins, from the live approvals (RFC §5 step 3)', async () => {
+    const app = appWith(asPerson);
+    const upload = async () => (await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).json();
+    const pins = async () => (await (await call(app, 'GET', '/store-drivers/graph', person)).json()).pins;
+    expect(await upload()).toMatchObject({ pinned: false, approved: false });
+    expect(await pins()).toEqual([]);
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/approvals`, person, reviewed(0))).status).toBe(201);
+    expect(await upload()).toMatchObject({ pinned: true, approved: true });
+    expect(await pins()).toEqual([{ sha256: shas[0], sourceCommit: COMMIT, schema: 0 }]);
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[0]}/revoke`, person, { reason: 'Withdraw', emergency: true })).status).toBe(200);
+    expect(await upload()).toMatchObject({ pinned: false, approved: false });
+    expect(await pins()).toEqual([]);
+  });
+
+  it('rolls out only a stored, approved release', async () => {
     const app = appWith(asPerson);
     expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[0] })).status).toBe(404);
-    await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(9)));
-    const notPinned = await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: await storeDriverReleaseDigest(bundle(9)) });
-    expect(notPinned.status).toBe(422);
-    expect(await notPinned.text()).toMatch(/not pinned/);
-    // The same bytes from another commit are not the pinned release.
-    await call(app, 'PUT', '/store-drivers/graph/releases', person, { ...wire(bundle(1)), sourceCommit: 'd'.repeat(40) });
-    const otherCommit = await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[0] });
-    expect(otherCommit.status).toBe(422);
+    await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)));
+    const unapproved = await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[0] });
+    expect(unapproved.status).toBe(422);
+    expect(await unapproved.text()).toMatch(/no live approval/);
     expect(moves).toEqual([]);
   });
 
   it('rolls back to the immediately previous good release, and never below the stored schema', async () => {
     const app = appWith(asPerson);
     for (const n of [1, 2, 3]) {
-      await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)));
+      await publish(app, n);
       expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[n - 1] })).status).toBe(200);
     }
     expect(moves).toEqual(['va:1', 'va:2', 'va:3']);
@@ -1260,7 +1327,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       id, verticalSlug: 'vb', version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g',
       deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] }),
     });
-    for (const n of [1, 2, 3]) await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)));
+    for (const n of [1, 2, 3]) await publish(app, n);
     expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[1] })).status).toBe(200);
     // 2 and 3 are both schema 1, so this is not the schema rule: vb's upload of 3 fails, and so
     // does va's return to 2. The rollout ends diverged, va on 3 and vb on 2.
@@ -1331,9 +1398,9 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect(bytes.size).toBe(0);
   });
 
-  it('holds a paused rollback whose target lost its pin until a control plane with the pin is deployed', async () => {
+  it('holds a paused rollback whose target was revoked until a person approves it again', async () => {
     const app = appWith(asPerson);
-    for (const n of [1, 2, 3]) await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)));
+    for (const n of [1, 2, 3]) await publish(app, n);
     for (const n of [2, 3]) expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[n - 1] })).status).toBe(200);
     // A rollback to 2 that paused part way (written directly: one batch here is 100 verticals).
     const holder = ulid();
@@ -1341,21 +1408,19 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     const row = await host.admin.beginStoreDriverRollout(person, { driver: 'graph', sha256: shas[1]!, action: 'rollback', holder });
     await host.admin.finishStoreDriverRollout(person, { driver: 'graph', seq: row.seq, holder, state: 'paused', detail: null });
     await host.admin.releaseStoreDriverHold(person, { driver: 'graph', holder });
-    // A control plane whose registration no longer pins 2 (a pin is never removed, but say one was).
-    const pinned = registration;
-    registration = { ...pinned, releases: pinned.releases.filter((p) => p.sha256 !== shas[1]) };
-    const unpinned = appWith(asPerson);
-    const back = await call(unpinned, 'POST', '/store-drivers/graph/rollback', person);
+    // 2 is revoked in an emergency (the walk would refuse: va may run it).
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/revoke`, person, { reason: 'Incident', emergency: true })).status).toBe(200);
+    const back = await call(app, 'POST', '/store-drivers/graph/rollback', person);
     expect(back.status).toBe(422);
-    expect(await back.text()).toMatch(/not pinned/);
-    const forward = await call(unpinned, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[2] });
+    expect(await back.text()).toMatch(/no live approval/);
+    const forward = await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[2] });
     expect(forward.status).toBe(409);
     expect(await forward.text()).toMatch(/is part way through; post the rollback again/);
-    // The way out: deploy a control plane that pins it again. Then the rollback finishes.
-    registration = pinned;
-    const repinned = await call(appWith(asPerson), 'POST', '/store-drivers/graph/rollback', person);
-    expect(repinned.status, await repinned.clone().text()).toBe(200);
-    expect(await repinned.json()).toMatchObject({ rollout: { action: 'rollback', sha256: shas[1], state: 'good' } });
+    // The way out: a person approves 2 again, with the facts its first approval fixed.
+    expect((await call(app, 'POST', `/store-drivers/graph/releases/${shas[1]}/approvals`, person, reviewed(1))).status).toBe(201);
+    const reapproved = await call(app, 'POST', '/store-drivers/graph/rollback', person);
+    expect(reapproved.status, await reapproved.clone().text()).toBe(200);
+    expect(await reapproved.json()).toMatchObject({ rollout: { action: 'rollback', sha256: shas[1], state: 'good' } });
   });
 
   it('answers 501 when this control plane keeps no releases', async () => {
@@ -1411,17 +1476,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
 
   it('refuses to undo a diverged schema raise by re-posting the lower release', async () => {
     const [s1, s2] = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2))];
-    const registration: StoreDriverRegistration = {
-      driver: 'graph',
-      isolationBasis: { kind: 'writtenInRepo' },
-      releases: [
-        { sha256: s1, sourceCommit: COMMIT, schema: 0 },
-        { sha256: s2, sourceCommit: COMMIT, schema: 1 },
-      ],
-      className: 'Store',
-      operations: [],
-      platformOperations: [...RESERVED_STORE_OPERATIONS],
-    };
+    const registration = GRAPH;
     for (const slug of ['va', 'vb']) {
       await host.admin.registerVertical(person, { slug, name: slug, source: 'cli' });
       const id = ulid();
@@ -1438,10 +1493,10 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
       authenticate: UNSAFE_devPlatformActorAuth(),
       storeDrivers: [registration],
       humanStaffActor: async () => person,
-      ensureScopeStores: ({ loadRelease, ...input }) => createScopeStoreEnsurer({ ...ensurerOptions, loadRelease })(input),
+      ensureScopeStores: ({ loadRelease, approvals, ...input }) => createScopeStoreEnsurer({ ...ensurerOptions, loadRelease, approvals })(input),
       storeReleases: {
         bytes: storedBytes(bytes),
-        ensureCanary: ({ loadRelease, ...input }) => createStoreCanaryEnsurer({ ...ensurerOptions, loadRelease })(input),
+        ensureCanary: ({ loadRelease, approvals, ...input }) => createStoreCanaryEnsurer({ ...ensurerOptions, loadRelease, approvals })(input),
         callCanary: canaryStore().call,
       },
     });
@@ -1451,7 +1506,10 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
         headers: { [DEV_ACTOR_HEADER]: person, 'content-type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-    for (const n of [1, 2]) expect((await call('PUT', '/store-drivers/graph/releases', wire(bundle(n)))).status).toBe(201);
+    for (const [n, sha256] of [[1, s1], [2, s2]] as const) {
+      expect((await call('PUT', '/store-drivers/graph/releases', wire(bundle(n)))).status).toBe(201);
+      expect((await call('POST', `/store-drivers/graph/releases/${sha256}/approvals`, reviewed(n - 1))).status).toBe(201);
+    }
     expect((await call('POST', '/store-drivers/graph/rollouts', { sha256: s1 })).status).toBe(200);
     // 1 → 2 raises the schema; vb's upload fails, va has moved and cannot go back: diverged.
     failPut.add('substrat-store-graph-vb');
@@ -1460,7 +1518,11 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     failPut.clear();
     // A push of either vertical meanwhile rebuilds its script at the release it runs: va stays on
     // 2, vb on 1. The schema rule refuses moves, and a push makes none.
-    const push = createScopeStoreEnsurer({ ...ensurerOptions, loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: storedBytes(bytes) }) });
+    const push = createScopeStoreEnsurer({
+      ...ensurerOptions,
+      loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: storedBytes(bytes) }),
+      approvals: await readStoreDriverApprovals(host.admin, person, registration),
+    });
     for (const vertical of ['va', 'vb']) await push({ vertical, stores: [{ binding: 'GRAPH', driver: 'graph' }] });
     expect([release('substrat-store-graph-va'), release('substrat-store-graph-vb')]).toEqual([s2, s1]);
     // Re-posting the current release would move va from schema 1 back to 0: the ensurer refuses.

@@ -108,6 +108,7 @@ import {
   callPlatformScopeStoreAt,
   type ScopeStoreEnsurerOptions,
   type StoreCanaryTarget,
+  type StoreDriverApprovals,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createWfpWireSettingsApi,
@@ -201,6 +202,7 @@ import {
 } from '@substrat-run/control-plane-api';
 import { durableCopyJobs } from './copy-jobs.js';
 import { refuse, refuseStatus } from './problem.js';
+import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -773,8 +775,8 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
 function ensureScopeStoresFor(env: Env) {
   const options = storeEnsurerOptionsOf(env);
   if (!options) return undefined;
-  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
-    createScopeStoreEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input);
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }) =>
+    createScopeStoreEnsurer({ ...(await options()), loadRelease: input.loadRelease, approvals: input.approvals })(input);
 }
 
 /** What every store script upload is built with, the key lists read when an upload runs. */
@@ -825,8 +827,8 @@ function storeReleasesFor(env: Env) {
         await bucket.put(key, bytes);
       },
     },
-    ensureCanary: async ({ loadRelease, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
-      createStoreCanaryEnsurer({ ...(await options()), loadRelease })(input),
+    ensureCanary: async ({ loadRelease, approvals, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease']; approvals: StoreDriverApprovals }) =>
+      createStoreCanaryEnsurer({ ...(await options()), loadRelease, approvals })(input),
     readScriptRelease: async (scriptName: string) => readStoreScriptSettings(await options(), scriptName),
     // #2309: what every store script is built from now; the fleet rebuild converges on it.
     fingerprint: async () => storePlatformFingerprint(await options()),
@@ -2903,12 +2905,16 @@ export default {
   fetch(request: Request, env: Env): Response | Promise<Response> {
     const app = new Hono<{ Bindings: Env }>();
 
+    // #113: a request id on every /api answer and in its problem body. First, so it stamps the
+    // answer every middleware below settled on. Not /internal or /hooks: no person reads those.
+    app.use('/api/*', controlPlaneRequestId());
+
     // A 401 to someone who presented a valid session says why (#1359). The staff readers
     // refuse an address the issuer did not verify — and every session minted before the
     // claim was carried reads that way for up to seven days — so a bare `unauthenticated`
     // would leave a signed-in person, in the console or the CLI, with no idea that signing
-    // in again is the whole fix. Registered first so it sees every /api answer, including
-    // the API router's own middleware.
+    // in again is the whole fix. Registered ahead of every route, behind only the request id, so
+    // it sees every /api answer, including the API router's own middleware.
     app.use('/api/*', async (c, next) => {
       await next();
       if (c.res.status !== 401) return;
@@ -3498,6 +3504,8 @@ export default {
         // box, and the sanctioned egress. Keyed by provider, so `control-plane-api`
         // learns no Scrive vocabulary and an unwired provider 501s honestly.
         connectionInspectors: connectionInspectorsFor(env),
+        // #2343: a mail connection's send test, through the senders the email relay uses.
+        mailSenders: mailSendersFor(env),
         // vertical-connectors.md §6.4: a vertical-defined provider, answered by its vertical's code.
         verticalConnectorInspector: (provider, context) =>
           verticalConnectorInspector(verticalConnectorDepsFor(env, hostFor(env), SERVICE_ACTOR), provider, context),

@@ -50,6 +50,7 @@ src/entities.ts     what exists — each entity's table, row shape, key and pare
 src/operations.ts   the operations: input, output, permission, and their http route
 src/manifest.ts     what the module declares — permissions, events, entitlement key
 src/migrations.ts   the append-only journal
+src/model.ts        the emitted model, the artifact of record
 src/module.ts       the operation handlers, bound to operations.ts
 src/provision.ts    roles and the permission surface `substrat push` reads
 src/seed.ts         a world to develop against
@@ -58,7 +59,8 @@ src/routes.ts       the HTTP API — operation routes derived from operations.ts
 src/server.ts       a Node dev server (SQLite adapter)
 src/worker.ts       the Cloudflare entry, via @substrat-run/vertical-host
 src/config-do.ts    per-instance settings (Cloudflare only)
-test/scenario.test.ts · test/entities.test.ts
+spec/concept.md     the design document you approve before any code
+test/scenario.test.ts · test/entities.test.ts · test/setup.ts (and the suites that guard it)
 AGENTS.md · .substrat/playbook.md · .claude/ · .cursor/ · .opencode/
 ```
 
@@ -110,16 +112,9 @@ pnpm add @substrat-run/kernel @substrat-run/contracts @substrat-run/adapter-sqli
 ```
 
 `@substrat-run/adapter-sqlite` uses [better-sqlite3](https://www.npmjs.com/package/better-sqlite3),
-a native module. With pnpm 10+, allow its build script:
-
-```jsonc
-// package.json
-{
-  "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3"]
-  }
-}
-```
+a native module that ships prebuilt binaries, so there is no install script to allow. Do not
+add it to `pnpm.onlyBuiltDependencies`: it still ships a `binding.gyp`, so an allowlist entry
+makes pnpm run a `node-gyp rebuild` that nothing needs.
 
 ### 1. Create a host and provision a scope
 

@@ -15,7 +15,6 @@ import {
   type ScopeId,
   type ScopeDump,
   type SubjectShredReceipt,
-  RESERVED_STORE_OPERATIONS,
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
@@ -432,7 +431,7 @@ describe('subject erasure (#37)', () => {
   };
   const graphTable = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
   /** A registered graph driver: with none registered no store can exist (`mayHoldScopeStores`, #2242). */
-  const graphDriver: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' }, releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }], className: 'Graph', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] };
+  const graphDriver: StoreDriverRegistration = { driver: 'graph', isolationBasis: { kind: 'writtenInRepo' } };
 
   /** The control plane against a hosted `docs`, its stores reached through the platform. */
   const hosted = (calls: { imported: unknown[][]; erased: string[]; failErase?: boolean }, tables: number) =>

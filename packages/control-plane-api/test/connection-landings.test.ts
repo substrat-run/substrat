@@ -34,6 +34,7 @@ import {
   listFortnoxBindings,
   sweepFortnoxLedger,
   type FortnoxLedgerPage,
+  type FortnoxSupplierInvoicePage,
 } from '@substrat-run/connector-fortnox';
 import {
   PlanimaMock,
@@ -71,6 +72,7 @@ describe('declared connection landings (#2316)', () => {
   let t = tenantId.parse(ulid());
   let s: ScopeId;
   let ledgerPages: FortnoxLedgerPage[];
+  let invoicePages: FortnoxSupplierInvoicePage[];
   let planPages: PlanimaPlanPage[];
   let runs: SweepRunInput[];
 
@@ -93,6 +95,11 @@ describe('declared connection landings (#2316)', () => {
       'ledger/record-period': (async (ctx, input: FortnoxLedgerPage) => {
         assertAllowed(await ctx.check(LEDGER_RECORD));
         ledgerPages.push(input);
+        return { ok: true };
+      }) as OperationHandler<never, unknown>,
+      'invoices/record': (async (ctx, input: FortnoxSupplierInvoicePage) => {
+        assertAllowed(await ctx.check(LEDGER_RECORD));
+        invoicePages.push(input);
         return { ok: true };
       }) as OperationHandler<never, unknown>,
       'maintenance/record-plan': (async (ctx, input: PlanimaPlanPage) => {
@@ -167,8 +174,23 @@ describe('declared connection landings (#2316)', () => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
     return url.startsWith(planima.apiBase) ? planima.fetch(input, init) : fortnox.fetch(input, init);
   };
+  const fortnoxSweeper: ConnectorSweeper = (h, id, o) =>
+    sweepFortnoxLedger(h, id, { ...o, apiBase: fortnox.apiBase, oauthBase: fortnox.oauthBase, now: () => NOW });
+  /**
+   * A connector that leaves its invoice bindings unpolled and says so — the answer the platform
+   * records as `unsupported`. Fortnox polled no invoices before #2422; no connector answers this
+   * today, but the platform still reads it, so these tests hold that reading.
+   */
+  const answeringUnsupported = (failed: { scopeId: string; error: string }[] = []): ConnectorSweeper => async (h, id) => {
+    const bindings = await listFortnoxBindings(h, id);
+    return {
+      found: bindings.length,
+      failed,
+      unsupported: bindings.filter((b) => b.kind === 'supplier-invoice').map((b) => ({ scopeId: b.scopeId, reason: 'invoice polling awaits an upgrade' })),
+    };
+  };
   const sweepers: Record<string, ConnectorSweeper> = {
-    fortnox: (h, id, o) => sweepFortnoxLedger(h, id, { ...o, apiBase: fortnox.apiBase, oauthBase: fortnox.oauthBase, now: () => NOW }),
+    fortnox: fortnoxSweeper,
     planima: (h, id, o) => sweepPlanimaPlan(h, id, { ...o, apiBase: planima.apiBase, now: () => NOW, sleep: async () => {} }),
   };
   /** `connectionBindersFor`, over this test's host. */
@@ -232,7 +254,9 @@ describe('declared connection landings (#2316)', () => {
     t = tenantId.parse(ulid());
     s = scopeId.parse(ulid());
     ledgerPages = [];
+    invoicePages = [];
     planPages = [];
+    sweepers.fortnox = fortnoxSweeper;
     runs = [];
     host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('k', new Uint8Array(32).fill(7)), fetch });
     host.registerModule(crm);
@@ -281,22 +305,25 @@ describe('declared connection landings (#2316)', () => {
     expect(await audited('bindConnectionScope')).toBe(3);
   });
 
-  it('seats an invoice declaration but records unsupported without a failed sweep', async () => {
+  it('seats an invoice declaration and lands supplier invoices through it, never the ledger (#2422)', async () => {
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring([
       { provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record',
         options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] },
     ])));
+    fortnox.setSupplierInvoice({
+      modified: '2026-06-10 09:00',
+      invoice: { GivenNumber: '1', SupplierNumber: '7', SupplierName: 'Hiss AB', InvoiceNumber: 'F-1', InvoiceDate: '2026-06-09',
+        DueDate: '2026-07-09', Currency: 'SEK', Total: '1250', Booked: true, Cancelled: false, SupplierInvoiceRows: [] },
+    });
     const id = await connect('fortnox', '111111');
     const report = await pass();
 
-    expect((await listFortnoxBindings(host, id))[0]).toMatchObject({ kind: 'supplier-invoice', operation: 'invoices/record' });
     expect(report.errors).toEqual([]);
-    expect(report.connectionLandings?.failed).toBe(0);
-    expect(report.connectionsSkipped).toBe(1);
-    expect(report.connectionsSwept).toBe(0);
-    expect(lastRun(id)).toMatchObject({ outcome: 'unsupported', error: expect.stringContaining('upgrade') });
+    expect(report.connectionsSwept).toBe(1);
+    expect(lastRun(id)).toMatchObject({ outcome: 'ok' });
+    expect(invoicePages.map((p) => [p.connectionId, p.invoices.map((i) => i.givenNumber)])).toEqual([[id, ['1']]]);
     expect(ledgerPages).toEqual([]);
-    expect(fortnox.calls).toEqual([]);
+    expect(fortnox.calls.some((c) => c.includes('/sie/') || c.includes('/financialyears'))).toBe(false);
   });
 
   it('counts an invoice-only connection whose landing failed as swept, beside its failed row', async () => {
@@ -374,6 +401,7 @@ describe('declared connection landings (#2316)', () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date('2026-06-15T12:00:00.000Z'));
+      sweepers.fortnox = answeringUnsupported();
       const id = await connect('fortnox');
       const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
       await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(invoice)));
@@ -408,17 +436,16 @@ describe('declared connection landings (#2316)', () => {
     const invoice = [{ provider: 'fortnox', operation: 'invoices/record', permission: 'ledger:record', options: { kind: 'supplier-invoice' }, declaredBy: ['@acme/crm'] }];
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(ledger)));
     await host.admin.bindScopeVersion(staff, t, invoiceScope, await publish(manifestDeclaring(invoice)));
+    sweepers.fortnox = answeringUnsupported(outcome === 'failed' ? [{ scopeId: s, error: `unknown operation ${operation}` }] : []);
 
     await pass();
 
-    expect(lastRun(id)).toMatchObject({ outcome, error: expect.stringContaining('supplier-invoice polling is unavailable') });
+    expect(lastRun(id)).toMatchObject({ outcome, error: expect.stringContaining('invoice polling awaits an upgrade') });
     if (outcome === 'failed') expect(lastRun(id)?.error).toContain('\n1 of 2 bindings did not land');
     expect((await listFortnoxBindings(host, id))).toEqual(expect.arrayContaining([
       expect.objectContaining({ scopeId: s, operation }),
       expect.objectContaining({ scopeId: invoiceScope, kind: 'supplier-invoice' }),
     ]));
-    expect(ledgerPages).toHaveLength(outcome === 'ok' ? 1 : 0);
-    const calls = fortnox.calls.length;
     const rows = runs.length;
     vi.useFakeTimers();
     try {
@@ -426,7 +453,6 @@ describe('declared connection landings (#2316)', () => {
       await host.admin.recordSweepRun({ kind: 'connector', unit: id, outcome: outcome as 'ok' | 'failed', tenantId: t, vertical: SLUG, connectionId: id });
       vi.advanceTimersByTime(60 * 60_000);
       await pass({ fortnox: 120 });
-      expect(fortnox.calls).toHaveLength(calls);
       expect(runs).toHaveLength(rows);
     } finally {
       vi.useRealTimers();

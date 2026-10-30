@@ -2774,6 +2774,8 @@ const providerForm = (spec: ProviderSpec, env: Env) => ({
   // A connection per external account (#1267): a bureau connects one Fortnox company per
   // client, so the UI lists a fleet and keeps offering "connect another" instead of rotate.
   multiAccount: spec.accountRefField !== undefined,
+  // #2343: the detail view offers a send test only for a provider that sends mail.
+  sendsMail: spec.sendsMail === true,
 });
 
 async function appIntegrationTarget({ host, node }: TeamContext, appScopeId: string) {
@@ -3020,6 +3022,22 @@ async function verifyAppIntegrationIn(ctx: TeamContext, appScopeId: string, prov
 }
 
 /**
+ * Send a test message through a mail connection (#2343), behind the same gate as Test connection.
+ * The recipient is the signed-in person's own verified address, read from the session and never
+ * from the request: the message leaves the tenant's mailbox, so the door does not take an address.
+ */
+async function sendTestAppConnectionIn(ctx: TeamContext, appScopeId: string, provider: string, id: string, from: string) {
+  const { connectionId, cp } = await inspectableConnection(ctx, appScopeId, provider, id);
+  const user = await verifySession(ctx.c.env, getCookie(ctx.c, SESSION_COOKIE));
+  if (!user) throw new HTTPException(401, { message: 'unauthorized' });
+  const me = identifyEmail(ctx.c.env, user);
+  if (me.refused || !me.email) {
+    throw new HTTPException(400, { message: `a send test goes to your own verified email address: ${emailRefusalMessage(me.refused ?? 'no-email')}` });
+  }
+  return cp.sendConnectionTest(connectionId, { from, to: me.email });
+}
+
+/**
  * What this integration has done, and what it is allowed to do (#605): the connector's
  * projected dispatch ledger plus the connection's live grants — the readable "a leaked
  * provider token could invoke exactly these". `?live=1` also asks the provider for
@@ -3034,7 +3052,7 @@ async function getAppIntegrationActivityIn(
   source: 'provider' | 'ledger' = 'ledger',
 ) {
   const { connectionId, cp, connection, spec } = await inspectableConnection(ctx, appScopeId, provider, wantedId);
-  const [activity, grants, credential, intents, sweepRuns, certificate] = await Promise.all([
+  const [activity, grants, credential, intents, sweepRuns, certificate, mailSenders] = await Promise.all([
     cp.connectionActivity(connectionId, { live, source }),
     // Best-effort, all of them: a plane too old to serve grants, the credential view or the
     // intent journal must not cost the activity itself.
@@ -3050,6 +3068,8 @@ async function getAppIntegrationActivityIn(
     cp.listSweepRuns({ kind: 'connector', connectionId, limit: 20 }),
     // #2100: only for a provider whose door says it can sign in with a generated certificate.
     spec.certificate ? cp.connectionCertificate(connectionId) : Promise.resolve(null),
+    // #2343: the send test's picker, as a list (a display field is cut short). Best-effort too.
+    spec.sendsMail ? cp.connectionSenders(connectionId).catch((): string[] => []) : Promise.resolve([]),
   ]);
   return {
     ...activity,
@@ -3058,6 +3078,7 @@ async function getAppIntegrationActivityIn(
     credential: credential.fields,
     // Public: the certificate the tenant uploads to the provider. The key never leaves the plane.
     certificate,
+    mailSenders,
     // Current health, read in this request. The list page's copy can be minutes old.
     connection: connectionView(connection),
     // #1232: newest first — the strip renders it verbatim.
@@ -3293,25 +3314,21 @@ function roundLinkRow(env: Env, round: ConnectRound): RoundLinkRow | null {
  * navigates straight to it) and "copy connect link" (it is handed to whoever
  * administers the provider — no dashboard login needed to use it). Single-use and
  * revocable via its `dashboard_connect_links` row; the default 7-day life is for the
- * send-it-to-finance case, and a button click spends it within seconds.
+ * send-it-to-finance case, and a button click spends it within seconds. The claim names the
+ * team the PATH named (#2170), so a link minted in one tab never carries another tab's team.
  */
-app.post('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const spec = PROVIDERS[c.req.param('provider')];
+async function mintAppConnectLinkIn(ctx: TeamContext, appScopeId: string, provider: string, ttlMs: number | undefined) {
+  const { c, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
+  const spec = PROVIDERS[provider];
   if (!spec || spec.connectFlow !== 'redirect') throw new HTTPException(404, { message: 'provider has no connect flow' });
   if (!fortnoxConfig(c.env)) throw new HTTPException(503, { message: `${spec.name} connect is not configured on this deployment` });
-  const body = (await c.req.json().catch(() => ({}))) as { ttlMs?: number };
   // The permission-checked act; the row is written as this principal in the same scope.
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
   const row = (await dash.invoke('dashboard/mint-connect-link', {
     provider: spec.provider,
     appScopeId: appRow.app_scope_id,
-    ...(typeof body.ttlMs === 'number' ? { ttlMs: body.ttlMs } : {}),
+    ...(ttlMs !== undefined ? { ttlMs } : {}),
   })) as ConnectLinkRow;
   const claim: ConnectLinkClaim = {
     linkId: row.id,
@@ -3324,24 +3341,17 @@ app.post('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) =>
   };
   const token = await signClaim(c.env.SESSION_SECRET, CONNECT_LINK_PURPOSE, claim);
   const origin = new URL(c.req.url).origin;
-  return c.json(
-    {
-      ...connectLinkView(row),
-      url: `${origin}/api/integrations/${spec.provider}/connect?token=${encodeURIComponent(token)}`,
-    },
-    201,
-  );
-});
+  return {
+    ...connectLinkView(row),
+    url: `${origin}/api/integrations/${spec.provider}/connect?token=${encodeURIComponent(token)}`,
+  };
+}
 
 /** The outstanding (unexpired, unrevoked, unused) links for this app + provider. */
-app.get('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const spec = PROVIDERS[c.req.param('provider')];
+async function listAppConnectLinksIn(ctx: TeamContext, appScopeId: string, provider: string) {
+  const { c, node } = ctx;
+  const { dash, appRow } = await appIntegrationTarget(ctx, appScopeId);
+  const spec = PROVIDERS[provider];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
   const rows = await walkAll(dash, 'dashboard/list-connect-links', {
@@ -3371,39 +3381,35 @@ app.get('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => 
   } catch (e) {
     console.error('app connect-link list failed', e);
   }
-  return c.json({
+  return {
     links: [
       ...rows.map((r) => ({ ...connectLinkView(r), source: 'dashboard' as const })),
       ...appLinks.map((l) => ({ ...l, source: 'app' as const })),
     ],
-  });
-});
+  };
+}
 
 /** Revoke an outstanding link — the signature it rides becomes worthless. Idempotent. */
-app.delete('/api/apps/:scopeId/integrations/:provider/connect-links/:linkId', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const spec = PROVIDERS[c.req.param('provider')];
+async function revokeAppConnectLinkIn(ctx: TeamContext, appScopeId: string, provider: string, id: string) {
+  const { c, node } = ctx;
+  const dash = await teamScope(ctx);
+  const spec = PROVIDERS[provider];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const result = (await dash.invoke('dashboard/revoke-connect-link', { linkId: c.req.param('linkId') })) as
-    | { status: string }
-    | null;
-  if (result) return c.body(null, 204);
+  const result = (await dash.invoke('dashboard/revoke-connect-link', { linkId: id })) as { status: string } | null;
+  if (result) return { revoked: id };
   // Not one of the dashboard's own: it may be a link the app minted (§3.5.4), held by the
   // platform under this app's scope — which is the only scope this route lets it name, so an
   // id from another app, or another tenant, is a 404 there as it is here.
-  const appScope = scopeId.safeParse(c.req.param('scopeId'));
-  const linkId = connectLinkId.safeParse(c.req.param('linkId'));
+  const appScope = scopeId.safeParse(appScopeId);
+  const linkId = connectLinkId.safeParse(id);
   if (appScope.success && linkId.success && (await appByScopeId(dash, appScope.data))) {
     if (await controlPlaneFor(c.env, node.tenantId, node.principal).revokeConnectLink(appScope.data, linkId.data)) {
-      return c.body(null, 204);
+      return { revoked: id };
     }
   }
   throw new HTTPException(404, { message: 'unknown link' });
-});
+}
 
 /**
  * A connect link's landing: verify the signature, check the row still stands, and
@@ -5708,10 +5714,17 @@ const routeHandlers = {
     verifyAppIntegrationIn(ctx, app, provider),
   'dashboard/verify-app-connection': async (ctx, { scopeId: app, provider, connectionId: id }) =>
     verifyAppIntegrationIn(ctx, app, provider, id),
+  'dashboard/send-test-app-connection': async (ctx, { scopeId: app, provider, connectionId: id, from }) =>
+    sendTestAppConnectionIn(ctx, app, provider, id, from),
   'dashboard/get-app-integration-activity': async (ctx, { scopeId: app, provider, live, source }) =>
     getAppIntegrationActivityIn(ctx, app, provider, undefined, live === '1', source === 'provider' ? 'provider' : 'ledger'),
   'dashboard/get-app-connection-activity': async (ctx, { scopeId: app, provider, connectionId: id, live, source }) =>
     getAppIntegrationActivityIn(ctx, app, provider, id, live === '1', source === 'provider' ? 'provider' : 'ledger'),
+  'dashboard/mint-app-connect-link': async (ctx, { scopeId: app, provider, ttlMs }) =>
+    mintAppConnectLinkIn(ctx, app, provider, ttlMs),
+  'dashboard/list-app-connect-links': async (ctx, { scopeId: app, provider }) => listAppConnectLinksIn(ctx, app, provider),
+  'dashboard/revoke-app-connect-link': async (ctx, { scopeId: app, provider, linkId }) =>
+    revokeAppConnectLinkIn(ctx, app, provider, linkId),
   'dashboard/list-domains': async (ctx, page) => listDomainsIn(ctx, listPageQuery.parse(page)),
   'dashboard/add-domain': async (ctx, body) => addDomainIn(ctx, body),
   'dashboard/verify-domain': async ({ c, node }, { hostname }) =>
