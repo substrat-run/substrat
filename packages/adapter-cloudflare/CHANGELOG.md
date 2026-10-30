@@ -1,5 +1,21 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.169.0
+
+### Minor Changes
+
+- 9e6412c: `HostAdmin.revokeFromConnection` takes one key back from a live connection on one scope, the inverse of a scope-level `grantToConnection`: the scope's grant tuple goes first, then the directory record is tombstoned so no reconcile delivers it again, and the action is audited only when something changed. Hosted, the tuple is removed through the new `/internal/connector-revoke` route of the deployment serving the scope; a deployment on an older `@substrat-run/vertical-host` cannot take it, and the call refuses with `ConnectorRevokeUnsupported` without changing anything. `ConnectionInspector.unbindScope` drops a connection's binding to one scope.
+- 77d504f: A scope can make, bind and unbind its own connection through the connection relay. The upsert takes `owner: 'scope'` for a provider the scope's running version lands `on-request` and whose connector opens a scope's own connection. `relayConnectionBind` and `relayConnectionUnbind` (`/internal/connections/bind` and `/unbind`) bind that connection to that scope alone, with the scope's own options validated by the connector, and take the binding and its key back again. A vertical-defined connector's routed event is handed its scope's own connection when it holds one. The kernel exports `onRequestLandingFor` and `binderOf`, `ConnectionBinder` gains `unbind`, `revokeFromConnection` takes an optional `revokedBy`, and the binding audit an optional `requestedBy`.
+- fb2de85: The connection store can hold a connection owned by one scope, keyed apart from the tenant's and every other scope's, so two scopes could each hold their own connection to one account. `Connection.ownerScopeId` names the owner (`null` for a tenant-owned connection), `createConnection` takes it, `listConnections` filters by it, and `openConnection` opens a scope's own connection only when its owner is named. The connector pass never lands a scope-owned connection. Tenant-owned connections behave exactly as before, and the connection relay still makes only tenant-owned ones.
+
+### Patch Changes
+
+- Updated dependencies [9e6412c]
+- Updated dependencies [77d504f]
+- Updated dependencies [fb2de85]
+  - @substrat-run/contracts@0.169.0
+  - @substrat-run/kernel@0.169.0
+
 ## 0.168.0
 
 ### Patch Changes
@@ -7731,7 +7747,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
