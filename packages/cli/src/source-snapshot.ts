@@ -68,9 +68,14 @@ export function collectSourceSnapshot(directory: string): SourceSnapshot {
   }
   const files: SourceSnapshot['files'] = [];
   let bytes = 0;
+  const own = `${relative(root, dir).split(sep).join('/')}/`;
   for (const path of [...new Set(names)].sort()) {
     if (excludedSourcePath(path)) continue;
     if (included && path.includes('/') && !path.startsWith('tools/') && !path.startsWith('scripts/') && !included.some((prefix) => path.startsWith(prefix))) continue;
+    // A dependency package is only built (`tsc` over its `src`), never tested, so its tests
+    // and changelog are bytes every hop carries for nothing. The vertical's own tree stays whole.
+    const pkg = included && !path.startsWith(own) ? included.find((prefix) => path.startsWith(prefix)) : undefined;
+    if (pkg && /^(?:test\/|CHANGELOG\.md$)/.test(path.slice(pkg.length))) continue;
     const absolute = join(root, path);
     if (!existsSync(absolute)) continue; // tracked deletion
     const stat = lstatSync(absolute);
