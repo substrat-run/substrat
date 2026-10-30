@@ -520,7 +520,7 @@ preview or a fork, and for a provider with no platform consent round. A refusal 
 secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
 card and can revoke them there.
 
-## `upsertConnection(request)`, `bindConnection(request)`, `unbindConnection(request)`
+## `upsertConnection(request)`, `bindConnection(request)`, `unbindConnection(request)`, `listBindings(request)`
 
 How a vertical stores a provider credential from its **own** admin screen, and binds a
 scope's own connection to that scope with that scope's options (#2732) — one folder of a
@@ -528,7 +528,7 @@ file source per scope, say, where a tenant-wide landing would mirror the same fo
 every scope.
 
 ```ts
-import { upsertConnection, bindConnection, unbindConnection, ConnectionRequestError } from '@substrat-run/vertical-host';
+import { upsertConnection, bindConnection, unbindConnection, listBindings, ConnectionRequestError } from '@substrat-run/vertical-host';
 
 // module.ts — the authorizing act, and the only place a permission is checked
 const connectSource: OperationHandler = async (ctx, raw) => {
@@ -566,10 +566,30 @@ on this scope, keeps everything the scope already landed, and is idempotent; it 
 `{ connectionId, scopeId, unbound: true }`. Only the scope's own connection is reachable: another
 one answers `404`, as an unknown one does.
 
-Bind, unbind and an `owner: 'scope'` upsert need a **proven caller**: call them from the worker,
-on the request it is serving, never from inside a Durable Object. A refusal, or a `2xx` that is
-not the relay's answer, throws `ConnectionRequestError` with the relay's status. The calls go
-through `POST /internal/connections/upsert`, `…/bind` and `…/unbind`.
+Bind, unbind, the bindings read and an `owner: 'scope'` upsert need a **proven caller**: call them
+from the worker, on the request it is serving, never from inside a Durable Object. A refusal, or a
+`2xx` that is not the relay's answer, throws `ConnectionRequestError` with the relay's status. The
+calls go through `POST /internal/connections/upsert`, `…/bind`, `…/unbind` and `…/bindings`.
+
+### `listBindings(request)`
+
+What a settings screen shows for the scope's source: "last synced", and the last error.
+
+```ts
+const { bindings } = await listBindings({ ...access });
+// [{ connectionId, provider, status, options, boundAt, lastSyncedAt, lastError: { at, message } | null }]
+```
+
+It lists the scope's **own** connections that are bound to it — never another scope's, and not a
+tenant-wide connection bound here, whose sweeps cover every scope it lands in and so cannot say how
+this one fares. `status` is the connection's (`expired` or `error` asks for a reconnect).
+`lastSyncedAt` is the last sweep that completed, and `lastError` the last that failed, in the
+platform's words with a reference staff can trace; the provider's own answer is never in it.
+Only sweeps since `boundAt` count, so a rebind starts afresh. Sweep records are kept 14 days, so a
+`null` means none in that window, not necessarily never, and `lastError` can be older than
+`lastSyncedAt`: compare the two to tell a past failure from a current one. A binding nothing polls
+(its sweep is skipped, or unsupported for that binding) reads `null` in both, as one not swept yet
+does.
 
 ## `mailInAddress(request)`
 

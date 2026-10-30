@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PLATFORM_SECRET_HEADER, connectionId, scopeId, tenantId } from '@substrat-run/contracts';
-import { bindConnection, ConnectionRequestError, unbindConnection, upsertConnection } from '../src/index.js';
+import { bindConnection, ConnectionRequestError, listBindings, unbindConnection, upsertConnection } from '../src/index.js';
 
 /**
  * The harness half of a scope's connection (#2732). These helpers decide nothing — the operation
@@ -76,6 +76,18 @@ describe('connection helpers — the harness effects, the operation decides', ()
       secret: 'platform-secret',
       body: { ...ids, connectionId: conn, unboundBy: 'principal-1' },
     });
+  });
+
+  it('lists the scope\'s bindings through /internal/connections/bindings', async () => {
+    const answer = {
+      bindings: [{
+        connectionId: conn, provider: 'acme-files', status: 'active', options: { folder: 'f-1' }, boundAt: '2026-10-30T09:00:00.000Z',
+        lastSyncedAt: '2026-10-30T10:00:00.000Z', lastError: null,
+      }],
+    };
+    const s = seam(200, answer);
+    expect(await listBindings({ ...access, ...ids, fetchImpl: s.fetchImpl })).toEqual(answer);
+    expect(s.sent()).toEqual({ url: 'https://cp.example/internal/connections/bindings', secret: 'platform-secret', body: ids });
   });
 
   it('throws the relay\'s status and words on a refusal, and on a 2xx that is not the result', async () => {

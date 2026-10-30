@@ -27,6 +27,7 @@ import {
   connectionProbe,
   connectionProvider,
   connectionSecret,
+  connectionStatus,
 } from './connections.js';
 import {
   scopeDump,
@@ -1626,6 +1627,43 @@ export type ConnectionUnbindRequest = z.infer<typeof connectionUnbindRequest>;
 
 export const connectionUnbindResult = z.object({ connectionId, scopeId, unbound: z.literal(true) });
 export type ConnectionUnbindResult = z.infer<typeof connectionUnbindResult>;
+
+/**
+ * `/internal/connections/bindings` (#2732): the scope's own connections bound to that scope, each
+ * with what its sweep record says. A tenant's connection bound here is not listed: its sweep record
+ * covers every scope it lands in, so it cannot say how this one's binding fares.
+ */
+export const connectionBindingsRequest = z.object({ tenantId, scopeId });
+export type ConnectionBindingsRequest = z.infer<typeof connectionBindingsRequest>;
+
+/** One binding as a scope reads it. An allow-list: never a secret, a label or the provider's own answer. */
+export const connectionBindingStatus = z
+  .object({
+    connectionId,
+    provider: connectionProvider,
+    /** The connection's own status: `expired` or `error` says the credential needs attention. */
+    status: connectionStatus,
+    options: z.record(z.string(), z.unknown()),
+    boundAt: instant,
+    /**
+     * When a sweep of this binding last completed `ok`; only sweeps since `boundAt` count, so a
+     * rebind starts afresh. Sweep records are kept 14 days, so `null` means none in that window,
+     * not necessarily never. A binding nothing polls (its sweep is skipped or unsupported) reads
+     * `null` here and in `lastError`, as one not swept yet does.
+     */
+    lastSyncedAt: instant.nullable(),
+    /**
+     * The last failed sweep, in the platform's words (the tenant-readable line, never the provider's
+     * answer). It can be older than `lastSyncedAt`: compare the two to tell a past failure from a
+     * current one.
+     */
+    lastError: z.object({ at: instant, message: z.string() }).strict().nullable(),
+  })
+  .strict();
+export type ConnectionBindingStatus = z.infer<typeof connectionBindingStatus>;
+
+export const connectionBindingsResult = z.object({ bindings: z.array(connectionBindingStatus) }).strict();
+export type ConnectionBindingsResult = z.infer<typeof connectionBindingsResult>;
 
 /** What the relay answers — metadata only, the secret is never echoed. */
 export const connectionRelayResult = z.object({

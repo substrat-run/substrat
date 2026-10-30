@@ -14,19 +14,26 @@ import {
   connectionBindResult,
   connectionUnbindRequest,
   connectionUnbindResult,
+  connectionBindingsRequest,
+  connectionBindingsResult,
+  isVerticalConnectorProvider,
   type Connection,
+  type ConnectionBindingsResult,
   type ConnectionBindResult,
   type ConnectionUnbindResult,
   type PlatformActorId,
   type Scope,
 } from '@substrat-run/contracts';
 import type { z } from '@substrat-run/contracts';
+import type { ConnectionScopeBinding } from '@substrat-run/control-plane-client';
 import { ConnectionRelayError, PREVIEW_CONNECTIONS_REFUSAL, PROVEN_CALLER_REFUSAL } from './connection-relay.js';
+import { connectionBindingOptions } from './connection-binding-options.js';
 
 /**
  * The binding relays (#2732): `/internal/connections/bind` and `/internal/connections/unbind`, how a
  * scope binds its OWN connection (one made with the upsert relay's `owner: 'scope'`) to itself, with
- * its own options, and unbinds it again, from the vertical's own screen.
+ * its own options, and unbinds it again, from the vertical's own screen; and
+ * `/internal/connections/bindings`, how it reads those bindings back with their sweep status.
  *
  * The same shape as the upsert relay (connections.md §3.5.2): the vertical's operation is the
  * authorizing act (`ctx.check`), and its worker makes the call. What is bound is never the
@@ -58,6 +65,23 @@ function parsed<T extends z.ZodTypeAny>(schema: T, body: unknown, what: string):
   throw new ConnectionRelayError(`invalid ${what} request: ${first ? `${first.path.join('.') || '(root)'} — ${first.message}` : 'malformed body'}`, 400);
 }
 
+/** A binding's inspection notes, never its options. */
+const INSPECTION = new Set(['permissionInspectionError', 'auditWarning']);
+
+/** The named scope, for a caller proven to be it, of a vertical, and primary; or the refusal. */
+async function primaryScope(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  input: { tenantId: Scope['tenantId']; scopeId: Scope['id'] },
+  options: Pick<ConnectionBindingRelayOptions, 'proven'>,
+): Promise<Scope & { vertical: string }> {
+  if (!options.proven) throw new ConnectionRelayError(PROVEN_CALLER_REFUSAL, 403);
+  const scope = await host.admin.getScopeRecord(actor, input.tenantId, input.scopeId);
+  if (!scope?.vertical) throw new ConnectionRelayError('scope has no vertical bound', 404);
+  if (!isPrimaryScope(scope)) throw new ConnectionRelayError(PREVIEW_CONNECTIONS_REFUSAL, 403);
+  return { ...scope, vertical: scope.vertical };
+}
+
 /** The scope, its own connection and the provider's binder, or the refusal. All both relays need. */
 async function ownConnection(
   host: ScopeHost,
@@ -65,10 +89,7 @@ async function ownConnection(
   input: { tenantId: Scope['tenantId']; scopeId: Scope['id']; connectionId: Connection['id'] },
   options: ConnectionBindingRelayOptions,
 ): Promise<{ scope: Scope; connection: Connection; binder: ConnectionBinder }> {
-  if (!options.proven) throw new ConnectionRelayError(PROVEN_CALLER_REFUSAL, 403);
-  const scope = await host.admin.getScopeRecord(actor, input.tenantId, input.scopeId);
-  if (!scope?.vertical) throw new ConnectionRelayError('scope has no vertical bound', 404);
-  if (!isPrimaryScope(scope)) throw new ConnectionRelayError(PREVIEW_CONNECTIONS_REFUSAL, 403);
+  const scope = await primaryScope(host, actor, input, options);
   const connection = (
     await host.admin.listConnections(actor, { tenantId: input.tenantId, vertical: scope.vertical, ownerScopeId: input.scopeId })
   ).find((c) => c.id === input.connectionId);
@@ -183,6 +204,54 @@ export async function relayConnectionBind(
     options: answered ? Object.fromEntries(Object.entries(answered).filter(([k]) => !FIXED.has(k))) : bindingOptions,
     boundAt: typeof answered?.boundAt === 'string' ? answered.boundAt : new Date().toISOString(),
   });
+}
+
+/**
+ * `/internal/connections/bindings`: the scope's own connections bound to it, with the last `ok` and
+ * the last `failed` sweep of each. The sweep record is per connection, and a scope's own connection
+ * is bound only to its scope, so the record is that binding's. Its `error` is the tenant-readable
+ * line the pass writes; the provider's answer stays on staff's row.
+ */
+export async function relayConnectionBindings(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  body: unknown,
+  options: Pick<ConnectionBindingRelayOptions, 'proven'> & {
+    /**
+     * The bindings a connection holds as its connector stored them (the inspection route's read),
+     * so the options are the ones the bind answered. Undefined for a provider that binds none.
+     */
+    bindings: (host: ScopeHost, connection: Connection) => Promise<readonly ConnectionScopeBinding[]> | undefined;
+  },
+): Promise<ConnectionBindingsResult> {
+  const input = parsed(connectionBindingsRequest, body, 'connection bindings');
+  const scope = await primaryScope(host, actor, input, options);
+  const own = await host.admin.listConnections(actor, { tenantId: scope.tenantId, vertical: scope.vertical, ownerScopeId: scope.id });
+  const listed = await Promise.all(
+    own.map(async (connection) => {
+      const binding = (await options.bindings(host, connection))?.find((b) => b.scopeId === scope.id);
+      if (!binding) return [];
+      // Only this binding's sweeps: a period before an unbind and rebind is not its record.
+      const last = async (outcome: 'ok' | 'failed') =>
+        (await host.admin.listSweepRuns(actor, { kind: 'connector', unit: connection.id, tenantId: scope.tenantId, outcome, since: binding.boundAt, limit: 1 }))[0];
+      const [ok, failed] = await Promise.all([last('ok'), last('failed')]);
+      const stored = Object.fromEntries(Object.entries(binding).filter(([k]) => !FIXED.has(k) && !INSPECTION.has(k)));
+      return [{
+        connectionId: connection.id,
+        provider: connection.provider,
+        status: connection.status,
+        // A vertical connector's options are what its own bind stored. A built-in's record also
+        // holds its sync cursor, so it is cut to the provider's options.
+        options: isVerticalConnectorProvider(connection.provider) ? stored : connectionBindingOptions(connection.provider).strip().parse(stored),
+        boundAt: binding.boundAt,
+        lastSyncedAt: ok?.at ?? null,
+        // The pass writes a failed row's `error` in the platform's words; the provider's own answer
+        // is filed on staff's row under the reference that line names.
+        lastError: failed?.error ? { at: failed.at, message: failed.error } : null,
+      }];
+    }),
+  );
+  return connectionBindingsResult.parse({ bindings: listed.flat() });
 }
 
 export async function relayConnectionUnbind(

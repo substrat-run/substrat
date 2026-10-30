@@ -3,16 +3,31 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid, webCryptoSecretBox, type ConnectionBinder } from '@substrat-run/kernel';
-import { connectionId, permissionKey, platformActorId, principalId, scopeId, tenantId, type ConnectionId, type ScopeId } from '@substrat-run/contracts';
+import { runPlatformSweep, ulid, webCryptoSecretBox, type ConnectionBinder, type ConnectorSweeper, type ScopeHost } from '@substrat-run/kernel';
+import {
+  connectionId,
+  permissionKey,
+  platformActorId,
+  principalId,
+  scopeId,
+  tenantId,
+  verticalConnectorBinding,
+  verticalConnectorBindingKey,
+  type Connection,
+  type ConnectionId,
+  type ScopeId,
+} from '@substrat-run/contracts';
 import { bindPlanimaScope, listPlanimaBindings, unbindPlanimaScope } from '@substrat-run/connector-planima';
 import {
   ConnectionRelayError,
   connectionBindingOptions,
   relayConnectionBind,
+  relayConnectionBindings,
   relayConnectionUnbind,
   relayConnectionUpsert,
+  verticalConnectorInspector,
   type ConnectionBindingRelayOptions,
+  type VerticalConnectorDeps,
 } from '../src/index.js';
 import { heldVersion } from './held-manifest.js';
 
@@ -50,6 +65,9 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     proven,
     landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { planima: with_ } },
   });
+  /** The bindings read's options: Planima's stored bindings, as its inspector lists them. */
+  const statusOf = (proven = true) => ({ proven, bindings: (h: ScopeHost, row: Connection) => listPlanimaBindings(h, row.id) });
+  const statusOfA = () => relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf()).then((r) => r.bindings);
 
   /** A version of the vertical declaring the landing in `mode`, holding `key`, and every scope given it. */
   const runs = async (mode: 'on-request' | 'every-install', key = LAND) => {
@@ -108,6 +126,8 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await holds(a, conn)).toBe(true);
     expect(await holds(b, conn)).toBe(false);
     expect((await listPlanimaBindings(host, conn)).map((x) => [x.scopeId, x.operation, x.permission])).toEqual([[a, 'drive/land', LAND]]);
+    // Not swept yet: the status read lists it with neither time.
+    expect(await statusOfA()).toEqual([expect.objectContaining({ connectionId: conn, boundAt: bound.boundAt, lastSyncedAt: null, lastError: null })]);
     const row = (await host.admin.auditLog(relayActor, { tenantId: t })).find((e) => e.action === 'bindConnectionScope');
     expect(row?.after).toMatchObject({ connectionId: conn, requestedBy: person, phase: 'applied' });
   });
@@ -260,11 +280,86 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await unbind()).toEqual({ connectionId: conn, scopeId: a, unbound: true });
     expect(await holds(a, conn)).toBe(false);
     expect(await listPlanimaBindings(host, conn)).toEqual([]);
-    // The connection itself stays the scope's, and binding again resumes.
-    await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
+    expect(await statusOfA()).toEqual([]);
+    // The connection itself stays the scope's, and binding again resumes, with a status of its own:
+    // a failure before the rebind is not this binding's.
+    const rebound = await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
     expect(await holds(a, conn)).toBe(true);
+    await host.admin.recordSweepRun({
+      kind: 'connector', unit: conn, outcome: 'failed', tenantId: t, connectionId: conn, error: 'before the rebind',
+      at: new Date(Date.parse(rebound.boundAt) - 60_000).toISOString(),
+    });
+    expect(await statusOfA()).toEqual([expect.objectContaining({ connectionId: conn, lastSyncedAt: null, lastError: null })]);
     const revokes = (await host.admin.auditLog(relayActor, { tenantId: t })).filter((e) => e.action === 'revokeFromConnection');
     expect(revokes.map((e) => e.before)).toEqual([expect.objectContaining({ connectionId: conn, revokedBy: person })]);
+  });
+
+  it("reads its own binding back with its sweep status in the platform's words, and nothing of another scope's or the tenant's", async () => {
+    await runs('on-request');
+    const conn = await own(a);
+    await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
+    // Bound to a as well, by the tenant's connection and b's own; neither is a's to read.
+    const tenants = connectionId.parse(ulid());
+    await host.admin.createConnection(relayActor, { id: tenants, tenantId: t, vertical: SLUG, provider: 'planima', label: 'tenant', secret: { token: 'tok' } });
+    await host.admin.grantToConnection(relayActor, { connectionId: tenants, permission: LAND, node: { tenantId: t, scopeId: a }, grantedBy: relayActor });
+    await bindPlanimaScope(host, { tenantId: t, scopeId: a, vertical: SLUG, operation: 'drive/land', permission: LAND, connectionId: tenants });
+    await relayConnectionBind(host, relayActor, bindBody(b, await own(b)), landings());
+
+    // One pass the provider fails with its own words, then one that syncs and moves the cursor.
+    const RAW = 'provider says: folder /private/payroll is locked';
+    const pass = (sweeper: ConnectorSweeper) => {
+      const recorded: Promise<unknown>[] = [];
+      return runPlatformSweep(host, {
+        actor: relayActor,
+        fetch,
+        sweepers: { planima: sweeper },
+        drainRetries: false,
+        recordSweepRun: (e) => void recorded.push(host.admin.recordSweepRun(e)),
+        recordFailure: () => {},
+        connectionLandings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { planima: binder } },
+      }).then(() => Promise.all(recorded));
+    };
+    await pass(async () => {
+      throw new Error(RAW);
+    });
+    await pass(async (h, id) => {
+      for (const x of await listPlanimaBindings(h, id)) {
+        await h.admin.putConnectorState(id, `planima:binding:${x.scopeId}`, { ...x, lastSync: { syncedAt: x.boundAt, contentHash: 'h', facilities: 1, actions: 1 } });
+      }
+      return { found: 1, failed: [] };
+    });
+
+    const bindings = await statusOfA();
+    expect(bindings).toEqual([{
+      connectionId: conn,
+      provider: 'planima',
+      status: 'active',
+      options: { organizationId: null, currency: 'SEK', window: null, horizonYears: 10 },
+      boundAt: expect.any(String),
+      lastSyncedAt: expect.any(String),
+      lastError: { at: expect.any(String), message: expect.stringContaining('the sweep did not complete (reference ') },
+    }]);
+    expect(JSON.stringify(bindings)).not.toContain('payroll');
+    expect(await refusal(relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf(false)))).toBe(403);
+  });
+
+  it("lists a vertical connector's binding with the options its own bind stored, through the inspector the control plane reads", async () => {
+    // The only kind a scope owns in production: a vertical-defined provider, bound by its connector.
+    const conn = connectionId.parse(ulid());
+    await host.admin.createConnection(relayActor, { id: conn, tenantId: t, vertical: SLUG, provider: 'acme.files', label: 'own', secret: { token: 't' }, ownerScopeId: a });
+    const stored = { scopeId: a, operation: 'drive/land', permission: LAND, options: { folder: 'f-1', folderId: 'id-1' }, declared: { folder: 'f-1' }, boundAt: new Date().toISOString() };
+    await host.admin.putConnectorState(conn, verticalConnectorBindingKey(a), verticalConnectorBinding.parse(stored));
+    const unused = () => {
+      throw new Error('a bindings read calls no connector');
+    };
+    const deps: VerticalConnectorDeps = { host, actor: relayActor, resolve: unused, call: unused, now: () => new Date().toISOString() };
+
+    const { bindings } = await relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, {
+      proven: true,
+      bindings: (h, row) => verticalConnectorInspector(deps, row.provider, { tenantId: row.tenantId, vertical: row.vertical, scopeId: null }).bindings(h, row),
+    });
+
+    expect(bindings).toEqual([expect.objectContaining({ connectionId: conn, provider: 'acme.files', options: { folder: 'f-1', folderId: 'id-1' }, boundAt: stored.boundAt })]);
   });
 
   it("makes each scope's own connection on one account through the upsert, refused where it cannot be the scope's", async () => {
