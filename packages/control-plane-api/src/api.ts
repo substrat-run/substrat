@@ -363,6 +363,12 @@ export interface ConnectionInspector {
   /** Poll-only landing setup. The API checks tenant, vertical and the in-scope grant first. */
   bindScope?: (host: ScopeHost, connection: Connection, target: ConnectionScopeBindingInput & { tenantId: string; scopeId: string; vertical: string }) => Promise<ConnectionScopeBinding>;
   bindings?: (host: ScopeHost, connection: Connection) => Promise<ConnectionScopeBinding[]>;
+  /**
+   * #2732: drop `connection`'s binding to one scope, `bindScope`'s inverse. Idempotent; what the
+   * scope already landed stays. The key the binding held is the caller's to take back
+   * (`revokeFromConnection`).
+   */
+  unbindScope?: (host: ScopeHost, connection: Connection, scopeId: ScopeId) => Promise<void>;
 
   probe?: (host: ScopeHost, connection: Connection) => Promise<ConnectionProbe>;
   activity?: (

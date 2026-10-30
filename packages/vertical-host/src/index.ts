@@ -578,6 +578,12 @@ export interface VerticalScopeHost {
     expiresAt?: string,
   ): Promise<void>;
   /**
+   * The far end of `revokeFromConnection` (#2732): tombstone the scope's `connection:<id>` grant
+   * tuple, `true` when one was live. Optional so a host built before it still satisfies this
+   * interface; `/internal/connector-revoke` then answers 501.
+   */
+  connectorRevokeLocal?(connectionId: ConnectionId, scopeId: ScopeId, permission: PermissionKey): Promise<boolean>;
+  /**
    * The far end of the schedule kill switch (#1666): move one module's switch in the
    * scope's own storage. OPTIONAL for the reason `redrainCountLocal` is — a host built
    * before it satisfies this interface without it — and the route answers 501, which the
@@ -1246,6 +1252,9 @@ const connectorGrantBody = z.object({
   permission: permissionKeyOf,
   expiresAt: instant.optional(),
 });
+
+/** `/internal/connector-revoke` body (#2732) — the delivery half of `revokeFromConnection`. */
+const connectorRevokeBody = connectorGrantBody.omit({ expiresAt: true });
 
 export interface PlatformSurfaceDeps<Env> {
   /**
@@ -2213,9 +2222,10 @@ export function mountPlatformSurface<Env extends object>(
   });
 
   // Grant delivery (#574): the scope-level `connection:<id>` tuple the two verbs above
-  // are checked against. Idempotent (INSERT OR REPLACE). No revoke mirror: every
-  // delegated call re-passes the platform's live-connection gate first, so revoking
-  // the connection closes the door even while the tuple remains.
+  // are checked against. Idempotent (INSERT OR REPLACE). Revoking a whole connection needs
+  // no mirror: every delegated call re-passes the platform's live-connection gate first.
+  // Taking one key back on one scope from a connection that stays live does (#2732):
+  // `/internal/connector-revoke` below.
   app.post('/internal/connector-grants', async (c) => {
     const body = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf }).strict().parse(await c.req.json());
     const host = deps.hostFor(c.env);
@@ -2249,6 +2259,18 @@ export function mountPlatformSurface<Env extends object>(
       .hostFor(c.env)
       .connectorGrantLocal(body.connectionId, body.scopeId, body.permission, body.expiresAt);
     return c.json({ granted: body.permission, scopeId: body.scopeId });
+  });
+
+  // #2732: one key taken back from a live connection on one scope, the platform's
+  // `revokeFromConnection` for a scope served HERE. Idempotent: `revoked: false` when nothing was
+  // live. A deployment built before this route answers 404, which the platform reads as "cannot
+  // revoke here yet" and changes nothing.
+  app.post('/internal/connector-revoke', async (c) => {
+    const body = connectorRevokeBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.connectorRevokeLocal) return refuseStatus(c, 501, 'this deployment cannot revoke a connector grant — redeploy it');
+    const revoked = await host.connectorRevokeLocal(body.connectionId, body.scopeId, body.permission);
+    return c.json({ revoked, scopeId: body.scopeId });
   });
 
   // The schedule kill switch (#1666): the shared control plane's `revokeFromSystem` /

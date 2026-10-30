@@ -6141,6 +6141,40 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- one key taken back on one scope, from a connection that stays live (#2732) --
+
+    describe('revokeFromConnection (#2732)', () => {
+      it('takes one key back on one scope, out of the gather too, keeps the rest, and audits only a change', async () => {
+        const vt = tenantId.parse(ulid());
+        const vs = scopeId.parse(ulid());
+        const vconn = connectionId.parse(ulid());
+        const LAND = permissionKey.parse('protocol:record-signature');
+        const KEEP = permissionKey.parse('protocol:attach');
+        await host.admin.createTenant(staff, { id: vt, slug: `tenant-${vt.toLowerCase()}`, name: 'Revoke' });
+        await host.provisionScope(staff, { tenantId: vt, scopeId: vs, vertical: 'signing' });
+        await host.admin.activateScope(staff, vt, vs);
+        await host.admin.createConnection(staff, {
+          id: vconn, tenantId: vt, vertical: 'signing', provider: 'signer', label: 'Signer', secret: { accessToken: 'tok-revoke' },
+        });
+        for (const permission of [LAND, KEEP]) {
+          await host.admin.grantToConnection(staff, { connectionId: vconn, permission, node: { tenantId: vt, scopeId: vs }, grantedBy: staff });
+        }
+        const revoke = () => host.admin.revokeFromConnection(staff, { connectionId: vconn, permission: LAND, node: { tenantId: vt, scopeId: vs } });
+        const audited = async () => (await host.admin.auditLog(staff, { tenantId: vt })).filter((e) => e.action === 'revokeFromConnection').length;
+
+        await revoke();
+        expect((await host.connectionGrantsInScope(vt, vs)).map((g) => g.permission)).toEqual([KEEP]);
+        // The gather provision and reconcile seat from: a revoked key is never delivered again.
+        expect((await host.admin.listConnectionGrants(staff, vt)).map((g) => g.permission)).toEqual([KEEP]);
+        // The connection itself is untouched.
+        expect((await host.admin.openConnection(vt, 'signing', 'signer'))?.id).toBe(vconn);
+        expect(await audited()).toBe(1);
+
+        await revoke();
+        expect(await audited()).toBe(1);
+      });
+    });
+
     // -- connector state: a connector's own durable bookkeeping (#101 gap 3) ---
 
     describe('connector state', () => {

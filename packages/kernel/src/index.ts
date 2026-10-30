@@ -104,6 +104,8 @@ export {
 } from './retention.js';
 // #2732: the live-connection key, owner included, as both adapters build it.
 export { CONNECTIONS_LIVE_INDEX, connectionsLiveIndexHasOwner } from './connection-live-index.js';
+// #2732: a per-scope connection-grant revoke the serving deployment cannot take yet.
+export { ConnectorRevokeUnsupported } from './connector-revoke.js';
 export {
   isUpgradeRequest,
   isVouchedWithin,

@@ -214,6 +214,12 @@ describe('vertical-defined connectors — the platform side', () => {
     });
     // The pass compares a declaration with what was declared, not with what the hook made of it.
     expect(await binder.list(host, row)).toEqual([{ folder: 'Inbox', scopeId: a, operation: 'docs/land', permission: LAND }]);
+
+    // #2732: and the inspector's unbind drops it, again harmlessly.
+    const { unbindScope } = verticalConnectorInspector(deps(), row.provider, { tenantId: t, vertical: SLUG, scopeId: a });
+    await unbindScope(host, row, a);
+    await unbindScope(host, row, a);
+    expect(await binder.list(host, row)).toEqual([]);
   });
 
   it('binds a declared landing once through the kernel’s fallbacks, though its bind hook rewrites the option, and sweeps it every pass', async () => {

@@ -54,6 +54,7 @@ import {
   runCrossVerticalFrom,
   isPrimaryScope,
   StorageReadUnsupported,
+  ConnectorRevokeUnsupported,
   webCryptoSecretBox,
   globalFetch,
   type CrossVerticalOptions,
@@ -1327,7 +1328,25 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
         permission: a.permission,
         expiresAt: a.expiresAt,
       }),
+    revoke: async (a) => connectorRevokeThrough(await clientFor(a.tenantId, a.scopeId), a),
   };
+}
+
+/**
+ * #2732: `grant`'s mirror, over the client of the deployment serving the scope. A deployment built
+ * before the route cannot take it, and says so with a 404 (or 501, a host that cannot): that is
+ * "this vertical cannot be unbound until it upgrades", so it is `ConnectorRevokeUnsupported`.
+ */
+export async function connectorRevokeThrough(
+  client: Pick<VerticalClient, 'connectorRevoke'>,
+  a: Parameters<NonNullable<ConnectorDelegation['revoke']>>[0],
+): Promise<boolean> {
+  try {
+    return await client.connectorRevoke({ connectionId: a.connectionId, scopeId: a.scopeId, permission: a.permission });
+  } catch (e) {
+    if (e instanceof ControlPlaneError && (e.status === 404 || e.status === 501)) throw new ConnectorRevokeUnsupported(a.vertical);
+    throw e;
+  }
 }
 
 /**
