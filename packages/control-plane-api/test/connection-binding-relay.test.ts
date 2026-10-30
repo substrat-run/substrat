@@ -3,13 +3,24 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid, webCryptoSecretBox, type ConnectionBinder } from '@substrat-run/kernel';
-import { connectionId, permissionKey, platformActorId, principalId, scopeId, tenantId, type ConnectionId, type ScopeId } from '@substrat-run/contracts';
+import { runPlatformSweep, ulid, webCryptoSecretBox, type ConnectionBinder, type ConnectorSweeper, type ScopeHost } from '@substrat-run/kernel';
+import {
+  connectionId,
+  permissionKey,
+  platformActorId,
+  principalId,
+  scopeId,
+  tenantId,
+  type Connection,
+  type ConnectionId,
+  type ScopeId,
+} from '@substrat-run/contracts';
 import { bindPlanimaScope, listPlanimaBindings, unbindPlanimaScope } from '@substrat-run/connector-planima';
 import {
   ConnectionRelayError,
   connectionBindingOptions,
   relayConnectionBind,
+  relayConnectionBindings,
   relayConnectionUnbind,
   relayConnectionUpsert,
   type ConnectionBindingRelayOptions,
@@ -50,6 +61,9 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     proven,
     landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { planima: with_ } },
   });
+  /** The bindings read's options: Planima's stored bindings, as its inspector lists them. */
+  const statusOf = (proven = true) => ({ proven, bindings: (h: ScopeHost, row: Connection) => listPlanimaBindings(h, row.id) });
+  const statusOfA = () => relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf()).then((r) => r.bindings);
 
   /** A version of the vertical declaring the landing in `mode`, holding `key`, and every scope given it. */
   const runs = async (mode: 'on-request' | 'every-install', key = LAND) => {
@@ -108,7 +122,9 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await holds(a, conn)).toBe(true);
     expect(await holds(b, conn)).toBe(false);
     expect((await listPlanimaBindings(host, conn)).map((x) => [x.scopeId, x.operation, x.permission])).toEqual([[a, 'drive/land', LAND]]);
-    const row = (await host.admin.auditLog(relayActor, { tenantId: t })).find((e) => e.action === 'bindConnectionScope');
+    // Not swept yet: the status read lists it with neither time.
+    expect(await statusOfA()).toEqual([expect.objectContaining({ connectionId: conn, boundAt: bound.boundAt, lastSyncedAt: null, lastError: null })]);
+    const row =(await host.admin.auditLog(relayActor, { tenantId: t })).find((e) => e.action === 'bindConnectionScope');
     expect(row?.after).toMatchObject({ connectionId: conn, requestedBy: person, phase: 'applied' });
   });
 
@@ -260,11 +276,62 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await unbind()).toEqual({ connectionId: conn, scopeId: a, unbound: true });
     expect(await holds(a, conn)).toBe(false);
     expect(await listPlanimaBindings(host, conn)).toEqual([]);
+    expect(await statusOfA()).toEqual([]);
     // The connection itself stays the scope's, and binding again resumes.
     await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
     expect(await holds(a, conn)).toBe(true);
+    expect((await statusOfA()).map((x) => x.connectionId)).toEqual([conn]);
     const revokes = (await host.admin.auditLog(relayActor, { tenantId: t })).filter((e) => e.action === 'revokeFromConnection');
     expect(revokes.map((e) => e.before)).toEqual([expect.objectContaining({ connectionId: conn, revokedBy: person })]);
+  });
+
+  it("reads its own binding back with its sweep status in the platform's words, and nothing of another scope's or the tenant's", async () => {
+    await runs('on-request');
+    const conn = await own(a);
+    await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
+    // Bound to a as well, by the tenant's connection and b's own; neither is a's to read.
+    const tenants = connectionId.parse(ulid());
+    await host.admin.createConnection(relayActor, { id: tenants, tenantId: t, vertical: SLUG, provider: 'planima', label: 'tenant', secret: { token: 'tok' } });
+    await host.admin.grantToConnection(relayActor, { connectionId: tenants, permission: LAND, node: { tenantId: t, scopeId: a }, grantedBy: relayActor });
+    await bindPlanimaScope(host, { tenantId: t, scopeId: a, vertical: SLUG, operation: 'drive/land', permission: LAND, connectionId: tenants });
+    await relayConnectionBind(host, relayActor, bindBody(b, await own(b)), landings());
+
+    // One pass the provider fails with its own words, then one that syncs and moves the cursor.
+    const RAW = 'provider says: folder /private/payroll is locked';
+    const pass = (sweeper: ConnectorSweeper) => {
+      const recorded: Promise<unknown>[] = [];
+      return runPlatformSweep(host, {
+        actor: relayActor,
+        fetch,
+        sweepers: { planima: sweeper },
+        drainRetries: false,
+        recordSweepRun: (e) => void recorded.push(host.admin.recordSweepRun(e)),
+        recordFailure: () => {},
+        connectionLandings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { planima: binder } },
+      }).then(() => Promise.all(recorded));
+    };
+    await pass(async () => {
+      throw new Error(RAW);
+    });
+    await pass(async (h, id) => {
+      for (const x of await listPlanimaBindings(h, id)) {
+        await h.admin.putConnectorState(id, `planima:binding:${x.scopeId}`, { ...x, lastSync: { syncedAt: x.boundAt, contentHash: 'h', facilities: 1, actions: 1 } });
+      }
+      return { found: 1, failed: [] };
+    });
+
+    const bindings = await statusOfA();
+    expect(bindings).toEqual([{
+      connectionId: conn,
+      provider: 'planima',
+      status: 'active',
+      options: { organizationId: null, currency: 'SEK', window: null, horizonYears: 10 },
+      boundAt: expect.any(String),
+      lastSyncedAt: expect.any(String),
+      lastError: { at: expect.any(String), message: expect.stringContaining('the sweep did not complete (reference ') },
+    }]);
+    expect(JSON.stringify(bindings)).not.toContain('payroll');
+    expect(await refusal(relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf(false)))).toBe(403);
   });
 
   it("makes each scope's own connection on one account through the upsert, refused where it cannot be the scope's", async () => {

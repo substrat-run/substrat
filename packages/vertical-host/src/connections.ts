@@ -1,5 +1,7 @@
-import { PLATFORM_SECRET_HEADER, connectionBindResult, connectionRelayResult, connectionUnbindResult } from '@substrat-run/contracts';
+import { PLATFORM_SECRET_HEADER, connectionBindResult, connectionBindingsResult, connectionRelayResult, connectionUnbindResult } from '@substrat-run/contracts';
 import type {
+  ConnectionBindingsRequest,
+  ConnectionBindingsResult,
   ConnectionBindRequest,
   ConnectionBindResult,
   ConnectionRelayResult,
@@ -50,6 +52,7 @@ export interface ConnectionRelayAccess {
 export type UpsertConnectionRequest = ConnectionRelayAccess & z.input<typeof connectionRelayRequest>;
 export type BindConnectionRequest = ConnectionRelayAccess & ConnectionBindRequest;
 export type UnbindConnectionRequest = ConnectionRelayAccess & ConnectionUnbindRequest;
+export type ListBindingsRequest = ConnectionRelayAccess & ConnectionBindingsRequest;
 
 /** The relay refused, or answered something other than its result. Carries the status so a caller can map it. */
 export class ConnectionRequestError extends Error {
@@ -98,4 +101,14 @@ export function bindConnection(request: BindConnectionRequest): Promise<Connecti
 /** Drop the binding and take its landing key back on this scope; what the scope landed stays. Idempotent. */
 export function unbindConnection(request: UnbindConnectionRequest): Promise<ConnectionUnbindResult> {
   return relay(request, '/internal/connections/unbind', connectionUnbindResult, `unbind connection ${request.connectionId}`);
+}
+
+/**
+ * The scope's own connections bound to it, each with its last successful sweep (`lastSyncedAt`) and
+ * its last failed one (`lastError`, in the platform's words). Sweep records are kept 14 days, so a
+ * `null` there means none in that window; compare the two times to tell a past failure from a
+ * current one.
+ */
+export function listBindings(request: ListBindingsRequest): Promise<ConnectionBindingsResult> {
+  return relay(request, '/internal/connections/bindings', connectionBindingsResult, 'list connection bindings');
 }

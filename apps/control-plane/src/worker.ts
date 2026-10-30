@@ -151,6 +151,7 @@ import {
   type VerticalConnectorDeclarationOf,
   relayConnectionUpsert,
   relayConnectionBind,
+  relayConnectionBindings,
   relayConnectionUnbind,
   ConnectionRelayError,
   relayConnectUrl,
@@ -3281,11 +3282,12 @@ export default {
     });
 
     // The binding relays (#2732): a scope binds its own connection to itself with its own options,
-    // through the on-request landing its running version declares, and unbinds it. Same gate as the
-    // upsert; the caller must also be established as the scope it names, and each call is judged by
-    // the connector pass's own reader and binders.
+    // through the on-request landing its running version declares, unbinds it, and reads those
+    // bindings back with their sweep status. Same gate as the upsert; the caller must also be
+    // established as the scope it names, and each change is judged by the connector pass's own
+    // reader and binders.
     const bindingRelay =
-      (run: typeof relayConnectionBind | typeof relayConnectionUnbind) =>
+      (run: (env: Env, host: CloudflareScopeHost, body: unknown, proven: boolean) => Promise<unknown>) =>
       async (c: Context<{ Bindings: Env }>) => {
         try {
           assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
@@ -3296,28 +3298,47 @@ export default {
         const body: unknown = await c.req.json().catch(() => ({}));
         const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
         if (!caller.ok) return c.json({ error: caller.error }, 403);
-        const host = hostFor(c.env);
         try {
-          return c.json(
-            await run(host, CONNECTION_RELAY_ACTOR, body, {
-              proven: caller.proven,
-              landings: {
-                read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
-                binders: connectionBindersFor(c.env),
-                binderFor: (conn) =>
-                  isVerticalConnectorProvider(conn.provider)
-                    ? verticalConnectorBinder(verticalConnectorDepsFor(c.env, host, CONNECTION_RELAY_ACTOR))
-                    : undefined,
-              },
-            }),
-          );
+          return c.json(await run(c.env, hostFor(c.env), body, caller.proven));
         } catch (e) {
           if (e instanceof ConnectionRelayError) return c.json({ error: e.message }, e.status);
           throw e;
         }
       };
-    app.post('/internal/connections/bind', bindingRelay(relayConnectionBind));
-    app.post('/internal/connections/unbind', bindingRelay(relayConnectionUnbind));
+    const bindingChange =
+      (run: typeof relayConnectionBind | typeof relayConnectionUnbind) => (env: Env, host: CloudflareScopeHost, body: unknown, proven: boolean) =>
+        run(host, CONNECTION_RELAY_ACTOR, body, {
+          proven,
+          landings: {
+            read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+            binders: connectionBindersFor(env),
+            binderFor: (conn) =>
+              isVerticalConnectorProvider(conn.provider)
+                ? verticalConnectorBinder(verticalConnectorDepsFor(env, host, CONNECTION_RELAY_ACTOR))
+                : undefined,
+          },
+        });
+    app.post('/internal/connections/bind', bindingRelay(bindingChange(relayConnectionBind)));
+    app.post('/internal/connections/unbind', bindingRelay(bindingChange(relayConnectionUnbind)));
+    app.post(
+      '/internal/connections/bindings',
+      bindingRelay((env, host, body, proven) =>
+        relayConnectionBindings(host, CONNECTION_RELAY_ACTOR, body, {
+          proven,
+          // The inspection route's read, so a binding's options are the ones its bind answered.
+          bindings: (h, conn) =>
+            (connectionInspectorsFor(env)[conn.provider] ??
+              (isVerticalConnectorProvider(conn.provider)
+                ? verticalConnectorInspector(verticalConnectorDepsFor(env, host, CONNECTION_RELAY_ACTOR), conn.provider, {
+                    tenantId: conn.tenantId,
+                    vertical: conn.vertical,
+                    scopeId: null,
+                  })
+                : undefined)
+            )?.bindings?.(h, conn),
+        }),
+      ),
+    );
 
     // The connect-url relay (connections.md §3.5.3) — the OAuth half of the relay above.
     // The paste door assumes the tenant admin HOLDS a credential; a provider that mints one
