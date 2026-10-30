@@ -141,6 +141,26 @@ async function declaresPermissions(ws: Workspace, projectDir: string): Promise<b
 	}
 }
 
+/**
+ * The `model` gate's compile. `tsc` ignores a tsconfig whenever files are named on
+ * its command line, so the project's own config only applies through a throwaway
+ * one that `extends` it and lists `spec/model.ts` alone (#2727). It sits inside
+ * the project so `types` and `paths` resolve as they do for the project's own
+ * typecheck, and is removed in the same command so no turn's commit picks it up.
+ * With no project tsconfig yet (the model phase, before scaffold) the file is
+ * compiled under explicit defaults instead.
+ */
+function modelCompileCmd(projectDir: string): string {
+	const dir = `'${projectDir.replace(/'/g, "'\\''")}'`;
+	const throwaway = `${dir}/tsconfig.model-gate.json`;
+	const config = '{"extends":"./tsconfig.json","files":["spec/model.ts"],"include":[],"compilerOptions":{"noEmit":true}}';
+	return (
+		`if [ -f ${dir}/tsconfig.json ]; then ` +
+		`printf '%s' '${config}' > ${throwaway}; pnpm exec tsc -p ${throwaway}; code=$?; rm -f ${throwaway}; exit $code; ` +
+		`else pnpm exec tsc --ignoreConfig --noEmit --strict --skipLibCheck --target ES2023 --module NodeNext ${dir}/spec/model.ts; fi`
+	);
+}
+
 export function standaloneGates(projectDir: string): GateSpec[] {
 	const pkg = async (ws: Workspace): Promise<boolean> => await ws.exists(`${projectDir}/package.json`);
 	return [
@@ -156,7 +176,7 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			// nothing and exits zero without running tsc. Run the root toolchain
 			// against the file directly; contracts is a root tooling dependency so
 			// both tsc and the emitter can resolve it before project deps exist.
-			cmd: `pnpm exec tsc --ignoreConfig --noEmit --strict --skipLibCheck --target ES2023 --module NodeNext '${projectDir.replace(/'/g, "'\\''")}/spec/model.ts'`,
+			cmd: modelCompileCmd(projectDir),
 			appliesWhen: async (ws) => await ws.exists(`${projectDir}/spec/model.ts`),
 			note: 'no spec/model.ts yet — the model phase has not run',
 		},
