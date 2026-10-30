@@ -1,4 +1,4 @@
-import { sourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
+import { sourceBuildRequest, type SourceBuildRequest, type SourceBuildService, type BuiltSource } from '@substrat-run/contracts';
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
 import { bindingChangeRefusal, connectionBindingOptions, refusesBindingChange } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
@@ -9828,18 +9828,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (!c.req.header('content-type')?.startsWith('application/json')) {
         return refuseStatus(c, 415, 'submit source JSON; client-built module uploads are no longer accepted');
       }
-      const input = sourceBuildRequest.parse(await c.req.json());
+      // The snapshot can be tens of MB, and a build runs for minutes. An async frame keeps a
+      // local alive across every later await, used or not, so the request is read past Hono's
+      // body cache and `input` is dropped once handed over: only its scalars outlive the build.
+      let input: SourceBuildRequest | undefined = sourceBuildRequest.parse(JSON.parse(await c.req.raw.text()));
+      const { tenant: pin, allowFork } = input;
       const bare = c.req.param('slug');
       let sourceSlug = bare;
       let sourceTenant: string | null = null;
       if (p.kind === 'builder') {
-        if (input.tenant && input.tenant !== p.tenantId && input.tenant !== p.tenantSlug) {
-          return refuse(c, 'forbidden', `push is pinned to workspace '${input.tenant}' but this session acts for '${p.tenantSlug}'`);
+        if (pin && pin !== p.tenantId && pin !== p.tenantSlug) {
+          return refuse(c, 'forbidden', `push is pinned to workspace '${pin}' but this session acts for '${p.tenantSlug}'`);
         }
         sourceTenant = p.tenantId;
         sourceSlug = effectiveSlug(p, bare);
-      } else if (input.tenant) {
-        const tenant = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.id === input.tenant || t.slug === input.tenant);
+      } else if (pin) {
+        const tenant = (await c.var.admin.listTenants(c.get('actor'))).find((t) => t.id === pin || t.slug === pin);
         if (!tenant) return refuse(c, 'not_found', 'unknown workspace');
         sourceTenant = tenant.id;
         sourceSlug = bare.startsWith(`${tenant.slug}/`) || await ownerOf(c.get('actor'), bare) === tenant.id ? bare : `${tenant.slug}/${bare}`;
@@ -9850,13 +9854,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       verticalSlug.parse(sourceSlug);
       if (platformScriptCollision(sourceSlug)) return refuseStatus(c, 422, 'reserved platform script name');
       requestedVersion = input.version;
-      built = await options.sourceBuilds.build(sourceTenant ?? 'platform', sourceSlug, input);
+      const building = options.sourceBuilds.build(sourceTenant ?? 'platform', sourceSlug, input);
+      input = undefined;
+      built = await building;
       form = built.form;
       // Addressing is the authenticated caller's, never a field emitted by project code.
       form.delete('tenant');
-      if (input.tenant) form.set('tenant', input.tenant);
+      if (pin) form.set('tenant', pin);
       form.delete('allowFork');
-      if (input.allowFork) form.set('allowFork', '1');
+      if (allowFork) form.set('allowFork', '1');
     } else {
       return refuseStatus(c, 501, 'platform source builds are not configured');
     }

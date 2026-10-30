@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { migrationDigestOf, platformActorId, tenantId, type SourceBuildService } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { createControlPlaneApi, DEV_ACTOR_HEADER, mintPushToken, pushActorFor, pushTokenBuilderAuth, UNSAFE_devPlatformActorAuth } from '../src/index.js';
+import { createControlPlaneApi, DEV_ACTOR_HEADER, mintPushToken, pushActorFor, pushTokenBuilderAuth, sourceBuildService, UNSAFE_devPlatformActorAuth } from '../src/index.js';
 
 describe('platform source releases', () => {
   let root: string;
@@ -86,6 +86,21 @@ describe('platform source releases', () => {
     expect(response.status, await response.clone().text()).toBe(201);
     expect(build).toHaveBeenCalledWith(tenant, 'acme/demo', expect.anything());
     expect((await response.json()).verticalSlug).toBe('acme/demo');
+  });
+
+  it('sends the whole request to the build service once and refuses a release built from another revision', async () => {
+    const sent: Array<{ url: string; tenant: string | null; body: unknown }> = [];
+    const service = sourceBuildService({
+      async fetch(request) {
+        sent.push({ url: request.url, tenant: request.headers.get('x-substrat-tenant'), body: await request.json() });
+        const form = new FormData();
+        form.set('buildResult', JSON.stringify({ projectId: 'project-1', revision: 'b'.repeat(40), dataLoss: { status: 'skipped', why: 'test' } }));
+        return new Response(form);
+      },
+    }, 'token');
+    const input = { version: '1.0.0', revision, allowFork: false, allowUnservedUi: false, allowUnsweptSchedules: false, requireDataLossCheck: false };
+    await expect(service.build(tenant, 'acme/demo', input)).rejects.toThrow(/did not build the requested source revision/);
+    expect(sent).toEqual([{ url: 'https://builder/internal/build', tenant, body: { slug: 'acme/demo', request: input } }]);
   });
 
   it('gives builders only their own project catalogue', async () => {
