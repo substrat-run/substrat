@@ -1737,7 +1737,8 @@ export const api = {
   appPermissions: (teamId: string, scopeId: string) => teamApi(teamId).getAppPermissions({ scopeId }) as Promise<AppPermissionsView>,
   appModel: (teamId: string, scopeId: string) => teamApi(teamId).getAppModel({ scopeId }) as Promise<AppModelView>,
   /** Schedule health for the app's running version (#1232) — null schedules hides the panel. */
-  appSchedules: (teamId: string, scopeId: string): Promise<AppSchedulesView> => teamApi(teamId).getAppSchedules({ scopeId }),
+  // The route declares a sweep row as loosely as the plane writes it; this is the shape it writes.
+  appSchedules: (teamId: string, scopeId: string) => teamApi(teamId).getAppSchedules({ scopeId }) as Promise<AppSchedulesView>,
   /** Data reads use the selected tab's team through the generated client. */
   appTables: (teamId: string, scopeId: string) => teamApi(teamId).listAppTables({ scopeId }),
   appTableRows: (teamId: string, scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) =>
