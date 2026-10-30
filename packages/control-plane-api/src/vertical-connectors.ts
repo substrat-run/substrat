@@ -505,10 +505,13 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
           `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
       };
     }
-    // #2732: the connection is chosen by the EVENT'S scope: its own when it holds one, else the
-    // tenant's. Another scope's own is never in the list.
+    // #2732: the connection is chosen by the EVENT'S scope: its own when that connection is bound
+    // on the scope, else the tenant's, so an own connection not (or no longer) bound never shadows
+    // the tenant's. Another scope's own is never in the list.
     const own = await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider, ownerScopeId: ctx.scopeId });
-    const rows = own.length > 0
+    const boundOwn = own.length === 1
+      && (await deps.host.admin.getConnectorState(own[0]!.id, verticalConnectorBindingKey(ctx.scopeId))) != null;
+    const rows = boundOwn
       ? own
       : await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider, ownerScopeId: null });
     if (rows.length !== 1) {

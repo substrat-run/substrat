@@ -26,6 +26,7 @@ import { heldVersion } from './held-manifest.js';
 describe('a scope binds its own connection through the relay (#2732)', () => {
   const SLUG = 'acme-drive';
   const LAND = permissionKey.parse('plan:record');
+  const INGEST = permissionKey.parse('plan:ingest');
   const relayActor = platformActorId.parse(ulid());
   const person = principalId.parse(ulid());
 
@@ -45,22 +46,22 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     },
     unbind: (h, row, s) => unbindPlanimaScope(h, row.id, s),
   };
-  const landings = (proven = true): ConnectionBindingRelayOptions => ({
+  const landings = (proven = true, with_: ConnectionBinder = binder): ConnectionBindingRelayOptions => ({
     proven,
-    landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { planima: binder } },
+    landings: { read: (slug, versionId) => host.versionConnectionLandings(slug, versionId), binders: { planima: with_ } },
   });
 
-  /** A version of the vertical declaring the landing in `mode`, and every scope given it. */
-  const runs = async (mode: 'on-request' | 'every-install') => {
+  /** A version of the vertical declaring the landing in `mode`, holding `key`, and every scope given it. */
+  const runs = async (mode: 'on-request' | 'every-install', key = LAND) => {
     const id = ulid();
     await host.admin.publishVersion(relayActor, await heldVersion({
       id, verticalSlug: SLUG, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
       manifestJson: JSON.stringify({
         registry: {
-          permissions: [{ key: LAND, description: 'land a plan', declaredBy: ['@acme/drive'] }],
+          permissions: [LAND, INGEST].map((k) => ({ key: k, description: 'land a plan', declaredBy: ['@acme/drive'] })),
           roles: [],
           entityGrants: [],
-          connections: [{ provider: 'planima', operation: 'drive/land', permission: LAND, ...(mode === 'on-request' ? { bind: mode } : {}), declaredBy: ['@acme/drive'] }],
+          connections: [{ provider: 'planima', operation: 'drive/land', permission: key, ...(mode === 'on-request' ? { bind: mode } : {}), declaredBy: ['@acme/drive'] }],
         },
       }),
     }));
@@ -126,6 +127,35 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     // Nothing above granted or bound anything.
     expect(await holds(a, ofA)).toBe(false);
     expect(await listPlanimaBindings(host, ofA)).toEqual([]);
+  });
+
+  it("takes back the key it granted when the connector's own bind refuses, as a vertical-defined connector does", async () => {
+    await runs('on-request');
+    const conn = await own(a);
+    // The vertical-defined binder's shape: no staged bind, options merged, validated inside `bind`.
+    const refusing: ConnectionBinder = {
+      list: binder.list,
+      options: (raw, current) => ({ ...current, ...raw }),
+      bind: async () => {
+        throw new Error('no such folder');
+      },
+      unbind: binder.unbind!,
+    };
+
+    expect(await refusal(relayConnectionBind(host, relayActor, bindBody(a, conn), landings(true, refusing)))).toBe(422);
+    expect(await holds(a, conn)).toBe(false);
+  });
+
+  it('unbinds what the scope holds after its version changed the landing, its key and its mode', async () => {
+    await runs('on-request');
+    const conn = await own(a);
+    await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
+    await runs('every-install', INGEST);
+
+    await relayConnectionUnbind(host, relayActor, { tenantId: t, scopeId: a, connectionId: conn, unboundBy: person }, landings());
+
+    expect(await holds(a, conn)).toBe(false);
+    expect(await listPlanimaBindings(host, conn)).toEqual([]);
   });
 
   it('unbinds: the binding and the key go, a second unbind is the same answer, and who asked is on the revoke', async () => {

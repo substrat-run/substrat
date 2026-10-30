@@ -1598,7 +1598,7 @@ export const connectionBindRequest = z.object({
   connectionId,
   options: z.record(z.string().min(1), z.unknown()).optional(),
   /** The tenant principal whose permission-checked act authorized the bind. */
-  boundBy: z.string().min(1),
+  boundBy: z.string().min(1).max(200),
 });
 export type ConnectionBindRequest = z.infer<typeof connectionBindRequest>;
 
@@ -1620,7 +1620,7 @@ export const connectionUnbindRequest = z.object({
   scopeId,
   connectionId,
   /** The tenant principal whose permission-checked act authorized the unbind. */
-  unboundBy: z.string().min(1),
+  unboundBy: z.string().min(1).max(200),
 });
 export type ConnectionUnbindRequest = z.infer<typeof connectionUnbindRequest>;
 

@@ -14,7 +14,6 @@ import {
   connectionUnbindRequest,
   connectionUnbindResult,
   type Connection,
-  type PermissionKey,
   type ConnectionBindResult,
   type ConnectionUnbindResult,
   type PlatformActorId,
@@ -58,27 +57,36 @@ function parsed<T extends z.ZodTypeAny>(schema: T, body: unknown, what: string):
   throw new ConnectionRelayError(`invalid ${what} request: ${first ? `${first.path.join('.') || '(root)'} — ${first.message}` : 'malformed body'}`, 400);
 }
 
-/** The scope, its own connection, the declared landing and the provider's binder, or the refusal. */
-async function ownTarget(
+/** The scope, its own connection and the provider's binder, or the refusal. All both relays need. */
+async function ownConnection(
   host: ScopeHost,
   actor: PlatformActorId,
   input: { tenantId: Scope['tenantId']; scopeId: Scope['id']; connectionId: Connection['id'] },
   options: ConnectionBindingRelayOptions,
-): Promise<{ scope: Scope; connection: Connection; landing: { operation: string; permission: PermissionKey; options?: Record<string, unknown> }; binder: ConnectionBinder }> {
+): Promise<{ scope: Scope; connection: Connection; binder: ConnectionBinder }> {
   if (!options.proven) throw new ConnectionRelayError(PROVEN_CALLER_REFUSAL, 403);
   const scope = await host.admin.getScopeRecord(actor, input.tenantId, input.scopeId);
   if (!scope?.vertical) throw new ConnectionRelayError('scope has no vertical bound', 404);
   if (!isPrimaryScope(scope)) throw new ConnectionRelayError(PREVIEW_CONNECTIONS_REFUSAL, 403);
-  if (scope.status !== 'active') throw new ConnectionRelayError(`scope ${scope.id} is ${scope.status}, not active`, 409);
   const connection = (
     await host.admin.listConnections(actor, { tenantId: input.tenantId, vertical: scope.vertical, ownerScopeId: input.scopeId })
   ).find((c) => c.id === input.connectionId);
   if (!connection) throw new ConnectionRelayError('unknown connection', 404);
-  const declared = await onRequestLandingFor(host.admin, actor, options.landings.read, scope, connection.provider);
-  if ('refused' in declared) throw new ConnectionRelayError(declared.refused, 409);
   const binder = binderOf(options.landings, connection);
   if (!binder) throw new ConnectionRelayError(`no scope binding registered for provider '${connection.provider}'`, 501);
-  return { scope, connection, landing: declared.landing, binder };
+  return { scope, connection, binder };
+}
+
+const said = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** `revokeFromConnection`, with a deployment that cannot take it answered as the relay's 503. */
+async function revokeHere(host: ScopeHost, actor: PlatformActorId, revoke: Parameters<ScopeHost['admin']['revokeFromConnection']>[1]) {
+  try {
+    await host.admin.revokeFromConnection(actor, revoke);
+  } catch (err) {
+    if (err instanceof ConnectorRevokeUnsupported) throw new ConnectionRelayError(err.message, 503);
+    throw err;
+  }
 }
 
 export async function relayConnectionBind(
@@ -88,37 +96,55 @@ export async function relayConnectionBind(
   options: ConnectionBindingRelayOptions,
 ): Promise<ConnectionBindResult> {
   const input = parsed(connectionBindRequest, body, 'connection bind');
-  const { scope, connection, landing, binder } = await ownTarget(host, actor, input, options);
+  const { scope, connection, binder } = await ownConnection(host, actor, input, options);
+  if (scope.status !== 'active') throw new ConnectionRelayError(`scope ${scope.id} is ${scope.status}, not active`, 409);
+  const declared = await onRequestLandingFor(host.admin, actor, options.landings.read, scope, connection.provider);
+  if ('refused' in declared) throw new ConnectionRelayError(declared.refused, 409);
+  const { landing } = declared;
   const current = (await binder.list(host, connection)).find((b) => b.scopeId === scope.id);
-  // The declaration's options are the defaults; the scope's own are what make it this scope's.
+  // The declaration's options fill only what the binding does not hold yet, and the scope's own
+  // override both: a rebind keeps the scope's options, never resetting them to the defaults.
+  const defaults = Object.fromEntries(Object.entries(landing.options ?? {}).filter(([k]) => !current || !(k in current)));
   let bindingOptions: Record<string, unknown>;
   try {
-    bindingOptions = binder.options ? binder.options({ ...landing.options, ...input.options }, current) : { ...input.options };
+    bindingOptions = binder.options ? binder.options({ ...defaults, ...input.options }, current) : { ...defaults, ...input.options };
   } catch (err) {
-    throw new ConnectionRelayError(err instanceof Error ? err.message : String(err), 422);
+    throw new ConnectionRelayError(said(err), 422);
   }
   const target = { ...bindingOptions, tenantId: scope.tenantId, scopeId: scope.id, vertical: connection.vertical, operation: landing.operation, permission: landing.permission };
-  const bind = async (write: () => Promise<unknown>) => {
-    try {
-      return await write();
-    } catch (err) {
-      throw new ConnectionRelayError(`the ${connection.provider} connector refused the binding: ${err instanceof Error ? err.message : String(err)}`, 422);
-    }
-  };
+  const refused = (err: unknown) => new ConnectionRelayError(`the ${connection.provider} connector refused the binding: ${said(err)}`, 422);
+  const node = { tenantId: scope.tenantId, scopeId: scope.id };
+
   // The landing pass's order: a binder that stages its binding before the grant does so, and the
-  // grant follows; otherwise the grant comes first and the connector's bind checks it is held.
+  // grant follows; otherwise the grant comes first and the connector's bind checks it is held. A
+  // refusal at any step leaves nothing this call added: a key it granted is taken back, a binding
+  // it staged is dropped.
   let bound: unknown;
-  if (binder.bindBeforeGrant) bound = await bind(() => binder.bindBeforeGrant!(host, connection, target));
-  const held = await host.connectionGrantsInScope(scope.tenantId, scope.id);
-  if (!held.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
-    await host.admin.grantToConnection(actor, {
-      connectionId: connection.id,
-      permission: landing.permission,
-      node: { tenantId: scope.tenantId, scopeId: scope.id },
-      grantedBy: actor,
-    });
+  if (binder.bindBeforeGrant) {
+    try {
+      bound = await binder.bindBeforeGrant(host, connection, target);
+    } catch (err) {
+      throw refused(err);
+    }
   }
-  if (!binder.bindBeforeGrant) bound = await bind(() => binder.bind(host, connection, target));
+  const held = await host.connectionGrantsInScope(scope.tenantId, scope.id);
+  const granted = !held.some((g) => g.connectionId === connection.id && g.permission === landing.permission);
+  if (granted) {
+    try {
+      await host.admin.grantToConnection(actor, { connectionId: connection.id, permission: landing.permission, node, grantedBy: actor });
+    } catch (err) {
+      if (binder.bindBeforeGrant && !current) await binder.unbind?.(host, connection, scope.id);
+      throw new ConnectionRelayError(`the landing key '${landing.permission}' cannot be granted to this connection: ${said(err)}`, 409);
+    }
+  }
+  if (!binder.bindBeforeGrant) {
+    try {
+      bound = await binder.bind(host, connection, target);
+    } catch (err) {
+      if (granted) await revokeHere(host, actor, { connectionId: connection.id, permission: landing.permission, node, revokedBy: input.boundBy });
+      throw refused(err);
+    }
+  }
   await host.admin.recordConnectionBindingChange(actor, {
     phase: 'applied',
     tenantId: scope.tenantId,
@@ -130,13 +156,14 @@ export async function relayConnectionBind(
     permission: landing.permission,
     requestedBy: input.boundBy,
   });
-  const answered = bound !== null && typeof bound === 'object' ? (bound as Record<string, unknown>) : {};
-  const stored = Object.fromEntries(Object.entries(answered).filter(([k]) => !FIXED.has(k)));
+  // The options as the connector stored them, when its bind answers the binding; otherwise the
+  // validated options it was handed.
+  const answered = bound !== null && typeof bound === 'object' ? (bound as Record<string, unknown>) : undefined;
   return connectionBindResult.parse({
     connectionId: connection.id,
     scopeId: scope.id,
-    options: Object.keys(stored).length > 0 ? stored : bindingOptions,
-    boundAt: typeof answered.boundAt === 'string' ? answered.boundAt : new Date().toISOString(),
+    options: answered ? Object.fromEntries(Object.entries(answered).filter(([k]) => !FIXED.has(k))) : bindingOptions,
+    boundAt: typeof answered?.boundAt === 'string' ? answered.boundAt : new Date().toISOString(),
   });
 }
 
@@ -147,21 +174,17 @@ export async function relayConnectionUnbind(
   options: ConnectionBindingRelayOptions,
 ): Promise<ConnectionUnbindResult> {
   const input = parsed(connectionUnbindRequest, body, 'connection unbind');
-  const { scope, connection, landing, binder } = await ownTarget(host, actor, input, options);
+  // Ownership alone: a version that has since dropped the landing, or changed its key or mode,
+  // still lets the scope take back what it holds.
+  const { scope, connection, binder } = await ownConnection(host, actor, input, options);
   if (!binder.unbind) throw new ConnectionRelayError(`'${connection.provider}' bindings cannot be removed through the relay`, 501);
-  // The key first, so a deployment that cannot take the revoke leaves the binding as it was.
-  try {
-    await host.admin.revokeFromConnection(actor, {
-      connectionId: connection.id,
-      permission: landing.permission,
-      node: { tenantId: scope.tenantId, scopeId: scope.id },
-      revokedBy: input.unboundBy,
-    });
-  } catch (err) {
-    if (err instanceof ConnectorRevokeUnsupported) throw new ConnectionRelayError(err.message, 503);
-    throw err;
+  // Every key this connection holds on THIS scope, as the scope's own grants say, first: a
+  // deployment that cannot take the revoke leaves the binding as it was. Each revoke is audited
+  // on its own row (with `revokedBy`), when it moved: a binding change is a bind's record.
+  const held = (await host.connectionGrantsInScope(scope.tenantId, scope.id)).filter((g) => g.connectionId === connection.id);
+  for (const g of held) {
+    await revokeHere(host, actor, { connectionId: connection.id, permission: g.permission, node: { tenantId: scope.tenantId, scopeId: scope.id }, revokedBy: input.unboundBy });
   }
-  // Audited by the revoke's own row (with `revokedBy`), when the key moved: a binding change is a bind's record.
   await binder.unbind(host, connection, scope.id);
   return connectionUnbindResult.parse({ connectionId: connection.id, scopeId: scope.id, unbound: true });
 }
