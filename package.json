@@ -56,7 +56,7 @@
     "builder": "pnpm --filter @substrat-run/builder",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm lint:pins",
-    "release": "pnpm run build && pnpm run lint:publish-manifests && pnpm publish -r --access public --no-git-checks && changeset tag",
+    "release": "pnpm run build && pnpm run lint:publish-manifests && node tools/publish-packages.mjs && changeset tag",
     "secrets:platform": "node scripts/secrets.mjs push",
     "secrets:check": "node scripts/secrets.mjs check",
     "secrets:push": "node scripts/secrets.mjs push",
