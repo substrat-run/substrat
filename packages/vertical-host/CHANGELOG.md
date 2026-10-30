@@ -1,5 +1,20 @@
 # @substrat-run/vertical-host
 
+## 0.169.0
+
+### Minor Changes
+
+- 9e6412c: `HostAdmin.revokeFromConnection` takes one key back from a live connection on one scope, the inverse of a scope-level `grantToConnection`: the scope's grant tuple goes first, then the directory record is tombstoned so no reconcile delivers it again, and the action is audited only when something changed. Hosted, the tuple is removed through the new `/internal/connector-revoke` route of the deployment serving the scope; a deployment on an older `@substrat-run/vertical-host` cannot take it, and the call refuses with `ConnectorRevokeUnsupported` without changing anything. `ConnectionInspector.unbindScope` drops a connection's binding to one scope.
+
+### Patch Changes
+
+- Updated dependencies [9e6412c]
+- Updated dependencies [77d504f]
+- Updated dependencies [fb2de85]
+  - @substrat-run/contracts@0.169.0
+  - @substrat-run/kernel@0.169.0
+  - @substrat-run/model-providers@0.5.59
+
 ## 0.168.0
 
 ### Patch Changes
