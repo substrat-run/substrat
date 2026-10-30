@@ -1,5 +1,18 @@
 # @substrat-run/control-plane-client
 
+## 0.4.0
+
+### Minor Changes
+
+- 3e1c96e: A failed control-plane call exposes the request id the plane stamped (`ControlPlaneError.requestId`), and the CLI prints it as a `request id:` line after the error.
+
+### Patch Changes
+
+- Updated dependencies [9e6412c]
+- Updated dependencies [77d504f]
+- Updated dependencies [fb2de85]
+  - @substrat-run/contracts@0.169.0
+
 ## 0.3.19
 
 ### Patch Changes
