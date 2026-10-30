@@ -84,8 +84,9 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 
 ## Commands
 
-New PRs do not add `.changeset/*.md` files. Describe published-package impact in the PR;
-maintainers write the release notes when releasing.
+A PR adds a `.changeset/*.md` file for every **published** package it changes: `patch` for a
+fix, `minor` for a feature, one short line per package. The `fixed` group bumps together;
+a private package needs none. If `lint:changeset-bump` fails, fix the changeset in the PR.
 
 - `pnpm install` · `pnpm build` · `pnpm typecheck` · `pnpm test` (builds first) — the root
   scripts, not `pnpm -r …` directly, **in a local checkout**: they exclude

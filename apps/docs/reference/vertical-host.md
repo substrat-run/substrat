@@ -520,6 +520,57 @@ preview or a fork, and for a provider with no platform consent round. A refusal 
 secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
 card and can revoke them there.
 
+## `upsertConnection(request)`, `bindConnection(request)`, `unbindConnection(request)`
+
+How a vertical stores a provider credential from its **own** admin screen, and binds a
+scope's own connection to that scope with that scope's options (#2732) — one folder of a
+file source per scope, say, where a tenant-wide landing would mirror the same folder into
+every scope.
+
+```ts
+import { upsertConnection, bindConnection, unbindConnection, ConnectionRequestError } from '@substrat-run/vertical-host';
+
+// module.ts — the authorizing act, and the only place a permission is checked
+const connectSource: OperationHandler = async (ctx, raw) => {
+  assertAllowed(await ctx.check(PERM.manageSource));
+  return { principal: ctx.principal, folder: schema.parse(raw).folder };
+};
+
+// worker.ts — the effect
+const { principal, folder } = await scope.invoke<{ principal: string; folder: string }>('drive/connect-source', { folder: body.folder });
+const access = { controlPlaneUrl: env.CONTROL_PLANE_URL, platformSecret: env.PLATFORM_SECRET, tenantId, scopeId };
+const { connectionId } = await upsertConnection({
+  ...access,
+  provider: 'acme-files',
+  secret: { token },                          // sealed by the platform, never echoed back
+  owner: 'scope',                             // this scope's own connection, not the tenant's
+  createdBy: principal,
+});
+const { options, boundAt } = await bindConnection({ ...access, connectionId, options: { folder }, boundBy: principal });
+// later, from another permission-checked operation:
+await unbindConnection({ ...access, connectionId, unboundBy: principal });
+```
+
+The bodies are the relays' own request shapes (`connectionRelayRequest`, `connectionBindRequest`,
+`connectionUnbindRequest` in `@substrat-run/contracts`), and the answers are parsed by their
+result schemas. `upsertConnection` creates the connection, or rotates the live one's secret in
+place; it answers `{ connectionId, created, granted, probe? }`, never the secret. Leave `owner`
+out for a tenant-wide connection, as before.
+
+`bindConnection` binds through the `on-request` landing your running version declares for the
+provider, so the operation and the key it grants on this scope come from that declaration, never
+from the call. The connector validates and normalises `options`, and the answer
+`{ connectionId, scopeId, options, boundAt }` carries the options as it stored them; a rebind keeps
+the options it does not name. `unbindConnection` drops the binding and takes the landing key back
+on this scope, keeps everything the scope already landed, and is idempotent; it answers
+`{ connectionId, scopeId, unbound: true }`. Only the scope's own connection is reachable: another
+one answers `404`, as an unknown one does.
+
+Bind, unbind and an `owner: 'scope'` upsert need a **proven caller**: call them from the worker,
+on the request it is serving, never from inside a Durable Object. A refusal, or a `2xx` that is
+not the relay's answer, throws `ConnectionRequestError` with the relay's status. The calls go
+through `POST /internal/connections/upsert`, `…/bind` and `…/unbind`.
+
 ## `mailInAddress(request)`
 
 This scope's [inbound mail](/connectors/mail-in) address (#2611): ask for one, read it, rotate
