@@ -62,7 +62,10 @@ import type {
   PermissionDenial,
   ScopeTable,
   ScopeTablePage,
+  ScopeDumpChange,
+  ScopeDumpChanges,
   ScopeDumpPage,
+  ScopeDumpPageTable,
   TenantId,
   TenantStoreHandle,
   Visibility,
@@ -127,6 +130,7 @@ import {
   PLATFORM_SECRET_HEADER,
   WRITE_REVISION_HEADER,
   mergeDumpPages,
+  scopeDumpChanges,
   scopeDumpPage,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, DeadlineOptions, FetchLike, IncrementalSha256, KeptCopy, LoadMarker, OpenedAttachment, OpenedAttachmentStream, OrphanSweepReport, RoleState, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
@@ -1809,10 +1813,16 @@ export class VerticalClient {
    * `exportScope` without. `'predates'` from a deployment built before the paged verbs (a 404, or
    * its own 501), which exports whole.
    */
-  async exportScopePage(scopeId: ScopeId, cursor: string | null, opts: { stamp?: boolean } = {}): Promise<ScopeDumpPage | 'predates'> {
+  async exportScopePage(
+    scopeId: ScopeId,
+    cursor: string | null,
+    /** `capture`: a copy's id, for a copy that catches up on writes (`exportScopeChanges`). */
+    opts: { stamp?: boolean; capture?: string } = {},
+  ): Promise<ScopeDumpPage | 'predates'> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     const query =
       `scopeId=${encodeURIComponent(scopeId)}${opts.stamp ? '&stamp=1' : ''}` +
+      (opts.capture === undefined ? '' : `&capture=${encodeURIComponent(opts.capture)}`) +
       (cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`);
     const answer = await withDeadline('export-page', PAGE_CALL_DEADLINE_MS, (signal) =>
       this.routeAnswer('export-page', FENCED, () =>
@@ -1836,7 +1846,7 @@ export class VerticalClient {
     scopeId: ScopeId,
     stageId: string,
     seq: number,
-    tables: ScopeDumpTable[],
+    tables: ScopeDumpPageTable[],
   ): Promise<{ staged: boolean } | 'predates'> {
     const answer = await withDeadline('stage', PAGE_CALL_DEADLINE_MS, (signal) =>
       this.routeAnswer('stage', FENCED, () => this.postRaw('/internal/stage', { scopeId, stageId, seq, tables }, signal)));
@@ -1848,6 +1858,43 @@ export class VerticalClient {
   async discardStagedScope(scopeId: ScopeId, stageId: string): Promise<void> {
     await withDeadline('stage-discard', PAGE_CALL_DEADLINE_MS, (signal) =>
       this.routeAnswer('stage-discard', FENCED, () => this.postRaw('/internal/stage/discard', { scopeId, stageId }, signal)));
+  }
+
+  /**
+   * One batch of what `scopeId` took since the capture `copyId`'s first page (#2450). Batch `seq`
+   * acknowledges those before it, and the same `seq` asked again is served afresh, so a lost
+   * answer is retried safely. `'predates'` from a deployment that cannot catch a copy up.
+   */
+  async exportScopeChanges(scopeId: ScopeId, copyId: string, seq: number): Promise<ScopeDumpChanges | 'predates'> {
+    const answer = await withDeadline('export-changes', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('export-changes', FENCED, () => this.postRaw('/internal/export-changes', { scopeId, copyId, seq }, signal)));
+    if (answer === PREDATES) return 'predates';
+    const changes = scopeDumpChanges.safeParse(answer);
+    if (!changes.success) throw new ControlPlaneError(502, 'export-changes: the vertical answered something that is not a change batch');
+    return changes.data;
+  }
+
+  /** End the capture `copyId` of `scopeId` (#2450): a copy that stopped. Best effort, as a discard is. */
+  async endScopeCapture(scopeId: ScopeId, copyId: string): Promise<void> {
+    await withDeadline('capture-end', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('capture-end', FENCED, () => this.postRaw('/internal/capture/end', { scopeId, copyId }, signal)));
+  }
+
+  /**
+   * Apply one batch of a capture's changes to the stage `stageId` here (#2450), numbered after its
+   * pages. `'predates'` from a deployment that cannot catch a copy up; a batch already applied
+   * answers `staged: false`.
+   */
+  async stageScopeChanges(
+    scopeId: ScopeId,
+    stageId: string,
+    seq: number,
+    tables: ScopeDumpChange[],
+  ): Promise<{ staged: boolean } | 'predates'> {
+    const answer = await withDeadline('stage-changes', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('stage-changes', FENCED, () => this.postRaw('/internal/stage-changes', { scopeId, stageId, seq, tables }, signal)));
+    if (answer === PREDATES) return 'predates';
+    return { staged: (answer as { staged?: unknown } | null)?.staged === true };
   }
 
   /** A platform-authenticated JSON POST, its response unread, for `routeAnswer`. */

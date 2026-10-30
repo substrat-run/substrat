@@ -43,7 +43,10 @@ import {
   type PrincipalId,
   type ScopeId,
   type ScopeDumpTable,
+  type ScopeDumpChange,
+  type ScopeDumpChanges,
   type ScopeDumpPage,
+  type ScopeDumpPageTable,
   SCOPE_DUMP_PAGE_MAX_BYTES,
   type ScopeQueryResult,
   type ScopeTable,
@@ -1119,6 +1122,64 @@ const STAGE_READ_BATCH = 500;
 /** How many rows a dump page reads from a table at a time; each batch is read to its end. */
 const DUMP_READ_BATCH = 500;
 
+/**
+ * A capture's own tables and triggers (#2450): what lets a copy page a scope that never stops
+ * taking writes. `_substrat_capture` holds one row per copy reading this store (its id, when it was
+ * last asked for, the schema its pages read), `_substrat_capture_changes` the rows written since
+ * (table, rowid, and the batch that served it, null until one did), and three triggers per dumped
+ * table log every insert, update and delete there, once for every open capture. They exist only
+ * while a capture is open: the last one to end drops them all. Never in a dump.
+ */
+const CAPTURE_GLOB = '_substrat_capture*';
+const CAPTURE_TABLES_DDL = [
+  `CREATE TABLE IF NOT EXISTS _substrat_capture (copy_id TEXT PRIMARY KEY, touched_at INTEGER NOT NULL, tables TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS _substrat_capture_changes (
+     copy_id TEXT NOT NULL, tbl TEXT NOT NULL, rid INTEGER NOT NULL, batch INTEGER,
+     PRIMARY KEY (copy_id, tbl, rid)) WITHOUT ROWID`,
+];
+/**
+ * How long a capture nobody asks for stays open: one copy lease. A copy's job renews its lease at
+ * least every quarter of it, and asks the source at every step, so a capture this idle belongs to
+ * a copy that has stopped, and its triggers would only cost every write a log row.
+ */
+const CAPTURE_IDLE_MS = SCOPE_COPY_LEASE_MS;
+/** How many logged rows one batch of changes serves at most, before its byte cap. */
+const CAPTURE_BATCH_ROWS = 2_000;
+/** Rowids per `IN (…)`: a Durable Object's SQLite binds at most 100 parameters to a statement. */
+const CAPTURE_IN_CHUNK = 90;
+const CAPTURE_GONE = 'the copy\'s capture of this scope is gone (it ended, expired or a load replaced the store); start the copy again';
+const CAPTURE_SCHEMA_MOVED = 'the scope\'s schema changed while it was copied (a migration ran); start the copy again';
+/** A write the capture path takes: one whose target is a capture table or a capture trigger. */
+const CAPTURE_STATEMENT =
+  /^\s*(?:CREATE TABLE IF NOT EXISTS|INSERT INTO|UPDATE|DELETE FROM|DROP TABLE IF EXISTS|CREATE TRIGGER IF NOT EXISTS|DROP TRIGGER IF EXISTS)\s+"?_substrat_capture(?:\b|_)/;
+const quoteIdent = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+const quoteText = (text: string): string => `'${text.replaceAll("'", "''")}'`;
+
+/**
+ * The three triggers that log `name`'s writes for every open capture (#2450). A write logs the
+ * rowid it touched (an update both the old and the new, should it move the row), once per capture
+ * however often the row is written, and clears the batch that served it, so it is served again.
+ * A table read by offset has no rowid to log, and logs `0`: the whole table is sent again.
+ *
+ * A delete and a plain insert rather than `INSERT OR REPLACE`: inside a trigger, the outer
+ * statement's conflict handling wins, so an upsert's update (the write revision's own bump is one)
+ * would turn the replace into an abort, and fail the write it logs.
+ */
+function captureTriggers(name: string, byRowid: boolean): string[] {
+  const tbl = quoteText(name);
+  const log = (rid: string) =>
+    // Keyed on the log's primary key, copy first, so neither statement scans the log.
+    `DELETE FROM _substrat_capture_changes WHERE copy_id IN (SELECT copy_id FROM _substrat_capture) AND tbl = ${tbl} AND rid = ${rid}; ` +
+    `INSERT INTO _substrat_capture_changes (copy_id, tbl, rid, batch) SELECT copy_id, ${tbl}, ${rid}, NULL FROM _substrat_capture;`;
+  const on = (kind: 'i' | 'u' | 'd', event: string, body: string) =>
+    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_substrat_capture_${kind}_${name}`)} AFTER ${event} ON ${quoteIdent(name)} BEGIN ${body} END`;
+  return [
+    on('i', 'INSERT', log(byRowid ? 'NEW.rowid' : '0')),
+    on('u', 'UPDATE', byRowid ? log('OLD.rowid') + ' ' + log('NEW.rowid') : log('0')),
+    on('d', 'DELETE', log(byRowid ? 'OLD.rowid' : '0')),
+  ];
+}
+
 /** The names under which SQLite answers a table's rowid, unless a column takes one. */
 const ROWID_NAMES: ReadonlySet<string> = new Set(['rowid', '_rowid_', 'oid']);
 
@@ -1203,6 +1264,8 @@ class WriteRevision {
    * reads) only costs a pass a re-check.
    */
   private written = 0;
+  /** Inside `untracked`: a capture's own bookkeeping, which nothing here counts. */
+  private bypass = false;
   readonly sql: SqlStorage;
 
   constructor(
@@ -1211,10 +1274,23 @@ class WriteRevision {
     private readonly suspended: () => boolean,
     /** Why this store takes no write at all right now, or null (a `carried_away` copy, #1722). */
     private readonly refusal: () => string | null,
+    /** Run before every write statement (#2450: an idle capture's triggers go before the write). */
+    private readonly beforeWrite: () => void = () => undefined,
   ) {
     const exec = (query: string, ...bindings: unknown[]) => {
+      if (this.bypass) {
+        // Enforced, not trusted, as `bookkeeping` is: a write here that is not the capture's own
+        // would be one the revision never saw.
+        if (this.isWrite(query) && !CAPTURE_STATEMENT.test(query)) {
+          throw substratError('internal', `the capture path takes only the capture's own statements (#2450), not: ${query.slice(0, 80)}`);
+        }
+        return raw.exec(query, ...bindings);
+      }
       const write = this.isWrite(query);
-      if (write) this.written++;
+      if (write) {
+        this.written++;
+        this.beforeWrite();
+      }
       if (this.keeping && write) {
         // Bookkeeping takes the copy-marker insert, the lifecycle delivery (#1713) and the wire
         // nonce claim's own statements (RFC wire-signing §4) and nothing else: any other write here would be one the revision never saw, which is the hole this
@@ -1257,6 +1333,23 @@ class WriteRevision {
       return run();
     } finally {
       this.keeping = was;
+    }
+  }
+
+  /**
+   * A copy's capture of this store (#2450): its log, its triggers and its clock. That is what this
+   * store records about a copy reading it, never its data, so it advances no write revision and
+   * meets no refusal: a capture must open, renew and end on a store whatever state it is in. Only
+   * the capture's own statements run here; the triggers it creates log the scope's writes, which
+   * still go through the counted path above.
+   */
+  untracked<T>(run: () => T): T {
+    const was = this.bypass;
+    this.bypass = true;
+    try {
+      return run();
+    } finally {
+      this.bypass = was;
     }
   }
 
@@ -1633,6 +1726,7 @@ export function defineScopeDO(
         ctx.storage,
         () => this.revisionSuspended,
         () => (this.carriedAwayCopy ? CARRIED_AWAY_WRITE_REFUSAL : null),
+        () => this.expireIdleCaptures(),
       );
       this.sql = this.revision.sql;
       for (const stmt of executableSqlStatements(KERNEL_DDL)) {
@@ -7304,7 +7398,7 @@ export function defineScopeDO(
      * tables cannot be replayed — this host answers "object name reserved for internal use" — and
      * it is recomputable, so `importDump` rebuilds it from the loaded rows. A dump carries the rows,
      * never the index over them. A staged load's own tables (#2450) are this store's, not its data,
-     * and so is the wire nonce store (RFC wire-signing §4): a load builds it empty.
+     * and so are a capture's (#2450) and the wire nonce store (RFC wire-signing §4): a load builds it empty.
      */
     private dumpTableDefs(): { name: string; sql: string }[] {
       return (
@@ -7312,7 +7406,7 @@ export function defineScopeDO(
           .exec(
             `SELECT name, sql FROM sqlite_master
               WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
-                AND name NOT GLOB '${STAGE_GLOB}' AND sql IS NOT NULL
+                AND name NOT GLOB '${STAGE_GLOB}' AND name NOT GLOB '${CAPTURE_GLOB}' AND sql IS NOT NULL
               ORDER BY name`,
           )
           .toArray() as unknown as { name: string; sql: string }[]
@@ -7326,37 +7420,45 @@ export function defineScopeDO(
      * own; the pages are one consistent read only while `revision` stays the same, which the reader
      * compares. With `stamp`, the first page (`cursor` null) mints the load stamp, as
      * `exportDumpStamped` does; without it the export writes nothing, as `exportDump`.
+     *
+     * With `capture` (a copy's id), the pages need no quiet moment: the first page opens a capture
+     * in the same turn it reads (`openCapture`), so every row written after it is logged for
+     * `exportDumpChanges`, and every page names each row by its rowid (`rowids`), so a change can
+     * replace or delete it at the destination. A later page of a capture that is gone is refused.
      */
-    exportDumpPage(cursor: string | null, opts: { stamp?: boolean; maxBytes?: number } = {}): Promise<DoReply<ScopeDumpPage>> {
+    exportDumpPage(
+      cursor: string | null,
+      opts: { stamp?: boolean; maxBytes?: number; capture?: string } = {},
+    ): Promise<DoReply<ScopeDumpPage>> {
       // Answered as data, so a refusal's code survives the hop (#113).
       return replyOf(() => this.dumpPage(cursor, opts));
     }
 
     private dumpPage(
       cursor: string | null,
-      { stamp = false, maxBytes = SCOPE_DUMP_PAGE_MAX_BYTES }: { stamp?: boolean; maxBytes?: number },
+      { stamp = false, maxBytes = SCOPE_DUMP_PAGE_MAX_BYTES, capture }: { stamp?: boolean; maxBytes?: number; capture?: string },
     ): ScopeDumpPage {
       let loadStamp = this.loadStamp();
       if (stamp && cursor === null && !loadStamp && !this.carriedAwayCopy) {
         loadStamp = ulid();
         this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
       }
+      const defs = this.dumpTableDefs();
+      if (capture !== undefined) {
+        if (cursor === null) this.openCapture(capture, defs);
+        else this.heldCapture(capture, defs);
+      }
       const at = cursor === null ? null : decodeDumpCursor(cursor);
-      const tables: ScopeDumpTable[] = [];
+      const tables: ScopeDumpPageTable[] = [];
       let bytes = 0;
       let next: string | null = null;
-      for (const { name, sql } of this.dumpTableDefs()) {
+      for (const { name, sql } of defs) {
         // Tables are read in name order: those before the cursor's are done. A cursor naming a
         // table that is gone resumes at the next name.
         if (at && name < at.table) continue;
         const after = at && name === at.table ? at.after : null;
         const { where, bindings } = dumpRowFilter(name);
-        // Read to its end (it holds no row), as every cursor here is: see the batches below.
-        const probe = this.sql.exec(`SELECT * FROM "${name}" WHERE 0`);
-        probe.toArray();
-        const columns = probe.columnNames;
-        // A table without a rowid, or with a column that takes the name, is read by offset.
-        const byRowid = !/\bWITHOUT\s+ROWID\b/i.test(sql) && !columns.some((c) => ROWID_NAMES.has(c.toLowerCase()));
+        const { columns, byRowid } = this.tableShape(name, sql);
         // In batches, each read to its end: a cursor left part-read keeps its table locked, and
         // the next statement that drops or alters it fails with SQLITE_LOCKED.
         const batch = (from: number | null): unknown[][] =>
@@ -7371,12 +7473,14 @@ export function defineScopeDO(
             (raw) => raw as unknown[],
           );
         const rows: unknown[][] = [];
+        const rowids: number[] = [];
         let last: number | null = after;
         let full = false;
         for (;;) {
           const read = batch(last);
           for (const cells of read) {
             rows.push(byRowid ? cells.slice(1) : cells);
+            if (byRowid) rowids.push(Number(cells[0]));
             last = byRowid ? Number(cells[0]) : (last ?? 0) + 1;
             bytes += rowBytes(rows[rows.length - 1]!);
             if (bytes >= maxBytes) {
@@ -7386,13 +7490,229 @@ export function defineScopeDO(
           }
           if (full || read.length < DUMP_READ_BATCH) break;
         }
-        tables.push({ name, ddl: sql, columns, rows });
+        tables.push({ name, ddl: sql, columns, rows, ...(capture !== undefined && byRowid ? { rowids } : {}) });
         if (full) {
           next = encodeDumpCursor({ table: name, after: last ?? 0 });
           break;
         }
       }
       return { tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY) };
+    }
+
+    /** A dumped table's columns, and whether its rows are read, and named, by rowid. */
+    private tableShape(name: string, sql: string): { columns: string[]; byRowid: boolean } {
+      // Read to its end (it holds no row), as every cursor here is: see `dumpPage`'s batches.
+      const probe = this.sql.exec(`SELECT * FROM ${quoteIdent(name)} WHERE 0`);
+      probe.toArray();
+      const columns = probe.columnNames;
+      // A table without a rowid, or with a column that takes the name, is read by offset.
+      return { columns, byRowid: !/\bWITHOUT\s+ROWID\b/i.test(sql) && !columns.some((c) => ROWID_NAMES.has(c.toLowerCase())) };
+    }
+
+    /**
+     * #2450: when the oldest open capture goes idle (epoch ms); null when none is open; undefined
+     * when not read since the object woke or since the last expiry, so the next write reads it.
+     */
+    private captureIdleAt: number | null | undefined = undefined;
+
+    /**
+     * Open (or, for page 0 asked again, renew) the capture `copyId` (#2450): its row, the log, and
+     * the triggers that fill it on every dumped table. Through the untracked path: a capture is this
+     * store's bookkeeping about a copy, not its data, so it moves no write revision, and no dump
+     * carries it. Every trigger logs for every open capture, so one set serves overlapping copies.
+     */
+    private openCapture(copyId: string, defs: { name: string; sql: string }[]): void {
+      this.revision.untracked(() => {
+        for (const ddl of CAPTURE_TABLES_DDL) this.sql.exec(ddl);
+        this.sql.exec(
+          `INSERT INTO _substrat_capture (copy_id, touched_at, tables) VALUES (?, ?, ?)
+             ON CONFLICT (copy_id) DO UPDATE SET touched_at = excluded.touched_at, tables = excluded.tables`,
+          copyId, Date.now(), JSON.stringify(defs),
+        );
+        // Page 0 asked again starts the pages over: what was logged since its first read is still
+        // to be sent, and is sent again at worst.
+        for (const { name, sql } of defs) {
+          for (const ddl of captureTriggers(name, this.tableShape(name, sql).byRowid)) this.sql.exec(ddl);
+        }
+      });
+      this.readCaptureClock();
+    }
+
+    /**
+     * The capture `copyId`, renewed, as its pages read the schema (#2450). Refused when it is gone,
+     * and ended and refused when a table was added, dropped or altered since its first page: no
+     * trigger logs a table it did not see, and a table altered under it no longer reads as its
+     * pages did.
+     */
+    private heldCapture(copyId: string, defs: { name: string; sql: string }[]): void {
+      const row = this.revision.untracked(() =>
+        this.hasTable('_substrat_capture')
+          ? (this.sql.exec(`SELECT tables FROM _substrat_capture WHERE copy_id = ?`, copyId).toArray()[0] as { tables: string } | undefined)
+          : undefined,
+      );
+      if (!row) throw substratError('precondition_failed', CAPTURE_GONE);
+      if (row.tables !== JSON.stringify(defs)) {
+        this.endCapture(copyId);
+        throw substratError('precondition_failed', CAPTURE_SCHEMA_MOVED);
+      }
+      this.revision.untracked(() => this.sql.exec(`UPDATE _substrat_capture SET touched_at = ? WHERE copy_id = ?`, Date.now(), copyId));
+      this.readCaptureClock();
+    }
+
+    /**
+     * One batch of what was written since the capture `copyId` opened (#2450), read in one turn.
+     *
+     * Batch `seq` acknowledges every batch before it: their rows leave the log. A batch asked for
+     * again under the same `seq` (its answer was lost) is served afresh, from the rows as they are
+     * now. A row written after a batch served it is logged again, so a later batch serves it again.
+     * Each row is read as it is now: present, it is put in place by its rowid; gone, it is deleted.
+     * A table read by offset is logged as a whole and sent whole.
+     *
+     * The batch that leaves nothing in the log is `final`: read in the same turn as the log ran
+     * empty, so nothing was written between it and the moment its `revision` names, and the capture
+     * ends with it (its triggers too, when it was the last).
+     */
+    exportDumpChanges(copyId: string, seq: number, opts: { maxBytes?: number } = {}): Promise<DoReply<ScopeDumpChanges>> {
+      return replyOf(() => this.captureChanges(copyId, seq, opts.maxBytes ?? SCOPE_DUMP_PAGE_MAX_BYTES));
+    }
+
+    private captureChanges(copyId: string, seq: number, maxBytes: number): ScopeDumpChanges {
+      if (!Number.isSafeInteger(seq) || seq < 0) throw substratError('validation_failed', 'a change batch is numbered from 0');
+      const defs = this.dumpTableDefs();
+      this.heldCapture(copyId, defs);
+      const sqlOf = new Map(defs.map((d) => [d.name, d.sql]));
+      return this.revision.untracked(() => {
+        this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id = ? AND batch < ?`, copyId, seq);
+        this.sql.exec(`UPDATE _substrat_capture_changes SET batch = NULL WHERE copy_id = ? AND batch >= ?`, copyId, seq);
+        const logged = this.sql
+          .exec(`SELECT tbl, rid FROM _substrat_capture_changes WHERE copy_id = ? ORDER BY tbl, rid LIMIT ?`, copyId, CAPTURE_BATCH_ROWS)
+          .toArray() as unknown as { tbl: string; rid: number }[];
+        const byTable = new Map<string, number[]>();
+        for (const { tbl, rid } of logged) {
+          const rids = byTable.get(tbl) ?? [];
+          rids.push(Number(rid));
+          byTable.set(tbl, rids);
+        }
+        const tables: ScopeDumpChange[] = [];
+        let bytes = 0;
+        for (const [name, rids] of byTable) {
+          if (bytes >= maxBytes) break;
+          const ddl = sqlOf.get(name)!;
+          const { columns, byRowid } = this.tableShape(name, ddl);
+          const { where, bindings } = dumpRowFilter(name);
+          const served: number[] = [];
+          if (!byRowid) {
+            const rows = Array.from(this.sql.exec(`SELECT * FROM ${quoteIdent(name)} WHERE ${where}`, ...bindings).raw(), (r) => r as unknown[]);
+            for (const row of rows) bytes += rowBytes(row);
+            tables.push({ name, ddl, columns, rows, deleted: [] });
+            served.push(...rids);
+          } else {
+            const change: ScopeDumpChange & { rowids: number[] } = { name, ddl, columns, rows: [], rowids: [], deleted: [] };
+            for (let i = 0; i < rids.length && bytes < maxBytes; i += CAPTURE_IN_CHUNK) {
+              const chunk = rids.slice(i, i + CAPTURE_IN_CHUNK);
+              const found = new Map<number, unknown[]>();
+              for (const cells of this.sql
+                .exec(
+                  `SELECT rowid, * FROM ${quoteIdent(name)} WHERE (${where}) AND rowid IN (${chunk.map(() => '?').join(', ')})`,
+                  ...bindings, ...chunk,
+                )
+                .raw()) {
+                found.set(Number((cells as unknown[])[0]), (cells as unknown[]).slice(1));
+              }
+              for (const rid of chunk) {
+                if (bytes >= maxBytes) break;
+                const row = found.get(rid);
+                if (row) {
+                  change.rows.push(row);
+                  change.rowids.push(rid);
+                  bytes += rowBytes(row);
+                } else {
+                  change.deleted.push(rid);
+                  bytes += 24;
+                }
+                served.push(rid);
+              }
+            }
+            tables.push(change);
+          }
+          for (let i = 0; i < served.length; i += CAPTURE_IN_CHUNK) {
+            const chunk = served.slice(i, i + CAPTURE_IN_CHUNK);
+            this.sql.exec(
+              `UPDATE _substrat_capture_changes SET batch = ? WHERE copy_id = ? AND tbl = ? AND rid IN (${chunk.map(() => '?').join(', ')})`,
+              seq, copyId, name, ...chunk,
+            );
+          }
+        }
+        const left = this.sql.exec(`SELECT 1 FROM _substrat_capture_changes WHERE copy_id = ? AND batch IS NULL LIMIT 1`, copyId).toArray();
+        const final = left.length === 0;
+        if (final) this.endCapture(copyId);
+        return { tables, final, revision: this.metaValue(WRITE_REVISION_KEY) };
+      });
+    }
+
+    /**
+     * End the capture `copyId` (#2450), if it is open: a copy that finished, failed or was cancelled
+     * calls it. The last capture to end takes the log and every trigger with it.
+     */
+    endDumpCapture(copyId: string): { ended: boolean } {
+      return { ended: this.endCapture(copyId) };
+    }
+
+    private endCapture(copyId: string): boolean {
+      const ended = this.revision.untracked(() => {
+        if (!this.hasTable('_substrat_capture')) return false;
+        this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id = ?`, copyId);
+        const gone = this.sql.exec(`DELETE FROM _substrat_capture WHERE copy_id = ? RETURNING copy_id`, copyId).toArray().length > 0;
+        this.dropCaptureIfIdle();
+        return gone;
+      });
+      this.readCaptureClock();
+      return ended;
+    }
+
+    /** With no capture left open, drop the log, the capture table and every capture trigger. */
+    private dropCaptureIfIdle(): void {
+      if (this.sql.exec(`SELECT 1 FROM _substrat_capture LIMIT 1`).toArray().length > 0) return;
+      const triggers = this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB '${CAPTURE_GLOB}'`)
+        .toArray() as unknown as { name: string }[];
+      for (const { name } of triggers) this.sql.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(name)}`);
+      this.sql.exec(`DROP TABLE IF EXISTS _substrat_capture_changes`);
+      this.sql.exec(`DROP TABLE IF EXISTS _substrat_capture`);
+    }
+
+    /** Read when the oldest open capture goes idle (`captureIdleAt`). */
+    private readCaptureClock(): void {
+      const oldest = this.revision.untracked(() =>
+        this.hasTable('_substrat_capture')
+          ? (this.sql.exec(`SELECT MIN(touched_at) AS t FROM _substrat_capture`).toArray()[0] as { t: number | null } | undefined)?.t ?? null
+          : null,
+      );
+      this.captureIdleAt = oldest === null ? null : Number(oldest) + CAPTURE_IDLE_MS;
+    }
+
+    /**
+     * Run before every write (#2450, the write revision's `beforeWrite`): a capture nobody has asked
+     * for in `CAPTURE_IDLE_MS` belongs to a copy that stopped, so it ends here, before the write its
+     * triggers would log. Once the clock is read this is one comparison per write; the clock is read
+     * on the first write after a wake and after each expiry.
+     */
+    private expireIdleCaptures(): void {
+      if (this.captureIdleAt === undefined) this.readCaptureClock();
+      if (this.captureIdleAt === null || this.captureIdleAt === undefined || Date.now() < this.captureIdleAt) return;
+      this.revision.untracked(() => {
+        const idle = this.sql
+          .exec(`SELECT copy_id FROM _substrat_capture WHERE touched_at <= ?`, Date.now() - CAPTURE_IDLE_MS)
+          .toArray() as unknown as { copy_id: string }[];
+        for (const { copy_id } of idle) {
+          this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id = ?`, copy_id);
+          this.sql.exec(`DELETE FROM _substrat_capture WHERE copy_id = ?`, copy_id);
+        }
+        this.dropCaptureIfIdle();
+      });
+      // Read again at the next write, not now: should the write's own transaction roll back, the
+      // capture is back, and the next write ends it again.
+      this.captureIdleAt = undefined;
     }
 
     /**
@@ -8023,12 +8343,12 @@ export function defineScopeDO(
      * following pages must arrive in order. A page already staged (page `0` included)
      * answers `staged: false` and changes nothing, so a retried page is harmless.
      */
-    stageDumpPage(stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<DoReply<{ staged: boolean }>> {
+    stageDumpPage(stageId: string, seq: number, tables: ScopeDumpPageTable[]): Promise<DoReply<{ staged: boolean }>> {
       // Answered as data, so a refusal's code survives the hop (#113).
       return replyOf(() => this.stagePage(stageId, seq, tables));
     }
 
-    private stagePage(stageId: string, seq: number, tables: ScopeDumpTable[]): { staged: boolean } {
+    private stagePage(stageId: string, seq: number, tables: ScopeDumpPageTable[]): { staged: boolean } {
       if (!Number.isSafeInteger(seq) || seq < 0) throw substratError('validation_failed', 'a stage page is numbered from 0');
       // The identifiers reach SQL below as text, so they are held to the replay rules first.
       assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
@@ -8059,9 +8379,6 @@ export function defineScopeDO(
           if (seq > head.nextSeq) {
             throw substratError('precondition_failed', `stage page ${seq} arrived before page ${head.nextSeq}`);
           }
-          // #2314: a page carrying an attachment row this store condemned is refused here, at the
-          // page, as the commit refuses it again before its first drop (`loadTables`).
-          refuseCondemnedInDump(doSpineSql(this.sql), tables);
           for (const t of tables) {
             const columns = JSON.stringify(t.columns);
             let held = this.sql
@@ -8079,13 +8396,76 @@ export function defineScopeDO(
             } else if (held.ddl !== t.ddl || held.columns !== columns) {
               throw substratError('precondition_failed', `table ${t.name} changed between dump pages; nothing more was staged`);
             }
-            const insert = `INSERT INTO "${stageRowsTable(held.ord)}" VALUES (${t.columns.map(() => '?').join(', ')})`;
-            for (const row of t.rows) {
-              if (row.length !== t.columns.length) {
-                throw substratError('validation_failed', `a row of ${t.name} has ${row.length} cells for ${t.columns.length} columns`);
-              }
-              this.sql.exec(insert, ...row);
+            this.stageRows(held.ord, t);
+          }
+          this.sql.exec(`UPDATE _substrat_stage SET next_seq = ?`, seq + 1);
+          return { staged: true };
+        });
+      } finally {
+        this.revisionSuspended = false;
+      }
+    }
+
+    /**
+     * Put a fragment's rows into staged table `ord` (#2450). With `rowids` each row is staged under
+     * its source rowid, replacing the one staged there: a capture's page and its changes name rows
+     * that way, and the commit reads the stage in rowid order, so the rows load in the source's order.
+     */
+    private stageRows(ord: number, t: ScopeDumpPageTable): void {
+      // #2314: a fragment carrying an attachment row this store condemned is refused here, as it
+      // arrives, and the commit refuses it again before its first drop (`loadTables`).
+      refuseCondemnedInDump(doSpineSql(this.sql), [t]);
+      if (t.rowids && t.rowids.length !== t.rows.length) {
+        throw substratError('validation_failed', `${t.name} has ${t.rowids.length} rowids for ${t.rows.length} rows`);
+      }
+      const marks = t.columns.map(() => '?').join(', ');
+      const insert = t.rowids
+        ? `INSERT OR REPLACE INTO "${stageRowsTable(ord)}" (rowid, ${t.columns.map((_, i) => `c${i}`).join(', ')}) VALUES (?, ${marks})`
+        : `INSERT INTO "${stageRowsTable(ord)}" VALUES (${marks})`;
+      for (const [i, row] of t.rows.entries()) {
+        if (row.length !== t.columns.length) {
+          throw substratError('validation_failed', `a row of ${t.name} has ${row.length} cells for ${t.columns.length} columns`);
+        }
+        if (t.rowids) this.sql.exec(insert, t.rowids[i], ...row);
+        else this.sql.exec(insert, ...row);
+      }
+    }
+
+    /**
+     * Apply one batch of a capture's changes to the stage (#2450): numbered in the same sequence as
+     * the stage's pages, after the last of them, and as idempotent: a batch already applied answers
+     * `staged: false`. A change with `rowids` puts its rows in place and deletes `deleted` by rowid;
+     * one without replaces its table whole. A table no page staged, or staged with another schema,
+     * is refused: the source's schema moved, and the copy starts again.
+     */
+    stageDumpChanges(stageId: string, seq: number, tables: ScopeDumpChange[]): Promise<DoReply<{ staged: boolean }>> {
+      return replyOf(() => this.stageChanges(stageId, seq, tables));
+    }
+
+    private stageChanges(stageId: string, seq: number, tables: ScopeDumpChange[]): { staged: boolean } {
+      if (!Number.isSafeInteger(seq) || seq < 1) throw substratError('validation_failed', 'a change batch follows a stage\'s first page');
+      assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
+      this.revisionSuspended = true;
+      try {
+        return this.revision.transactionSync(() => {
+          const head = this.stageHead();
+          if (head?.stageId !== stageId) throw substratError('precondition_failed', STAGE_GONE);
+          if (seq < head.nextSeq) return { staged: false };
+          if (seq > head.nextSeq) throw substratError('precondition_failed', `stage page ${seq} arrived before page ${head.nextSeq}`);
+          for (const t of tables) {
+            const held = this.sql
+              .exec(`SELECT ord, ddl, columns FROM _substrat_stage_tables WHERE name = ?`, t.name)
+              .toArray()[0] as { ord: number; ddl: string; columns: string } | undefined;
+            if (!held || held.ddl !== t.ddl || held.columns !== JSON.stringify(t.columns)) {
+              throw substratError('precondition_failed', `table ${t.name} changed since its pages were staged; nothing more was staged`);
             }
+            const rows = `"${stageRowsTable(held.ord)}"`;
+            if (!t.rowids) this.sql.exec(`DELETE FROM ${rows}`);
+            for (let i = 0; i < t.deleted.length; i += CAPTURE_IN_CHUNK) {
+              const chunk = t.deleted.slice(i, i + CAPTURE_IN_CHUNK);
+              this.sql.exec(`DELETE FROM ${rows} WHERE rowid IN (${chunk.map(() => '?').join(', ')})`, ...chunk);
+            }
+            this.stageRows(held.ord, t);
           }
           this.sql.exec(`UPDATE _substrat_stage SET next_seq = ?`, seq + 1);
           return { staged: true };
@@ -8140,12 +8520,16 @@ export function defineScopeDO(
 
     /** One staged table's rows, in the order they were staged, a batch at a time. */
     private *stagedRows(ord: number): Generator<unknown[]> {
-      let after = 0;
+      // No lower bound on the first batch: a row staged under its source rowid (#2450) may sit at 0
+      // or below.
+      let after: number | null = null;
       for (;;) {
-        const batch = Array.from(
-          this.sql
-            .exec(`SELECT rowid, * FROM "${stageRowsTable(ord)}" WHERE rowid > ? ORDER BY rowid LIMIT ?`, after, STAGE_READ_BATCH)
-            .raw(),
+        const table = `"${stageRowsTable(ord)}"`;
+        const batch: unknown[][] = Array.from(
+          (after === null
+            ? this.sql.exec(`SELECT rowid, * FROM ${table} ORDER BY rowid LIMIT ?`, STAGE_READ_BATCH)
+            : this.sql.exec(`SELECT rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`, after, STAGE_READ_BATCH)
+          ).raw(),
           (row) => row as unknown[],
         );
         for (const row of batch) yield row.slice(1);

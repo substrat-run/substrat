@@ -239,7 +239,10 @@ import {
   type ScopeDump,
   type ScopeDumpInput,
   type ScopeDumpTable,
+  type ScopeDumpChange,
+  type ScopeDumpChanges,
   type ScopeDumpPage,
+  type ScopeDumpPageTable,
   type ScopeLineage,
   subjectShredReceipt,
   type SubjectShredReceipt,
@@ -2115,9 +2118,15 @@ interface ScopeStubRpc {
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
   /** #2450: one page of `exportDumpStamped`; the first (`cursor` null) mints the load stamp. */
-  exportDumpPage(cursor: string | null, opts?: { stamp?: boolean; maxBytes?: number }): Promise<DoReply<ScopeDumpPage>>;
+  exportDumpPage(cursor: string | null, opts?: { stamp?: boolean; maxBytes?: number; capture?: string }): Promise<DoReply<ScopeDumpPage>>;
+  /** #2450: one batch of what was written since the capture's first page; `final` ends it. */
+  exportDumpChanges(copyId: string, seq: number, opts?: { maxBytes?: number }): Promise<DoReply<ScopeDumpChanges>>;
+  /** #2450: end a capture, if it is open; the last one takes its triggers with it. */
+  endDumpCapture(copyId: string): Promise<{ ended: boolean }>;
   /** #2450: stage one page for `commitStagedDumpChecked`; page 0 starts (and replaces) a stage. */
-  stageDumpPage(stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<DoReply<{ staged: boolean }>>;
+  stageDumpPage(stageId: string, seq: number, tables: ScopeDumpPageTable[]): Promise<DoReply<{ staged: boolean }>>;
+  /** #2450: apply one batch of a capture's changes to the stage, in the stage's page sequence. */
+  stageDumpChanges(stageId: string, seq: number, tables: ScopeDumpChange[]): Promise<DoReply<{ staged: boolean }>>;
   /** #2450: `importDumpChecked`, the rows read from the stage named. */
   commitStagedDumpChecked(
     stageId: string,
@@ -4133,20 +4142,46 @@ export class CloudflareScopeHost implements ScopeHost {
   async exportScopePageLocal(
     scopeId: ScopeId,
     cursor: string | null,
-    /** `maxBytes`: a smaller page than `SCOPE_DUMP_PAGE_MAX_BYTES`, for a test that wants many. */
-    opts?: { stamp?: boolean; maxBytes?: number },
+    /** `maxBytes`: a smaller page than `SCOPE_DUMP_PAGE_MAX_BYTES`, for a test that wants many.
+     *  `capture`: a copy's id; its pages need no quiet moment (`exportScopeChangesLocal`). */
+    opts?: { stamp?: boolean; maxBytes?: number; capture?: string },
   ): Promise<ScopeDumpPage> {
     return unwrapReply(
       await this.scopeStub(scopeId).exportDumpPage(cursor, {
         stamp: opts?.stamp === true,
         ...(opts?.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}),
+        ...(opts?.capture !== undefined ? { capture: opts.capture } : {}),
       }),
     );
   }
 
+  /**
+   * One batch of what this scope took since the capture `copyId`'s first page (#2450), behind the
+   * vertical's `/internal/export-changes`. Batch `seq` acknowledges those before it; the `final`
+   * one ends the capture.
+   */
+  async exportScopeChangesLocal(
+    scopeId: ScopeId,
+    copyId: string,
+    seq: number,
+    opts?: { maxBytes?: number },
+  ): Promise<ScopeDumpChanges> {
+    return unwrapReply(await this.scopeStub(scopeId).exportDumpChanges(copyId, seq, opts?.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}));
+  }
+
+  /** End the capture `copyId` of this scope (#2450), if it is still open: a copy that stopped. */
+  async endScopeCaptureLocal(scopeId: ScopeId, copyId: string): Promise<{ ended: boolean }> {
+    return this.scopeStub(scopeId).endDumpCapture(copyId);
+  }
+
   /** Stage one page of a dump into a scope in THIS deployment (#2450), for `restoreStagedScopeLocal`. */
-  async stageScopePageLocal(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<{ staged: boolean }> {
+  async stageScopePageLocal(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpPageTable[]): Promise<{ staged: boolean }> {
     return unwrapReply(await this.scopeStub(scopeId).stageDumpPage(stageId, seq, tables));
+  }
+
+  /** Apply one batch of a capture's changes to the stage `stageId` (#2450), after its pages. */
+  async stageScopeChangesLocal(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpChange[]): Promise<{ staged: boolean }> {
+    return unwrapReply(await this.scopeStub(scopeId).stageDumpChanges(stageId, seq, tables));
   }
 
   /** `restoreScopeLocal` from the dump staged under `stageId` (#2450), with the same fences and answers. */

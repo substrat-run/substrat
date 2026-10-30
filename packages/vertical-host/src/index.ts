@@ -149,7 +149,10 @@ import {
   type Visibility,
   type RoleDefinition,
   type ScopeDumpTable,
+  type ScopeDumpChange,
+  type ScopeDumpChanges,
   type ScopeDumpPage,
+  type ScopeDumpPageTable,
   type ScopeTable,
   type ScopeQueryResult,
   type EntitlementGrant,
@@ -371,9 +374,16 @@ export interface VerticalScopeHost {
   /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
    *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
    *  carries the scope whole. */
-  exportScopePageLocal?(scopeId: ScopeId, cursor: string | null, opts?: { stamp?: boolean }): Promise<ScopeDumpPage>;
+  exportScopePageLocal?(scopeId: ScopeId, cursor: string | null, opts?: { stamp?: boolean; capture?: string }): Promise<ScopeDumpPage>;
+  /** #2450: one batch of what the scope took since a capture's first page. Optional: the route
+   *  answers 501 without it, and the platform then copies only at a quiet moment. */
+  exportScopeChangesLocal?(scopeId: ScopeId, copyId: string, seq: number): Promise<ScopeDumpChanges>;
+  /** #2450: end a capture, if it is still open. */
+  endScopeCaptureLocal?(scopeId: ScopeId, copyId: string): Promise<{ ended: boolean }>;
   /** #2450: stage one page of a dump into this scope; page 0 starts (and replaces) a stage. */
-  stageScopePageLocal?(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<{ staged: boolean }>;
+  stageScopePageLocal?(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpPageTable[]): Promise<{ staged: boolean }>;
+  /** #2450: apply one batch of a capture's changes to the stage, after its pages. */
+  stageScopeChangesLocal?(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpChange[]): Promise<{ staged: boolean }>;
   /** #2450: `restoreScopeLocal` from the dump staged under `stageId`, with the same options. */
   restoreStagedScopeLocal?(
     scopeId: ScopeId,
@@ -936,14 +946,15 @@ const restoreFields = z.object({
   }).strict().optional(),
 });
 
-const dumpTables = z.array(
-  z.object({
-    name: z.string(),
-    ddl: z.string(),
-    columns: z.array(z.string()),
-    rows: z.array(z.array(z.unknown())),
-  }),
-);
+const dumpTable = z.object({
+  name: z.string(),
+  ddl: z.string(),
+  columns: z.array(z.string()),
+  rows: z.array(z.array(z.unknown())),
+});
+const dumpTables = z.array(dumpTable);
+/** #2450: a table's fragment in a page, with each row's source rowid on a page read under a capture. */
+const pageTable = dumpTable.extend({ rowids: z.array(z.number().int()).optional() });
 
 // #1869: `exact` vouches for a named source. Without one the host would silently fall back.
 const namesSource = (b: { exact?: boolean; sourceScopeId?: string }) => !b.exact || b.sourceScopeId !== undefined;
@@ -959,7 +970,15 @@ const stagePageBody = z.object({
   scopeId: scopeIdOf,
   stageId: z.string().min(1),
   seq: z.number().int().nonnegative(),
-  tables: dumpTables,
+  tables: z.array(pageTable),
+});
+
+/** #2450: one batch of a capture's changes to apply to a stage, numbered after its pages. */
+const stageChangesBody = z.object({
+  scopeId: scopeIdOf,
+  stageId: z.string().min(1),
+  seq: z.number().int().positive(),
+  tables: z.array(pageTable.extend({ deleted: z.array(z.number().int()) })),
 });
 
 const configureBody = z.object({
@@ -1486,7 +1505,31 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.exportScopePageLocal) return refuseStatus(c, 501, 'this deployment exports a scope only whole (#2450) — redeploy it');
     const cursor = c.req.query('cursor');
     // `stamp=1` is a carry's export, as on `/internal/export`: its first page mints the load stamp.
-    return c.json(await host.exportScopePageLocal(scopeId, cursor ? cursor : null, { stamp: c.req.query('stamp') === '1' }));
+    // `capture=<copy id>`: the pages of a copy that catches up on the writes taken meanwhile.
+    const capture = c.req.query('capture');
+    return c.json(
+      await host.exportScopePageLocal(scopeId, cursor ? cursor : null, {
+        stamp: c.req.query('stamp') === '1',
+        ...(capture ? { capture } : {}),
+      }),
+    );
+  });
+
+  // #2450: a copy that needs no quiet moment. The capture its first page opened logs every row the
+  // scope takes meanwhile; these batches carry them to the stage until none are left. A host built
+  // before them answers 501, and the platform copies at a quiet moment instead.
+  app.post('/internal/export-changes', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.exportScopeChangesLocal) return refuseStatus(c, 501, 'this deployment cannot catch a copy up (#2450) — redeploy it');
+    const body = z.object({ scopeId: scopeIdOf, copyId: z.string().min(1), seq: z.number().int().nonnegative() }).parse(await c.req.json());
+    return c.json(await host.exportScopeChangesLocal(body.scopeId, body.copyId, body.seq));
+  });
+
+  app.post('/internal/capture/end', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.endScopeCaptureLocal) return refuseStatus(c, 501, 'this deployment captures nothing (#2450) — redeploy it');
+    const body = z.object({ scopeId: scopeIdOf, copyId: z.string().min(1) }).parse(await c.req.json());
+    return c.json(await host.endScopeCaptureLocal(body.scopeId, body.copyId));
   });
 
   app.post('/internal/stage', async (c) => {
@@ -1494,6 +1537,13 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.stageScopePageLocal) return refuseStatus(c, 501, 'this deployment restores a scope only whole (#2450) — redeploy it');
     const body = stagePageBody.parse(await c.req.json());
     return c.json(await host.stageScopePageLocal(body.scopeId, body.stageId, body.seq, body.tables));
+  });
+
+  app.post('/internal/stage-changes', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.stageScopeChangesLocal) return refuseStatus(c, 501, 'this deployment cannot catch a copy up (#2450) — redeploy it');
+    const body = stageChangesBody.parse(await c.req.json());
+    return c.json(await host.stageScopeChangesLocal(body.scopeId, body.stageId, body.seq, body.tables));
   });
 
   app.post('/internal/restore-staged', async (c) => {
