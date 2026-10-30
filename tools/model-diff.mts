@@ -186,6 +186,8 @@ async function emitArtifact(
 
   if (check) {
     if (current !== rendered) {
+      // The studio's gate tells drift from a crash by this line, since node exits 1 on
+      // an uncaught throw too (packages/builder-workspace/src/model.ts) — keep its shape.
       console.error(`model-diff: ${target} is stale — re-run \`${regenerate}\` and commit the diff`);
       return { drifted: true, lifecycles };
     }

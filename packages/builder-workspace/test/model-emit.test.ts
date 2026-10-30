@@ -22,7 +22,7 @@ import { describe, expect, it } from 'vitest';
 import { emitProjectModel, modelEmitWarning } from '../src/model.js';
 import { LocalWorkspace } from '../src/local.js';
 import { ensureVerticalRepo, runTurn } from '../src/turn.js';
-import { runGates, standaloneGates } from '../src/gates.js';
+import { repairNeeded, runGates, standaloneGates } from '../src/gates.js';
 import type { ExecOptions, ExecResult } from '../src/workspace.js';
 
 const PROJECT = 'proj';
@@ -36,6 +36,7 @@ const PROJECT = 'proj';
 class ScriptedWorkspace extends LocalWorkspace {
 	readonly commands: string[] = [];
 	emitExit = 0;
+	emitStderr = 'model-diff: boom';
 	/** Written by the scripted emitter, to stand in for what model-diff renders. */
 	artifact: string | null = '{ "entities": {} }\n';
 
@@ -46,15 +47,20 @@ class ScriptedWorkspace extends LocalWorkspace {
 			if (this.emitExit === 0 && this.artifact !== null) {
 				await this.writeFile(`${PROJECT}/model.json`, this.artifact);
 			}
-			return { stdout: '', stderr: 'model-diff: boom', exitCode: this.emitExit };
+			return { stdout: '', stderr: this.emitStderr, exitCode: this.emitExit };
 		}
 		return { stdout: '', stderr: '', exitCode: 0 };
 	}
 }
 
-async function project(opts: { model?: boolean } = {}): Promise<ScriptedWorkspace> {
+async function project(opts: { model?: boolean; emitter?: boolean } = {}): Promise<ScriptedWorkspace> {
 	const root = await mkdtemp(join(tmpdir(), 'builder-model-emit-'));
 	await mkdir(join(root, PROJECT, 'spec'), { recursive: true });
+	// The emitter is scripted, but its presence at the root is what the probe reads.
+	if (opts.emitter !== false) {
+		await mkdir(join(root, 'tools'));
+		await writeFile(join(root, 'tools', 'model-diff.mts'), '');
+	}
 	await writeFile(join(root, PROJECT, 'README.md'), '# project\n');
 	if (opts.model !== false) {
 		await writeFile(join(root, PROJECT, 'spec', 'model.ts'), 'export const model = {};\n');
@@ -95,7 +101,41 @@ describe('emitProjectModel', () => {
 			throw new Error('container gone');
 		};
 		const r = await emitProjectModel(ws, PROJECT);
-		expect(r).toEqual({ status: 'failed', output: 'container gone' });
+		// The workspace's failure, not the declaration's: blocked, which no repair answers.
+		expect(r).toEqual({ status: 'blocked', output: 'container gone' });
+		await ws.dispose();
+	});
+});
+
+describe('runGates over an emission the model cannot fix', () => {
+	it.each([
+		['a workspace that cannot run the emitter', { exists: true }, 'blocked', false],
+		[
+			'a stale artifact on a recheck, which does not write',
+			{ emitExit: 1, emitStderr: 'model-diff: proj/model.json is stale — re-run `x` and commit the diff' },
+			'passed',
+			true,
+		],
+		// node's own exit 1 for an uncaught throw: not drift, and never a pass.
+		['an emitter that crashed with exit 1', { emitExit: 1, emitStderr: 'Error: EISDIR' }, 'blocked', false],
+		['a root without the emitter', { emitter: false }, 'skipped', true],
+	] as const)('%s asks for no repair', async (_, setup, status, ok) => {
+		const ws = await project({ emitter: !('emitter' in setup) });
+		if ('emitExit' in setup) {
+			ws.emitExit = setup.emitExit;
+			ws.emitStderr = setup.emitStderr;
+		}
+		if ('exists' in setup) {
+			ws.exists = async () => {
+				throw new Error('container gone');
+			};
+		}
+		const run = await runGates(ws, PROJECT, []);
+		expect(run.results).toEqual([expect.objectContaining({ name: 'model-emit', status })]);
+		expect(run.ok).toBe(ok);
+		expect(repairNeeded(run)).toBe(false);
+		if ('emitter' in setup) expect(ws.commands).toEqual([]);
+		if (status === 'passed') expect(run.results[0]?.note).toContain('next model turn');
 		await ws.dispose();
 	});
 });
@@ -289,7 +329,8 @@ describe('model-diff --root — the emitter the studio calls', () => {
 		await writeFile(artifact, '{"entities":{}}\n');
 		const drift = await tool(['tools/model-diff.mts', '--root', dir, '--check']);
 		expect(drift.code).toBe(1);
-		expect(drift.out).toContain('is stale');
+		// The line the studio's gate tells drift from a crash by (src/model.ts).
+		expect(drift.out).toMatch(/^model-diff: .+ is stale — re-run /m);
 	}, 60_000);
 
 	it('a project declaring no entity model is exit 2, never a green light', async () => {

@@ -52,6 +52,11 @@ export interface Workspace {
 	mkdir(path: string, opts?: { recursive?: boolean }): Promise<void>;
 	listFiles(path: string): Promise<string[]>;
 	exists(path: string): Promise<boolean>;
+	/**
+	 * Whether a repo tool (`tools/model-diff.mts`) is there for `exec` to run — answered
+	 * where `exec` will look for it, which a hosted workspace keeps outside its root.
+	 */
+	hasTool(path: string): Promise<boolean>;
 	exposePort(port: number): Promise<ExposedPort>;
 	dispose(): Promise<void>;
 }

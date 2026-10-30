@@ -22,7 +22,14 @@
  * own type errors. Default: every nonzero exit is a plain failure.
  */
 import type { Workspace } from './workspace.js';
-import { emitProjectModel, type ModelEmitResult } from './model.js';
+import {
+	emitProjectModel,
+	MODEL_ARTIFACT_PATH,
+	MODEL_EMITTER_PATH,
+	MODEL_SOURCE_PATH,
+	type ModelEmitResult,
+	type ModelEmitStatus,
+} from './model.js';
 
 export type GateName =
 	| 'install'
@@ -44,7 +51,7 @@ export interface GateResult {
 	readonly durationMs: number;
 	/** Trimmed combined output — what the generator is shown on failure. */
 	readonly output: string;
-	/** Why a gate was skipped, when it was. */
+	/** Why a gate was skipped, or what a passed one could not do. */
 	readonly note?: string;
 }
 
@@ -271,6 +278,30 @@ export interface GateRun {
 }
 
 /**
+ * What each emission means as a gate. Only the declaration's own refusal is `failed`,
+ * the one status the repair loop answers: a workspace that could not run the emitter
+ * is `blocked`, and a stale artifact or an absent emitter is nothing a model can fix.
+ */
+const MODEL_EMIT_GATE: Record<
+	Exclude<ModelEmitStatus, 'absent'>,
+	{ status: GateStatus; exitCode: number; note?: string }
+> = {
+	emitted: { status: 'passed', exitCode: 0 },
+	failed: { status: 'failed', exitCode: 1 },
+	blocked: { status: 'blocked', exitCode: 2 },
+	stale: {
+		status: 'passed',
+		exitCode: 0,
+		note: `${MODEL_ARTIFACT_PATH} is older than ${MODEL_SOURCE_PATH}; the next model turn re-emits it`,
+	},
+	unavailable: {
+		status: 'skipped',
+		exitCode: 0,
+		note: `no ${MODEL_EMITTER_PATH} at this workspace root — the emitter is not here to run`,
+	},
+};
+
+/**
  * Runs every gate. Deliberately does NOT stop at the first failure: the generator
  * fixes more per turn when it can see every complaint at once, and these are
  * cheap relative to a model call.
@@ -289,8 +320,7 @@ export async function runGates(
 	if (model.status !== 'absent') {
 		const result: GateResult = {
 			name: 'model-emit',
-			status: model.status === 'failed' ? 'failed' : 'passed',
-			exitCode: model.status === 'failed' ? 1 : 0,
+			...MODEL_EMIT_GATE[model.status],
 			durationMs: Date.now() - started,
 			output: model.output,
 		};

@@ -239,6 +239,11 @@ export class LocalWorkspace implements Workspace {
 		}
 	}
 
+	/** Mode A runs tools from its root, so the root is where one is or is not. */
+	async hasTool(path: string): Promise<boolean> {
+		return await this.exists(path);
+	}
+
 	/**
 	 * Mode A has nothing to expose — the dev server is already listening on the
 	 * host. Port ALLOCATION (so concurrent sessions do not collide) is the turn
