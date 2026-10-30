@@ -33,6 +33,8 @@ export type ModuleSpec = {
   lists?: unknown[];
   /** As its manifest declares them (#1995: the push derives the attachment store from these). */
   attachmentTargets?: unknown[];
+  /** Connection landings, as its manifest declares them (#2732). */
+  connections?: unknown[];
 };
 
 /** The workspace kernel, linked into a fixture the way a vertical's node_modules has it. */
@@ -74,6 +76,7 @@ export function vertical(
       ...(m.searchables ? { searchables: m.searchables } : {}),
       ...(m.lists ? { lists: m.lists } : {}),
       ...(m.attachmentTargets ? { attachmentTargets: m.attachmentTargets } : {}),
+      ...(m.connections ? { connections: m.connections } : {}),
     },
     ...(m.migrations ? { migrations: m.migrations } : {}),
   }));

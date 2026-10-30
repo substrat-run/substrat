@@ -303,6 +303,17 @@ test('a declared connection landing gets a row: the provider, the module, the op
     md,
     /\| `planima` \| `@fixture\/plan` \| `maintenance\/record-plan` \| `plan:record` \| `horizonYears: 50`, `organizationId: null` \|/,
   );
+  assert.doesNotMatch(md, /on request/);
+});
+
+test('an on-request landing is marked on its row and explained once (#2732)', () => {
+  const dir = writeLandingFixture(mkdtempSync(join(tmpdir(), 'permission-diff-')), [
+    { provider: 'planima', operation: 'maintenance/record-plan', permission: 'plan:record', bind: 'on-request' },
+  ]);
+  assert.equal(run(dir).status, 0);
+  const md = rendered(dir);
+  assert.match(md, /\| `planima` \*\(on request\)\* \| `@fixture\/plan` \| `maintenance\/record-plan` \| `plan:record` \| — \|/);
+  assert.match(md, /A provider marked \*on request\* is the exception/);
 });
 
 test('a landing holding a key nothing declares is refused, like a peer\'s (#2316)', () => {
