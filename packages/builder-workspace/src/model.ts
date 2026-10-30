@@ -25,18 +25,33 @@ import type { Workspace } from './workspace.js';
 export const MODEL_SOURCE_PATH = 'spec/model.ts';
 /** Where the emitted artifact lands, relative to the vertical dir. */
 export const MODEL_ARTIFACT_PATH = 'model.json';
+/** The emitter, relative to the workspace root it runs from. */
+export const MODEL_EMITTER_PATH = 'tools/model-diff.mts';
 
 export type ModelEmitStatus =
 	/** The artifact is now current — written, or already identical. */
 	| 'emitted'
 	/** No `spec/model.ts`: the model phase has not run. Not a failure. */
 	| 'absent'
-	/** The emitter could not do its job. Work is preserved with red gates. */
-	| 'failed';
+	/** The emitter refused the declaration. Work is preserved with red gates. */
+	| 'failed'
+	/**
+	 * `check` only: the declaration loads and emits, but `model.json` is not what it
+	 * renders to. A recheck does not write, so it cannot fix this; the next model turn
+	 * does. Reported, never failed: a gate the user cannot clear is not a verdict.
+	 */
+	| 'stale'
+	/**
+	 * The workspace could not run the emitter at all (the exec or the probe threw, a
+	 * container gone mid-turn). Not the declaration's fault, so not the model's to repair.
+	 */
+	| 'blocked'
+	/** The workspace root holds no emitter: a `--root` outside this monorepo. */
+	| 'unavailable';
 
 export interface ModelEmitResult {
 	readonly status: ModelEmitStatus;
-	/** The emitter's combined output, kept only when it failed. */
+	/** The emitter's combined output, kept only when it did not emit. */
 	readonly output: string;
 }
 
@@ -70,17 +85,21 @@ export async function emitProjectModel(
 		if (!(await ws.exists(`${verticalDir}/${MODEL_SOURCE_PATH}`))) {
 			return { status: 'absent', output: '' };
 		}
+		if (!(await ws.exists(MODEL_EMITTER_PATH))) return { status: 'unavailable', output: '' };
 		// The tool runs from the workspace root, where `tools/` and the installed
 		// toolchain are — the same calling convention the standalone permission and
 		// api gates use.
 		const { stdout, stderr, exitCode } = await ws.exec(
-			`pnpm exec tsx tools/model-diff.mts --root ${JSON.stringify(verticalDir)}${opts.check ? ' --check' : ''}`,
+			`pnpm exec tsx ${MODEL_EMITTER_PATH} --root ${JSON.stringify(verticalDir)}${opts.check ? ' --check' : ''}`,
 		);
 		if (exitCode === 0) return { status: 'emitted', output: '' };
-		const combined = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n');
-		return { status: 'failed', output: combined.slice(-MAX_OUTPUT) };
+		const combined = [stdout.trimEnd(), stderr.trimEnd()].filter(Boolean).join('\n').slice(-MAX_OUTPUT);
+		// The emitter's 0/1/2: 1 is drift, which only `--check` can report. A module that
+		// will not load is 2, and stays the declaration's failure.
+		if (opts.check && exitCode === 1) return { status: 'stale', output: combined };
+		return { status: 'failed', output: combined };
 	} catch (e) {
-		return { status: 'failed', output: e instanceof Error ? e.message : String(e) };
+		return { status: 'blocked', output: e instanceof Error ? e.message : String(e) };
 	}
 }
 
@@ -98,7 +117,7 @@ export async function emitProjectModel(
  * before this turn.
  */
 export function modelEmitWarning(result: ModelEmitResult): string | null {
-	if (result.status !== 'failed') return null;
+	if (result.status !== 'failed' && result.status !== 'blocked') return null;
 	return (
 		`${MODEL_ARTIFACT_PATH} could not be re-emitted from ${MODEL_SOURCE_PATH}, so the Model tab ` +
 		`still shows the entity model from before this turn.\n${result.output}`
