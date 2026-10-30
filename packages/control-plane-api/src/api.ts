@@ -825,7 +825,15 @@ type Vars = {
   failureReference?: string;
   /** #2540: whose failure `onError` resolved it as (`failureSubject`), so the backstop reads it once. */
   failureSubjectOf?: { vertical: string | null; tenantId: OpsFailureInput['tenantId'] };
+  /**
+   * #113: the id the host worker minted for this request and answers in `requestId` and the
+   * `x-substrat-request-id` header. A failure's reference reuses it, so the caller quotes one id.
+   */
+  substratInvocationId?: string;
 };
+
+/** A failure's reference: the request's own id where the host minted one, else a fresh ULID. */
+const referenceOf = (c: Context<{ Variables: Vars }>): string => c.get('substratInvocationId') ?? ulid();
 
 /** What a helper needs of a request: its actor and the host it writes through (#977). */
 type ReqCtx = { get: (k: 'actor') => PlatformActorId; var: { host: ScopeHost; admin: HostAdmin } };
@@ -1990,7 +1998,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           // row with no tenant, which only staff read, and to the log line, under the same reference.
           let reference = c.get('failureReference');
           if (!reference) {
-            reference = ulid();
+            reference = referenceOf(c);
             console.error('control-plane.unhandled', { method: c.req.method, path: c.req.path, reference, tenantId, scopeId, detail: raw });
           }
           recordWithheld({ ...base, tenantId, reference }, raw, answered, cause);
@@ -2338,7 +2346,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     cause: unknown,
     answered?: (reference: string) => string,
   ): { reference: string; detail?: string } => {
-    const reference = ulid();
+    const reference = referenceOf(c);
     console.error('control-plane.unhandled', {
       method: c.req.method,
       path: c.req.path,
@@ -2484,7 +2492,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // says what is wrong, and the tail line is what ties it to the request that hit it.
     if (status >= 500) {
       const subject = await subjectOf();
-      const reference = ulid();
+      const reference = referenceOf(c);
       c.set('failureReference', reference);
       console.error('control-plane.unhandled', {
         method: c.req.method,
@@ -5581,7 +5589,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           // backstop would file is filed here as a pair, the tenant's row with the sentences only.
           const tenantStores = storeSentences.length ? ` (stores: ${storeSentences.join('; ')})` : '';
           if (e.status >= 500 && e.status !== 501 && tenantStores !== stores) {
-            const reference = ulid();
+            const reference = referenceOf(c);
             recordWithheld(
               {
                 actor,
@@ -5607,7 +5615,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const sentence = (reference: string) => `the reconcile of this scope failed (${e.status})${stores} (reference ${reference})`;
         if (e.status < 500) {
           // A refusal, which the 5xx backstop leaves unrecorded for staff too: logged, no row.
-          const reference = ulid();
+          const reference = referenceOf(c);
           console.warn('control-plane.withheld', {
             method: c.req.method,
             path: c.req.path,
