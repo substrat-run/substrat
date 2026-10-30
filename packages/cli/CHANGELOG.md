@@ -1,5 +1,19 @@
 # @substrat-run/cli
 
+## 0.53.0
+
+### Minor Changes
+
+- e34da92: A connection landing can declare `bind: 'on-request'`: the connector pass then grants and binds nothing for it, so a scope can bind its own connection with its own options. Leaving `bind` out keeps today's behaviour (`every-install`), and the permission digest of a vertical that declares no on-request landing does not move. `substrat push` now sends each module's landings with the deploy manifest, and the control plane refuses a push whose registry disagrees with them about a landing's mode.
+
+### Patch Changes
+
+- e5f9bb4: `substrat push` leaves the tests and changelogs of a monorepo's dependency packages out of the submitted source, and a failure answered with an HTML error page now prints the page's title and error code.
+- Updated dependencies [e34da92]
+  - @substrat-run/contracts@0.168.0
+  - @substrat-run/control-plane-client@0.3.19
+  - @substrat-run/model-view@0.6.16
+
 ## 0.52.1
 
 ### Patch Changes
