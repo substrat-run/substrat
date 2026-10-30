@@ -21,6 +21,8 @@ type Tenant = {
   status: 'active' | 'suspended' | 'deleting' | 'reaped'; // 'reaped' = terminal, bytes gone
   deletingAt: Instant | null; // set when it entered 'deleting'; null otherwise. The reap
                               // sweep ages a tenant off this to decide the grace window.
+  provisionedByTenant: TenantId | null; // the manager vertical's own tenant when it created this
+                              // one through the `provision-tenant` intent; null when staff did
   createdAt: Instant;
 };
 
@@ -38,6 +40,9 @@ type Scope = {
   jurisdiction: 'eu' | 'us' | 'global';  // fixed at provisioning; 'global' is unconstrained
   vertical: string | null;          // which vertical's deployment executes this scope
   verticalVersionId: string | null; // the registered version it runs (null if pre-registry)
+  provisionedVersionId: string | null; // the version this scope's provision hook last ran
+                         // against; differing from verticalVersionId means the hook is due
+                         // (a few reconcile receipts ride beside it and are left out here)
   schemaVersion: string; // COUNT of applied (module, version) pairs, as a string.
                          // '0' = provisioned, nothing applied yet. Compared against the
                          // host's registered migration total to answer "which are behind".

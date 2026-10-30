@@ -34,7 +34,7 @@ between what's shared and what isn't is the design:
 | **Entitlements** | The entitlement store, operation gate and scope-local projection | The `entitlementKey` each manifest declares; how its plan and quota are used |
 | **History & analytics** | The event spine and its history tier | — |
 | **Copies** | Snapshots, forks, per-PR previews, per-scope PITR, directory backup/restore | — |
-| **The outside world** | Connections and their sealed credentials, the outbound egress seam, the email relay | The declared allowlist and the connectors a manifest requires |
+| **The outside world** | Connections and their sealed credentials, the outbound egress seam, the email relay, inbound mail on the platform's receiving subdomain ([mail-in](/connectors/mail-in)) | The declared allowlist, the connectors a manifest requires, and [connectors it ships itself](/connectors/your-own) |
 | **Admin** | Directory, audit log, access log, ops-failure log; the [console](/platform/console) and the builder [dashboard](/platform/dashboard) | — |
 | **Execution** | — | **The scope's code**: kernel + engines + your modules, and their migrations |
 
@@ -53,7 +53,8 @@ The platform also implements the deployment and lifecycle machinery for
 and driver. Their storage is included in full scope dumps, erasure, reaping and the
 storage meter. **Hosted scope stores are not available yet**: the driver registry is
 empty, so a push declaring one is refused. Store-driver releases have their own rollout
-and rollback, separate from a vertical's code release.
+and rollback, separate from a vertical's code release, and a release is used only once staff
+have approved it.
 
 ## Why the deployments don't merge
 

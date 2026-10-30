@@ -21,6 +21,7 @@ src/entities.ts        defineEntities — what exists
 src/operations.ts      defineOperations — the declared surface (input, output, permission, http)
 src/manifest.ts        the module manifest + permission and env constants
 src/migrations.ts      the append-only SqlMigration[] journal
+src/model.ts           the emitted model, the artifact of record
 src/module.ts          the handler bodies, bound to the declaration
 src/provision.ts       MODULES, ROLES, grant shapes — what `substrat push` reads
 src/seed.ts            a world to develop against
@@ -29,8 +30,11 @@ src/routes.ts          the HTTP API, DERIVED from the operations — it holds no
 src/server.ts          the Node dev server (SQLite adapter, OIDC against the dev issuer)
 src/worker.ts          the deployable Cloudflare worker
 src/config-do.ts       the per-instance config store (Cloudflare only)
+spec/concept.md        the design document you approve before any code; `substrat concept sync` writes its generated sections
 test/scenario.test.ts  the scenario, including the denials
 test/entities.test.ts  the entity registry held to the tables its migrations create
+test/invoke-route.test.ts  the hand-written /api/invoke route, held to the platform's one door
+test/portal-shape.test.ts  the portal's entity-narrowed reads
 test/setup.ts          the 50-byte LIKE/GLOB pattern limit, on by default (vitest setupFiles)
 test/sql-limits.test.ts  proves the setupFiles wiring itself — goes red if setup.ts stops running
 ```
@@ -50,7 +54,8 @@ the same layout, emitted from the `AGENTS.md` the scaffolder writes.
 
 **The instruction layer** — `AGENTS.md` (the rules) and `.substrat/playbook.md` (the build
 flow), plus a command stub per tool so Claude Code, Cursor and opencode all read the *same*
-two files. This is the point of the scaffolder: the skeleton is small, but an agent that
+two files (Claude Code's `CLAUDE.md` is a one-line import of `AGENTS.md`). A session-start
+hook points the agent at the docs matching the kernel version installed. This is the point of the scaffolder: the skeleton is small, but an agent that
 already knows the [three-layer rule](/guide/architecture) and the
 [module-code rules](/concepts/modules) is what makes the next hour productive.
 
