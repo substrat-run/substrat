@@ -1600,6 +1600,8 @@ export const REPLIED_METHODS = [
   'writeOrgTenantTuple',
   'writeTenantSystemGrant',
   'grantConnectionInDirectory',
+  // #2732: new, so a DO from before refuses it rather than revoking without the row.
+  'revokeConnectionGrantInDirectory',
   'insertOrg',
   // #2526: the hostname and entitlement writes, each reading its row and judging its no-op in the
   // unit that writes it and its admin row. A DO from before lists none of them, so the current
@@ -5473,6 +5475,37 @@ export class ControlPlaneDO extends DurableObject {
       const after = (audit.after ?? {}) as Record<string, unknown>;
       this.recordAdmin({ ...audit, vertical: conn.vertical, after: { ...after, provider: conn.provider } });
       return { vertical: conn.vertical };
+    });
+  }
+
+  /**
+   * #2732: `revokeFromConnection`'s directory half as one unit, after the scope's tuple was
+   * delivered gone. The scope-level record is tombstoned (K-21), so the additive reconcile never
+   * re-seats it, and the admin row is written only when something changed: the record here, or the
+   * tuple the coordinator already removed (`tupleChanged`). Answers whether the record moved.
+   */
+  revokeConnectionGrantInDirectory(
+    row: { connectionId: string; tenantId: string; permission: string; scopeId: string; revokedAt: string; tupleChanged: boolean },
+    audit: AdminEntryInput,
+  ): { changed: boolean } {
+    return this.ctx.storage.transactionSync(() => {
+      const conn = this.readConnection(row.connectionId);
+      if (!conn) throw new Error(`connection not found: ${row.connectionId}`);
+      const changed =
+        this.sql.exec(
+          `UPDATE _substrat_connection_grants SET revoked_at = ?
+           WHERE connection_id = ? AND tenant_id = ? AND permission = ? AND scope_id = ? AND revoked_at IS NULL`,
+          row.revokedAt,
+          row.connectionId,
+          row.tenantId,
+          row.permission,
+          row.scopeId,
+        ).rowsWritten > 0;
+      if (changed || row.tupleChanged) {
+        const after = (audit.after ?? {}) as Record<string, unknown>;
+        this.recordAdmin({ ...audit, vertical: conn.vertical, after: { ...after, provider: conn.provider } });
+      }
+      return { changed };
     });
   }
 

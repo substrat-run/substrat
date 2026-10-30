@@ -346,6 +346,14 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
   (`openConnection`'s `ownerScopeId`); a tenant-level read sees tenant-owned connections alone.
   Nothing creates one yet: a scope makes its own through the relay once that relay can bind it to
   a declared on-request landing.
+- **One key back, on one scope** (#2732). `revokeFromConnection` is `grantToConnection`'s inverse
+  for a connection that stays live, the half an unbind needs. It removes the scope's
+  `connection:<id>` tuple first: in the scope's own store, or, hosted, through the deployment
+  serving the scope (`/internal/connector-revoke`). Then it tombstones the directory record (K-21),
+  so the additive provision/reconcile never delivers it again, and writes the admin row only if
+  something changed. A deployment whose vertical-host predates the revoke route cannot take it:
+  the call refuses with `ConnectorRevokeUnsupported` and changes nothing, so such a vertical cannot
+  be unbound until it upgrades. `ConnectionInspector.unbindScope` is the binding's half.
 - **Attribution is the tenant principal's** (§3.5.1's law, both sides): `createdBy` lands on
   the connection row at create, and in the audit metadata as `rotatedBy` at rotate
   (`updateConnectionSecret` grew an additive `opts.rotatedBy`). The relay effects under a

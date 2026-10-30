@@ -58,6 +58,7 @@ import {
   connection,
   capabilityGrant,
   connectionGrant,
+  connectionRevoke,
   connectionGrantRecord,
   connectionSecret,
   systemGrant,
@@ -129,6 +130,7 @@ import {
   type MintedCapability,
   type Connection,
   type ConnectionGrant,
+  type ConnectionRevoke,
   type ConnectionFilter,
   type ConnectionId,
   type ConnectionSecret,
@@ -9674,6 +9676,49 @@ export class SqliteScopeHost implements ScopeHost {
           })();
           if (grant.node.scopeId) tuple();
         });
+      },
+
+      revokeFromConnection: async (actor: PlatformActorId, raw: ConnectionRevoke) => {
+        const revoke = connectionRevoke.parse(raw);
+        const conn = this.connectionRow(revoke.connectionId);
+        if (conn.tenant_id !== revoke.node.tenantId) {
+          throw new Error(`connection ${revoke.connectionId} belongs to tenant ${conn.tenant_id}, not ${revoke.node.tenantId}`);
+        }
+        const scope = this.directory
+          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+          .get(revoke.node.scopeId) as { tenant_id: string } | undefined;
+        if (!scope || scope.tenant_id !== revoke.node.tenantId) {
+          throw substratError('not_found', `unknown scope ${revoke.node.scopeId} in tenant ${revoke.node.tenantId}`);
+        }
+        const at = new Date().toISOString();
+        // #2732: the tuple first, in the scope's own store and on its actor (#1678), then the
+        // directory record (K-21, so no reconcile delivers it again) and the row, only if either moved.
+        const tupleChanged = await onNode(revoke.node, () =>
+          this.runtime(revoke.node.tenantId, revoke.node.scopeId).db
+            .prepare(
+              `UPDATE _substrat_tuples SET revoked_at = ?
+               WHERE subject = ? AND relation = ? AND object = ? AND revoked_at IS NULL`,
+            )
+            .run(at, subjectRef({ kind: 'connection', id: revoke.connectionId }), `granted:${revoke.permission}`, `scope:${revoke.node.scopeId}`)
+            .changes > 0,
+        );
+        this.directoryWriteAndAudit(
+          () =>
+            this.directory
+              .prepare(
+                `UPDATE _substrat_connection_grants SET revoked_at = ?
+                 WHERE connection_id = ? AND tenant_id = ? AND permission = ? AND scope_id = ? AND revoked_at IS NULL`,
+              )
+              .run(at, revoke.connectionId, revoke.node.tenantId, revoke.permission, revoke.node.scopeId).changes > 0 || tupleChanged,
+          () =>
+            this.recordAdmin(
+              actor,
+              'revokeFromConnection',
+              { tenantId: revoke.node.tenantId, scopeId: revoke.node.scopeId, vertical: conn.vertical },
+              { connectionId: revoke.connectionId, permission: revoke.permission },
+              { provider: conn.provider },
+            ),
+        );
       },
 
       grantToSystem: async (actor: PlatformActorId, raw: SystemGrant) => {

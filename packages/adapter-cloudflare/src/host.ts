@@ -84,6 +84,7 @@ import {
   capabilityGrant,
   principalId,
   connectionGrant,
+  connectionRevoke,
   connectionGrantRecord,
   connectionSecret,
   systemGrant,
@@ -134,6 +135,7 @@ import {
   type Connection,
   type ConnectionFilter,
   type ConnectionGrant,
+  type ConnectionRevoke,
   type ConnectionId,
   type ConnectionSecret,
   type ModuleId,
@@ -575,6 +577,7 @@ import {
   verticalOwnerNow,
 } from '@substrat-run/kernel';
 import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
+import { ConnectorRevokeUnsupported } from '@substrat-run/kernel';
 import { assertWireAuthFilter, wireAuthAccessTarget, COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type DeploymentWireAuthFilter, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
@@ -1191,6 +1194,15 @@ interface ControlPlaneStub {
     grantedBy: string;
     grantedAt: string;
   }, audit: AdminEntry): Promise<{ vertical: string }>;
+  /** #2732: `revokeFromConnection`'s directory half — the record tombstoned, the row when anything changed. */
+  revokeConnectionGrantInDirectory(row: {
+    connectionId: string;
+    tenantId: string;
+    permission: string;
+    scopeId: string;
+    revokedAt: string;
+    tupleChanged: boolean;
+  }, audit: AdminEntry): Promise<{ changed: boolean }>;
   listConnectionGrants(tenantId: string): Promise<ConnectionGrantDoRow[]>;
   // #1674, #2029: the kill switches' directory record — `system-switch-record.ts`. #2045 (Codex
   // r3): each write is also the call's write-ahead intent — the subject's owed mark and the scope's
@@ -2311,6 +2323,12 @@ export interface ConnectorDelegation {
     permission: PermissionKey;
     expiresAt?: string;
   }): Promise<void>;
+  /**
+   * Tombstone that tuple in the serving deployment (#2732), `grant`'s mirror: `true` when one was
+   * live. Optional for older embedders, and a deployment whose vertical-host predates the verb
+   * cannot take it: either way `revokeFromConnection` throws `ConnectorRevokeUnsupported`.
+   */
+  revoke?(args: { connectionId: ConnectionId; tenantId: TenantId; scopeId: ScopeId; vertical: string; permission: PermissionKey }): Promise<boolean>;
 }
 
 /**
@@ -8315,6 +8333,48 @@ export class CloudflareScopeHost implements ScopeHost {
         }
       },
 
+      revokeFromConnection: async (actor: PlatformActorId, raw: ConnectionRevoke) => {
+        const revoke = connectionRevoke.parse(raw);
+        const conn = await this.cp.readConnection(revoke.connectionId);
+        if (!conn) throw new Error(`connection not found: ${revoke.connectionId}`);
+        if (conn.tenant_id !== revoke.node.tenantId) {
+          throw new Error(`connection ${revoke.connectionId} belongs to tenant ${conn.tenant_id}, not ${revoke.node.tenantId}`);
+        }
+        if (!(await this.cp.getScopeRecord(revoke.node.tenantId, revoke.node.scopeId))) {
+          throw substratError('not_found', `unknown scope ${revoke.node.scopeId} in tenant ${revoke.node.tenantId}`);
+        }
+        const connectionId = revoke.connectionId as ConnectionId;
+        // #2732: the tuple first, where the scope is served, so a delivery that cannot happen
+        // leaves the record (and with it the grant) exactly as it was.
+        let tupleChanged: boolean;
+        if (this.connectorDelegation) {
+          if (!this.connectorDelegation.revoke) throw new ConnectorRevokeUnsupported(conn.vertical);
+          tupleChanged = await this.connectorDelegation.revoke({
+            connectionId,
+            tenantId: revoke.node.tenantId,
+            scopeId: revoke.node.scopeId,
+            vertical: conn.vertical,
+            permission: revoke.permission,
+          });
+        } else {
+          tupleChanged = await this.connectorRevokeLocal(connectionId, revoke.node.scopeId, revoke.permission);
+        }
+        await this.directory('revokeConnectionGrantInDirectory', {
+          connectionId: revoke.connectionId,
+          tenantId: revoke.node.tenantId,
+          permission: revoke.permission,
+          scopeId: revoke.node.scopeId,
+          revokedAt: new Date().toISOString(),
+          tupleChanged,
+        }, this.adminEntry(
+          actor,
+          'revokeFromConnection',
+          { tenantId: revoke.node.tenantId, scopeId: revoke.node.scopeId, vertical: conn.vertical },
+          { connectionId: revoke.connectionId, permission: revoke.permission },
+          null,
+        ));
+      },
+
       grantToSystem: async (actor: PlatformActorId, raw: SystemGrant) => {
         // The scheduler's grant (#383) — mirror of grantToConnection. Narrow: one
         // module, one permission; tombstones on revoke; shows in the permission diff.
@@ -12938,9 +12998,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * The delivery half of `grantToConnection` for a scope served HERE (#574): write
    * the scope-local `connection:<id>` grant tuple the permission checker reads.
-   * Revocation needs no mirror verb — every delegated call re-passes the platform's
-   * live-connection gate first, so revoking the connection closes the door even
-   * while the tuple remains; `expiresAt` bounds the tuple itself.
+   * Revoking the whole connection needs no mirror — every delegated call re-passes the
+   * platform's live-connection gate first, so it closes the door even while the tuple
+   * remains. Taking one key back from a connection that stays live does: that is
+   * {@link connectorRevokeLocal} (#2732). An explicit grant clears that tombstone, so a
+   * re-grant grants again. `expiresAt` bounds the tuple itself.
    */
   async connectorGrantLocal(
     connectionId: ConnectionId,
@@ -12956,6 +13018,20 @@ export class CloudflareScopeHost implements ScopeHost {
       `granted:${permission}`,
       `scope:${scopeId}`,
       expiresAt ?? null,
+    );
+  }
+
+  /**
+   * The delivery half of `revokeFromConnection` for a scope served HERE (#2732), the mirror of
+   * {@link connectorGrantLocal}: tombstone the scope's `connection:<id>` grant tuple (K-21).
+   * `true` when one was live, so a repeat is a no-op the caller does not audit.
+   */
+  async connectorRevokeLocal(connectionId: ConnectionId, scopeId: ScopeId, permission: PermissionKey): Promise<boolean> {
+    return this.scopeStub(scopeId).revokeTuple(
+      subjectRef({ kind: 'connection', id: connectionId }),
+      `granted:${permission}`,
+      `scope:${scopeId}`,
+      new Date().toISOString(),
     );
   }
 

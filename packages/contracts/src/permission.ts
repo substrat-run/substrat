@@ -133,6 +133,18 @@ export const connectionGrant = z.object({
 export type ConnectionGrant = z.infer<typeof connectionGrant>;
 
 /**
+ * Take one key back from a connection on ONE scope (#2732) — `grantToConnection`'s inverse where
+ * the connection itself stays live: a scope unbinding its own connection gives up the landing key
+ * there and nowhere else. Scope-level only; a tenant-wide grant ends with the connection.
+ */
+export const connectionRevoke = z.object({
+  connectionId: z.string().min(1),
+  permission: permissionKey,
+  node: z.object({ tenantId, scopeId }),
+});
+export type ConnectionRevoke = z.infer<typeof connectionRevoke>;
+
+/**
  * A connection grant as the DIRECTORY records it (#592) — the durable, readable half
  * of `grantToConnection`, written alongside the enforcement tuple. The tuple lives
  * where it is checked (the scope's own store); this row is what the platform gathers

@@ -441,7 +441,7 @@ export function verticalConnectorInspector(
   deps: VerticalConnectorDeps,
   provider: string,
   context: { tenantId: TenantId; vertical: string; scopeId: ScopeId | null },
-): Required<Pick<ConnectionInspector, 'probe' | 'probeCandidate' | 'bindScope' | 'bindings'>> {
+): Required<Pick<ConnectionInspector, 'probe' | 'probeCandidate' | 'bindScope' | 'bindings' | 'unbindScope'>> {
   return {
     // A probe that cannot run is an answer the verify route shows, never a 500.
     probe: async (host, connection) => {
@@ -476,6 +476,10 @@ export function verticalConnectorInspector(
     },
     bindScope: async (host, connection, target) => scopeBindingOf(connection, await bindScope(deps, host, connection, target as unknown as BindTarget)),
     bindings: async (host, connection) => (await storedBindings(host, connection.id)).map((b) => scopeBindingOf(connection, b)),
+    // A null under the key reads as unbound to every reader of it (`storedBindings`, the dispatch).
+    unbindScope: async (host, connection, scopeId) => {
+      await host.admin.putConnectorState(connection.id, verticalConnectorBindingKey(scopeId), null);
+    },
   };
 }
 

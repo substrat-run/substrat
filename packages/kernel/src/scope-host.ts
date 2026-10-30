@@ -37,6 +37,7 @@ import type {
   ConnectionFilter,
   ConnectionId,
   ConnectionGrant,
+  ConnectionRevoke,
   ConnectionGrantRecord,
   ConnectionSecret,
   CreateConnectionInput,
@@ -1888,6 +1889,19 @@ export interface HostAdmin {
    * against the plane's own. A grant recorded before stays as it is.
    */
   grantToConnection(actor: PlatformActorId, grant: ConnectionGrant): Promise<void>;
+  /**
+   * Take one key back from a live connection on ONE scope (#2732): `grantToConnection`'s inverse
+   * for a scope that unbinds its own connection. The connection, its secret and every other grant
+   * stay.
+   *
+   * Fail closed, in this order: the scope's `connection:<id>` tuple is removed first (in the
+   * scope's own store, or through `ConnectorDelegation.revoke` on a plane that does not serve the
+   * scope), then the directory record is tombstoned (K-21, so the additive provision/reconcile
+   * never delivers it again), then the admin row is written. A delivery the serving deployment
+   * cannot take (one predating the verb) throws `ConnectorRevokeUnsupported` before the record
+   * moves. Idempotent: a grant that is not held is a no-op, and a no-op is not audited.
+   */
+  revokeFromConnection(actor: PlatformActorId, revoke: ConnectionRevoke): Promise<void>;
   /**
    * The tenant's connection grants as the DIRECTORY records them (#592) — what
    * `grantToConnection` wrote alongside each enforcement tuple. This is the gather

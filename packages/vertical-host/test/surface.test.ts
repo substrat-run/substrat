@@ -2403,6 +2403,22 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
     expect(got).toEqual([CONN, SCOPE, 'protocol:record-signature', undefined]);
   });
 
+  it('connector-revoke (#2732): delivers the tombstone behind the platform gate, and a host that cannot answers 501', async () => {
+    let got: unknown[] = [];
+    const host = fakeHost({ connectorRevokeLocal: async (...args: unknown[]) => { got = args; return true; } });
+    const request = {
+      method: 'POST',
+      headers: authed({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ connectionId: CONN, scopeId: SCOPE, permission: 'protocol:record-signature' }),
+    };
+    const res = await appWith(host).request('/internal/connector-revoke', request, ENV);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ revoked: true, scopeId: SCOPE });
+    expect(got).toEqual([CONN, SCOPE, 'protocol:record-signature']);
+    expect((await appWith(host).request('/internal/connector-revoke', { ...request, headers: { 'content-type': 'application/json' } }, ENV)).status).toBe(403);
+    expect((await appWith(fakeHost()).request('/internal/connector-revoke', request, ENV)).status).toBe(501);
+  });
+
   it('connector verbs sit behind the platform-secret gate like the rest of the surface', async () => {
     const res = await appWith(fakeHost()).request(
       '/internal/connector-invoke',

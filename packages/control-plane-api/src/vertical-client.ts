@@ -1330,6 +1330,18 @@ export class VerticalClient {
   }
 
   /**
+   * Tombstone that tuple in the vertical's deployment (#2732), `connectorGrant`'s mirror: `true`
+   * when one was live. A deployment built before the route refuses with 404 (or 501, a host that
+   * cannot), which the caller reads as "cannot revoke here yet".
+   */
+  async connectorRevoke(input: { connectionId: ConnectionId; scopeId: ScopeId; permission: PermissionKey }): Promise<boolean> {
+    const value = await this.postInternal<unknown>('/internal/connector-revoke', input, 'connector-revoke');
+    const parsed = z.object({ revoked: z.boolean() }).safeParse(value);
+    if (!parsed.success) throw new ControlPlaneError(502, 'vertical answered connector-revoke with an unexpected shape');
+    return parsed.data.revoked;
+  }
+
+  /**
    * Deliver one scope's lifecycle to the deployment serving it (#1713). Throws on anything but
    * a parsed answer, a deployment built before the route (404/501) included, so the caller
    * records no receipt and the heal sweep asks again.

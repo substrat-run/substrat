@@ -23,6 +23,7 @@ import {
 import {
   bindFortnoxScope,
   listFortnoxBindings,
+  unbindFortnoxScope,
   FORTNOX_CONNECTION_GRANTS,
   fortnoxConnectionActivity,
   fortnoxCredentialSummary,
@@ -33,6 +34,7 @@ import {
 import {
   bindPlanimaScope,
   listPlanimaBindings,
+  unbindPlanimaScope,
   PLANIMA_CONNECTION_GRANTS,
   planimaConnectionActivity,
   planimaCredentialSummary,
@@ -44,6 +46,7 @@ import {
   MICROSOFT365_CONNECTION_GRANTS,
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
+  unbindMicrosoft365Scope,
   microsoft365FilesConnector,
   sweepMicrosoft365Files,
   microsoft365Certificate,
@@ -364,6 +367,7 @@ const FORTNOX: ConnectorRegistration = {
     bindScope: (h, row, target) =>
       bindFortnoxScope(h, { ...target, connectionId: row.id, externalAccountRef: row.externalAccountRef }),
     bindings: (h, row) => listFortnoxBindings(h, row.id),
+    unbindScope: (h, row, scopeId) => unbindFortnoxScope(h, row.id, scopeId),
     probe: async (h, row) =>
       probeFortnoxConnection(h, row, {
         fetch: globalFetch,
@@ -411,6 +415,7 @@ const PLANIMA: ConnectorRegistration = {
   inspector: (env) => ({
     bindScope: (h, row, target) => bindPlanimaScope(h, { ...target, connectionId: row.id }),
     bindings: (h, row) => listPlanimaBindings(h, row.id),
+    unbindScope: (h, row, scopeId) => unbindPlanimaScope(h, row.id, scopeId),
     probe: async (h, row) =>
       probePlanimaConnection(h, row, {
         fetch: globalFetch,
@@ -463,6 +468,7 @@ const MICROSOFT365: ConnectorRegistration = {
       );
     },
     bindings: (h, row) => listMicrosoft365Bindings(h, row.id),
+    unbindScope: (h, row, scopeId) => unbindMicrosoft365Scope(h, row.id, scopeId),
     probe: async (h, row) => probeMicrosoft365Connection(h, row, microsoft365Options(env)),
     credential: (h, row) => microsoft365CredentialSummary(h, row),
     probeCandidate: async (secret) => probeMicrosoft365Secret(secret, microsoft365Options(env)),

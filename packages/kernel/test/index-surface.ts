@@ -56,6 +56,8 @@ export const INDEX_VALUE_EXPORTS = [
   'ConnectionSealingKeyUnavailableError',
   // Vertical-defined connectors: the terminal failure a connector in a vertical's worker throws.
   'ConnectorRefusal',
+  // #2732: a per-scope connection-grant revoke the serving deployment cannot take yet.
+  'ConnectorRevokeUnsupported',
   'CrossVerticalRegistry',
   'CursorMismatch',
   'DEFAULT_ATTACHMENT_TEXT_BOUNDS',
