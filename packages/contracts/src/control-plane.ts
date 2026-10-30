@@ -772,6 +772,11 @@ export const connectionBindingAudit = z.object({
   /** microsoft365 (#2101): the channel folder's drive path the binding names. */
   folder: z.string().min(1).max(400).optional(),
   error: z.string().max(AUDIT_ERROR_MAX).optional(),
+  /**
+   * #2732: the tenant principal whose in-scope, permission-checked act asked for this binding or
+   * unbinding through the connection relay (§3.5.1), beside the platform actor that effected it.
+   */
+  requestedBy: z.string().min(1).max(200).optional(),
 }).strict();
 export type ConnectionBindingAudit = z.infer<typeof connectionBindingAudit>;
 
@@ -1570,8 +1575,57 @@ export const connectionRelayRequest = z.object({
   grants: z.array(permissionKey).max(16).default([]),
   /** The tenant principal whose permission-checked act authorized this connect/rotation. */
   createdBy: z.string().min(1),
+  /**
+   * Whose connection this is (#2732). `tenant`, the default, is the upsert as it always was.
+   * `scope` creates or rotates the calling scope's OWN connection, keyed apart from the tenant's and
+   * every other scope's. It is for a provider the scope's running version lands `on-request`, and
+   * one whose connector opens a scope's own connection; the scope then binds it
+   * (`/internal/connections/bind`).
+   */
+  owner: z.enum(['tenant', 'scope']).default('tenant'),
 });
 export type ConnectionRelayRequest = z.infer<typeof connectionRelayRequest>;
+
+/**
+ * The body a hosted vertical POSTs to `/internal/connections/bind` (#2732): bind the scope's own
+ * connection to that scope, through the `on-request` landing its running version declares for the
+ * provider, with the scope's own options. The operation and key come from that declaration, never
+ * from here; the connector's bind hook validates and normalises `options`.
+ */
+export const connectionBindRequest = z.object({
+  tenantId,
+  scopeId,
+  connectionId,
+  options: z.record(z.string().min(1), z.unknown()).optional(),
+  /** The tenant principal whose permission-checked act authorized the bind. */
+  boundBy: z.string().min(1),
+});
+export type ConnectionBindRequest = z.infer<typeof connectionBindRequest>;
+
+/** What the bind relay answers: the binding as the connector stored it. Never a secret. */
+export const connectionBindResult = z.object({
+  connectionId,
+  scopeId,
+  options: z.record(z.string(), z.unknown()),
+  boundAt: instant,
+});
+export type ConnectionBindResult = z.infer<typeof connectionBindResult>;
+
+/**
+ * `/internal/connections/unbind` (#2732): the binding goes and the landing key is taken back on
+ * that scope; what the scope already landed stays. Idempotent.
+ */
+export const connectionUnbindRequest = z.object({
+  tenantId,
+  scopeId,
+  connectionId,
+  /** The tenant principal whose permission-checked act authorized the unbind. */
+  unboundBy: z.string().min(1),
+});
+export type ConnectionUnbindRequest = z.infer<typeof connectionUnbindRequest>;
+
+export const connectionUnbindResult = z.object({ connectionId, scopeId, unbound: z.literal(true) });
+export type ConnectionUnbindResult = z.infer<typeof connectionUnbindResult>;
 
 /** What the relay answers — metadata only, the secret is never echoed. */
 export const connectionRelayResult = z.object({

@@ -141,6 +141,8 @@ export const connectionRevoke = z.object({
   connectionId: z.string().min(1),
   permission: permissionKey,
   node: z.object({ tenantId, scopeId }),
+  /** The tenant principal whose in-scope act asked for it (§3.5.1), recorded on the admin row. */
+  revokedBy: z.string().min(1).max(200).optional(),
 });
 export type ConnectionRevoke = z.infer<typeof connectionRevoke>;
 

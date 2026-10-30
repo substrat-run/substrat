@@ -3300,7 +3300,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     try {
       return c.json(
-        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId }, {
+        // Always tenant-owned (#2732): a scope's own connection is made only by that scope, through
+        // the vertical's relay.
+        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId, owner: 'tenant' }, {
           probeCandidate,
           prepareCandidate,
           ...(options.verticalConnectorDeclaration ? { declarationOf: options.verticalConnectorDeclaration } : {}),

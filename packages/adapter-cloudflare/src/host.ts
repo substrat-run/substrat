@@ -8370,7 +8370,7 @@ export class CloudflareScopeHost implements ScopeHost {
           actor,
           'revokeFromConnection',
           { tenantId: revoke.node.tenantId, scopeId: revoke.node.scopeId, vertical: conn.vertical },
-          { connectionId: revoke.connectionId, permission: revoke.permission },
+          { connectionId: revoke.connectionId, permission: revoke.permission, ...(revoke.revokedBy ? { revokedBy: revoke.revokedBy } : {}) },
           null,
         ));
       },

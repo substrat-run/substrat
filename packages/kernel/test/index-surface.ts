@@ -301,6 +301,8 @@ export const INDEX_VALUE_EXPORTS = [
   'beginStoreDriverRolloutIn',
   'bindExportBreakRefusal',
   'bindExportBreaksOf',
+  // #2732: a scope binding its own connection, held to the landing pass's reading of a version.
+  'binderOf',
   'blankSqlComments',
   'boundEverOf',
   'boundShapesColumn',
@@ -552,6 +554,7 @@ export const INDEX_VALUE_EXPORTS = [
   'noteUncheckedCompletion',
   'observeFinding',
   'observeStoreCall',
+  'onRequestLandingFor',
   // #2514: both adapters open an attachment's bytes as a stream through it.
   'openAttachmentByteStream',
   'openSealed',

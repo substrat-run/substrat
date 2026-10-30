@@ -989,6 +989,8 @@ export {
 } from './platform-sweep.js';
 // #2316: a vertical's declared connection landings, granted and bound by the connector pass.
 export type { ConnectionBinder, ConnectionLandingOptionsInput, LandingOutcome } from './connection-landings.js';
+// #2732: a scope binding its own connection, held to the landing pass's own reading of a version.
+export { binderOf, onRequestLandingFor } from './connection-landings.js';
 export { SCHEDULE_STATE_DDL, SCHEDULE_STATE_REBUILD, scheduleStateHasKind } from './schedule-state.js';
 export type { ScheduleSweepReport, ScheduleStateKind } from './schedule-state.js';
 export type {

@@ -395,13 +395,20 @@ export function verticalConnectorBinder(deps: VerticalConnectorDeps): Connection
   return {
     list: async (host, connection) =>
       (await storedBindings(host, connection.id)).map((b) => ({ ...b.declared, scopeId: b.scopeId, operation: b.operation, permission: b.permission })),
-    bind: (host, connection, target) => bindScope(deps, host, connection, target),
+    // Answered as the inspector's `bindScope` answers it: the options the connector stored, flat.
+    bind: async (host, connection, target) => scopeBindingOf(connection, await bindScope(deps, host, connection, target)),
     // Validated at bind, by the connector. A current binding's options survive unless overridden.
     options: (raw, current) => ({
       ...(current ? Object.fromEntries(Object.entries(current).filter(([k]) => !LISTED_FIXED.has(k))) : {}),
       ...(raw ?? {}),
     }),
+    unbind: unbindVerticalBinding,
   };
+}
+
+/** #2732: drop a binding. A null under the key reads as unbound to every reader of it. */
+async function unbindVerticalBinding(host: ScopeHost, connection: Pick<Connection, 'id'>, scopeId: string): Promise<void> {
+  await host.admin.putConnectorState(connection.id, verticalConnectorBindingKey(scopeId), null);
 }
 
 const probeFailure = (error: string, refused = false): ConnectionProbe => ({
@@ -476,10 +483,7 @@ export function verticalConnectorInspector(
     },
     bindScope: async (host, connection, target) => scopeBindingOf(connection, await bindScope(deps, host, connection, target as unknown as BindTarget)),
     bindings: async (host, connection) => (await storedBindings(host, connection.id)).map((b) => scopeBindingOf(connection, b)),
-    // A null under the key reads as unbound to every reader of it (`storedBindings`, the dispatch).
-    unbindScope: async (host, connection, scopeId) => {
-      await host.admin.putConnectorState(connection.id, verticalConnectorBindingKey(scopeId), null);
-    },
+    unbindScope: unbindVerticalBinding,
   };
 }
 
@@ -501,8 +505,12 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
           `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
       };
     }
-    // Tenant-owned only (#2732): a scope's own connection is not the tenant's dispatch connection.
-    const rows = await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider, ownerScopeId: null });
+    // #2732: the connection is chosen by the EVENT'S scope: its own when it holds one, else the
+    // tenant's. Another scope's own is never in the list.
+    const own = await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider, ownerScopeId: ctx.scopeId });
+    const rows = own.length > 0
+      ? own
+      : await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider, ownerScopeId: null });
     if (rows.length !== 1) {
       throw new Error(
         rows.length === 0
