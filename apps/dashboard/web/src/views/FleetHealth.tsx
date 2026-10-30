@@ -45,7 +45,7 @@ export function FleetHealth({
     }
     // Two reads, and neither gates the other: a missing verdict still leaves the
     // traffic, and missing traffic still leaves the verdicts.
-    api.fleetHealth().then((r) => live && setHealth(r.rows)).catch(() => live && setHealth(null));
+    api.fleetHealth(teamId).then((r) => live && setHealth(r.rows)).catch(() => live && setHealth(null));
     api.appMetrics(teamId, 24).then((m) => live && setMetrics(m)).catch(() => live && setMetrics(null));
     return () => {
       live = false;

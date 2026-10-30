@@ -17,11 +17,13 @@ import { Pill, type PillKind } from '../components/ui';
  * header shows the install status it always showed rather than a verdict it has not got.
  */
 export function AppHeader({
+  teamId,
   app,
   statusKind,
   statusLabel,
   actions,
 }: {
+  teamId: string;
   app: AppRow;
   statusKind: PillKind;
   statusLabel: string;
@@ -49,13 +51,13 @@ export function AppHeader({
     // There is no one-app health read; the fleet read is one row per app and the
     // same one the Apps table makes.
     api
-      .fleetHealth()
+      .fleetHealth(teamId)
       .then((r) => live && setRead({ scopeId, rows: r.rows }))
       .catch(() => live && setRead({ scopeId, rows: null }));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, app.status]);
+  }, [teamId, app.app_scope_id, app.status]);
   const health = read?.scopeId === app.app_scope_id ? read.rows : undefined;
 
   // An app that is not running is judged by its install state, which needs no read.

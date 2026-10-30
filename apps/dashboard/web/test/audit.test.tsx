@@ -156,7 +156,7 @@ describe('Audit page', () => {
 
   const apps = [{ app_scope_id: 'a', name: 'Acme HR' } as AppRow];
   const render = (entryId: string | null = null) =>
-    act(async () => root.render(<AuditLog apps={apps} appsComplete scopeId={null} entryId={entryId} onScope={() => {}} />));
+    act(async () => root.render(<AuditLog teamId="team-a" apps={apps} appsComplete scopeId={null} entryId={entryId} onScope={() => {}} />));
   const rows = () => [...container.querySelectorAll('[data-entry-id]')].map((r) => r.getAttribute('data-entry-id'));
   const expanded = () => [...container.querySelectorAll('[aria-expanded="true"]')].map((r) => r.closest('[data-entry-id]')!.getAttribute('data-entry-id'));
   const click = (el: Element) => act(async () => el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
@@ -187,7 +187,7 @@ describe('Audit page', () => {
     });
     await act(async () =>
       root.render(
-        <AuditLog apps={apps} appsComplete scopeId={null} onScope={() => {}} personName={(p) => (p === ann ? 'ann@acme.com' : null)} />,
+        <AuditLog teamId="team-a" apps={apps} appsComplete scopeId={null} onScope={() => {}} personName={(p) => (p === ann ? 'ann@acme.com' : null)} />,
       ),
     );
     expect(container.textContent).toContain('ann@acme.com assigned role on Acme HR · via Dashboard');
@@ -214,14 +214,14 @@ describe('Audit page', () => {
       .mockResolvedValueOnce({ entries: [entry('1', { after: { role: 'lead' } })], nextCursor: 'c2' });
     await render('1');
     expect(read).toHaveBeenCalledTimes(2);
-    expect(read.mock.calls[1]![0]).toEqual({ cursor: 'c1' });
+    expect(read.mock.calls[1]!).toEqual(['team-a', { cursor: 'c1' }]);
     expect(rows()).toEqual(['3', '2', '1']);
     expect(expanded()).toEqual(['1']);
     expect(container.textContent).toContain('Load older entries');
   });
 
   it('stops after a bounded walk and says the entry was not found', async () => {
-    const read = vi.spyOn(api, 'auditLogAll').mockImplementation(async (o) => ({ entries: [entry(`e-${o?.cursor ?? 0}`)], nextCursor: `${Number(o?.cursor ?? 0) + 1}` }));
+    const read = vi.spyOn(api, 'auditLogAll').mockImplementation(async (_team, o) => ({ entries: [entry(`e-${o?.cursor ?? 0}`)], nextCursor: `${Number(o?.cursor ?? 0) + 1}` }));
     await render('nope');
     expect(read).toHaveBeenCalledTimes(DEEP_LINK_PAGES);
     expect(container.querySelector('[role="status"]')!.textContent).toContain(`not in the latest ${DEEP_LINK_PAGES} pages`);
@@ -230,7 +230,7 @@ describe('Audit page', () => {
 
   it('opens the entry when Load older brings it in after the walk, and says so when the log ends without it', async () => {
     const pages = 2 * DEEP_LINK_PAGES;
-    vi.spyOn(api, 'auditLogAll').mockImplementation(async (o) => {
+    vi.spyOn(api, 'auditLogAll').mockImplementation(async (_team, o) => {
       const i = Number(o?.cursor ?? 0);
       return { entries: [entry(`e-${i}`)], nextCursor: i + 1 < pages ? `${i + 1}` : null };
     });

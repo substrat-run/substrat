@@ -187,7 +187,7 @@ describe('Overview page', () => {
 
   const entry = (id: string, action: string): AuditEntry => ({ id, actor: 'dana@acme.com', action, tenantId: null, scopeId: 'a', vertical: null, before: null, after: null, causedBy: null, at: new Date().toISOString() });
   const render = () =>
-    act(async () => root.render(<Overview apps={[app('a'), app('b')]} teamName="Acme" onCreate={() => {}} onOpen={() => {}} onRetry={() => {}} />));
+    act(async () => root.render(<Overview teamId="team-a" apps={[app('a'), app('b')]} teamName="Acme" onCreate={() => {}} onOpen={() => {}} onRetry={() => {}} />));
   const section = (label: string) => container.querySelector(`[aria-label="${label}"]`)!.textContent!;
   const cards = () => [...container.querySelectorAll('a[href*="/observability?app="]')].filter((a) => a.textContent === 'Observe →').map((a) => a.getAttribute('href'));
 
@@ -220,7 +220,7 @@ describe('Overview page', () => {
     vi.spyOn(api, 'auditLogAll').mockResolvedValue({ entries: [], nextCursor: null });
     const onLoadMore = vi.fn().mockRejectedValue(new Error('page 2 failed'));
     await act(async () =>
-      root.render(<Overview apps={[app('a'), app('b')]} teamName="Acme" hasMore onLoadMore={onLoadMore} onCreate={() => {}} onOpen={() => {}} onRetry={() => {}} />),
+      root.render(<Overview teamId="team-a" apps={[app('a'), app('b')]} teamName="Acme" hasMore onLoadMore={onLoadMore} onCreate={() => {}} onOpen={() => {}} onRetry={() => {}} />),
     );
     const status = () => container.querySelector('[role="status"]')!.textContent!;
     expect(onLoadMore).toHaveBeenCalledTimes(1);

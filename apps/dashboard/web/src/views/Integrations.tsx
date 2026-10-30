@@ -4,6 +4,7 @@ import {
   api,
   teamApi,
   ApiError,
+  isApiError,
   type AccountIntegration,
   type AppIntegration,
   type AppIntegrationsView,
@@ -1196,13 +1197,13 @@ export function Integrations({ teamId }: { teamId: string }) {
     setView(null);
     setErr(null);
     api
-      .integrations()
+      .integrations(teamId)
       .then((v) => live && setView(v.providers))
-      .catch((e) => live && setErr(e instanceof ApiError ? e.message : String(e)));
+      .catch((e) => live && setErr(isApiError(e) ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [nonce]);
+  }, [teamId, nonce]);
 
   return (
     <Page>

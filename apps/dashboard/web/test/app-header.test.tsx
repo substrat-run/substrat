@@ -36,7 +36,7 @@ describe('App page header', () => {
     vi.restoreAllMocks();
   });
 
-  const render = (a: AppRow) => act(async () => root.render(<AppHeader app={a} statusKind="success" statusLabel="Active" />));
+  const render = (a: AppRow) => act(async () => root.render(<AppHeader teamId="team-a" app={a} statusKind="success" statusLabel="Active" />));
   const verdict = () => container.querySelector('[data-verdict]');
   // The verdict's word; the reason sits beside it inside the same trigger.
   const label = () => verdict()?.firstElementChild?.textContent;
@@ -77,7 +77,7 @@ describe('App page header', () => {
       return null;
     };
     const next = { ...app(), app_scope_id: 'scope-b', name: 'Acme Legal' };
-    await act(async () => root.render(<><AppHeader app={next} statusKind="success" statusLabel="Active" /><Probe /></>));
+    await act(async () => root.render(<><AppHeader teamId="team-a" app={next} statusKind="success" statusLabel="Active" /><Probe /></>));
     expect(verdict()).toBeNull();
     expect(commits.length).toBeGreaterThan(0);
     for (const text of commits) {
