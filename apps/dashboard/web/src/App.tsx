@@ -194,14 +194,16 @@ export function App() {
       }));
       return;
     }
-    void Promise.allSettled(missing.map((a) => api.appModel(a.app_scope_id).then((v) => v.running.model))).then((answers) => {
+    const team = me && !needsOnboarding(me) ? me.currentTeamId : null;
+    if (!team) return;
+    void Promise.allSettled(missing.map((a) => api.appModel(team, a.app_scope_id).then((v) => v.running.model))).then((answers) => {
       if (!live) return;
       setPaletteModels((m) => mergePaletteModels(m, missing.map((a) => a.app_scope_id), answers));
     });
     return () => {
       live = false;
     };
-  }, [palette, apps]);
+  }, [palette, apps, me]);
 
   // ⌘K opens the palette.
   useEffect(() => {

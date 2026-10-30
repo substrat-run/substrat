@@ -741,6 +741,61 @@ const appReleaseSide = z.object({
   errors: z.number().nullable(), cpuTimeP50: z.number().nullable(), cpuTimeP99: z.number().nullable(),
 });
 
+/**
+ * A document the control plane keeps for a version and this worker only carries: a permission
+ * registry, an emitted model, a lifecycle and its replayed counts, a version's static files. The
+ * plane parsed it when the version was pushed; parsing it again with this worker's contracts would
+ * turn version skew between the two into an empty tab, and stripping would drop what a newer plane
+ * says. So it goes out as the plane answered it, and the client states its type.
+ */
+const planeDocument = z.unknown();
+
+/** The per-app Deployments tab: one page of versions, plus what THIS scope runs and whether the team pushed it. */
+const appDeploymentsView = deploymentRow.extend({
+  owned: z.boolean(),
+  boundVersionId: z.string().nullable(),
+  nextCursor: z.string().nullable(),
+});
+
+/** The running version and an available update's, each with one document the plane holds for it. */
+const versionPairOf = <K extends string>(key: K) => {
+  const side = z.object({ versionId: z.string().nullable(), version: z.string().nullable(), [key]: planeDocument });
+  return z.object({ running: side, update: side.nullable() });
+};
+
+/** A schedule's or a freshness unit's recent sweep rows. `outcome` is the plane's. */
+const sweepRunView = z.object({
+  id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(),
+  elapsedMs: z.number().nullable(), observedAt: z.string().nullable(),
+});
+
+/** Schedule and freshness health (`schedules.ts`): the verdicts are this worker's own. */
+const appSchedulesView = z.object({
+  running: z.object({ versionId: z.string().nullable(), version: z.string().nullable() }),
+  schedules: z.array(z.object({
+    operation: z.string(), moduleId: z.string(), everyMinutes: z.number(), permissions: z.array(z.string()),
+    lastRun: sweepRunView.nullable(), nextDueAt: z.string().nullable(),
+    health: z.enum(['healthy', 'overdue', 'never-run', 'sweeper-silent']), runs: z.array(sweepRunView),
+  })).nullable(),
+  freshness: z.array(z.object({
+    eventType: z.string(), moduleId: z.string(), withinHours: z.number(), observedAt: z.string().nullable(),
+    health: z.enum(['fresh', 'stale', 'never-seen', 'sweeper-silent']), runs: z.array(sweepRunView),
+  })).nullable(),
+  lastSweepAt: z.string().nullable(),
+});
+
+/** The process map (`process-map.ts`): a declared lifecycle replayed over a period and the one before. */
+const processMapView = z.object({
+  versionId: z.string().nullable(),
+  processes: z.array(z.object({ entity: z.string(), initial: z.string(), states: z.number(), edges: z.number() })),
+  entity: z.string().nullable(),
+  lifecycle: planeDocument,
+  period: z.enum(['24h', '7d', '30d']),
+  current: planeDocument,
+  previous: planeDocument,
+  unavailable: z.enum(['no-version', 'no-lifecycles', 'not-yet-available']).nullable(),
+});
+
 // These vocabularies are written by the deployed app's kernel, which may be newer
 // than this dashboard. Preserve its value for the person reading the record.
 const historyEntryOut = historyEntry.extend({ piiClass: z.string() });
@@ -1072,6 +1127,44 @@ export const dashboardRoutes = defineRoutes({
       metricsAvailable: z.boolean(), owned: z.boolean(),
     }),
     http: { method: 'GET', path: '/apps/{scopeId}/release-comparison' },
+  },
+  // -- app version reads: what the app runs, and what it declares ----------
+  'dashboard/get-app-deployments': {
+    summary: "One page of this app's vertical versions, its channels, and the version the app runs",
+    input: z.object({ scopeId: z.string().min(1), ...pageInput }),
+    output: appDeploymentsView,
+    http: { method: 'GET', path: '/apps/{scopeId}/deployments' },
+  },
+  'dashboard/get-app-version-assets': {
+    summary: 'The static files one version of this app ships',
+    input: z.object({ scopeId: z.string().min(1), versionId: z.string().min(1) }),
+    output: z.object({ assets: planeDocument }),
+    http: { method: 'GET', path: '/apps/{scopeId}/deployments/{versionId}/assets' },
+  },
+  'dashboard/get-app-permissions': {
+    summary: 'The permission surface of the version this app runs, and of an available update',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: versionPairOf('registry'),
+    http: { method: 'GET', path: '/apps/{scopeId}/permissions' },
+  },
+  'dashboard/get-app-model': {
+    summary: 'The entity model of the version this app scope runs, and of an available update',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: versionPairOf('model'),
+    http: { method: 'GET', path: '/apps/{scopeId}/model' },
+  },
+  'dashboard/get-app-process-map': {
+    summary: "One app's process map: a declared lifecycle replayed over a period and the one before",
+    // `period` is judged by the handler, which answers an unknown one with the 400 it always has.
+    input: z.object({ scopeId: z.string().min(1), period: z.string().optional(), entity: z.string().optional() }),
+    output: processMapView,
+    http: { method: 'GET', path: '/apps/{scopeId}/processes' },
+  },
+  'dashboard/get-app-schedules': {
+    summary: 'Schedule and freshness health for the version this app runs',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: appSchedulesView,
+    http: { method: 'GET', path: '/apps/{scopeId}/schedules' },
   },
   'dashboard/rewind-app': {
     summary: 'Rewind this app to a pre-migration bookmark',

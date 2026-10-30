@@ -141,8 +141,12 @@ app-specific plane read; a foreign app or a team the caller has not joined gets 
 The previously offered assistant reads keep their tool names and descriptions, while the
 newly declared reads stay outside the assistant. The SPA calls these through `teamApi(teamId)`.
 
-The deployment and version asset, permissions, model, processes, and schedules reads still
-use the cookie; they form the next app read slice. The team audit and fleet-health reads
+The app's Deployments tab (its versions page and a version's static files), its Permissions
+and Model tabs, its process map and its schedule health now take the team from the path too,
+with the same answers they gave on the cookie. The registry, the model, a lifecycle with its
+replayed counts and a version's files are carried as the plane answered them, so a plane newer
+than the dashboard cannot empty a tab. The old cookie routes are gone. These reads stay outside
+the assistant's tools; its process-map tool is unchanged. The team audit and fleet-health reads
 also remain on the cookie as a team-wide read slice, and so does the account-wide
 Integrations list. The catalog keeps
 its anonymous contract, while the identity mirror has no SPA caller to move. OAuth callbacks

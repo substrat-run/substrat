@@ -51,6 +51,7 @@ const aroundRun = (at: string) => {
  * no longer reaches.
  */
 export function AppSchedules({
+  teamId,
   scopeId,
   window,
   focused = false,
@@ -58,6 +59,7 @@ export function AppSchedules({
   onOpen,
   embedded = false,
 }: {
+  teamId: string;
   scopeId: string;
   window: { from: string; to: string };
   focused?: boolean;
@@ -82,13 +84,13 @@ export function AppSchedules({
     // Best-effort: a worker predating the route means no panel, never an error —
     // the page's other panels answer their own questions independently.
     api
-      .appSchedules(scopeId)
+      .appSchedules(teamId, scopeId)
       .then((v) => live && setView(v))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [scopeId]);
+  }, [teamId, scopeId]);
 
   const freshness = view?.freshness ?? [];
   const declared = view?.schedules ?? [];

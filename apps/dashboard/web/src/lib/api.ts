@@ -1724,20 +1724,20 @@ export const api = {
   },
   /** The app's vertical version registry (one page of versions, newest first) + channels +
    *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
-  appDeployments: (scopeId: string, opts?: PageOpts) =>
-    call<AppDeployments>(`/apps/${encodeURIComponent(scopeId)}/deployments${pageQs(opts)}`),
+  // The registry, model and asset documents are carried as the plane answered them, so the
+  // generated client types them `unknown`; these views are what the plane answers.
+  appDeployments: (teamId: string, scopeId: string, opts?: PageOpts) =>
+    teamApi(teamId).getAppDeployments({ scopeId, ...opts }) as Promise<AppDeployments>,
   /** The static files ONE version ships (#340), from its retained deploy manifest —
    *  `assets: null` when it retained none or shipped no static files. */
-  appVersionAssets: (scopeId: string, versionId: string) =>
-    call<{ assets: DeployAssets | null }>(
-      `/apps/${encodeURIComponent(scopeId)}/deployments/${encodeURIComponent(versionId)}/assets`,
-    ).then((r) => r.assets),
+  appVersionAssets: (teamId: string, scopeId: string, versionId: string) =>
+    teamApi(teamId).getAppVersionAssets({ scopeId, versionId }).then((r) => r.assets as DeployAssets | null),
   /** The declared permission surface (D-39, #336) of the version this app runs, plus the
    *  update target's, for the Permissions tab's table + update diff. */
-  appPermissions: (scopeId: string) => call<AppPermissionsView>(`/apps/${encodeURIComponent(scopeId)}/permissions`),
-  appModel: (scopeId: string) => call<AppModelView>(`/apps/${encodeURIComponent(scopeId)}/model`),
+  appPermissions: (teamId: string, scopeId: string) => teamApi(teamId).getAppPermissions({ scopeId }) as Promise<AppPermissionsView>,
+  appModel: (teamId: string, scopeId: string) => teamApi(teamId).getAppModel({ scopeId }) as Promise<AppModelView>,
   /** Schedule health for the app's running version (#1232) — null schedules hides the panel. */
-  appSchedules: (scopeId: string) => call<AppSchedulesView>(`/apps/${encodeURIComponent(scopeId)}/schedules`),
+  appSchedules: (teamId: string, scopeId: string): Promise<AppSchedulesView> => teamApi(teamId).getAppSchedules({ scopeId }),
   /** Data reads use the selected tab's team through the generated client. */
   appTables: (teamId: string, scopeId: string) => teamApi(teamId).listAppTables({ scopeId }),
   appTableRows: (teamId: string, scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) =>
@@ -1845,11 +1845,8 @@ export const api = {
   appMetrics: (teamId: string, hours = 24) => teamApi(teamId).appMetrics({ hours: String(hours) }),
 
   /** One declared lifecycle replayed for the process map (#1744); the first declared one when `entity` is absent. */
-  appProcesses: (scopeId: string, input: { entity?: string; period: ProcessPeriod }) => {
-    const q = new URLSearchParams({ period: input.period });
-    if (input.entity) q.set('entity', input.entity);
-    return call<ProcessMapView>(`/apps/${encodeURIComponent(scopeId)}/processes?${q}`);
-  },
+  appProcesses: (teamId: string, scopeId: string, input: { entity?: string; period: ProcessPeriod }) =>
+    teamApi(teamId).getAppProcessMap({ scopeId, ...input }) as Promise<ProcessMapView>,
 };
 
 /**

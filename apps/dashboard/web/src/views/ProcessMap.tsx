@@ -86,13 +86,13 @@ export function ProcessMap({ teamId, app, entity, period, sel, compare, nonce, o
       return;
     }
     api
-      .appProcesses(app.app_scope_id, { period, ...(entity ? { entity } : {}) })
+      .appProcesses(teamId, app.app_scope_id, { period, ...(entity ? { entity } : {}) })
       .then((v) => live && setView(v))
       .catch((e: unknown) => live && setFailed(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, entity, period, nonce]);
+  }, [teamId, app.app_scope_id, entity, period, nonce]);
 
   const layout = useMemo(
     () => (view?.lifecycle ? processLayout(view.lifecycle, view.current) : null),

@@ -1567,15 +1567,11 @@ app.get('/api/audit', async (c) => {
  * vertical the versions are managed by the Substrat team; this just surfaces the truth
  * (so "am I on 0.0.9?" is answerable). The app must be the caller's own.
  */
-app.get('/api/apps/:scopeId/deployments', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appDeploymentsIn({ c, host, node }: TeamContext, appScopeId: string, page: ListPageQuery) {
   // The versions list pages (`?limit&cursor`, default 20, newest first — the order the
   // tab always rendered); channels stay complete (~3). `nextCursor` walks older versions.
-  const page = pageParams(c);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scope = scopeId.parse(appRow.app_scope_id);
@@ -1591,13 +1587,13 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
     cp.listVerticals(),
   ]);
   const ownRecord = mine.find((v) => v.slug === appRow.vertical_slug);
-  return c.json({
+  return {
     ...deployment,
     owned: !!ownRecord,
     listed: ownRecord ? !!ownRecord.listed : deployment.listed,
     boundVersionId,
-  });
-});
+  };
+}
 
 /**
  * The static files ONE version ships (#340) — the Assets panel under the Deployments tab.
@@ -1611,19 +1607,13 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
  * only to render an empty state, and distinguishing them would be a distinction without a
  * consequence.
  */
-app.get('/api/apps/:scopeId/deployments/:versionId/assets', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appVersionAssetsIn({ c, host, node }: TeamContext, appScopeId: string, versionId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const slug = appRow.vertical_slug;
-  const versionId = c.req.param('versionId');
-  const assets = await cp.versionAssets(slug, versionId);
-  return c.json({ assets });
-});
+  return { assets: await cp.versionAssets(appRow.vertical_slug, versionId) };
+}
 
 /**
  * One app's Permissions tab (#336, D-39): the declared permission surface — keys,
@@ -1636,12 +1626,9 @@ app.get('/api/apps/:scopeId/deployments/:versionId/assets', async (c) => {
  * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s; the registry
  * itself is read through the tenant-narrowed control plane.
  */
-app.get('/api/apps/:scopeId/permissions', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appPermissionsIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scope = scopeId.parse(appRow.app_scope_id);
@@ -1660,11 +1647,11 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
   };
   const [runningRegistry, updateRegistry] = await Promise.all([registryOf(runningId), registryOf(updateId)]);
 
-  return c.json({
+  return {
     running: { versionId: runningId, version: runningLabel, registry: runningRegistry },
     update: updateId ? { versionId: updateId, version: updateLabel, registry: updateRegistry } : null,
-  });
-});
+  };
+}
 
 /**
  * One app's Model tab (#1214): the emitted entity model — entities, field schemas, parent
@@ -1686,13 +1673,10 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
  * resolved from the tenant-scoped `list-apps` and the tenant's own vertical scopes, so a
  * foreign scope id 404s; the model itself is read through the tenant-narrowed control plane.
  */
-app.get('/api/apps/:scopeId/model', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appModelIn({ c, host, node }: TeamContext, asked: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const { appRow, scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
+  const { appRow, scope } = await resolveBrowsableScope(dash, cp, asked);
   const slug = appRow.vertical_slug;
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
   const { runningId, runningLabel, updateId, updateLabel } = versionPair(deployment, boundVersionId);
@@ -1703,11 +1687,11 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   };
   const [runningModel, updateModel] = await Promise.all([modelOf(runningId), modelOf(updateId)]);
 
-  return c.json({
+  return {
     running: { versionId: runningId, version: runningLabel, model: runningModel },
     update: updateId ? { versionId: updateId, version: updateLabel, model: updateModel } : null,
-  });
-});
+  };
+}
 
 /**
  * One app's process map (#1744): a declared lifecycle of the version the ADDRESSED scope
@@ -1721,16 +1705,10 @@ app.get('/api/apps/:scopeId/model', async (c) => {
  * An app whose deployed code predates the read answers `not-yet-available` rather than an
  * error: the model is there, and the reader's next step is a re-push, not a bug report.
  */
-app.get('/api/apps/:scopeId/processes', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const periodParam = c.req.query('period') ?? '7d';
+async function appProcessMapIn(ctx: TeamContext, asked: string, periodParam = '7d', entity?: string) {
   if (!isProcessPeriod(periodParam)) throw new HTTPException(400, { message: `unknown period: ${periodParam}` });
-  return c.json((await processMapIn(dash, cp, c.req.param('scopeId'), periodParam, c.req.query('entity'))).answer);
-});
+  return (await processMapIn(await teamScope(ctx), teamPlane(ctx), asked, periodParam, entity)).answer;
+}
 
 /**
  * The process map's read, shared by the map's route and its note's (#1749): the note is
@@ -1824,12 +1802,9 @@ async function runningDeclarations(
  * run — while ONE unfiltered `limit: 1` read answers the different question the skips
  * exist for: is the sweep still reaching this scope at all.
  */
-app.get('/api/apps/:scopeId/schedules', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function appSchedulesIn({ c, host, node }: TeamContext, appScopeId: string) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  const appRow = await appByScopeId(dash, appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const scope = scopeId.parse(appRow.app_scope_id);
@@ -1838,12 +1813,12 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
   if (schedules.length === 0 && freshness.length === 0) {
     // A version pushed before the manifest fields, or one declaring neither —
     // the UI hides the panel rather than nagging every app.
-    return c.json({
+    return {
       running: { versionId: runningId, version: runningVersion?.version ?? null },
       schedules: null,
       freshness: null,
       lastSweepAt: null,
-    });
+    };
   }
 
   const [liveness, ...perUnit] = await Promise.all([
@@ -1879,7 +1854,7 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
   });
 
   const lastSweepAt = liveness[0]?.at ?? null;
-  return c.json({
+  return {
     running: { versionId: runningId, version: runningVersion?.version ?? null },
     schedules:
       schedules.length > 0
@@ -1890,8 +1865,8 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
         ? deriveFreshnessHealth(freshness, runsByEventType, lastSweepAt, Date.now())
         : null,
     lastSweepAt,
-  });
-});
+  };
+}
 
 /**
  * The peer disclosure for one app (#1706), both directions at once, because a tenant
@@ -4950,7 +4925,7 @@ async function askIn(ctx: TeamContext, input: { messages: Array<{ role: 'user' |
     };
   }
   // Two reads no route answers in this shape: a finding's redacted evidence (#1749's facts), and
-  // an app's process map as counts, which the map's own route answers cookie-scoped.
+  // an app's process map as counts, which the map's own route answers as the whole replay.
   tools.finding_evidence = {
     description: 'Read one finding’s evidence: its failure records (who refused, status codes, redacted messages) or sweep runs, and its likely cause.',
     input: z.object({ id: z.string().min(1).max(64) }),
@@ -5679,6 +5654,12 @@ const routeHandlers = {
   'dashboard/bind-installed-app': async (ctx, { scopeId: app, ...body }) => bindInstalledAppIn(ctx, app, body),
   'dashboard/list-app-bookmarks': async (ctx, { scopeId: app }) => appBookmarksIn(ctx, app),
   'dashboard/list-app-migrations': async (ctx, { scopeId: app }) => appMigrationsIn(ctx, app),
+  'dashboard/get-app-deployments': async (ctx, { scopeId: app, ...page }) => appDeploymentsIn(ctx, app, listPageQuery.parse(page)),
+  'dashboard/get-app-version-assets': async (ctx, { scopeId: app, versionId }) => appVersionAssetsIn(ctx, app, versionId),
+  'dashboard/get-app-permissions': async (ctx, { scopeId: app }) => appPermissionsIn(ctx, app),
+  'dashboard/get-app-model': async (ctx, { scopeId: asked }) => appModelIn(ctx, asked),
+  'dashboard/get-app-process-map': async (ctx, { scopeId: asked, period, entity }) => appProcessMapIn(ctx, asked, period, entity),
+  'dashboard/get-app-schedules': async (ctx, { scopeId: app }) => appSchedulesIn(ctx, app),
   'dashboard/get-app-release-comparison': async (ctx, { scopeId: app }) => appReleaseComparisonIn(ctx, app),
   'dashboard/rewind-app': async (ctx, { scopeId: app, bookmark }) => rewindAppIn(ctx, app, bookmark),
   'dashboard/export-installed-app': async (ctx, { scopeId: app }) => exportInstalledAppIn(ctx, app),

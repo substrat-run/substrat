@@ -247,7 +247,7 @@ const versionsFetchLimit = (limit: number): number => Math.min(limit + 1, LIST_P
 
 /**
  * ONE vertical's deployment record with a PAGED versions list (the per-app
- * Deployments tab, `GET /api/apps/:scopeId/deployments`): newest first, `limit`
+ * Deployments tab, `GET /api/teams/:teamId/apps/:scopeId/deployments`): newest first, `limit`
  * rows, `cursor` walking older. Channels stay complete — there are ~3.
  */
 export async function verticalDeploymentPageFromCp(

@@ -12,7 +12,7 @@ export type SchedulesState = { state: 'loading' } | { state: 'error' } | { state
  * Cleared on a scope change: keeping the previous app's rows visible while the next app's
  * request is in flight would caption one app with another's schedules.
  */
-export function useAppSchedules(scopeId: string): SchedulesState {
+export function useAppSchedules(teamId: string, scopeId: string): SchedulesState {
   const [schedules, setSchedules] = useState<SchedulesState>({ state: 'loading' });
   useEffect(() => {
     if (DEV_MOCK) {
@@ -22,12 +22,12 @@ export function useAppSchedules(scopeId: string): SchedulesState {
     let live = true;
     setSchedules({ state: 'loading' });
     api
-      .appSchedules(scopeId)
+      .appSchedules(teamId, scopeId)
       .then((v) => live && setSchedules({ state: 'ok', view: v }))
       .catch(() => live && setSchedules({ state: 'error' }));
     return () => {
       live = false;
     };
-  }, [scopeId]);
+  }, [teamId, scopeId]);
   return schedules;
 }
