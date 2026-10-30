@@ -231,7 +231,7 @@ describe('a confined caller reads no upstream failure text (#2540)', () => {
     });
     // Mounted as the control-plane worker mounts it.
     hosted.route('/api', app);
-    const res = await hosted.request(`/api/verticals/${slug}/channels/prod/promote`, {
+    const res = await hosted.request(`/api/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
       method: 'POST',
       headers: asTenant,
       body: JSON.stringify({ versionId: v2.id, acknowledge: {} }),
