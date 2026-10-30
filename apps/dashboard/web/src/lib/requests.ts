@@ -61,29 +61,31 @@ export function requestChips(q: ObsQuery): { key: string; value: string; clears:
   });
 }
 
+/** One request read's query, as the declared routes name it: each facet a list, sent as repeated keys. */
+export type RequestReadQuery = { since?: string; until?: string; hours?: string; buckets?: string; limit?: string } &
+  Partial<Record<RequestFacetKey, string[]>>;
+
 /**
- * The query string for one request read: the window, the facet filters as repeated keys,
- * and the read's own knob. The window is the page's — the two instants when there is a
- * cursor, the hours preset otherwise, never both.
+ * The query for one request read: the window, the facet filters, and the read's own knob.
+ * The window is the page's — the two instants when there is a cursor, the hours preset
+ * otherwise, never both.
  */
 export function requestReadQuery(
   q: ObsQuery,
   window: { since?: string; until?: string; hours?: number },
-  extra: Record<string, string | number | readonly string[]> = {},
-): URLSearchParams {
-  const p = new URLSearchParams();
+  extra: { buckets?: number; limit?: number } = {},
+): RequestReadQuery {
+  const out: RequestReadQuery = {};
   if (window.since && window.until) {
-    p.set('since', window.since);
-    p.set('until', window.until);
+    out.since = window.since;
+    out.until = window.until;
   } else if (window.hours) {
-    p.set('hours', String(window.hours));
+    out.hours = String(window.hours);
   }
-  for (const [key, values] of Object.entries(whereOf(q))) for (const v of values) p.append(key, v);
-  for (const [k, v] of Object.entries(extra)) {
-    if (Array.isArray(v)) for (const x of v) p.append(k, String(x));
-    else p.set(k, String(v));
-  }
-  return p;
+  Object.assign(out, whereOf(q));
+  if (extra.buckets !== undefined) out.buckets = String(extra.buckets);
+  if (extra.limit !== undefined) out.limit = String(extra.limit);
+  return out;
 }
 
 /**

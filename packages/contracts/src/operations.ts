@@ -3323,6 +3323,11 @@ type RouteShape<R> = {
   };
   /** The success status, when it is not 200 — `201` for a create. */
   readonly status?: 200 | 201 | 202;
+  /**
+   * Response headers that say what the body cannot (a logs page's `incomplete`). The client
+   * method answers `{ body, headers }`, and `headers` holds only these names.
+   */
+  readonly responseHeaders?: readonly string[];
 };
 
 /**

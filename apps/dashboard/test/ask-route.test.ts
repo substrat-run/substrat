@@ -348,6 +348,30 @@ describe('AI-written text in the dashboard (#1749)', () => {
       for (const t of ['list_members', 'list_team_audit', 'observability_logs', 'app_requests', 'list_deployments', 'list_findings']) expect(offered).toContain(t);
     });
 
+    it('#2170: the service and scopeId a tool call names reach their handlers, inside the team’s own set', async () => {
+      script(
+        { response: '', tool_calls: [{ id: 'logs', name: 'observability_logs', arguments: { service: ['not-ours'] } }] },
+        { response: '', tool_calls: [{ id: 'traffic', name: 'team_traffic', arguments: { scopeId: [appScope] } }] },
+        { response: 'Ok.' },
+      );
+      const evs = await events(ask('viewer', [{ role: 'user', text: 'How is Desk doing?' }]));
+      const [logs, traffic] = evs.filter((e) => e.t === 'tool-output');
+      // A named service is a request, not a 400; one the team does not own never reaches the logs read.
+      expect(logs).toMatchObject({ output: [] });
+      expect(planeCalls.some((p) => p.includes('/observability/logs'))).toBe(false);
+      expect(traffic!.output).toMatchObject({ series: [{ scopeId: appScope }] });
+      const series = planeCalls.filter((p) => p.includes('/observability/tenant-metrics-series'));
+      expect(series).toHaveLength(1);
+      expect(new URLSearchParams(series[0]!.split('?')[1]).getAll('scopeId')).toEqual([appScope]);
+    });
+
+    it('#2170: a tool call naming another team’s app is refused before the plane is asked', async () => {
+      script({ response: '', tool_calls: [{ id: 'traffic', name: 'team_traffic', arguments: { scopeId: [ulid()] } }] }, { response: 'Ok.' });
+      const evs = await events(ask('viewer', [{ role: 'user', text: 'How is that app doing?' }]));
+      expect(evs.find((e) => e.t === 'tool-output')).toMatchObject({ output: { error: 'app not found' } });
+      expect(planeCalls.some((p) => p.includes('/observability/tenant-metrics-series'))).toBe(false);
+    });
+
     it('reads the team’s roster with the members’ addresses, as the Team page shows them', async () => {
       const owner = await host.getScope(people.owner, tenant, dashScope);
       const org = orgId.parse(ulid());
