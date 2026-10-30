@@ -282,6 +282,8 @@ export class BuilderAgent extends DurableObject<Env> {
 		if (this.#busy) return refuse(409, 'project operation already in progress');
 		this.#busy = true;
 		const buildId = ulid();
+		/** Where a submitted snapshot builds from; undefined for a pinned revision. */
+		const submittedDirectory = request.snapshot?.directory;
 		const raw = getSandbox(this.env.Sandbox, `build:${buildId}`);
 		const sb = sandboxLike(raw, 600_000);
 		let entry: ProjectEntry | undefined;
@@ -295,10 +297,13 @@ export class BuilderAgent extends DurableObject<Env> {
 			await checkoutRepository(sb, await this.#access(entry, 'read', this.#tenant), root, entry.repository.branch);
 			if (request.snapshot) {
 				await writeSandboxFile(sb, '/build/snapshot.json', JSON.stringify(request.snapshot));
+				// stage-source reads the tree from the sandbox's disk. Kept in `request` it would sit in
+				// this DO's memory for the whole build: an async frame holds its locals across every await.
+				request = { ...request, snapshot: undefined };
 				await checkedExec(sb, 'node --import tsx /workspace/substrat/apps/builder/src/stage-source.ts /build/source /build/snapshot.json', TOOLCHAIN);
 				await checkedExec(sb, "git -c core.hooksPath=/dev/null add -A && git -c core.hooksPath=/dev/null -c user.name=Substrat -c user.email=build@substrat.invalid commit --allow-empty -m 'Source snapshot'", root);
 				if (entry.repository.kind === 'artifacts') {
-					entry.directory = request.snapshot.directory;
+					entry.directory = submittedDirectory!;
 					revision = await saveRepository(sb, await this.#access(entry, 'write', this.#tenant), root, entry.repository.branch);
 					entry.revision = revision;
 				} else {
@@ -317,7 +322,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				revision = await checkedExec(sb, 'git rev-parse HEAD', root);
 				entry.revision = revision;
 			}
-			const directory = request.snapshot?.directory ?? entry.directory;
+			const directory = submittedDirectory ?? entry.directory;
 			entry.dir = `${PROJECTS}/${entry.id}${entry.directory === '.' ? '' : `/${entry.directory}`}`;
 			const reg = await this.#registry();
 			reg.projects = reg.projects.map((p) => p.id === entry!.id ? entry! : p);
@@ -342,7 +347,7 @@ export class BuilderAgent extends DurableObject<Env> {
 				else form.set(part.name, new Blob([Uint8Array.from(atob(part.base64!), (c) => c.charCodeAt(0))], { type: part.type }), part.name);
 			}
 			const gate = JSON.parse(form.get('origin') as string)?.gate;
-			const origin = entry.repository.kind === 'github' && !request.snapshot
+			const origin = entry.repository.kind === 'github' && submittedDirectory === undefined
 				? { source: 'git', gitRepo: `${entry.repository.owner}/${entry.repository.repo}`, gitCommit: revision, gitRef: entry.repository.branch }
 				: request.origin ?? { source: 'cli' };
 			form.set('origin', JSON.stringify({ ...origin, gate }));
