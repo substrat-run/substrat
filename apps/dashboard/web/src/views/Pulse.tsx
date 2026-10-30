@@ -65,6 +65,7 @@ import { AppSchedules } from './AppSchedules';
 /** The ranges the plane answers — capped at 72h, so the design's 7 and 30 days are 3 days here. */
 const RANGES = [
   { value: '1', label: '1h', words: 'last hour' },
+  { value: '3', label: '3h', words: 'last 3 hours' },
   { value: '24', label: '24h', words: 'last 24 hours' },
   { value: '72', label: '3 days', words: 'last 3 days' },
 ] as const;

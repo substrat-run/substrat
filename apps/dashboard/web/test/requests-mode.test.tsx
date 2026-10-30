@@ -221,6 +221,66 @@ describe('RequestsMode', () => {
     expect(box.textContent).toContain('—');
   });
 
+  const reads = (over: { facets?: RequestFacets; goLives?: Awaited<ReturnType<typeof api.appGoLives>> } = {}) => {
+    vi.spyOn(api, 'appRequestVolume').mockResolvedValue(volume);
+    vi.spyOn(api, 'appRequestFacets').mockResolvedValue(over.facets ?? facets);
+    vi.spyOn(api, 'appRequests').mockResolvedValue([row()]);
+    return vi.spyOn(api, 'appGoLives').mockResolvedValue(over.goLives ?? []);
+  };
+
+  it('#2762: marks each version that went live in the window, and offers the way back from a zoom', async () => {
+    const goLives = reads({
+      goLives: [
+        { at: '2026-09-01T11:30:00.000Z', kind: 'went-live', version: '0.4.0', versionId: 'v4' },
+        // Outside the window the read asked for: not drawn.
+        { at: '2026-09-01T09:00:00.000Z', kind: 'went-live', version: '0.3.0', versionId: 'v3' },
+      ],
+    });
+    const onResetZoom = vi.fn();
+    await render({ zoomed: true, onResetZoom });
+    expect(goLives).toHaveBeenCalledWith('team-a', 'app-a', { since: window.from, until: window.to });
+    expect([...container.querySelectorAll('[data-deploy]')].map((m) => m.getAttribute('data-deploy'))).toEqual(['0.4.0']);
+    const reset = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Reset zoom')!;
+    await act(async () => reset.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onResetZoom).toHaveBeenCalledOnce();
+  });
+
+  it('#2762: no "Reset zoom" on the range itself', async () => {
+    reads();
+    await render({ onResetZoom: vi.fn() });
+    expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Reset zoom')).toBe(false);
+  });
+
+  it('#2762: hovering a bar opens a popover with its counts', async () => {
+    reads();
+    await render();
+    const chart = container.querySelector<HTMLDivElement>('[role="img"]')!;
+    vi.spyOn(chart, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 300, top: 0, height: 110, right: 300, bottom: 110, x: 0, y: 0, toJSON: () => ({}) });
+    // 10:00 is the window's start, so the first bucket sits at the chart's left edge.
+    await act(async () => chart.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 1 })));
+    const pop = container.querySelector('[data-popover]')!;
+    expect(pop.textContent).toContain('10:00:00–10:02:00 UTC');
+    expect(pop.textContent).toContain('warn3');
+  });
+
+  it('#2762: says there are no problem codes rather than dropping the facet', async () => {
+    reads({ facets: { ...facets, facets: { ...facets.facets, problemCode: [] } } });
+    await render();
+    expect(container.querySelector('[aria-label="Request filters"]')!.textContent).toContain('Problem codeNone in this window');
+  });
+
+  it('#2762: under Live, a refresh keeps the last answer up until the next one lands', async () => {
+    reads();
+    await render({ live: true });
+    let settle!: (v: RequestRecord[]) => void;
+    vi.spyOn(api, 'appRequests').mockReturnValue(new Promise((r) => (settle = r)));
+    await render({ live: true, nonce: 1 });
+    expect(container.textContent).toContain('409 conflict');
+    expect(container.textContent).not.toContain('Loading requests');
+    await act(async () => settle([row({ status: 200, problemCode: null, level: 'info' })]));
+    expect(container.textContent).toContain('200 ok');
+  });
+
   it('says a 501 is "not on this platform", never an empty app', async () => {
     const unconfigured = new ApiError(501, 'observability is not configured on this platform');
     vi.spyOn(api, 'appRequestVolume').mockRejectedValue(unconfigured);

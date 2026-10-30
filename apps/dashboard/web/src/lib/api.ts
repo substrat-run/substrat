@@ -1781,6 +1781,12 @@ export const api = {
     teamApi(teamId).appRequestVolume({ scopeId, ...query }),
   appRequestFacets: (teamId: string, scopeId: string, query: RequestReadQuery): Promise<RequestFacets> =>
     teamApi(teamId).appRequestFacets({ scopeId, ...query }),
+  /** #2762: the versions that went live for one app inside a window — the request histogram's
+   *  deploy marks. The traffic read is the one that already answers them. */
+  appGoLives: (teamId: string, scopeId: string, window: { since: string; until: string }): Promise<ReleaseMarker[]> =>
+    teamApi(teamId)
+      .getAppTraffic({ scopeId, ...window })
+      .then((t) => t.markers.filter((m) => m.kind === 'went-live')),
   /** #1747: one app's `ctx.log` lines grouped by template. The route declares the plane's
    *  `dominant` level as an open string; this is the four the plane writes. */
   appLogPatterns: (teamId: string, scopeId: string, query: Omit<Parameters<DashboardClient['appLogPatterns']>[0], 'scopeId'>): Promise<LogPatterns> =>

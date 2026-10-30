@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent, type PointerEvent } from 'react';
-import { api, isApiError, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
+import { useEffect, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
+import { api, isApiError, type ReleaseMarker, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestFacets, mockRequestVolume, mockRequests } from '../lib/mock-requests';
+import { mockAppTraffic } from '../lib/mock-app-traffic';
+import { card } from '../components/ui';
 import { dragWindow, type ObsQuery } from '../lib/observability-query';
 import {
   LEVEL_COLORS,
@@ -33,10 +35,14 @@ import { parseRequestId, requestLookup } from '../lib/request-url';
  * and all three reads answer it, so the bars, the counts and the rows never describe
  * different sets.
  *
- * The histogram and the facets live in this mode rather than above the stream, as the
- * design draws them, because only requests carry the business fields yet: a log line
- * cannot be narrowed by operation until module log lines inherit them (`ctx.log`, #1746
- * step 4). Drawing them over the Lines mode would offer filters the lines do not obey.
+ * The page is laid out as the design draws Logs (#2762): the histogram in a card of its own
+ * at the top, then the facet sidebar beside the stream card, one scroll for both. The
+ * caller hands the stream card in as `frame`, so the mode tabs stay on the card.
+ *
+ * The histogram and the facets belong to this mode rather than to every mode, because only
+ * requests carry the business fields yet: a log line cannot be narrowed by operation until
+ * module log lines inherit them (`ctx.log`, #1746 step 4). Drawing them over the Lines mode
+ * would offer filters the lines do not obey.
  */
 
 /** How many buckets the histogram asks for — the design's 90. Zooming keeps the count. */
@@ -64,6 +70,10 @@ export function RequestsMode({
   onFilters,
   onRange,
   onOpenCall,
+  zoomed = false,
+  onResetZoom,
+  live = false,
+  frame = (body) => body,
 }: {
   teamId: string;
   scopeId: string;
@@ -81,55 +91,80 @@ export function RequestsMode({
   onRange: (w: { from: string; to: string }) => void;
   /** Open one request's own log lines. */
   onOpenCall: (invocationId: string, atMs: number) => void;
+  /** The window is a brushed one, not the range's — the histogram offers the way back. */
+  zoomed?: boolean;
+  onResetZoom?: () => void;
+  /** Live re-reads every few seconds: the last answer stays up until the next one lands,
+   *  rather than the page blanking to "Counting…" on every tick. */
+  live?: boolean;
+  /** The stream card around the list — the page's `LogStream`, so the mode tabs sit on it. */
+  frame?: (body: ReactNode) => ReactNode;
 }) {
   const [volume, setVolume] = useState<Loaded<RequestVolume>>(null);
   const [facets, setFacets] = useState<Loaded<RequestFacets>>(null);
   const [rows, setRows] = useState<Loaded<RequestRecord[]>>(null);
+  const [goLives, setGoLives] = useState<ReleaseMarker[]>([]);
   const where = whereOf(q);
   const whereKey = JSON.stringify(where);
   const span = { from: Date.parse(window.from), to: Date.parse(window.to) };
 
   useEffect(() => {
-    let live = true;
-    setVolume(null);
-    setFacets(null);
-    setRows(null);
+    let current = true;
+    if (!live) {
+      setVolume(null);
+      setFacets(null);
+      setRows(null);
+    }
     const readWindow = { since: window.from, until: window.to };
     const settle = <T,>(set: (v: Loaded<T>) => void, read: () => Promise<T>) =>
       read().then(
-        (v) => live && set(v),
-        (e: unknown) => live && set(failure(e)),
+        (v) => current && set(v),
+        (e: unknown) => current && set(failure(e)),
       );
     if (DEV_MOCK) {
       setVolume(mockRequestVolume(where, span, BUCKETS));
       setFacets(mockRequestFacets(where, span));
       setRows(mockRequests(where, span, LIST_LIMIT));
+      setGoLives(mockAppTraffic(readWindow).markers.filter((m) => m.kind === 'went-live'));
     } else {
       void settle(setVolume, () => api.appRequestVolume(teamId, scopeId, requestReadQuery(q, readWindow, { buckets: BUCKETS })));
       void settle(setFacets, () => api.appRequestFacets(teamId, scopeId, requestReadQuery(q, readWindow)));
       void settle(setRows, () => api.appRequests(teamId, scopeId, requestReadQuery(q, readWindow, { limit: LIST_LIMIT })));
+      // The deploy marks are decoration: a failed read costs the marks and nothing else.
+      api.appGoLives(teamId, scopeId, readWindow).then(
+        (m) => current && setGoLives(m),
+        () => current && setGoLives([]),
+      );
     }
     return () => {
-      live = false;
+      current = false;
     };
     // `whereKey` stands for `where`/`q`'s facet keys; the window is its two instants.
   }, [teamId, scopeId, whereKey, window.from, window.to, nonce]);
 
   const levelSel = selected(q, 'level');
   return (
-    <div>
-      <FindRequest onOpenCall={onOpenCall} />
-      <Histogram
-        volume={volume}
-        span={span}
-        window={window}
-        levels={levelSel}
-        onLevel={(level) => onFilters(toggleFacet(q, 'level', level))}
-        onRange={onRange}
-      />
-      <div style={{ display: 'grid', gridTemplateColumns: '232px minmax(0,1fr)', borderTop: '1px solid var(--border-subtle)' }}>
+    <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ ...card, boxShadow: 'var(--shadow-sm)' }}>
+        <Histogram
+          volume={volume}
+          span={span}
+          window={window}
+          levels={levelSel}
+          goLives={goLives}
+          onLevel={(level) => onFilters(toggleFacet(q, 'level', level))}
+          onRange={onRange}
+          {...(zoomed && onResetZoom ? { onResetZoom } : {})}
+        />
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '232px minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
         <FacetSidebar facets={facets} q={q} onToggle={(key, value) => onFilters(toggleFacet(q, key, value))} />
-        <RequestList rows={rows} total={isError(facets) || facets === null ? null : facets.total} onOpenCall={onOpenCall} />
+        {frame(
+          <>
+            <FindRequest onOpenCall={onOpenCall} />
+            <RequestList rows={rows} total={isError(facets) || facets === null ? null : facets.total} onOpenCall={onOpenCall} />
+          </>,
+        )}
       </div>
     </div>
   );
@@ -140,23 +175,29 @@ const LEVELS = ['unrecorded', 'info', 'warn', 'error'] as const;
 /**
  * The level histogram: one stacked bar per bucket, drawn at its own instant on the
  * window's time axis. Dragging across it narrows the page's window (the reads re-bucket at
- * the same count, so the bars get finer); hovering names a bucket's counts. A level in the
- * legend toggles that level's filter.
+ * the same count, so the bars get finer) and offers "Reset zoom" back to the range; hovering
+ * opens a popover with the bucket's counts. A level in the legend toggles that level's
+ * filter. Each version that went live inside the window is a line with its version on it.
  */
 function Histogram({
   volume,
   span,
   window,
   levels,
+  goLives,
   onLevel,
   onRange,
+  onResetZoom,
 }: {
   volume: Loaded<RequestVolume>;
   span: { from: number; to: number };
   window: { from: string; to: string };
   levels: string[];
+  goLives: ReleaseMarker[];
   onLevel: (level: string) => void;
   onRange: (w: { from: string; to: string }) => void;
+  /** Present only while the window is a brushed one. */
+  onResetZoom?: () => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; left: number; width: number; pointer: number } | null>(null);
@@ -219,6 +260,15 @@ function Histogram({
           {bucketWidthLabel(volume.bucketMs)} buckets · drag to zoom
           {volume.estimated && ' · estimated from a sample'}
         </span>
+        {onResetZoom && (
+          <button
+            type="button"
+            onClick={onResetZoom}
+            style={{ border: 0, padding: '2px 4px', background: 'transparent', font: 'inherit', fontSize: 12.5, color: 'var(--text-link)', cursor: 'pointer' }}
+          >
+            Reset zoom
+          </button>
+        )}
         <span style={{ flex: 1 }} />
         {LEVELS.map((l) =>
           l === 'unrecorded' && totals.unrecorded === 0 ? null : (
@@ -283,6 +333,43 @@ function Histogram({
             </div>
           );
         })}
+        {goLives
+          .filter((m) => {
+            const t = Date.parse(m.at);
+            return t >= span.from && t <= span.to;
+          })
+          .map((m) => {
+            const x = at(Date.parse(m.at));
+            return (
+              <span
+                key={`${m.versionId}:${m.at}`}
+                data-deploy={m.version}
+                title={`${m.version} went live · ${lineTime(Date.parse(m.at)).slice(0, 5)} UTC`}
+                style={{ position: 'absolute', top: 0, bottom: 0, left: `${x}%`, borderLeft: '1px dashed var(--brand-400)', pointerEvents: 'none' }}
+              >
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    // The label sits on the side with room, so a late deploy stays readable.
+                    ...(x > 70 ? { right: 4 } : { left: 4 }),
+                    fontSize: 10,
+                    fontFamily: 'var(--font-mono)',
+                    color: 'var(--text-brand)',
+                    whiteSpace: 'nowrap',
+                    background: 'var(--surface-card)',
+                    padding: '0 3px',
+                    borderRadius: 3,
+                  }}
+                >
+                  {m.version} · {lineTime(Date.parse(m.at)).slice(0, 5)}
+                </span>
+              </span>
+            );
+          })}
+        {hovered && hover !== null && !selection && (
+          <HoverPopover x={at(Date.parse(hovered.start) + volume.bucketMs / 2)} bucket={hovered} bucketMs={volume.bucketMs} />
+        )}
         {selection && (
           <span
             aria-hidden
@@ -300,21 +387,61 @@ function Histogram({
           />
         )}
       </div>
-      <div aria-live="polite" style={{ minHeight: 18, marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', gap: 10 }}>
+      <div style={{ minHeight: 18, marginTop: 6, fontSize: 12, color: 'var(--text-tertiary)', display: 'flex', gap: 10 }}>
         <span style={{ fontFamily: 'var(--font-mono)' }}>{axisLabel(span.from, width)}</span>
-        <span style={{ flex: 1, textAlign: 'center' }}>
-          {hovered && (
-            <>
-              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
-                {lineTime(Date.parse(hovered.start)).slice(0, 8)}–{lineTime(Date.parse(hovered.start) + volume.bucketMs).slice(0, 8)} UTC
-              </span>{' '}
-              · {hovered.error} errors · {hovered.warn} warnings · {hovered.info} info
-              {hovered.unrecorded > 0 && ` · ${hovered.unrecorded} not recorded`}
-            </>
-          )}
-        </span>
+        <span style={{ flex: 1 }} />
         <span style={{ fontFamily: 'var(--font-mono)' }}>{axisLabel(span.to, width)} UTC</span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The hovered bucket's counts, over the chart beside its bar. It flips to the bar's left
+ * near the right edge, so it never runs off the card.
+ */
+function HoverPopover({ x, bucket, bucketMs }: { x: number; bucket: RequestVolume['buckets'][number]; bucketMs: number }) {
+  const start = Date.parse(bucket.start);
+  const rows: [string, number][] = [
+    ['error', bucket.error],
+    ['warn', bucket.warn],
+    ['info', bucket.info],
+    ...(bucket.unrecorded > 0 ? [['unrecorded', bucket.unrecorded] as [string, number]] : []),
+  ];
+  return (
+    <div
+      role="tooltip"
+      aria-live="polite"
+      data-popover
+      style={{
+        position: 'absolute',
+        top: 4,
+        ...(x > 70 ? { right: `calc(${100 - x}% + 8px)` } : { left: `calc(${x}% + 8px)` }),
+        zIndex: 2,
+        minWidth: 150,
+        padding: '8px 10px',
+        background: 'var(--surface-raised)',
+        border: '1px solid var(--border-default)',
+        borderRadius: 8,
+        boxShadow: 'var(--shadow-popover)',
+        fontSize: 12,
+        color: 'var(--text-secondary)',
+        pointerEvents: 'none',
+        display: 'grid',
+        gap: 3,
+      }}
+    >
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>
+        {lineTime(start).slice(0, 8)}–{lineTime(start + bucketMs).slice(0, 8)} UTC
+      </span>
+      {rows.map(([level, n]) => (
+        <span key={level} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span aria-hidden style={{ width: 8, height: 8, borderRadius: 2, background: LEVEL_COLORS[level as (typeof LEVELS)[number]] }} />
+          {level === 'unrecorded' ? 'not recorded' : level}
+          <span style={{ flex: 1 }} />
+          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{n.toLocaleString('en-US')}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -335,7 +462,7 @@ function FacetSidebar({
 }) {
   const quiet = { fontSize: 12.5, color: 'var(--text-tertiary)' } as const;
   return (
-    <div role="group" aria-label="Request filters" style={{ padding: '12px 14px', borderRight: '1px solid var(--border-subtle)', display: 'grid', gap: 14, alignContent: 'start' }}>
+    <div role="group" aria-label="Request filters" style={{ padding: '4px 2px', display: 'grid', gap: 14, alignContent: 'start' }}>
       {facets === null ? (
         <span style={quiet}>Counting…</span>
       ) : isError(facets) ? (
@@ -346,7 +473,17 @@ function FacetSidebar({
           const ticked = selected(q, f.key);
           const extra = ticked.filter((v) => !listed.some((x) => String(x.value) === v)).map((v) => ({ value: v, count: null as number | null }));
           const rows = [...listed.map((x) => ({ value: String(x.value), count: x.count as number | null })), ...extra];
-          if (rows.length === 0) return null;
+          if (rows.length === 0) {
+            // A problem code is the facet a reader comes looking for, so its absence is said
+            // rather than left as a missing heading: the requests in this window carried none.
+            if (f.key !== 'problemCode') return null;
+            return (
+              <div key={f.key} style={{ display: 'grid', gap: 2 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 2 }}>{f.label}</div>
+                <span style={quiet}>None in this window</span>
+              </div>
+            );
+          }
           return (
             <div key={f.key} style={{ display: 'grid', gap: 2 }}>
               <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 2 }}>{f.label}</div>

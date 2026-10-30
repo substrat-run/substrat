@@ -63,6 +63,7 @@ export function TenantLogs({
   hadTraffic,
   window: cursor,
   embedded = false,
+  live = false,
 }: {
   teamId: string;
   scopeId: string;
@@ -83,6 +84,8 @@ export function TenantLogs({
   /** Drawn as the Lines mode of the Logs stream card (#1767): the card and its tab
    *  already say what this is, so the panel drops its own frame and title. */
   embedded?: boolean;
+  /** #2762: Live re-reads on a timer — the lines stay up until the next page lands. */
+  live?: boolean;
 }) {
   const level = filters.level;
   const search = filters.search;
@@ -94,11 +97,15 @@ export function TenantLogs({
   // #2521: what the answer says beyond its lines.
   const panel = appLogsPanelOf(read);
   const [logsError, setLogsError] = useState<string | null>(null);
+  // #2762: "Load more" — older pages appended below the first, and whether the last one
+  // brought anything new (a page of nothing new means the window is read to its start).
+  const [more, setMore] = useState<{ loading: boolean; exhausted: boolean; error: string | null }>({ loading: false, exhausted: false, error: null });
 
   useEffect(() => {
-    let live = true;
-    setRead(null);
+    let current = true;
+    if (!live) setRead(null);
     setLogsError(null);
+    setMore({ loading: false, exhausted: false, error: null });
     void (async () => {
       try {
         const mocked = DEV_MOCK
@@ -134,9 +141,9 @@ export function TenantLogs({
               invocationId,
               ...(template ? { template } : {}),
             });
-        if (live) setRead(answer);
+        if (current) setRead(answer);
       } catch (e) {
-        if (!live) return;
+        if (!current) return;
         // Surface WHY, not a blanket "unavailable" — the plane's status is the whole
         // signal (501 = not configured, 5xx = an upstream/query failure worth reporting).
         // The plane returns sanitized bodies, so `e.message` is safe to show.
@@ -150,9 +157,45 @@ export function TenantLogs({
       }
     })();
     return () => {
-      live = false;
+      current = false;
     };
   }, [teamId, scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId, template]);
+
+  /**
+   * The next page: the same filters over the same window, ending at the oldest line on
+   * screen. That line's own instant is inside the page again (the bound is inclusive), so
+   * the lines already shown are dropped by identity rather than counted twice.
+   */
+  const loadMore = async () => {
+    const oldest = logs?.reduce<number | null>((min, e) => (e.timestamp !== null && (min === null || e.timestamp < min) ? e.timestamp : min), null);
+    if (!logs || oldest === null || oldest === undefined || DEV_MOCK) {
+      setMore({ loading: false, exhausted: true, error: null });
+      return;
+    }
+    const since = cursor?.from ?? new Date(Date.now() - hours * 3_600_000).toISOString();
+    if (oldest <= Date.parse(since)) {
+      setMore({ loading: false, exhausted: true, error: null });
+      return;
+    }
+    setMore((m) => ({ ...m, loading: true, error: null }));
+    try {
+      const page = await api.appTenantLogsRead(teamId, scopeId, {
+        level,
+        search,
+        since,
+        until: new Date(oldest).toISOString(),
+        limit: 100,
+        invocationId,
+        ...(template ? { template } : {}),
+      });
+      const seen = new Set(logs.map(lineKey));
+      const fresh = page.events.filter((e) => !seen.has(lineKey(e)));
+      setRead((r) => (r ? { events: [...r.events, ...fresh], incomplete: r.incomplete || page.incomplete } : r));
+      setMore({ loading: false, exhausted: fresh.length === 0, error: null });
+    } catch (e) {
+      setMore({ loading: false, exhausted: false, error: isApiError(e) ? `Older lines could not be read (${e.status}).` : 'Older lines could not be read right now.' });
+    }
+  };
 
   const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' };
   return (
@@ -203,15 +246,33 @@ export function TenantLogs({
         {template ? (
           // #1747: a pattern's lines are read directly by their template — no invocation
           // walk, so the only bound is the page size.
-          <span>The newest 100 lines written from this template in this window.</span>
+          <span>Read 100 lines at a time, newest first, from this template in this window.</span>
         ) : (
-          <span title="Up to 100 recent lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Retention and sampling depend on the backend.">
-            Bounded read — the newest 100 lines of the latest 40 invocations; an empty result does not prove nothing matched.
+          <span title="Each page is up to 100 lines from bounded invocation discovery (40 invocations, normally 20 lines each). Filters search that bounded coverage, not an exhaustive log archive. Retention and sampling depend on the backend.">
+            Bounded read — each page is the newest 100 lines of 40 invocations; an empty result does not prove nothing matched.
           </span>
+        )}
+        {logs && logs.length > 0 && (
+          <>
+            <span style={{ flex: 1 }} />
+            {more.error && <span role="alert" style={{ color: 'var(--status-danger-fg)' }}>{more.error}</span>}
+            {more.exhausted ? (
+              <span>No older lines in this window</span>
+            ) : (
+              <Button variant="secondary" size="sm" loading={more.loading} onClick={() => void loadMore()}>
+                Load more
+              </Button>
+            )}
+          </>
         )}
       </div>
     </div>
   );
+}
+
+/** A line's identity across two overlapping pages: when, which call, and what it said. */
+function lineKey(e: ObservabilityLogEvent): string {
+  return `${e.timestamp ?? ''}\u0000${e.invocationId ?? ''}\u0000${e.level ?? ''}\u0000${e.message ?? ''}`;
 }
 
 /**
