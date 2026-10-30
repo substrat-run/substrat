@@ -133,7 +133,7 @@ kernel builds a real index for it:
 ```ts
 // The vertical's manifest, through `manifestEntities` — the same helper that checks
 // `fields` against the entity registry.
-...manifestEntities(calloutEntities, {
+...manifestEntities(fsmEntities, {
   searchables: [
     { entityType: 'customer', fields: ['name', 'number'] },
     // `substring` matches inside a word ("ande" → "Andersson") for a larger index.
@@ -157,7 +157,7 @@ const searchCustomers = async (ctx, { q, limit = 20 }) => {
   if (hits.length === 0) return { results: [], limit, capped: false };
   // One parameter for the whole list: a Durable Object refuses the 101st.
   const ids = inList(hits.map((h) => h.id)); // from '@substrat-run/contracts'
-  const rows = ctx.sql.query<CustomerRow>(`SELECT * FROM callout_customers WHERE id IN ${ids.sql}`, ids.params);
+  const rows = ctx.sql.query<CustomerRow>(`SELECT * FROM fsm_customers WHERE id IN ${ids.sql}`, ids.params);
   const byId = new Map(rows.map((r) => [r.id, r]));
   // `IN (…)` loses the rank order — put it back, or the best match lands third.
   return { results: hits.map((h) => byId.get(h.id)!), limit, capped: hits.length === limit };

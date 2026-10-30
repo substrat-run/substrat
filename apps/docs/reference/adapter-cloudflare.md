@@ -58,6 +58,16 @@ pnpm add @substrat-run/adapter-cloudflare
   is. A pushed vertical that declares schedules and exports none is given one at upload, as
   `SweeperDO` bound to `SWEEPER` ([`substrat push`](/reference/cli)); wire your own only to
   change what it does.
+- **`defineCopyJobDO`** — one Durable Object per background scope copy, stepped by its own
+  alarm: a [preview](/guide/environments-and-previews) copy too large for one request runs as
+  a job (`start`, `get`, `claim`, `cancel`, `forget`) that survives the request, and a newer
+  push replaces it. The control plane exports its class as `ScopeCopyJobDO`, bound as `COPY_JOBS`.
+- **`defineKickCoalescerDO`** — the bound on the router's cross-vertical kick: one object per
+  producer scope, so a burst of kicks costs the pass that started it plus one trailing pass at
+  the window's end (`CROSS_VERTICAL_KICK_WINDOW_MS`, 5 s), fleet-wide rather than per isolate.
+- **`analyticsEngineConnectorCallRecorder`** — the hosted recorder that writes one Analytics
+  Engine point per connector call, in its own dataset. The kernel keeps the record and a no-op
+  default for self-host.
 - **Per-tenant stores** — `createD1TenantStores` and `createR2BlobStores`, the platform's
   reach into a minted D1 database or R2 bucket. Worth understanding for what they are *not*:
   this is the **control-plane** path — minting at provision, out-of-band SQL, ops inspection.
