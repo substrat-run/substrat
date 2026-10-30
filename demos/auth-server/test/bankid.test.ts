@@ -243,7 +243,12 @@ describe('the stored configuration', () => {
 
   it.each([
     ['BankID refusing only the order', async () => ({ status: 400, body: { errorCode: 'invalidParameters', details: 'Invalid orderRef' } }), { ok: true }],
-    ['BankID refusing the certificate', async () => ({ status: 403, body: undefined }), { ok: false, stage: 'http.response' }],
+    [
+      'BankID refusing with its own error code',
+      async () => ({ status: 403, body: { errorCode: 'accessDenied', details: 'Unknown\n  client certificate' } }),
+      { ok: false, stage: 'http.response', detail: 'BankID answered 403 accessDenied (Unknown client certificate)' },
+    ],
+    ['BankID refusing with no body', async () => ({ status: 403, body: undefined }), { ok: false, stage: 'http.response', detail: 'BankID answered 403' }],
     [
       'the relay failing the handshake',
       async () => {

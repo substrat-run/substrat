@@ -270,6 +270,12 @@ export function publicBankIdFrom(
 /** The order reference BankID never issued: `collect` of it is the cheapest call that needs a certificate. */
 const PROBE_ORDER_REF = '00000000-0000-0000-0000-000000000000';
 
+/** BankID's own words for a refusal, on one short line: the status, its `errorCode` and `details` when the body has them. */
+function refusalDetail(status: number, error: z.infer<typeof apiError> | undefined): string {
+  const details = error?.details?.replace(/\s+/g, ' ').trim().slice(0, 120);
+  return `BankID answered ${status}${error ? ` ${error.errorCode}` : ''}${details ? ` (${details})` : ''}`;
+}
+
 /**
  * Test the connection: BankID's `collect` for an order that does not exist. A `400
  * invalidParameters` is BankID having accepted the TLS handshake and this certificate and then
@@ -287,10 +293,7 @@ export async function probeBankId(transport: BankIdTransport, apiUrl: string, no
       ok: false,
       at: now,
       stage: 'http.response',
-      detail:
-        res.status === 403
-          ? 'BankID refused the connection: this certificate is not accepted for this environment'
-          : `BankID answered ${res.status}${parsed.success ? ` ${parsed.data.errorCode}` : ''}`,
+      detail: refusalDetail(res.status, parsed.success ? parsed.data : undefined),
     };
   } catch (e) {
     const stage = typeof (e as { stage?: unknown }).stage === 'string' ? (e as { stage: string }).stage : 'transport';
