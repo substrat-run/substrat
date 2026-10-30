@@ -1132,7 +1132,7 @@ const DUMP_READ_BATCH = 500;
  */
 const CAPTURE_GLOB = '_substrat_capture*';
 const CAPTURE_TABLES_DDL = [
-  `CREATE TABLE IF NOT EXISTS _substrat_capture (copy_id TEXT PRIMARY KEY, touched_at INTEGER NOT NULL, tables TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS _substrat_capture (copy_id TEXT PRIMARY KEY, touched_at INTEGER NOT NULL, schema TEXT NOT NULL, triggers INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS _substrat_capture_changes (
      copy_id TEXT NOT NULL, tbl TEXT NOT NULL, rid INTEGER NOT NULL, batch INTEGER,
      PRIMARY KEY (copy_id, tbl, rid)) WITHOUT ROWID`,
@@ -1148,36 +1148,60 @@ const CAPTURE_BATCH_ROWS = 2_000;
 /** Rowids per `IN (…)`: a Durable Object's SQLite binds at most 100 parameters to a statement. */
 const CAPTURE_IN_CHUNK = 90;
 const CAPTURE_GONE = 'the copy\'s capture of this scope is gone (it ended, expired or a load replaced the store); start the copy again';
-const CAPTURE_SCHEMA_MOVED = 'the scope\'s schema changed while it was copied (a migration ran); start the copy again';
+const CAPTURE_SCHEMA_MOVED = 'the scope\'s schema changed while it was copied (a migration ran, or a table was rebuilt); start the copy again';
+const CAPTURE_EXPRESSION_INDEX = 'a table with a unique index on an expression cannot be copied while it takes writes; copy it at a quiet moment';
 /** A write the capture path takes: one whose target is a capture table or a capture trigger. */
 const CAPTURE_STATEMENT =
   /^\s*(?:CREATE TABLE IF NOT EXISTS|INSERT INTO|UPDATE|DELETE FROM|DROP TABLE IF EXISTS|CREATE TRIGGER IF NOT EXISTS|DROP TRIGGER IF EXISTS)\s+"?_substrat_capture(?:\b|_)/;
 const quoteIdent = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 const quoteText = (text: string): string => `'${text.replaceAll("'", "''")}'`;
 
+/** One unique index's key columns, each with the collation the index compares it under. */
+type UniqueKey = { column: string; collation: string }[];
+
 /**
- * The three triggers that log `name`'s writes for every open capture (#2450). A write logs the
- * rowid it touched (an update both the old and the new, should it move the row), once per capture
- * however often the row is written, and clears the batch that served it, so it is served again.
- * A table read by offset has no rowid to log, and logs `0`: the whole table is sent again.
+ * The triggers that log `name`'s writes for every open capture (#2450). A write logs the rowid it
+ * touched (an update both the old and the new, should it move the row), once per capture however
+ * often the row is written, and clears the batch that served it, so it is served again. A table
+ * read by offset has no rowid to log, and logs `0`: the whole table is sent again.
+ *
+ * A row a `REPLACE` resolution deletes (`INSERT OR REPLACE`, `REPLACE INTO`, `UPDATE OR REPLACE`
+ * onto another key) fires no delete trigger while recursive triggers are off, so for each of
+ * `uniqueKeys` a BEFORE trigger also logs every row equal to the incoming one on that key: the row
+ * the resolution is about to delete. Logging a row that then survives is harmless (a batch reads
+ * every row as it is), so a partial index is matched without its WHERE.
  *
  * A delete and a plain insert rather than `INSERT OR REPLACE`: inside a trigger, the outer
  * statement's conflict handling wins, so an upsert's update (the write revision's own bump is one)
  * would turn the replace into an abort, and fail the write it logs.
  */
-function captureTriggers(name: string, byRowid: boolean): string[] {
+function captureTriggers(name: string, byRowid: boolean, uniqueKeys: readonly UniqueKey[]): string[] {
   const tbl = quoteText(name);
+  const table = quoteIdent(name);
+  // Keyed on the log's primary key, copy first, so neither statement scans the log.
+  const clear = (rids: string) =>
+    `DELETE FROM _substrat_capture_changes WHERE copy_id IN (SELECT copy_id FROM _substrat_capture) AND tbl = ${tbl} AND rid IN (${rids}); `;
   const log = (rid: string) =>
-    // Keyed on the log's primary key, copy first, so neither statement scans the log.
-    `DELETE FROM _substrat_capture_changes WHERE copy_id IN (SELECT copy_id FROM _substrat_capture) AND tbl = ${tbl} AND rid = ${rid}; ` +
-    `INSERT INTO _substrat_capture_changes (copy_id, tbl, rid, batch) SELECT copy_id, ${tbl}, ${rid}, NULL FROM _substrat_capture;`;
-  const on = (kind: 'i' | 'u' | 'd', event: string, body: string) =>
-    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_substrat_capture_${kind}_${name}`)} AFTER ${event} ON ${quoteIdent(name)} BEGIN ${body} END`;
-  return [
-    on('i', 'INSERT', log(byRowid ? 'NEW.rowid' : '0')),
-    on('u', 'UPDATE', byRowid ? log('OLD.rowid') + ' ' + log('NEW.rowid') : log('0')),
-    on('d', 'DELETE', log(byRowid ? 'OLD.rowid' : '0')),
+    clear(rid) + `INSERT INTO _substrat_capture_changes (copy_id, tbl, rid, batch) SELECT copy_id, ${tbl}, ${rid}, NULL FROM _substrat_capture;`;
+  const logHeld = (key: UniqueKey) => {
+    const match = key.map(({ column, collation }) => `t.${quoteIdent(column)} = NEW.${quoteIdent(column)} COLLATE ${quoteIdent(collation)}`).join(' AND ');
+    return (
+      clear(`SELECT t.rowid FROM ${table} t WHERE ${match}`) +
+      `INSERT INTO _substrat_capture_changes (copy_id, tbl, rid, batch) SELECT c.copy_id, ${tbl}, t.rowid, NULL FROM _substrat_capture c, ${table} t WHERE ${match};`
+    );
+  };
+  const on = (kind: string, when: 'AFTER' | 'BEFORE', event: string, body: string) =>
+    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_substrat_capture_${kind}_${name}`)} ${when} ${event} ON ${table} BEGIN ${body} END`;
+  const triggers = [
+    on('i', 'AFTER', 'INSERT', log(byRowid ? 'NEW.rowid' : '0')),
+    on('u', 'AFTER', 'UPDATE', byRowid ? log('OLD.rowid') + ' ' + log('NEW.rowid') : log('0')),
+    on('d', 'AFTER', 'DELETE', log(byRowid ? 'OLD.rowid' : '0')),
   ];
+  if (byRowid && uniqueKeys.length > 0) {
+    const held = uniqueKeys.map(logHeld).join(' ');
+    triggers.push(on('bi', 'BEFORE', 'INSERT', held), on('bu', 'BEFORE', 'UPDATE', held));
+  }
+  return triggers;
 }
 
 /** The names under which SQLite answers a table's rowid, unless a column takes one. */
@@ -1735,6 +1759,11 @@ export function defineScopeDO(
       this.applySpineColumnAdditions();
       this.revisionSuspended = false;
       this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
+      // #2450: the triggers and tables an expiry emptied but could not drop go here, if no capture
+      // is open, before any request runs.
+      this.revision.untracked(() => {
+        if (this.hasTable('_substrat_capture')) this.dropCaptureIfIdle();
+      });
 
       for (const registration of modules) this.registerModule(registration);
       for (const [name, handler] of Object.entries(bareOps)) this.defineOperation(name, handler);
@@ -7522,36 +7551,77 @@ export function defineScopeDO(
      * carries it. Every trigger logs for every open capture, so one set serves overlapping copies.
      */
     private openCapture(copyId: string, defs: { name: string; sql: string }[]): void {
+      // Every trigger is worked out before anything is written, so a table a capture cannot follow
+      // refuses it with nothing left behind.
+      const triggers = defs.flatMap(({ name, sql }) => {
+        const { byRowid } = this.tableShape(name, sql);
+        return captureTriggers(name, byRowid, byRowid ? this.uniqueKeysOf(name) : []);
+      });
       this.revision.untracked(() => {
         for (const ddl of CAPTURE_TABLES_DDL) this.sql.exec(ddl);
         this.sql.exec(
-          `INSERT INTO _substrat_capture (copy_id, touched_at, tables) VALUES (?, ?, ?)
-             ON CONFLICT (copy_id) DO UPDATE SET touched_at = excluded.touched_at, tables = excluded.tables`,
-          copyId, Date.now(), JSON.stringify(defs),
+          `INSERT INTO _substrat_capture (copy_id, touched_at, schema, triggers) VALUES (?, ?, ?, ?)
+             ON CONFLICT (copy_id) DO UPDATE SET touched_at = excluded.touched_at, schema = excluded.schema, triggers = excluded.triggers`,
+          copyId, Date.now(), this.captureSchema(defs), triggers.length,
         );
         // Page 0 asked again starts the pages over: what was logged since its first read is still
         // to be sent, and is sent again at worst.
-        for (const { name, sql } of defs) {
-          for (const ddl of captureTriggers(name, this.tableShape(name, sql).byRowid)) this.sql.exec(ddl);
-        }
+        for (const ddl of triggers) this.sql.exec(ddl);
       });
       this.readCaptureClock();
     }
 
     /**
-     * The capture `copyId`, renewed, as its pages read the schema (#2450). Refused when it is gone,
-     * and ended and refused when a table was added, dropped or altered since its first page: no
-     * trigger logs a table it did not see, and a table altered under it no longer reads as its
-     * pages did.
+     * The unique keys of dumped rowid table `name` (#2450), for the triggers that log a row a
+     * `REPLACE` deletes. A unique index on an expression has no columns to match the incoming row
+     * on, so a capture of its table is refused: that copy is taken at a quiet moment instead.
+     */
+    private uniqueKeysOf(name: string): UniqueKey[] {
+      const indexes = this.sql.exec(`SELECT name FROM pragma_index_list(?) WHERE "unique" = 1`, name).toArray() as { name: string }[];
+      return indexes.map(({ name: index }) => {
+        const key = this.sql
+          .exec(`SELECT cid, name, coll FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno`, index)
+          .toArray() as { cid: number; name: string | null; coll: string }[];
+        if (key.some((c) => Number(c.cid) < 0 || c.name === null)) {
+          throw substratError('precondition_failed', `${CAPTURE_EXPRESSION_INDEX}: ${name} (${index})`);
+        }
+        return key.map((c) => ({ column: c.name!, collation: c.coll }));
+      });
+    }
+
+    /** What a capture's pages read the schema as (#2450): the dumped tables and their explicit indexes. */
+    private captureSchema(defs: { name: string; sql: string }[]): string {
+      const names = new Set(defs.map((d) => d.name));
+      const indexes = (
+        this.sql.exec(`SELECT tbl_name, name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name`).toArray() as {
+          tbl_name: string;
+          name: string;
+          sql: string;
+        }[]
+      ).filter((i) => names.has(i.tbl_name));
+      return JSON.stringify({ tables: defs, indexes: indexes.map((i) => [i.name, i.sql]) });
+    }
+
+    /**
+     * The capture `copyId`, renewed, as its pages read the schema (#2450). Refused when it is gone.
+     * Ended and refused when a table or an index was added, dropped or altered since its first
+     * page (no trigger logs a table it did not see, and a table altered under it no longer reads as
+     * its pages did), or when a capture trigger is missing: a table dropped and made again with the
+     * same schema took its triggers with it, and nothing logged its writes since.
      */
     private heldCapture(copyId: string, defs: { name: string; sql: string }[]): void {
       const row = this.revision.untracked(() =>
         this.hasTable('_substrat_capture')
-          ? (this.sql.exec(`SELECT tables FROM _substrat_capture WHERE copy_id = ?`, copyId).toArray()[0] as { tables: string } | undefined)
+          ? (this.sql.exec(`SELECT schema, triggers FROM _substrat_capture WHERE copy_id = ?`, copyId).toArray()[0] as
+              | { schema: string; triggers: number }
+              | undefined)
           : undefined,
       );
       if (!row) throw substratError('precondition_failed', CAPTURE_GONE);
-      if (row.tables !== JSON.stringify(defs)) {
+      const triggers = Number(
+        (this.sql.exec(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND name GLOB '${CAPTURE_GLOB}'`).toArray()[0] as { n: number }).n,
+      );
+      if (row.schema !== this.captureSchema(defs) || triggers !== Number(row.triggers)) {
         this.endCapture(copyId);
         throw substratError('precondition_failed', CAPTURE_SCHEMA_MOVED);
       }
@@ -7695,12 +7765,19 @@ export function defineScopeDO(
      * Run before every write (#2450, the write revision's `beforeWrite`): a capture nobody has asked
      * for in `CAPTURE_IDLE_MS` belongs to a copy that stopped, so it ends here, before the write its
      * triggers would log. Once the clock is read this is one comparison per write; the clock is read
-     * on the first write after a wake and after each expiry.
+     * on the first write after a wake, a load, or an expiry.
+     *
+     * No DDL here: the write this runs before may hold a read cursor open (a module iterating a
+     * table and writing as it goes), and a DROP under one fails that write (SQLITE_LOCKED). Only the
+     * idle captures' rows go; a trigger with no capture to log for logs nothing, and the triggers and
+     * tables are dropped in a turn of their own (`dropIdleCaptureLater`).
      */
     private expireIdleCaptures(): void {
       if (this.captureIdleAt === undefined) this.readCaptureClock();
       if (this.captureIdleAt === null || this.captureIdleAt === undefined || Date.now() < this.captureIdleAt) return;
       this.revision.untracked(() => {
+        // A load took the capture's tables with it: there is nothing left to end.
+        if (!this.hasTable('_substrat_capture')) return;
         const idle = this.sql
           .exec(`SELECT copy_id FROM _substrat_capture WHERE touched_at <= ?`, Date.now() - CAPTURE_IDLE_MS)
           .toArray() as unknown as { copy_id: string }[];
@@ -7708,11 +7785,29 @@ export function defineScopeDO(
           this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id = ?`, copy_id);
           this.sql.exec(`DELETE FROM _substrat_capture WHERE copy_id = ?`, copy_id);
         }
-        this.dropCaptureIfIdle();
       });
       // Read again at the next write, not now: should the write's own transaction roll back, the
       // capture is back, and the next write ends it again.
       this.captureIdleAt = undefined;
+      this.dropIdleCaptureLater();
+    }
+
+    /**
+     * Drop the capture's triggers and tables once no capture is open (#2450), after the current
+     * turn: never under the write that ended the last capture. Best effort: one that fails (a cursor
+     * still open across an await) leaves them to the next capture call or the next wake, and a
+     * trigger with no capture to log for costs a write only an empty lookup meanwhile.
+     */
+    private dropIdleCaptureLater(): void {
+      setTimeout(() => {
+        try {
+          this.revision.untracked(() => {
+            if (this.hasTable('_substrat_capture')) this.dropCaptureIfIdle();
+          });
+        } catch {
+          // Left to the next capture call or wake, as above.
+        }
+      }, 0);
     }
 
     /**
@@ -8206,6 +8301,8 @@ export function defineScopeDO(
         }
       });
       this.carriedAwayCopy = this.metaValue(CARRIED_AWAY_KEY) !== null;
+      // #2450: the drops took any capture with them; its clock is read again at the next write.
+      this.captureIdleAt = undefined;
       // #1335 / #1686: the outbox arrived with the dump, so this DO's event ids resume above it,
       // as on a wake. A copy's own events then sort above every copied one, which is what
       // `emittedHere()` relies on. A dump whose top id is no ULID leaves the floor where it was.

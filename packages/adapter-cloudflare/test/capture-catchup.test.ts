@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, scopeId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
 import { SCOPE_COPY_LEASE_MS, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from './test-host.js';
@@ -32,6 +32,8 @@ const audit: ScopeDumpTable = { name: 'cc_audit', ddl: 'CREATE TABLE cc_audit (n
 type TestStub = {
   testSql(query: string, ...bindings: unknown[]): Promise<Record<string, unknown>[]>;
   testAgeCaptures(ms: number): Promise<void>;
+  testElapseCaptureClock(ms: number): Promise<void>;
+  testCursorWrite(table: string, column: string): Promise<void>;
 };
 
 describe('a copy catches up on the writes its source took while it was read (#2450)', () => {
@@ -204,12 +206,46 @@ describe('a copy catches up on the writes its source took while it was read (#24
     await host.exportScopePageLocal(source, null, { capture: copyId });
     await stub(source).testAgeCaptures(SCOPE_COPY_LEASE_MS - 60_000);
     await sql(source, `INSERT INTO cc_notes (id, body) VALUES ('n-kept', 'x')`);
-    expect(await captureLeft(source)).not.toEqual([]);
+    expect(await sql(source, 'SELECT copy_id FROM _substrat_capture')).toEqual([{ copy_id: copyId }]);
     await stub(source).testAgeCaptures(120_000);
     await sql(source, `INSERT INTO cc_notes (id, body) VALUES ('n-unlogged', 'x')`);
-    expect(await captureLeft(source)).toEqual([]);
     const gone = await host.exportScopeChangesLocal(source, copyId, 0).catch((e: unknown) => e);
     expect(errorCodeOf(gone)).toBe('precondition_failed');
+    // The triggers and tables go in a turn of their own.
+    await vi.waitFor(async () => expect(await captureLeft(source)).toEqual([]));
+  });
+
+  it('an expiry under a module\'s open read cursor neither fails the write nor drops anything under it', async () => {
+    const source = await seed();
+    await host.exportScopePageLocal(source, null, { capture: ulid() });
+    await stub(source).testAgeCaptures(SCOPE_COPY_LEASE_MS + 60_000);
+    await stub(source).testCursorWrite('cc_notes', 'body');
+    expect(await sql(source, `SELECT COUNT(*) AS n FROM cc_notes WHERE body = 'x'`)).toEqual([{ n: 12 }]);
+    await vi.waitFor(async () => expect(await captureLeft(source)).toEqual([]));
+  });
+
+  it('a load under an open capture takes it, and writes past its lease still land', async () => {
+    const source = await seed();
+    await host.exportScopePageLocal(source, null, { capture: ulid() });
+    await host.restoreScopeLocal(source, [notes(3), tags(1), audit], { sourceScopeId: source });
+    // As the object held the clock before the load, a lease later.
+    await stub(source).testElapseCaptureClock(SCOPE_COPY_LEASE_MS + 60_000);
+    await sql(source, `INSERT INTO cc_notes (id, body) VALUES ('w1', 'x')`);
+    await sql(source, `INSERT INTO cc_notes (id, body) VALUES ('w2', 'x')`);
+    expect(await sql(source, `SELECT COUNT(*) AS n FROM cc_notes`)).toEqual([{ n: 5 }]);
+    expect(await captureLeft(source)).toEqual([]);
+  });
+
+  it('a table dropped and made again with the same schema ends the capture and refuses it', async () => {
+    const source = await seed();
+    const copyId = ulid();
+    await host.exportScopePageLocal(source, null, { capture: copyId });
+    await sql(source, 'DROP TABLE cc_notes');
+    await sql(source, notes(0).ddl);
+    await sql(source, `INSERT INTO cc_notes (id, body) VALUES ('z1', 'other')`);
+    const refused = await host.exportScopeChangesLocal(source, copyId, 0).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('precondition_failed');
+    expect(await captureLeft(source)).toEqual([]);
   });
 
   it('a table added while the copy reads ends the capture and refuses it', async () => {
@@ -221,5 +257,59 @@ describe('a copy catches up on the writes its source took while it was read (#24
     expect(errorCodeOf(refused)).toBe('precondition_failed');
     expect(String((refused as Error).message)).toContain('schema changed');
     expect(await captureLeft(source)).toEqual([]);
+  });
+
+  // A row a REPLACE resolution deletes fires no delete trigger, so each unique key's BEFORE
+  // trigger logs it. Every key shape, against every way a write can meet an existing row on it.
+  const KEYS: [string, { ddl: string; index?: string; key: (n: number) => string; rowKey: (n: number) => string | null }][] = [
+    ['a text primary key', { ddl: 'CREATE TABLE rk (id TEXT, code TEXT PRIMARY KEY, v TEXT)', key: (n) => `'c${n}'`, rowKey: (n) => `c${n}` }],
+    ['a UNIQUE constraint', { ddl: 'CREATE TABLE rk (id TEXT, code TEXT UNIQUE, v TEXT)', key: (n) => `'c${n}'`, rowKey: (n) => `c${n}` }],
+    ['a unique index', { ddl: 'CREATE TABLE rk (id TEXT, code TEXT, v TEXT)', index: 'CREATE UNIQUE INDEX rk_code ON rk (code)', key: (n) => `'c${n}'`, rowKey: (n) => `c${n}` }],
+    ['a composite key', { ddl: 'CREATE TABLE rk (id TEXT, code TEXT, v TEXT, UNIQUE (id, code))', key: (n) => `'c${n}'`, rowKey: (n) => `c${n}` }],
+    // The column compares BINARY and the index NOCASE: only the index's collation finds the conflict.
+    ['a NOCASE index, case-only', { ddl: 'CREATE TABLE rk (id TEXT, code TEXT, v TEXT)', index: 'CREATE UNIQUE INDEX rk_code ON rk (code COLLATE NOCASE)', key: (n) => `'C${n}'`, rowKey: (n) => `c${n}` }],
+    ['a NULL key', { ddl: 'CREATE TABLE rk (id TEXT, code TEXT UNIQUE, v TEXT)', key: () => 'NULL', rowKey: () => null }],
+  ];
+  const WRITES: [string, (k: (n: number) => string) => string][] = [
+    ['INSERT OR REPLACE', (k) => `INSERT OR REPLACE INTO rk (id, code, v) VALUES ('a', ${k(1)}, 'replaced')`],
+    ['REPLACE INTO', (k) => `REPLACE INTO rk (id, code, v) VALUES ('a', ${k(2)}, 'replaced')`],
+    ['UPDATE OR REPLACE onto another key', (k) => `UPDATE OR REPLACE rk SET code = ${k(3)} WHERE v = 'v0'`],
+    ['an upsert', (k) => `INSERT INTO rk (id, code, v) VALUES ('a', ${k(1)}, 'up') ON CONFLICT DO UPDATE SET v = excluded.v`],
+    ['INSERT OR IGNORE', (k) => `INSERT OR IGNORE INTO rk (id, code, v) VALUES ('a', ${k(1)}, 'ignored')`],
+  ];
+  it.each(KEYS.flatMap(([keyName, key]) => WRITES.map(([writeName, write]) => [`${writeName} on ${keyName}`, key, write] as const)))(
+    '%s lands as the source holds it',
+    async (_, key, write) => {
+      const source = scopeId.parse(ulid());
+      const rk: ScopeDumpTable = {
+        name: 'rk', ddl: key.ddl, columns: ['id', 'code', 'v'],
+        rows: Array.from({ length: 4 }, (__, n) => ['a', key.rowKey(n), `v${n}`]),
+      };
+      await host.restoreScopeLocal(source, [rk], { sourceScopeId: source });
+      if (key.index) await sql(source, key.index);
+      const copyId = ulid();
+      const dest = scopeId.parse(ulid());
+      const stageId = ulid();
+      const page = await host.exportScopePageLocal(source, null, { capture: copyId });
+      expect(page.next).toBeNull();
+      await host.stageScopePageLocal(dest, stageId, 0, page.tables);
+      await sql(source, write(key.key));
+      const changes = await host.exportScopeChangesLocal(source, copyId, 0);
+      expect(changes.final).toBe(true);
+      await host.stageScopeChangesLocal(dest, stageId, 1, changes.tables);
+      await host.restoreStagedScopeLocal(dest, stageId, { sourceScopeId: source });
+      const rows = async (sid: ScopeId) => (await sql(sid, 'SELECT id, code, v FROM rk ORDER BY v, code')).map((r) => JSON.stringify(r));
+      expect(await rows(dest)).toEqual(await rows(source));
+    },
+  );
+
+  it('a unique index on an expression refuses a capture, leaving nothing; the page without one still reads', async () => {
+    const source = await seed();
+    await sql(source, 'CREATE UNIQUE INDEX cc_notes_lower ON cc_notes (lower(id))');
+    const refused = await host.exportScopePageLocal(source, null, { capture: ulid() }).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('precondition_failed');
+    expect(await captureLeft(source)).toEqual([]);
+    // What a caller falls back to: the copy that needs a quiet moment.
+    expect((await host.exportScopePageLocal(source, null)).tables.map((t) => t.name)).toContain('cc_notes');
   });
 });

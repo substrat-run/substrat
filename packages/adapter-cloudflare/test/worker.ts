@@ -234,6 +234,18 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
       self.revision.untracked(() => self.sql.exec('UPDATE _substrat_capture SET touched_at = touched_at - ?', ms));
       self.readCaptureClock();
     }
+
+    /** #2450: the object's capture clock, as it holds it, moved `ms` earlier; its tables untouched. */
+    testElapseCaptureClock(ms: number): void {
+      const self = this as unknown as { captureIdleAt: number | null | undefined };
+      if (typeof self.captureIdleAt === 'number') self.captureIdleAt -= ms;
+    }
+
+    /** #2450: a module's iterate-and-write: `column` set to 'x' on each row, a row at a time, under the open read cursor. */
+    testCursorWrite(table: string, column: string): void {
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      for (const row of sql.exec(`SELECT rowid AS r FROM ${table}`)) sql.exec(`UPDATE ${table} SET ${column} = 'x' WHERE rowid = ?`, row.r);
+    }
   };
 }
 
