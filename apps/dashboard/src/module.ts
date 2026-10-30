@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { appEvent, appRow, explanationProvenance, explanationRow, installStep, memberRow } from './rows.js';
+import { CONNECT_LINK_MAX_TTL_MS, appEvent, appRow, explanationProvenance, explanationRow, installStep, memberRow } from './rows.js';
 import {
   CURSOR_FIELD_SEPARATOR,
   defineOperations,
@@ -1543,7 +1543,6 @@ const beginConnectionOp: OperationHandler<z.infer<typeof beginConnectionInput>, 
 // that principal from the token's signature), and re-checks the same permission — a
 // link outlives neither its author's access nor a revocation.
 
-const CONNECT_LINK_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CONNECT_LINK_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** One minted connect link, as the module exposes it (never the signed token itself). */

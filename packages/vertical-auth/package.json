@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/vertical-auth",
-  "version": "0.28.6",
+  "version": "0.28.7",
   "description": "OIDC authentication for Substrat verticals — token verification, a full relying-party login flow, and a per-tenant identity directory Durable Object. Workers-targeted; the vertical worker bundles it.",
   "license": "AGPL-3.0-only",
   "repository": {

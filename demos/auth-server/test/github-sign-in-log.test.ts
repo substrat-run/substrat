@@ -48,6 +48,9 @@ afterAll(async () => {
 beforeEach(() => {
   calls = [];
   globalThis.fetch = (async (input, init) => {
+    // workerd's own refusal (#2722): Node accepts 'error', so without this only a deployed
+    // issuer would see it.
+    if (init?.redirect === 'error') throw new TypeError('Invalid redirect value, must be one of "follow" or "manual"');
     const url = new URL(input instanceof Request ? input.url : String(input));
     if (['github.com', 'api.github.com'].includes(url.hostname)) {
       calls.push(url.pathname);
@@ -64,7 +67,7 @@ beforeEach(() => {
   auth = fixtureAuth();
 });
 
-function fixtureAuth(disableSignUp = false) {
+function fixtureAuth(disableSignUp = false, runInBackground?: (task: Promise<unknown>) => void) {
   return buildAuth({
     database: drizzleAdapter(drizzle(db, { schema }), { provider: 'sqlite', schema }),
     secret: 'test-secret-000000000000000000000000',
@@ -77,6 +80,7 @@ function fixtureAuth(disableSignUp = false) {
     fetchSignInDiagnostic: (input, init) => globalThis.fetch(input, init),
     allowSignup: true,
     signInPolicyFor: () => policy,
+    ...(runInBackground ? { runInBackground } : {}),
   });
 }
 
@@ -160,6 +164,29 @@ describe('GitHub callback diagnostics', () => {
       errorDescription: 'Token exchange succeeded; profile lookup threw an exception',
     });
     expect(attempts.filter((attempt) => attempt.phase === 'callback')).toHaveLength(1);
+  });
+
+  it('redirects without waiting for the email check, and records it once it settles', async () => {
+    const background: Promise<unknown>[] = [];
+    auth = fixtureAuth(false, (task) => { background.push(task); });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const fixtureFetch = globalThis.fetch;
+    // Hold only the diagnostic's read, which names itself in its user agent.
+    globalThis.fetch = (async (input, init) => {
+      if ((init?.headers as Record<string, string> | undefined)?.['user-agent'] === 'substrat-auth-diagnostics') await held;
+      return fixtureFetch(input, init);
+    }) as typeof fetch;
+
+    const response = await complete(await start(), 'forbidden');
+    expect(new URL(response.headers.get('location')!, ORIGIN).pathname).toBe('/github-email');
+    expect(attempts.filter((attempt) => attempt.phase === 'callback')).toHaveLength(0);
+
+    release();
+    await Promise.all(background);
+    expect(attempts.filter((attempt) => attempt.phase === 'callback')).toEqual([
+      expect.objectContaining({ error: 'email_verification_required', errorDescription: expect.stringContaining('HTTP 403') }),
+    ]);
   });
 
   it('keeps overlapping callbacks separate on a reused auth instance', async () => {

@@ -6,6 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
+import { CONNECT_LINK_PURPOSE, verifyClaim } from '../src/signed-token.js';
 
 /**
  * A bureau's Fortnox fleet (#1267 follow-up): one app, one connection per client company.
@@ -211,6 +212,8 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
             if (tail === '/credential') return Response.json({ fields: [] });
           }
           if (path === `/tenants/${tenant}/connection-grants`) return Response.json([]);
+          // The links the app itself mailed: none here, so the panel lists the dashboard's own.
+          if (path === `/tenants/${tenant}/connect-links`) return Response.json([]);
           if (path === `/tenants/${tenant}/scopes/${appScope}/intents`) return Response.json(intents);
           if (path === '/sweep-runs') return Response.json({ entries: [], nextCursor: null });
           return Response.json({ error: `unexpected ${method} ${path}` }, { status: 500 });
@@ -229,7 +232,8 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
 
   const byLabel = (label: string) => rows.find((r) => r.label === label)!;
 
-  it('uses the app path team when another tab has switched the shared cookie', async () => {
+  /** A second team the same person owns, with an app of its own: the team another tab switched to. */
+  const joinOtherTeam = async () => {
     const otherTeam = tenantId.parse(ulid());
     const otherScope = scopeId.parse(ulid());
     const otherOwner = principalId.parse(ulid());
@@ -240,6 +244,11 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     const otherApp = scopeId.parse(ulid());
     const otherDash = await host.getScope(otherOwner, otherTeam, otherScope);
     await otherDash.invoke('dashboard/provision-app', { appScopeId: otherApp, verticalSlug: VERTICAL, name: 'Other App' });
+    return { otherTeam, otherApp };
+  };
+
+  it('uses the app path team when another tab has switched the shared cookie', async () => {
+    const { otherTeam, otherApp } = await joinOtherTeam();
 
     const response = await app.request(`/api/teams/${tenant}/apps/${appScope}/integrations`, {
       headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
@@ -258,6 +267,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
       ['', 'GET'], ['/acme.docbox', 'POST'], ['/fortnox', 'DELETE'],
       [`/fortnox/connections/${byLabel('Alfa AB').id}`, 'DELETE'],
       ['/fortnox/verify', 'POST'], ['/fortnox/activity', 'GET'],
+      ['/fortnox/connect-links', 'POST'], ['/fortnox/connect-links', 'GET'], [`/fortnox/connect-links/${ulid()}`, 'DELETE'],
     ] as const) {
       expect((await app.request(`${base}${path}`, { method, headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
     }
@@ -267,11 +277,39 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
       [`/fortnox/connections/${byLabel('Alfa AB').id}`, 'DELETE'],
       ['/fortnox/verify', 'POST'], [`/fortnox/connections/${byLabel('Alfa AB').id}/verify`, 'POST'],
       ['/fortnox/activity', 'GET'], [`/fortnox/connections/${byLabel('Alfa AB').id}/activity`, 'GET'],
+      ['/fortnox/connect-links', 'POST'], ['/fortnox/connect-links', 'GET'], [`/fortnox/connect-links/${ulid()}`, 'DELETE'],
     ] as const) {
       expect((await app.request(`/api/apps/${appScope}/integrations${path}`, {
         method, headers: { cookie: 'sb_session=sub-owner' },
       }, env)).status).toBe(404);
     }
+  });
+
+  it('mints, lists and revokes connect links in the path team, and the minted claim names it, when another tab has switched the shared cookie', async () => {
+    const { otherTeam, otherApp } = await joinOtherTeam();
+    const fortnoxEnv = { ...env, FORTNOX_CLIENT_ID: 'client-id', FORTNOX_CLIENT_SECRET: 'client-secret' };
+    const send = (path: string, method = 'GET') => app.request(path, {
+      method,
+      headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}`, 'content-type': 'application/json' },
+      ...(method === 'POST' ? { body: '{}' } : {}),
+    }, fortnoxEnv);
+    const links = `/api/teams/${tenant}/apps/${appScope}/integrations/fortnox/connect-links`;
+
+    const minted = await send(links, 'POST');
+    expect(minted.status).toBe(201);
+    const link = (await minted.json()) as { id: string; url: string };
+    const token = new URL(link.url).searchParams.get('token')!;
+    const claim = await verifyClaim<{ exp: number }>(String(env.SESSION_SECRET), CONNECT_LINK_PURPOSE, token, Date.now());
+    expect(claim).toMatchObject({ linkId: link.id, tenantId: tenant, scopeId: dashScope, appScopeId: appScope });
+
+    expect(((await (await send(links)).json()) as { links: unknown[] }).links).toEqual([
+      expect.objectContaining({ id: link.id, source: 'dashboard', status: 'outstanding' }),
+    ]);
+    const revoked = await send(`${links}/${link.id}`, 'DELETE');
+    expect(revoked.status).toBe(200);
+    expect(await revoked.json()).toEqual({ revoked: link.id });
+    expect(await (await send(links)).json()).toEqual({ links: [] });
+    expect((await send(`/api/teams/${tenant}/apps/${otherApp}/integrations/fortnox/connect-links`, 'POST')).status).toBe(404);
   });
 
   it('keeps connect, disconnect and verify gated by the path team scope', async () => {

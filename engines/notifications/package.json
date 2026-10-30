@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-notifications",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Substrat engine: notifications — an occasion a vertical names becomes email to the people it concerns, through per-user preferences, escaped templates and tracked deliveries",
   "license": "AGPL-3.0-only",
   "repository": {

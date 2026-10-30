@@ -18,13 +18,16 @@ export function withGithubEmailFallback(providers: BetterAuthOptions['socialProv
     ...options,
     getUserInfo: options.getUserInfo ?? (async (token) => {
       const headers = { 'User-Agent': 'better-auth', authorization: `Bearer ${token.accessToken}` };
-      const response = await fetch('https://api.github.com/user', { headers, redirect: 'error', signal: AbortSignal.timeout(10_000) });
+      // Redirects are refused by not following them: `'manual'` hands back the 3xx, which is not
+      // `ok`. workerd throws on `redirect: 'error'` (#2722), so that spelling failed every
+      // GitHub callback on a deployed issuer while Node accepted it.
+      const response = await fetch('https://api.github.com/user', { headers, redirect: 'manual', signal: AbortSignal.timeout(10_000) });
       if (!response.ok) { await response.body?.cancel(); return null; }
       // Invalid identity data must fail closed; only the email lookup is optional.
       const profile = githubProfile.parse(await response.json());
       let emails: z.infer<typeof githubEmails> = [];
       try {
-        const response = await fetch('https://api.github.com/user/emails', { headers, redirect: 'error', signal: AbortSignal.timeout(1500) });
+        const response = await fetch('https://api.github.com/user/emails', { headers, redirect: 'manual', signal: AbortSignal.timeout(1500) });
         if (response.ok) emails = githubEmails.parse(await response.json());
         else await response.body?.cancel();
       } catch { /* Authenticated profile remains usable through mailbox verification. */ }

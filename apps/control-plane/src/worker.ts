@@ -202,6 +202,7 @@ import {
 } from '@substrat-run/control-plane-api';
 import { durableCopyJobs } from './copy-jobs.js';
 import { refuse, refuseStatus } from './problem.js';
+import { controlPlaneRequestId } from './request-id.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -2904,12 +2905,16 @@ export default {
   fetch(request: Request, env: Env): Response | Promise<Response> {
     const app = new Hono<{ Bindings: Env }>();
 
+    // #113: a request id on every /api answer and in its problem body. First, so it stamps the
+    // answer every middleware below settled on. Not /internal or /hooks: no person reads those.
+    app.use('/api/*', controlPlaneRequestId());
+
     // A 401 to someone who presented a valid session says why (#1359). The staff readers
     // refuse an address the issuer did not verify — and every session minted before the
     // claim was carried reads that way for up to seven days — so a bare `unauthenticated`
     // would leave a signed-in person, in the console or the CLI, with no idea that signing
-    // in again is the whole fix. Registered first so it sees every /api answer, including
-    // the API router's own middleware.
+    // in again is the whole fix. Registered ahead of every route, behind only the request id, so
+    // it sees every /api answer, including the API router's own middleware.
     app.use('/api/*', async (c, next) => {
       await next();
       if (c.res.status !== 401) return;
