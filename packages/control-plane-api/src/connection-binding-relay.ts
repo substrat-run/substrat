@@ -9,6 +9,7 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import {
+  permissionKey,
   connectionBindRequest,
   connectionBindResult,
   connectionUnbindRequest,
@@ -141,7 +142,16 @@ export async function relayConnectionBind(
     try {
       bound = await binder.bind(host, connection, target);
     } catch (err) {
-      if (granted) await revokeHere(host, actor, { connectionId: connection.id, permission: landing.permission, node, revokedBy: input.boundBy });
+      // With no binding before this call, the key has nothing to land for: take it back whoever
+      // granted it (the revoke is idempotent), so a retry after a revoke that failed clears it. The
+      // connector's reason stays in the answer even when taking the key back fails.
+      if (granted || !current) {
+        try {
+          await host.admin.revokeFromConnection(actor, { connectionId: connection.id, permission: landing.permission, node, revokedBy: input.boundBy });
+        } catch (revokeErr) {
+          throw new ConnectionRelayError(`${refused(err).message}; taking the landing key back failed, ask again: ${said(revokeErr)}`, 503);
+        }
+      }
       throw refused(err);
     }
   }
@@ -178,12 +188,18 @@ export async function relayConnectionUnbind(
   // still lets the scope take back what it holds.
   const { scope, connection, binder } = await ownConnection(host, actor, input, options);
   if (!binder.unbind) throw new ConnectionRelayError(`'${connection.provider}' bindings cannot be removed through the relay`, 501);
-  // Every key this connection holds on THIS scope, as the scope's own grants say, first: a
-  // deployment that cannot take the revoke leaves the binding as it was. Each revoke is audited
-  // on its own row (with `revokedBy`), when it moved: a binding change is a bind's record.
-  const held = (await host.connectionGrantsInScope(scope.tenantId, scope.id)).filter((g) => g.connectionId === connection.id);
-  for (const g of held) {
-    await revokeHere(host, actor, { connectionId: connection.id, permission: g.permission, node: { tenantId: scope.tenantId, scopeId: scope.id }, revokedBy: input.unboundBy });
+  // The key the binding itself records, first: whatever version wrote it, and never a standing
+  // grant the connection holds for another reason. A deployment that cannot take the revoke leaves
+  // the binding as it was. The revoke is audited on its own row (with `revokedBy`), when it moved:
+  // a binding change is a bind's record.
+  const binding = (await binder.list(host, connection)).find((b) => b.scopeId === scope.id);
+  if (binding) {
+    await revokeHere(host, actor, {
+      connectionId: connection.id,
+      permission: permissionKey.parse(binding.permission),
+      node: { tenantId: scope.tenantId, scopeId: scope.id },
+      revokedBy: input.unboundBy,
+    });
   }
   await binder.unbind(host, connection, scope.id);
   return connectionUnbindResult.parse({ connectionId: connection.id, scopeId: scope.id, unbound: true });

@@ -146,6 +146,66 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await holds(a, conn)).toBe(false);
   });
 
+  it('keeps the standing grants the connection was made with across an unbind and a rebind', async () => {
+    await runs('on-request');
+    const { connectionId: conn } = await relayConnectionUpsert(
+      host,
+      relayActor,
+      { tenantId: t, scopeId: a, provider: 'planima', secret: { token: 'a' }, grants: [INGEST], createdBy: person, owner: 'scope' },
+      { scopeOwned: { proven: true, scopeOwnable: () => true, readLandings: (slug, versionId) => host.versionConnectionLandings(slug, versionId) } },
+    );
+    const keys = async () => (await host.connectionGrantsInScope(t, a)).filter((g) => g.connectionId === conn).map((g) => g.permission).sort();
+    const id = connectionId.parse(conn);
+
+    await relayConnectionBind(host, relayActor, bindBody(a, id), landings());
+    await relayConnectionUnbind(host, relayActor, { tenantId: t, scopeId: a, connectionId: id, unboundBy: person }, landings());
+    expect(await keys()).toEqual([INGEST]);
+    await relayConnectionBind(host, relayActor, bindBody(a, id), landings());
+    expect(await keys()).toEqual([INGEST, LAND].sort());
+  });
+
+  it('a refused bind takes back a key a refused bind before it left, once taking it back works again', async () => {
+    await runs('on-request');
+    const conn = await own(a);
+    const refusing: ConnectionBinder = {
+      list: binder.list,
+      options: (raw, current) => ({ ...current, ...raw }),
+      bind: async () => {
+        throw new Error('no such folder');
+      },
+      unbind: binder.unbind!,
+    };
+    // The host as the relay sees it, with its revoke failing once.
+    let failing = true;
+    const flaky = new Proxy(host, {
+      get(target, prop) {
+        if (prop === 'admin') {
+          return new Proxy(target.admin, {
+            get(admin, key) {
+              if (key === 'revokeFromConnection' && failing) {
+                return async () => {
+                  failing = false;
+                  throw new Error('the scope did not answer');
+                };
+              }
+              const v = Reflect.get(admin, key);
+              return typeof v === 'function' ? v.bind(admin) : v;
+            },
+          });
+        }
+        const v = Reflect.get(target, prop);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+
+    const first = await relayConnectionBind(flaky, relayActor, bindBody(a, conn), landings(true, refusing)).catch((e: unknown) => e);
+    expect(first).toMatchObject({ status: 503, message: expect.stringContaining('no such folder') });
+    expect(await holds(a, conn)).toBe(true);
+
+    expect(await refusal(relayConnectionBind(flaky, relayActor, bindBody(a, conn), landings(true, refusing)))).toBe(422);
+    expect(await holds(a, conn)).toBe(false);
+  });
+
   it('unbinds what the scope holds after its version changed the landing, its key and its mode', async () => {
     await runs('on-request');
     const conn = await own(a);
