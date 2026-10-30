@@ -1354,6 +1354,12 @@ export const deployModuleDeclaration = z.object({
   id: moduleId,
   permissions: z.array(permissionDeclaration),
   ownerGrants: z.array(permissionKey).optional(),
+  /**
+   * #2732: the providers this module lands, with `bind` when it is `on-request`, so the control
+   * plane can hold `registry.connections` to what the modules declare
+   * ({@link pushedLandingProblems}). Absent from a CLI that predates it.
+   */
+  connections: z.array(z.object({ provider: connectionProvider, bind: z.literal('on-request').optional() })).optional(),
 });
 export type DeployModuleDeclaration = z.infer<typeof deployModuleDeclaration>;
 
@@ -1790,6 +1796,37 @@ export function pushedModuleRegistryProblems(
     }
   }
   for (const key of expected.keys()) if (!seen.has(key)) problems.push(`${key}: module declaration is absent from registry`);
+  return problems;
+}
+
+/**
+ * #2732: `registry.connections` against the landings the module declarations carry, so a row that
+ * lost its `bind: 'on-request'` on the way (a CLI whose registry builder predates the field) is
+ * refused rather than stored as every-install, which the connector pass would grant and bind on
+ * every install. Each row must be declared by a module, with the same mode, and each declared
+ * provider must have a row.
+ */
+export function pushedLandingProblems(
+  modules: readonly DeployModuleDeclaration[] | undefined,
+  registry: Pick<PermissionRegistry, 'connections'>,
+): string[] {
+  if (modules === undefined || !modules.some((m) => m.connections !== undefined)) return [];
+  const declared = new Map<string, 'on-request' | undefined>();
+  for (const m of modules) for (const l of m.connections ?? []) declared.set(l.provider, l.bind);
+  const problems: string[] = [];
+  const rows = registry.connections ?? [];
+  for (const row of rows) {
+    if (!declared.has(row.provider)) problems.push(`connections '${row.provider}': registry lists a landing no module declares`);
+    else if (declared.get(row.provider) !== row.bind) {
+      problems.push(
+        `connections '${row.provider}': the modules declare bind '${declared.get(row.provider) ?? 'every-install'}' and the registry ` +
+          `says '${row.bind ?? 'every-install'}' — rebuild the registry with a current @substrat-run/cli`,
+      );
+    }
+  }
+  for (const provider of declared.keys()) {
+    if (!rows.some((r) => r.provider === provider)) problems.push(`connections '${provider}': module declaration is absent from registry`);
+  }
   return problems;
 }
 

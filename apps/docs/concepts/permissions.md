@@ -826,6 +826,9 @@ connections: [
   moves if you change it. Leaving `bind` out means `every-install`, everything above. Switching an
   `every-install` landing to `on-request` revokes nothing: the key and binding an earlier version
   gave each instance stay until they are removed, as with a landing a version stops declaring.
+  Push an `on-request` landing with the `@substrat-run/cli` release that carries it: an older CLI
+  builds the registry without the mode, and the platform cannot tell its push from an
+  `every-install` landing.
 - **Revoking the connection ends it.** The revoke takes the connection's keys and bindings
   together, and the pass never seats them again.
 - **Nothing lands silently.** A connection with no binding reads *nothing polls this connection*;

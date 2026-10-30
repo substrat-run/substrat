@@ -542,6 +542,10 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         key, description, ...(holder ? { holder } : {}),
       })),
       ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
+      // #2732: the landings, so the control plane can hold registry.connections to them.
+      ...(manifest.connections?.length
+        ? { connections: manifest.connections.map(({ provider, bind }) => ({ provider, ...(bind === 'on-request' ? { bind } : {}) })) }
+        : {}),
     })),
     envSpec: spec,
     // #1232: the same import that yields the permission surface already holds every

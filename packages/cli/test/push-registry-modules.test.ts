@@ -18,6 +18,17 @@ describe.runIf(built)('push carries its loaded module permission declarations (#
   });
 });
 
+describe.runIf(built)('push carries each module\'s connection landings (#2732)', () => {
+  it('sends the mode beside the registry row, so the control plane can hold one to the other', () => {
+    const manifest = pushed(vertical([{
+      id: 'helpdesk',
+      connections: [{ provider: 'planima', operation: 'helpdesk/record-plan', permission: 'helpdesk:read', bind: 'on-request' }],
+    }]));
+    expect(manifest.modules[0]!.connections).toEqual([{ provider: 'planima', bind: 'on-request' }]);
+    expect(manifest.registry.connections).toEqual([expect.objectContaining({ provider: 'planima', bind: 'on-request' })]);
+  });
+});
+
 describe.runIf(built)("push carries a vertical's connectors (vertical-connectors.md §7.1)", () => {
   const DECL = {
     provider: 'acme.docbox',
