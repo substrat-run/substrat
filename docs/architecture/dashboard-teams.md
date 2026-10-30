@@ -167,8 +167,14 @@ dashboard scope. The control plane confines peer bindings to active scopes in th
 and resolves an edge's producer through that tenant's directory. The old cookie routes are
 gone; the three new reads remain outside the assistant's tools.
 
-When the last area has moved, `sb_team` survives only as "last team used",
-read to decide where `/` lands.
+Every team-scoped route is now declared under the team path, and no handler takes its team
+from the cookie. `sb_team` is read by two team-less routes only, `/api/me` and `/api/catalog`,
+to pick the team the shell opens on; the team switch, create, invite accept, leave and the
+GitHub callback write or clear it. It is "last team used", never the team a request acts on.
+What is still open under #2170: the declared surface does not yet emit an `openapi.json`
+with its `--check` gate, and the observability and logs reads are declared but called from the
+browser through a hand-written helper (they send repeated query parameters and read a response
+header), not the generated client.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 
