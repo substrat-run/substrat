@@ -64,6 +64,13 @@ describe('connection landings in the permission registry (#2316)', () => {
     expect(buildPermissionRegistry({ modules: [b, a], roles: [] }).connections).toEqual([{ ...LANDING, declaredBy: ['@acme/a', '@acme/b'] }]);
   });
 
+  it('carries an on-request landing as such, and builds the row it always did from a written-out default (#2732)', () => {
+    const built = (bind: string) => buildPermissionRegistry({ modules: [{ manifest: manifest('@acme/a', [PLAN], [{ ...LANDING, bind }]) }], roles: [] }).connections;
+    expect(built('on-request')).toEqual([{ ...LANDING, bind: 'on-request', declaredBy: ['@acme/a'] }]);
+    expect(built('every-install')).toEqual([{ ...LANDING, declaredBy: ['@acme/a'] }]);
+    expect(() => manifest('@acme/a', [PLAN], [{ ...LANDING, bind: 'sometimes' }])).toThrow();
+  });
+
   it('omits the field when nothing lands, so an existing digest does not move', () => {
     expect('connections' in buildPermissionRegistry({ modules: [{ manifest: manifest('@acme/a', [PLAN]) }], roles: [] })).toBe(false);
   });
@@ -96,9 +103,10 @@ describe('connection landings in the permission registry (#2316)', () => {
 describe('connectionLandingsOfManifestJson (#2316)', () => {
   const row = { ...LANDING, declaredBy: ['@acme/a'] };
   it('reads the rows a stored manifest declares, without who declared them', () => {
-    expect(connectionLandingsOfManifestJson(JSON.stringify({ registry: { permissions: [], roles: [], connections: [row] } }))).toEqual({
+    const onRequest = { ...row, provider: 'fortnox', bind: 'on-request' };
+    expect(connectionLandingsOfManifestJson(JSON.stringify({ registry: { permissions: [], roles: [], connections: [row, onRequest] } }))).toEqual({
       kind: 'landings',
-      rows: [LANDING],
+      rows: [LANDING, { ...LANDING, provider: 'fortnox', bind: 'on-request' }],
     });
   });
 

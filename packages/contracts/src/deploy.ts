@@ -10,7 +10,7 @@ import { substratError } from './errors.js';
 import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
-import { connectionLandingOptions } from './connection-landing.js';
+import { connectionLandingBind, connectionLandingOptions } from './connection-landing.js';
 import { connectionProvider } from './connections.js';
 import { verticalConnectorDeclarations, verticalConnectorProvider, type VerticalConnectorDeclaration } from './vertical-connector.js';
 import {
@@ -1154,7 +1154,13 @@ export function connectionLandingsOfManifestJson(manifestJson: string | null | u
   if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
   return {
     kind: 'landings',
-    rows: read.rows.map((r) => ({ provider: r.provider, operation: r.operation, permission: r.permission, ...(r.options ? { options: r.options } : {}) })),
+    rows: read.rows.map((r) => ({
+      provider: r.provider,
+      operation: r.operation,
+      permission: r.permission,
+      ...(r.options ? { options: r.options } : {}),
+      ...(r.bind ? { bind: r.bind } : {}),
+    })),
   };
 }
 
@@ -1348,6 +1354,13 @@ export const deployModuleDeclaration = z.object({
   id: moduleId,
   permissions: z.array(permissionDeclaration),
   ownerGrants: z.array(permissionKey).optional(),
+  /**
+   * #2732: the providers this module lands, with `bind` when it is `on-request`, so the control
+   * plane can hold `registry.connections` to what the modules declare
+   * ({@link pushedLandingProblems}). A current CLI sends it on every module, empty when the module
+   * lands nothing; absent means a CLI that predates it.
+   */
+  connections: z.array(z.object({ provider: connectionProvider, bind: connectionLandingBind.optional() })).optional(),
 });
 export type DeployModuleDeclaration = z.infer<typeof deployModuleDeclaration>;
 
@@ -1586,12 +1599,16 @@ export type PermissionRegistryImport = z.infer<typeof permissionRegistryImport>;
  * invokes and the key a connection is granted for it. A row here is authority handed to whoever
  * holds the provider token, so it belongs in the same artifact, and the same digest, as the keys a
  * person is given.
+ *
+ * `bind` is carried only as `on-request` (#2732): the default is omitted rather than written out,
+ * so a registry built before the field hashes to the same digest.
  */
 export const permissionRegistryConnection = z.object({
   provider: connectionProvider,
   operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/),
   permission: permissionKey,
   options: connectionLandingOptions.optional(),
+  bind: z.literal('on-request').optional(),
   declaredBy: z.array(moduleId).min(1),
 });
 export type PermissionRegistryConnection = z.infer<typeof permissionRegistryConnection>;
@@ -1780,6 +1797,38 @@ export function pushedModuleRegistryProblems(
     }
   }
   for (const key of expected.keys()) if (!seen.has(key)) problems.push(`${key}: module declaration is absent from registry`);
+  return problems;
+}
+
+/**
+ * #2732: `registry.connections` against the landings the module declarations carry, so a row that
+ * lost its `bind: 'on-request'` on the way (a CLI whose registry builder predates the field) is
+ * refused rather than stored as every-install, which the connector pass would grant and bind on
+ * every install. Each row must be declared by a module, with the same mode, and each declared
+ * provider must have a row.
+ */
+export function pushedLandingProblems(
+  modules: readonly DeployModuleDeclaration[] | undefined,
+  registry: Pick<PermissionRegistry, 'connections'>,
+): string[] {
+  if (modules === undefined || !modules.some((m) => m.connections !== undefined)) return [];
+  // Normalised as the registry row is: only `on-request` is carried, so a written-out default reads as absent.
+  const declared = new Map<string, 'on-request' | undefined>();
+  for (const m of modules) for (const l of m.connections ?? []) declared.set(l.provider, l.bind === 'on-request' ? l.bind : undefined);
+  const problems: string[] = [];
+  const rows = registry.connections ?? [];
+  for (const row of rows) {
+    if (!declared.has(row.provider)) problems.push(`connections '${row.provider}': registry lists a landing no module declares`);
+    else if (declared.get(row.provider) !== row.bind) {
+      problems.push(
+        `connections '${row.provider}': the modules declare bind '${declared.get(row.provider) ?? 'every-install'}' and the registry ` +
+          `says '${row.bind ?? 'every-install'}' — rebuild the registry with a current @substrat-run/cli`,
+      );
+    }
+  }
+  for (const provider of declared.keys()) {
+    if (!rows.some((r) => r.provider === provider)) problems.push(`connections '${provider}': module declaration is absent from registry`);
+  }
   return problems;
 }
 
@@ -2003,16 +2052,26 @@ function connectionRowsOf(
   const rows = new Map<string, PermissionRegistryConnection>();
   const problems: string[] = [];
   const same = (a: Omit<PermissionRegistryConnection, 'declaredBy'>, b: Omit<PermissionRegistryConnection, 'declaredBy'>) =>
-    a.operation === b.operation && a.permission === b.permission && JSON.stringify(a.options ?? {}) === JSON.stringify(b.options ?? {});
+    a.operation === b.operation && a.permission === b.permission && a.bind === b.bind &&
+    JSON.stringify(a.options ?? {}) === JSON.stringify(b.options ?? {});
   // `?? []` although parsed manifests carry the field: the CLI imports a vertical's modules as plain JS.
   for (const m of modules) {
-    for (const l of m.manifest.connections ?? []) {
+    for (const d of m.manifest.connections ?? []) {
+      // Built field by field, in the order rows always had; the default `bind` is dropped, so a
+      // landing that writes `every-install` out builds the row it always did.
+      const l: Omit<PermissionRegistryConnection, 'declaredBy'> = {
+        provider: d.provider,
+        operation: d.operation,
+        permission: d.permission,
+        ...(d.options ? { options: d.options } : {}),
+        ...(d.bind === 'on-request' ? { bind: d.bind } : {}),
+      };
       const where = `connections '${l.provider}' (${m.manifest.id})`;
       if (!declared.has(l.permission)) problems.push(`${where}: lands holding ${l.permission}, which no module declares`);
       if (reserved.has(l.permission)) problems.push(`${where}: lands holding ${l.permission}, which is reserved to a system principal`);
       const row = rows.get(l.provider);
       if (!row) {
-        rows.set(l.provider, { provider: l.provider, operation: l.operation, permission: l.permission, ...(l.options ? { options: l.options } : {}), declaredBy: [m.manifest.id] });
+        rows.set(l.provider, { ...l, declaredBy: [m.manifest.id] });
       } else if (same(row, l)) {
         row.declaredBy = [...new Set([...row.declaredBy, m.manifest.id])].sort((a, b) => a.localeCompare(b));
       } else {
