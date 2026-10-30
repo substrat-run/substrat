@@ -116,8 +116,17 @@ The app Integrations panel's provider list, connect, disconnect, verify and acti
 name the team in the path too. The app lookup stays inside that team's dashboard scope;
 connect, disconnect and verify keep the `dashboard/begin-connection` permission check in
 that scope. The two activity reads keep the same check through their shared connection
-lookup. The old cookie routes are gone. Connect links and the account-wide Integrations
-list remain separate work under #2170.
+lookup. The old cookie routes are gone. The account-wide Integrations list remains separate
+work under #2170.
+
+The app's connect links (mint, list, revoke) followed them. Each acts in the team the path
+names and asks `dashboard/begin-connection` in that team's dashboard scope first, so a tab on
+one team can no longer mint a link whose signed claim names another. The claim keeps its
+shape and the landing and callback that read it are unchanged. Mint and list look the app up
+in the path team's scope; revoke finds the dashboard's own link by id there, and an
+app-mailed link only under an app of that team. Revoke answers `200 {"revoked": <id>}` where
+the cookie route answered an empty `204`, because a declared route owes an output. The list
+stays outside the assistant's tools, and the old cookie routes are gone.
 
 The Data browser's table list and pages, event facets and timeline reads, refusal
 and dead-letter lists, and read-only SQL console now name the team in the path.
@@ -134,9 +143,8 @@ newly declared reads stay outside the assistant. The SPA calls these through `te
 
 The deployment and version asset, permissions, model, processes, and schedules reads still
 use the cookie; they form the next app read slice. The team audit and fleet-health reads
-also remain on the cookie as a team-wide read slice. The account-wide Integrations list
-and app connect links remain on the cookie
-because their consent-link workflow and writes need a separate review. The catalog keeps
+also remain on the cookie as a team-wide read slice, and so does the account-wide
+Integrations list. The catalog keeps
 its anonymous contract, while the identity mirror has no SPA caller to move. OAuth callbacks
 and other teamless or signed-state routes do not take their team from the cookie.
 
