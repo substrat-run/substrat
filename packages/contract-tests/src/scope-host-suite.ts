@@ -6172,6 +6172,12 @@ export function scopeHostContractSuite(
 
         await revoke();
         expect(await audited()).toBe(1);
+
+        // A scope the tenant does not hold is not found, as it is for `grantToConnection`.
+        await expectRefusal(
+          host.admin.revokeFromConnection(staff, { connectionId: vconn, permission: LAND, node: { tenantId: vt, scopeId: scopeId.parse(ulid()) } }),
+          'not_found',
+        );
       });
     });
 

@@ -8340,6 +8340,9 @@ export class CloudflareScopeHost implements ScopeHost {
         if (conn.tenant_id !== revoke.node.tenantId) {
           throw new Error(`connection ${revoke.connectionId} belongs to tenant ${conn.tenant_id}, not ${revoke.node.tenantId}`);
         }
+        if (!(await this.cp.getScopeRecord(revoke.node.tenantId, revoke.node.scopeId))) {
+          throw substratError('not_found', `unknown scope ${revoke.node.scopeId} in tenant ${revoke.node.tenantId}`);
+        }
         const connectionId = revoke.connectionId as ConnectionId;
         // #2732: the tuple first, where the scope is served, so a delivery that cannot happen
         // leaves the record (and with it the grant) exactly as it was.
@@ -12995,9 +12998,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * The delivery half of `grantToConnection` for a scope served HERE (#574): write
    * the scope-local `connection:<id>` grant tuple the permission checker reads.
-   * Revocation needs no mirror verb — every delegated call re-passes the platform's
-   * live-connection gate first, so revoking the connection closes the door even
-   * while the tuple remains; `expiresAt` bounds the tuple itself.
+   * Revoking the whole connection needs no mirror — every delegated call re-passes the
+   * platform's live-connection gate first, so it closes the door even while the tuple
+   * remains. Taking one key back from a connection that stays live does: that is
+   * {@link connectorRevokeLocal} (#2732). An explicit grant clears that tombstone, so a
+   * re-grant grants again. `expiresAt` bounds the tuple itself.
    */
   async connectorGrantLocal(
     connectionId: ConnectionId,

@@ -39,12 +39,15 @@ describe('revokeFromConnection on the hosted adapter (#2732)', () => {
 
   it('through the delegation: refused, with nothing moved, where the deployment cannot take it; revoked and audited once where it can', async () => {
     const delivered: unknown[] = [];
+    const granted: unknown[] = [];
     let live = true;
     const delegation = (revoke?: ConnectorDelegation['revoke']): ConnectorDelegation => ({
       invoke: async () => ({}),
       uploadAttachment: async () => ({}) as never,
       openAttachment: async () => null,
-      grant: async () => {},
+      grant: async (a) => {
+        granted.push(a);
+      },
       ...(revoke ? { revoke } : {}),
     });
     const hostWith = (d: ConnectorDelegation) =>
@@ -69,6 +72,16 @@ describe('revokeFromConnection on the hosted adapter (#2732)', () => {
     ]);
     expect(await able.recorded()).toEqual([]);
     expect(await able.audited()).toBe(1);
+
+    // Granting the same key again converges: the record is live and the tuple delivered once more.
+    const before = granted.length;
+    await hostWith(delegation()).admin.grantToConnection(staff, {
+      connectionId: able.conn, permission: LAND, node: { tenantId: able.t, scopeId: able.s }, grantedBy: staff,
+    });
+    expect(await able.recorded()).toEqual([LAND]);
+    expect(granted.slice(before)).toEqual([
+      { connectionId: able.conn, tenantId: able.t, scopeId: able.s, vertical: 'docs', permission: LAND, expiresAt: undefined },
+    ]);
   });
 
   it("the serving deployment's end: revoked once, then a no-op, and a reconcile's seat never delivers it again", async () => {
@@ -97,5 +110,9 @@ describe('revokeFromConnection on the hosted adapter (#2732)', () => {
     await host.seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: [] });
     await host.seatScopeLocal({ tenantId: t, scopeId: s, connectionGrants: [grant] });
     expect(await held()).toBe(false);
+
+    // The grant's own delivery is explicit, so a re-grant clears the tombstone and holds again.
+    await host.connectorGrantLocal(conn, s, USE);
+    expect(await held()).toBe(true);
   });
 });
