@@ -36,6 +36,8 @@ export interface ProblemSummary {
   title?: string;
   /** Field-level complaints from a `validation_failed`, in the order the server sent. */
   errors?: Array<{ path: string; message: string }>;
+  /** The id a person can quote about this request, when the plane stamped one. */
+  requestId?: string;
 }
 
 /**
@@ -102,6 +104,7 @@ export function readProblem(body: string): ProblemSummary {
       code: p.code,
       title: p.title,
       ...(errors ? { errors } : {}),
+      ...(p.requestId ? { requestId: p.requestId } : {}),
     };
   }
 
@@ -115,6 +118,7 @@ export function readProblem(body: string): ProblemSummary {
         ...(str('code') ? { code: str('code') } : {}),
         ...(str('title') ? { title: str('title') } : {}),
         ...(issues ? { errors: issues } : {}),
+        ...(str('requestId') ? { requestId: str('requestId') } : {}),
       };
     }
   }
@@ -134,6 +138,7 @@ export function failureMessage(action: string, status: number, body: string): st
   const head = `${action} (${status}${p.code ? ` ${p.code}` : ''})`;
   const lines = [p.detail ? `${head}: ${p.detail}` : head];
   for (const e of p.errors ?? []) lines.push(`  ${e.path || '(root)'}: ${e.message}`);
+  if (p.requestId) lines.push(`request id: ${p.requestId}`);
   return lines.join('\n') + explainPlatformFault(status, p.detail);
 }
 
