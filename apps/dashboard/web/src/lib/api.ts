@@ -2,6 +2,7 @@ import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { ApiError as GeneratedApiError, createClient, type AppEvent, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
+import type { RequestReadQuery } from './requests';
 import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
@@ -39,16 +40,13 @@ export interface PageOpts {
   cursor?: string;
 }
 
-/** A team-grain observability read's query: which apps, and the window. */
-const obsWindowQs = (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string }): string => {
-  const p = new URLSearchParams();
-  for (const s of q.scopeIds ?? []) p.append('scopeId', s);
-  if (q.hours) p.set('hours', String(q.hours));
-  if (q.since) p.set('since', q.since);
-  if (q.until) p.set('until', q.until);
-  const qs = p.toString();
-  return qs ? `?${qs}` : '';
-};
+/** A team-grain observability read's query: which apps (none = every app), and the window. */
+const obsWindow = (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string }) => ({
+  scopeId: q.scopeIds,
+  hours: q.hours === undefined ? undefined : String(q.hours),
+  since: q.since,
+  until: q.until,
+});
 
 const pageQs = (opts?: PageOpts): string => {
   const q = new URLSearchParams();
@@ -1472,9 +1470,7 @@ export interface ExportBreakRow {
  * The declared surface (#2170), bound to ONE team: every call goes to
  * `/api/teams/<teamId>/…`, so the request names its team in its own URL. The `sb_team`
  * cookie, which every tab shares, is no longer what a request acts on. The hand-written
- * helpers below (`call`, `callWithHeaders`) reach the team-less routes and the
- * observability reads, which are declared in `src/routes.ts` but need repeated query
- * parameters or a response header.
+ * helper below (`call`) reaches only the team-less routes.
  *
  * Build it from the team the TAB is on (`me.currentTeamId`, pinned by the URL), never
  * once at module load.
@@ -1495,11 +1491,6 @@ export function teamApi(teamId: string): DashboardClient {
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  return (await callWithHeaders<T>(path, init)).body;
-}
-
-/** `call`, plus the headers of the answer — for a read that says something its body cannot. */
-async function callWithHeaders<T>(path: string, init?: RequestInit): Promise<{ body: T; headers: Headers }> {
   const res = await fetch(`/api${path}`, {
     credentials: 'include',
     headers: { 'content-type': 'application/json', ...(init?.headers as Record<string, string>) },
@@ -1522,7 +1513,7 @@ async function callWithHeaders<T>(path: string, init?: RequestInit): Promise<{ b
       typeof body?.reason === 'string' ? body.reason : undefined,
     );
   }
-  return { body: res.status === 204 ? (undefined as T) : ((await res.json()) as T), headers: res.headers };
+  return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
 
 /** Invocation aggregates for one deployed version of a team vertical (last N hours). */
@@ -1556,23 +1547,6 @@ export interface TenantMetricsRow {
   requests: number;
   errors: number;
   /** Router-observed duration quantiles, milliseconds. */
-  durationP50: number;
-  durationP95: number;
-}
-
-/**
- * One installed app's traffic inside ONE time bucket (#1447) — `TenantMetricsRow` with a
- * time axis, keyed on the app alone so a chart draws one line per app. An empty bucket is
- * omitted, never zero-filled; the renderer fills, knowing `bucketMinutes`.
- */
-export interface TenantMetricsBucket {
-  scopeId: string;
-  /** The bucket's opening instant, ISO, UTC. */
-  start: string;
-  bucketMinutes: number;
-  requests: number;
-  errors: number;
-  /** Weighted median request duration inside the bucket, ms — the same quantiles as `TenantMetricsRow`. */
   durationP50: number;
   durationP95: number;
 }
@@ -1665,10 +1639,7 @@ async function appTenantLogsRead(
   scopeId: string,
   q: AppTenantLogsQuery,
 ): Promise<{ events: ObservabilityLogEvent[]; incomplete: boolean }> {
-  const p = tenantLogsQuery(q);
-  const { body, headers } = await callWithHeaders<ObservabilityLogEvent[]>(
-    `/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
-  );
+  const { body, headers } = await teamApi(teamId).appObservabilityLogs({ scopeId, ...Object.fromEntries(tenantLogsQuery(q)) });
   return { events: body, incomplete: logsIncompleteOf(headers) };
 }
 
@@ -1676,15 +1647,13 @@ async function observabilityLogsRead(
   teamId: string,
   q: ObservabilityLogsQuery,
 ): Promise<{ events: ObservabilityLogEvent[]; incomplete: boolean }> {
-  const p = new URLSearchParams();
-  for (const s of q.services) p.append('service', s);
-  if (q.level) p.set('level', q.level);
-  if (q.search) p.set('search', q.search);
-  if (q.hours) p.set('hours', String(q.hours));
-  if (q.limit) p.set('limit', String(q.limit));
-  const { body, headers } = await callWithHeaders<ObservabilityLogEvent[]>(
-    `/teams/${encodeURIComponent(teamId)}/observability/logs?${p.toString()}`,
-  );
+  const { body, headers } = await teamApi(teamId).observabilityLogs({
+    service: q.services,
+    level: q.level || undefined,
+    search: q.search || undefined,
+    hours: q.hours ? String(q.hours) : undefined,
+    limit: q.limit ? String(q.limit) : undefined,
+  });
   return { events: body, incomplete: logsIncompleteOf(headers) };
 }
 
@@ -1784,22 +1753,18 @@ export const api = {
    * worker against the team's own apps, never by this client.
    */
   tenantMetricsSeries: (teamId: string, q: { scopeIds?: string[]; hours?: number } = {}) =>
-    call<TenantMetricsBucket[]>(`/teams/${encodeURIComponent(teamId)}/observability/tenant-metrics-series${obsWindowQs(q)}`),
+    teamApi(teamId).tenantMetricsSeries(obsWindow(q)),
   /**
    * The same read, shaped for the team Observability chart (#1447): one zero-filled
    * series per app, every scope asked for present whether it served or not. No
    * `scopeIds` means every app this team has installed — resolved by the worker.
    */
   teamTraffic: (teamId: string, q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
-    q.scopeIds?.length
-      ? call<TeamTrafficSeries>(`/teams/${encodeURIComponent(teamId)}/observability/traffic${obsWindowQs(q)}`)
-      : teamApi(teamId).teamTraffic({ hours: q.hours === undefined ? undefined : String(q.hours), since: q.since, until: q.until }),
+    teamApi(teamId).teamTraffic(obsWindow(q)),
   connectorCalls: (teamId: string, q: { hours?: number; since?: string; until?: string } = {}) =>
     teamApi(teamId).connectorCalls({ hours: q.hours === undefined ? undefined : String(q.hours), since: q.since, until: q.until }),
   businessVolumes: (teamId: string, q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
-    q.scopeIds?.length
-      ? call<BusinessVolumesView>(`/teams/${encodeURIComponent(teamId)}/observability/business-volumes${obsWindowQs(q)}`)
-      : teamApi(teamId).businessVolumes({ hours: q.hours === undefined ? undefined : String(q.hours), since: q.since, until: q.until }),
+    teamApi(teamId).businessVolumes(obsWindow(q)),
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
   appTenantLogs: async (teamId: string, scopeId: string, q: AppTenantLogsQuery): Promise<ObservabilityLogEvent[]> =>
@@ -1812,15 +1777,16 @@ export const api = {
   appTenantLogsRead,
   /** #1746: one app's request histogram, facet counts and request list. `query` is built
    *  by `requestReadQuery`, so the three reads always carry the same window and filters. */
-  appRequestVolume: (teamId: string, scopeId: string, query: URLSearchParams) =>
-    call<RequestVolume>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/volume?${query.toString()}`),
-  appRequestFacets: (teamId: string, scopeId: string, query: URLSearchParams) =>
-    call<RequestFacets>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/facets?${query.toString()}`),
-  /** #1747: one app's `ctx.log` lines grouped by template. */
-  appLogPatterns: (teamId: string, scopeId: string, query: URLSearchParams) =>
-    call<LogPatterns>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/log-patterns?${query.toString()}`),
-  appRequests: (teamId: string, scopeId: string, query: URLSearchParams) =>
-    call<RequestRecord[]>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/list?${query.toString()}`),
+  appRequestVolume: (teamId: string, scopeId: string, query: RequestReadQuery): Promise<RequestVolume> =>
+    teamApi(teamId).appRequestVolume({ scopeId, ...query }),
+  appRequestFacets: (teamId: string, scopeId: string, query: RequestReadQuery): Promise<RequestFacets> =>
+    teamApi(teamId).appRequestFacets({ scopeId, ...query }),
+  /** #1747: one app's `ctx.log` lines grouped by template. The route declares the plane's
+   *  `dominant` level as an open string; this is the four the plane writes. */
+  appLogPatterns: (teamId: string, scopeId: string, query: Omit<Parameters<DashboardClient['appLogPatterns']>[0], 'scopeId'>): Promise<LogPatterns> =>
+    teamApi(teamId).appLogPatterns({ scopeId, ...query }) as Promise<LogPatterns>,
+  appRequests: (teamId: string, scopeId: string, query: RequestReadQuery): Promise<RequestRecord[]> =>
+    teamApi(teamId).appRequests({ scopeId, ...query }),
   /** The manual path's workflow YAML (same generator the one-click commit uses). */
   workflowPreview: (teamId: string, repo: string, branch: string, path?: string): Promise<WorkflowPreview> =>
     teamApi(teamId).githubWorkflowPreview({ repo, branch, path }),

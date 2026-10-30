@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, type LogPattern, type LogPatterns } from '../lib/api';
+import { api, isApiError, type LogPattern, type LogPatterns } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockLogPatterns } from '../lib/mock-patterns';
 import { shareLabel, templateParts } from '../lib/patterns';
@@ -51,16 +51,15 @@ export function PatternsMode({
       setAnswer(mockLogPatterns(span, BUCKETS));
       return;
     }
-    const q = new URLSearchParams({ since: window.from, until: window.to, buckets: String(BUCKETS) });
-    api.appLogPatterns(teamId, scopeId, q).then(
+    api.appLogPatterns(teamId, scopeId, { since: window.from, until: window.to, buckets: String(BUCKETS) }).then(
       (a) => live && setAnswer(a),
       (e: unknown) =>
         live &&
         setAnswer({
           error:
-            e instanceof ApiError && e.status === 501
+            isApiError(e) && e.status === 501
               ? 'Log patterns are not available on this platform yet.'
-              : e instanceof ApiError
+              : isApiError(e)
                 ? `Patterns could not be read (${e.status}): ${e.message}`
                 : 'Patterns could not be read right now.',
         }),

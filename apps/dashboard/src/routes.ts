@@ -72,6 +72,7 @@ import {
   verticalSlug,
   z,
 } from '@substrat-run/contracts';
+import { LOGS_INCOMPLETE_HEADER } from '@substrat-run/control-plane-api/browser';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
 import { CONNECT_LINK_MAX_TTL_MS, appEvent, appRow, explanationProvenance, installStep, memberRow } from './rows.js';
@@ -668,11 +669,12 @@ const requestRecordView = z.object({
   })).optional(),
   outboundCallsDropped: z.number().optional(),
 });
+/** A filter the query carries once per selected value (`?level=warn&level=error`). */
+const repeated = z.array(z.string()).optional();
 const appRequestInput = z.object({
   scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(),
-  level: z.string().optional(), operation: z.string().optional(), principalKind: z.string().optional(),
-  problemCode: z.string().optional(), surface: z.string().optional(), status: z.string().optional(),
-  kind: z.string().optional(), buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
+  level: repeated, operation: repeated, principalKind: repeated, problemCode: repeated, surface: repeated, status: repeated,
+  kind: repeated, buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
 });
 const logPatternsView = z.object({
   total: z.number(), bucketMs: z.number(),
@@ -1587,8 +1589,7 @@ export const dashboardRoutes = defineRoutes({
 
   // -- observability (#2170) --------------------------------------------------
   // These are the existing read-only plane reads, now resolved from the team in the path.
-  // Repeated service/scopeId filters are read from the request by their handlers because
-  // mountRoutes' scalar query parser only exposes the first value of each key.
+  // A filter that can name several values is declared as an array and sent once per value.
   'dashboard/observability-metrics': {
     summary: "Metrics for this team's published verticals",
     input: z.object({ hours: z.string().optional(), vertical: z.string().optional() }),
@@ -1597,9 +1598,10 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/observability-logs': {
     summary: "Logs for this team's published service versions",
-    input: z.object({ service: z.string().optional(), hours: z.string().optional(), limit: z.string().optional(), level: z.string().optional(), search: z.string().optional() }),
+    input: z.object({ service: repeated, hours: z.string().optional(), limit: z.string().optional(), level: z.string().optional(), search: z.string().optional() }),
     output: z.array(observabilityLogEvent),
     http: { method: 'GET', path: '/observability/logs' },
+    responseHeaders: [LOGS_INCOMPLETE_HEADER],
   },
   'dashboard/app-observability-metrics': {
     summary: "One installed app's traffic at this team's tenant grain",
@@ -1609,7 +1611,7 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/tenant-metrics-series': {
     summary: "Bucketed traffic for this team's installed apps",
-    input: z.object({ scopeId: z.string().optional(), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    input: z.object({ scopeId: repeated, hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
     output: z.array(tenantMetricsBucket),
     http: { method: 'GET', path: '/observability/tenant-metrics-series' },
   },
@@ -1621,13 +1623,13 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/business-volumes': {
     summary: "Lifecycle move volumes for this team's installed apps",
-    input: z.object({ scopeId: z.string().optional(), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    input: z.object({ scopeId: repeated, hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
     output: businessVolumesView,
     http: { method: 'GET', path: '/observability/business-volumes' },
   },
   'dashboard/team-traffic': {
     summary: "Zero-filled traffic series for this team's installed apps",
-    input: z.object({ scopeId: z.string().optional(), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
+    input: z.object({ scopeId: repeated, hours: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
     output: teamTrafficSeries,
     http: { method: 'GET', path: '/observability/traffic' },
   },
@@ -1642,6 +1644,7 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), limit: z.string().optional(), level: z.string().optional(), search: z.string().optional(), invocationId: z.string().optional(), template: z.string().optional(), since: z.string().optional(), until: z.string().optional() }),
     output: z.array(observabilityLogEvent),
     http: { method: 'GET', path: '/apps/{scopeId}/observability/logs' },
+    responseHeaders: [LOGS_INCOMPLETE_HEADER],
   },
   'dashboard/app-request-volume': {
     summary: "Request histogram for one of this team's installed apps",
@@ -1663,7 +1666,7 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/app-log-patterns': {
     summary: "Log templates for one of this team's installed apps",
-    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(), level: z.string().optional(), operation: z.string().optional(), buckets: z.string().optional() }),
+    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(), level: repeated, operation: repeated, buckets: z.string().optional() }),
     output: logPatternsView,
     http: { method: 'GET', path: '/apps/{scopeId}/observability/log-patterns' },
   },

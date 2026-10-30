@@ -1,7 +1,7 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
 import { useEffect, useState } from 'react';
 import { Button, Input } from '@substrat-run/ui';
-import { type EventFacetAnswer, api, ApiError, isApiError, type ObservabilityLogEvent } from '../lib/api';
+import { type EventFacetAnswer, api, isApiError, type ObservabilityLogEvent } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { MOCK_LOG_LINES } from '../lib/mock-pulse';
 import { card, MonoTag } from '../components/ui';
@@ -141,7 +141,7 @@ export function TenantLogs({
         // signal (501 = not configured, 5xx = an upstream/query failure worth reporting).
         // The plane returns sanitized bodies, so `e.message` is safe to show.
         setLogsError(
-          e instanceof ApiError
+          isApiError(e)
             ? e.status === 501
               ? 'Log streaming is not configured on this platform.'
               : `Logs are unavailable (${e.status}): ${e.message}`

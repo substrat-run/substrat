@@ -277,6 +277,20 @@ describe('rendering a client', () => {
   it('is deterministic — the same model renders the same bytes', () => {
     expect(render()).toBe(out);
   });
+
+  it('#2170: repeats an array query field and hands back named headers, emitting neither runtime for a client that declares neither', () => {
+    const printed = render({
+      'demo/read-logs': {
+        summary: 'Logs', input: z.object({ service: z.array(z.string()).optional() }), output: z.array(z.string()),
+        http: { method: 'GET', path: '/logs' }, responseHeaders: ['x-incomplete'],
+      },
+    });
+    expect(printed).toContain('readLogs(input: { service?: string[] }): Promise<{ body: string[]; headers: Headers }>;');
+    expect(printed).toContain('withHeaders(["x-incomplete"], "/logs", "GET", undefined, input)');
+    expect(printed).toContain('if (Array.isArray(v)) for (const each of v) params.append(k, String(each));');
+    expect(out).not.toContain('Array.isArray(v)');
+    expect(out).not.toContain('withHeaders');
+  });
 });
 
 describe('what rendering refuses', () => {
