@@ -130,7 +130,7 @@ const integrationSweepRun = z.object({
 const mirroredIdentityLink = z.object({
   provider: z.string(), externalId: z.string(), principal: z.string(), tenantId: z.string(), scopeId: z.string().optional(),
 });
-const integrationProbeBody =connectionProbe.extend({ refused: z.boolean().optional() });
+const integrationProbeBody = connectionProbe.extend({ refused: z.boolean().optional() });
 const integrationProbe = integrationProbeBody.extend({ connection: integrationConnection.optional() });
 const integrationActivity = connectionActivity.extend({
   source: z.string(),
