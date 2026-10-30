@@ -34,6 +34,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@substrat-run/contracts": "workspace:*",
     "@types/node": "catalog:",
     "ai": "7.0.152",
     "typescript": "catalog:",
