@@ -354,10 +354,10 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
     grants the key on that scope, in the connector pass's order, and answers `{ connectionId,
     scopeId, options, boundAt }`.
   - **Unbinding.** `POST /internal/connections/unbind` `{ tenantId, scopeId, connectionId,
-    unboundBy }` takes back every key the connection holds there (`revokeFromConnection`, below)
-    and drops the binding. It needs only ownership, so a version that has since dropped the landing
-    or changed its key still lets the scope unbind. What the scope landed stays, and binding again
-    resumes. A second unbind answers the same.
+    unboundBy }` takes back the key the binding records (`revokeFromConnection`, below) and drops
+    the binding; the connection's standing grants stay. It needs only ownership, so a version that
+    has since dropped the landing or changed its key still lets the scope unbind. What the scope
+    landed stays, and binding again resumes. A second unbind answers the same.
   - **Rules for both.**
     - They must come from the vertical's worker, on the request it is serving.
     - Any connection but the scope's own answers as an unknown one (404).
