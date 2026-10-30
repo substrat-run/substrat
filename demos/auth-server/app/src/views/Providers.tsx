@@ -11,7 +11,7 @@ import {
 import { Field } from '../primitives';
 import { navigate } from '../console/router';
 import { PROVIDERS_PATH } from '../console/routes';
-import { BankIdSettingsLink } from './BankId';
+import { BankIdSettingsLink, bankIdStatus } from './BankId';
 
 /* ---- the upstream identity providers ---- */
 
@@ -108,7 +108,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
                   {bankid.environment === 'production' ? 'Production' : 'Test'}
                   {' · '}{bankid.certSet ? 'Certificate stored' : 'No certificate'}
                 </td>
-                <td>{bankid.disabled ? 'Disabled' : 'Enabled'}</td>
+                <td>{bankIdStatus(bankid)}</td>
               </tr>
             )}
           </tbody>

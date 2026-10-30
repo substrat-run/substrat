@@ -1118,6 +1118,23 @@ export interface BankIdSettings {
   allowSignup: boolean;
   disabled: boolean;
   updatedAt: number;
+  /** The last connection test, or null when none has run since the certificate was saved. */
+  probe: BankIdProbe | null;
+  /**
+   * How this deployment presents the certificate: itself (`direct`), through the platform's
+   * sign-in relay (`hop`), or not at all (`none` — BankID is never offered).
+   */
+  transport: 'direct' | 'hop' | 'none';
+}
+
+/** A connection test: BankID's `collect` for an order that does not exist (`probeBankId`). */
+export interface BankIdProbe {
+  ok: boolean;
+  at: number;
+  /** Where a failed test stopped: `tls.config`, `tcp.open`, `tls.handshake`, `http.response`, … */
+  stage?: string;
+  detail?: string;
+  stages?: { stage: string; ms: number; protocol?: string; status?: number }[];
 }
 
 /** The editable half. Cert/key omitted on an edit means "keep the stored ones";
@@ -1137,6 +1154,11 @@ export async function bankidSettings(): Promise<BankIdSettings | null> {
 
 export async function saveBankidSettings(draft: BankIdDraft): Promise<BankIdSettings> {
   return admin('/bankid', { method: 'PUT', body: JSON.stringify(draft) });
+}
+
+/** Test the connection with the stored certificate, and record the answer. */
+export async function testBankid(): Promise<BankIdSettings> {
+  return admin('/bankid/test', { method: 'POST' });
 }
 
 export async function removeBankid(): Promise<void> {

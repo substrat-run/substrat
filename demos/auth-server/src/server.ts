@@ -222,7 +222,7 @@ const app = new Hono();
  *  dev database. A client's own policy narrows it (`sign-in-policy.ts`); both readers below
  *  go through here so the two cannot come to disagree about what exists. */
 function offeredProviders(): { id: string; label: string }[] {
-  const bankid = publicBankIdFrom(readBankIdConfig(sql), true);
+  const bankid = publicBankIdFrom(readBankIdConfig(sql), 'direct');
   return [...publicProvidersFrom(readProviders(sql)), ...(bankid ? [bankid] : [])];
 }
 
@@ -295,6 +295,8 @@ app.route(
     effectiveCfg: config,
     auth: () => authFor().api as never,
     offeredProviders,
+    // Node presents the certificate itself, so a connection test here is the real one.
+    bankidTransport: (cfg) => ({ kind: 'direct', transport: nodeBankIdTransport(cfg) }),
     transaction: (fn) => sqlite.transaction(fn)(),
   }),
 );

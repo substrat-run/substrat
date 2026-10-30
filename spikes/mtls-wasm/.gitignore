@@ -1,0 +1,5 @@
+tls-wasm/target/
+worker/src/pkg/
+worker/.dev.vars
+worker/.wrangler/
+certs/
