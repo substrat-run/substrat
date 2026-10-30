@@ -431,6 +431,7 @@ export function Pulse({
           <AppSchedules
             key={`${scopeId}:${nonce}`}
             embedded
+            teamId={teamId}
             scopeId={scopeId}
             window={window}
             focused={cursor !== null}

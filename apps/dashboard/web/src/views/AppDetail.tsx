@@ -415,7 +415,7 @@ function ScopeOwnerSeat({ teamId, scopeId, versionId, active, canClaim }: { team
 function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, canClaimOwnerSeat }: { teamId: string; app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[]; canClaimOwnerSeat: boolean }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
   const metrics24 = useTenantMetrics(teamId, app.app_scope_id);
-  const schedules = useAppSchedules(app.app_scope_id);
+  const schedules = useAppSchedules(teamId, app.app_scope_id);
   // The app's REAL audit trail (created / active / failed+reason / deleted), one page
   // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
   const [events, setEvents] = useState<AppEvent[] | null>(null);
@@ -472,7 +472,7 @@ function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, can
       })
       .catch(() => live && setEvents([]));
     api
-      .appDeployments(app.app_scope_id)
+      .appDeployments(teamId, app.app_scope_id)
       .then((d) => {
         if (!live) return;
         depScope.current = app.app_scope_id;
@@ -785,7 +785,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
     let live = true;
     setSearchGaveUp(false);
     api
-      .appDeployments(app.app_scope_id)
+      .appDeployments(teamId, app.app_scope_id)
       .then((d) => live && setDep(d))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     teamApi(teamId)
@@ -804,7 +804,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
     if (DEV_MOCK || loadingOlder || !dep?.nextCursor) return;
     setLoadingOlder(true);
     try {
-      const p = await api.appDeployments(app.app_scope_id, { cursor: dep.nextCursor });
+      const p = await api.appDeployments(teamId, app.app_scope_id, { cursor: dep.nextCursor });
       setDep((d) =>
         d
           ? {
@@ -1109,7 +1109,7 @@ export function Deployments({ teamId, app, canManageApp }: { teamId: string; app
                   ) : null}
                 </span>
               </div>
-              {openAssets === v.id && <VersionAssets scopeId={app.app_scope_id} versionId={v.id} />}
+              {openAssets === v.id && <VersionAssets teamId={teamId} scopeId={app.app_scope_id} versionId={v.id} />}
               </div>
             );
           })}
@@ -1141,19 +1141,19 @@ function fileSize(bytes: number): string {
  * A version that shipped no static files (or predates them) renders the empty state rather
  * than an error: "no manifest retained" and "no assets" are the same non-event to a reader.
  */
-function VersionAssets({ scopeId, versionId }: { scopeId: string; versionId: string }) {
+function VersionAssets({ teamId, scopeId, versionId }: { teamId: string; scopeId: string; versionId: string }) {
   const [assets, setAssets] = useState<DeployAssets | null | undefined>(undefined);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     api
-      .appVersionAssets(scopeId, versionId)
+      .appVersionAssets(teamId, scopeId, versionId)
       .then((a) => live && setAssets(a))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [scopeId, versionId]);
+  }, [teamId, scopeId, versionId]);
 
   const pad = { padding: '10px 16px 14px', fontSize: 12.5 };
   if (err) return <div style={{ ...pad, color: 'var(--status-danger-fg)' }}>Couldn’t load assets — {err}</div>;
@@ -1321,7 +1321,7 @@ function FieldCoverage({ teamId, app }: { teamId: string; app: AppRow }) {
  * (inline CSS + SVG, no script, nothing external), so it goes into a sandboxed iframe via
  * `srcdoc` — no network, no script execution, styled by its own light/dark palette.
  */
-function Model({ app }: { app: AppRow }) {
+function Model({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<AppModelView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -1333,13 +1333,13 @@ function Model({ app }: { app: AppRow }) {
     setView(null);
     setErr(null);
     api
-      .appModel(app.app_scope_id)
+      .appModel(teamId, app.app_scope_id)
       .then((v) => live && setView(v))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
 
   const running = view?.running;
   const html = useMemo(() => {
@@ -1391,7 +1391,7 @@ function Model({ app }: { app: AppRow }) {
  * checkpoint exists to surface. It only DISPLAYS: approving a widened role stays a human
  * decision (the update itself is confirmed on the Deployments tab).
  */
-export function AppPermissions({ app }: { app: AppRow }) {
+export function AppPermissions({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<AppPermissionsView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -1403,13 +1403,13 @@ export function AppPermissions({ app }: { app: AppRow }) {
     setView(null);
     setErr(null);
     api
-      .appPermissions(app.app_scope_id)
+      .appPermissions(teamId, app.app_scope_id)
       .then((v) => live && setView(v))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
 
   if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load permissions — {err}</div>;
   if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading permissions…</div>;
@@ -1683,13 +1683,13 @@ function TestEnvironment({ teamId, app, canClaimOwnerSeat }: { teamId: string; a
     }
     let live = true;
     api
-      .appDeployments(app.app_scope_id)
+      .appDeployments(teamId, app.app_scope_id)
       .then((d) => live && setDep(d))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [teamId, app.app_scope_id]);
 
   const slug = dep?.slug ?? null;
   useEffect(() => {
@@ -2275,7 +2275,7 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     let live = true;
     setTableEntity({});
     api
-      .appModel(activeScope)
+      .appModel(teamId, activeScope)
       .then((v) => {
         const entities = v.running?.model?.entities;
         if (!live || !entities) return;
@@ -2286,7 +2286,7 @@ function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
     return () => {
       live = false;
     };
-  }, [activeScope]);
+  }, [teamId, activeScope]);
 
   // The scopes this app spans (M4). A multi-scope vertical (Manyfold: one site per scope) has
   // several; the switcher below picks which one's database to browse. On 404/empty — or a
@@ -3136,7 +3136,7 @@ export function Data({ teamId, app, section, onSection, canRestore }: { teamId: 
         <div style={{ display: 'grid', gap: 16 }}>
           <FieldCoverage teamId={teamId} app={app} />
           <FieldReads teamId={teamId} scopeId={app.app_scope_id} />
-          <Model app={app} />
+          <Model teamId={teamId} app={app} />
         </div>
       )}
       {section === 'previews' && <Previews teamId={teamId} app={app} canClaimOwnerSeat={canRestore} />}
@@ -3169,7 +3169,7 @@ function Settings({ teamId, app, section, onSection, onDeleted, authServers }: {
       {section === 'domains' && <AppDomains teamId={teamId} app={app} />}
       {section === 'integrations' && <AppIntegrations teamId={teamId} app={app} />}
       {section === 'members' && <AppMembers teamId={teamId} app={app} />}
-      {section === 'permissions' && <><EmailSenderPermission key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} /><AppPermissions app={app} /></>}
+      {section === 'permissions' && <><EmailSenderPermission key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} /><AppPermissions teamId={teamId} app={app} /></>}
     </div>
   );
 }

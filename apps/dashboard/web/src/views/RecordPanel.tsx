@@ -33,14 +33,14 @@ export function RecordPanel({
       return;
     }
     api
-      .appModel(scopeId)
+      .appModel(teamId, scopeId)
       .then((m) => live && setLifecycle(m.running.model?.lifecycles?.[entityType] ?? null))
       // No model to read is no lifecycle to draw; the history below still opens.
       .catch(() => live && setLifecycle(null));
     return () => {
       live = false;
     };
-  }, [scopeId, entityType]);
+  }, [teamId, scopeId, entityType]);
   useEscapeLayer(onClose);
 
   return (

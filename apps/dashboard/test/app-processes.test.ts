@@ -8,7 +8,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 
 /**
- * `GET /api/apps/:scopeId/processes` (#1744), driven through the worker with the same
+ * `GET /api/teams/:teamId/apps/:scopeId/processes` (#1744), driven through the worker with the same
  * seams as `app-requests.test.ts`: the plane behind the service binding is a recorder.
  *
  * What is under test is what this route adds to the replay: it takes the declaration
@@ -133,7 +133,7 @@ describe('the process map route (#1744)', () => {
   });
 
   const get = (scope: string, query = '') =>
-    app.request(`/api/apps/${scope}/processes${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    app.request(`/api/teams/${tenant}/apps/${scope}/processes${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
 
   it('replays the running version\'s lifecycle for the period and the one before it, tenant and scope pinned', async () => {
     const res = await get(appScope, `?period=24h&tenantId=${tenantId.parse(ulid())}`);

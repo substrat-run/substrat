@@ -158,7 +158,7 @@ describe('schedule surfaces', () => {
   it('Pulse draws each run as a tick on the axis, failures in red, with the verdict in words', async () => {
     vi.spyOn(api, 'appSchedules').mockResolvedValue(view());
     const w = { from: at(24 * 60), to: at(0) };
-    await act(async () => root.render(<AppSchedules scopeId="s" window={w} appName="Acme HR" onOpen={() => {}} />));
+    await act(async () => root.render(<AppSchedules teamId="t" scopeId="s" window={w} appName="Acme HR" onOpen={() => {}} />));
     const ticks = [...container.querySelectorAll<HTMLElement>('[role="img"]')];
     expect(ticks).toHaveLength(3);
     // Drawn red, not only labelled failed: the colour and the taller tick are the chart's claim.
@@ -173,7 +173,7 @@ describe('schedule surfaces', () => {
     vi.spyOn(api, 'appSchedules').mockResolvedValue(view());
     const w = { from: at(95), to: at(85) };
     const onOpen = vi.fn();
-    await act(async () => root.render(<AppSchedules scopeId="s" window={w} focused onOpen={onOpen} />));
+    await act(async () => root.render(<AppSchedules teamId="t" scopeId="s" window={w} focused onOpen={onOpen} />));
     const names = [...container.querySelectorAll('a, div')].filter((el) => el.getAttribute('style')?.includes('height: 48px'));
     expect(names[0]!.textContent).toContain('app/failing');
     expect(names[0]!.textContent).toContain('In this window: failed');
@@ -201,7 +201,7 @@ describe('schedule surfaces', () => {
     const metricsSpy = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     const Both = () => {
-      const schedules = useAppSchedules('s');
+      const schedules = useAppSchedules('t', 's');
       useTenantMetrics('s');
       return (
         <>
@@ -224,7 +224,7 @@ describe('schedule surfaces', () => {
     expect(lastRun.style.color).toBe('var(--status-danger-fg)');
     await act(async () => root.render(<div />));
     vi.mocked(api.appSchedules).mockResolvedValue(failing);
-    await act(async () => root.render(<AppSchedules scopeId="s" window={{ from: at(24 * 60), to: at(0) }} onOpen={() => {}} />));
+    await act(async () => root.render(<AppSchedules teamId="t" scopeId="s" window={{ from: at(24 * 60), to: at(0) }} onOpen={() => {}} />));
     const pulse = [...container.querySelectorAll<HTMLElement>('span')].find((e) => /^failed \d/.test(e.textContent ?? ''))!;
     expect(pulse.style.color).toBe('var(--status-danger-fg)');
   });
@@ -233,7 +233,7 @@ describe('schedule surfaces', () => {
     const v = view();
     const f = { ...fresh('sla.checked', 'fresh', 30), runs: [run('r2', 30), run('r1', 90, 'failed', 'probe down')] };
     vi.spyOn(api, 'appSchedules').mockResolvedValue({ ...v, schedules: [], freshness: [{ ...f, runs: [liveRun('r2', 30), liveRun('r1', 90, 'failed', 'probe down')] }] });
-    await act(async () => root.render(<AppSchedules scopeId="s" window={{ from: at(24 * 60), to: at(0) }} onOpen={() => {}} />));
+    await act(async () => root.render(<AppSchedules teamId="t" scopeId="s" window={{ from: at(24 * 60), to: at(0) }} onOpen={() => {}} />));
     const row = [...container.querySelectorAll('a')].find((a) => a.textContent?.includes('sla.checked'))!;
     const nums = [...row.querySelectorAll('span')].map((e) => e.textContent);
     expect(nums).toEqual(expect.arrayContaining(['2', '1']));

@@ -673,8 +673,8 @@ the last entry's key when the page came back full, `null` when short (the walk i
 The same two-layer rule holds everywhere: kernel `HostAdmin.list*` reads stay unbounded
 unless a page is passed (internal enumerate-everything callers — sweeps, catalogs,
 reconciliation — must never mistake a page for the inventory); only the HTTP egress
-defaults a page. Dashboard list routes (`/api/teams/:teamId/apps`, `/api/apps/:id/deployments`,
-`/api/apps/:id/events`, …) follow the identical shape.
+defaults a page. Dashboard list routes (`/api/teams/:teamId/apps`, `/api/teams/:teamId/apps/:id/deployments`,
+`/api/teams/:teamId/apps/:id/events`, …) follow the identical shape.
 
 ### 4.5 The console
 

@@ -10,7 +10,7 @@ import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import { PROCESS_PERIODS, type ProcessMapAnswer } from '../src/process-map.js';
 
 /**
- * `GET /api/apps/:scopeId/processes` (#1744), end to end: the worker driven the way a request
+ * `GET /api/teams/:teamId/apps/:scopeId/processes` (#1744), end to end: the worker driven the way a request
  * reaches it, the real control plane over a SQLite host behind the service binding (the
  * `promote-review-route.test.ts` harness), and real events in the app scope's outbox replayed
  * by the kernel's own `readLifecycleFlow`. `process-map.test.ts` pins the window arithmetic;
@@ -191,7 +191,7 @@ describe('the process map route (#1744)', () => {
 
   const get = (sub: string | null, path: string) =>
     app.request(path, { method: 'GET', headers: sub ? { cookie: `sb_session=${sub}` } : {} }, env);
-  const processes = (scope: ScopeId, query = '') => `/api/apps/${scope}/processes${query}`;
+  const processes = (scope: ScopeId, query = '') => `/api/teams/${tenant}/apps/${scope}/processes${query}`;
   const read = async (scope: ScopeId, query = ''): Promise<ProcessMapAnswer> => {
     const res = await get(OWNER_SUB, processes(scope, query));
     expect(res.status).toBe(200);

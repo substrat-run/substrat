@@ -171,8 +171,8 @@ export function ReleaseComparisonCard({
       const migrationsRow: DiffItem[] = targetMigrates
         ? [{ kind: 'added', name: 'migrations', note: 'this update runs new migrations — a snapshot is offered first' }]
         : [];
-      const permsRead = DEV_MOCK ? Promise.resolve(MOCK_APP_PERMISSIONS) : api.appPermissions(app.app_scope_id);
-      const modelRead = DEV_MOCK ? Promise.resolve(MOCK_APP_MODEL_UPDATE) : api.appModel(app.app_scope_id);
+      const permsRead = DEV_MOCK ? Promise.resolve(MOCK_APP_PERMISSIONS) : api.appPermissions(teamId, app.app_scope_id);
+      const modelRead = DEV_MOCK ? Promise.resolve(MOCK_APP_MODEL_UPDATE) : api.appModel(teamId, app.app_scope_id);
       permsRead
         .then((v) => {
           if (!live) return;

@@ -121,7 +121,7 @@ describe('Deployments tab — the Update action', () => {
     const page2: AppDeployments = { ...MOCK_APP_DEPLOYMENTS, boundVersionId: V300, nextCursor: null };
 
     it('walks older pages until an admitted version is found, then offers the promotion', async () => {
-      const spy = vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => Promise.resolve(o?.cursor === 'c1' ? page2 : page1));
+      const spy = vi.spyOn(api, 'appDeployments').mockImplementation((_t, _s, o) => Promise.resolve(o?.cursor === 'c1' ? page2 : page1));
       await act(async () => root.render(<Deployments teamId="T1" app={app} canManageApp />));
       expect(spy).toHaveBeenCalledTimes(2);
       const header = comparisonHeader();
@@ -130,7 +130,7 @@ describe('Deployments tab — the Update action', () => {
     });
 
     it('when the look fails, says it does not know rather than claiming the latest', async () => {
-      vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => (o?.cursor === 'c1' ? Promise.reject(new Error('down')) : Promise.resolve(page1)));
+      vi.spyOn(api, 'appDeployments').mockImplementation((_t, _s, o) => (o?.cursor === 'c1' ? Promise.reject(new Error('down')) : Promise.resolve(page1)));
       await act(async () => root.render(<Deployments teamId="T1" app={app} canManageApp />));
       expect(container.textContent).toContain('Could not check whether a newer version is waiting for prod.');
       expect(container.textContent).not.toContain('Running the latest version');

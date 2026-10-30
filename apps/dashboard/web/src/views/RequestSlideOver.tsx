@@ -108,7 +108,7 @@ function useRequestDetail(teamId: string, scopeId: string, invocationId: string,
           return;
         }
         try {
-          const lifecycles = (await api.appModel(scopeId)).running.model?.lifecycles ?? {};
+          const lifecycles = (await api.appModel(teamId, scopeId)).running.model?.lifecycles ?? {};
           set({ lifecycles });
           const withLifecycle = refs.filter((r) => lifecycles[r.entityType]).slice(0, ENTITIES_MAX);
           const found = await Promise.all(
