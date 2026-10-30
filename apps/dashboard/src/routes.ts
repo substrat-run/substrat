@@ -74,7 +74,7 @@ import {
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
-import { appEvent, appRow, explanationProvenance, installStep, memberRow } from './rows.js';
+import { CONNECT_LINK_MAX_TTL_MS, appEvent, appRow, explanationProvenance, installStep, memberRow } from './rows.js';
 import { ASK_TURN_MAX, ASK_TURNS_MAX } from './ask.js';
 
 // The rows the module shares, declared where module code may import them (`rows.ts`); the
@@ -1288,7 +1288,10 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/mint-app-connect-link': {
     summary: "Mint a single-use consent link for one app's redirect-flow provider",
-    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), ttlMs: z.number().int().positive().optional() }),
+    input: z.object({
+      scopeId: z.string().min(1), provider: z.string().min(1),
+      ttlMs: z.number().int().positive().max(CONNECT_LINK_MAX_TTL_MS).optional(),
+    }),
     output: appConnectLink.extend({ url: z.string() }),
     http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connect-links' },
     status: 201,

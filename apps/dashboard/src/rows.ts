@@ -10,6 +10,9 @@ import { APP_EVENT_KINDS } from './app-event-kinds.js';
  * is module code, scanned as such.
  */
 
+/** The longest a connect link may live: the mint operation and the route that declares it both cap at it. */
+export const CONNECT_LINK_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** One installed app, as the Apps list shows it. */
 export const appRow = z.object({
   id: z.string(),
