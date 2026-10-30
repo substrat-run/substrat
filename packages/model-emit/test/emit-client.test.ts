@@ -291,6 +291,19 @@ describe('rendering a client', () => {
     expect(out).not.toContain('Array.isArray(v)');
     expect(out).not.toContain('withHeaders');
   });
+
+  it('a refusal whose body is not JSON (an edge’s HTML page) is still an ApiError carrying its status', async () => {
+    const { stripTypeScriptTypes } = await import('node:module');
+    const url = `data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(out, { mode: 'transform' })).toString('base64')}`;
+    const { createClient, ApiError } = (await import(url)) as {
+      createClient(o: { fetch: typeof fetch }): { createNote(i: { body: string }): Promise<unknown> };
+      ApiError: new (...a: never[]) => Error & { status: number };
+    };
+    const client = createClient({ fetch: async () => new Response('<html>502</html>', { status: 502, statusText: 'Bad Gateway' }) });
+    const err = await client.createNote({ body: 'x' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 502, message: 'Bad Gateway' });
+  });
 });
 
 describe('what rendering refuses', () => {

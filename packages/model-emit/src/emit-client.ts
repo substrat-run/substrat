@@ -721,9 +721,13 @@ export function createClient(options: ClientOptions = {}): ${config.name}Client 
 
   const parse = async (res: Response): Promise<unknown> => {
     const text = await res.text();
-    const body: unknown = text ? JSON.parse(text) : null;
-    if (!res.ok) throw new ApiError(res.status, readMessage(body, res) ?? res.statusText, body);
-    return body;
+    if (!res.ok) {
+      // A refusal from in front of the app (an edge's HTML 502) is not JSON; its status still says what happened.
+      let body: unknown = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+      throw new ApiError(res.status, readMessage(body, res) ?? res.statusText, body);
+    }
+    return text ? JSON.parse(text) : null;
   };
 
   const send = async (path: string, method: string, body: unknown, params: unknown): Promise<unknown> =>
