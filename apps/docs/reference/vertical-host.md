@@ -528,7 +528,7 @@ file source per scope, say, where a tenant-wide landing would mirror the same fo
 every scope.
 
 ```ts
-import { upsertConnection, bindConnection, unbindConnection, ConnectionRequestError } from '@substrat-run/vertical-host';
+import { upsertConnection, bindConnection, unbindConnection, listBindings, ConnectionRequestError } from '@substrat-run/vertical-host';
 
 // module.ts — the authorizing act, and the only place a permission is checked
 const connectSource: OperationHandler = async (ctx, raw) => {
