@@ -560,9 +560,9 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       ...(landings.some((l) => l.bind === 'on-request')
         ? [
             ``,
-            `A provider marked *on request* is the exception: the platform grants and binds nothing for it`,
-            `by itself. An instance binds a connection of its own, with its own options, when it asks, and`,
-            `only that instance holds the key.`,
+            `A provider marked *on request* is the exception: the platform grants and binds nothing new for`,
+            `it by itself. An instance binds a connection of its own, with its own options, when it asks.`,
+            `A key and binding an earlier version granted every instance stay until they are removed.`,
           ]
         : []),
       ``,

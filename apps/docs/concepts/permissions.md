@@ -823,7 +823,9 @@ connections: [
   for itself, one folder per instance, say. The pass grants and binds nothing for it; an instance
   binds its own connection, with its own options, when it asks. The declaration still names the
   operation and the key, so `PERMISSIONS.md` shows the provider marked *on request* and the digest
-  moves if you change it. Leaving `bind` out means `every-install`, everything above.
+  moves if you change it. Leaving `bind` out means `every-install`, everything above. Switching an
+  `every-install` landing to `on-request` revokes nothing: the key and binding an earlier version
+  gave each instance stay until they are removed, as with a landing a version stops declaring.
 - **Revoking the connection ends it.** The revoke takes the connection's keys and bindings
   together, and the pass never seats them again.
 - **Nothing lands silently.** A connection with no binding reads *nothing polls this connection*;
