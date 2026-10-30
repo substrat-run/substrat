@@ -24,7 +24,7 @@ describe.runIf(built)('push carries each module\'s connection landings (#2732)',
       id: 'helpdesk',
       connections: [{ provider: 'planima', operation: 'helpdesk/record-plan', permission: 'helpdesk:read', bind: 'on-request' }],
     }]));
-    expect(manifest.modules[0]!.connections).toEqual([{ provider: 'planima', bind: 'on-request' }]);
+    expect(manifest.modules?.[0]?.connections).toEqual([{ provider: 'planima', bind: 'on-request' }]);
     expect(manifest.registry.connections).toEqual([expect.objectContaining({ provider: 'planima', bind: 'on-request' })]);
   });
 });
