@@ -42,6 +42,7 @@ export function withGithubEmailFallback(providers: BetterAuthOptions['socialProv
 }
 
 const TTL = 10 * 60_000;
+const SEND_COOLDOWN_MS = 60_000;
 const address = z.string().trim().toLowerCase().email().max(254);
 const secret = () => `${crypto.randomUUID()}${crypto.randomUUID()}`;
 const digest = async (value: string) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -157,7 +158,15 @@ export const githubEmailPlugin = (opts: { transport: EmailTransport; sender: Ema
         if (pending.linkSessionId && ctx.body.email !== pending.email) throw new APIError('FORBIDDEN', { message: 'Verify your existing account email before connecting GitHub.' });
         const existing = await adapter.findUserByEmail(ctx.body.email);
         if (existing && existing.user.id !== pending.userId) throw new APIError('CONFLICT', { message: 'This email already has an account. Sign in with its existing method and connect GitHub under Sign-in methods.' });
-        if (!await adapter.reserveVerificationValue({ identifier: `github-email-send:${pending.accountId}:${Math.floor(Date.now() / 60_000)}`, value: 'sent', expiresAt: new Date(Date.now() + TTL) })) throw new APIError('TOO_MANY_REQUESTS', { message: 'Wait a minute before requesting another email.' });
+        // One reservation per GitHub account, good for a minute from the send: a live one is never
+        // replaced, so no clock edge lets two sends through. A lapsed one is deleted by a
+        // conditional delete, which cannot remove a reservation another request just made.
+        const cooldownKey = `github-email-send:${pending.accountId}`;
+        await ctx.context.adapter.deleteMany({ model: 'verification', where: [
+          { field: 'identifier', value: cooldownKey },
+          { field: 'expiresAt', value: new Date(), operator: 'lt' },
+        ] });
+        if (!await adapter.reserveVerificationValue({ identifier: cooldownKey, value: 'sent', expiresAt: new Date(Date.now() + SEND_COOLDOWN_MS) })) throw new APIError('TOO_MANY_REQUESTS', { message: 'Wait a minute before requesting another email.' });
         const token = secret();
         const key = `github-email-proof:${await digest(token)}`;
         await adapter.createVerificationValue({ identifier: key, value: JSON.stringify({ pendingKey, email: ctx.body.email }), expiresAt: row.expiresAt });

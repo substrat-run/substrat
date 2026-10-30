@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type RequestListener } from 'node:http';
 import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
@@ -85,6 +85,7 @@ function fixtureAuth(disableSignUp = false, runInBackground?: (task: Promise<unk
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   globalThis.fetch = realFetch;
   db.close();
 });
@@ -376,6 +377,17 @@ describe('verified GitHub email fallback', () => {
     db.prepare("UPDATE verification SET expires_at = 0 WHERE identifier LIKE 'github-email:%'").run();
     expect((await post('/github-email/send', { email: 'work@example.test' }, cookie)).status).toBe(400);
     expect(db.prepare('SELECT * FROM user').all()).toHaveLength(0);
+  });
+
+  it('holds the resend cooldown across a minute boundary and ends it a minute after the send', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-30T09:43:59.900Z'));
+    const cookie = await pending();
+    await send(cookie);
+    vi.setSystemTime(new Date('2026-10-30T09:44:00.100Z'));
+    expect((await post('/github-email/send', { email: 'work@example.test' }, cookie)).status).toBe(429);
+    vi.setSystemTime(new Date('2026-10-30T09:45:00.100Z'));
+    await send(cookie);
   });
 
   it('refuses disabled GitHub sign-up both at the callback and if disabled while verification was pending', async () => {
