@@ -1,8 +1,7 @@
 import { SELF } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
-import { DEV_ACTOR_HEADER } from '@substrat-run/control-plane-api';
-import { REQUEST_ID_HEADER } from '@substrat-run/contracts';
+import { PROBLEM_CONTENT_TYPE, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { controlPlaneRequestId } from '../src/request-id.js';
 
@@ -29,7 +28,7 @@ describe('the control-plane request id', () => {
   });
 
   it('a success carries the header, and its body is left as the route wrote it', async () => {
-    const res = await SELF.fetch('https://cp.test/api/auth/session', { headers: { [DEV_ACTOR_HEADER]: ulid() } });
+    const res = await SELF.fetch('https://cp.test/api/auth/session');
     expect(res.status).toBe(200);
     expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);
     expect(await res.json()).toEqual({ user: null });
@@ -43,9 +42,10 @@ describe('the control-plane request id', () => {
     app.get('/api/tenants/:tenantId', () => {
       throw new Error('upstream said token=abc');
     });
-    app.onError(() => new Response('{}', { status: 500, headers: { 'content-type': 'application/json' } }));
+    app.onError(() => new Response('{"status":500}', { status: 500, headers: { 'content-type': PROBLEM_CONTENT_TYPE } }));
     const tenant = ulid();
     const res = await app.request(`/api/tenants/${tenant}?code=secret-consent-code`);
+    expect(await res.json()).toEqual({ status: 500, requestId: res.headers.get(REQUEST_ID_HEADER) });
     expect(logged).toHaveLength(1);
     expect(JSON.parse(logged[0]!)).toEqual({
       event: 'control-plane.request-failed',

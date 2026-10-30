@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from 'hono';
+import { routePath } from 'hono/route';
 import { ERROR_NAME_PREFIX, PROBLEM_CONTENT_TYPE, REQUEST_ID_HEADER, errorCode, errorCodeOf } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 
@@ -18,6 +19,8 @@ import { ulid } from '@substrat-run/kernel';
 export function controlPlaneRequestId(): MiddlewareHandler {
   return async (c, next) => {
     const id = ulid();
+    // The API router reuses it as a failure's reference, so detail, log rows and header agree.
+    c.set('substratInvocationId', id);
     await next();
     // An upgrade's socket would be dropped by the copy Hono makes of an answered response.
     if (c.res.status === 101) return;
@@ -63,7 +66,7 @@ function logFailedRequest(c: Context, requestId: string): void {
       event: 'control-plane.request-failed',
       requestId,
       method: c.req.method,
-      route: c.req.routePath,
+      route: routePath(c),
       status: c.res.status,
       ...(err === undefined ? {} : { errorName: err instanceof Error && isCodeName(err.name) ? err.name : 'Error' }),
       ...(code ? { errorCode: code } : {}),

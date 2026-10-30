@@ -289,9 +289,11 @@ nothing about the tenant or the scope. Module code reads it as `ctx.requestId`, 
 the header unless the response exposes it: a vertical that answers its own CORS lists
 `REQUEST_ID_EXPOSED_HEADERS` beside the paging and concurrency ones, and the public surface
 exposes it already. A failure needs none of that, since its body carries the id. The control
-plane's `/api` answers (the console's and the CLI's) carry both too, under an id it mints per
-request: it names the request in the control plane's own logs, so quote it to an operator
-rather than look for it in an app's request view.
+plane's `/api` answers carry both too, under an id it mints per request. It names the request to
+the control plane, not to an app, so an app's request view will not find it. A failure the
+control plane recorded (a 5xx, or a withheld failure's `reference`) is filed under that same id,
+and a refusal it decided records nothing. The CLI does not print the id yet: read it from the
+response.
 
 ::: warning A status read from the sentence is deprecated
 A throw that declares nothing still gets a status from its wording, for now: "permission
