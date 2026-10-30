@@ -1085,21 +1085,18 @@ const pageParams = (c: { req: { query(key: string): string | undefined } }) =>
  * live-data move that cannot be planned against a belief.
  *
  * Both directories, for the CALLER'S OWN tenant only: the local read is the
- * staff-actor projection read (access-logged, K-24) narrowed to the tenant their
- * session resolved to, and the shared read is the tenant-narrowed plane's, so
+ * staff-actor projection read (access-logged, K-24) narrowed to the team the path
+ * names, which the caller must be a member of, and the shared read is the tenant-narrowed plane's, so
  * neither side can be aimed at somebody else's team by a request argument.
  *
  * A 503 here is the answer, not a bug: an unbound control plane means the mirror
  * has not been landing at all, which is exactly what a readiness check should say.
  */
-app.get('/api/identity-mirror', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function identityMirrorIn({ c, host, node }: TeamContext) {
   const local = await host.admin.listIdentityLinks(STAFF, node.tenantId);
   const shared = await controlPlaneFor(c.env, node.tenantId, node.principal).listIdentityLinks();
   const divergence = deriveIdentityDivergence(local, shared);
-  return c.json({
+  return {
     tenant: node.tenantId,
     inSync: divergence.inSync,
     counts: {
@@ -1112,8 +1109,8 @@ app.get('/api/identity-mirror', async (c) => {
     missing: divergence.missing,
     extra: divergence.extra,
     conflicting: divergence.conflicting,
-  });
-});
+  };
+}
 
 /**
  * A freshly-signed accept link for one invitation (14 days, or the invitation's own
@@ -1534,6 +1531,7 @@ async function appEventsPage(host: CloudflareScopeHost, node: DashboardNode, app
 /**
  * The admin log, whole or narrowed to one app. The app is resolved from the caller's OWN
  * `list-apps`, so a foreign scope id is a 404, and the read goes through the tenant-narrowed plane.
+ * Whole, it is the team's Audit page (#1447), entries naming no scope included.
  */
 async function auditLogOf(c: Context<{ Bindings: Env }>, host: CloudflareScopeHost, node: DashboardNode, page: ListPageQuery, asked?: string) {
   if (!asked) return controlPlaneFor(c.env, node.tenantId, node.principal).auditLogPage({ limit: page.limit, cursor: page.cursor });
@@ -1544,22 +1542,6 @@ async function auditLogOf(c: Context<{ Bindings: Env }>, host: CloudflareScopeHo
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scopeId.parse(appRow.app_scope_id));
 }
-
-/**
- * The TEAM's audit log (#1447) — the same admin log, one page newest-first, behind the
- * left-menu Audit page. The tenant is pinned by the authority seam, so the SCOPE is the
- * only thing this query decides: `?scopeId=` narrows to one app, resolved exactly as the
- * per-app route resolves it (from the caller's OWN `list-apps`, so a foreign scope id
- * 404s), and leaving it off is precisely "this team's whole log" — including the entries
- * that name no scope at all, which a per-app read can never show. The per-app route stays
- * for the deep links that already carry a scope in their path.
- */
-app.get('/api/audit', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  return c.json(await auditLogOf(c, host, node, pageParams(c), c.req.query('scopeId') || undefined));
-});
 
 /**
  * One app's Deployments tab — its vertical's REAL version registry + which version each
@@ -2063,19 +2045,16 @@ const FLEET_HEALTH_ROW_MAX = 400;
  * so does a read that stopped at its cap: each read reports whether it reached the
  * end of the window, and a verdict is only as strong as the read behind it.
  */
-// Deliberately NOT `/api/apps/health`: no bare `/api/apps/:scopeId` route exists
-// today, but adding one later would silently capture `health` as a scope id.
-app.get('/api/fleet-health', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+// Deliberately NOT `/apps/health`: no bare `/apps/{scopeId}` route exists today, but
+// adding one later would silently capture `health` as a scope id.
+async function fleetHealthIn({ c, host, node }: TeamContext) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
   // The verdict carries the app's own name and vertical: the operator this view is
   // for runs one vertical for thirty clients, and a scope id does not tell them whose
   // app is broken.
   const named = apps.map((a) => ({ scopeId: a.app_scope_id, name: a.name, vertical: a.vertical_slug }));
-  if (named.length === 0) return c.json({ rows: [] });
+  if (named.length === 0) return { rows: [] };
 
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const since = new Date(Date.now() - FLEET_HEALTH_WINDOW_MS).toISOString();
@@ -2128,7 +2107,7 @@ app.get('/api/fleet-health', async (c) => {
         read: (scope) => cp.readSweepRuns({ since, scopeId: scope, limit: 1 }),
       });
 
-  return c.json({
+  return {
     rows: deriveFleetHealth({
       apps: fleet,
       failures: failures.entries,
@@ -2142,8 +2121,8 @@ app.get('/api/fleet-health', async (c) => {
         sweepsConfirmed: followUp.confirmed,
       },
     }),
-  });
-});
+  };
+}
 
 /**
  * Field coverage (#1321): which of the running version's declared fields is any
@@ -3123,12 +3102,10 @@ async function getAppIntegrationActivityIn(
  * tenant's connections under it (a connection is keyed to a VERTICAL, so every app of
  * that vertical shares it), and which of the tenant's apps can connect it (their
  * vertical declares it). Connecting from here still targets one app — the connect
- * dialog picks it, and the grant lands on that app's scope.
+ * dialog picks it, and the grant lands on that app's scope. The targets are the path
+ * team's apps, the same team the dialog then connects in.
  */
-app.get('/api/integrations', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+async function teamIntegrationsIn({ c, host, node }: TeamContext) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
   const offeredBy = await providerSpecsBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
@@ -3145,7 +3122,7 @@ app.get('/api/integrations', async (c) => {
     if (list.length < 20) list.push({ id: r.id, outcome: r.outcome, at: r.at, error: r.error, elapsedMs: r.elapsedMs });
     sweepByConnection.set(r.connectionId, list);
   }
-  return c.json({
+  return {
     // First-party only, deliberately: this view is per provider ACROSS apps, and a
     // vertical-defined provider means nothing outside the one vertical that declares it.
     // Its door is that app's own Integrations panel.
@@ -3171,8 +3148,8 @@ app.get('/api/integrations', async (c) => {
         connectTargets: targets,
       };
     }),
-  });
-});
+  };
+}
 
 // -- OAuth-style provider connect (#1220) ------------------------------------
 // The consent-round flow for a provider whose credential a customer cannot paste
@@ -5651,6 +5628,8 @@ const routeHandlers = {
   },
   'dashboard/list-team-audit': async ({ c, host, node }, { scopeId: asked, ...page }) =>
     auditLogOf(c, host, node, listPageQuery.parse(page), asked || undefined),
+  'dashboard/fleet-health': async (ctx) => fleetHealthIn(ctx),
+  'dashboard/identity-mirror': async (ctx) => identityMirrorIn(ctx),
   'dashboard/list-findings': async (ctx, filter) => {
     const page = await (await findingsPlane(ctx, 'read')).listFindings(filter);
     return page === null ? { available: false, entries: [], nextCursor: null, cut: false } : { available: true, ...page };
@@ -5704,6 +5683,7 @@ const routeHandlers = {
   'dashboard/set-app-env': async (ctx, { scopeId: app, entries }) => setAppEnvIn(ctx, app, entries ?? []),
   'dashboard/delete-app-env': async (ctx, { scopeId: app, key }) => deleteAppEnvIn(ctx, app, key),
   'dashboard/get-app-integrations': async (ctx, { scopeId: app }) => getAppIntegrationsIn(ctx, app),
+  'dashboard/list-team-integrations': async (ctx) => teamIntegrationsIn(ctx),
   'dashboard/connect-app-integration': async (ctx, { scopeId: app, provider, secret, label }) =>
     connectAppIntegrationIn(ctx, app, provider, { secret, label }),
   'dashboard/disconnect-app-integration': async (ctx, { scopeId: app, provider }) =>
@@ -5778,6 +5758,7 @@ const routeHandlers = {
   'dashboard/list-github-repos': async (ctx, { account }) => githubReposIn(ctx, account),
   'dashboard/list-github-branches': async (ctx, { repo, account }) => githubBranchesIn(ctx, repo, account),
   'dashboard/setup-github-ci': async (ctx, body) => setupGithubCiIn(ctx, body),
+  'dashboard/github-workflow-preview': async (ctx, input) => workflowPreviewIn(ctx, input),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
 mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);
@@ -6027,14 +6008,12 @@ app.post('/api/github/webhook', async (c) => {
 });
 
 /** The manual path's copy-paste workflow — same generator as the committed one (github.ts). */
-app.get('/api/github/workflow-preview', async (c) => {
-  const node = await resolveAccount(hostFor(c.env), c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const repo = c.req.query('repo') ?? 'owner/app';
-  const branch = c.req.query('branch') ?? 'main';
-  const path = packageDirOrThrow(c.req.query('path') || undefined);
+function workflowPreviewIn({ c }: TeamContext, input: { repo?: string; branch?: string; path?: string }) {
+  const repo = input.repo ?? 'owner/app';
+  const branch = input.branch ?? 'main';
+  const path = packageDirOrThrow(input.path || undefined);
   const slug = slugify((path ? path.split('/').pop() : undefined) ?? repo.split('/').pop() ?? 'app');
-  return c.json({
+  return {
     workflowPath: '.github/workflows/substrat-deploy.yml',
     workflow: deployWorkflowYaml({
       branch,
@@ -6042,8 +6021,8 @@ app.get('/api/github/workflow-preview', async (c) => {
       cpUrl: c.env.CP_PUBLIC_URL ?? 'https://console.substrat.net/api',
       ...(path ? { path } : {}),
     }),
-  });
-});
+  };
+}
 
 /**
  * The dashboard's error envelope — RFC 9457 since #113 phase 4.
