@@ -13,6 +13,8 @@ Two distinct acts, deliberately not fused:
 - A **push** uploads a version. The CLI builds your worker locally, POSTs the bundle plus a
   manifest to the control plane, and the control plane records an immutable version (a
   `deploymentRef`, a permission digest, a migration digest). A push does **not** serve anything.
+  The CLI refuses a bundle before uploading it when it imports a Node builtin the worker's
+  compatibility flags do not provide, since workerd would refuse to start it.
 - A **promotion** points a **channel** at a version and makes scopes run it. This is the deploy.
 
 The split exists because "here is a new build" and "run this build against real data" are
@@ -130,7 +132,9 @@ channel.
 Two things a promotion always respects:
 
 - **The surface checkpoint.** A promotion whose **permission** or **migration** digest differs
-  from what is live is refused until the diff is acknowledged. This is the same two-human-
+  from what is live is refused until the diff is acknowledged, and the acknowledgement names the
+  review it answers, so one given against a diff that has since moved is refused as stale (see
+  [an acknowledgement answers one review](/guide/deploying#acknowledgement-answers-one-review)). This is the same two-human-
   checkpoint discipline the kernel applies to [modules](/concepts/modules#two-human-checkpoints),
   applied at the deploy boundary — with the owner as the human at their own checkpoint.
 - **Channel history.** Every promotion appends a row: what went live, what it replaced, who did
@@ -270,10 +274,11 @@ too, so neither can start a line of its own in the review.
 Declarations are not part of the SQL, so they do not change the digest a scope journals for the
 migration, and editing one on a shipped migration does not make a scope that already ran it fail
 closed. They are part of the version's migration digest, so a promote that adds, removes or
-rewords a declaration asks for the migration acknowledgement like a SQL change does. That digest
-is computed by the pushing CLI and nothing on the platform recomputes it. What the review shows is
-read from the declarations the control plane stored, never inferred from the digest, so a client
-that hashed something else still cannot hide a declared discard from the review.
+rewords a declaration asks for the migration acknowledgement like a SQL change does. The control
+plane derives that digest itself from the migrations the push declares, which it stores, and refuses
+a push whose own digest is another one before anything is uploaded. What the review shows is read
+from the declarations the control plane stored, never inferred from the digest, so a client that
+hashed something else cannot hide a declared discard from the review.
 
 ## Previews: run a version against a copy of the data
 

@@ -236,7 +236,7 @@ permissions, events (emits/consumes), migrations + skew window, attachment targe
 entity relations, entitlement key, searchables (`{ entityType, fields, tokenizer? }` — the
 table and id column are filled in by `manifestEntities` from the entity registry, and the
 kernel derives a per-scope FTS5 index from the result), UI contributions, `envSpec`
-(`envVarSpec[]` — the declared environment that the Dashboard's Env form renders from),
+(`envVarSpec[]` — the declared environment that the Dashboard's Env form renders from; a non-secret setting may opt in to `previewCarry`, re-delivered to a preview on every push, and a secret or `kind: 'model'` setting may not),
 `schedules` (`scheduleSpec[]` — recurring work: `{ operation, cadence: { everyMinutes },
 input?, permissions }` the platform sweep runs on every live scope under a system actor),
 and `freshness` (`freshnessSpec[]` — freshness expectations: `{ eventType, within: { hours } }`,
@@ -253,8 +253,10 @@ read as permanently stale). Field-by-field walkthrough in
 
 The registry shapes (#31): `vertical` / `Vertical` (slug, `source`, `ownerTenant`,
 declared `envSpec`, install spec — entitlements/grants/capabilities/surfaces),
-`verticalVersion` (digests + admission status — so *push is not live*), and the channel
-records promotion moves a scope between. This is what turns the scope's nullable
+`verticalVersion` (digests + admission status — so *push is not live*), the channel
+records promotion moves a scope between, and `verticalOwnerPeriod` — one period of a slug's
+ownership (#2501), which is what bills a past period to the builder who owned it then. A
+vertical record also carries the `connectors` its latest push declared. This is what turns the scope's nullable
 `vertical` string into a pinnable record. See [The platform layer](/concepts/platform).
 
 ## Deploy manifest (`deploy.ts`)
@@ -276,8 +278,37 @@ One schema, two parses, no drift.
 
 The integrations hub's store (#101): `connection` / `Connection` and `connectionStatus`,
 keyed on **(tenant, vertical, provider)** so one vendor's host code never reaches
-another's credential. Everything here is metadata — the sealed credential never appears
-in these shapes. See [The connector seam](/concepts/events#the-connector-seam).
+another's credential. A `provider` is a lowercase slug, or `<namespace>.<name>` for a
+[vertical-defined connector](#vertical-defined-connectors-vertical-connector-ts). A connection
+is tenant-owned unless `ownerScopeId` names the scope that made it through the connection relay
+(#2732): the owner is part of the live key, so two scopes can connect the same account and each
+hold its own, and only the owning scope binds it. `connectionRevoke` takes one key back from a
+connection on one scope while the connection stays live, and `connectionSendTest` /
+`connectionSenders` / `connectionSendTestResult` are the send test of a connection that sends
+mail. Everything here is metadata — the sealed credential never appears in these shapes. See [The connector seam](/concepts/events#the-connector-seam).
+
+## Vertical-defined connectors (`vertical-connector.ts`)
+
+The vocabulary a vertical's own connector shares with the platform (D-64): the declaration
+(`verticalConnectorDeclaration`, a `<namespace>.<name>` provider), the call the platform makes
+into the vertical's worker (`connectorCallRequest`) and the vertical's answer
+(`connectorCallResponse`), each parsed on both ends. The platform keeps the sealed credential,
+the bindings and the connector state, and hands the vertical one connection's worth per call.
+`connectorCallTarget` (`connector-call-target.ts`) is where the router dispatches one such call.
+
+## Inbound mail (`mail-in.ts`)
+
+What a vertical sees of a message mailed to one of its scopes (#2611) and what crosses the relay
+when a scope asks for, rotates or gives up its address: `mailInAddress`, `mailInChange`,
+`mailInRelayRequest` / `mailInRelayResult`. An address is a capability for one scope, backed by
+its own `mail-in` connection; a vertical opts in by declaring a `mail-in` landing.
+
+## Source builds (`source-build.ts`)
+
+`sourceSnapshot` and `sourceBuildRequest` / `sourceBuildResult`: a release built from persisted
+source rather than client-built uploads (D-66, `PLATFORM_FEATURE_SOURCE_BUILDS`). Paths are
+repository-relative; credential and generated paths are excluded by `excludedSourcePath`, and a
+snapshot is bounded by `SOURCE_BYTES_MAX` and `SOURCE_FILES_MAX`.
 
 ## Scope introspection (`introspection.ts`)
 
@@ -416,7 +447,6 @@ compiler checks the joins between them. Full walkthrough in
 | `emitModel` | renders the registry to deterministic JSON — the artifact `pnpm lint:model --check` gates |
 | `EntityRow<T, K>` | a declared entity's row type, for `ctx.sql.query<…>` |
 | `OperationImpl<Ops, Ctx>` | the handler map an operation set requires; the kernel's `operationsFor` holds a module's map to it |
-| `journalColumns(sql)` | test tooling — columns per table from a migration journal, following `ADD COLUMN`, `DROP TABLE` and `RENAME TO` |
 
 `model.json` is for consumers that must not execute your code, or that want diffability. A
 code generator reads the TypeScript: `z.toJSONSchema` drops `.refine()` and `.brand()`, so a
