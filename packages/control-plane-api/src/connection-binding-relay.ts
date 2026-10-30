@@ -116,6 +116,14 @@ export async function relayConnectionBind(
   const refused = (err: unknown) => new ConnectionRelayError(`the ${connection.provider} connector refused the binding: ${said(err)}`, 422);
   const node = { tenantId: scope.tenantId, scopeId: scope.id };
 
+  // A rebind under a landing whose key changed takes the binding's previous key back FIRST, while
+  // the binding still records it: a revoke that fails then changes nothing and the scope can ask
+  // again, where one after the new bind could leave a key nothing records. Only once the options
+  // passed, so a refused option never touches the working binding.
+  if (current && current.permission !== landing.permission) {
+    await revokeHere(host, actor, { connectionId: connection.id, permission: permissionKey.parse(current.permission), node, revokedBy: input.boundBy });
+  }
+
   // The landing pass's order: a binder that stages its binding before the grant does so, and the
   // grant follows; otherwise the grant comes first and the connector's bind checks it is held. A
   // refusal at any step leaves nothing this call added: a key it granted is taken back, a binding

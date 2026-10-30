@@ -206,6 +206,21 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await holds(a, conn)).toBe(false);
   });
 
+  it("takes the previous key back on a rebind under a landing whose key changed, so an unbind then leaves nothing", async () => {
+    await runs('on-request');
+    const conn = await own(a);
+    await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
+    await runs('on-request', INGEST);
+
+    await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
+
+    const keys = async () => (await host.connectionGrantsInScope(t, a)).filter((g) => g.connectionId === conn).map((g) => g.permission);
+    expect(await keys()).toEqual([INGEST]);
+    expect((await listPlanimaBindings(host, conn)).map((x) => x.permission)).toEqual([INGEST]);
+    await relayConnectionUnbind(host, relayActor, { tenantId: t, scopeId: a, connectionId: conn, unboundBy: person }, landings());
+    expect(await keys()).toEqual([]);
+  });
+
   it('unbinds what the scope holds after its version changed the landing, its key and its mode', async () => {
     await runs('on-request');
     const conn = await own(a);
