@@ -1,5 +1,13 @@
 # @substrat-run/model-view
 
+## 0.6.18
+
+### Patch Changes
+
+- Updated dependencies [f0e000d]
+- Updated dependencies [0bc0f4a]
+  - @substrat-run/contracts@0.170.0
+
 ## 0.6.17
 
 ### Patch Changes

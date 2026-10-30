@@ -1,5 +1,19 @@
 # @substrat-run/control-plane-api
 
+## 0.170.0
+
+### Minor Changes
+
+- 0bc0f4a: Add `listBindings` and the `/internal/connections/bindings` relay: a scope reads its own connections bound to it, with the last successful sweep and the last failed one in the platform's words.
+
+### Patch Changes
+
+- Updated dependencies [f0e000d]
+- Updated dependencies [0bc0f4a]
+  - @substrat-run/contracts@0.170.0
+  - @substrat-run/control-plane-client@0.4.1
+  - @substrat-run/kernel@0.170.0
+
 ## 0.169.0
 
 ### Minor Changes
