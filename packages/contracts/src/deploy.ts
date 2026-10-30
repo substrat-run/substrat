@@ -1357,7 +1357,8 @@ export const deployModuleDeclaration = z.object({
   /**
    * #2732: the providers this module lands, with `bind` when it is `on-request`, so the control
    * plane can hold `registry.connections` to what the modules declare
-   * ({@link pushedLandingProblems}). Absent from a CLI that predates it.
+   * ({@link pushedLandingProblems}). A current CLI sends it on every module, empty when the module
+   * lands nothing; absent means a CLI that predates it.
    */
   connections: z.array(z.object({ provider: connectionProvider, bind: connectionLandingBind.optional() })).optional(),
 });
