@@ -21,7 +21,7 @@ The credential model is now proven rather than argued: `grant_type=client_creden
 |---|---|
 | **Provider** | Fortnox (Swedish accounting), REST API v3 + SIE4 export |
 | **Category** | Accounting |
-| **Status** | Live-verified against a Fortnox test company — poll-only, no outbound writes |
+| **Status** | Ledger live-verified against a Fortnox test company; supplier invoices verified against the mock only — poll-only, no outbound writes |
 | **Package** | `@substrat-run/connector-fortnox` — `0.x` |
 | **Consumes** | *nothing* — this connector answers no event |
 | **Registered with** | *nothing* — it is a `ConnectorSweeper`, bound into the platform sweeper |
@@ -80,16 +80,62 @@ kind per scope**. An omitted kind means `ledger`, including when a scope is alre
 invoices. A declaration or staff bind that asks for the other kind is refused before a new
 permission is granted: use a separate scope for the other kind. A single scope cannot declare
 both kinds at once. Ledger
-polling reads only ledger bindings. The invoice sweep, when available, reads only invoice
-bindings. Until that sweep ships, an invoice binding remains visible as **unsupported** with
-upgrade guidance; no ledger data is fetched or delivered to its operation. An unrecognized
-stored kind fails closed, naming the kind, without delivering ledger data.
+polling reads only ledger bindings, and the invoice sweep reads only invoice bindings. An
+unrecognized stored kind fails closed, naming the kind, without fetching or delivering anything.
 
 This option requires the platform and `@substrat-run/connector-fortnox` release containing
 this change (see their release changelogs). Older platforms reject `kind` as an unknown
 binding option: the connection's sweep row says its declared landing could not be bound,
-and the staff failure names the invalid option. An invoice binding also needs a later
-release with the invoice sweep before it can receive invoices.
+and the staff failure names the invalid option. A platform whose connector predates the invoice
+sweep seats an invoice binding but polls nothing for it, and reports it as **unsupported**.
+
+### What an invoice binding lands
+
+Each pass lists the supplier invoices changed since the binding's cursor, reads each one's rows,
+and lands them in **one** call to the declared operation, parsed by `fortnoxSupplierInvoicePage`:
+
+```ts
+{
+  connectionId,                              // the company's connection
+  company: { name, organizationNumber },
+  invoices: [{
+    givenNumber,                             // Fortnox's number for the invoice in this company
+    supplierNumber, supplierName, invoiceNumber,
+    invoiceDate, dueDate,
+    total: { amount, currency },             // in the invoice's own currency
+    booked, cancelled,
+    rows: [{ account, costCentre, amount }], // debit-positive, in SEK
+  }],
+}
+```
+
+**Upsert by `(connectionId, givenNumber)`.** An invoice arrives again every time it changes in
+Fortnox (booked, cancelled, edited). The cursor also reads a few minutes back, so a change made in
+the same minute as the last pass is never missed, which means an unchanged invoice can arrive
+twice. A pass with no changes makes no call to the operation.
+
+- **The first pass** reads invoices changed in the last **90 days**. This is fixed, not
+  configurable.
+- **The cursor** moves only after the operation accepted the page. An operation that throws
+  leaves it in place, and the next pass reads the same invoices again.
+- **Rate.** Every read of a pass is paced to Fortnox's documented limit, 25 requests in any
+  5 seconds, and a `429` is waited out for as long as its `Retry-After` says, up to three times
+  per request. The pacing sees only this pass. A ledger connection to the same company, or the
+  company's own integrations, spend from the same limit, and their share is absorbed by the
+  retry rather than prevented. A pass reads at most 200 invoices per connection, about 40 seconds
+  at the limit, and starts no new read after **90 seconds**. When it stops, the invoices read so
+  far land and the next pass resumes after them. A read already under way still finishes its own
+  retries, so a Fortnox that is both throttling and timing out can stretch one pass by a few
+  minutes past that, never more. A larger change set (a first pass over a busy company) lands
+  over several passes, oldest number first, until it is through.
+- **A read that fails.** Invoices read before it still land, and the cursor moves past them. An
+  invoice deleted between the list and its read (`404`) is stepped over. Any other failure (a
+  `429` past its retries, a server error, an invoice the connector cannot read) fails the
+  scope's row naming the invoice number, and the next pass starts from that invoice. One that
+  can never be read fails every pass by its number rather than being skipped, because a skipped
+  invoice would not reach the operation until someone edited it in Fortnox.
+- **Read-only.** This sweep writes nothing to Fortnox. Invoice files (the scanned PDF) and
+  writing an approval back are not part of it yet.
 
 Each client company is its own connection, told apart by its `externalAccountRef`. On the connector
 pass after a company's connection appears — through the dashboard's Connect, a connect link the
@@ -106,13 +152,11 @@ pushing and promoting the version that declares it is enough, and the next pass 
 hour) grants and binds every company connected so far. A binding written by hand before bindings
 recorded the company is re-written once on that pass.
 
-Each due pass writes one row per connection, shown in Health › Connections: **ok** when the
-polled ledger bindings synced or were unchanged, **skipped** when the connection has no binding,
-**unsupported** when every binding awaits the invoice sweep, and **failed**, naming the scope,
-when a scope could not be landed in or a declared landing could not be granted or bound. A
-connection with ledger and invoice bindings in separate scopes reports the ledger poll's outcome
-and keeps the unsupported invoice scope in the row detail. The unsupported-only row obeys the
-same configured cadence as a ledger poll.
+Each due pass writes one row per connection, shown in Health › Connections: **ok** when every
+polled binding, ledger or invoice, landed or was unchanged, **skipped** when the connection has
+no binding, and **failed**, naming the scope, when a scope could not be landed in or a declared
+landing could not be granted or bound. An operation that refuses the invoice page fails its
+scope this way, naming the scope.
 
 ### Bind a hosted connection by hand
 
@@ -165,9 +209,10 @@ grant_type=client_credentials
 An access token lives an hour and is minted on demand, cached for the life of one sweep pass. One
 client pair serves a whole fleet; `tenantId` is the only part that differs per company.
 
-**What is never stored:** nothing sensitive beyond the client secret. This connector reads
-bookkeeping totals — accounts, cost centres, months, sums. It never reads a customer register, a
-supplier invoice, or an employee record, and it writes nothing back to Fortnox at all.
+**What is never stored:** nothing sensitive beyond the client secret. A ledger binding reads
+bookkeeping totals — accounts, cost centres, months, sums. An invoice binding reads supplier
+invoices and their accounting rows, and only for a scope that declared it. Neither reads a customer
+register or an employee record, and neither writes anything back to Fortnox.
 
 ### The one-time consent
 
@@ -410,9 +455,8 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
 3. **A deployment that schedules the sweep.** The connector provides the driver and cannot hold a
    timer. Without `startPlatformSweeper` or `definePlatformSweeperDO` wired, a binding is inert.
 
-4. **Supplier invoices and their PDFs.** The platform's Connect flow requests `supplierinvoice` at
-   consent and the manifest can declare an invoice binding, but this connector has no supplier
-   invoice read or approve code yet: the binding reports unsupported. The `archive` and
-   `connectfile` scopes are not requested, and because scopes cannot be
+4. **Supplier-invoice files and approvals.** An invoice binding lands the invoices and their rows
+   (above), but not the invoice's file, and nothing is written back to Fortnox. The `archive` and
+   `connectfile` scopes the file needs are not requested, and because scopes cannot be
    widened after consent, a deployment that expects to want them should ask for them in the *first*
    consent round.

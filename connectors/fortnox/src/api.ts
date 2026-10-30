@@ -6,6 +6,8 @@ import { decodeSie } from './sie4.js';
 // connector pulls in no platform typings, exactly as `connector-scrive` does.
 declare const TextDecoder: new (label?: string) => { decode(input: ArrayBuffer | Uint8Array): string };
 declare const btoa: (data: string) => string;
+// The default `sleep` only: web-standard in Node, Workers and browsers alike. Tests inject their own.
+declare const setTimeout: (handler: () => void, timeout: number) => unknown;
 declare const URL: new (input: string) => { searchParams: { set(k: string, v: string): void }; toString(): string };
 
 /**
@@ -150,6 +152,75 @@ export const fortnoxCompany = z.object({
 });
 export type FortnoxCompany = z.infer<typeof fortnoxCompany>;
 
+/** A number Fortnox may send as a JSON number or as a string. Kept as a string: never arithmetic on floats. */
+const fortnoxNumber = z.union([z.number(), z.string().min(1)]).transform(String);
+
+/**
+ * One supplier invoice, as `GET /3/supplierinvoices/{GivenNumber}` returns it. Only the fields
+ * the invoice landing carries are read; the rest are ignored.
+ */
+const fortnoxSupplierInvoice = z.object({
+  /** Fortnox's own sequence number for the invoice in this company — the key a landing upserts by. */
+  GivenNumber: fortnoxNumber,
+  SupplierNumber: fortnoxText(),
+  SupplierName: fortnoxText(),
+  InvoiceNumber: fortnoxText(),
+  InvoiceDate: fortnoxText(),
+  DueDate: fortnoxText(),
+  Currency: fortnoxText('SEK'),
+  Total: fortnoxNumber,
+  Booked: z.boolean(),
+  Cancelled: z.boolean(),
+  SupplierInvoiceRows: z
+    .array(
+      z.object({
+        Account: fortnoxNumber,
+        CostCenter: fortnoxText(),
+        Debit: fortnoxNumber.default('0'),
+        Credit: fortnoxNumber.default('0'),
+      }),
+    )
+    .default([]),
+});
+export type FortnoxSupplierInvoice = z.infer<typeof fortnoxSupplierInvoice>;
+
+/** How many list entries one `GET /3/supplierinvoices` page asks for — Fortnox's maximum. */
+const LIST_LIMIT = 500;
+
+/**
+ * Fortnox's documented REST limit: 25 requests per 5 seconds per client and company (the
+ * "300 a minute" figure is this, averaged). A sliding window rather than a fixed spacing, so a
+ * short pass goes out at once and only a long burst waits.
+ */
+const RATE_LIMIT_REQUESTS = 25;
+const RATE_LIMIT_WINDOW_MS = 5_000;
+/** 429s in a row one request sits out before the pass fails on it. */
+const RATE_LIMIT_RETRIES = 3;
+
+/**
+ * `Retry-After` in milliseconds: the header's seconds when Fortnox sends one, else a whole
+ * window. Capped, so a provider answering an hour cannot hang a sweep.
+ */
+function retryAfterMs(header: string | null): number {
+  const seconds = header === null || header.trim() === '' ? Number.NaN : Number(header);
+  if (!Number.isFinite(seconds) || seconds < 0) return RATE_LIMIT_WINDOW_MS;
+  return Math.min(seconds * 1000, RATE_LIMIT_WINDOW_MS * 3);
+}
+
+export interface FortnoxApiOptions {
+  apiBase?: string;
+  oauthBase?: string;
+  /** Injected so a test can assert elapsed time without sleeping. */
+  now?: () => number;
+  /** Injected for the same reason: the throttle and the 429 retry wait through this. */
+  sleep?: (ms: number) => Promise<void>;
+  /**
+   * A sliding window SHARED by every client of one pass. The limit is per company, and a
+   * sweep builds one client per binding, so a shared window is what models it.
+   */
+  rateWindow?: number[];
+}
+
 const tokenResponse = z.object({
   access_token: z.string().min(1),
   token_type: z.string().default('bearer'),
@@ -237,17 +308,51 @@ export class FortnoxApi {
    */
   private token: { value: string; expiresAtMs: number } | null = null;
 
-  constructor(
-    conn: ConnectorConnection,
-    options?: { apiBase?: string; oauthBase?: string; now?: () => number },
-  ) {
+  constructor(conn: ConnectorConnection, options?: FortnoxApiOptions) {
     this.conn = conn;
     this.apiBase = options?.apiBase ?? FORTNOX_API_BASE;
     this.oauthBase = options?.oauthBase ?? FORTNOX_OAUTH_BASE;
     this.now = options?.now ?? (() => Date.now());
+    this.sleep = options?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.sent = options?.rateWindow ?? [];
   }
 
   private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  /** When the last {@link RATE_LIMIT_REQUESTS} REST requests went out, oldest first. */
+  private readonly sent: number[];
+
+  /** Wait, if the sliding window says the next REST request would breach Fortnox's limit. */
+  private async throttle(): Promise<void> {
+    const cutoff = this.now() - RATE_LIMIT_WINDOW_MS;
+    while (this.sent.length > 0 && this.sent[0]! <= cutoff) this.sent.shift();
+    if (this.sent.length >= RATE_LIMIT_REQUESTS) {
+      // The oldest request leaving the window is the earliest moment a new one fits.
+      const waitMs = this.sent[0]! + RATE_LIMIT_WINDOW_MS - this.now();
+      if (waitMs > 0) await this.sleep(waitMs);
+      const after = this.now() - RATE_LIMIT_WINDOW_MS;
+      while (this.sent.length > 0 && this.sent[0]! <= after) this.sent.shift();
+    }
+    this.sent.push(this.now());
+  }
+
+  /**
+   * One authenticated REST request, throttled, and waited through a 429 up to
+   * {@link RATE_LIMIT_RETRIES} times. The window only sees this client's traffic: a ledger
+   * connection to the same company, or the company's own integrations, spend from the same
+   * limit, and the retry is what absorbs them.
+   */
+  private async request(path: string, accept?: string): Promise<Awaited<ReturnType<ConnectorConnection['fetch']>>> {
+    for (let attempt = 0; ; attempt += 1) {
+      const token = await this.accessToken();
+      await this.throttle();
+      const res = await this.conn.fetch(`${this.apiBase}${path}`, {
+        headers: { Authorization: `Bearer ${token}`, ...(accept ? { Accept: accept } : {}) },
+      });
+      if (res.status !== 429 || attempt >= RATE_LIMIT_RETRIES) return res;
+      await this.sleep(retryAfterMs(res.headers?.get('Retry-After') ?? null));
+    }
+  }
 
   private secret(): FortnoxSecret {
     const parsed = fortnoxSecret.safeParse(this.conn.secret);
@@ -304,10 +409,7 @@ export class FortnoxApi {
 
   /** A JSON GET against the REST host, authenticated with a freshly-ensured token. */
   private async getJson(path: string): Promise<unknown> {
-    const token = await this.accessToken();
-    const res = await this.conn.fetch(`${this.apiBase}${path}`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    });
+    const res = await this.request(path, 'application/json');
     const body = await res.text();
     if (!res.ok) {
       throw new FortnoxApiError(
@@ -334,6 +436,34 @@ export class FortnoxApi {
   }
 
   /**
+   * The `GivenNumber` of every supplier invoice changed at or after `lastModified` — Fortnox's
+   * `YYYY-MM-DD HH:MM`, in Swedish local time. Every list page is read: the list carries no rows,
+   * so it is the cheap half, and the caller decides how many details to spend.
+   */
+  async supplierInvoicesModifiedSince(lastModified: string): Promise<string[]> {
+    const page = z.object({
+      MetaInformation: z.object({ '@TotalPages': z.number() }).optional(),
+      SupplierInvoices: z.array(z.object({ GivenNumber: fortnoxNumber })).default([]),
+    });
+    const numbers: string[] = [];
+    for (let current = 1, total = 1; current <= total; current += 1) {
+      const query = `lastmodified=${encodeURIComponent(lastModified)}&limit=${LIST_LIMIT}&page=${current}`;
+      const parsed = page.parse(await this.getJson(`/supplierinvoices?${query}`));
+      numbers.push(...parsed.SupplierInvoices.map((i) => i.GivenNumber));
+      total = parsed.MetaInformation?.['@TotalPages'] ?? 1;
+    }
+    return numbers;
+  }
+
+  /** One supplier invoice with its rows. */
+  async supplierInvoice(givenNumber: string): Promise<FortnoxSupplierInvoice> {
+    const raw = (await this.getJson(`/supplierinvoices/${encodeURIComponent(givenNumber)}`)) as {
+      SupplierInvoice?: unknown;
+    };
+    return fortnoxSupplierInvoice.parse(raw.SupplierInvoice ?? raw);
+  }
+
+  /**
    * The whole year's bookkeeping as one SIE4 file — the read this connector exists for.
    *
    * **The response is PC8 (code page 437), not UTF-8 and not latin1**, and nothing in
@@ -346,11 +476,7 @@ export class FortnoxApi {
    * which owns the charset decision for the whole connector.
    */
   async sieFile(financialYearId: number): Promise<string> {
-    const token = await this.accessToken();
-    const path = `/sie/4?financialyear=${financialYearId}`;
-    const res = await this.conn.fetch(`${this.apiBase}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const res = await this.request(`/sie/4?financialyear=${financialYearId}`);
     if (!res.ok) {
       const body = await res.text();
       throw new FortnoxApiError(
