@@ -1152,7 +1152,7 @@ const CAPTURE_SCHEMA_MOVED = 'the scope\'s schema changed while it was copied (a
 const CAPTURE_EXPRESSION_INDEX = 'a table with a unique index on an expression cannot be copied while it takes writes; copy it at a quiet moment';
 /** A write the capture path takes: one whose target is a capture table or a capture trigger. */
 const CAPTURE_STATEMENT =
-  /^\s*(?:CREATE TABLE IF NOT EXISTS|INSERT INTO|UPDATE|DELETE FROM|DROP TABLE IF EXISTS|CREATE TRIGGER IF NOT EXISTS|DROP TRIGGER IF EXISTS)\s+"?_substrat_capture(?:\b|_)/;
+  /^\s*(?:CREATE TABLE IF NOT EXISTS|INSERT INTO|UPDATE|DELETE FROM|DROP TABLE IF EXISTS|CREATE TRIGGER|DROP TRIGGER IF EXISTS)\s+"?_substrat_capture(?:\b|_)/;
 const quoteIdent = (name: string): string => `"${name.replaceAll('"', '""')}"`;
 const quoteText = (text: string): string => `'${text.replaceAll("'", "''")}'`;
 
@@ -1175,7 +1175,7 @@ type UniqueKey = { column: string; collation: string }[];
  * statement's conflict handling wins, so an upsert's update (the write revision's own bump is one)
  * would turn the replace into an abort, and fail the write it logs.
  */
-function captureTriggers(name: string, byRowid: boolean, uniqueKeys: readonly UniqueKey[]): string[] {
+function captureTriggers(name: string, byRowid: boolean, uniqueKeys: readonly UniqueKey[]): { name: string; sql: string }[] {
   const tbl = quoteText(name);
   const table = quoteIdent(name);
   // Keyed on the log's primary key, copy first, so neither statement scans the log.
@@ -1190,8 +1190,12 @@ function captureTriggers(name: string, byRowid: boolean, uniqueKeys: readonly Un
       `INSERT INTO _substrat_capture_changes (copy_id, tbl, rid, batch) SELECT c.copy_id, ${tbl}, t.rowid, NULL FROM _substrat_capture c, ${table} t WHERE ${match};`
     );
   };
-  const on = (kind: string, when: 'AFTER' | 'BEFORE', event: string, body: string) =>
-    `CREATE TRIGGER IF NOT EXISTS ${quoteIdent(`_substrat_capture_${kind}_${name}`)} ${when} ${event} ON ${table} BEGIN ${body} END`;
+  // Spelled as `sqlite_master` keeps it (no IF NOT EXISTS, one space after CREATE TRIGGER), so a
+  // trigger in place can be compared with the one this schema needs, text for text.
+  const on = (kind: string, when: 'AFTER' | 'BEFORE', event: string, body: string) => {
+    const trigger = `_substrat_capture_${kind}_${name}`;
+    return { name: trigger, sql: `CREATE TRIGGER ${quoteIdent(trigger)} ${when} ${event} ON ${table} BEGIN ${body} END` };
+  };
   const triggers = [
     on('i', 'AFTER', 'INSERT', log(byRowid ? 'NEW.rowid' : '0')),
     on('u', 'AFTER', 'UPDATE', byRowid ? log('OLD.rowid') + ' ' + log('NEW.rowid') : log('0')),
@@ -7549,6 +7553,16 @@ export function defineScopeDO(
      * the triggers that fill it on every dumped table. Through the untracked path: a capture is this
      * store's bookkeeping about a copy, not its data, so it moves no write revision, and no dump
      * carries it. Every trigger logs for every open capture, so one set serves overlapping copies.
+     *
+     * One set serving several captures means a capture opening must not vouch for one already open.
+     * So, before its triggers are made:
+     * - every other open capture is held to what `heldCapture` holds it to (the schema its pages read,
+     *   and every trigger it opened with still there) and ended here if it fails, because the triggers
+     *   about to be made again would hide a table rebuilt under it;
+     * - the triggers in place must be exactly the ones this schema needs, text for text. If any
+     *   differ, are missing or are left over (an index added under an open capture, a drop that did
+     *   not run), every other open capture ends, as the triggers it relied on were not these, and the
+     *   whole set is dropped and made again.
      */
     private openCapture(copyId: string, defs: { name: string; sql: string }[]): void {
       // Every trigger is worked out before anything is written, so a table a capture cannot follow
@@ -7557,18 +7571,45 @@ export function defineScopeDO(
         const { byRowid } = this.tableShape(name, sql);
         return captureTriggers(name, byRowid, byRowid ? this.uniqueKeysOf(name) : []);
       });
+      const schema = this.captureSchema(defs);
       this.revision.untracked(() => {
         for (const ddl of CAPTURE_TABLES_DDL) this.sql.exec(ddl);
+        const inPlace = new Map(
+          (this.sql.exec(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name GLOB '${CAPTURE_GLOB}'`).toArray() as {
+            name: string;
+            sql: string;
+          }[]).map((t) => [t.name, t.sql]),
+        );
+        const others = this.sql.exec(`SELECT copy_id, schema, triggers FROM _substrat_capture WHERE copy_id <> ?`, copyId).toArray() as {
+          copy_id: string;
+          schema: string;
+          triggers: number;
+        }[];
+        for (const other of others) {
+          if (other.schema !== schema || Number(other.triggers) !== inPlace.size) this.forgetCapture(other.copy_id);
+        }
+        const current = inPlace.size === triggers.length && triggers.every((t) => inPlace.get(t.name) === t.sql);
+        if (!current) {
+          this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id <> ?`, copyId);
+          this.sql.exec(`DELETE FROM _substrat_capture WHERE copy_id <> ?`, copyId);
+          for (const name of inPlace.keys()) this.sql.exec(`DROP TRIGGER IF EXISTS ${quoteIdent(name)}`);
+          for (const t of triggers) this.sql.exec(t.sql);
+        }
+        // Page 0 asked again starts the pages over: what was logged since its first read is still
+        // to be sent, and is sent again at worst.
         this.sql.exec(
           `INSERT INTO _substrat_capture (copy_id, touched_at, schema, triggers) VALUES (?, ?, ?, ?)
              ON CONFLICT (copy_id) DO UPDATE SET touched_at = excluded.touched_at, schema = excluded.schema, triggers = excluded.triggers`,
-          copyId, Date.now(), this.captureSchema(defs), triggers.length,
+          copyId, Date.now(), schema, triggers.length,
         );
-        // Page 0 asked again starts the pages over: what was logged since its first read is still
-        // to be sent, and is sent again at worst.
-        for (const ddl of triggers) this.sql.exec(ddl);
       });
       this.readCaptureClock();
+    }
+
+    /** Forget the capture `copyId` and its log (#2450), leaving the tables and triggers. Untracked, in the caller's run. */
+    private forgetCapture(copyId: string): void {
+      this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id = ?`, copyId);
+      this.sql.exec(`DELETE FROM _substrat_capture WHERE copy_id = ?`, copyId);
     }
 
     /**
@@ -7781,10 +7822,7 @@ export function defineScopeDO(
         const idle = this.sql
           .exec(`SELECT copy_id FROM _substrat_capture WHERE touched_at <= ?`, Date.now() - CAPTURE_IDLE_MS)
           .toArray() as unknown as { copy_id: string }[];
-        for (const { copy_id } of idle) {
-          this.sql.exec(`DELETE FROM _substrat_capture_changes WHERE copy_id = ?`, copy_id);
-          this.sql.exec(`DELETE FROM _substrat_capture WHERE copy_id = ?`, copy_id);
-        }
+        for (const { copy_id } of idle) this.forgetCapture(copy_id);
       });
       // Read again at the next write, not now: should the write's own transaction roll back, the
       // capture is back, and the next write ends it again.

@@ -259,6 +259,40 @@ describe('a copy catches up on the writes its source took while it was read (#24
     expect(await captureLeft(source)).toEqual([]);
   });
 
+  it('a table rebuilt under one capture still refuses it after a second capture opens and makes its triggers again', async () => {
+    const source = await seed();
+    const a = ulid();
+    await host.exportScopePageLocal(source, null, { capture: a });
+    await sql(source, 'DROP TABLE cc_notes');
+    await sql(source, notes(0).ddl);
+    await sql(source, `INSERT INTO cc_notes (id, body) VALUES ('z1', 'unlogged')`);
+    await host.exportScopePageLocal(source, null, { capture: ulid() });
+    const refused = await host.exportScopeChangesLocal(source, a, 0).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('precondition_failed');
+  });
+
+  it('a unique index added under one capture is followed by the next: its REPLACE lands', async () => {
+    const source = await seed();
+    // A unique key already there, so the first capture opens with BEFORE triggers the index makes stale.
+    await sql(source, 'CREATE UNIQUE INDEX cc_notes_body ON cc_notes (body)');
+    const a = ulid();
+    await host.exportScopePageLocal(source, null, { capture: a });
+    await sql(source, 'CREATE UNIQUE INDEX cc_notes_id ON cc_notes (id)');
+    const copyId = ulid();
+    const dest = scopeId.parse(ulid());
+    const stageId = ulid();
+    const page = await host.exportScopePageLocal(source, null, { capture: copyId });
+    await host.stageScopePageLocal(dest, stageId, 0, page.tables);
+    await sql(source, `INSERT OR REPLACE INTO cc_notes (id, body) VALUES ('n3', 'replaced')`);
+    const changes = await host.exportScopeChangesLocal(source, copyId, 0);
+    expect(changes.final).toBe(true);
+    await host.stageScopeChangesLocal(dest, stageId, 1, changes.tables);
+    await host.restoreStagedScopeLocal(dest, stageId, { sourceScopeId: source });
+    expect(await vertical(dest)).toEqual(await vertical(source));
+    // The first capture read the schema before the index: it was ended when the triggers were made again.
+    expect(errorCodeOf(await host.exportScopeChangesLocal(source, a, 0).catch((e: unknown) => e))).toBe('precondition_failed');
+  });
+
   // A row a REPLACE resolution deletes fires no delete trigger, so each unique key's BEFORE
   // trigger logs it. Every key shape, against every way a write can meet an existing row on it.
   const KEYS: [string, { ddl: string; index?: string; key: (n: number) => string; rowKey: (n: number) => string | null }][] = [
