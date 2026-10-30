@@ -175,10 +175,16 @@ The observability and logs reads go through the generated client like every othe
 A filter that names several values (`service`, `scopeId`, the request facets) is declared as an
 array, sent as a repeated query key and parsed by the mount into a list. The two log reads
 declare `responseHeaders: [x-substrat-logs-incomplete]`, so their client method answers the body
-and only that header. The assistant's tools run the same handlers, so the `service` and
-`scopeId` it names now reach them too. The browser's hand-written `call` reaches the team-less
-routes only. What is still open under #2170: the declared surface does not yet emit an
-`openapi.json` with its `--check` gate.
+and only that header. The browser's hand-written `call` reaches the team-less routes only.
+
+The assistant's tools run the same handlers with the `/ask` request as the Hono context. The
+team logs and the three team series take `service` and `scopeId` from the parsed input, so the
+assistant's values for those reach them. The other handlers still read the request's own query:
+the request and pattern reads forward their filters from it, and every observability handler
+reads its scalar arguments (`hours`, `since`, `until`, `limit`, `level`, …) from it. On the
+assistant path that query is the `/ask` request's, so those filters and arguments are not applied
+there today, and such a call answers the unfiltered default window (#2759). What is still open under
+#2170: the declared surface does not yet emit an `openapi.json` with its `--check` gate.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 
