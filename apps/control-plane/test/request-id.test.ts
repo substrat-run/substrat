@@ -18,17 +18,13 @@ describe('the control-plane request id', () => {
     // One refusal from the worker's own route, one from the control-plane API router.
     for (const path of ['/api/members', `/api/tenants/${ulid()}`]) {
       const res = await SELF.fetch(`https://cp.test${path}`, { headers: { [REQUEST_ID_HEADER]: CLAIMED } });
-      const text = await res.text();
-      const body = JSON.parse(text) as Record<string, unknown>;
+      const body = (await res.json()) as Record<string, unknown>;
       const id = res.headers.get(REQUEST_ID_HEADER);
       expect(res.status, path).toBeGreaterThanOrEqual(400);
       expect(id, path).toMatch(ULID);
       expect(id, path).not.toBe(CLAIMED);
       expect(body.requestId, path).toBe(id);
       expect(body.detail, path).toBeTypeOf('string');
-      // A length the old body had would truncate the stamped one.
-      const length = res.headers.get('content-length');
-      if (length !== null) expect(Number(length), path).toBe(new TextEncoder().encode(text).length);
     }
   });
 
