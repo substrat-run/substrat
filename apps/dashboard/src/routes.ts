@@ -102,6 +102,17 @@ const integrationConnection = z.object({
   lastErrorAt: z.string().nullable(),
   createdAt: z.string(),
 });
+/** A consent-round connect link as the panel shows it; the signed URL only ever rides the mint answer. */
+const appConnectLink = z.object({
+  id: z.string(),
+  provider: z.string(),
+  appScopeId: z.string(),
+  // outstanding · used · revoked; the plane owns the status of an app-minted link.
+  status: z.string(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+  expiresAt: z.string(),
+});
 const integrationProbeBody = connectionProbe.extend({ refused: z.boolean().optional() });
 const integrationProbe = integrationProbeBody.extend({ connection: integrationConnection.optional() });
 const integrationActivity = connectionActivity.extend({
@@ -1274,6 +1285,26 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), connectionId: z.string().min(1), live: z.string().optional(), source: z.string().optional() }),
     output: integrationActivity,
     http: { method: 'GET', path: '/apps/{scopeId}/integrations/{provider}/connections/{connectionId}/activity' },
+  },
+  'dashboard/mint-app-connect-link': {
+    summary: "Mint a single-use consent link for one app's redirect-flow provider",
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), ttlMs: z.number().int().positive().optional() }),
+    output: appConnectLink.extend({ url: z.string() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/integrations/{provider}/connect-links' },
+    status: 201,
+  },
+  'dashboard/list-app-connect-links': {
+    summary: "The outstanding connect links for one app and provider: the dashboard's own and those the app mailed",
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1) }),
+    output: z.object({ links: z.array(appConnectLink.extend({ source: z.enum(['dashboard', 'app']) })) }),
+    http: { method: 'GET', path: '/apps/{scopeId}/integrations/{provider}/connect-links' },
+  },
+  'dashboard/revoke-app-connect-link': {
+    summary: 'Revoke one outstanding connect link of an app; its URL stops working',
+    input: z.object({ scopeId: z.string().min(1), provider: z.string().min(1), linkId: z.string().min(1) }),
+    // A declared route owes an output; the cookie route's empty 204 becomes this 200.
+    output: z.object({ revoked: z.string() }),
+    http: { method: 'DELETE', path: '/apps/{scopeId}/integrations/{provider}/connect-links/{linkId}' },
   },
 
   // -- domains (#2170) --------------------------------------------------------

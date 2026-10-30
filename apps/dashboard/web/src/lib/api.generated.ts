@@ -768,6 +768,13 @@ export interface DashboardClient {
   listAppBookmarks(input: { scopeId: string }): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
 
   /**
+   * The outstanding connect links for one app and provider: the dashboard's own and those the app mailed
+   *
+   * `GET /apps/{scopeId}/integrations/{provider}/connect-links` — `dashboard/list-app-connect-links`
+   */
+  listAppConnectLinks(input: { scopeId: string; provider: string }): Promise<{ links: ({ id: string; provider: string; appScopeId: string; status: string; createdBy: string; createdAt: string; expiresAt: string; source: "dashboard" | "app" })[] }>;
+
+  /**
    * One page of dead-lettered deliveries in this app scope
    *
    * `GET /apps/{scopeId}/dead-letters` — `dashboard/list-app-dead-letters`
@@ -922,6 +929,13 @@ export interface DashboardClient {
   listTeamAudit(input: { scopeId?: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
 
   /**
+   * Mint a single-use consent link for one app's redirect-flow provider
+   *
+   * `POST /apps/{scopeId}/integrations/{provider}/connect-links` — `dashboard/mint-app-connect-link`
+   */
+  mintAppConnectLink(input: { scopeId: string; provider: string; ttlMs?: number }): Promise<{ id: string; provider: string; appScopeId: string; status: string; createdBy: string; createdAt: string; expiresAt: string; url: string }>;
+
+  /**
    * Replay or skip one event edge into this app
    *
    * `POST /apps/{scopeId}/edges/move` — `dashboard/move-app-edge`
@@ -1074,6 +1088,13 @@ export interface DashboardClient {
    * `POST /deployments/{slug}/scopes/move-review` — `dashboard/review-scope-move`
    */
   reviewScopeMove(input: { slug: string; scopeIds: string[]; target: string }): Promise<{ scopes: MoveReviewRow[] }>;
+
+  /**
+   * Revoke one outstanding connect link of an app; its URL stops working
+   *
+   * `DELETE /apps/{scopeId}/integrations/{provider}/connect-links/{linkId}` — `dashboard/revoke-app-connect-link`
+   */
+  revokeAppConnectLink(input: { scopeId: string; provider: string; linkId: string }): Promise<{ revoked: string }>;
 
   /**
    * End a suppress rule now
@@ -1396,6 +1417,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/audit`, "GET", undefined, omit(input, ["scopeId"])),
     listAppBookmarks: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/bookmarks`, "GET", undefined, omit(input, ["scopeId"])),
+    listAppConnectLinks: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connect-links`, "GET", undefined, omit(input, ["scopeId","provider"])),
     listAppDeadLetters: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/dead-letters`, "GET", undefined, omit(input, ["scopeId"])),
     listAppDenials: (input: Args) =>
@@ -1440,6 +1463,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews`, "GET", undefined, omit(input, ["slug"])),
     listTeamAudit: (input: Args) =>
       send("/audit", "GET", undefined, input),
+    mintAppConnectLink: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connect-links`, "POST", omit(input, ["scopeId","provider"]), undefined),
     moveAppEdge: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/edges/move`, "POST", omit(input, ["scopeId"]), undefined),
     moveScopes: (input: Args) =>
@@ -1484,6 +1509,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/retry`, "POST", omit(input, ["scopeId"]), undefined),
     reviewScopeMove: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes/move-review`, "POST", omit(input, ["slug"]), undefined),
+    revokeAppConnectLink: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connect-links/${encodeURIComponent(String(input.linkId))}`, "DELETE", undefined, omit(input, ["scopeId","provider","linkId"])),
     revokeFindingRule: (input: Args) =>
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     revokeInvite: (input: Args) =>

@@ -677,14 +677,21 @@ function ConnectDialog({
   useEffect(() => {
     if (!redirect || DEV_MOCK || target === '') return;
     let live = true;
-    api
-      .connectLinks(target, provider.provider)
+    teamApi(teamId)
+      .listAppConnectLinks({ scopeId: target, provider: provider.provider })
       .then((v) => live && setLinks(v.links))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [redirect, target, provider.provider]);
+  }, [redirect, teamId, target, provider.provider]);
+
+  const refreshLinks = async () => {
+    const refreshed = await teamApi(teamId)
+      .listAppConnectLinks({ scopeId: target, provider: provider.provider })
+      .catch(() => null);
+    if (refreshed) setLinks(refreshed.links);
+  };
 
   /** Mint a fresh single-use link and follow it — the Connect button's whole journey. */
   const goConnect = async () => {
@@ -693,11 +700,11 @@ function ConnectDialog({
     setErr(null);
     try {
       // Short-lived on purpose: this link is spent within seconds, by this browser.
-      const link = await api.mintConnectLink(target, provider.provider, { ttlMs: 10 * 60 * 1000 });
+      const link = await teamApi(teamId).mintAppConnectLink({ scopeId: target, provider: provider.provider, ttlMs: 10 * 60 * 1000 });
       window.location.assign(link.url);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 503) setUnavailable(e.message);
-      else setErr(e instanceof ApiError ? e.message : String(e));
+      if (e instanceof TeamApiError && e.status === 503) setUnavailable(e.message);
+      else setErr(e instanceof TeamApiError ? e.message : String(e));
       setBusy(false);
     }
   };
@@ -708,28 +715,26 @@ function ConnectDialog({
     setBusy(true);
     setErr(null);
     try {
-      const link = await api.mintConnectLink(target, provider.provider);
+      const link = await teamApi(teamId).mintAppConnectLink({ scopeId: target, provider: provider.provider });
       // The clipboard write can be refused (no permission, insecure context) — the URL
       // is shown below either way, but the message must not claim a copy that failed.
       const copied = await navigator.clipboard.writeText(link.url).then(() => true, () => false);
       setMinted({ url: link.url, expiresAt: link.expiresAt, copied });
-      const refreshed = await api.connectLinks(target, provider.provider).catch(() => null);
-      if (refreshed) setLinks(refreshed.links);
+      await refreshLinks();
     } catch (e) {
-      if (e instanceof ApiError && e.status === 503) setUnavailable(e.message);
-      else setErr(e instanceof ApiError ? e.message : String(e));
+      if (e instanceof TeamApiError && e.status === 503) setUnavailable(e.message);
+      else setErr(e instanceof TeamApiError ? e.message : String(e));
     }
     setBusy(false);
   };
 
   const revokeLink = async (linkId: string) => {
     try {
-      await api.revokeConnectLink(target, provider.provider, linkId);
+      await teamApi(teamId).revokeAppConnectLink({ scopeId: target, provider: provider.provider, linkId });
     } catch {
       // The refetch shows the surviving state either way.
     }
-    const refreshed = await api.connectLinks(target, provider.provider).catch(() => null);
-    if (refreshed) setLinks(refreshed.links);
+    await refreshLinks();
     setMinted(null);
   };
 

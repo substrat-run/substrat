@@ -351,6 +351,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'DELETE /apps/{id} dashboard/remove-app',
       'DELETE /apps/{scopeId}/env/{key} dashboard/delete-app-env',
       'DELETE /apps/{scopeId}/integrations/{provider} dashboard/disconnect-app-integration',
+      'DELETE /apps/{scopeId}/integrations/{provider}/connect-links/{linkId} dashboard/revoke-app-connect-link',
       'DELETE /apps/{scopeId}/integrations/{provider}/connections/{connectionId} dashboard/disconnect-app-connection',
       'DELETE /apps/{scopeId}/snapshots/{snapshotId} dashboard/delete-app-snapshot',
       'POST /apps dashboard/install-app',
@@ -358,6 +359,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
       'POST /apps/{scopeId}/edges/move dashboard/move-app-edge',
       'POST /apps/{scopeId}/email-sender dashboard/set-app-email-sender',
       'POST /apps/{scopeId}/integrations/{provider} dashboard/connect-app-integration',
+      'POST /apps/{scopeId}/integrations/{provider}/connect-links dashboard/mint-app-connect-link',
       // #2343: the mail send test; its gate and recipient are held in send-test-door.test.ts.
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/send-test dashboard/send-test-app-connection',
       'POST /apps/{scopeId}/integrations/{provider}/connections/{connectionId}/verify dashboard/verify-app-connection',
