@@ -281,6 +281,15 @@ describe('RequestsMode', () => {
     expect(container.textContent).toContain('200 ok');
   });
 
+  it('#2762: under Live, another app clears the last answer instead of showing it under the new one', async () => {
+    reads();
+    await render({ live: true });
+    vi.spyOn(api, 'appRequests').mockReturnValue(new Promise(() => {}));
+    await render({ live: true, scopeId: 'app-b' });
+    expect(container.textContent).not.toContain('409 conflict');
+    expect(container.textContent).toContain('Loading requests');
+  });
+
   it('says a 501 is "not on this platform", never an empty app', async () => {
     const unconfigured = new ApiError(501, 'observability is not configured on this platform');
     vi.spyOn(api, 'appRequestVolume').mockRejectedValue(unconfigured);

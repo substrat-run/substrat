@@ -1,5 +1,5 @@
 import { exactTime, type ObsQuery } from '../lib/observability-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button, Input } from '@substrat-run/ui';
 import { type EventFacetAnswer, api, isApiError, type ObservabilityLogEvent } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
@@ -100,10 +100,21 @@ export function TenantLogs({
   // #2762: "Load more" — older pages appended below the first, and whether the last one
   // brought anything new (a page of nothing new means the window is read to its start).
   const [more, setMore] = useState<{ loading: boolean; exhausted: boolean; error: string | null }>({ loading: false, exhausted: false, error: null });
+  // Which first-page read the lines on screen belong to. A page of older lines still in
+  // flight when another read starts belongs to the old one, and is dropped on arrival.
+  const generation = useRef(0);
+  // What the lines are an answer TO, less the window's position: a Live tick keeps them up,
+  // another filter or range length clears them.
+  const asked = useRef<string | null>(null);
 
   useEffect(() => {
     let current = true;
-    if (!live) setRead(null);
+    generation.current += 1;
+    const span = cursor ? Date.parse(cursor.to) - Date.parse(cursor.from) : hours;
+    const question = JSON.stringify([teamId, scopeId, level, search, invocationId, template, span]);
+    const same = asked.current === question;
+    asked.current = question;
+    if (!live || !same) setRead(null);
     setLogsError(null);
     setMore({ loading: false, exhausted: false, error: null });
     void (async () => {
@@ -177,6 +188,7 @@ export function TenantLogs({
       setMore({ loading: false, exhausted: true, error: null });
       return;
     }
+    const mine = generation.current;
     setMore((m) => ({ ...m, loading: true, error: null }));
     try {
       const page = await api.appTenantLogsRead(teamId, scopeId, {
@@ -188,11 +200,13 @@ export function TenantLogs({
         invocationId,
         ...(template ? { template } : {}),
       });
+      if (mine !== generation.current) return;
       const seen = new Set(logs.map(lineKey));
       const fresh = page.events.filter((e) => !seen.has(lineKey(e)));
       setRead((r) => (r ? { events: [...r.events, ...fresh], incomplete: r.incomplete || page.incomplete } : r));
       setMore({ loading: false, exhausted: fresh.length === 0, error: null });
     } catch (e) {
+      if (mine !== generation.current) return;
       setMore({ loading: false, exhausted: false, error: isApiError(e) ? `Older lines could not be read (${e.status}).` : 'Older lines could not be read right now.' });
     }
   };

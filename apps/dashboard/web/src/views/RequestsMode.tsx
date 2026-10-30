@@ -104,13 +104,20 @@ export function RequestsMode({
   const [facets, setFacets] = useState<Loaded<RequestFacets>>(null);
   const [rows, setRows] = useState<Loaded<RequestRecord[]>>(null);
   const [goLives, setGoLives] = useState<ReleaseMarker[]>([]);
+  // What the answers on screen are an answer TO, less the window's position: a Live tick
+  // slides the window and keeps them up, while another app, filter or range length clears
+  // them — an old app's rows must never sit under a new app's name.
+  const asked = useRef<string | null>(null);
   const where = whereOf(q);
   const whereKey = JSON.stringify(where);
   const span = { from: Date.parse(window.from), to: Date.parse(window.to) };
 
   useEffect(() => {
     let current = true;
-    if (!live) {
+    const question = JSON.stringify([teamId, scopeId, whereKey, span.to - span.from]);
+    const same = asked.current === question;
+    asked.current = question;
+    if (!live || !same) {
       setVolume(null);
       setFacets(null);
       setRows(null);

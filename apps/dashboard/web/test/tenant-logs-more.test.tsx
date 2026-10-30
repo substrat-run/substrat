@@ -44,4 +44,19 @@ describe('TenantLogs › Load more', () => {
     expect(button()).toBeUndefined();
     expect(container.textContent).toContain('No older lines in this window');
   });
+
+  it('drops a page of older lines that arrives after the query changed', async () => {
+    let older!: (v: { events: ObservabilityLogEvent[]; incomplete: boolean }) => void;
+    vi.spyOn(api, 'appTenantLogsRead')
+      .mockResolvedValueOnce({ events: [line('first query', T)], incomplete: false })
+      .mockReturnValueOnce(new Promise((r) => (older = r)))
+      .mockResolvedValueOnce({ events: [line('second query', T)], incomplete: false });
+    const at = (level: string) => <TenantLogs teamId="team-a" scopeId="app-a" hours={24} nonce={0} window={window} filters={{ level }} />;
+    await act(async () => root.render(at('info')));
+    await act(async () => button()!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await act(async () => root.render(at('error')));
+    await act(async () => older({ events: [line('stale page', T - 60_000)], incomplete: false }));
+    expect(container.textContent).toContain('second query');
+    expect(container.textContent).not.toContain('stale page');
+  });
 });
