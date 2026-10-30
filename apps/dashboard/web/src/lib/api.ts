@@ -1471,9 +1471,10 @@ export interface ExportBreakRow {
 /**
  * The declared surface (#2170), bound to ONE team: every call goes to
  * `/api/teams/<teamId>/…`, so the request names its team in its own URL. The `sb_team`
- * cookie, which every tab shares, is no longer what a request acts on. `call` below
- * reaches the team-less routes and the observability reads, which are declared in
- * `src/routes.ts` but need repeated query parameters or a response header.
+ * cookie, which every tab shares, is no longer what a request acts on. The hand-written
+ * helpers below (`call`, `callWithHeaders`) reach the team-less routes and the
+ * observability reads, which are declared in `src/routes.ts` but need repeated query
+ * parameters or a response header.
  *
  * Build it from the team the TAB is on (`me.currentTeamId`, pinned by the URL), never
  * once at module load.
