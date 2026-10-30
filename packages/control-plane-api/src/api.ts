@@ -3284,8 +3284,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // fresh id, or rotate the one live row in place so its grant tuples survive — behind
   // platform-actor auth instead of the vertical-harness PLATFORM_SECRET. The tenant is
   // the path's, never the body's: a body naming a different tenant is refused, not
-  // silently rewritten. Always tenant-owned (#2732): a scope's own connection is made only by
-  // that scope, through the vertical's relay.
+  // silently rewritten.
   app.post('/tenants/:tenantId/connections', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const raw = await c.req.json();
@@ -3295,7 +3294,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     try {
       return c.json(
-        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId, owner: 'tenant' }, {
+        await relayConnectionUpsert(c.var.host, c.get('actor'), { ...body, tenantId }, {
           probeCandidate,
           prepareCandidate,
           ...(options.verticalConnectorDeclaration ? { declarationOf: options.verticalConnectorDeclaration } : {}),
@@ -3528,7 +3527,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.post('/tenants/:tenantId/connections/:id/verify', async (c) => {
     const row = await inspectableConnection(c);
-    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    // #2732: a connector opens the tenant's connection for a provider, so a scope's own reads as absent here.
+    if (!row || row.ownerScopeId !== null) return refuse(c, 'not_found', 'unknown connection');
     const probe = inspectorOf(row)?.probe;
     if (!probe) {
       return refuseStatus(c, 501, `no probe registered for provider '${row.provider}'`);
@@ -3631,7 +3631,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.get('/tenants/:tenantId/connections/:id/credential', async (c) => {
     const row = await inspectableConnection(c);
-    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    // #2732: as /verify, a scope's own connection reads as absent until its own read exists.
+    if (!row || row.ownerScopeId !== null) return refuse(c, 'not_found', 'unknown connection');
     const credential = inspectorOf(row)?.credential;
     if (!credential) {
       return refuseStatus(c, 501, `no credential view registered for provider '${row.provider}'`);

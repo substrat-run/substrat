@@ -497,7 +497,8 @@ export function verticalConnectorDispatchHandler(deps: VerticalConnectorDeps): P
           `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
       };
     }
-    const rows = await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider });
+    // Tenant-owned only (#2732): a scope's own connection is not the tenant's dispatch connection.
+    const rows = await deps.host.admin.listConnections(deps.actor, { tenantId: ctx.tenantId, vertical: ctx.vertical, provider, ownerScopeId: null });
     if (rows.length !== 1) {
       throw new Error(
         rows.length === 0

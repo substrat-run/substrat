@@ -1417,6 +1417,15 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t1}/connections/${created.connectionId}/activity`)).status).toBe(501);
     expect((await req(`/tenants/${t1}/connections/${created.connectionId}/credential`)).status).toBe(501);
 
+    // #2732: a connector opens the tenant's connection for a provider, so a scope's own reads as
+    // absent here rather than answering with the tenant's credential under its id.
+    const own = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, {
+      id: own, tenantId: t1, vertical: 'inspect-vert', provider: 'scrive', label: 'own', secret: { clientId: 'own' }, ownerScopeId: sInspect,
+    });
+    expect((await ireq(`/tenants/${t1}/connections/${own}/verify`, { method: 'POST' })).status).toBe(404);
+    expect((await ireq(`/tenants/${t1}/connections/${own}/credential`)).status).toBe(404);
+
     // A revoked connection has no secret left to probe with — 404, like an absent one.
     await host.admin.revokeConnection(staff, connectionId.parse(created.connectionId));
     expect((await ireq(`/tenants/${t1}/connections/${created.connectionId}/verify`, { method: 'POST' })).status).toBe(404);
