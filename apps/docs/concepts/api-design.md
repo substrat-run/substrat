@@ -292,8 +292,10 @@ exposes it already. A failure needs none of that, since its body carries the id.
 plane's `/api` answers carry both too, under an id it mints per request. It names the request to
 the control plane, not to an app, so an app's request view will not find it. A failure the
 control plane recorded (a 5xx, or a withheld failure's `reference`) is filed under that same id,
-and a refusal it decided records nothing. The CLI prints it on a failed call, as a final
-`request id:` line, and the client's `ControlPlaneError` carries it as `requestId`.
+and a refusal it decided records nothing. `substrat push`, `promote`, `preview` and the
+CLI's control-plane reads print it as a final `request id:` line when they fail (`substrat
+hostnames` still prints the bare error), and the client's `ControlPlaneError` carries it as
+`requestId`.
 
 ::: warning A status read from the sentence is deprecated
 A throw that declares nothing still gets a status from its wording, for now: "permission
