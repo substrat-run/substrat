@@ -585,9 +585,11 @@ tenant-wide connection bound here, whose sweeps cover every scope it lands in an
 this one fares. `status` is the connection's (`expired` or `error` asks for a reconnect).
 `lastSyncedAt` is the last sweep that completed, and `lastError` the last that failed, in the
 platform's words with a reference staff can trace; the provider's own answer is never in it.
-Sweep records are kept 14 days, so a `null` means none in that window, not necessarily never, and
-`lastError` can be older than `lastSyncedAt`: compare the two to tell a past failure from a current
-one.
+Only sweeps since `boundAt` count, so a rebind starts afresh. Sweep records are kept 14 days, so a
+`null` means none in that window, not necessarily never, and `lastError` can be older than
+`lastSyncedAt`: compare the two to tell a past failure from a current one. A binding nothing polls
+(its sweep is skipped, or unsupported for that binding) reads `null` in both, as one not swept yet
+does.
 
 ## `mailInAddress(request)`
 

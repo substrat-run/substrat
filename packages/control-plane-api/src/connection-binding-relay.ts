@@ -16,6 +16,7 @@ import {
   connectionUnbindResult,
   connectionBindingsRequest,
   connectionBindingsResult,
+  isVerticalConnectorProvider,
   type Connection,
   type ConnectionBindingsResult,
   type ConnectionBindResult,
@@ -230,17 +231,18 @@ export async function relayConnectionBindings(
     own.map(async (connection) => {
       const binding = (await options.bindings(host, connection))?.find((b) => b.scopeId === scope.id);
       if (!binding) return [];
+      // Only this binding's sweeps: a period before an unbind and rebind is not its record.
       const last = async (outcome: 'ok' | 'failed') =>
-        (await host.admin.listSweepRuns(actor, { kind: 'connector', unit: connection.id, tenantId: scope.tenantId, outcome, limit: 1 }))[0];
+        (await host.admin.listSweepRuns(actor, { kind: 'connector', unit: connection.id, tenantId: scope.tenantId, outcome, since: binding.boundAt, limit: 1 }))[0];
       const [ok, failed] = await Promise.all([last('ok'), last('failed')]);
+      const stored = Object.fromEntries(Object.entries(binding).filter(([k]) => !FIXED.has(k) && !INSPECTION.has(k)));
       return [{
         connectionId: connection.id,
         provider: connection.provider,
         status: connection.status,
-        // The provider's options only: a poll connector's record also holds its sync cursor.
-        options: connectionBindingOptions(connection.provider)
-          .strip()
-          .parse(Object.fromEntries(Object.entries(binding).filter(([k]) => !FIXED.has(k) && !INSPECTION.has(k)))),
+        // A vertical connector's options are what its own bind stored. A built-in's record also
+        // holds its sync cursor, so it is cut to the provider's options.
+        options: isVerticalConnectorProvider(connection.provider) ? stored : connectionBindingOptions(connection.provider).strip().parse(stored),
         boundAt: binding.boundAt,
         lastSyncedAt: ok?.at ?? null,
         // The pass writes a failed row's `error` in the platform's words; the provider's own answer

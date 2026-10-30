@@ -11,6 +11,8 @@ import {
   principalId,
   scopeId,
   tenantId,
+  verticalConnectorBinding,
+  verticalConnectorBindingKey,
   type Connection,
   type ConnectionId,
   type ScopeId,
@@ -23,7 +25,9 @@ import {
   relayConnectionBindings,
   relayConnectionUnbind,
   relayConnectionUpsert,
+  verticalConnectorInspector,
   type ConnectionBindingRelayOptions,
+  type VerticalConnectorDeps,
 } from '../src/index.js';
 import { heldVersion } from './held-manifest.js';
 
@@ -124,7 +128,7 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect((await listPlanimaBindings(host, conn)).map((x) => [x.scopeId, x.operation, x.permission])).toEqual([[a, 'drive/land', LAND]]);
     // Not swept yet: the status read lists it with neither time.
     expect(await statusOfA()).toEqual([expect.objectContaining({ connectionId: conn, boundAt: bound.boundAt, lastSyncedAt: null, lastError: null })]);
-    const row =(await host.admin.auditLog(relayActor, { tenantId: t })).find((e) => e.action === 'bindConnectionScope');
+    const row = (await host.admin.auditLog(relayActor, { tenantId: t })).find((e) => e.action === 'bindConnectionScope');
     expect(row?.after).toMatchObject({ connectionId: conn, requestedBy: person, phase: 'applied' });
   });
 
@@ -277,10 +281,15 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     expect(await holds(a, conn)).toBe(false);
     expect(await listPlanimaBindings(host, conn)).toEqual([]);
     expect(await statusOfA()).toEqual([]);
-    // The connection itself stays the scope's, and binding again resumes.
-    await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
+    // The connection itself stays the scope's, and binding again resumes, with a status of its own:
+    // a failure before the rebind is not this binding's.
+    const rebound = await relayConnectionBind(host, relayActor, bindBody(a, conn), landings());
     expect(await holds(a, conn)).toBe(true);
-    expect((await statusOfA()).map((x) => x.connectionId)).toEqual([conn]);
+    await host.admin.recordSweepRun({
+      kind: 'connector', unit: conn, outcome: 'failed', tenantId: t, connectionId: conn, error: 'before the rebind',
+      at: new Date(Date.parse(rebound.boundAt) - 60_000).toISOString(),
+    });
+    expect(await statusOfA()).toEqual([expect.objectContaining({ connectionId: conn, lastSyncedAt: null, lastError: null })]);
     const revokes = (await host.admin.auditLog(relayActor, { tenantId: t })).filter((e) => e.action === 'revokeFromConnection');
     expect(revokes.map((e) => e.before)).toEqual([expect.objectContaining({ connectionId: conn, revokedBy: person })]);
   });
@@ -332,6 +341,25 @@ describe('a scope binds its own connection through the relay (#2732)', () => {
     }]);
     expect(JSON.stringify(bindings)).not.toContain('payroll');
     expect(await refusal(relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, statusOf(false)))).toBe(403);
+  });
+
+  it("lists a vertical connector's binding with the options its own bind stored, through the inspector the control plane reads", async () => {
+    // The only kind a scope owns in production: a vertical-defined provider, bound by its connector.
+    const conn = connectionId.parse(ulid());
+    await host.admin.createConnection(relayActor, { id: conn, tenantId: t, vertical: SLUG, provider: 'acme.files', label: 'own', secret: { token: 't' }, ownerScopeId: a });
+    const stored = { scopeId: a, operation: 'drive/land', permission: LAND, options: { folder: 'f-1', folderId: 'id-1' }, declared: { folder: 'f-1' }, boundAt: new Date().toISOString() };
+    await host.admin.putConnectorState(conn, verticalConnectorBindingKey(a), verticalConnectorBinding.parse(stored));
+    const unused = () => {
+      throw new Error('a bindings read calls no connector');
+    };
+    const deps: VerticalConnectorDeps = { host, actor: relayActor, resolve: unused, call: unused, now: () => new Date().toISOString() };
+
+    const { bindings } = await relayConnectionBindings(host, relayActor, { tenantId: t, scopeId: a }, {
+      proven: true,
+      bindings: (h, row) => verticalConnectorInspector(deps, row.provider, { tenantId: row.tenantId, vertical: row.vertical, scopeId: null }).bindings(h, row),
+    });
+
+    expect(bindings).toEqual([expect.objectContaining({ connectionId: conn, provider: 'acme.files', options: { folder: 'f-1', folderId: 'id-1' }, boundAt: stored.boundAt })]);
   });
 
   it("makes each scope's own connection on one account through the upsert, refused where it cannot be the scope's", async () => {

@@ -1646,8 +1646,10 @@ export const connectionBindingStatus = z
     options: z.record(z.string(), z.unknown()),
     boundAt: instant,
     /**
-     * When a sweep of this connection last completed `ok`. Sweep records are kept 14 days, so `null`
-     * means none in that window, not necessarily never.
+     * When a sweep of this binding last completed `ok`; only sweeps since `boundAt` count, so a
+     * rebind starts afresh. Sweep records are kept 14 days, so `null` means none in that window,
+     * not necessarily never. A binding nothing polls (its sweep is skipped or unsupported) reads
+     * `null` here and in `lastError`, as one not swept yet does.
      */
     lastSyncedAt: instant.nullable(),
     /**
