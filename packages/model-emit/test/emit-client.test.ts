@@ -277,6 +277,33 @@ describe('rendering a client', () => {
   it('is deterministic — the same model renders the same bytes', () => {
     expect(render()).toBe(out);
   });
+
+  it('#2170: repeats an array query field and hands back named headers, emitting neither runtime for a client that declares neither', () => {
+    const printed = render({
+      'demo/read-logs': {
+        summary: 'Logs', input: z.object({ service: z.array(z.string()).optional() }), output: z.array(z.string()),
+        http: { method: 'GET', path: '/logs' }, responseHeaders: ['x-incomplete'],
+      },
+    });
+    expect(printed).toContain('readLogs(input: { service?: string[] }): Promise<{ body: string[]; headers: Headers }>;');
+    expect(printed).toContain('withHeaders(["x-incomplete"], "/logs", "GET", undefined, input)');
+    expect(printed).toContain('if (Array.isArray(v)) for (const each of v) params.append(k, String(each));');
+    expect(out).not.toContain('Array.isArray(v)');
+    expect(out).not.toContain('withHeaders');
+  });
+
+  it('a refusal whose body is not JSON (an edge’s HTML page) is still an ApiError carrying its status', async () => {
+    const { stripTypeScriptTypes } = await import('node:module');
+    const url = `data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(out, { mode: 'transform' })).toString('base64')}`;
+    const { createClient, ApiError } = (await import(url)) as {
+      createClient(o: { fetch: typeof fetch }): { createNote(i: { body: string }): Promise<unknown> };
+      ApiError: new (...a: never[]) => Error & { status: number };
+    };
+    const client = createClient({ fetch: async () => new Response('<html>502</html>', { status: 502, statusText: 'Bad Gateway' }) });
+    const err = await client.createNote({ body: 'x' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 502, message: 'Bad Gateway' });
+  });
 });
 
 describe('what rendering refuses', () => {

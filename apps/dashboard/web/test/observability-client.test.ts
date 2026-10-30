@@ -59,6 +59,10 @@ describe('observability team paths (#2170)', () => {
     // The bare-list read answers as it always has, header or not.
     answer({ [LOGS_INCOMPLETE_HEADER]: '1' });
     expect(await api.observabilityLogs('team-a', { services: ['one'] })).toEqual(lines);
+    // The declared route hands back the header it names, and no other (#2170).
+    answer({ [LOGS_INCOMPLETE_HEADER]: '1', 'x-other': 'kept-out' });
+    const { headers } = await teamApi('team-a').observabilityLogs({ service: ['one'] });
+    expect([...headers.keys()]).toEqual([LOGS_INCOMPLETE_HEADER]);
   });
 
   it('reports the logs-incomplete header of an app’s tenant logs exactly when the worker passes it on (#2521)', async () => {
@@ -81,7 +85,7 @@ describe('observability team paths (#2170)', () => {
       seen.push(String(url));
       return Response.json({});
     }) as typeof fetch;
-    const filters = new URLSearchParams([['level', 'warn'], ['level', 'error']]);
+    const filters = { level: ['warn', 'error'] };
     await api.appTenantLogs('team-a', 'app-1', { hours: 24 });
     await api.appRequestVolume('team-b', 'app-2', filters);
     await api.appRequestFacets('team-a', 'app-1', filters);

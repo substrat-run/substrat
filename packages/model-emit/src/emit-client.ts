@@ -355,6 +355,18 @@ interface HttpOp {
   readonly paged?: { readonly sortKey?: string; readonly total?: boolean };
   /** #129: this operation participates in optimistic concurrency. */
   readonly concurrency?: { readonly over: string; readonly idFrom: string };
+  /** #2170: the response headers the method hands back beside the body. */
+  readonly responseHeaders?: readonly string[];
+}
+
+/** A field a query string carries once per value: declared as an array, under any transparent wrapper. */
+function isRepeated(schema: unknown): boolean {
+  const def = defOf(schema);
+  if (def?.type === 'array') return true;
+  if (def?.type === 'optional' || def?.type === 'nullable' || def?.type === 'nullish' || TRANSPARENT.has(def?.type ?? '')) {
+    return isRepeated(def?.innerType ?? def?.in);
+  }
+  return false;
 }
 
 const pathParams = (path: string) => [...path.matchAll(/\{(\w+)\}/g)].map((m) => m[1] as string);
@@ -541,6 +553,8 @@ export function renderClient(
   const impls: string[] = [];
   let anyPaged = false;
   let anyGuarded = false;
+  let anyRepeated = false;
+  let anyHeaders = false;
 
   for (const [operation, op] of declared) {
     const method = methodName(operation, ownPrefix);
@@ -567,9 +581,18 @@ export function renderClient(
     const inputType = op.input ? tsObject(inputShape, { ...ctx, where: `${where}.input` }) : '{}';
 
     const entryType = tsType(op.output, { ...ctx, where: `${where}.output` });
-    const returnType = op.paged ? `Paged<${maybeParen(entryType, ctx)}>` : entryType;
+    const headers = op.responseHeaders ?? [];
+    if (headers.length && (op.paged || op.concurrency)) {
+      fail(`${where}: \`responseHeaders\` cannot be combined with a paged or concurrency-checked read`);
+    }
+    const returnType = op.paged
+      ? `Paged<${maybeParen(entryType, ctx)}>`
+      : headers.length ? `{ body: ${entryType}; headers: Headers }` : entryType;
     if (op.paged) anyPaged = true;
     if (op.concurrency) anyGuarded = true;
+    if (headers.length) anyHeaders = true;
+    const takesBody = ['POST', 'PUT', 'PATCH'].includes(op.http.method);
+    if (!takesBody && Object.values(inputShape).some(isRepeated)) anyRepeated = true;
 
     const signature = hasInput ? `input: ${inputType}` : '';
     const doc = [
@@ -586,6 +609,7 @@ export function renderClient(
             '   * write that would overwrite someone else\'s change fails with 412 instead.',
           ]
         : []),
+      ...(headers.length ? ['   *', `   * Answers the body beside the response headers ${headers.map((h) => `\`${h}\``).join(', ')}, and no others.`] : []),
       '   */',
     ].join('\n');
 
@@ -594,21 +618,20 @@ export function renderClient(
     // Path parameters are spliced out of the payload; what is left is a body for a
     // writing method and a query string for a read — exactly what mountOperations
     // expects on the other side, which is the only reason this can be derived.
-    const takesBody = ['POST', 'PUT', 'PATCH'].includes(op.http.method);
     const pathExpr = params.length
       ? '`' + op.http.path.replace(/\{(\w+)\}/g, (_, p: string) => `\${encodeURIComponent(String(input.${p}))}`) + '`'
       : JSON.stringify(op.http.path);
     const rest = params.length ? `omit(input, ${JSON.stringify(params)})` : hasInput ? 'input' : 'undefined';
-    const call = op.paged ? 'page' : op.concurrency ? 'guarded' : 'send';
+    const call = op.paged ? 'page' : op.concurrency ? 'guarded' : headers.length ? 'withHeaders' : 'send';
     // A guarded call carries the entity it is about, so the runtime can key the tag
     // it caches. Read off the declaration rather than guessed from the path: the id
     // field and the path parameter are usually the same and are not required to be.
-    const guardArgs = op.concurrency
+    const leadArgs = op.concurrency
       ? `${JSON.stringify(op.concurrency.over)}, input.${op.concurrency.idFrom}, `
-      : '';
+      : headers.length ? `${JSON.stringify(headers)}, ` : '';
     impls.push(
       `    ${method}: (${hasInput ? 'input: Args' : ''}) =>\n` +
-        `      ${call}(${guardArgs}${pathExpr}, ${JSON.stringify(op.http.method)}, ${takesBody ? `${rest}, undefined` : `undefined, ${rest}`}),`,
+        `      ${call}(${leadArgs}${pathExpr}, ${JSON.stringify(op.http.method)}, ${takesBody ? `${rest}, undefined` : `undefined, ${rest}`}),`,
     );
   }
 
@@ -631,13 +654,21 @@ const omit = (input: Record<string, unknown>, keys: string[]): Record<string, un
   return out;
 };
 
-/** Declared fields become a query string; \`undefined\` is absent rather than the string "undefined". */
+/** Declared fields become a query string; \`undefined\` is absent rather than the string "undefined".${
+  anyRepeated ? ' An array is its key once per value.' : ''
+} */
 const query = (values: Record<string, unknown> | undefined): string => {
   if (!values) return '';
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(values)) {
-    if (v === undefined || v === null) continue;
-    params.set(k, String(v));
+    if (v === undefined || v === null) continue;${
+      anyRepeated
+        ? `
+    if (Array.isArray(v)) for (const each of v) params.append(k, String(each));
+    else params.set(k, String(v));`
+        : `
+    params.set(k, String(v));`
+    }
   }
   const s = params.toString();
   return s ? \`?\${s}\` : '';
@@ -690,14 +721,37 @@ export function createClient(options: ClientOptions = {}): ${config.name}Client 
 
   const parse = async (res: Response): Promise<unknown> => {
     const text = await res.text();
-    const body: unknown = text ? JSON.parse(text) : null;
-    if (!res.ok) throw new ApiError(res.status, readMessage(body, res) ?? res.statusText, body);
-    return body;
+    if (!res.ok) {
+      let body: unknown = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        // A refusal from in front of the app (an edge's HTML 502) is not JSON; its status still says what happened.
+      }
+      throw new ApiError(res.status, readMessage(body, res) ?? res.statusText, body);
+    }
+    return text ? JSON.parse(text) : null;
   };
 
   const send = async (path: string, method: string, body: unknown, params: unknown): Promise<unknown> =>
     await parse(await raw(\`\${baseUrl}\${path}\${query(params as Record<string, unknown>)}\`, method, body));
 ${
+  anyHeaders
+    ? `
+  /** A read whose answer is more than its body (#2170): the body, and only the headers it names. */
+  const withHeaders = async (names: string[], path: string, method: string, body: unknown, params: unknown): Promise<unknown> => {
+    const res = await raw(\`\${baseUrl}\${path}\${query(params as Record<string, unknown>)}\`, method, body);
+    const parsed = await parse(res);
+    const headers = new Headers();
+    for (const name of names) {
+      const value = res.headers.get(name);
+      if (value !== null) headers.set(name, value);
+    }
+    return { body: parsed, headers };
+  };
+`
+    : ''
+}${
   anyGuarded
     ? `
   /**

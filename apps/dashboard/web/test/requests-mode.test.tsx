@@ -36,11 +36,10 @@ describe('request facets in the URL', () => {
   it('sends facets as repeated keys, with the cursor in place of hours — never both', () => {
     const q = { op: 'acme/create,acme/assign', status: '409' };
     const withCursor = requestReadQuery(q, { since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z', hours: 24 }, { buckets: 90 });
-    expect(withCursor.getAll('operation')).toEqual(['acme/create', 'acme/assign']);
-    expect(withCursor.get('status')).toBe('409');
-    expect(withCursor.get('hours')).toBeNull();
-    expect(withCursor.get('buckets')).toBe('90');
-    expect(requestReadQuery(q, { hours: 3 }).get('hours')).toBe('3');
+    expect(withCursor).toEqual({
+      since: '2026-09-01T10:00:00.000Z', until: '2026-09-01T11:00:00.000Z', operation: ['acme/create', 'acme/assign'], status: ['409'], buckets: '90',
+    });
+    expect(requestReadQuery(q, { hours: 3 }).hours).toBe('3');
   });
 
   it('shows one chip per facet, in the reader’s words', () => {
@@ -74,7 +73,7 @@ describe('request facets in the URL', () => {
 
   it('#1901: filters on kind, and reads async work by its outcome — never as a request that threw', () => {
     expect(whereOf({ kind: 'consumer,schedule' })).toEqual({ kind: ['consumer', 'schedule'] });
-    expect(requestReadQuery({ kind: 'request' }, { hours: 1 }).getAll('kind')).toEqual(['request']);
+    expect(requestReadQuery({ kind: 'request' }, { hours: 1 }).kind).toEqual(['request']);
     expect(requestChips({ kind: 'consumer' })).toEqual([{ key: 'kind', value: 'event consumer', clears: ['kind'] }]);
     const async = { status: null, threw: true, problemCode: 'unavailable', kind: 'consumer' };
     expect(resultLabel({ ...async, outcome: 'retrying', level: 'error', attempt: 2 })).toEqual({ text: 'retrying #2 unavailable', tone: 'error' });
@@ -178,16 +177,14 @@ describe('RequestsMode', () => {
     const l = vi.spyOn(api, 'appRequests').mockResolvedValue([row()]);
     await render({ q: { op: 'acme/assign' } });
     for (const spy of [v, f, l]) {
-      const query = spy.mock.calls[0]![2] as URLSearchParams;
+      const query = spy.mock.calls[0]![2];
       expect(spy.mock.calls[0]!.slice(0, 2)).toEqual(['team-a', 'app-a']);
-      expect(query.getAll('operation')).toEqual(['acme/assign']);
       // The chart's own window, verbatim — never `hours`, which the plane would anchor to
       // its own clock while the bars are drawn against this one.
-      expect(query.get('since')).toBe(window.from);
-      expect(query.get('until')).toBe(window.to);
-      expect(query.get('hours')).toBeNull();
+      expect(query).toMatchObject({ operation: ['acme/assign'], since: window.from, until: window.to });
+      expect(query).not.toHaveProperty('hours');
     }
-    expect((v.mock.calls[0]![2] as URLSearchParams).get('buckets')).toBe('90');
+    expect(v.mock.calls[0]![2]).toMatchObject({ buckets: '90' });
     const text = container.textContent!;
     // The footer names the window's total from the facet read.
     expect(text).toContain('of 60 requests in this window');

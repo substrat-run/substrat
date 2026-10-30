@@ -134,6 +134,21 @@ function queryCoercers(input: HttpDecl['input']): Record<string, (raw: string) =
 }
 
 /**
+ * The fields a route's query carries more than once (#2170): those declared as an array,
+ * through the same transparent wrappers. `?service=a&service=b` is `['a', 'b']`, and a
+ * single `?service=a` is `['a']`. Each value is coerced as the array's element is.
+ */
+function repeatedFields(input: HttpDecl['input']): Map<string, ((raw: string) => unknown) | undefined> {
+  const out = new Map<string, ((raw: string) => unknown) | undefined>();
+  for (const [field, schema] of Object.entries(input?.shape ?? {})) {
+    let def = defOf(schema);
+    for (let depth = 0; def && def.type !== 'array' && depth < 8; depth++) def = defOf(transparentInner(def));
+    if (def?.type === 'array') out.set(field, coercerFor(def.element));
+  }
+  return out;
+}
+
+/**
  * The coercion a declared field wants, looking through the wrappers that do not
  * change its type — `optional`, `nullable`, `default`, `catch`, `readonly`, and
  * a pipe's input side (`z.coerce.number()` is one, and coercing ahead of it is
@@ -781,6 +796,7 @@ function mountDeclaredRoutes<Ctx>(
     const full = `${options.basePath}${toHonoPath(path)}`;
     const takesBody = method === 'POST' || method === 'PUT' || method === 'PATCH';
     const coercers = queryCoercers(decl.input as HttpDecl['input']);
+    const repeated = repeatedFields(decl.input as HttpDecl['input']);
     const parseIn = safeParseOf(decl.input);
     const parseOut = safeParseOf(decl.output);
     if (decl.output !== undefined && !parseOut) throw new Error(`mountRoutes: '${name}' declares an output that is not a schema`);
@@ -805,7 +821,12 @@ function mountDeclaredRoutes<Ctx>(
           const raw = await c.req.text();
           payload = { ...(raw ? (parseBody(raw) as Record<string, unknown>) : {}), ...typed(fromPath) };
         } else {
-          payload = { ...typed(c.req.query()), ...typed(fromPath) };
+          const query: Record<string, unknown> = typed(c.req.query());
+          for (const [field, coerce] of repeated) {
+            const values = c.req.queries(field);
+            if (values) query[field] = coerce ? values.map(coerce) : values;
+          }
+          payload = { ...query, ...typed(fromPath) };
         }
         const parsed = parseIn(payload);
         if (!parsed.success) throw new HTTPException(400, { message: parsed.error.message });
