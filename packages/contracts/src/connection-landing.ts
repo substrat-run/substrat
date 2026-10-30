@@ -47,6 +47,16 @@ export const connectionLandingOptions = z
 export type ConnectionLandingOptions = z.infer<typeof connectionLandingOptions>;
 
 /**
+ * When the platform binds a landing (#2732). `every-install`, the default, is the pass above: every
+ * live connection of the provider is granted and bound on each primary, active install. `on-request`
+ * is for a source a scope connects for itself, one folder of one drive per scope: the pass grants
+ * and binds nothing, and a scope binds its own connection, with its own options, when it asks. The
+ * declaration still names the operation and key either way, so both stay reviewed.
+ */
+export const connectionLandingBind = z.enum(['every-install', 'on-request']);
+export type ConnectionLandingBind = z.infer<typeof connectionLandingBind>;
+
+/**
  * One declared landing — "a `provider` connection of this tenant lands through `operation`,
  * holding `permission`" — as a module manifest's `connections` entry.
  *
@@ -58,6 +68,8 @@ export type ConnectionLandingOptions = z.infer<typeof connectionLandingOptions>;
  * `permission` is what the connection is granted, and it must be a key some module declares and
  * that is not reserved to a system principal: a connection acts for the external provider holding
  * its token. The registry builder refuses both.
+ *
+ * `bind` is {@link connectionLandingBind}; absent reads `every-install`.
  */
 export const connectionLandingSpec = z
   .object({
@@ -65,6 +77,7 @@ export const connectionLandingSpec = z
     operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/, 'operation is `module/operation`'),
     permission: permissionKey,
     options: connectionLandingOptions.optional(),
+    bind: connectionLandingBind.optional(),
   })
   .strict();
 export type ConnectionLandingSpec = z.infer<typeof connectionLandingSpec>;
