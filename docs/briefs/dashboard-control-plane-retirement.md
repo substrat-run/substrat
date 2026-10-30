@@ -29,7 +29,7 @@ The table names and keys below are from `DIRECTORY_DDL` in `packages/adapter-clo
 
 ## Divergence and dependencies
 
-The mirror in `src/identity-mirror.ts` writes tenant, display name and one identity link only. It logs failure and returns without failing the local request. A failed create/link leaves a local-only link until that user returns to `/api/me` or another mirror call. A failed shared unlink leaves a shared-only link. A shared-side change can also leave a different principal for the same `(provider, externalId)`; a count comparison misses that. `/api/identity-mirror` and `deriveIdentityDivergence` (#1366) expose missing, extra and conflicting links **for the caller's tenant**, not a fleet-wide reconciliation. The next mirror attempt may overwrite a shared-side difference, so every conflict needs review before any automated repair.
+The mirror in `src/identity-mirror.ts` writes tenant, display name and one identity link only. It logs failure and returns without failing the local request. A failed create/link leaves a local-only link until that user returns to `/api/me` or another mirror call. A failed shared unlink leaves a shared-only link. A shared-side change can also leave a different principal for the same `(provider, externalId)`; a count comparison misses that. `/api/teams/:teamId/identity-mirror` and `deriveIdentityDivergence` (#1366) expose missing, extra and conflicting links **for the caller's tenant**, not a fleet-wide reconciliation. The next mirror attempt may overwrite a shared-side difference, so every conflict needs review before any automated repair.
 
 The local DO has three independent jobs today:
 

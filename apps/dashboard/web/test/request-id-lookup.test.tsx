@@ -156,7 +156,7 @@ describe('ApiError.requestId', () => {
   afterEach(() => vi.unstubAllGlobals());
   const failWith = async (init: ResponseInit, body: unknown) => {
     vi.stubGlobal('fetch', async () => new Response(JSON.stringify(body), { status: 403, headers: { 'content-type': 'application/json' }, ...init }));
-    return api.integrations().then(
+    return api.catalog().then(
       () => null,
       (e: unknown) => e as ApiError,
     );

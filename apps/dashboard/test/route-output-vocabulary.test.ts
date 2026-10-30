@@ -23,6 +23,8 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/retry-app status': OWN_APP_ROW,
   'dashboard/resume-app status': OWN_APP_ROW,
   'dashboard/get-app-integrations providers[].connectFlow': 'the worker advertises only the redirect flow it can serve on this deployment',
+  'dashboard/list-team-integrations providers[].connectFlow': 'the worker advertises only the redirect flow it can serve on this deployment',
+  'dashboard/fleet-health rows[].state': 'the worker derives each verdict itself (`fleet-health.ts`) from the reads it made',
   'dashboard/list-app-connect-links links[].source': 'the worker labels where it read each link: its own scope or the plane',
   'dashboard/get-app-install-steps [].status': 'an install step the dashboard scope records itself',
   'dashboard/get-app-concept unavailable': 'the worker’s own labels for an absent running version or unpublished application description',

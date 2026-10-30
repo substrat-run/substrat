@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.168.0
+
+### Minor Changes
+
+- e34da92: A connection landing can declare `bind: 'on-request'`: the connector pass then grants and binds nothing for it, so a scope can bind its own connection with its own options. Leaving `bind` out keeps today's behaviour (`every-install`), and the permission digest of a vertical that declares no on-request landing does not move. `substrat push` now sends each module's landings with the deploy manifest, and the control plane refuses a push whose registry disagrees with them about a landing's mode.
+
 ## 0.167.1
 
 ## 0.167.0
@@ -7251,7 +7257,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

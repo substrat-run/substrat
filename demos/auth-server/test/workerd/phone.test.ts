@@ -2,42 +2,51 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ulid } from '@substrat-run/kernel';
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+/** A provisioned instance with Twilio stubbed to answer `replies` in order, and an admin signed in. */
+async function signedIn(replies: Array<'pending' | 'approved'>) {
+  const service = `VA${'b'.repeat(32)}`;
+  // Twilio, answering each expected request once; any other egress throws. The Durable
+  // Object runs in the test's isolate, so stubbing the global is stubbing its egress.
+  const twilio = replies.map((status) => ({
+    url: `https://verify.twilio.com/v2/Services/${service}/${status === 'pending' ? 'Verifications' : 'VerificationCheck'}`, body: { status },
+  }));
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = new Request(input, init);
+    const at = twilio.findIndex((e) => request.method === 'POST' && e.url === request.url);
+    if (at < 0) throw new Error(`unexpected egress: ${request.method} ${request.url}`);
+    return Response.json(twilio.splice(at, 1)[0]!.body);
+  });
+  const scope = ulid();
+  const stub = env.AUTH.get(env.AUTH.idFromName(scope));
+  await runInDurableObject(stub, async (instance) => (instance as unknown as import('../../src/auth-do.js').AuthServerDO).provisionInstance({ tenantId: ulid(), scopeId: scope, slug: 'acme-auth', name: 'Acme Auth' }, [
+    { key: 'ADMIN_EMAIL', value: 'admin@example.test' },
+    { key: 'ADMIN_PASSWORD', value: 'admin-test-password' },
+    { key: 'TWILIO_ACCOUNT_SID', value: `AC${'a'.repeat(32)}` },
+    { key: 'TWILIO_AUTH_TOKEN', value: 'test-auth-token' },
+    { key: 'TWILIO_VERIFY_SERVICE_SID', value: service },
+  ]));
+  await runInDurableObject(stub, async (_instance, state) => { state.storage.sql.exec('UPDATE user SET email_verified = 1'); });
+  const post = (path: string, body: unknown, cookie = '') => stub.fetch(new Request(`https://auth-server.test/api/auth${path}`, {
+    method: 'POST', headers: { origin: 'https://auth-server.test', 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
+  }));
+  const cookieOf = (res: Response) => (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie().map((c) => c.split(';')[0]).filter((c) => c && !c.endsWith('=')).join('; ');
+  const login = await post('/sign-in/email', { email: 'admin@example.test', password: 'admin-test-password' });
+  expect(login.status).toBe(200);
+  return { stub, post, cookieOf, cookie: cookieOf(login), twilio };
+}
 
 describe('SMS verification in the deployed Durable Object', () => {
   it('uses delivered Twilio configuration, enrolls the phone, and rotates the password session', async () => {
-    const service = `VA${'b'.repeat(32)}`;
-    // Twilio, answering each expected request once; any other egress throws. The Durable
-    // Object runs in the test's isolate, so stubbing the global is stubbing its egress.
-    const twilio = [
-      { url: `https://verify.twilio.com/v2/Services/${service}/Verifications`, body: { status: 'pending' } },
-      { url: `https://verify.twilio.com/v2/Services/${service}/VerificationCheck`, body: { status: 'approved' } },
-    ];
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      const at = twilio.findIndex((e) => request.method === 'POST' && e.url === request.url);
-      if (at < 0) throw new Error(`unexpected egress: ${request.method} ${request.url}`);
-      return Response.json(twilio.splice(at, 1)[0]!.body);
-    });
-    const scope = ulid();
-    const stub = env.AUTH.get(env.AUTH.idFromName(scope));
-    await runInDurableObject(stub, async (instance) => (instance as unknown as import('../../src/auth-do.js').AuthServerDO).provisionInstance({ tenantId: ulid(), scopeId: scope, slug: 'acme-auth', name: 'Acme Auth' }, [
-      { key: 'ADMIN_EMAIL', value: 'admin@example.test' },
-      { key: 'ADMIN_PASSWORD', value: 'admin-test-password' },
-      { key: 'TWILIO_ACCOUNT_SID', value: `AC${'a'.repeat(32)}` },
-      { key: 'TWILIO_AUTH_TOKEN', value: 'test-auth-token' },
-      { key: 'TWILIO_VERIFY_SERVICE_SID', value: service },
-    ]));
-    await runInDurableObject(stub, async (_instance, state) => { state.storage.sql.exec('UPDATE user SET email_verified = 1'); });
-    const post = (path: string, body: unknown, cookie = '') => stub.fetch(new Request(`https://auth-server.test/api/auth${path}`, {
-      method: 'POST', headers: { origin: 'https://auth-server.test', 'content-type': 'application/json', cookie }, body: JSON.stringify(body),
-    }));
-    const cookieOf = (res: Response) => (res.headers as unknown as { getSetCookie(): string[] }).getSetCookie().map((c) => c.split(';')[0]).filter((c) => c && !c.endsWith('=')).join('; ');
-    const login = await post('/sign-in/email', { email: 'admin@example.test', password: 'admin-test-password' });
-    expect(login.status).toBe(200);
-    const cookie = cookieOf(login);
+    // Pinned across a minute boundary: the second send is 200 ms after the first, a calendar
+    // minute later, and the cooldown still refuses it.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-30T09:43:59.900Z'));
+    const { stub, post, cookieOf, cookie, twilio } = await signedIn(['pending', 'approved']);
     const sent = await post('/phone/send', { phoneNumber: '+46701234567' }, cookie);
     expect(sent.status, await sent.text()).toBe(200);
+    vi.setSystemTime(new Date('2026-10-30T09:44:00.100Z'));
     expect((await post('/phone/send', { phoneNumber: '+46701234567' }, cookie)).status).toBe(429);
     const verified = await post('/phone/verify', { code: '123456' }, cookie);
     expect(verified.status).toBe(200);
@@ -52,6 +61,16 @@ describe('SMS verification in the deployed Durable Object', () => {
     // revocation rather than assuming this is the account's only session.
     const oldSession = await stub.fetch(new Request('https://auth-server.test/api/auth/get-session', { headers: { cookie } }));
     expect(await oldSession.json()).toBeNull();
+    expect(twilio).toEqual([]);
+  });
+
+  it('sends again once the minute has passed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-30T09:43:30.000Z'));
+    const { post, cookie, twilio } = await signedIn(['pending', 'pending']);
+    expect((await post('/phone/send', { phoneNumber: '+46701234567' }, cookie)).status).toBe(200);
+    vi.setSystemTime(new Date('2026-10-30T09:44:30.100Z'));
+    expect((await post('/phone/send', { phoneNumber: '+46701234567' }, cookie)).status).toBe(200);
     expect(twilio).toEqual([]);
   });
 });

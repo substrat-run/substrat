@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { Badge, Button, Input, Select } from '@substrat-run/ui';
-import { api, ApiError, type AccountIntegration, type AppHealthRow, type AppRow, type AuditEntry, type InstallStep } from '../lib/api';
+import { api, isApiError, type AccountIntegration, type AppHealthRow, type AppRow, type AuditEntry, type InstallStep } from '../lib/api';
 import { DEV_MOCK, MOCK_FLEET_HEALTH } from '../lib/mock';
 import { MOCK_OVERVIEW_AUDIT, MOCK_OVERVIEW_INTEGRATIONS } from '../lib/mock-overview';
 import { VERDICTS, fleetRows, type FleetRow } from '../lib/fleet-rows';
@@ -33,6 +33,7 @@ const TONE: Record<string, string> = {
  * fleet, so the pages are walked to exhaustion the way the Apps table walks them.
  */
 export function Overview({
+  teamId,
   apps,
   loading,
   teamName,
@@ -46,6 +47,7 @@ export function Overview({
   onLoadMore,
   personName,
 }: {
+  teamId: string;
   apps: AppRow[];
   loading?: boolean;
   teamName: string;
@@ -77,22 +79,22 @@ export function Overview({
       return;
     }
     let live = true;
-    api.fleetHealth().then((r) => live && setHealth(r.rows)).catch(() => live && setHealth('failed'));
-    api.integrations().then((v) => live && setIntegrations(v.providers)).catch(() => live && setIntegrations('failed'));
+    api.fleetHealth(teamId).then((r) => live && setHealth(r.rows)).catch(() => live && setHealth('failed'));
+    api.integrations(teamId).then((v) => live && setIntegrations(v.providers)).catch(() => live && setIntegrations('failed'));
     api
       // A scope permission change can have intent, unknown and eventual outcome rows.
       // Eighteen raw rows cover six attempts; activityRows collapses each operation.
-      .auditLogAll({ limit: 18 })
+      .auditLogAll(teamId, { limit: 18 })
       .then((p) => live && setAudit(p.entries))
       .catch((e) => {
         if (!live) return;
-        if (e instanceof ApiError && e.status === 501) setAuditUnavailable(true);
+        if (isApiError(e) && e.status === 501) setAuditUnavailable(true);
         setAudit('failed');
       });
     return () => {
       live = false;
     };
-  }, []);
+  }, [teamId]);
 
   // A page that fails ends the walk: its row count never changes, so nothing would ever
   // re-run it, and every composed card would wait on "Reading…" for good. The page then

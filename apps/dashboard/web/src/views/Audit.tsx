@@ -97,7 +97,7 @@ export function AuditLog({
   // changes (or Back is pressed) cannot append the old scope's rows under the new one
   // and hand it the old cursor.
   const generation = useRef(0);
-  const read: Read = DEV_MOCK ? mockAuditLogAll : api.auditLogAll;
+  const read: Read = DEV_MOCK ? mockAuditLogAll : (opts) => api.auditLogAll(teamId, opts);
 
   useEffect(() => {
     const gen = ++generation.current;
@@ -118,7 +118,7 @@ export function AuditLog({
         first = await read(scopeId ? { scopeId } : undefined);
       } catch (e) {
         if (gen !== generation.current) return;
-        if (e instanceof ApiError && e.status === 501) setUnavailable(true);
+        if (isApiError(e) && e.status === 501) setUnavailable(true);
         setEntries([]);
         return;
       }
@@ -148,7 +148,7 @@ export function AuditLog({
       // Unmount, or a new filter about to start: either way this generation is over.
       if (gen === generation.current) generation.current += 1;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `read` is fixed for the page's life (mock or live)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `read` changes only with `teamId`, a dependency
   }, [teamId, scopeId, entryId]);
 
   /** One page of the app's refusals, appended; the next is `until` the oldest held (+1 ms, deduped). */

@@ -147,6 +147,8 @@ export class LandingPass {
   /** Grant and bind what `connection`'s installs declare for its provider, and say what happened. */
   async apply(connection: Connection): Promise<LandingOutcome> {
     const out: LandingOutcome = { granted: [], bound: [], failed: [] };
+    // #2732: a scope's own connection is bound by that scope when it asks, never by this pass.
+    if (connection.ownerScopeId !== null) return out;
     const binder = binderOf(this.input, connection);
     if (!binder) return out;
     const targets = await this.targetsOf(connection.tenantId, connection.vertical);

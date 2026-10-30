@@ -142,7 +142,7 @@ export async function setupRepoCi(
  * The workflow one-click setup commits. The generator itself lives in
  * `@substrat-run/contracts` (`ci.ts`) because there are three writers of this one file —
  * this path, `substrat init --ci github`, and the manual copy-paste path
- * (`GET /api/github/workflow-preview`) — and a builder must get the same workflow
+ * (`GET /api/teams/:teamId/github/workflow-preview`) — and a builder must get the same workflow
  * whichever they use. Re-exported so the worker keeps importing it from here.
  *
  * The dashboard commits the `trunk` release mode: a private vertical's push lands

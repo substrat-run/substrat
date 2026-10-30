@@ -891,7 +891,7 @@ export interface GitReposResult {
   repos: GitRepo[];
 }
 
-/** `GET /api/github/workflow-preview` — the manual path's copy-paste workflow. */
+/** `GET /api/teams/:teamId/github/workflow-preview` — the manual path's copy-paste workflow. */
 export interface WorkflowPreview {
   workflowPath: string;
   workflow: string;
@@ -1110,8 +1110,9 @@ export interface AccountIntegration {
     ConnectionView & {
       vertical: string;
       apps: Array<{ scopeId: string; name: string }>;
-      /** #1232: the last day's sweep outcomes, newest first — the recent-runs strip. */
-      sweepRuns: SweepRunView[];
+      /** #1232: the last day's sweep outcomes, newest first — the recent-runs strip. A connector
+       *  sweep has no freshness evidence, so these rows carry no `observedAt`. */
+      sweepRuns: Omit<SweepRunView, 'observedAt'>[];
     }
   >;
   connectTargets: Array<{ scopeId: string; name: string; vertical: string; connected: boolean }>;
@@ -1133,7 +1134,7 @@ export interface ConnectLinkView {
   source?: 'dashboard' | 'app';
 }
 
-/** `GET /api/integrations` */
+/** `GET /api/teams/:teamId/integrations` */
 export interface AccountIntegrationsView {
   providers: AccountIntegration[];
 }
@@ -1717,11 +1718,8 @@ export const api = {
   /** One page of the TEAM's control-plane audit log (#1447) — every app, newest first.
    *  `scopeId` narrows it to one app; without it the page is the tenant's whole log,
    *  which is the only way to see the entries that name no scope at all. */
-  auditLogAll: (opts?: PageOpts & { scopeId?: string }) => {
-    const qs = pageQs(opts);
-    const scope = opts?.scopeId ? `${qs ? '&' : '?'}scopeId=${encodeURIComponent(opts.scopeId)}` : '';
-    return call<ListPage<AuditEntry>>(`/audit${qs}${scope}`);
-  },
+  auditLogAll: (teamId: string, opts?: PageOpts & { scopeId?: string }): Promise<ListPage<AuditEntry>> =>
+    teamApi(teamId).listTeamAudit({ limit: opts?.limit, cursor: opts?.cursor, scopeId: opts?.scopeId || undefined }),
   /** The app's vertical version registry (one page of versions, newest first) + channels +
    *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
   // The registry, model and asset documents are carried as the plane answered them, so the
@@ -1744,8 +1742,17 @@ export const api = {
   appTableRows: (teamId: string, scopeId: string, table: string, opts: { limit?: number; offset?: number } = {}) =>
     teamApi(teamId).readAppTable({ scopeId, table, ...opts }),
   appQuery: (teamId: string, scopeId: string, sql: string) => teamApi(teamId).queryAppScope({ scopeId, sql }),
-  /** The account-level integrations overview: all providers, connections, and connectable apps. */
-  integrations: () => call<AccountIntegrationsView>('/integrations'),
+  /** The account-level integrations overview: all providers, connections, and connectable apps.
+   *  The route declares a connection's plane-owned `status` as a string; only that field is cast. */
+  integrations: async (teamId: string): Promise<AccountIntegrationsView> => {
+    const { providers } = await teamApi(teamId).listTeamIntegrations();
+    return {
+      providers: providers.map((p) => ({
+        ...p,
+        connections: p.connections.map((c) => ({ ...c, status: c.status as ConnectionView['status'] })),
+      })),
+    };
+  },
   // -- observability (design/observability.md §5, view 2) -------------------
   // Metrics/logs for THIS team's pushed verticals only — the worker narrows by
   // owned deployment refs. 501 = the platform has no observability backend.
@@ -1814,10 +1821,8 @@ export const api = {
   appRequests: (teamId: string, scopeId: string, query: URLSearchParams) =>
     call<RequestRecord[]>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/list?${query.toString()}`),
   /** The manual path's workflow YAML (same generator the one-click commit uses). */
-  workflowPreview: (repo: string, branch: string, path?: string) =>
-    call<WorkflowPreview>(
-      `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
-    ),
+  workflowPreview: (teamId: string, repo: string, branch: string, path?: string): Promise<WorkflowPreview> =>
+    teamApi(teamId).githubWorkflowPreview({ repo, branch, path }),
   /**
    * One record's event history (#1235) — payload, authorization chain, impersonation, PII class.
    *
@@ -1842,7 +1847,7 @@ export const api = {
     teamApi(teamId).listAppDeadLetters({ scopeId, cursor }) as Promise<Page<DeadLetter>>,
 
   /** Every app's health, worst first (#1238) — the rollup, not a per-app read. */
-  fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),
+  fleetHealth: (teamId: string): Promise<{ rows: AppHealthRow[] }> => teamApi(teamId).fleetHealth(),
   appMetrics: (teamId: string, hours = 24) => teamApi(teamId).appMetrics({ hours: String(hours) }),
 
   /** One declared lifecycle replayed for the process map (#1744); the first declared one when `entity` is absent. */

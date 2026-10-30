@@ -5942,6 +5942,27 @@ export function scopeHostContractSuite(
         // An unknown account is simply not connected — the ordinary miss.
         expect(await host.admin.openConnection(t1, 'multigit', 'github', 'nobody')).toBeUndefined();
       });
+
+      it("keys a scope's own connection apart from the tenant's and another scope's, on one account (#2732)", async () => {
+        const [a, b] = [scopeId.parse(ulid()), scopeId.parse(ulid())];
+        const connect = (token: string, ownerScopeId?: ScopeId) =>
+          host.admin.createConnection(staff, {
+            id: connectionId.parse(ulid()), tenantId: t1, vertical: 'owned', provider: 'planima', label: token,
+            secret: { token }, ...(ownerScopeId ? { ownerScopeId } : {}),
+          });
+        await connect('tenant');
+        await connect('a', a);
+        await connect('b', b);
+        // Each owner still holds one live connection per account.
+        await expect(connect('a-again', a)).rejects.toThrow(/already has a live/);
+        await expect(connect('tenant-again')).rejects.toThrow(/already has a live/);
+
+        // A tenant-level read opens the tenant's alone; naming the owner opens that scope's.
+        expect((await host.admin.openConnection(t1, 'owned', 'planima'))?.secret).toEqual({ token: 'tenant' });
+        expect((await host.admin.openConnection(t1, 'owned', 'planima', undefined, a))?.secret).toEqual({ token: 'a' });
+        expect((await host.admin.listConnections(staff, { tenantId: t1, vertical: 'owned', ownerScopeId: b })).map((c) => c.label)).toEqual(['b']);
+        expect((await host.admin.listConnections(staff, { tenantId: t1, vertical: 'owned', ownerScopeId: null })).map((c) => c.label)).toEqual(['tenant']);
+      });
     });
 
     // -- connection grants: the directory record behind the tuple (#592) --------

@@ -1207,7 +1207,7 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
           )}
           {error && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{error}</div>}
 
-          {manual && <ManualCiSetup repo={repo.fullName} branch={branch} path={packageDir} />}
+          {manual && <ManualCiSetup teamId={teamId} repo={repo.fullName} branch={branch} path={packageDir} />}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
             <Button onClick={setup} disabled={busy || branches === null}>{busy ? 'Setting up…' : 'Set up deployment'}</Button>
@@ -1226,18 +1226,18 @@ function RepoDeploy({ teamId, repo, onBack, onDone }: { teamId: string; repo: { 
 }
 
 /** The copy-paste fallback: the same workflow the one-click path would commit. */
-function ManualCiSetup({ repo, branch, path }: { repo: string; branch: string; path?: string }) {
+function ManualCiSetup({ teamId, repo, branch, path }: { teamId: string; repo: string; branch: string; path?: string }) {
   const [preview, setPreview] = useState<WorkflowPreview | null>(null);
   useEffect(() => {
     let live = true;
     api
-      .workflowPreview(repo, branch, path)
+      .workflowPreview(teamId, repo, branch, path)
       .then((p) => live && setPreview(p))
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [repo, branch, path]);
+  }, [teamId, repo, branch, path]);
 
   if (!preview) return <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading workflow…</div>;
   return (

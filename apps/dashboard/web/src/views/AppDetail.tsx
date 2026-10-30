@@ -221,6 +221,7 @@ export function AppDetail({
         />
       )}
       <AppHeader
+        teamId={teamId}
         app={app}
         statusKind={statusKind}
         statusLabel={statusLabel}

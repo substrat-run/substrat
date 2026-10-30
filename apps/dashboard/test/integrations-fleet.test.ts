@@ -102,6 +102,8 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
   let upserts: Record<string, unknown>[];
   let refuseUpsert: boolean;
   let planeCalls: string[];
+  // The tenant each minted plane credential names: what narrows a read with no tenant in its path.
+  let tokenTenants: string[];
   // What this vertical's latest push declares; a test empties it to model a push that dropped one.
   let declared: (typeof DOC_CONNECTOR)[];
   let env: Record<string, unknown>;
@@ -134,6 +136,7 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     upserts = [];
     refuseUpsert = false;
     planeCalls = [];
+    tokenTenants = [];
     declared = [DOC_CONNECTOR];
 
     const owner = principalId.parse(ulid());
@@ -171,7 +174,10 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
           const path = u.pathname.replace(/^\/api/, '');
           planeCalls.push(path);
           const method = init?.method ?? 'GET';
-          if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
+          if (path === '/tenant-tokens') {
+            tokenTenants.push((JSON.parse(String(init?.body)) as { tenantId: string }).tenantId);
+            return Response.json({ token: 'tenant-token' });
+          }
           if (path === '/verticals') {
             return Response.json({
               entries: [
@@ -215,7 +221,8 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
           // The links the app itself mailed: none here, so the panel lists the dashboard's own.
           if (path === `/tenants/${tenant}/connect-links`) return Response.json([]);
           if (path === `/tenants/${tenant}/scopes/${appScope}/intents`) return Response.json(intents);
-          if (path === '/sweep-runs') return Response.json({ entries: [], nextCursor: null });
+          if (path === '/sweep-runs' || path === '/ops-failures') return Response.json({ entries: [], nextCursor: null });
+          if (path === `/tenants/${tenant}/identities`) return Response.json([]);
           return Response.json({ error: `unexpected ${method} ${path}` }, { status: 500 });
         },
       },
@@ -259,10 +266,34 @@ describe('a Fortnox fleet on one app (#1267 follow-up)', () => {
     expect((await app.request(`/api/teams/${tenant}/apps/${otherApp}/integrations`, {
       headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
     }, env)).status).toBe(404);
+    // The account-wide page's Connect targets are the path team's apps, the team its dialog connects in.
+    const teamWide = await app.request(`/api/teams/${tenant}/integrations`, {
+      headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` },
+    }, env);
+    expect(teamWide.status).toBe(200);
+    const { providers } = (await teamWide.json()) as { providers: { provider: string; connectTargets: { scopeId: string }[] }[] };
+    expect(providers.find((p) => p.provider === 'fortnox')!.connectTargets.map((t) => t.scopeId)).toEqual([appScope]);
+    // The other team-wide reads answer through the path team as well, and every plane credential names it.
+    const teamRead = async (path: string) => {
+      const res = await app.request(`/api/teams/${tenant}${path}`, { headers: { cookie: `sb_session=sub-owner; sb_team=${otherTeam}` } }, env);
+      expect(res.status, path).toBe(200);
+      return res.json() as Promise<Record<string, unknown>>;
+    };
+    expect(((await teamRead('/fleet-health')).rows as { scopeId: string }[]).map((r) => r.scopeId)).toEqual([appScope]);
+    expect(await teamRead('/identity-mirror')).toMatchObject({ tenant, counts: { local: 1, shared: 0, missing: 1 } });
+    expect(planeCalls).toContain(`/tenants/${tenant}/identities`);
+    expect(await teamRead('/github/workflow-preview?repo=acme/books')).toMatchObject({ workflowPath: '.github/workflows/substrat-deploy.yml' });
+    expect(tokenTenants.length).toBeGreaterThan(0);
+    expect(tokenTenants.every((t) => t === tenant)).toBe(true);
 
     const outside = tenantId.parse(ulid());
     const base = `/api/teams/${outside}/apps/${appScope}/integrations`;
     const before = planeCalls.length;
+    const teamReads = ['/integrations', '/fleet-health', '/identity-mirror', '/audit', '/github/workflow-preview'];
+    for (const path of teamReads) {
+      expect((await app.request(`/api/teams/${outside}${path}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status, path).toBe(404);
+      expect((await app.request(`/api${path}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status, path).toBe(404);
+    }
     for (const [path, method] of [
       ['', 'GET'], ['/acme.docbox', 'POST'], ['/fortnox', 'DELETE'],
       [`/fortnox/connections/${byLabel('Alfa AB').id}`, 'DELETE'],
