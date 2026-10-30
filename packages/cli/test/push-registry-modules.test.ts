@@ -8,13 +8,25 @@ describe.runIf(built)('push carries its loaded module permission declarations (#
       { id: 'helpdesk', ownerGrants: ['helpdesk:read'] },
     ]));
     expect(manifest.modules).toEqual([
-      { id: '@acme/engine-work', permissions: [{ key: 'engine-work:read', description: 'Read', holder: 'system' }] },
-      { id: 'helpdesk', permissions: [{ key: 'helpdesk:read', description: 'Read' }], ownerGrants: ['helpdesk:read'] },
+      // `connections` on every module, empty when it lands nothing (#2732): absent marks an older CLI.
+      { id: '@acme/engine-work', permissions: [{ key: 'engine-work:read', description: 'Read', holder: 'system' }], connections: [] },
+      { id: 'helpdesk', permissions: [{ key: 'helpdesk:read', description: 'Read' }], ownerGrants: ['helpdesk:read'], connections: [] },
     ]);
     expect(manifest.registry.permissions.map(({ key, declaredBy }) => ({ key, declaredBy }))).toEqual([
       { key: 'engine-work:read', declaredBy: ['@acme/engine-work'] },
       { key: 'helpdesk:read', declaredBy: ['helpdesk'] },
     ]);
+  });
+});
+
+describe.runIf(built)('push carries each module\'s connection landings (#2732)', () => {
+  it('sends the mode beside the registry row, so the control plane can hold one to the other', () => {
+    const manifest = pushed(vertical([{
+      id: 'helpdesk',
+      connections: [{ provider: 'planima', operation: 'helpdesk/record-plan', permission: 'helpdesk:read', bind: 'on-request' }],
+    }]));
+    expect(manifest.modules?.[0]?.connections).toEqual([{ provider: 'planima', bind: 'on-request' }]);
+    expect(manifest.registry.connections).toEqual([expect.objectContaining({ provider: 'planima', bind: 'on-request' })]);
   });
 });
 

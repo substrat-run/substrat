@@ -36,9 +36,12 @@ import { ulid } from './ulid.js';
  *   staged binding this follows its write, so an interrupted pass leaves no new authority without
  *   its landing.
  *
- * Nothing is unbound. A version that stops declaring a landing leaves its bindings in place, and a
- * pass that lands through an operation the version no longer has reports the refusal on the
- * connection's sweep row; `unbind` stays a person's act. A revoked connection is never reached:
+ * A landing declared `bind: 'on-request'` (#2732) is passed over: its connections are granted and
+ * bound one scope at a time, when that scope asks, so the pass writes nothing for them.
+ *
+ * Nothing is unbound. A version that stops declaring a landing (or makes it `on-request`) leaves its
+ * bindings in place, and a pass that lands through an operation the version no longer has reports
+ * the refusal on the connection's sweep row; `unbind` stays a person's act. A revoked connection is never reached:
  * the pass skips it, and the revoke itself tombstoned its grants and deleted its bindings.
  */
 
@@ -156,7 +159,8 @@ export class LandingPass {
         continue;
       }
       const landing = t.fact.rows.find((r) => r.provider === connection.provider);
-      if (!landing) continue;
+      // #2732: an `on-request` landing is bound by the scope that asks, never by this pass.
+      if (!landing || landing.bind === 'on-request') continue;
       try {
         existing ??= await binder.list(this.host, connection);
         const current = existing.find((b) => b.scopeId === scopeId);

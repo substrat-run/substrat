@@ -557,12 +557,20 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       `shown — by the platform, from the version the instance runs, on the connector pass after the`,
       `connection appears. A connection acts for whoever holds the provider's token, never as a`,
       `person. Revoking the connection takes back the key and the binding together.`,
+      ...(landings.some((l) => l.bind === 'on-request')
+        ? [
+            ``,
+            `A provider marked *on request* is the exception: the platform grants and binds nothing new for`,
+            `it by itself. An instance binds a connection of its own, with its own options, when it asks.`,
+            `A key and binding an earlier version granted every instance stay until they are removed.`,
+          ]
+        : []),
       ``,
       `| Provider | Declared by | Lands through | Holds | Options |`,
       `| --- | --- | --- | --- | --- |`,
       ...landings.map(
         (l) =>
-          `| ${code(l.provider)} | ${code(l.module)} | ${code(l.operation)} | ${code(l.permission)} | ${
+          `| ${code(l.provider)}${l.bind === 'on-request' ? ' *(on request)*' : ''} | ${code(l.module)} | ${code(l.operation)} | ${code(l.permission)} | ${
             l.options && Object.keys(l.options).length
               ? Object.entries(l.options)
                   .sort(([a], [b]) => a.localeCompare(b))

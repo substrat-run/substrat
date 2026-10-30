@@ -4716,6 +4716,34 @@ describe('control-plane API — vertical registry', () => {
       expect((await post(empty, manifest(empty, rows, []))).status).toBe(400);
     });
 
+    it('refuses a landing whose registry row lost the on-request mode the modules declare (#2732)', async () => {
+      const declared = [{ key: 'fsm:plan-record', description: 'Land a plan' }];
+      const landing = { provider: 'planima', operation: 'fsm/record-plan', permission: 'fsm:plan-record', declaredBy: ['fsm'] };
+      const manifest = (id: string, row: object, connections: object[] = [{ provider: 'planima', bind: 'on-request' }]) => JSON.stringify({
+        version: id.toLowerCase(), entry: 'index.js', compatibilityDate: '2026-07-01',
+        registry: { permissions: declared.map((p) => ({ ...p, declaredBy: ['fsm'] })), roles: [], entityGrants: [], connections: [row] },
+        modules: [{ id: 'fsm', permissions: declared, connections }],
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      });
+      const good = ulid();
+      expect((await post(good, manifest(good, { ...landing, bind: 'on-request' }))).status).toBe(201);
+
+      const dropped = ulid();
+      const res = await post(dropped, manifest(dropped, landing));
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain(
+        "connections 'planima': the modules declare bind 'on-request' and the registry says 'every-install'",
+      );
+      expect((await get(`/verticals/fsm/versions/${dropped}/registry`)).status).toBe(404);
+
+      // A current CLI declares "no landings" as an empty list, so a row beside it is refused too.
+      const undeclared = ulid();
+      const none = await post(undeclared, manifest(undeclared, landing, []));
+      expect(none.status).toBe(400);
+      expect(((await none.json()) as { error: string }).error).toContain("connections 'planima': registry lists a landing no module declares");
+      expect((await get(`/verticals/fsm/versions/${undeclared}/registry`)).status).toBe(404);
+    });
+
     it('requires a registry when module declarations are sent, while accepting a legacy manifest with neither', async () => {
       const base = (id: string) => ({
         version: id.toLowerCase(), entry: 'index.js', compatibilityDate: '2026-07-01',

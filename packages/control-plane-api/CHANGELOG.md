@@ -1,5 +1,13 @@
 # @substrat-run/control-plane-api
 
+## 0.167.1
+
+### Patch Changes
+
+- 34ca432: A failure's reference reuses the request id the host worker minted for the request, when it minted one, so the caller quotes one id.
+  - @substrat-run/contracts@0.167.1
+  - @substrat-run/kernel@0.167.1
+
 ## 0.167.0
 
 ### Minor Changes
