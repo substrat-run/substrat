@@ -198,7 +198,9 @@ const edgeHealthOut = edgeHealth.extend({
  */
 const orNull = <T extends z.ZodType>(schema: T, field: string) =>
   schema.nullable().catch((ctx) => {
-    logOutputDrift(field, ctx.error.issues);
+    // `z.toJSONSchema` asks for the fallback with no context, to document it as the default
+    // (`openapi.json`, via `api.ts`); only a real parse has drift to report.
+    if (ctx) logOutputDrift(field, ctx.error.issues);
     return null;
   });
 

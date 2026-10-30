@@ -53,7 +53,15 @@ const doc = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
   'customer/create': {
     summary: 'Register a customer',
     input: z.object({ name: z.string() }),
+    status: 201,
     http: { method: 'POST', path: '/customers' },
+  },
+  // A declared route's response header (#2170): a log page's `incomplete` flag.
+  'customer/logs': {
+    summary: 'Log lines',
+    output: z.object({ lines: z.array(z.string()) }),
+    responseHeaders: ['x-incomplete'],
+    http: { method: 'GET', path: '/customers/logs' },
   },
   // A literal the ROUTE supplies (`mountOperations` pins it and overrides the caller).
   'customer/pinned': {
@@ -228,6 +236,12 @@ describe('a write is untouched', () => {
     // A header documented where it is refused is worse than one documented
     // nowhere: a client reads it and builds a retry it does not have.
     expect(names).not.toContain('Idempotency-Key');
+  });
+
+  it('documents a declared success status and response headers where the route answers them (#2170)', () => {
+    expect(Object.keys(op('/api/customers', 'post').responses)).toContain('201');
+    expect(op('/api/customers', 'post').responses['200']).toBeUndefined();
+    expect(Object.keys(op('/api/customers/logs', 'get').responses['200'].headers)).toEqual(['x-incomplete']);
   });
 
   it('keeps the invoke convention a POST with a body', () => {

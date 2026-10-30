@@ -84,6 +84,10 @@ export interface ApiOperationDoc {
    * client reads it and builds a retry it does not have.
    */
   idempotency?: false;
+  /** The success status, when it is not 200 — a declared route's `201` for a create (#2170). */
+  status?: 200 | 201 | 202;
+  /** Response headers the success carries beside its body (a declared route's `responseHeaders`). */
+  responseHeaders?: readonly string[];
   paged?: {
     /** Present on a handler-composed read: the ENTRY field the cursor walks. */
     sortKey?: string;
@@ -466,7 +470,7 @@ export function buildOpenApiDocument(
             }
           : {}),
         responses: {
-          '200': {
+          [String(op.status ?? 200)]: {
             description: op.paged
               ? op.paged.total
                 ? 'One page of results. The walk is in the response headers.'
@@ -477,11 +481,14 @@ export function buildOpenApiDocument(
             // adopting paging a breaking change for consumers a vertical cannot see —
             // and could not be done at all for the list reads whose published shape
             // was a bare array. In headers the body is what it always was.
-            ...(op.paged || op.concurrency
+            ...(op.paged || op.concurrency || op.responseHeaders?.length
               ? {
                   headers: {
                     ...(op.paged ? pageResponseHeaders(op.paged.total === true) : {}),
                     ...(op.concurrency ? etagResponseHeader() : {}),
+                    ...Object.fromEntries(
+                      (op.responseHeaders ?? []).map((name) => [name, { schema: { type: 'string' } }]),
+                    ),
                   },
                 }
               : {}),
