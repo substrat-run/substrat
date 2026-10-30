@@ -1,5 +1,11 @@
 # @substrat-run/model-view
 
+## 0.6.15
+
+### Patch Changes
+
+- @substrat-run/contracts@0.167.1
+
 ## 0.6.14
 
 ### Patch Changes
