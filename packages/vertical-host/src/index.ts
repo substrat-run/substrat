@@ -3141,6 +3141,13 @@ export type {
   ConnectLinkListRequest,
   ConnectLinkRevokeRequest,
 } from './connect-link.js';
+export { upsertConnection, bindConnection, unbindConnection, ConnectionRequestError } from './connections.js';
+export type {
+  ConnectionRelayAccess,
+  UpsertConnectionRequest,
+  BindConnectionRequest,
+  UnbindConnectionRequest,
+} from './connections.js';
 export * from './mcp.js';
 export { externalInput, externalJson, externalResult } from './wire.js';
 export * from './public-surface.js';

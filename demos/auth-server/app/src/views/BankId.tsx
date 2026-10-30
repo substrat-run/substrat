@@ -114,16 +114,26 @@ export function BankIdEditor({
         <span>{settings?.certSet ? 'Client certificate (stored — paste to replace)' : 'Client certificate (PEM)'}</span>
         <textarea rows={4} value={cert} onChange={(e) => setCert(e.target.value)} placeholder={'-----BEGIN CERTIFICATE-----'} />
         <em className="hint">
-          From a .p12: <code>openssl pkcs12 -in FPTestcert5_20240610.p12 -clcerts -nokeys -legacy</code>
-          &nbsp;(test passphrase <code>qwerty123</code>).
+          {environment === 'test' ? (
+            <>
+              From a .p12: <code>openssl pkcs12 -in FPTestcert5_20240610.p12 -clcerts -nokeys -legacy</code>
+              &nbsp;(test passphrase <code>qwerty123</code>).
+            </>
+          ) : (
+            'The certificate the bank issued for your own certificate request; it must match the private key pasted below.'
+          )}
         </em>
       </label>
       <label className="field">
         <span>{settings?.certSet ? 'Private key (stored — paste to replace)' : 'Private key (PEM)'}</span>
         <textarea rows={4} value={key} onChange={(e) => setKey(e.target.value)} placeholder={'-----BEGIN PRIVATE KEY-----'} />
         <em className="hint">
-          <code>openssl pkcs12 -in FPTestcert5_20240610.p12 -nocerts -nodes -legacy</code>. Stored
-          in this issuer&apos;s own database and never shown again.
+          {environment === 'test' && (
+            <>
+              <code>openssl pkcs12 -in FPTestcert5_20240610.p12 -nocerts -nodes -legacy</code>.{' '}
+            </>
+          )}
+          Stored in this issuer&apos;s own database and never shown again.
         </em>
       </label>
       <label className="toggle">
