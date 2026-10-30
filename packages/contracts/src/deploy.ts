@@ -10,7 +10,7 @@ import { substratError } from './errors.js';
 import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
-import { connectionLandingOptions } from './connection-landing.js';
+import { connectionLandingBind, connectionLandingOptions } from './connection-landing.js';
 import { connectionProvider } from './connections.js';
 import { verticalConnectorDeclarations, verticalConnectorProvider, type VerticalConnectorDeclaration } from './vertical-connector.js';
 import {
@@ -1359,7 +1359,7 @@ export const deployModuleDeclaration = z.object({
    * plane can hold `registry.connections` to what the modules declare
    * ({@link pushedLandingProblems}). Absent from a CLI that predates it.
    */
-  connections: z.array(z.object({ provider: connectionProvider, bind: z.literal('on-request').optional() })).optional(),
+  connections: z.array(z.object({ provider: connectionProvider, bind: connectionLandingBind.optional() })).optional(),
 });
 export type DeployModuleDeclaration = z.infer<typeof deployModuleDeclaration>;
 
@@ -1811,8 +1811,9 @@ export function pushedLandingProblems(
   registry: Pick<PermissionRegistry, 'connections'>,
 ): string[] {
   if (modules === undefined || !modules.some((m) => m.connections !== undefined)) return [];
+  // Normalised as the registry row is: only `on-request` is carried, so a written-out default reads as absent.
   const declared = new Map<string, 'on-request' | undefined>();
-  for (const m of modules) for (const l of m.connections ?? []) declared.set(l.provider, l.bind);
+  for (const m of modules) for (const l of m.connections ?? []) declared.set(l.provider, l.bind === 'on-request' ? l.bind : undefined);
   const problems: string[] = [];
   const rows = registry.connections ?? [];
   for (const row of rows) {
