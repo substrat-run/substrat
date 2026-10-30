@@ -6,6 +6,7 @@ import type { PhoneVerifier } from './twilio.js';
 
 const phoneNumber = z.string().regex(/^\+[1-9]\d{7,14}$/, 'Use an international phone number, such as +46701234567');
 const FRESH_MS = 10 * 60_000;
+const SEND_COOLDOWN_MS = 60_000;
 
 /** Fresh password sessions may enroll or step up. Other methods and impersonation do
  * not prove the password; a registered phone cannot be replaced through this flow. */
@@ -39,10 +40,17 @@ export const phonePlugin = (verifier: PhoneVerifier | undefined) => ({
       const phone = enrolled ?? ctx.body.phoneNumber;
       if (!phone) throw new APIError('BAD_REQUEST', { message: 'A phone number is required' });
       const adapter = ctx.context.internalAdapter;
-      // Atomic account-wide cooldown, including parallel requests and different sessions.
+      // Atomic account-wide cooldown, including parallel requests and different sessions. One
+      // reservation per user, good for a minute from the send: a reservation is never replaced
+      // while it is live, so no clock edge lets two sends through. A lapsed one is deleted by a
+      // conditional delete, which cannot remove a reservation another request just made.
+      const cooldownKey = `phone-send:${user.id}`;
+      await ctx.context.adapter.deleteMany({ model: 'verification', where: [
+        { field: 'identifier', value: cooldownKey },
+        { field: 'expiresAt', value: new Date(), operator: 'lt' },
+      ] });
       const reserved = await adapter.reserveVerificationValue({
-        identifier: `phone-send:${user.id}:${Math.floor(Date.now() / 60_000)}`,
-        value: 'sent', expiresAt: new Date(Date.now() + 2 * 60_000),
+        identifier: cooldownKey, value: 'sent', expiresAt: new Date(Date.now() + SEND_COOLDOWN_MS),
       });
       if (!reserved) throw new APIError('TOO_MANY_REQUESTS', { message: 'Wait a minute before requesting another code' });
       await verifier.send(phone).catch(() => {
