@@ -44,6 +44,7 @@ import {
   putBankIdConfig,
   readBankIdConfig,
   recordBankIdProbe,
+  sameBankIdConnection,
   toWireBankId,
   untestableBankId,
   type BankIdConfig,
@@ -751,7 +752,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   const testBankId = async (cfg: BankIdConfig) => {
     const transport = deps.bankidTransport?.(cfg);
     const probe = transport ? await probeBankId(transport.transport, bankIdApiUrl(cfg.environment)) : untestableBankId();
-    return recordBankIdProbe(deps.sql, probe) ?? cfg;
+    return recordBankIdProbe(deps.sql, probe, cfg) ?? cfg;
   };
 
   app.get('/bankid', (c) => {
@@ -774,10 +775,10 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       throw new HTTPException(400, { message: 'a client certificate and key are required to enable BankID' });
     }
     let saved = putBankIdConfig(deps.sql, input, existing);
-    // A new certificate, or a new environment for the old one, is tested as it is saved: the
-    // answer shows on the page now rather than at the first person's sign-in, and through the
-    // relay BankID is not offered until it passes.
-    if (input.clientCert !== undefined || input.environment !== existing?.environment) saved = await testBankId(saved);
+    // A changed connection — certificate, key, root or environment — is tested as it is saved:
+    // the answer shows on the page now rather than at the first person's sign-in, and through
+    // the relay BankID is not offered until it passes.
+    if (!existing || !sameBankIdConnection(existing, saved)) saved = await testBankId(saved);
     return c.json(bankidView(saved), existing ? 200 : 201);
   });
 

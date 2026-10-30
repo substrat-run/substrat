@@ -76,6 +76,8 @@ function build() {
     // Paths a panic message or a debug section could carry, made the same on every host.
     'export RUSTFLAGS="--remap-path-prefix=/build=crate --remap-path-prefix=$CARGO_HOME=cargo"',
     'export CC_wasm32_unknown_unknown=clang AR_wasm32_unknown_unknown=llvm-ar',
+    // The crate's own tests (`receive` against an in-memory server), natively, before the module is built.
+    'cargo test --locked --quiet',
     'cargo build --locked --release --target wasm32-unknown-unknown',
     'wasm-bindgen --target web --out-dir /out target/wasm32-unknown-unknown/release/mtls_wasm.wasm',
   ].join('\n');

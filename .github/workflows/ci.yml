@@ -643,9 +643,6 @@ jobs:
       - run: pnpm test:preloads
       - run: pnpm test:publish-manifests
 
-  # The one verdict: green only when the checks, every shard and the Windows CLI suite
-  # succeeded. A skipped or cancelled job is not a pass. Named `test` because that is the
-  # job name deploy-test waits on and the one a merge has always been judged by.
   # The social relay's TLS module (apps/social-relay/src/mtls-wasm/) is rustls compiled to
   # WebAssembly — the one checked-in artifact a reviewer cannot read. This rebuilds it from its
   # Rust source inside the digest-pinned image its Dockerfile names, as linux/amd64, and fails
@@ -674,6 +671,9 @@ jobs:
       - if: steps.touched.outputs.run == 'true'
         run: node tools/mtls-wasm-emit.mjs --check
 
+  # The one verdict: green only when the checks, every shard and the Windows CLI suite
+  # succeeded. A skipped or cancelled job is not a pass. Named `test` because that is the
+  # job name deploy-test waits on and the one a merge has always been judged by.
   test:
     needs: [checks, test-shard, test-windows, mtls-wasm]
     if: always()

@@ -189,11 +189,16 @@ export function putBankIdConfig(sql: SqlExec, input: BankIdInput, existing?: Ban
     allowSignup: input.allowSignup,
     disabled: input.disabled,
     updatedAt: Date.now(),
-    // A new certificate has not been tested; anything else keeps the last answer.
-    ...(input.clientCert === undefined && existing?.probe ? { probe: existing.probe } : {}),
   };
+  // A changed connection has not been tested; anything else keeps the last answer.
+  if (existing?.probe && sameBankIdConnection(existing, next)) next.probe = existing.probe;
   sql.exec('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', CONFIG_KEY, JSON.stringify(next));
   return next;
+}
+
+/** Whether two configs make the same call to BankID: what a connection test's answer is about. */
+export function sameBankIdConnection(a: BankIdConfig, b: BankIdConfig): boolean {
+  return a.environment === b.environment && a.clientCert === b.clientCert && a.clientKey === b.clientKey && a.caCert === b.caCert;
 }
 
 /** The test a runtime with no transport records: there is no call to make, and the panel should say so. */
@@ -206,10 +211,14 @@ export function untestableBankId(now = Date.now()): BankIdProbe {
   };
 }
 
-/** Record a connection test on the stored config. Nothing to record against when none is stored. */
-export function recordBankIdProbe(sql: SqlExec, probe: BankIdProbe): BankIdConfig | undefined {
+/**
+ * Record a connection test of `tested` on the stored config — only while that is still the stored
+ * connection. A test outlives the request that saved it, so a slow answer about a replaced
+ * certificate must not land on its successor. Returns the stored config either way.
+ */
+export function recordBankIdProbe(sql: SqlExec, probe: BankIdProbe, tested: BankIdConfig): BankIdConfig | undefined {
   const cfg = readBankIdConfig(sql);
-  if (!cfg) return undefined;
+  if (!cfg || !sameBankIdConnection(cfg, tested)) return cfg;
   const next = { ...cfg, probe };
   sql.exec('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', CONFIG_KEY, JSON.stringify(next));
   return next;

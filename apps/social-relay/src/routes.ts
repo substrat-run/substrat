@@ -105,16 +105,19 @@ const hopInput = z
 /** The JSON body BankID is sent, serialized. Its largest request (`sign` with visible data) is well under this. */
 const HOP_BODY_MAX = 16 * 1024;
 
-/** `client_secret_basic`, or empty strings: malformed is a failed authentication, never a 500. */
-function basicCredentials(authorization: string): { clientId: string; clientSecret: string } {
-  if (!authorization.toLowerCase().startsWith('basic ')) return { clientId: '', clientSecret: '' };
+/**
+ * `client_secret_basic`: the pair, empty strings when it is malformed (a failed authentication,
+ * never a 500), or `undefined` when the header carries no pair at all.
+ */
+function basicCredentials(authorization: string): { clientId: string; clientSecret: string } | undefined {
+  if (!authorization.toLowerCase().startsWith('basic ')) return undefined;
   // Both `atob` and `decodeURIComponent` throw on input that is merely malformed, and a
   // malformed credential is a failed authentication — a 401 the caller can read — never a
   // 500 that reads as the relay being broken.
   try {
     const decoded = atob(authorization.slice(6).trim());
     const separator = decoded.indexOf(':');
-    if (separator <= 0) return { clientId: '', clientSecret: '' };
+    if (separator <= 0) return undefined;
     return {
       clientId: decodeURIComponent(decoded.slice(0, separator)),
       clientSecret: decodeURIComponent(decoded.slice(separator + 1)),
@@ -309,7 +312,7 @@ export function createApp(options: AppOptions = {}) {
       return hopProblem(404, 'target', 'the hop reaches BankID test or production, under /rp/v6.0/');
     }
 
-    const { clientId, clientSecret } = basicCredentials(c.req.header('authorization') ?? '');
+    const { clientId, clientSecret } = basicCredentials(c.req.header('authorization') ?? '') ?? { clientId: '', clientSecret: '' };
     const store = storeOf(c.env);
     if (!clientId || !clientSecret || !(await store.verifyClientSecret(clientId, clientSecret))) {
       return hopProblem(401, 'client', 'client authentication failed');
@@ -564,7 +567,7 @@ export function createApp(options: AppOptions = {}) {
     let clientId = form.get('client_id') ?? '';
     let clientSecret = form.get('client_secret') ?? '';
     const authorization = c.req.raw.headers.get('authorization') ?? '';
-    if (authorization.toLowerCase().startsWith('basic ')) ({ clientId, clientSecret } = basicCredentials(authorization));
+    ({ clientId, clientSecret } = basicCredentials(authorization) ?? { clientId, clientSecret });
     const store = storeOf(c.env);
     if (!clientId || !clientSecret || !(await store.verifyClientSecret(clientId, clientSecret))) {
       return c.json({ error: 'invalid_client', error_description: 'client authentication failed' }, 401);

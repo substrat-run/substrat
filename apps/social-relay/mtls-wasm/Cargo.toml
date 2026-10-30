@@ -21,6 +21,10 @@ ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
 rustls-pki-types = { version = "1", features = ["web", "std"] }
 getrandom = { version = "0.2", features = ["js"] }
 
+[dev-dependencies]
+# Certificates for the in-memory server `receive` is tested against; never in the module.
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+
 [profile.release]
 opt-level = "z"
 lto = true

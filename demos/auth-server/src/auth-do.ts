@@ -236,12 +236,14 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 
   /** BankID for `buildAuth` — only when configured, enabled, AND this worker can present the
-   *  client certificate (`bankidTransport`). The binding's certificate is fixed at deploy time;
+   *  client certificate (`bankidTransport`), through the hop only once a connection test has
+   *  passed (`publicBankIdFrom`). The binding's certificate is fixed at deploy time;
    *  the panel's environment choice still decides which API it is presented to. */
   private bankid(cfg: BankIdConfig | undefined) {
     if (!cfg || cfg.disabled) return undefined;
     const transport = this.bankidTransport(cfg);
-    if (!transport) return undefined;
+    // The login screen's own rule, so a flow it does not offer cannot be started directly either.
+    if (!transport || !publicBankIdFrom(cfg, transport.kind)) return undefined;
     return {
       apiUrl: bankIdApiUrl(cfg.environment),
       transport: transport.transport,

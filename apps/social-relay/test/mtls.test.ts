@@ -143,14 +143,14 @@ describe('the hop route', () => {
   let client: { clientId: string; clientSecret: string };
   let calls: MtlsRequest[];
 
-  const env = (): Env => ({ RELAY: namespaceOf(store) as unknown as Env['RELAY'] });
+  const env = (vars: Partial<Env> = {}): Env => ({ RELAY: namespaceOf(store) as unknown as Env['RELAY'], ...vars });
   const basic = (id: string, secret: string) => `Basic ${btoa(`${id}:${secret}`)}`;
   const hopBody = { certPem: 'CERT', keyPem: 'KEY', caPem: 'ROOT', body: { orderRef: '00000000-0000-0000-0000-000000000000' } };
 
   const appWith = (mtls?: (r: MtlsRequest) => Promise<{ status: number; text: string; stages: [] }>) =>
     createApp({ now: () => NOW, ...(mtls ? { mtls } : {}) });
 
-  const post = (app: ReturnType<typeof createApp>, path: string, init: { auth?: string; body?: unknown } = {}) =>
+  const post = (app: ReturnType<typeof createApp>, path: string, init: { auth?: string; body?: unknown; vars?: Partial<Env> } = {}) =>
     app.request(
       path,
       {
@@ -158,7 +158,7 @@ describe('the hop route', () => {
         headers: { 'content-type': 'application/json', ...(init.auth === undefined ? { authorization: basic(client.clientId, client.clientSecret) } : init.auth ? { authorization: init.auth } : {}) },
         body: JSON.stringify(init.body ?? hopBody),
       },
-      env(),
+      env(init.vars),
     );
 
   beforeEach(async () => {
@@ -196,6 +196,7 @@ describe('the hop route', () => {
     ['no client credential', '/mtls/bankid/test/rp/v6.0/auth', { auth: '' }, 401, 'client'],
     ['a wrong client secret', '/mtls/bankid/test/rp/v6.0/auth', { auth: 'Basic d3Jvbmc6c2VjcmV0' }, 401, 'client'],
     ['a body without the key', '/mtls/bankid/test/rp/v6.0/auth', { body: { certPem: 'C', caPem: 'R', body: {} } }, 400, 'request'],
+    ['a BankID request over the bound', '/mtls/bankid/test/rp/v6.0/auth', { body: { ...hopBody, body: { text: 'a'.repeat(16 * 1024) } } }, 413, 'request'],
   ] as const)('refuses %s before any connection is made', async (_, path, init, status, stage) => {
     const app = appWith(async (r) => {
       calls.push(r);
@@ -206,6 +207,19 @@ describe('the hop route', () => {
     expect(res.headers.get('content-type')).toBe('application/problem+json');
     expect(await res.json()).toMatchObject({ status, stage });
     expect(calls).toEqual([]);
+  });
+
+  it('refuses a call over the per-client rate before any connection is made', async () => {
+    const app = appWith(async (r) => {
+      calls.push(r);
+      return { status: 200, text: '', stages: [] };
+    });
+    const vars = { MTLS_RATE_LIMIT: '1' };
+    expect((await post(app, '/mtls/bankid/test/rp/v6.0/auth', { vars })).status).toBe(200);
+    const res = await post(app, '/mtls/bankid/test/rp/v6.0/auth', { vars });
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ status: 429, stage: 'client' });
+    expect(calls).toHaveLength(1);
   });
 
   it('honours the kill switch', async () => {

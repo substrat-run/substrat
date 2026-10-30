@@ -16,6 +16,7 @@ import {
   publicBankIdFrom,
   putBankIdConfig,
   readBankIdConfig,
+  recordBankIdProbe,
   toWireBankId,
   type BankIdConfig,
   type BankIdTransport,
@@ -198,6 +199,23 @@ describe('the stored configuration', () => {
     expect(readBankIdConfig(sql)).toBeUndefined();
   });
 
+  it.each([
+    ['a new key', { clientKey: `${PEM_KEY}\n` }],
+    ['a cleared root', { caCert: null }],
+  ] as const)('drops a passed connection test on %s', (_, change) => {
+    putBankIdConfig(sql, { ...input, caCert: PEM_CERT });
+    recordBankIdProbe(sql, { ok: true, at: 1 }, readBankIdConfig(sql)!);
+    putBankIdConfig(sql, { environment: 'test', allowSignup: true, disabled: false, ...change }, readBankIdConfig(sql));
+    expect(readBankIdConfig(sql)?.probe).toBeUndefined();
+  });
+
+  it('records a connection test only while the connection it tested is still stored', () => {
+    const tested = putBankIdConfig(sql, input);
+    putBankIdConfig(sql, { ...input, clientCert: `${PEM_CERT}\n` }, tested);
+    recordBankIdProbe(sql, { ok: true, at: 1 }, tested);
+    expect(readBankIdConfig(sql)?.probe).toBeUndefined();
+  });
+
   it('refuses a first save without both PEMs', () => {
     expect(() => putBankIdConfig(sql, { environment: 'test', clientCert: PEM_CERT, allowSignup: true, disabled: false })).toThrow();
   });
@@ -344,6 +362,10 @@ describe('the admin surface', () => {
     probeAnswer = { status: 403, body: undefined };
     await adminCall('/bankid', { method: 'PUT', body: JSON.stringify({ environment: 'test', allowSignup: false, disabled: false }) });
     expect(readBankIdConfig(sql)?.probe?.ok).toBe(true);
+
+    // A new root is a different connection: tested again as it is saved.
+    await adminCall('/bankid', { method: 'PUT', body: JSON.stringify({ environment: 'test', caCert: PEM_CERT, allowSignup: false, disabled: false }) });
+    expect(readBankIdConfig(sql)?.probe?.ok).toBe(false);
   });
 
   it('refuses a first save without PEMs, and refuses anonymously', async () => {
