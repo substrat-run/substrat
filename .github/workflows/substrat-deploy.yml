@@ -53,6 +53,13 @@ jobs:
     # and prod is self-serve, so the same run points prod at the new version.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # One build submit at a time across the platform: this group is shared with the auth-server
+    # deploy and with every ticket0 preview, because the builder agent serves ONE build per
+    # tenant and answers `409 project operation already in progress` to a second concurrent
+    # submit. A push touching `.github/workflows/**` matches both deploy workflows' path
+    # filters, so two separate groups fired both at once. The price: a job holds the group for
+    # its whole duration, so deploys and previews now run one at a time across verticals.
+    #
     # One promotion at a time, and every merge still gets one. Two merges landing together
     # would otherwise race, and the loser could point prod at the OLDER version — the channel
     # takes whichever push finishes last, not whichever commit is newer. Queued rather than
@@ -68,7 +75,7 @@ jobs:
     # (`push` patch-bumps the registry's highest; it never reads the commit). Closing that
     # needs a guard refusing to promote a commit the branch has moved past — its own change.
     concurrency:
-      group: substrat-deploy-ticket0-prod
+      group: substrat-platform-build
       queue: max
       cancel-in-progress: false
     steps:
@@ -194,8 +201,13 @@ jobs:
       github.event.action != 'closed' &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
-    # Never overlap two runs for the same PR — a rapid re-push waits for the first.
-    concurrency: substrat-preview-${{ github.event.number }}
+    # Never overlap two builds at the builder, whichever PR or deploy they belong to: the same
+    # group (and the same `queue: max`, no cancelling) as the `deploy` job, whose comment gives
+    # the reasons. A rapid re-push of one PR waits for the first, as it did before.
+    concurrency:
+      group: substrat-platform-build
+      queue: max
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
