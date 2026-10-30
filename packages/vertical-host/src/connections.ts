@@ -25,7 +25,7 @@ import type {
  * };
  *
  * // worker.ts — the effect
- * const { principal, folder } = await scope.invoke('drive/connect-source', { folder });
+ * const { principal, folder } = await scope.invoke<{ principal: string; folder: string }>('drive/connect-source', { folder: body.folder });
  * const access = { controlPlaneUrl: env.CONTROL_PLANE_URL, platformSecret: env.PLATFORM_SECRET, tenantId, scopeId };
  * const { connectionId } = await upsertConnection({ ...access, provider: 'acme-files', secret, owner: 'scope', createdBy: principal });
  * await bindConnection({ ...access, connectionId, options: { folder }, boundBy: principal });
