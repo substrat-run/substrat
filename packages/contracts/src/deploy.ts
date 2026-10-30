@@ -1154,7 +1154,13 @@ export function connectionLandingsOfManifestJson(manifestJson: string | null | u
   if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
   return {
     kind: 'landings',
-    rows: read.rows.map((r) => ({ provider: r.provider, operation: r.operation, permission: r.permission, ...(r.options ? { options: r.options } : {}) })),
+    rows: read.rows.map((r) => ({
+      provider: r.provider,
+      operation: r.operation,
+      permission: r.permission,
+      ...(r.options ? { options: r.options } : {}),
+      ...(r.bind ? { bind: r.bind } : {}),
+    })),
   };
 }
 
@@ -1586,12 +1592,16 @@ export type PermissionRegistryImport = z.infer<typeof permissionRegistryImport>;
  * invokes and the key a connection is granted for it. A row here is authority handed to whoever
  * holds the provider token, so it belongs in the same artifact, and the same digest, as the keys a
  * person is given.
+ *
+ * `bind` is carried only as `on-request` (#2732): the default is omitted rather than written out,
+ * so a registry built before the field hashes to the same digest.
  */
 export const permissionRegistryConnection = z.object({
   provider: connectionProvider,
   operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/),
   permission: permissionKey,
   options: connectionLandingOptions.optional(),
+  bind: z.literal('on-request').optional(),
   declaredBy: z.array(moduleId).min(1),
 });
 export type PermissionRegistryConnection = z.infer<typeof permissionRegistryConnection>;
@@ -2003,16 +2013,26 @@ function connectionRowsOf(
   const rows = new Map<string, PermissionRegistryConnection>();
   const problems: string[] = [];
   const same = (a: Omit<PermissionRegistryConnection, 'declaredBy'>, b: Omit<PermissionRegistryConnection, 'declaredBy'>) =>
-    a.operation === b.operation && a.permission === b.permission && JSON.stringify(a.options ?? {}) === JSON.stringify(b.options ?? {});
+    a.operation === b.operation && a.permission === b.permission && a.bind === b.bind &&
+    JSON.stringify(a.options ?? {}) === JSON.stringify(b.options ?? {});
   // `?? []` although parsed manifests carry the field: the CLI imports a vertical's modules as plain JS.
   for (const m of modules) {
-    for (const l of m.manifest.connections ?? []) {
+    for (const d of m.manifest.connections ?? []) {
+      // Built field by field, in the order rows always had; the default `bind` is dropped, so a
+      // landing that writes `every-install` out builds the row it always did.
+      const l: Omit<PermissionRegistryConnection, 'declaredBy'> = {
+        provider: d.provider,
+        operation: d.operation,
+        permission: d.permission,
+        ...(d.options ? { options: d.options } : {}),
+        ...(d.bind === 'on-request' ? { bind: d.bind } : {}),
+      };
       const where = `connections '${l.provider}' (${m.manifest.id})`;
       if (!declared.has(l.permission)) problems.push(`${where}: lands holding ${l.permission}, which no module declares`);
       if (reserved.has(l.permission)) problems.push(`${where}: lands holding ${l.permission}, which is reserved to a system principal`);
       const row = rows.get(l.provider);
       if (!row) {
-        rows.set(l.provider, { provider: l.provider, operation: l.operation, permission: l.permission, ...(l.options ? { options: l.options } : {}), declaredBy: [m.manifest.id] });
+        rows.set(l.provider, { ...l, declaredBy: [m.manifest.id] });
       } else if (same(row, l)) {
         row.declaredBy = [...new Set([...row.declaredBy, m.manifest.id])].sort((a, b) => a.localeCompare(b));
       } else {

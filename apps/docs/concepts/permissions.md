@@ -819,6 +819,11 @@ connections: [
   left as an operator set it. A version that stops declaring a landing does not unbind anything:
   the connection keeps its binding, and the connection's row in Health › Connections reports any
   landing that now fails.
+- **A landing can wait to be asked.** `bind: 'on-request'` is for a source each instance connects
+  for itself, one folder per instance, say. The pass grants and binds nothing for it; an instance
+  binds its own connection, with its own options, when it asks. The declaration still names the
+  operation and the key, so `PERMISSIONS.md` shows the provider marked *on request* and the digest
+  moves if you change it. Leaving `bind` out means `every-install`, everything above.
 - **Revoking the connection ends it.** The revoke takes the connection's keys and bindings
   together, and the pass never seats them again.
 - **Nothing lands silently.** A connection with no binding reads *nothing polls this connection*;
