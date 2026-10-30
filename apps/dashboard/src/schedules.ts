@@ -24,7 +24,9 @@ export const SWEEP_WINDOW_MINUTES = 15;
  */
 const SWEEPER_SILENT_AFTER_MS = 2 * SWEEP_WINDOW_MINUTES * 60_000;
 
-export interface ScheduleRunView {
+// A type, not an interface: the route's output declares a sweep row loose, and only a type
+// alias is assignable to the index signature that gives it.
+export type ScheduleRunView = {
   id: string;
   outcome: string;
   at: string;
@@ -32,7 +34,7 @@ export interface ScheduleRunView {
   elapsedMs: number | null;
   /** The freshness rows' evidence timestamp (#1272); null on schedule rows. */
   observedAt: string | null;
-}
+};
 
 export interface AppScheduleRow {
   operation: string;
