@@ -1085,8 +1085,8 @@ const pageParams = (c: { req: { query(key: string): string | undefined } }) =>
  * live-data move that cannot be planned against a belief.
  *
  * Both directories, for the CALLER'S OWN tenant only: the local read is the
- * staff-actor projection read (access-logged, K-24) narrowed to the team the path
- * names, which the caller must be a member of, and the shared read is the tenant-narrowed plane's, so
+ * staff-actor projection read (access-logged, K-24) narrowed to the path's team, which
+ * the caller is a member of, and the shared read is the tenant-narrowed plane's, so
  * neither side can be aimed at somebody else's team by a request argument.
  *
  * A 503 here is the answer, not a bug: an unbound control plane means the mirror
