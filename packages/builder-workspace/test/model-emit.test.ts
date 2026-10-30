@@ -253,6 +253,44 @@ async function fixtureProject(base = tmpdir()): Promise<string> {
 	return dir;
 }
 
+describe('the model gate compiles under the project tsconfig once one exists (#2727)', () => {
+	// A file `noUnusedLocals` refuses and the explicit defaults accept: only the
+	// project's own config can tell the two forms apart.
+	const compile = async (tsconfig: boolean) => {
+		await mkdir(join(REPO_ROOT, '.builder'), { recursive: true });
+		const dir = await mkdtemp(join(REPO_ROOT, '.builder/model-gate-'));
+		try {
+			await mkdir(join(dir, 'spec'));
+			await writeFile(join(dir, 'spec/model.ts'), 'const unused = 1;\nexport const model = {};\n');
+			if (tsconfig) {
+				await writeFile(
+					join(dir, 'tsconfig.json'),
+					JSON.stringify({ compilerOptions: { strict: true, target: 'ES2023', module: 'NodeNext', noUnusedLocals: true } }),
+				);
+			}
+			const spec = standaloneGates(relative(REPO_ROOT, dir)).find((g) => g.name === 'model')!;
+			const ws = new LocalWorkspace({ root: REPO_ROOT });
+			const result = await ws.exec(spec.cmd);
+			const leftover = await ws.exists(relative(REPO_ROOT, join(dir, 'tsconfig.model-gate.json')));
+			await ws.dispose();
+			return { result, leftover };
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	};
+
+	it('compiles under explicit defaults while the project has no tsconfig', async () => {
+		expect((await compile(false)).result).toMatchObject({ exitCode: 0 });
+	}, 60_000);
+
+	it('applies the project tsconfig once it exists, and leaves nothing behind', async () => {
+		const { result, leftover } = await compile(true);
+		expect(result.exitCode).not.toBe(0);
+		expect(result.stdout + result.stderr).toContain('TS6133');
+		expect(leftover).toBe(false);
+	}, 60_000);
+});
+
 describe('model-diff --root — the emitter the studio calls', () => {
 	it('a direct gate recheck refuses a model that typechecks but throws on import', async () => {
 		// Real compiler/emitter subprocesses need a few seconds of CI headroom.
