@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, type ObservabilityLogEvent } from '../lib/api';
+import { api, isApiError, type ObservabilityLogEvent } from '../lib/api';
 import { callLogsWindow, CALL_LOGS_MARGIN_MINUTES } from '../lib/history';
 import { shortId } from '../lib/format';
 import { LogList } from '../components/LogList';
@@ -66,7 +66,7 @@ export function InvocationLogsStrip({
         // The plane's own words for a refusal are safe to show and say why; a 501 is the
         // one status with a fixed meaning (no log backend on this platform).
         setErr(
-          e instanceof ApiError
+          isApiError(e)
             ? e.status === 501
               ? 'Log streaming is not configured on this platform.'
               : `Logs are unavailable (${e.status}): ${e.message}`

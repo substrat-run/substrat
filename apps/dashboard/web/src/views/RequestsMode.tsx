@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type PointerEvent } from 'react';
-import { api, ApiError, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
+import { api, isApiError, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestFacets, mockRequestVolume, mockRequests } from '../lib/mock-requests';
 import { dragWindow, type ObsQuery } from '../lib/observability-query';
@@ -50,8 +50,8 @@ const isError = (v: unknown): v is { error: string } => typeof v === 'object' &&
 
 /** Why a read failed, in the page's words: 501 is "not on this platform", never an outage. */
 function failure(e: unknown): { error: string } {
-  if (e instanceof ApiError && e.status === 501) return { error: 'Request counts are not available on this platform yet.' };
-  if (e instanceof ApiError) return { error: `Requests could not be read (${e.status}): ${e.message}` };
+  if (isApiError(e) && e.status === 501) return { error: 'Request counts are not available on this platform yet.' };
+  if (isApiError(e)) return { error: `Requests could not be read (${e.status}): ${e.message}` };
   return { error: 'Requests could not be read right now.' };
 }
 

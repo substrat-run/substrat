@@ -13,8 +13,8 @@ import { issuePathsOf, mountRoutes, RouteOutputMismatch } from '../src/index.js'
 const routes = defineRoutes({
   'acme/list-things': {
     summary: 'Things, filtered',
-    input: z.object({ limit: z.number().int().optional(), done: z.boolean().optional() }),
-    output: z.object({ limit: z.number().nullable(), done: z.boolean().nullable() }),
+    input: z.object({ limit: z.number().int().optional(), done: z.boolean().optional(), ids: z.array(z.number()).optional() }),
+    output: z.object({ limit: z.number().nullable(), done: z.boolean().nullable(), ids: z.array(z.number()).nullable() }),
     http: { method: 'GET', path: '/things' },
   },
   'acme/get-thing': {
@@ -48,7 +48,7 @@ interface Ctx {
 
 function appWith(seen: unknown[] = []) {
   const handlers = {
-    'acme/list-things': (_ctx, input) => ({ limit: input.limit ?? null, done: input.done ?? null }),
+    'acme/list-things': (_ctx, input) => ({ limit: input.limit ?? null, done: input.done ?? null, ids: input.ids ?? null }),
     'acme/get-thing': (ctx, input) => {
       seen.push([ctx.team, input]);
       return { id: input.id };
@@ -91,7 +91,13 @@ describe('mountRoutes (#2170)', () => {
 
   it('types a query string by the declared shape', async () => {
     const res = await appWith().req('/api/teams/t1/things?limit=5&done=false');
-    expect(await res.json()).toEqual({ limit: 5, done: false });
+    expect(await res.json()).toEqual({ limit: 5, done: false, ids: null });
+  });
+
+  it('reads a field declared as an array from every repeat of its key, each value typed', async () => {
+    const { req } = appWith();
+    expect(await (await req('/api/teams/t1/things?ids=1&ids=2&limit=5')).json()).toEqual({ limit: 5, done: null, ids: [1, 2] });
+    expect(await (await req('/api/teams/t1/things?ids=3')).json()).toMatchObject({ ids: [3] });
   });
 
   it('resolves the context first: no session is the context’s 401, not a 400 about the input', async () => {

@@ -171,10 +171,20 @@ Every team-scoped route is now declared under the team path, and no handler take
 from the cookie. `sb_team` is read by two team-less routes only, `/api/me` and `/api/catalog`,
 to pick the team the shell opens on; the team switch, create, invite accept, leave and the
 GitHub callback write or clear it. It is "last team used", never the team a request acts on.
-What is still open under #2170: the declared surface does not yet emit an `openapi.json`
-with its `--check` gate, and the observability and logs reads are declared but called from the
-browser through a hand-written helper (they send repeated query parameters and read a response
-header), not the generated client.
+The observability and logs reads go through the generated client like every other team route.
+A filter that names several values (`service`, `scopeId`, the request facets) is declared as an
+array, sent as a repeated query key and parsed by the mount into a list. The two log reads
+declare `responseHeaders: [x-substrat-logs-incomplete]`, so their client method answers the body
+and only that header. The browser's hand-written `call` reaches the team-less routes only.
+
+The assistant's tools run the same handlers with the `/ask` request as the Hono context. The
+team logs and the three team series take `service` and `scopeId` from the parsed input, so the
+assistant's values for those reach them. The other handlers still read the request's own query:
+the request and pattern reads forward their filters from it, and every observability handler
+reads its scalar arguments (`hours`, `since`, `until`, `limit`, `level`, …) from it. On the
+assistant path that query is the `/ask` request's, so those filters and arguments are not applied
+there today, and such a call answers the unfiltered default window (#2759). What is still open under
+#2170: the declared surface does not yet emit an `openapi.json` with its `--check` gate.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 

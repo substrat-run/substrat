@@ -366,7 +366,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/observability/log-patterns` — `dashboard/app-log-patterns`
    */
-  appLogPatterns(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; buckets?: string }): Promise<{ total: number; bucketMs: number; patterns: { template: string; count: number; share: number; levels: { debug: number; info: number; warn: number; error: number }; dominant: string; buckets: { start: string; count: number }[] }[]; truncated: boolean; estimated: boolean }>;
+  appLogPatterns(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; buckets?: string }): Promise<{ total: number; bucketMs: number; patterns: { template: string; count: number; share: number; levels: { debug: number; info: number; warn: number; error: number }; dominant: string; buckets: { start: string; count: number }[] }[]; truncated: boolean; estimated: boolean }>;
 
   /**
    * The members, roles and open invites in one app scope
@@ -386,8 +386,10 @@ export interface DashboardClient {
    * Log lines for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/logs` — `dashboard/app-observability-logs`
+   *
+   * Answers the body beside the response headers `x-substrat-logs-incomplete`, and no others.
    */
-  appObservabilityLogs(input: { scopeId: string; hours?: string; limit?: string; level?: string; search?: string; invocationId?: string; template?: string; since?: string; until?: string }): Promise<({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]>;
+  appObservabilityLogs(input: { scopeId: string; hours?: string; limit?: string; level?: string; search?: string; invocationId?: string; template?: string; since?: string; until?: string }): Promise<{ body: ({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]; headers: Headers }>;
 
   /**
    * One installed app's traffic at this team's tenant grain
@@ -429,21 +431,21 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/observability/requests/facets` — `dashboard/app-request-facets`
    */
-  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
+  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; buckets?: string; facet?: string; limit?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
 
   /**
    * Request histogram for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/requests/volume` — `dashboard/app-request-volume`
    */
-  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
+  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; buckets?: string; facet?: string; limit?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
 
   /**
    * Request records for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/requests/list` — `dashboard/app-requests`
    */
-  appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
+  appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; buckets?: string; facet?: string; limit?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
 
   /**
    * The browsable scopes of this app's vertical
@@ -478,7 +480,7 @@ export interface DashboardClient {
    *
    * `GET /observability/business-volumes` — `dashboard/business-volumes`
    */
-  businessVolumes(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ window: { since: string; until: string }; bucketMinutes: number; rows: { scopeId: string; entityType: string; state: string; terminal: boolean; fromInitial: boolean; operations: string[]; today: number; yesterday: number; buckets: { start: string; count: number }[] }[]; apps: ({ scopeId: string; unavailable: "no-version" | "no-moves" | "not-yet-available" | null })[] }>;
+  businessVolumes(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<{ window: { since: string; until: string }; bucketMinutes: number; rows: { scopeId: string; entityType: string; state: string; terminal: boolean; fromInitial: boolean; operations: string[]; today: number; yesterday: number; buckets: { start: string; count: number }[] }[]; apps: ({ scopeId: string; unavailable: "no-version" | "no-moves" | "not-yet-available" | null })[] }>;
 
   /**
    * Connect or rotate one provider credential for an app
@@ -1023,8 +1025,10 @@ export interface DashboardClient {
    * Logs for this team's published service versions
    *
    * `GET /observability/logs` — `dashboard/observability-logs`
+   *
+   * Answers the body beside the response headers `x-substrat-logs-incomplete`, and no others.
    */
-  observabilityLogs(input: { service?: string; hours?: string; limit?: string; level?: string; search?: string }): Promise<({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]>;
+  observabilityLogs(input: { service?: string[]; hours?: string; limit?: string; level?: string; search?: string }): Promise<{ body: ({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]; headers: Headers }>;
 
   /**
    * Metrics for this team's published verticals
@@ -1248,14 +1252,14 @@ export interface DashboardClient {
    *
    * `GET /observability/traffic` — `dashboard/team-traffic`
    */
-  teamTraffic(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ window?: { since: string; until: string }; series: ({ scopeId: string; buckets: ({ start: string; requests: number; errors: number; durationP95: number | null; green?: number; yellow?: number })[] })[]; bucketMinutes: number; available: boolean }>;
+  teamTraffic(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<{ window?: { since: string; until: string }; series: ({ scopeId: string; buckets: ({ start: string; requests: number; errors: number; durationP95: number | null; green?: number; yellow?: number })[] })[]; bucketMinutes: number; available: boolean }>;
 
   /**
    * Bucketed traffic for this team's installed apps
    *
    * `GET /observability/tenant-metrics-series` — `dashboard/tenant-metrics-series`
    */
-  tenantMetricsSeries(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ scopeId: string; start: string; bucketMinutes: number; requests: number; errors: number; class2xx?: number; class3xx?: number; class4xx?: number; durationP50: number; durationP95?: number }[]>;
+  tenantMetricsSeries(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<{ scopeId: string; start: string; bucketMinutes: number; requests: number; errors: number; class2xx?: number; class3xx?: number; class4xx?: number; durationP50: number; durationP95?: number }[]>;
 
   /**
    * Move this app to the current prod version of its vertical
@@ -1318,13 +1322,14 @@ const omit = (input: Record<string, unknown>, keys: string[]): Record<string, un
   return out;
 };
 
-/** Declared fields become a query string; `undefined` is absent rather than the string "undefined". */
+/** Declared fields become a query string; `undefined` is absent rather than the string "undefined". An array is its key once per value. */
 const query = (values: Record<string, unknown> | undefined): string => {
   if (!values) return '';
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(values)) {
     if (v === undefined || v === null) continue;
-    params.set(k, String(v));
+    if (Array.isArray(v)) for (const each of v) params.append(k, String(each));
+    else params.set(k, String(v));
   }
   const s = params.toString();
   return s ? `?${s}` : '';
@@ -1350,13 +1355,32 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
 
   const parse = async (res: Response): Promise<unknown> => {
     const text = await res.text();
-    const body: unknown = text ? JSON.parse(text) : null;
-    if (!res.ok) throw new ApiError(res.status, readMessage(body, res) ?? res.statusText, body);
-    return body;
+    if (!res.ok) {
+      let body: unknown = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        // A refusal from in front of the app (an edge's HTML 502) is not JSON; its status still says what happened.
+      }
+      throw new ApiError(res.status, readMessage(body, res) ?? res.statusText, body);
+    }
+    return text ? JSON.parse(text) : null;
   };
 
   const send = async (path: string, method: string, body: unknown, params: unknown): Promise<unknown> =>
     await parse(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
+
+  /** A read whose answer is more than its body (#2170): the body, and only the headers it names. */
+  const withHeaders = async (names: string[], path: string, method: string, body: unknown, params: unknown): Promise<unknown> => {
+    const res = await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body);
+    const parsed = await parse(res);
+    const headers = new Headers();
+    for (const name of names) {
+      const value = res.headers.get(name);
+      if (value !== null) headers.set(name, value);
+    }
+    return { body: parsed, headers };
+  };
 
   return {
     addAppHostname: (input: Args) =>
@@ -1378,7 +1402,7 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
     appMetrics: (input: Args) =>
       send("/observability/app-metrics", "GET", undefined, input),
     appObservabilityLogs: (input: Args) =>
-      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/logs`, "GET", undefined, omit(input, ["scopeId"])),
+      withHeaders(["x-substrat-logs-incomplete"], `/apps/${encodeURIComponent(String(input.scopeId))}/observability/logs`, "GET", undefined, omit(input, ["scopeId"])),
     appObservabilityMetrics: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/metrics`, "GET", undefined, omit(input, ["scopeId"])),
     appOwnerClaim: (input: Args) =>
@@ -1560,7 +1584,7 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
     moveScopes: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes/move`, "POST", omit(input, ["slug"]), undefined),
     observabilityLogs: (input: Args) =>
-      send("/observability/logs", "GET", undefined, input),
+      withHeaders(["x-substrat-logs-incomplete"], "/observability/logs", "GET", undefined, input),
     observabilityMetrics: (input: Args) =>
       send("/observability/metrics", "GET", undefined, input),
     promoteDeployment: (input: Args) =>

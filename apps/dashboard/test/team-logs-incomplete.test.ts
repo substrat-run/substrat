@@ -64,6 +64,8 @@ describe('the team logs route forwards the plane’s logs-incomplete header (#25
   let planeHeaders: Record<string, string>;
   const line = { timestamp: 1_722_700_000_000, level: 'info', message: 'a line', service: SERVICE, outcome: 'ok', raw: { a: 1 } };
   let env: Record<string, unknown>;
+  /** The query each `/observability/logs` ask reached the plane with. */
+  let asked: string[];
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-team-logs-'));
@@ -71,6 +73,7 @@ describe('the team logs route forwards the plane’s logs-incomplete header (#25
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     planeHeaders = {};
+    asked = [];
     const owner = principalId.parse(ulid());
     await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'logs', name: 'Logs' });
     await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
@@ -84,7 +87,8 @@ describe('the team logs route forwards the plane’s logs-incomplete header (#25
       CP_SERVICE_TOKEN: 'service-token',
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request) => {
-          const path = new URL(String(url)).pathname.replace(/^\/api/, '');
+          const u = new URL(String(url));
+          const path = u.pathname.replace(/^\/api/, '');
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           // The team owns SERVICE, so the authority lets the ask through to the plane.
           if (path === '/service-refs') {
@@ -93,7 +97,10 @@ describe('the team logs route forwards the plane’s logs-incomplete header (#25
               verticalsTruncated: false,
             });
           }
-          if (path === '/observability/logs') return Response.json([line], { headers: planeHeaders });
+          if (path === '/observability/logs') {
+            asked.push(u.search);
+            return Response.json([line], { headers: planeHeaders });
+          }
           return Response.json({ error: `unexpected ${path}` }, { status: 500 });
         },
       },
@@ -105,8 +112,15 @@ describe('the team logs route forwards the plane’s logs-incomplete header (#25
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const read = () =>
-    app.request(`/api/teams/${tenant}/observability/logs?service=${SERVICE}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+  const read = (query = `service=${SERVICE}`) =>
+    app.request(`/api/teams/${tenant}/observability/logs?${query}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+
+  it('#2170: an empty service is dropped, and no service left is a 400 before the plane is asked', async () => {
+    expect((await read(`service=&service=${SERVICE}`)).status).toBe(200);
+    expect(asked.map((q) => new URLSearchParams(q).getAll('service'))).toEqual([[SERVICE]]);
+    for (const query of ['service=', '']) expect((await read(query)).status).toBe(400);
+    expect(asked).toHaveLength(1);
+  });
 
   it('sets the header on the answer exactly when the plane did, and the body is the list either way', async () => {
     planeHeaders = { [LOGS_INCOMPLETE_HEADER]: '1' };

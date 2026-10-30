@@ -4030,11 +4030,11 @@ async function observabilityMetricsIn({ c, node }: TeamContext) {
   );
 }
 
-async function observabilityLogsIn({ c, node }: TeamContext) {
+async function observabilityLogsIn({ c, node }: TeamContext, asked: string[] | undefined) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   // `service` repeats — one per deployed version when the tab shows all of them.
   // Unowned refs are dropped by the authority, so this stays a request, not a claim.
-  const services = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
+  const services = (asked ?? []).filter((s) => s.length > 0);
   if (services.length === 0) throw new HTTPException(400, { message: 'service is required' });
   const hours = Number(c.req.query('hours') ?? '1');
   const limit = Number(c.req.query('limit') ?? '100');
@@ -4091,7 +4091,8 @@ async function appObservabilityMetricsIn({ c, host, node }: TeamContext, appScop
  * widening the plane could be asked for. Shared by the two routes below so the shaped chart
  * read and the raw one cannot drift into answering about different apps.
  */
-function seriesScopes(apps: DashboardAppRow[], asked: string[]): string[] {
+function seriesScopes(apps: DashboardAppRow[], scopeIds: string[] | undefined): string[] {
+  const asked = (scopeIds ?? []).filter((s) => s.length > 0);
   const owned = new Set(apps.map((a) => a.app_scope_id));
   if (asked.some((s) => !owned.has(s))) throw new HTTPException(404, { message: 'app not found' });
   // Every installed app when none is named. The plane caps one ask; the authority
@@ -4104,10 +4105,10 @@ function seriesScopes(apps: DashboardAppRow[], asked: string[]): string[] {
  * unshaped, for a consumer that wants to fill and fold them itself. Team-level rather
  * than under `/apps/:scopeId` because "all my apps" is one read here, not one per app.
  */
-async function tenantMetricsSeriesIn({ c, host, node }: TeamContext) {
+async function tenantMetricsSeriesIn({ c, host, node }: TeamContext, asked: string[] | undefined) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
-  const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
+  const scopeIds = seriesScopes(apps, asked);
   // No apps at all is an honest empty series, not a question for the plane.
   if (scopeIds.length === 0) return [];
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -4147,10 +4148,10 @@ async function connectorCallsIn({ c, node }: TeamContext) {
  * bounded window: never a read per event or per bucket. An app that cannot answer says why,
  * beside the rows of the apps that could.
  */
-async function businessVolumesIn({ c, host, node }: TeamContext) {
+async function businessVolumesIn({ c, host, node }: TeamContext, asked: string[] | undefined) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
-  const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
+  const scopeIds = seriesScopes(apps, asked);
   const hours = chartHours(c.req.query('hours'));
   let window: { since: string; until: string };
   try { window = resolveObservabilityWindow({ hours, since: c.req.query('since'), until: c.req.query('until') }); }
@@ -4213,10 +4214,10 @@ async function businessVolumesIn({ c, host, node }: TeamContext) {
  * No markers. A push is a fact about a vertical's code and this chart draws installations
  * of several verticals at once; per-app deploy markers are their own read.
  */
-async function teamTrafficIn({ c, host, node }: TeamContext) {
+async function teamTrafficIn({ c, host, node }: TeamContext, asked: string[] | undefined) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = await allApps(dash);
-  const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
+  const scopeIds = seriesScopes(apps, asked);
   const hours = chartHours(c.req.query('hours'));
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
   const now = new Date();
@@ -5696,12 +5697,12 @@ const routeHandlers = {
   'dashboard/leave-team': async (ctx) => leaveTeamIn(ctx),
   'dashboard/delete-team': async (ctx, { confirm }) => deleteTeamIn(ctx, confirm),
   'dashboard/observability-metrics': async (ctx) => observabilityMetricsIn(ctx),
-  'dashboard/observability-logs': async (ctx) => observabilityLogsIn(ctx),
+  'dashboard/observability-logs': async (ctx, { service }) => observabilityLogsIn(ctx, service),
   'dashboard/app-observability-metrics': async (ctx, { scopeId: app }) => appObservabilityMetricsIn(ctx, app),
-  'dashboard/tenant-metrics-series': async (ctx) => tenantMetricsSeriesIn(ctx),
+  'dashboard/tenant-metrics-series': async (ctx, { scopeId }) => tenantMetricsSeriesIn(ctx, scopeId),
   'dashboard/connector-calls': async (ctx) => connectorCallsIn(ctx),
-  'dashboard/business-volumes': async (ctx) => businessVolumesIn(ctx),
-  'dashboard/team-traffic': async (ctx) => teamTrafficIn(ctx),
+  'dashboard/business-volumes': async (ctx, { scopeId }) => businessVolumesIn(ctx, scopeId),
+  'dashboard/team-traffic': async (ctx, { scopeId }) => teamTrafficIn(ctx, scopeId),
   'dashboard/app-metrics': async (ctx) => appMetricsIn(ctx),
   'dashboard/app-observability-logs': async (ctx, { scopeId: app }) => appObservabilityLogsIn(ctx, app),
   'dashboard/app-request-volume': async (ctx, { scopeId: app }) => appRequestsIn(ctx, app, 'volume') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-request-volume']['output']>>,

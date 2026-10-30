@@ -91,11 +91,10 @@ describe('PatternsMode', () => {
   it('asks for the page window verbatim and draws each template with its slots marked', async () => {
     const read = vi.spyOn(api, 'appLogPatterns').mockResolvedValue(answer);
     const onOpenPattern = await render();
-    const q = read.mock.calls[0]![2] as URLSearchParams;
+    const q = read.mock.calls[0]![2];
     expect(read.mock.calls[0]!.slice(0, 2)).toEqual(['team-a', 'app-a']);
-    expect(q.get('since')).toBe(window.from);
-    expect(q.get('until')).toBe(window.to);
-    expect(q.get('hours')).toBeNull();
+    expect(q).toMatchObject({ since: window.from, until: window.to });
+    expect(q).not.toHaveProperty('hours');
     const row = container.querySelector('[data-pattern]')!;
     expect([...row.querySelectorAll('[data-slot]')].map((s) => s.textContent)).toEqual(['ticketId']);
     expect(row.textContent).toContain('WRN');
