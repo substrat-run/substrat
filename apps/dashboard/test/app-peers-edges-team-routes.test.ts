@@ -128,6 +128,18 @@ it('refuses a non-member or another team’s app before control-plane work and r
   }
 });
 
+it('answers the app version reads only for a team the caller is in, and their cookie routes are gone', async () => {
+  const reads = ['deployments', 'deployments/V1/assets', 'permissions', 'model', 'processes', 'schedules'];
+  for (const suffix of reads) {
+    expect((await send('owner', 'GET', `/api/teams/${tenantId.parse(ulid())}/apps/${appScope[0]}/${suffix}`)).status, suffix).toBe(404);
+  }
+  // The cookie pins team 1 and this is team 1's own app, so a cookie route would have answered it.
+  for (const suffix of reads) {
+    expect((await send('owner', 'GET', `/api/apps/${appScope[1]}/${suffix}`)).status, suffix).toBe(404);
+  }
+  expect(planeCalls).toHaveLength(0);
+});
+
 it('uses the path-team app-management role on all three writes', async () => {
   for (const [method, suffix, body] of [
     ['POST', 'peers/switch', { vertical: peer, to: 'off', reason: 'review' }],

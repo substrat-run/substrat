@@ -89,7 +89,7 @@ describe('the promote dialog and the Permissions tab (#2430)', () => {
       update: { versionId: 'V3', version: '0.3.0', registry: to },
     });
     const app = { app_scope_id: 'S1', name: 'Acme HR', vertical_slug: 'acme/helpdesk', status: 'active' } as AppRow;
-    await act(async () => root.render(<AppPermissions app={app} />));
+    await act(async () => root.render(<AppPermissions teamId="T1" app={app} />));
     // The mark sits beside the added key itself, not only inside the moved reservation's sentence.
     shows(`a:new${RESERVED_KEY_MARK}`);
     shows(MOVED_RESERVATION);
