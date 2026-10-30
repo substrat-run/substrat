@@ -763,10 +763,10 @@ const versionPairOf = <K extends string>(key: K) => {
   return z.object({ running: side, update: side.nullable() });
 };
 
-/** A schedule's or a freshness unit's recent sweep rows. `outcome` is the plane's. */
-const sweepRunView = z.object({
-  id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(),
-  elapsedMs: z.number().nullable(), observedAt: z.string().nullable(),
+/** A schedule's or a freshness unit's recent sweep rows, which the plane writes and nothing here parses. */
+const sweepRunView = z.looseObject({
+  id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullish(),
+  elapsedMs: z.number().nullish(), observedAt: z.string().nullish(),
 });
 
 /** Schedule and freshness health (`schedules.ts`): the verdicts are this worker's own. */

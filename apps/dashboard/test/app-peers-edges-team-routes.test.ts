@@ -128,16 +128,23 @@ it('refuses a non-member or another team’s app before control-plane work and r
   }
 });
 
-it('answers the app version reads only for a team the caller is in, and their cookie routes are gone', async () => {
+it('answers the app version reads for the path team whichever team the cookie pins, and their cookie routes are gone', async () => {
   const reads = ['deployments', 'deployments/V1/assets', 'permissions', 'model', 'processes', 'schedules'];
   for (const suffix of reads) {
     expect((await send('owner', 'GET', `/api/teams/${tenantId.parse(ulid())}/apps/${appScope[0]}/${suffix}`)).status, suffix).toBe(404);
   }
+  expect(planeCalls).toHaveLength(0);
+  for (const suffix of reads) {
+    const res = await send('owner', 'GET', path(suffix));
+    expect(res.status, `${suffix}: ${await res.clone().text()}`).toBe(200);
+    expect((await send('owner', 'GET', `/api/teams/${team[0]}/apps/${appScope[1]}/${suffix}`)).status, suffix).toBe(404);
+  }
+  expect(planeCalls.some((call) => call.includes(`/tenants/${team[0]}/scopes/${appScope[0]}`))).toBe(true);
+  expect(planeCalls.every((call) => !call.includes(`/tenants/${team[1]}/`))).toBe(true);
   // The cookie pins team 1 and this is team 1's own app, so a cookie route would have answered it.
   for (const suffix of reads) {
     expect((await send('owner', 'GET', `/api/apps/${appScope[1]}/${suffix}`)).status, suffix).toBe(404);
   }
-  expect(planeCalls).toHaveLength(0);
 });
 
 it('uses the path-team app-management role on all three writes', async () => {

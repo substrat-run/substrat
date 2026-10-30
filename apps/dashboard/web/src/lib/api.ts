@@ -1726,8 +1726,8 @@ export const api = {
    *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
   // The registry, model and asset documents are carried as the plane answered them, so the
   // generated client types them `unknown`; these views are what the plane answers.
-  appDeployments: (teamId: string, scopeId: string, opts?: PageOpts) =>
-    teamApi(teamId).getAppDeployments({ scopeId, ...opts }) as Promise<AppDeployments>,
+  appDeployments: (teamId: string, scopeId: string, opts?: PageOpts): Promise<AppDeployments> =>
+    teamApi(teamId).getAppDeployments({ scopeId, ...opts }),
   /** The static files ONE version ships (#340), from its retained deploy manifest —
    *  `assets: null` when it retained none or shipped no static files. */
   appVersionAssets: (teamId: string, scopeId: string, versionId: string) =>

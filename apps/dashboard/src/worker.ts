@@ -1567,13 +1567,11 @@ app.get('/api/audit', async (c) => {
  * vertical the versions are managed by the Substrat team; this just surfaces the truth
  * (so "am I on 0.0.9?" is answerable). The app must be the caller's own.
  */
-async function appDeploymentsIn({ c, host, node }: TeamContext, appScopeId: string, page: ListPageQuery) {
+async function appDeploymentsIn(ctx: TeamContext, appScopeId: string, page: ListPageQuery) {
   // The versions list pages (`?limit&cursor`, default 20, newest first — the order the
   // tab always rendered); channels stay complete (~3). `nextCursor` walks older versions.
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const cp = teamPlane(ctx);
   const scope = scopeId.parse(appRow.app_scope_id);
   // The vertical's version registry AND the version THIS scope is actually pinned to
   // (the router dispatches on the latter). They differ when prod moved after install —
@@ -1607,12 +1605,9 @@ async function appDeploymentsIn({ c, host, node }: TeamContext, appScopeId: stri
  * only to render an empty state, and distinguishing them would be a distinction without a
  * consequence.
  */
-async function appVersionAssetsIn({ c, host, node }: TeamContext, appScopeId: string, versionId: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return { assets: await cp.versionAssets(appRow.vertical_slug, versionId) };
+async function appVersionAssetsIn(ctx: TeamContext, appScopeId: string, versionId: string) {
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  return { assets: await teamPlane(ctx).versionAssets(appRow.vertical_slug, versionId) };
 }
 
 /**
@@ -1626,11 +1621,9 @@ async function appVersionAssetsIn({ c, host, node }: TeamContext, appScopeId: st
  * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s; the registry
  * itself is read through the tenant-narrowed control plane.
  */
-async function appPermissionsIn({ c, host, node }: TeamContext, appScopeId: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+async function appPermissionsIn(ctx: TeamContext, appScopeId: string) {
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const cp = teamPlane(ctx);
   const scope = scopeId.parse(appRow.app_scope_id);
   const slug = appRow.vertical_slug;
   // Same two reads the Deployments tab makes: the vertical's version registry + the version
@@ -1673,10 +1666,9 @@ async function appPermissionsIn({ c, host, node }: TeamContext, appScopeId: stri
  * resolved from the tenant-scoped `list-apps` and the tenant's own vertical scopes, so a
  * foreign scope id 404s; the model itself is read through the tenant-narrowed control plane.
  */
-async function appModelIn({ c, host, node }: TeamContext, asked: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const { appRow, scope } = await resolveBrowsableScope(dash, cp, asked);
+async function appModelIn(ctx: TeamContext, asked: string) {
+  const cp = teamPlane(ctx);
+  const { appRow, scope } = await resolveBrowsableScope(await teamScope(ctx), cp, asked);
   const slug = appRow.vertical_slug;
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
   const { runningId, runningLabel, updateId, updateLabel } = versionPair(deployment, boundVersionId);
@@ -1802,11 +1794,9 @@ async function runningDeclarations(
  * run — while ONE unfiltered `limit: 1` read answers the different question the skips
  * exist for: is the sweep still reaching this scope at all.
  */
-async function appSchedulesIn({ c, host, node }: TeamContext, appScopeId: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, appScopeId);
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
+async function appSchedulesIn(ctx: TeamContext, appScopeId: string) {
+  const { appRow } = await teamAppTarget(ctx, appScopeId);
+  const cp = teamPlane(ctx);
   const scope = scopeId.parse(appRow.app_scope_id);
   const slug = appRow.vertical_slug;
   const { runningId, runningVersion, schedules, freshness, freshTypes } = await runningDeclarations(cp, scope, slug);

@@ -41,7 +41,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/get-app-process-map unavailable': 'the worker’s own labels for why there is no replay to draw',
   'dashboard/get-app-schedules schedules[].health': 'the verdict `schedules.ts` derives from the sweep rows',
   'dashboard/get-app-schedules freshness[].health': 'the verdict `schedules.ts` derives from the sweep rows',
-  'dashboard/app-peers calls[].state':'derived by the dashboard peer disclosure from the tenant directory and peer grants',
+  'dashboard/app-peers calls[].state': 'derived by the dashboard peer disclosure from the tenant directory and peer grants',
   'dashboard/list-members entries[].status': 'the dashboard module’s own roster projection',
   'dashboard/remove-app removed': ACK,
   'dashboard/bind-installed-app bound': ACK,
