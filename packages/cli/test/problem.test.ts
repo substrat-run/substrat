@@ -111,6 +111,15 @@ describe('readProblem', () => {
     expect(readProblem('x'.repeat(500)).detail).toHaveLength(300);
   });
 
+  it('reads an HTML error page as its title and error code, not its first characters of markup', () => {
+    const page = `<!DOCTYPE html>
+<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->
+<!--[if gt IE 8]><!--> <html class="no-js" lang="en-US"> <!--<![endif]-->
+<head>${'<meta name="x" content="y" />\n'.repeat(12)}<title>Worker exceeded resource limits | example.net | Cloudflare</title></head>
+<body><h1><span class="inline-block">Error</span> <span class="cf-error-code">1102</span></h1></body></html>`;
+    expect(readProblem(page).detail).toBe('Worker exceeded resource limits | example.net | Cloudflare (error code 1102)');
+  });
+
   it('reads a JSON body with no readable member as the raw body', () => {
     expect(readProblem('{"ok":false}').detail).toBe('{"ok":false}');
   });
