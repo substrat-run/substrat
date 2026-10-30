@@ -593,6 +593,13 @@ export interface DashboardClient {
   facetAppEvents(input: { scopeId: string; groupBy?: string; field?: string; type?: string; since?: string; until?: string; limit?: number }): Promise<{ buckets: ({ value: string | null; count: number; lastSeen: string | null })[]; erased: number; withheldPersonal: number; withheldReason?: string; total: number; truncated: boolean }>;
 
   /**
+   * Every app of this team with its health verdict, worst first
+   *
+   * `GET /fleet-health` — `dashboard/fleet-health`
+   */
+  fleetHealth(): Promise<{ rows: ({ scopeId: string; name: string; vertical: string; state: "failing" | "stale" | "silent" | "unknown" | "ok"; reason: string; failures: number; sweepFailures: number; stale: number; lastSweepAt: string | null })[] }>;
+
+  /**
    * One app's stored identity choice with its write-only secret redacted and its callback URL
    *
    * `GET /apps/{scopeId}/auth` — `dashboard/get-app-auth`
@@ -724,6 +731,20 @@ export interface DashboardClient {
    * `GET /deployments/{slug}/promote-review` — `dashboard/get-promotion-review`
    */
   getPromotionReview(input: { slug: string; versionId: string }): Promise<PromotionReviewRow>;
+
+  /**
+   * The deploy workflow to commit by hand, from the same generator one-click setup uses
+   *
+   * `GET /github/workflow-preview` — `dashboard/github-workflow-preview`
+   */
+  githubWorkflowPreview(input: { repo?: string; branch?: string; path?: string }): Promise<{ workflowPath: string; workflow: string }>;
+
+  /**
+   * Whether this team's identity links in the dashboard and the shared directory agree
+   *
+   * `GET /identity-mirror` — `dashboard/identity-mirror`
+   */
+  identityMirror(): Promise<{ tenant: string; inSync: boolean; counts: { local: number; shared: number; missing: number; extra: number; conflicting: number }; missing: { provider: string; externalId: string; principal: string; tenantId: string; scopeId?: string }[]; extra: { provider: string; externalId: string; principal: string; tenantId: string; scopeId?: string }[]; conflicting: { local: { provider: string; externalId: string; principal: string; tenantId: string; scopeId?: string }; shared: { provider: string; externalId: string; principal: string; tenantId: string; scopeId?: string } }[] }>;
 
   /**
    * Install a vertical into this team as a new app
@@ -927,6 +948,13 @@ export interface DashboardClient {
    * `GET /audit` — `dashboard/list-team-audit`
    */
   listTeamAudit(input: { scopeId?: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
+
+  /**
+   * Every first-party provider with this team's connections and the team's apps that can connect it
+   *
+   * `GET /integrations` — `dashboard/list-team-integrations`
+   */
+  listTeamIntegrations(): Promise<{ providers: ({ provider: string; name: string; description: string; monogram: string; fields: { key: string; label: string; secret: boolean; placeholder?: string; optional?: boolean; toggle?: boolean }[]; connectFlow: "redirect" | null; multiAccount: boolean; sendsMail: boolean; connections: ({ id: string; label: string; status: string; externalAccountRef: string | null; expiresAt: string | null; lastOkAt: string | null; lastError: string | null; lastErrorAt: string | null; createdAt: string; vertical: string; apps: { scopeId: string; name: string }[]; sweepRuns: ({ id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null })[] })[]; connectTargets: { scopeId: string; name: string; vertical: string; connected: boolean }[] })[] }>;
 
   /**
    * Mint a single-use consent link for one app's redirect-flow provider
@@ -1367,6 +1395,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/export`, "GET", undefined, omit(input, ["scopeId"])),
     facetAppEvents: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/facets`, "GET", undefined, omit(input, ["scopeId"])),
+    fleetHealth: () =>
+      send("/fleet-health", "GET", undefined, undefined),
     getAppAuth: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/auth`, "GET", undefined, omit(input, ["scopeId"])),
     getAppConcept: (input: Args) =>
@@ -1405,6 +1435,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/processes/note`, "GET", undefined, omit(input, ["scopeId"])),
     getPromotionReview: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/promote-review`, "GET", undefined, omit(input, ["slug"])),
+    githubWorkflowPreview: (input: Args) =>
+      send("/github/workflow-preview", "GET", undefined, input),
+    identityMirror: () =>
+      send("/identity-mirror", "GET", undefined, undefined),
     installApp: (input: Args) =>
       send("/apps", "POST", input, undefined),
     inviteLink: (input: Args) =>
@@ -1463,6 +1497,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews`, "GET", undefined, omit(input, ["slug"])),
     listTeamAudit: (input: Args) =>
       send("/audit", "GET", undefined, input),
+    listTeamIntegrations: () =>
+      send("/integrations", "GET", undefined, undefined),
     mintAppConnectLink: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/integrations/${encodeURIComponent(String(input.provider))}/connect-links`, "POST", omit(input, ["scopeId","provider"]), undefined),
     moveAppEdge: (input: Args) =>

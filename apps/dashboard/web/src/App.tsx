@@ -1010,7 +1010,7 @@ export function App() {
           <NotFound label="That app could not be found." onBack={() => go('/apps')} />
         )
       ) : route.section === 'overview' ? (
-        <Overview apps={apps} loading={appsLoading} teamName={org} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={loadMoreApps} personName={personName} />
+        <Overview teamId={me.currentTeamId} apps={apps} loading={appsLoading} teamName={org} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={loadMoreApps} personName={personName} />
       ) : route.section === 'apps' ? (
         <Apps teamId={me.currentTeamId} apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' && openVertical ? (

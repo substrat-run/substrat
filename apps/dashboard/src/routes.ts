@@ -113,6 +113,23 @@ const appConnectLink = z.object({
   createdAt: z.string(),
   expiresAt: z.string(),
 });
+/** A provider as its connect form renders it (`providerForm` in the worker). */
+const integrationProviderForm = z.object({
+  provider: z.string(), name: z.string(), description: z.string(), monogram: z.string(),
+  fields: z.array(z.object({
+    key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
+    optional: z.boolean().optional(), toggle: z.boolean().optional(),
+  })),
+  connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), sendsMail: z.boolean(),
+});
+// The plane owns a sweep's outcome, so it stays a string.
+const integrationSweepRun = z.object({
+  id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable(),
+});
+/** An identity link as either directory holds it; loose, since the shared one is the plane's. */
+const mirroredIdentityLink = z.object({
+  provider: z.string(), externalId: z.string(), principal: z.string(), tenantId: z.string(), scopeId: z.string().optional(),
+});
 const integrationProbeBody = connectionProbe.extend({ refused: z.boolean().optional() });
 const integrationProbe = integrationProbeBody.extend({ connection: integrationConnection.optional() });
 const integrationActivity = connectionActivity.extend({
@@ -126,9 +143,7 @@ const integrationActivity = connectionActivity.extend({
   /** #2343: the addresses a send test may go from; empty for a provider that sends no mail. */
   mailSenders: z.array(z.string()),
   connection: integrationConnection,
-  sweepRuns: z.array(z.object({
-    id: z.string(), outcome: z.string(), at: z.string(), error: z.string().nullable(), elapsedMs: z.number().nullable(),
-  })),
+  sweepRuns: z.array(integrationSweepRun),
   intents: z.array(z.object({
     id: z.string(), status: z.string(), attempts: z.number(), lastError: z.string().nullable(),
     failure: z.object({ origin: z.string(), code: z.string().nullable(), permission: z.string().nullable() }).nullable(),
@@ -951,6 +966,27 @@ export const dashboardRoutes = defineRoutes({
     output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/audit' },
   },
+  'dashboard/fleet-health': {
+    summary: "Every app of this team with its health verdict, worst first",
+    output: z.object({ rows: z.array(z.object({
+      scopeId: z.string(), name: z.string(), vertical: z.string(),
+      // Derived here (`fleet-health.ts`), from the reads below, never relayed from the plane.
+      state: z.enum(['failing', 'stale', 'silent', 'unknown', 'ok']),
+      reason: z.string(), failures: z.number(), sweepFailures: z.number(), stale: z.number(),
+      lastSweepAt: z.string().nullable(),
+    })) }),
+    http: { method: 'GET', path: '/fleet-health' },
+  },
+  'dashboard/identity-mirror': {
+    summary: "Whether this team's identity links in the dashboard and the shared directory agree",
+    output: z.object({
+      tenant: z.string(), inSync: z.boolean(),
+      counts: z.object({ local: z.number(), shared: z.number(), missing: z.number(), extra: z.number(), conflicting: z.number() }),
+      missing: z.array(mirroredIdentityLink), extra: z.array(mirroredIdentityLink),
+      conflicting: z.array(z.object({ local: mirroredIdentityLink, shared: mirroredIdentityLink })),
+    }),
+    http: { method: 'GET', path: '/identity-mirror' },
+  },
 
   // -- app peer access and cross-vertical edges (#2170) ----------------------
   // Each write checks `dashboard:provision-app` in the path team's dashboard scope.
@@ -1222,16 +1258,23 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/get-app-integrations': {
     summary: "One app's declared providers and live connection metadata",
     input: z.object({ scopeId: z.string().min(1) }),
-    output: z.object({ providers: z.array(z.object({
-      provider: z.string(), name: z.string(), description: z.string(), monogram: z.string(),
-      fields: z.array(z.object({
-        key: z.string(), label: z.string(), secret: z.boolean(), placeholder: z.string().optional(),
-        optional: z.boolean().optional(), toggle: z.boolean().optional(),
-      })),
-      connectFlow: z.literal('redirect').nullable(), multiAccount: z.boolean(), sendsMail: z.boolean(), required: z.boolean(),
+    output: z.object({ providers: z.array(integrationProviderForm.extend({
+      required: z.boolean(),
       connection: integrationConnection.nullable(), connections: z.array(integrationConnection),
     })) }),
     http: { method: 'GET', path: '/apps/{scopeId}/integrations' },
+  },
+  'dashboard/list-team-integrations': {
+    summary: "Every first-party provider with this team's connections and the team's apps that can connect it",
+    output: z.object({ providers: z.array(integrationProviderForm.extend({
+      connections: z.array(integrationConnection.extend({
+        vertical: z.string(),
+        apps: z.array(z.object({ scopeId: z.string(), name: z.string() })),
+        sweepRuns: z.array(integrationSweepRun),
+      })),
+      connectTargets: z.array(z.object({ scopeId: z.string(), name: z.string(), vertical: z.string(), connected: z.boolean() })),
+    })) }),
+    http: { method: 'GET', path: '/integrations' },
   },
   'dashboard/connect-app-integration': {
     summary: 'Connect or rotate one provider credential for an app',
@@ -1731,6 +1774,13 @@ export const dashboardRoutes = defineRoutes({
       z.object({ ok: z.literal(false), needsPermissions: z.literal(true) }),
     ]),
     http: { method: 'POST', path: '/github/setup-ci' },
+  },
+  'dashboard/github-workflow-preview': {
+    summary: "The deploy workflow to commit by hand, from the same generator one-click setup uses",
+    // Omitted, `repo` reads `owner/app` and `branch` `main`; `path` is checked as setup-ci checks it.
+    input: z.object({ repo: z.string().optional(), branch: z.string().optional(), path: z.string().optional() }),
+    output: z.object({ workflowPath: z.string(), workflow: z.string() }),
+    http: { method: 'GET', path: '/github/workflow-preview' },
   },
 
   // -- findings (#1748) ------------------------------------------------------
