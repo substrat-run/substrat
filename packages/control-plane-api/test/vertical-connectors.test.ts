@@ -379,7 +379,7 @@ describe('vertical-defined connectors — the platform side', () => {
       requestedAt: NOW as PlatformRequest['requestedAt'],
       settledAt: null,
     });
-    const drain = async (pending: PlatformRequestEntry[], withHook: boolean) => {
+    const drain = async (pending: PlatformRequestEntry[], withHook: boolean, scope: ScopeId = a) => {
       const settled = new Map<string, { status: string; lastError?: string | null }>();
       const client = {
         listPlatformRequests: async () => pending,
@@ -388,7 +388,7 @@ describe('vertical-defined connectors — the platform side', () => {
       const handler = verticalConnectorDispatchHandler(deps());
       await drainScopePlatformRequests(
         client,
-        { tenantId: t, scopeId: a, vertical: SLUG, scope: INSTALL, lifecycle: LIVE },
+        { tenantId: t, scopeId: scope, vertical: SLUG, scope: INSTALL, lifecycle: LIVE },
         { 'connector:scrive': async () => ({ status: 'done' }) },
         withHook ? { handlerFor: (kind) => (kind.startsWith('connector:') && kind.includes('.') ? handler : undefined) } : {},
       );
@@ -424,6 +424,25 @@ describe('vertical-defined connectors — the platform side', () => {
       // Without the hook, a dotted kind is an unknown kind, as before.
       const bare = await drain([intent(kind, { executorId: PROVIDER, event: event('ok') })], false);
       expect([...bare.values()]).toEqual([expect.objectContaining({ status: 'failed', lastError: `no handler for platform-request kind '${kind}'` })]);
+    });
+
+    it("hands a scope's event its own connection once that is bound there, else the tenant's, never another scope's (#2732)", async () => {
+      await bind(a);
+      const ofA = connectionId.parse(ulid());
+      await host.admin.createConnection(staff, {
+        id: ofA, tenantId: t, vertical: SLUG, provider: PROVIDER, label: 'own', secret: { password: 'own' }, ownerScopeId: a,
+      });
+      answer = async () => ok({});
+      const kind = `connector:${PROVIDER}`;
+      const dispatchFrom = (s: ScopeId) => drain([intent(kind, { executorId: PROVIDER, event: event('ok', { scopeId: s }) })], true, s);
+
+      // A's own connection, not bound on A, does not shadow the tenant's bound one.
+      await dispatchFrom(a);
+      await host.admin.putConnectorState(ofA, verticalConnectorBindingKey(a), { scopeId: a, operation: 'docs/land', permission: LAND, options: {}, declared: {}, boundAt: NOW });
+      await dispatchFrom(a);
+      await dispatchFrom(b);
+
+      expect(calls.map((c) => (c.request as { connection: { id: string } }).connection.id)).toEqual([row.id, ofA, row.id]);
     });
   });
 

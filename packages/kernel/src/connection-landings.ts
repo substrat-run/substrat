@@ -2,6 +2,7 @@ import type {
   Connection,
   ConnectionLandingOptions,
   ManifestConnectionLandings,
+  PermissionKey,
   PlatformActorId,
   ProjectedConnectionGrant,
   Scope,
@@ -85,6 +86,11 @@ export interface ConnectionBinder {
    * written after #2316). Absent means a matching binding is always current.
    */
   stale?(binding: { scopeId: string; operation: string; permission: string }, connection: Connection): boolean;
+  /**
+   * Drop `connection`'s binding to one scope (#2732), `bind`'s inverse. Idempotent; what the scope
+   * landed stays. Absent means the provider cannot unbind, and the relay refuses an unbind of it.
+   */
+  unbind?(host: ScopeHost, connection: Connection, scopeId: ScopeId): Promise<void>;
 }
 
 export interface ConnectionLandingOptionsInput {
@@ -103,6 +109,30 @@ export interface ConnectionLandingOptionsInput {
 /** The binder a connection is bound through: the record's entry, else `binderFor`'s. */
 export function binderOf(input: Pick<ConnectionLandingOptionsInput, 'binders' | 'binderFor'>, connection: Connection): ConnectionBinder | undefined {
   return input.binders[connection.provider] ?? input.binderFor?.(connection);
+}
+
+/**
+ * The `on-request` landing `scope`'s RUNNING version declares for `provider` (#2732), the one a
+ * scope binds its own connection through, or why there is none: read as the landing pass reads a
+ * version, so a scope is held to the declaration the pass would apply there.
+ */
+export async function onRequestLandingFor(
+  admin: Pick<ScopeHost['admin'], 'listVerticals'>,
+  actor: PlatformActorId,
+  read: ConnectionLandingOptionsInput['read'],
+  scope: Scope,
+  provider: string,
+): Promise<{ landing: { operation: string; permission: PermissionKey; options?: ConnectionLandingOptions } } | { refused: string }> {
+  const [running] = await runningFactsOf<ManifestConnectionLandings>(admin, actor, [scope], read, (reason) => ({ kind: 'unreadable', reason }), 1);
+  const fact = running?.fact;
+  if (!fact || fact.kind === 'none') return { refused: `the version scope ${scope.id} runs declares no connection landings` };
+  if (fact.kind === 'unreadable') return { refused: `the declared connection landings of the version scope ${scope.id} runs cannot be read: ${fact.reason}` };
+  const landing = fact.rows.find((r) => r.provider === provider);
+  if (!landing) return { refused: `the version scope ${scope.id} runs declares no landing for '${provider}'` };
+  if (landing.bind !== 'on-request') {
+    return { refused: `the '${provider}' landing is bound to every install by the platform; only an on-request landing is bound by a scope` };
+  }
+  return { landing: { operation: landing.operation, permission: landing.permission, ...(landing.options ? { options: landing.options } : {}) } };
 }
 
 /** What one connection's landing step did, folded into its sweep row and the pass report. */

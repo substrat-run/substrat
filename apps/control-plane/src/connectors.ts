@@ -6,6 +6,7 @@ import {
   type MailSender,
   type ScopeHost,
 } from '@substrat-run/kernel';
+import { isVerticalConnectorProvider } from '@substrat-run/contracts';
 import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
 import { bindingChangeRefusal, connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
@@ -200,6 +201,13 @@ export interface ConnectorRegistration {
    * create one either.
    */
   readonly minted?: true;
+  /**
+   * #2732: this provider's connector opens a scope's OWN connection (`openConnection`'s owner
+   * selector) wherever it opens one, so a scope may hold its own through the relay's
+   * `owner: 'scope'` and bind it. Absent, its connections are the tenant's, and the relay refuses a
+   * scope's own: its sweep, dispatch and inspection open the tenant's connection by key.
+   */
+  readonly scopeOwned?: true;
   /**
    * The webhook ingress, for a provider that calls back (#96). Absent is a complete
    * connector — push collapses the sweep's latency, it never replaces it.
@@ -519,6 +527,15 @@ export function connectionInspectorsFor(env: ConnectorEnv): Record<string, Conne
   return Object.fromEntries(CONNECTORS.map((c) => [c.provider, c.inspector(env)]));
 }
 
+/**
+ * #2732: whether a scope may hold its own connection of `provider`: a vertical-defined provider
+ * (its connector call opens the row it is handed, owner and all), or a registration that says so.
+ * None of the in-repo registrations does.
+ */
+export function scopeOwnable(provider: string): boolean {
+  return isVerticalConnectorProvider(provider) || CONNECTORS.some((c) => c.provider === provider && c.scopeOwned);
+}
+
 /** The `{ provider → sweeper }` shape `runPlatformSweep` takes. */
 export function connectorSweepersFor(env: ConnectorEnv) {
   return Object.fromEntries(CONNECTORS.map((c) => [c.provider, c.sweep(env)]));
@@ -546,6 +563,7 @@ export function connectionBindersFor(env: ConnectorEnv): Record<string, Connecti
       const binder: ConnectionBinder = {
         list: (h, row) => bindings(h, row),
         bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
+        ...(inspector.unbindScope ? { unbind: inspector.unbindScope } : {}),
         ...(['fortnox', 'planima'].includes(c.provider)
           ? {
               bindBeforeGrant: (h: ScopeHost, row: Parameters<typeof bindScope>[1], target: Parameters<typeof bindScope>[2]) =>

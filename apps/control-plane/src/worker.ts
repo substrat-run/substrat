@@ -150,6 +150,8 @@ import {
   verticalConnectorReadsOf,
   type VerticalConnectorDeclarationOf,
   relayConnectionUpsert,
+  relayConnectionBind,
+  relayConnectionUnbind,
   ConnectionRelayError,
   relayConnectUrl,
   relayConnectLinkMint,
@@ -233,6 +235,7 @@ import {
   connectorSweepersFor,
   connectorSweepEveryMinutesFor,
   connectionBindersFor,
+  scopeOwnable,
   type ConnectorEnv,
 } from './connectors.js';
 import { verticalConnectorDepsFor, type ConnectorCallsBinding } from './vertical-connectors.js';
@@ -3260,6 +3263,12 @@ export default {
             prepareCandidate: (provider) => connectionInspectorsFor(c.env)[provider]?.prepareCandidate,
             // A vertical-defined provider's standing grants come from its serving declaration.
             declarationOf: servingConnectorDeclaration(c.env, CONNECTION_RELAY_ACTOR),
+            // #2732: what a scope's own connection is held to.
+            scopeOwned: {
+              proven: caller.proven,
+              scopeOwnable,
+              readLandings: (slug, versionId) => hostFor(c.env).versionConnectionLandings(slug, versionId),
+            },
           },
         );
         return c.json(result);
@@ -3270,6 +3279,45 @@ export default {
         throw e;
       }
     });
+
+    // The binding relays (#2732): a scope binds its own connection to itself with its own options,
+    // through the on-request landing its running version declares, and unbinds it. Same gate as the
+    // upsert; the caller must also be established as the scope it names, and each call is judged by
+    // the connector pass's own reader and binders.
+    const bindingRelay =
+      (run: typeof relayConnectionBind | typeof relayConnectionUnbind) =>
+      async (c: Context<{ Bindings: Env }>) => {
+        try {
+          assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+        } catch (e) {
+          if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+          throw e;
+        }
+        const body: unknown = await c.req.json().catch(() => ({}));
+        const caller = checkRelayCaller(c.req.raw, c.env, scopeNamedBy(body));
+        if (!caller.ok) return c.json({ error: caller.error }, 403);
+        const host = hostFor(c.env);
+        try {
+          return c.json(
+            await run(host, CONNECTION_RELAY_ACTOR, body, {
+              proven: caller.proven,
+              landings: {
+                read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+                binders: connectionBindersFor(c.env),
+                binderFor: (conn) =>
+                  isVerticalConnectorProvider(conn.provider)
+                    ? verticalConnectorBinder(verticalConnectorDepsFor(c.env, host, CONNECTION_RELAY_ACTOR))
+                    : undefined,
+              },
+            }),
+          );
+        } catch (e) {
+          if (e instanceof ConnectionRelayError) return c.json({ error: e.message }, e.status);
+          throw e;
+        }
+      };
+    app.post('/internal/connections/bind', bindingRelay(relayConnectionBind));
+    app.post('/internal/connections/unbind', bindingRelay(relayConnectionUnbind));
 
     // The connect-url relay (connections.md §3.5.3) — the OAuth half of the relay above.
     // The paste door assumes the tenant admin HOLDS a credential; a provider that mints one

@@ -1,4 +1,4 @@
-import { isPrimaryScope, ulid, type ScopeHost } from '@substrat-run/kernel';
+import { isPrimaryScope, onRequestLandingFor, ulid, type ConnectionLandingOptionsInput, type ScopeHost } from '@substrat-run/kernel';
 import {
   instant,
   connectionId,
@@ -45,7 +45,7 @@ export class ConnectionRelayError extends Error {
      * 500 (what an unrecognised throw collapses to) sent an operator looking for a bug
      * in the credential or the relay, when the plane knew at boot that it had no key.
      */
-    readonly status: 400 | 403 | 404 | 409 | 422 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 422 | 501 | 503,
     /** The provider's own answer, when the refusal came from a pre-flight probe (#605). */
     readonly probe?: ConnectionProbe,
   ) {
@@ -121,6 +121,14 @@ export type VerticalConnectorDeclarationOf = (
 export const PREVIEW_CONNECTIONS_REFUSAL =
   "previews and forks cannot change a tenant's connections: this scope is a preview or a fork";
 
+/**
+ * #2732: what a scope's own connection, its bind and its unbind answer a call whose caller was not
+ * established as the scope it names: they must be made from the vertical's worker, on the request
+ * it is serving.
+ */
+export const PROVEN_CALLER_REFUSAL =
+  "a scope's own connection is changed only by that scope: make this call from the vertical's worker, on the request it is serving";
+
 export async function relayConnectionUpsert(
   host: ScopeHost,
   actor: PlatformActorId,
@@ -130,6 +138,17 @@ export async function relayConnectionUpsert(
     prepareCandidate?: ConnectionCandidatePreparer;
     /** Required for a dotted provider: a host without it refuses one. */
     declarationOf?: VerticalConnectorDeclarationOf;
+    /**
+     * #2732: what an `owner: 'scope'` upsert is held to; a host without them refuses one. `proven`
+     * is whether the call's caller was established as the scope it names. `scopeOwnable` says a
+     * provider's connector opens a scope's own connection. `readLandings` reads a version's
+     * declared landings, as the connector pass does.
+     */
+    scopeOwned?: {
+      proven: boolean;
+      scopeOwnable: (provider: string) => boolean;
+      readLandings: ConnectionLandingOptionsInput['read'];
+    };
   } = {},
 ): Promise<ConnectionRelayResult> {
   const parsed = connectionRelayRequest.safeParse(body);
@@ -171,6 +190,20 @@ export async function relayConnectionUpsert(
   }
   const vertical = rec.vertical;
 
+  // #2732: a scope's own connection is for a provider its running version lands on request, and one
+  // whose connector opens a scope's own connection; refused before the probe and the store.
+  const owner = input.owner === 'scope' ? input.scopeId : null;
+  if (owner) {
+    const held = options.scopeOwned;
+    if (!held) throw new ConnectionRelayError("this deployment is not configured for a scope's own connections", 503);
+    if (!held.proven) throw new ConnectionRelayError(PROVEN_CALLER_REFUSAL, 403);
+    if (!held.scopeOwnable(input.provider)) {
+      throw new ConnectionRelayError(`'${input.provider}' connections are the tenant's: its connector does not open a scope's own`, 409);
+    }
+    const declared = await onRequestLandingFor(host.admin, actor, held.readLandings, rec, input.provider);
+    if ('refused' in declared) throw new ConnectionRelayError(declared.refused, 409);
+  }
+
   // A vertical-defined provider's standing grants are what its vertical's serving version declares,
   // never what the caller sends (a dashboard door reads the latest push, which may not serve yet).
   // Refused before the probe and the store when that version declares no such connector.
@@ -188,14 +221,14 @@ export async function relayConnectionUpsert(
   // live row for this key — rotation is what revives them. The account leg matches
   // exactly (absent matches absent): a multi-account provider's second account is a new
   // connection, not a rotation of the first. Read before the probe because a provider that
-  // finishes its own credential (#2100) needs the one this upsert would replace. The relay
-  // makes tenant-owned connections, so it never rotates a scope's own (#2732).
+  // finishes its own credential (#2100) needs the one this upsert would replace. The owner is
+  // part of the key (#2732), so a scope rotates only its own and a tenant upsert only the tenant's.
   const live = (
     await host.admin.listConnections(actor, {
       tenantId: input.tenantId,
       vertical,
       provider: input.provider,
-      ownerScopeId: null,
+      ownerScopeId: owner,
     })
   ).filter((c) => c.externalAccountRef === (input.externalAccountRef ?? null));
 
@@ -207,7 +240,7 @@ export async function relayConnectionUpsert(
   if (prepare) {
     const previous =
       live.length === 1
-        ? (await host.admin.openConnection(input.tenantId, vertical, input.provider, input.externalAccountRef))?.secret
+        ? (await host.admin.openConnection(input.tenantId, vertical, input.provider, input.externalAccountRef, owner ?? undefined))?.secret
         : undefined;
     const prepared = await prepare(input.secret, previous);
     secret = prepared.secret;
@@ -248,6 +281,7 @@ export async function relayConnectionUpsert(
       // §3.5.1 — the authorizing tenant principal, proven by the vertical's own
       // `ctx.check` before the secret ever left the operation.
       createdBy: input.createdBy,
+      ...(owner ? { ownerScopeId: owner } : {}),
     });
     created = true;
   } else if (live.length === 1) {

@@ -337,15 +337,37 @@ relay (#303) — same secret, same trust derivation, same one uniform posture:
   `createConnection` under a fresh id; one live → `updateConnectionSecret` in place —
   rotation preserves the connection id, and with it every `grantToConnection` tuple. The
   relay is how the tenant rotates a credential without a support ticket.
-- **Tenant-owned, and the store's scope-owned shape** (#2732). The relay makes tenant-owned
-  connections and rotates only those. The store can also hold a connection owned by one scope
-  (`_substrat_connections.owner_scope_id`): the owner joins the live key in the directory's unique
-  index, so two scopes of one vertical could each hold their own connection to one account. A
-  scope-owned connection is never landed by the connector pass, is not projected as a sealing key,
-  is not a vertical connector's dispatch connection, and is opened only by naming its owner
-  (`openConnection`'s `ownerScopeId`); a tenant-level read sees tenant-owned connections alone.
-  Nothing creates one yet: a scope makes its own through the relay once that relay can bind it to
-  a declared on-request landing.
+- **A scope can own its connection** (#2732), for a vertical whose spaces each connect one folder
+  of a file source.
+  - **The store.** The owner is part of the live key (`_substrat_connections.owner_scope_id`, in the
+    directory's unique index), so two scopes of one vertical each hold, and rotate, their own
+    connection to one account.
+  - **How a scope gets one.** The upsert takes `owner: 'scope'` (default `tenant`, and the
+    dashboard's door always makes a tenant one). It is accepted only when all three hold:
+    - the call comes from the vertical's worker for the scope it names;
+    - the scope's running version declares an `on-request` landing for the provider;
+    - the provider's connector opens a scope's own connection: a vertical-defined provider, or a
+      registration marked `scopeOwned`. None of the first-party ones is.
+  - **Binding.** `POST /internal/connections/bind` `{ tenantId, scopeId, connectionId, options?,
+    boundBy }` binds the scope's own connection to that scope alone. The landing's operation and key
+    come from that declaration and the options from the scope, validated by the connector's bind. It
+    grants the key on that scope, in the connector pass's order, and answers `{ connectionId,
+    scopeId, options, boundAt }`.
+  - **Unbinding.** `POST /internal/connections/unbind` `{ tenantId, scopeId, connectionId,
+    unboundBy }` takes back the key the binding records (`revokeFromConnection`, below) and drops
+    the binding; the connection's standing grants stay. It needs only ownership, so a version that
+    has since dropped the landing or changed its key still lets the scope unbind. What the scope
+    landed stays, and binding again resumes. A second unbind answers the same.
+  - **Rules for both.**
+    - They must come from the vertical's worker, on the request it is serving.
+    - Any connection but the scope's own answers as an unknown one (404).
+    - Bind refuses a landing that is not `on-request` (409) and options the connector refuses
+      (422); a refused bind leaves no key and no binding behind.
+    - A vertical whose vertical-host predates the revoke cannot be unbound yet (503).
+  - **What else sees it.** A scope-owned connection is never landed by the connector pass and is not
+    projected as a sealing key. It is opened only by naming its owner (`openConnection`'s
+    `ownerScopeId`). A vertical connector's routed event is handed its scope's own connection when
+    that connection is bound on the scope, else the tenant's, never another scope's.
 - **One key back, on one scope** (#2732). `revokeFromConnection` is `grantToConnection`'s inverse
   for a connection that stays live, the half an unbind needs. It removes the scope's
   `connection:<id>` tuple first: in the scope's own store, or, hosted, through the deployment
