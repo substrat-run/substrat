@@ -443,7 +443,7 @@ export const REPOS: RepoRow[] = [
   { name: 'acme-inc/field-ops', meta: 'Work Orders engine · updated 2w ago', accent: LAYER.engine, slug: 'callout' },
 ];
 // The marketplace column of Create App is now live — it renders the real catalog
-// (GET /api/catalog) rather than fixtures. See views/CreateApp.tsx.
+// (GET /api/teams/:teamId/catalog) rather than fixtures. See views/CreateApp.tsx.
 
 // -- select option lists (mirror the gallery) -------------------------------
 

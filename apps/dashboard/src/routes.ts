@@ -388,6 +388,27 @@ export const deploymentVersion = z.object({
   createdAt: z.string(),
 });
 
+// The plane may ship a newer env `kind` than this dashboard knows. Widen only the read
+// shape; envVarSpec still validates declarations (including previewCarry rules).
+const envSpecRow = z.object({ ...envVarSpec.shape, required: z.boolean(), secret: z.boolean(), kind: z.string().optional() });
+
+/**
+ * One vertical the New-app page offers this team: published ones plus the team's own. `owned`
+ * groups it under "Your verticals", `listed` under "Marketplace"; `installable` is false until a
+ * pushed vertical has a version promoted to prod.
+ */
+export const catalogRow = z.object({
+  slug: z.string(),
+  name: z.string(),
+  owned: z.boolean(),
+  listed: z.boolean(),
+  source: z.string(),
+  installable: z.boolean(),
+  envSpec: z.array(envSpecRow).optional(),
+  provides: z.array(z.string()).optional(),
+  requires: z.array(z.string()).optional(),
+});
+
 /** A vertical this team pushed: its versions and where the `prod` channel points. */
 export const deploymentRow = z.object({
   /** The full registry id, e.g. `acme-co/helpdesk` — what the routes below take. */
@@ -1314,9 +1335,7 @@ export const dashboardRoutes = defineRoutes({
     summary: "One app's declared environment and its stored values; secrets are write-only",
     input: z.object({ scopeId: z.string().min(1) }),
     output: z.object({
-      // The plane may ship a newer kind than this dashboard knows. Widen only the read
-      // shape; envVarSpec still validates declarations (including previewCarry rules).
-      spec: z.array(z.object({ ...envVarSpec.shape, required: z.boolean(), secret: z.boolean(), kind: z.string().optional() })),
+      spec: z.array(envSpecRow),
       values: z.array(z.object({
         key: z.string(),
         isSecret: z.boolean(),
@@ -1671,6 +1690,15 @@ export const dashboardRoutes = defineRoutes({
     input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(), level: repeated, operation: repeated, buckets: z.string().optional() }),
     output: logPatternsView,
     http: { method: 'GET', path: '/apps/{scopeId}/observability/log-patterns' },
+  },
+
+  // -- install catalog (#2170) ------------------------------------------------
+  // The team's half of the New-app picker. The anonymous `/api/catalog` keeps the published
+  // builtins; the team's pushed verticals and their installability are read here, for the path's team.
+  'dashboard/list-catalog': {
+    summary: 'The verticals this team can install: published ones and its own, each saying whether it is installable yet',
+    output: z.array(catalogRow),
+    http: { method: 'GET', path: '/catalog' },
   },
 
   // -- deployments & previews (#2170) -----------------------------------------
