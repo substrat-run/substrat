@@ -309,7 +309,7 @@ mountPlatformSurface<Env>(app, {
   ownerRoleKey: 'admin',
   onProvision: async (env, b) => {
     const id = identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId });
-    await id.setPendingOwner(b.scopeId, b.owner);
+    await id.setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
     // Remember this site in the vertical's own per-tenant registry (M2), so the app can list
     // and switch between its sites without reaching the control-plane directory. Idempotent.
     if (b.slug && b.name) await id.recordSite(b.scopeId, b.slug, b.name);

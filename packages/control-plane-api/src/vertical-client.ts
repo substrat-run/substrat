@@ -442,6 +442,13 @@ export interface ProvisionInstanceInput {
   scopeId: ScopeId;
   /** The first admin — whoever asked for the instance. */
   owner: PrincipalId;
+  /**
+   * The running scope a sibling was asked for from (#2773). `owner` is that scope's principal, so
+   * the vertical binds the seat to the login the parent already binds to it, rather than opening
+   * a first-sign-in window any login could take. Absent on a first install. A vertical that
+   * predates the field ignores it (its body parse strips unknown keys).
+   */
+  parentScopeId?: ScopeId;
   slug: string;
   name: string;
   /**

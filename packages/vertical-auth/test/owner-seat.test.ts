@@ -6,6 +6,7 @@ import {
   OWNER_CLAIM_TTL_MS,
   migrateOwnerSeat,
   recordOwnerSeat,
+  recordSiblingOwnerSeat,
   ownerOfRecord,
   needsSetup,
   ownerSeat,
@@ -130,6 +131,24 @@ describe('owner seat', () => {
     recordOwnerSeat(sql, other, '01PRINCIPALOTHER', T0 + MIN);
     expect(ownerSeat(sql, other, T0 + MIN)).toMatchObject({ owner: OWNER, firstSignIn: { until: new Date(T0 + FIRST_SIGN_IN_WINDOW_MS).toISOString() } });
     expect(resolvePrincipal(sql, other, 'sub-installer', T0 + 2 * MIN)).toBe(OWNER);
+  });
+
+  it('a sibling seat (#2773) is bound to the parent\'s login at provision, so no first sign-in can take it', () => {
+    const parent = '01SCOPEPARENT';
+    recordOwnerSeat(sql, parent, OWNER, T0);
+    resolvePrincipal(sql, parent, 'sub-installer', T0 + MIN);
+
+    recordSiblingOwnerSeat(sql, SCOPE, OWNER, parent, T0 + 2 * MIN);
+    expect(ownerSeat(sql, SCOPE, T0 + 2 * MIN)).toEqual({ state: 'claimed', owner: OWNER, firstSignIn: null, claimLink: null });
+    // Inside what would have been the window, a stranger gets nothing; the asker is already in.
+    expect(resolvePrincipal(sql, SCOPE, 'sub-stranger', T0 + 3 * MIN)).toBeNull();
+    expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + 3 * MIN)).toBe(OWNER);
+  });
+
+  it('a sibling seat whose owner the parent binds nobody to waits for a claim link, window closed', () => {
+    recordSiblingOwnerSeat(sql, SCOPE, OWNER, '01SCOPEPARENT', T0);
+    expect(ownerSeat(sql, SCOPE, T0)).toMatchObject({ state: 'unclaimed', owner: OWNER, firstSignIn: { open: false } });
+    expect(resolvePrincipal(sql, SCOPE, 'sub-stranger', T0)).toBeNull();
   });
 
   it('a seat from before the window existed reads as closed, not open', () => {

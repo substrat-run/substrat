@@ -1190,7 +1190,7 @@ mountPlatformSurface<Env>(app, {
   ownerRoleKey: OWNER_ROLE_KEY,
   onProvision: async (env, b) => {
     const node = { tenantId: b.tenantId, scopeId: b.scopeId };
-    await identityDo(env, node).setPendingOwner(b.scopeId, b.owner);
+    await identityDo(env, node).setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
     // The desk's widget, assistant and relay accounts. Idempotent, and done here rather
     // than lazily on first use: a principal minted on a request path is a principal
     // minted by whoever got there first.
