@@ -282,7 +282,7 @@ export interface SweepTick {
   id: string;
   outcome: string;
   at: string;
-  error: string | null;
+  error?: string | null;
 }
 
 function sweepSuffix(outcome: string, skippedNote: string, detail: string | null): string {
@@ -347,7 +347,7 @@ export function SweepStrip({
       </span>
       <span>
         {label} {relativeTime(last.at)}
-        {sweepSuffix(last.outcome, skippedNote, last.error)}
+        {sweepSuffix(last.outcome, skippedNote, last.error ?? null)}
       </span>
     </div>
   );
