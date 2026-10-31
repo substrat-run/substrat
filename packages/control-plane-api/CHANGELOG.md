@@ -1,5 +1,17 @@
 # @substrat-run/control-plane-api
 
+## 0.172.0
+
+### Minor Changes
+
+- 76a1de6: The tenant request list takes a free-text `search` (operation, path, request id, or `POST /path`); the request histogram and facet counts refuse it with a `validation_failed` problem whose `reason` is `search_not_counted`.
+
+### Patch Changes
+
+- @substrat-run/contracts@0.172.0
+- @substrat-run/kernel@0.172.0
+- @substrat-run/control-plane-client@0.4.3
+
 ## 0.171.0
 
 ### Minor Changes

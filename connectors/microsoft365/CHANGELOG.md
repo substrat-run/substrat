@@ -1,5 +1,12 @@
 # @substrat-run/connector-microsoft365
 
+## 0.0.33
+
+### Patch Changes
+
+- @substrat-run/contracts@0.172.0
+- @substrat-run/kernel@0.172.0
+
 ## 0.0.32
 
 ### Patch Changes

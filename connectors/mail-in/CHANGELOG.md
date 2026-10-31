@@ -1,5 +1,12 @@
 # @substrat-run/connector-mail-in
 
+## 0.1.8
+
+### Patch Changes
+
+- @substrat-run/contracts@0.172.0
+- @substrat-run/kernel@0.172.0
+
 ## 0.1.7
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @substrat-run/vertical-host
 
+## 0.172.0
+
+### Patch Changes
+
+- @substrat-run/contracts@0.172.0
+- @substrat-run/kernel@0.172.0
+- @substrat-run/model-providers@0.5.62
+
 ## 0.171.0
 
 ### Minor Changes

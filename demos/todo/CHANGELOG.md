@@ -1,5 +1,15 @@
 # @substrat-run/demo-todo
 
+## 0.3.89
+
+### Patch Changes
+
+- @substrat-run/contracts@0.172.0
+- @substrat-run/kernel@0.172.0
+- @substrat-run/adapter-sqlite@0.172.0
+- @substrat-run/vertical-host@0.172.0
+- @substrat-run/dev-issuer@0.2.54
+
 ## 0.3.88
 
 ### Patch Changes
