@@ -1,4 +1,4 @@
-import type { AppHealthRow, AppMetricsView, BusinessVolumesView, AppOverlays, BoundScopesView, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHealthRow, AppMetricsView, BusinessVolumesView, AppOverlays, BoundScopesView, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, CatalogEntry, DeployFailureRow, DeploymentVersion, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, AppDeployments, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -55,53 +55,54 @@ export const MOCK_MEMBERS: Member[] = [
   { id: 'm3', principal: null, email: 'priya@acme.com', role_key: 'member', status: 'invited', invitation_id: 'inv-priya', invited_by: 'dana@acme.com', invited_at: '2026-07-20T10:00:00Z', joined_at: null },
 ];
 
-export const MOCK_DEPLOYMENTS: Deployment[] = [
-  {
+/** The fields a sample leaves out: a private, owned vertical, unpinned, with versions that carry no schema change or origin. */
+const ver = (v: Omit<DeploymentVersion, 'schemaChange' | 'origin'> & Partial<DeploymentVersion>): DeploymentVersion => ({ schemaChange: false, origin: null, ...v });
+const dep = (d: Omit<AppDeployments, 'listed' | 'owned' | 'boundVersionId' | 'nextCursor' | 'versions'> & Partial<AppDeployments> & { versions: DeploymentVersion[] }): AppDeployments => ({ listed: false, owned: true, boundVersionId: null, nextCursor: null, ...d });
+
+export const MOCK_DEPLOYMENTS: AppDeployments[] = [
+  dep({
     slug: 'acme/helpdesk',
     displaySlug: 'helpdesk',
     name: 'Helpdesk',
     source: 'cli',
-    owned: true,
     versions: [
       // A prerelease carrying a schema change — the widest a version cell ever gets, so the
       // dev preview shows the case the column has to survive rather than only the short one.
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7V400', version: '0.4.0-beta.7', admission: 'pending', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v400', schemaChange: true, origin: { source: 'git', gitRepo: 'acme/helpdesk', gitCommit: '3e7b91c0d5a4f6289173645aabbccdd001122ff', gitRef: 'main', gate: 'passed' }, createdAt: '2026-07-23T09:30:00Z' },
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7V300', version: '0.3.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', origin: { source: 'git', gitRepo: 'acme/helpdesk', gitCommit: '9f2c1d4b8a7e6f5091827364aabbccdd00112233', gitRef: 'main', gate: 'passed' }, createdAt: '2026-07-22T12:00:00Z' },
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7V200', version: '0.2.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', origin: { source: 'cli', gate: 'skipped' }, createdAt: '2026-07-20T12:00:00Z' },
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7V100', version: '0.1.0', admission: 'pending', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v100', createdAt: '2026-07-18T12:00:00Z' },
+      ver({ id: '01J2Q8Z3V9K4W7X2M5N6P7V400', version: '0.4.0-beta.7', admission: 'pending', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v400', schemaChange: true, origin: { source: 'git', gitRepo: 'acme/helpdesk', gitCommit: '3e7b91c0d5a4f6289173645aabbccdd001122ff', gitRef: 'main', gate: 'passed' }, createdAt: '2026-07-23T09:30:00Z' }),
+      ver({ id: '01J2Q8Z3V9K4W7X2M5N6P7V300', version: '0.3.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', origin: { source: 'git', gitRepo: 'acme/helpdesk', gitCommit: '9f2c1d4b8a7e6f5091827364aabbccdd00112233', gitRef: 'main', gate: 'passed' }, createdAt: '2026-07-22T12:00:00Z' }),
+      ver({ id: '01J2Q8Z3V9K4W7X2M5N6P7V200', version: '0.2.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', origin: { source: 'cli', gate: 'skipped' }, createdAt: '2026-07-20T12:00:00Z' }),
+      ver({ id: '01J2Q8Z3V9K4W7X2M5N6P7V100', version: '0.1.0', admission: 'pending', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v100', createdAt: '2026-07-18T12:00:00Z' }),
       // A 5th version so the dev preview exercises the collapsed list's "All N versions" link.
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7V050', version: '0.0.5', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v050', createdAt: '2026-07-16T12:00:00Z' },
+      ver({ id: '01J2Q8Z3V9K4W7X2M5N6P7V050', version: '0.0.5', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v050', createdAt: '2026-07-16T12:00:00Z' }),
     ],
     channels: [
       { channel: 'prod', versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300' },
     ],
     // This scope still runs 0.2.0 while prod moved to 0.3.0 — the "update available" state.
     boundVersionId: '01J2Q8Z3V9K4W7X2M5N6P7V200',
-  },
-  {
+  }),
+  dep({
     slug: 'acme/reports',
     displaySlug: 'reports',
     name: 'Reports',
     source: 'cli',
-    owned: true,
     versions: [
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7R100', version: '1.0.0', admission: 'pending', admissionNote: null, deploymentRef: 'acme-reports-01j2q8z3v9k4w7x2m5n6p7r100', createdAt: '2026-07-21T12:00:00Z' },
+      ver({ id: '01J2Q8Z3V9K4W7X2M5N6P7R100', version: '1.0.0', admission: 'pending', admissionNote: null, deploymentRef: 'acme-reports-01j2q8z3v9k4w7x2m5n6p7r100', createdAt: '2026-07-21T12:00:00Z' }),
     ],
     channels: [],
-  },
+  }),
   // The vertical the helpdesk's installs would move to after a package rename: pushed to
   // most recently, with a version in prod — what the "Bound scopes" Move dialog offers.
-  {
+  dep({
     slug: 'acme/support-desk',
     displaySlug: 'support-desk',
     name: 'Support desk',
     source: 'cli',
-    owned: true,
     versions: [
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7D100', version: '1.0.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-support-desk-01j2q8z3v9k4w7x2m5n6p7d100', createdAt: '2026-07-25T12:00:00Z' },
+      ver({ id: '01J2Q8Z3V9K4W7X2M5N6P7D100', version: '1.0.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-support-desk-01j2q8z3v9k4w7x2m5n6p7d100', createdAt: '2026-07-25T12:00:00Z' }),
     ],
     channels: [{ channel: 'prod', versionId: '01J2Q8Z3V9K4W7X2M5N6P7D100' }],
-  },
+  }),
 ];
 
 /**
