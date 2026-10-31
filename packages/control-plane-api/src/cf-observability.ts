@@ -406,8 +406,8 @@ function moduleLineFilters(input: {
   search?: string;
   invocationId?: string;
   template?: string;
-}): Array<{ key: string; operation: string; type: string; value: string }> {
-  const filters = [
+}): TelemetryFilter[] {
+  const filters: TelemetryFilter[] = [
     { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
     { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
   ];
@@ -417,7 +417,14 @@ function moduleLineFilters(input: {
   }
   if (input.template !== undefined) filters.push({ key: 'template', operation: 'eq', type: 'string', value: input.template });
   if (input.level) filters.push({ key: 'level', operation: 'eq', type: 'string', value: input.level.toLowerCase() });
-  if (input.search) filters.push({ key: 'message', operation: 'includes', type: 'string', value: input.search });
+  // #2762: the message or the request id, as one OR group.
+  if (input.search) {
+    filters.push({
+      kind: 'group',
+      filterCombination: 'or',
+      filters: ['message', 'invocationId'].map((key) => ({ key, operation: 'includes', type: 'string', value: input.search! })),
+    });
+  }
   return filters;
 }
 
@@ -1728,7 +1735,20 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
             phaseOneLimit,
           ),
         ])
-      : [await readTenant(base, phaseOneLimit), []];
+      : [
+          [
+            ...(await readTenant(base, phaseOneLimit)),
+            // #2762: a request id older than the newest page is reached by asking for it,
+            // not by filtering that page afterwards.
+            ...(input.search
+              ? await readTenant(
+                  [...base, { key: 'invocationId', operation: 'includes', type: 'string', value: input.search }],
+                  phaseOneLimit,
+                )
+              : []),
+          ],
+          [],
+        ];
 
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);

@@ -309,11 +309,13 @@ describe('cf tenant logs', () => {
   });
 
   it('a search matches the request id as well as the message (#2762)', async () => {
-    const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ invocationId: '01JZREQID' })] : []));
+    const { reader, sent } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ invocationId: '01JZREQID' })] : []));
     const read = async (search: string) => (await reader.tenantLogs!({ tenantId: '01TENANT', search, hours: 24, limit: 10 })).events;
     expect(await read('JZREQ')).toHaveLength(1);
     expect(await read('/api/orders')).toHaveLength(1);
     expect(await read('nothing')).toHaveLength(0);
+    // An id older than the newest page is asked for in phase one, not filtered out of it afterwards.
+    expect(sent.some((f) => f.some((x) => x['key'] === 'invocationId' && x['operation'] === 'includes' && x['value'] === 'JZREQ'))).toBe(true);
   });
 
   it('the service-grain search is one query over message OR request id (#2762)', async () => {
@@ -948,7 +950,14 @@ describe('cf tenant logs — ctx.log lines', () => {
     expect(q[0]).toEqual({ key: 'tenantId', operation: 'eq', type: 'string', value: '01TENANT' });
     expect(keyed(q, 'scopeId')).toMatchObject({ value: '01SCOPE' });
     expect(keyed(q, 'level')).toMatchObject({ value: 'warn' });
-    expect(keyed(q, 'message')).toMatchObject({ operation: 'includes', value: 'bounced' });
+    // #2762: the message or the request id, one OR group.
+    expect(q.find((f) => f['kind'] === 'group')).toMatchObject({
+      filterCombination: 'or',
+      filters: [
+        { key: 'message', operation: 'includes', value: 'bounced' },
+        { key: 'invocationId', operation: 'includes', value: 'bounced' },
+      ],
+    });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ message: 'reply to t1 bounced', level: 'warn', invocationId: '01INV', trigger: 'acme/reply' });
   });
