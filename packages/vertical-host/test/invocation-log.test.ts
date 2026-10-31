@@ -656,7 +656,7 @@ describe('the line’s outputFields (#1331)', () => {
     expect(Object.keys(line)).toEqual([
       'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'status', 'threw',
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
-      'eventTypes', 'entities', 'versionId',
+      'eventTypes', 'entities', 'entityTypes', 'versionId',
     ]);
   });
 });
