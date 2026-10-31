@@ -808,8 +808,9 @@ export function invocationLog<Env = unknown>(
 /**
  * #2762: the route that answered — the method and the pattern its handler was registered
  * under (`GET /api/lists/:id`), read after the chain has run, when Hono's route index points
- * at the handler that responded. A request no route answered names the wildcard middleware
- * it fell through (`GET /*`, or `GET /api/*` under a scoped one).
+ * at the handler that responded — not the last match, so a catch-all middleware registered
+ * after the handler does not displace it. A request no route answered names the last
+ * wildcard middleware it went through (`GET /*`).
  *
  * The pattern is the app's code, never the request: no segment, parameter or query string
  * of what was called reaches it, which is what keeps the `path` facet to the app's route
