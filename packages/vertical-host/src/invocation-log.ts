@@ -684,7 +684,8 @@ export interface PlatformCallLine {
   principalKind: string;
   operation: string;
   emitted: EmittedReport | undefined;
-  logLines: number | undefined;
+  /** #2762: optional, so a caller written before it still compiles; absent is "not recorded". */
+  logLines?: number;
   started: number;
 }
 
