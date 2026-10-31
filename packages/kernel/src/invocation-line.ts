@@ -69,7 +69,8 @@ export interface InvocationLogLine extends AuthRecording {
   /**
    * #2762: the request's ROUTE — its method and the pattern the route that answered was
    * registered under (`GET /api/lists/:id`), never the path it was called with, so its values
-   * are the app's route table and a cube can group by it. A request no route answered names
+   * are the app's route table times a fixed method set (any other method is `OTHER`) and a cube
+   * can group by it. A request no route answered names
    * the wildcard it fell through (`GET /*`). `null` on an async line, from a worker that is
    * not a Hono app, or from a vertical-host that predates it. At most 128 characters.
    */
