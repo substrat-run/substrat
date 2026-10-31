@@ -1,9 +1,10 @@
 import { readObsQuery, queryWindow, type ObsQuery } from '../lib/observability-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Select } from '@substrat-run/ui';
 import { api, type AppMetricsView, type AppRow, type OverlayMarker } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_METRICS } from '../lib/mock';
 import { navigate } from '../lib/router';
+import type { LogMode } from '../lib/log-stream';
 import { Page } from '../components/layout';
 import { card } from '../components/ui';
 import { AppFilter, PageHead } from '../components/ObsControls';
@@ -128,6 +129,27 @@ export function Observability({
   // Explicit selections always send exact bounds, including partial edge buckets.
   const requestWindow = q.from && q.to ? window : undefined;
   const panelWindow = { from: window.since, to: window.until };
+
+  // #2762: the mode tabs' counts are only what the modes the reader has opened already
+  // answered — nothing is asked for them. An answer is for one app, window, filter set and
+  // refresh, so a count read under another is dropped rather than shown against this page.
+  const countsFor = JSON.stringify([scopeId, q, panelWindow, nonce]);
+  const [answered, setAnswered] = useState<{ for: string; counts: Partial<Record<LogMode, number>> }>({ for: '', counts: {} });
+  const counts = answered.for === countsFor ? answered.counts : {};
+  const reportCount = useCallback(
+    (mode: LogMode, n: number | null) =>
+      setAnswered((a) => {
+        const fresh = a.for === countsFor;
+        if (fresh && a.counts[mode] === (n ?? undefined)) return a;
+        const counts = { ...(fresh ? a.counts : {}) };
+        if (n === null) delete counts[mode];
+        else counts[mode] = n;
+        return { for: countsFor, counts };
+      }),
+    [countsFor],
+  );
+  const onRequestsCount = useCallback((n: number | null) => reportCount('requests', n), [reportCount]);
+  const onPatternsCount = useCallback((n: number | null) => reportCount('patterns', n), [reportCount]);
 
   // The Findings client is per team and stable across renders, so its list is not re-read by a re-render.
   const findingsClient = useMemo<FindingsClient>(() => (DEV_MOCK ? mockFindingsClient() : teamApi(teamId)), [teamId]);
@@ -361,8 +383,9 @@ export function Observability({
           onResetZoom={() => preset(null)}
           // A request opens over the page, so closing it leaves the list as it was.
           onOpenCall={openRequest}
+          onCount={onRequestsCount}
           frame={(body) => (
-            <LogStream mode={logMode} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
+            <LogStream mode={logMode} counts={counts} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
               {body}
             </LogStream>
           )}
@@ -370,7 +393,7 @@ export function Observability({
       ) : scopeId ? (
         // One card, two modes. A tab switch is a sub-view switch — same URL key, and the
         // cursor comes along: "what was happening at 09:13" is one question asked of both.
-        <LogStream mode={logMode} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
+        <LogStream mode={logMode} counts={counts} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
           {logMode === 'logs' && (
             <LinesMode teamId={teamId} scopeId={scopeId} q={q} hours={hours} nonce={nonce} live={live} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
           )}
@@ -380,6 +403,7 @@ export function Observability({
               scopeId={scopeId}
               window={panelWindow}
               nonce={nonce}
+              onCount={onPatternsCount}
               // A pattern opens its lines, in the window the reader is already looking at —
               // and ONLY the template narrows them. A level, search or invocation left over
               // from an earlier visit to Lines would otherwise quietly cut the pattern's

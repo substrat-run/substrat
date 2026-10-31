@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Tabs } from '@substrat-run/ui';
-import { LOG_MODES, modeHint, type LogMode } from '../lib/log-stream';
+import { modeHint, modeTabs, type LogMode } from '../lib/log-stream';
 
 /**
  * The Logs stream card (#1767): one card, its modes as tabs along the top, the open
@@ -8,7 +8,18 @@ import { LOG_MODES, modeHint, type LogMode } from '../lib/log-stream';
  * as tabs on the card they read as two ways of looking at one stream, which is what
  * they are.
  */
-export function LogStream({ mode, onMode, children }: { mode: LogMode; onMode: (mode: LogMode) => void; children: ReactNode }) {
+export function LogStream({
+  mode,
+  onMode,
+  counts = {},
+  children,
+}: {
+  mode: LogMode;
+  onMode: (mode: LogMode) => void;
+  /** What the modes already answered for this page; see `modeTabs`. */
+  counts?: Partial<Record<LogMode, number>>;
+  children: ReactNode;
+}) {
   return (
     <div
       style={{
@@ -24,7 +35,7 @@ export function LogStream({ mode, onMode, children }: { mode: LogMode; onMode: (
         data-log-modes
         style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 12px 0 16px', borderBottom: '1px solid var(--border-default)', flexWrap: 'wrap' }}
       >
-        <Tabs tabs={LOG_MODES} value={mode} onChange={(v) => onMode(v as LogMode)} style={{ borderBottom: 'none' }} />
+        <Tabs tabs={modeTabs(counts)} value={mode} onChange={(v) => onMode(v as LogMode)} style={{ borderBottom: 'none' }} />
         <span style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{modeHint(mode)}</span>
       </div>

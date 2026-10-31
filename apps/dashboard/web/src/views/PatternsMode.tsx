@@ -33,6 +33,7 @@ export function PatternsMode({
   window,
   nonce,
   onOpenPattern,
+  onCount,
 }: {
   teamId: string;
   scopeId: string;
@@ -40,6 +41,9 @@ export function PatternsMode({
   window: { from: string; to: string };
   nonce: number;
   onOpenPattern: (template: string) => void;
+  /** How many patterns the window holds, null until the read answers or when it is cut short:
+   *  what the page's mode tab shows. Must be stable across renders. */
+  onCount?: (count: number | null) => void;
 }) {
   const [answer, setAnswer] = useState<LogPatterns | null | { error: string }>(null);
 
@@ -68,6 +72,10 @@ export function PatternsMode({
       live = false;
     };
   }, [teamId, scopeId, window.from, window.to, nonce]);
+
+  // A truncated answer lists only the most frequent patterns, so its length is a floor, not a count.
+  const count = answer !== null && !('error' in answer) && !answer.truncated ? answer.patterns.length : null;
+  useEffect(() => onCount?.(count), [count, onCount]);
 
   const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' } as const;
   if (answer === null) return <div style={quiet}>Grouping lines…</div>;

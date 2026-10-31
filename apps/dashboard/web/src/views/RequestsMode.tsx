@@ -74,6 +74,7 @@ export function RequestsMode({
   onResetZoom,
   live = false,
   frame = (body) => body,
+  onCount,
 }: {
   teamId: string;
   scopeId: string;
@@ -99,6 +100,9 @@ export function RequestsMode({
   live?: boolean;
   /** The stream card around the list — the page's `LogStream`, so the mode tabs sit on it. */
   frame?: (body: ReactNode) => ReactNode;
+  /** The matching requests' total once the facets read has answered, null while it has not:
+   *  what the page's mode tab shows. Must be stable across renders. */
+  onCount?: (total: number | null) => void;
 }) {
   const [volume, setVolume] = useState<Loaded<RequestVolume>>(null);
   const [facets, setFacets] = useState<Loaded<RequestFacets>>(null);
@@ -149,6 +153,9 @@ export function RequestsMode({
     // `whereKey` stands for `where`/`q`'s facet keys; the window is its two instants.
   }, [teamId, scopeId, whereKey, window.from, window.to, nonce]);
 
+  const total = facets === null || isError(facets) ? null : facets.total;
+  useEffect(() => onCount?.(total), [total, onCount]);
+
   const levelSel = selected(q, 'level');
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -169,7 +176,7 @@ export function RequestsMode({
         {frame(
           <>
             <FindRequest onOpenCall={onOpenCall} />
-            <RequestList rows={rows} total={isError(facets) || facets === null ? null : facets.total} onOpenCall={onOpenCall} />
+            <RequestList rows={rows} total={total} onOpenCall={onOpenCall} />
           </>,
         )}
       </div>

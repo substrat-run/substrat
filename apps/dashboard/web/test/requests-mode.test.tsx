@@ -197,6 +197,15 @@ describe('RequestsMode', () => {
     expect(container.querySelectorAll('[data-bucket]')).toHaveLength(2);
   });
 
+  it('#2762: reports the facet read’s total for the mode tab, and nothing while it is unanswered', async () => {
+    vi.spyOn(api, 'appRequestVolume').mockResolvedValue(volume);
+    vi.spyOn(api, 'appRequestFacets').mockResolvedValue(facets);
+    vi.spyOn(api, 'appRequests').mockResolvedValue([row()]);
+    const onCount = vi.fn();
+    await render({ onCount });
+    expect(onCount.mock.calls.map((c) => c[0])).toEqual([null, 60]);
+  });
+
   it('ticks a facet value and opens a request', async () => {
     vi.spyOn(api, 'appRequestVolume').mockResolvedValue(volume);
     vi.spyOn(api, 'appRequestFacets').mockResolvedValue(facets);
