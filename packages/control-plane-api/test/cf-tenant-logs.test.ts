@@ -1172,7 +1172,7 @@ describe('cf tenant logs — async work (#1901)', () => {
     // re-check is what still keeps a type to itself.
     const { reader: loose } = readerOver((filters, limit) =>
       lines
-        .filter((e) => filters.every((f) => f['key'] === 'entityTypes' || matches(e.source as Record<string, unknown>, f)))
+        .filter((e) => filters.every((f) => JSON.stringify(f).includes('entityTypes') || matches(e.source as Record<string, unknown>, f)))
         .slice(0, limit),
     );
     const listed = await loose.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity: ['a.c', 'repair'] } });
