@@ -29,7 +29,11 @@ try {
 
 A non-2xx answer or an unreachable plane throws `ControlPlaneError`: `status` is the HTTP
 status (`0` when no response arrived) and `message` the problem document's `detail`, else
-the status line. `fetch` is injectable, so a Worker service binding or an in-process
+the status line. The error also carries the problem document's taxonomy code as `problemCode`
+(branch on that, not on the sentence) and `requestId`, the id the plane stamped on the refusal
+(the problem body's `requestId`, else the `x-substrat-request-id` header), for a person to
+quote; `provesNothingChanged(error)` says whether a failed call is known to have changed
+nothing. `fetch` is injectable, so a Worker service binding or an in-process
 `app.fetch` stands in for the network.
 
 ## The builder surface
