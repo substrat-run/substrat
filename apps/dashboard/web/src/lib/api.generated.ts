@@ -86,6 +86,29 @@ export interface AppEvent {
   created_at: string;
 }
 
+/** `appFailuresView` — a published schema, not a stored row. */
+export interface AppFailuresView {
+  entries: ({ id: string; at: string; kind: "sweep" | "operation"; operation: string; stage: string | null; message: string | null; code: string | null })[];
+  unavailableSources: string[];
+  incompleteSources: string[];
+}
+
+/** `appMetricsView` — a published schema, not a stored row. */
+export interface AppMetricsView {
+  available: boolean;
+  cap: number | null;
+  rows: ({ scopeId: string; requests: number | null; errors: number | null; p95: number | null })[];
+}
+
+/** `appOverlaysView` — a published schema, not a stored row. */
+export interface AppOverlays {
+  unavailableSources?: string[];
+  incompleteSources?: string[];
+  markers: ({ at: string; kind: "migration" | "run-failed" | "failure"; label: string; detail: string | null })[];
+  spans: { from: string; to: string; kind: "stale"; label: string }[];
+  truncated: boolean;
+}
+
 /** `appRow` — a published schema, not a stored row. */
 export interface AppRow {
   id: string;
@@ -112,6 +135,14 @@ export interface BoundScopeRow {
   hostnames: string[];
 }
 
+/** `businessVolumesView` — a published schema, not a stored row. */
+export interface BusinessVolumesView {
+  window: { since: string; until: string };
+  bucketMinutes: number;
+  rows: { scopeId: string; entityType: string; state: string; terminal: boolean; fromInitial: boolean; operations: string[]; today: number; yesterday: number; buckets: { start: string; count: number }[] }[];
+  apps: ({ scopeId: string; unavailable: "no-version" | "no-moves" | "not-yet-available" | null })[];
+}
+
 /** `catalogRow` — a published schema, not a stored row. */
 export interface CatalogEntry {
   slug: string;
@@ -132,6 +163,12 @@ export interface ChannelHistoryRow {
   fromVersionId: string | null;
   actor: string;
   at: string;
+}
+
+/** `connectorCallsView` — a published schema, not a stored row. */
+export interface ConnectorCallsView {
+  available: boolean;
+  buckets: { provider: string; start: string; bucketMinutes: number; calls: number; errors: number; ok: number; class4xx: number; class5xx: number; timeouts: number; failed: number; durationP50: number; durationP95: number }[];
 }
 
 /** `deployFailureRow` — a published schema, not a stored row. */
@@ -199,6 +236,24 @@ export interface FailureGroupRow {
   lastStatus: number | null;
 }
 
+/** `fieldCoverageView` — a published schema, not a stored row. */
+export interface FieldCoverageView {
+  available: boolean;
+  entities: { entity: string; table: string; fields: { field: string; returned: boolean; erasable: boolean }[]; neverReturned: { field: string; returned: boolean; erasable: boolean }[] }[];
+  declared: number;
+  returned: number;
+  neverReturnedErasable: number;
+  operations: number;
+}
+
+/** `fieldReadsView` — a published schema, not a stored row. */
+export interface FieldReadsView {
+  available: boolean;
+  source: string;
+  window?: { since: string; until: string };
+  groups: ({ sampleRate: number | null; armedRequests: number; refused: number; operations: ({ operation: string; responses: number; fields: ({ field: string; present: number; empty: number; absent: number; eligible: number; sampleRate: number | null; window: { since: string; until: string } })[] })[]; notObservedReturned: { operation: string; field: string }[] })[];
+}
+
 /** `findingRow` — a published schema, not a stored row. */
 export interface FindingEntry {
   id: string;
@@ -240,6 +295,14 @@ export interface FindingRuleEntry {
   createdAt: string;
 }
 
+/** `appFlowView` — a published schema, not a stored row. */
+export interface FlowView {
+  findings: { available: boolean; observedComplete: boolean; declaredComplete: boolean; findings: ({ kind: "unemitted" | "unconsumed" | "stale" | "unconnected-provider" | "unhealthy-provider"; subject: string; moduleId: string | null; detail: string })[]; declaredTypes: number; observedTypes: number };
+  graph: { available: boolean; nodes: ({ id: string; kind: "trigger" | "module" | "event" | "connection" | "egress"; label: string; sublabel: string | null; observed: number | null; silent: boolean; stale: boolean; status: "ok" | "warn" | "danger"; title: string; x: number; y: number; w: number; h: number })[]; edges: ({ from: string; to: string; kind: "triggers" | "emits" | "consumes" | "uses"; title: string })[]; width: number; height: number; partialObservation: boolean; declaredComplete: boolean };
+  operations: { rows: ({ operation: string; events: number | null; lastSeen: string | null; refusals: number | null; refusedOnly: boolean })[]; observedComplete: boolean; refusals: { complete: boolean; held: number; counted: number; since: string | null } | null };
+  connectionSweep: { rows: ({ connectionId: string; provider: string; label: string; status: string; lastSweptAt: string | null; lastOutcomeFailed: boolean | null; unknown: boolean; idle: boolean })[]; windowDays: number; idleCount: number };
+}
+
 /** `installStep` — a published schema, not a stored row. */
 export interface InstallStep {
   step: string;
@@ -249,6 +312,15 @@ export interface InstallStep {
   last_error: string | null;
   started_at: string;
   settled_at: string | null;
+}
+
+/** `logPatternsView` — a published schema, not a stored row. */
+export interface LogPatterns {
+  total: number;
+  bucketMs: number;
+  patterns: { template: string; count: number; share: number; levels: { debug: number; info: number; warn: number; error: number }; dominant: string; buckets: { start: string; count: number }[] }[];
+  truncated: boolean;
+  estimated: boolean;
 }
 
 /** `memberRow` — a published schema, not a stored row. */
@@ -275,6 +347,19 @@ export interface MoveReviewRow {
   migrations: { baseline: "version" | "none" | "unavailable"; added: ({ moduleId: string; version: string; sql: string | null; moves?: Record<string, string>; discards?: Record<string, string>; declarationsLeftOut?: true; edited?: "sql" | "declarations" })[]; changed: ({ moduleId: string; version: string; sql: string | null; moves?: Record<string, string>; discards?: Record<string, string>; declarationsLeftOut?: true; edited?: "sql" | "declarations" })[]; total: number; truncated: boolean } | null;
   migrationsWithheld: boolean;
   review: { base: string | null; digest: string };
+}
+
+/** `observabilityRow` — a published schema, not a stored row. */
+export interface ObservabilityRow {
+  vertical: string;
+  version: string;
+  versionId: string | null;
+  service: string;
+  requests: number;
+  errors: number;
+  subrequests: number;
+  cpuTimeP50: number;
+  cpuTimeP99: number;
 }
 
 /** `previewCreated` — a published schema, not a stored row. */
@@ -347,6 +432,39 @@ export interface ReleasesView {
   metricsAvailable: boolean;
 }
 
+/** `requestFacetsView` — a published schema, not a stored row. */
+export interface RequestFacets {
+  total: number;
+  facets: Record<string, ({ value: string | number; count: number })[]>;
+  estimated: boolean;
+}
+
+/** `requestVolumeView` — a published schema, not a stored row. */
+export interface RequestVolume {
+  bucketMs: number;
+  buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[];
+  estimated: boolean;
+}
+
+/** `teamTrafficSeries` — a published schema, not a stored row. */
+export interface TeamTrafficSeries {
+  window?: { since: string; until: string };
+  series: ({ scopeId: string; buckets: ({ start: string; requests: number; errors: number; durationP95: number | null; green?: number; yellow?: number })[] })[];
+  bucketMinutes: number;
+  available: boolean;
+}
+
+/** `tenantMetricsRow` — a published schema, not a stored row. */
+export interface TenantMetricsRow {
+  scopeId: string;
+  vertical: string | null;
+  surface: string | null;
+  requests: number;
+  errors: number;
+  durationP50: number;
+  durationP95: number;
+}
+
 /** `trafficSeries` — a published schema, not a stored row. */
 export interface TrafficSeries {
   window?: { since: string; until: string };
@@ -405,7 +523,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/observability/log-patterns` — `dashboard/app-log-patterns`
    */
-  appLogPatterns(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; buckets?: string }): Promise<{ total: number; bucketMs: number; patterns: { template: string; count: number; share: number; levels: { debug: number; info: number; warn: number; error: number }; dominant: string; buckets: { start: string; count: number }[] }[]; truncated: boolean; estimated: boolean }>;
+  appLogPatterns(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; buckets?: string }): Promise<LogPatterns>;
 
   /**
    * The members, roles and open invites in one app scope
@@ -419,7 +537,7 @@ export interface DashboardClient {
    *
    * `GET /observability/app-metrics` — `dashboard/app-metrics`
    */
-  appMetrics(input: { hours?: string }): Promise<{ available: boolean; cap: number | null; rows: ({ scopeId: string; requests: number | null; errors: number | null; p95: number | null })[] }>;
+  appMetrics(input: { hours?: string }): Promise<AppMetricsView>;
 
   /**
    * Log lines for one of this team's installed apps
@@ -435,7 +553,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/observability/metrics` — `dashboard/app-observability-metrics`
    */
-  appObservabilityMetrics(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<({ scopeId: string; vertical: string | null; surface: string | null; requests: number; errors: number; durationP50: number; durationP95: number })[]>;
+  appObservabilityMetrics(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<TenantMetricsRow[]>;
 
   /**
    * Mint a one-time claim link for an unclaimed app owner seat
@@ -470,14 +588,14 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/observability/requests/facets` — `dashboard/app-request-facets`
    */
-  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; path?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
+  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; path?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<RequestFacets>;
 
   /**
    * Request histogram for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/requests/volume` — `dashboard/app-request-volume`
    */
-  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; path?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
+  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; path?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<RequestVolume>;
 
   /**
    * Request records for one of this team's installed apps
@@ -519,7 +637,7 @@ export interface DashboardClient {
    *
    * `GET /observability/business-volumes` — `dashboard/business-volumes`
    */
-  businessVolumes(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<{ window: { since: string; until: string }; bucketMinutes: number; rows: { scopeId: string; entityType: string; state: string; terminal: boolean; fromInitial: boolean; operations: string[]; today: number; yesterday: number; buckets: { start: string; count: number }[] }[]; apps: ({ scopeId: string; unavailable: "no-version" | "no-moves" | "not-yet-available" | null })[] }>;
+  businessVolumes(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<BusinessVolumesView>;
 
   /**
    * Connect or rotate one provider credential for an app
@@ -540,7 +658,7 @@ export interface DashboardClient {
    *
    * `GET /observability/connector-calls` — `dashboard/connector-calls`
    */
-  connectorCalls(input: { hours?: string; since?: string; until?: string }): Promise<{ available: boolean; buckets: { provider: string; start: string; bucketMinutes: number; calls: number; errors: number; ok: number; class4xx: number; class5xx: number; timeouts: number; failed: number; durationP50: number; durationP95: number }[] }>;
+  connectorCalls(input: { hours?: string; since?: string; until?: string }): Promise<ConnectorCallsView>;
 
   /**
    * Create an archive fork of this app's data, with optional expiry
@@ -680,28 +798,28 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/failures` — `dashboard/get-app-failures`
    */
-  getAppFailures(input: { scopeId: string; since?: string; until?: string }): Promise<{ entries: ({ id: string; at: string; kind: "sweep" | "operation"; operation: string; stage: string | null; message: string | null; code: string | null })[]; unavailableSources: string[]; incompleteSources: string[] }>;
+  getAppFailures(input: { scopeId: string; since?: string; until?: string }): Promise<AppFailuresView>;
 
   /**
    * Fields declared by the app's running version and returnable by its operations
    *
    * `GET /apps/{scopeId}/field-coverage` — `dashboard/get-app-field-coverage`
    */
-  getAppFieldCoverage(input: { scopeId: string }): Promise<{ available: boolean; entities: { entity: string; table: string; fields: { field: string; returned: boolean; erasable: boolean }[]; neverReturned: { field: string; returned: boolean; erasable: boolean }[] }[]; declared: number; returned: number; neverReturnedErasable: number; operations: number }>;
+  getAppFieldCoverage(input: { scopeId: string }): Promise<FieldCoverageView>;
 
   /**
    * Observed field presence in one app's responses
    *
    * `GET /apps/{scopeId}/field-reads` — `dashboard/get-app-field-reads`
    */
-  getAppFieldReads(input: { scopeId: string; hours?: string }): Promise<{ available: boolean; source: string; window?: { since: string; until: string }; groups: ({ sampleRate: number | null; armedRequests: number; refused: number; operations: ({ operation: string; responses: number; fields: ({ field: string; present: number; empty: number; absent: number; eligible: number; sampleRate: number | null; window: { since: string; until: string } })[] })[]; notObservedReturned: { operation: string; field: string }[] })[] }>;
+  getAppFieldReads(input: { scopeId: string; hours?: string }): Promise<FieldReadsView>;
 
   /**
    * The app's declared and observed flow
    *
    * `GET /apps/{scopeId}/flow` — `dashboard/get-app-flow`
    */
-  getAppFlow(input: { scopeId: string }): Promise<{ findings: { available: boolean; observedComplete: boolean; declaredComplete: boolean; findings: ({ kind: "unemitted" | "unconsumed" | "stale" | "unconnected-provider" | "unhealthy-provider"; subject: string; moduleId: string | null; detail: string })[]; declaredTypes: number; observedTypes: number }; graph: { available: boolean; nodes: ({ id: string; kind: "trigger" | "module" | "event" | "connection" | "egress"; label: string; sublabel: string | null; observed: number | null; silent: boolean; stale: boolean; status: "ok" | "warn" | "danger"; title: string; x: number; y: number; w: number; h: number })[]; edges: ({ from: string; to: string; kind: "triggers" | "emits" | "consumes" | "uses"; title: string })[]; width: number; height: number; partialObservation: boolean; declaredComplete: boolean }; operations: { rows: ({ operation: string; events: number | null; lastSeen: string | null; refusals: number | null; refusedOnly: boolean })[]; observedComplete: boolean; refusals: { complete: boolean; held: number; counted: number; since: string | null } | null }; connectionSweep: { rows: ({ connectionId: string; provider: string; label: string; status: string; lastSweptAt: string | null; lastOutcomeFailed: boolean | null; unknown: boolean; idle: boolean })[]; windowDays: number; idleCount: number } }>;
+  getAppFlow(input: { scopeId: string }): Promise<FlowView>;
 
   /**
    * An app's durable install record: directory, provision, activate, hostname, identity
@@ -736,7 +854,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/overlays` — `dashboard/get-app-overlays`
    */
-  getAppOverlays(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<{ unavailableSources?: string[]; incompleteSources?: string[]; markers: ({ at: string; kind: "migration" | "run-failed" | "failure"; label: string; detail: string | null })[]; spans: { from: string; to: string; kind: "stale"; label: string }[]; truncated: boolean }>;
+  getAppOverlays(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<AppOverlays>;
 
   /**
    * The permission surface of the version this app runs, and of an available update
@@ -1081,7 +1199,7 @@ export interface DashboardClient {
    *
    * `GET /observability/metrics` — `dashboard/observability-metrics`
    */
-  observabilityMetrics(input: { hours?: string; vertical?: string }): Promise<({ vertical: string; version: string; versionId: string | null; service: string; requests: number; errors: number; subrequests: number; cpuTimeP50: number; cpuTimeP99: number })[]>;
+  observabilityMetrics(input: { hours?: string; vertical?: string }): Promise<ObservabilityRow[]>;
 
   /**
    * Promote a version to prod (self-serve while the vertical is private; the registry gates migration and permission changes on a bound acknowledgement)
@@ -1298,7 +1416,7 @@ export interface DashboardClient {
    *
    * `GET /observability/traffic` — `dashboard/team-traffic`
    */
-  teamTraffic(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<{ window?: { since: string; until: string }; series: ({ scopeId: string; buckets: ({ start: string; requests: number; errors: number; durationP95: number | null; green?: number; yellow?: number })[] })[]; bucketMinutes: number; available: boolean }>;
+  teamTraffic(input: { scopeId?: string[]; hours?: string; since?: string; until?: string }): Promise<TeamTrafficSeries>;
 
   /**
    * Bucketed traffic for this team's installed apps

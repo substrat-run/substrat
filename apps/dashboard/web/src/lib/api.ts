@@ -1,5 +1,5 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppRow, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type FailureGroupRow, type InstallStep, type Member, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type TrafficSeries } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppFailuresView, type AppMetricsView, type AppOverlays, type AppRow, type BoundScopeRow, type BusinessVolumesView, type ChannelHistoryRow, type ConnectorCallsView, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type FailureGroupRow, type FieldCoverageView, type FieldReadsView, type FlowView, type InstallStep, type LogPatterns, type Member, type MoveReviewRow, type ObservabilityRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type RequestFacets, type RequestVolume, type TeamTrafficSeries, type TenantMetricsRow, type TrafficSeries } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { RequestReadQuery } from './requests';
@@ -7,7 +7,30 @@ import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
-export type { AppDeployments, AppEvent, AppRow, BoundScopeRow, DeployFailureRow, DeploymentVersion, FailureGroupRow, InstallStep, Member, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView, TrafficSeries };
+export type { AppDeployments, AppEvent, AppFailuresView, AppMetricsView, AppOverlays, AppRow, BoundScopeRow, BusinessVolumesView, ConnectorCallsView, DeployFailureRow, DeploymentVersion, FailureGroupRow, FieldCoverageView, FieldReadsView, FlowView, InstallStep, LogPatterns, Member, MoveReviewRow, ObservabilityRow, PreviewCreated, ReleaseRow, ReleasesView, RequestFacets, RequestVolume, TeamTrafficSeries, TenantMetricsRow, TrafficSeries };
+
+// The observability reads' parts (#2170), named as the views always have: each is the generated view's own member.
+export type AppMetricsRow = AppMetricsView['rows'][number];
+export type FlowFindingsView = FlowView['findings'];
+export type FlowFinding = FlowFindingsView['findings'][number];
+export type FlowGraph = FlowView['graph'];
+export type FlowNode = FlowGraph['nodes'][number];
+export type FlowEdge = FlowGraph['edges'][number];
+export type OperationHealthView = FlowView['operations'];
+export type OperationHealthRow = OperationHealthView['rows'][number];
+export type RefusalWindow = NonNullable<OperationHealthView['refusals']>;
+export type ConnectionSweepView = FlowView['connectionSweep'];
+export type ConnectionSweepRow = ConnectionSweepView['rows'][number];
+export type EntityCoverage = FieldCoverageView['entities'][number];
+export type FieldCoverageRow = EntityCoverage['fields'][number];
+export type ConnectorCallsBucket = ConnectorCallsView['buckets'][number];
+export type BusinessVolumeRow = BusinessVolumesView['rows'][number];
+export type OverlayMarker = AppOverlays['markers'][number];
+export type OverlaySpan = AppOverlays['spans'][number];
+export type AppFailure = AppFailuresView['entries'][number];
+export type TeamTrafficLine = TeamTrafficSeries['series'][number];
+export type RequestVolumeBucket = RequestVolume['buckets'][number];
+export type LogPattern = LogPatterns['patterns'][number];
 export type AuditEntry = AdminLogEntry;
 export type ChannelHistoryEntry = ChannelHistoryRow;
 export type VerticalPreview = PreviewRow;
@@ -267,27 +290,6 @@ export interface ProcessMapView {
   unavailable: 'no-version' | 'no-lifecycles' | 'not-yet-available' | null;
 }
 
-/**
- * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
- * `silent` and `ok` are different answers: nothing having checked an app is not
- * the same as nothing being wrong with it.
- */
-/** One traffic row per app for the Apps table (#1767) — mirrors `src/app-metrics.ts`. */
-export interface AppMetricsRow {
-  scopeId: string;
-  /** Null when this app's traffic was not read — beyond the view's `cap`. */
-  requests: number | null;
-  errors: number | null;
-  /** Milliseconds; null when not measured (no traffic, or a plane that cannot group by app). */
-  p95: number | null;
-}
-export interface AppMetricsView {
-  available: boolean;
-  /** Set when the read came back full: a null `requests` is an app not in the top `cap`. */
-  cap: number | null;
-  rows: AppMetricsRow[];
-}
-
 export interface AppHealthRow {
   scopeId: string;
   /** The app's own name and vertical slug — whose app this is, on the row itself. */
@@ -324,171 +326,6 @@ export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts
  */
 export type EventFacetAnswer = Omit<EventFacetResult, 'withheldPersonal' | 'withheldReason'> & { withheldPersonal?: number; withheldReason?: string };
 
-/** One declared field and whether anything declares it as output (#1321). */
-/** One node of the flow map (#1234), already laid out. */
-export interface FlowNode {
-  id: string;
-  kind: 'trigger' | 'module' | 'event' | 'connection' | 'egress';
-  label: string;
-  sublabel: string | null;
-  /** Event nodes only; null when the observation could not be completed. */
-  observed: number | null;
-  /** True only when the observation is trustworthy AND found nothing. */
-  silent: boolean;
-  /** True when the node HAS fired and not lately — a different story from `silent`. */
-  stale: boolean;
-  status: 'ok' | 'warn' | 'danger';
-  title: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-export interface FlowEdge {
-  from: string;
-  to: string;
-  kind: 'triggers' | 'emits' | 'consumes' | 'uses';
-  title: string;
-}
-
-export interface FlowGraph {
-  available: boolean;
-  nodes: FlowNode[];
-  edges: FlowEdge[];
-  width: number;
-  height: number;
-  /** True when some event node has no count because the facet was truncated. */
-  partialObservation: boolean;
-  /** False when the DECLARED surface was cut at the cap, so whole nodes are missing —
-   *  and a missing node, unlike a missing count, leaves nothing on screen to notice. */
-  declaredComplete: boolean;
-}
-
-/** One operation's recorded facts (#1234). */
-export interface OperationHealthRow {
-  operation: string;
-  /** Events it emitted; null when the facet could not say. */
-  events: number | null;
-  lastSeen: string | null;
-  /** Refusals in the page read; null when the log could not be read. A floor unless `refusals.complete`. */
-  refusals: number | null;
-  /** True when refusals are the ONLY evidence — the facet was complete and it has emitted nothing. */
-  refusedOnly: boolean;
-}
-
-/** What the refusal side can vouch for; null on the view when the log could not be read. */
-export interface RefusalWindow {
-  /** True when the page held every row the log holds, so counts are exact. */
-  complete: boolean;
-  held: number;
-  counted: number;
-  /** Oldest refusal still held. Those rows drain, so 0 never means "never refused". */
-  since: string | null;
-}
-
-export interface OperationHealthView {
-  rows: OperationHealthRow[];
-  observedComplete: boolean;
-  refusals: RefusalWindow | null;
-}
-
-/** One bound connection and whether it has actually been used (#1234). */
-export interface ConnectionSweepRow {
-  connectionId: string;
-  provider: string;
-  /** The human label — a tenant can hold several connections to one provider. */
-  label: string;
-  status: string;
-  /** Null = no run through it inside `windowDays`. Bounded by the window, NEVER "never". */
-  lastSweptAt: string | null;
-  lastOutcomeFailed: boolean | null;
-  /** The record could not be read: absence proves nothing, and the copy says so. */
-  unknown: boolean;
-  /** Usable, read, and with no run in the window. A lapsed connection is not called idle too. */
-  idle: boolean;
-}
-
-export interface ConnectionSweepView {
-  rows: ConnectionSweepRow[];
-  /** What "no runs" is bounded by — the sweep log's retention, not a promise. */
-  windowDays: number;
-  idleCount: number;
-}
-
-/** The flow read: the same declarations projected as a list and as a map. */
-export interface FlowView {
-  findings: FlowFindingsView;
-  graph: FlowGraph;
-  operations: OperationHealthView;
-  connectionSweep: ConnectionSweepView;
-}
-
-/** One declared-vs-observed finding (#1234). */
-export interface FlowFinding {
-  kind: 'unemitted' | 'unconsumed' | 'stale' | 'unconnected-provider' | 'unhealthy-provider';
-  subject: string;
-  moduleId: string | null;
-  detail: string;
-}
-
-export interface FlowFindingsView {
-  /** False when the running version predates the declared-event surface. */
-  available: boolean;
-  /** False when the observed side was truncated, so the event findings are withheld. */
-  observedComplete: boolean;
-  /** False when the DECLARED side was cut at the manifest's cap — the findings shown are
-   *  real, but they are not everything, and the count line must say so. */
-  declaredComplete: boolean;
-  findings: FlowFinding[];
-  declaredTypes: number;
-  /** Under a truncated observation this is the number RETURNED, never a total. */
-  observedTypes: number;
-}
-
-export interface FieldCoverageRow {
-  field: string;
-  returned: boolean;
-  erasable: boolean;
-}
-
-export interface EntityCoverage {
-  entity: string;
-  table: string;
-  fields: FieldCoverageRow[];
-  neverReturned: FieldCoverageRow[];
-}
-
-/**
- * Field coverage for the running version (#1321). `available: false` means the
- * version predates the declared output surface — unknown, never "nothing is
- * returned", which would report a whole schema as dead.
- */
-export interface FieldCoverageView {
-  available: boolean;
-  entities: EntityCoverage[];
-  declared: number;
-  returned: number;
-  neverReturnedErasable: number;
-  operations: number;
-}
-
-export interface FieldReadsView {
-  available: boolean;
-  source: string;
-  window?: { since: string; until: string };
-  groups: Array<{
-    sampleRate: number | null;
-    armedRequests: number;
-    refused: number;
-    operations: Array<{ operation: string; responses: number; fields: Array<{
-      field: string; present: number; empty: number; absent: number; eligible: number;
-      sampleRate: number | null; window: { since: string; until: string };
-    }> }>;
-    notObservedReturned: Array<{ operation: string; field: string }>;
-  }>;
-}
-
 export interface AppMigrationsView {
   available: boolean;
   migrations: AppliedMigration[];
@@ -511,115 +348,12 @@ export interface TrafficBucket {
   yellow?: number;
 }
 
-/** One tenant connector's calls in one time bucket. Empty buckets are omitted by the plane. */
-export interface ConnectorCallsBucket {
-  provider: string;
-  start: string;
-  bucketMinutes: number;
-  calls: number;
-  errors: number;
-  ok: number;
-  class4xx: number;
-  class5xx: number;
-  timeouts: number;
-  failed: number;
-  durationP50: number;
-  durationP95: number;
-}
-
-export interface ConnectorCallsView {
-  available: boolean;
-  buckets: ConnectorCallsBucket[];
-}
-
-/**
- * One declared lifecycle move of one app (#1750): calls that moved an `entityType` into
- * `state`, today (the 24 hours ending at the window's end), yesterday (the 24 before), and
- * per bucket over the window — zero-filled, so a gap is a quiet stretch, not missing data.
- */
-export interface BusinessVolumeRow {
-  scopeId: string;
-  entityType: string;
-  state: string;
-  terminal: boolean;
-  fromInitial: boolean;
-  operations: string[];
-  today: number;
-  yesterday: number;
-  buckets: Array<{ start: string; count: number }>;
-}
-
-export interface BusinessVolumesView {
-  window: { since: string; until: string };
-  bucketMinutes: number;
-  rows: BusinessVolumeRow[];
-  /** Why an app has no rows: nothing running, no move the model lets be counted, or code that predates the read. */
-  apps: Array<{ scopeId: string; unavailable: 'no-version' | 'no-moves' | 'not-yet-available' | null }>;
-}
-
 /** A deploy moment drawn on the chart (#1236) — a registry fact, not telemetry. */
 export interface ReleaseMarker {
   at: string;
   kind: 'pushed' | 'went-live';
   version: string;
   versionId: string;
-}
-
-/** One instant drawn on an app's chart (#1447) — a declared fact, never an inferred anomaly. */
-export interface OverlayMarker {
-  at: string;
-  kind: 'migration' | 'run-failed' | 'failure';
-  label: string;
-  /** The one line of context the tooltip adds, or the honest absence of one. */
-  detail: string | null;
-}
-
-/** Recorded failures retained independently of a schedule's recent successful runs. */
-export interface AppFailure {
-  id: string;
-  at: string;
-  kind: 'sweep' | 'operation';
-  operation: string;
-  stage: string | null;
-  message: string | null;
-  code: string | null;
-}
-export interface AppFailuresView {
-  entries: AppFailure[];
-  unavailableSources: string[];
-  incompleteSources: string[];
-}
-
-/** A stretch of time worth shading — today only a freshness expectation reading stale. */
-export interface OverlaySpan {
-  from: string;
-  to: string;
-  kind: 'stale';
-  label: string;
-}
-
-export interface AppOverlays {
-  unavailableSources?: string[];
-  incompleteSources?: string[];
-  markers: OverlayMarker[];
-  spans: OverlaySpan[];
-  /** True = markers were dropped to the cap; the legend says so rather than hiding it. */
-  truncated: boolean;
-}
-
-/** One app's line on the team chart — its own zero-filled series. */
-export interface TeamTrafficLine {
-  scopeId: string;
-  buckets: TrafficBucket[];
-}
-
-export interface TeamTrafficSeries {
-  window?: { since: string; until: string };
-  /** Every scope asked for, in the order asked. */
-  series: TeamTrafficLine[];
-  bucketMinutes: number;
-  /** False = the plane cannot bucket; the chart says so rather than drawing silence. */
-  available: boolean;
 }
 
 /** One side of the running-vs-update comparison (#1236). Nulls = metrics unavailable. */
@@ -1365,92 +1099,10 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }
 
-/** Invocation aggregates for one deployed version of a team vertical (last N hours). */
-export interface ObservabilityRow {
-  vertical: string;
-  /** The human version label (display); `versionId` is the signals dimension. */
-  version: string;
-  /** The version-registry ULID (#1231), or null where the registry cannot name one. */
-  versionId: string | null;
-  service: string;
-  requests: number;
-  errors: number;
-  subrequests: number;
-  /** Per-request CPU time quantiles, microseconds. */
-  cpuTimeP50: number;
-  cpuTimeP99: number;
-}
-
-/**
- * One installed app's own traffic — the tenant grain (observability.md §3 view 4).
- *
- * `ObservabilityRow` above is keyed on the deployed SERVICE, which serves every team that
- * installed the vertical; this is keyed on the app scope, which is one installation. Two
- * teams running the same vertical are two of these and one indistinguishable one of those.
- */
-export interface TenantMetricsRow {
-  scopeId: string;
-  vertical: string | null;
-  /** Which declared surface answered (`app`, `api`, …). */
-  surface: string | null;
-  requests: number;
-  errors: number;
-  /** Router-observed duration quantiles, milliseconds. */
-  durationP50: number;
-  durationP95: number;
-}
-
 /** One recent log event from a team vertical's deployed service. */
-/** #1746: one bucket of the request histogram — per-level counts from `start`. */
-export interface RequestVolumeBucket {
-  start: string;
-  info: number;
-  warn: number;
-  error: number;
-  /** Requests whose line predates `level` — a version not re-pushed since #1746. */
-  unrecorded: number;
-}
-
-/** #1746: the request histogram over a window. Buckets with no requests are absent. */
-export interface RequestVolume {
-  bucketMs: number;
-  buckets: RequestVolumeBucket[];
-  /** The backend counted from a sample; the numbers are estimates. */
-  estimated: boolean;
-}
-
-/** #1746: facet counts — each counted with every other filter applied, its own left out. */
-export interface RequestFacets {
-  total: number;
-  facets: Record<string, { value: string | number; count: number }[]>;
-  estimated: boolean;
-}
-
 /** #1746: one request, as its stamped invocation line recorded it. `null` = not recorded. */
 import type { RequestRecord } from './request-detail';
 export type { RequestRecord };
-
-/** #1747: one template and the lines written from it. */
-export interface LogPattern {
-  template: string;
-  count: number;
-  /** Of every matching `ctx.log` line in the window, 0–1. */
-  share: number;
-  levels: Record<'debug' | 'info' | 'warn' | 'error', number>;
-  dominant: 'debug' | 'info' | 'warn' | 'error';
-  /** Lines per bucket, oldest first; an empty bucket is absent. */
-  buckets: { start: string; count: number }[];
-}
-
-/** #1747: the pattern read. */
-export interface LogPatterns {
-  total: number;
-  bucketMs: number;
-  patterns: LogPattern[];
-  /** More templates existed than were listed. */
-  truncated: boolean;
-  estimated: boolean;
-}
 
 export interface ObservabilityLogEvent {
   timestamp: number | null;

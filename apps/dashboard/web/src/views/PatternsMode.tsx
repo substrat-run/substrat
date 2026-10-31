@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, isApiError, type LogPattern, type LogPatterns } from '../lib/api';
+import { api, isApiError, type LogPatterns } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockLogPatterns } from '../lib/mock-patterns';
 import { shareLabel, templateParts } from '../lib/patterns';
@@ -18,7 +18,7 @@ import { shareLabel, templateParts } from '../lib/patterns';
 /** How many buckets each row's histogram is cut into. It is drawn 180px wide. */
 const BUCKETS = 30;
 
-const LEVEL: Record<LogPattern['dominant'], { tag: string; color: string }> = {
+const LEVEL: Record<string, { tag: string; color: string }> = {
   error: { tag: 'ERR', color: 'var(--status-danger-fg)' },
   warn: { tag: 'WRN', color: 'var(--status-warning-fg)' },
   info: { tag: 'INF', color: 'var(--text-tertiary)' },
@@ -104,7 +104,7 @@ export function PatternsMode({
       </div>
       {answer.patterns.map((p) => {
         const peak = Math.max(1, ...p.buckets.map((b) => b.count));
-        const level = LEVEL[p.dominant];
+        const level = LEVEL[p.dominant] ?? LEVEL.info!; // the wire carries the level as a string: a level this build does not know reads as info
         return (
           <button
             key={p.template}
