@@ -249,6 +249,33 @@ describe('invocationLog', () => {
     }
   });
 
+  it('names a method outside the standard set OTHER, on a matched route and on a request no route answered', async () => {
+    const cap = capture();
+    try {
+      const app = appWith((a) => a.on('PROPFIND', '/api/dav', (c) => c.text('ok')));
+      await app.request('/api/dav', { method: 'PROPFIND', headers: routed }, ENV);
+      await app.request('/nowhere', { method: 'BREW', headers: routed }, ENV);
+      expect(cap.lines.map((l) => [l.status, l.route])).toEqual([
+        [200, 'OTHER /api/dav'],
+        [404, 'OTHER /*'],
+      ]);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('keeps the route of the innermost app when an app it calls mounts the middleware too', async () => {
+    const cap = capture();
+    try {
+      const inner = appWith((a) => a.get('/inner/items/:id', (c) => c.text('ok')));
+      const outer = appWith((a) => a.all('/inner/*', (c) => inner.fetch(c.req.raw, c.env)));
+      await outer.request('/inner/items/7', { headers: routed }, ENV);
+      expect(cap.lines.map((l) => l.route)).toEqual(['GET /inner/items/:id']);
+    } finally {
+      cap.restore();
+    }
+  });
+
   /**
    * A throw still produces a line — that invocation is exactly the one a tenant is
    * looking for — and it carries the status `onError` MAPPED the error to, because Hono

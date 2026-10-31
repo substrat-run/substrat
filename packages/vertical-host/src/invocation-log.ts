@@ -81,7 +81,6 @@ import {
   type StoreCallTally,
 } from '@substrat-run/kernel/invocation-line';
 import { ulid } from '@substrat-run/kernel/ulid';
-import { routePath } from 'hono/route';
 import { installOutboundRecorder, markRequestStart, type OutboundRecording } from './outbound-calls.js';
 import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
@@ -766,8 +765,9 @@ export function invocationLog<Env = unknown>(
         await next();
       } finally {
         // Only this middleware sees the Hono context; the platform's entry writes the line
-        // (and hands the record to the router) once this has returned.
-        existing.record.route = routeOf(c);
+        // (and hands the record to the router) once this has returned. An app nested inside
+        // another and mounting this too finishes first, and its route is the more specific.
+        existing.record.route ??= routeOf(c);
       }
       return;
     }
@@ -795,7 +795,7 @@ export function invocationLog<Env = unknown>(
       // the caller, and swallowing here would turn a fault into a silent 200.
       throw e;
     } finally {
-      stamp.record.route = routeOf(c);
+      stamp.record.route ??= routeOf(c);
       writeInvocationLine(
         stamp,
         { request: { method: c.req.method, url: c.req.raw.url, headers: c.req.raw.headers }, env: c.env, status: threw ? null : (c.res?.status ?? null), threw, started },
@@ -812,19 +812,31 @@ export function invocationLog<Env = unknown>(
  * after the handler does not displace it. A request no route answered names the last
  * wildcard middleware it went through (`GET /*`).
  *
- * The pattern is the app's code, never the request: no segment, parameter or query string
- * of what was called reaches it, which is what keeps the `path` facet to the app's route
- * table. Hono's helper rather than the structural context above, because only Hono knows
- * which registration answered; a context that is not Hono's yields `undefined`.
+ * The value is the app's route table times a fixed set of methods. The pattern is the app's
+ * code, never the request: no segment, parameter or query string of what was called reaches
+ * it. The method is the one part a caller chooses, so it is read through {@link methodOf}.
+ *
+ * Read off the request instance (`matchedRoutes`, `routeIndex`) rather than through
+ * `hono/route`'s helper: the helper reaches the match through a module-local symbol, which a
+ * second copy of Hono in a vertical's bundle would not share, and the route would be silently
+ * absent. A context that is not Hono's yields `undefined`.
  */
 function routeOf(c: InvocationLogContext<unknown>): string | undefined {
+  const req = c.req as { matchedRoutes?: readonly { path?: unknown }[]; routeIndex?: unknown };
   try {
-    const pattern = routePath(c as unknown as Parameters<typeof routePath>[0]);
-    return pattern ? `${c.req.method} ${pattern}`.slice(0, INVOCATION_RECORD_FIELD_MAX) : undefined;
+    const index = typeof req.routeIndex === 'number' ? req.routeIndex : 0;
+    const pattern = req.matchedRoutes?.[index]?.path;
+    return typeof pattern === 'string' && pattern !== ''
+      ? `${methodOf(c.req.method)} ${pattern}`.slice(0, INVOCATION_RECORD_FIELD_MAX)
+      : undefined;
   } catch {
     return undefined;
   }
 }
+
+/** The methods a route is named under; any other is `OTHER`, so a caller cannot add a value. */
+const ROUTE_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+const methodOf = (method: string): string => (ROUTE_METHODS.has(method) ? method : 'OTHER');
 
 /** The request a module worker's `fetch` receives, as far as the stamp reads it. */
 export interface IncomingRequest {
