@@ -99,7 +99,7 @@ export function parseTenantRequestQuery(tenantId: string, q: QueryReader, now: n
       .parse([...new Set(values)]);
   }
   // #2762: surrounding space is not part of what a reader looks for; an empty one is no filter.
-  const search = z.string().max(REQUEST_SEARCH_MAX).parse(q.one('search')?.trim() ?? '');
+  const { search } = z.object({ search: z.string().max(REQUEST_SEARCH_MAX) }).parse({ search: q.one('search')?.trim() ?? '' });
   return { ...base, ...(Object.keys(where).length > 0 ? { where } : {}), ...(search ? { search } : {}) };
 }
 
