@@ -277,6 +277,18 @@ function refusalDetail(status: number, error: z.infer<typeof apiError> | undefin
 }
 
 /**
+ * A certificate and key that are not a pair surface only as the TLS stack's own line (rustls and
+ * OpenSSL both say "KeyMismatch" / "key values mismatch"). Checking the pair before the call would
+ * mean parsing X.509 by hand and still could not read a PKCS#1 key, which Web Crypto refuses, so the
+ * runtime's wording is mapped instead.
+ */
+function plainTransportDetail(message: string): string {
+  return /KeyMismatch|key values mismatch|keys may not be consistent/i.test(message)
+    ? 'The private key does not belong to this certificate. A certificate only works with the key of the request it was issued for.'
+    : message;
+}
+
+/**
  * Test the connection: BankID's `collect` for an order that does not exist. A `400
  * invalidParameters` is BankID having accepted the TLS handshake and this certificate and then
  * refused only the order — so it starts nothing and needs no person. Anything else is a failure,
@@ -303,7 +315,7 @@ export async function probeBankId(transport: BankIdTransport, apiUrl: string, no
       ok: false,
       at: now,
       stage,
-      detail: e instanceof Error ? e.message : String(e),
+      detail: plainTransportDetail(e instanceof Error ? e.message : String(e)),
       ...(stages.success ? { stages: stages.data } : {}),
     };
   }
