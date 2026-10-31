@@ -520,6 +520,19 @@ dimension bumped `REQUEST_CUBE_SHAPE`, which moves the cached request blocks to 
 block stored before the bump has no entity dimension, so it is recounted once, never served. A
 new request dimension does the same: a field on the row, a group key in both sources, a bump.
 
+What the facet does not see:
+
+- The line's `entityTypes` is not capped, but the header and blob 10 are (128 characters, cut
+  between types). Past the cap, the Analytics Engine facet and histogram drop the trailing types
+  while the Lines list still matches them, so the two can disagree for such a request.
+- Types come only from the first `EMITTED_REPORT_CAP` (20) events an operation emitted, so a
+  request is not listed under a type whose events came after them.
+- A type is the text of an entity ref before its first `:`, so a type that itself holds a `:` is
+  cut to its prefix, and one holding a `,` is left out.
+- Every dimension in the `GROUP BY` multiplies the cube's rows by the combinations that occur.
+  The Analytics Engine read still refuses past its 50 000-row limit rather than truncate, and the
+  telemetry read still splits a full span.
+
 **4.6a Async work's lines (#1901).** A request's line is written around the worker's `fetch`,
 which trusts a tenant only from the router's assertion. Work that never arrives as a request
 used to write nothing: a consumer delivery, its retries and its dead-letter, and a schedule run
