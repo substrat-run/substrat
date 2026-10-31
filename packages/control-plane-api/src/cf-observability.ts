@@ -1743,7 +1743,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           input.search
             ? readTenant([...base, { key: 'invocationId', operation: 'includes', type: 'string', value: input.search }], phaseOneLimit)
             : [],
-        ]).then(([recent, hits]) => [[...hits, ...recent], []]);
+        ]).then(([recent, hits]): [Array<Record<string, unknown>>, Array<Record<string, unknown>>] => [[...hits, ...recent], []]);
 
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);
