@@ -9,9 +9,16 @@ import { useEffect, useState } from 'react';
  * synchronously on mount so the first paint is already correct, and stays subscribed so a
  * window resize (or a phone rotating) re-renders.
  */
-export function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+export function useMediaQuery(query: string | null): boolean {
+  // `null` is "no question asked" — a layout that has no breakpoint (the dashboard's shell,
+  // which never becomes a drawer) answers false without touching `matchMedia`, which jsdom
+  // and some embedders do not have.
+  const [matches, setMatches] = useState(() => (query === null ? false : window.matchMedia(query).matches));
   useEffect(() => {
+    if (query === null) {
+      setMatches(false);
+      return;
+    }
     const mq = window.matchMedia(query);
     const onChange = () => setMatches(mq.matches);
     onChange();

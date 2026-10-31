@@ -44,53 +44,38 @@
 }
 
 /*
- * The console's own chrome, and the bridge onto the panels that moved here verbatim: the
- * `.panel` / `.btn.primary` / `.grid` rules in tokens.css still draw them, and these
- * overrides — scoped to the console root, so they cannot reach a themed hand-off screen —
- * re-point their surfaces at the Substrat ramp. The console runs on the dark stratum
- * (`data-theme="dark"` on this element) because the panels it wraps are dark; a light
- * console is the next slice, once the panel internals are components rather than CSS
- * classes.
+ * The console's own chrome is `AppShell` (`@substrat-run/ui`) — the dashboard's sidebar, top
+ * bar and drawer, in inline styles on the shared tokens. What is left here is the bridge onto
+ * the panels that moved into the console verbatim: the `.panel` / `.btn` / `.grid` rules in
+ * tokens.css still draw them, and these overrides — scoped to the console root, so they
+ * cannot reach a themed hand-off screen — re-point them at the Substrat ramp.
+ *
+ * The theme is `data-theme` on the console root (`theme.ts`), which flips every Substrat
+ * token beneath it. tokens.css's own vocabulary is dark by construction (it is the hand-off
+ * screens' default), so inside the console each of its custom properties is redefined in
+ * terms of a Substrat token: everything tokens.css draws here then follows the theme with
+ * no per-theme rule. Redefined on `.console-root`, never `:root` — a relying party's stored
+ * theme is applied to these same names, and the console is not its to restyle, nor its to
+ * restyle back.
  */
 .console-root {
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
-  position: relative;
-  background: var(--surface-page);
+  --bg: var(--surface-page);
+  --panel: var(--surface-card);
+  --panel-2: var(--surface-inset);
+  --line: var(--border-default);
+  --text: var(--text-primary);
+  --muted: var(--text-secondary);
+  --accent: var(--text-link);
+  --accent-contrast: var(--action-primary-text);
+  --danger: var(--status-danger-fg);
+  --warn: var(--status-warning-fg);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: var(--text-base);
   line-height: var(--lh-base);
 }
-
-.console-main {
-  flex: 1;
-  min-width: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-
-/* Sticky, not merely first: `.console-main` is the scroll container, so a topbar that only
-   sat at the top would scroll away — taking the hamburger with it on exactly the narrow
-   screens where it is the only way back to the nav. */
-.console-topbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  height: var(--topbar-h);
-  flex: 0 0 auto;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  padding: 0 var(--space-6);
-  border-bottom: 1px solid var(--border-default);
-  background: var(--surface-card);
-}
-.console-topbar h1 { font-size: var(--text-md); font-weight: var(--weight-semibold); margin: 0; }
-.console-topbar .spacer { flex: 1; }
-.console-topbar .who { color: var(--text-secondary); font-size: var(--text-sm); }
+/* tokens.css gives `code` a fixed light grey that only reads on its dark panels. */
+.console-root code { color: var(--text-primary); }
 
 .console-content {
   padding: var(--space-6);
@@ -178,11 +163,6 @@
   .console-root .kv dd { margin-bottom: var(--space-3); }
 }
 .console-root .grid a { color: var(--text-link); }
-
-/* Below 900px the sidebar stops being a column and becomes an overlay — the same width
-   `apps/console` picked, and for the same reason: a table's trailing Actions cell goes
-   off-screen long before the viewport is a phone. */
-.console-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 30; }
 
 /* The sign-in log's reason column. NOT muted, deliberately: the upstream's own sentence —
    Entra's `AADSTS…` text — is usually the whole diagnosis, so it is the most readable thing

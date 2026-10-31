@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { EmptyState, IconButton, SideNav, SubIcon, SubIcons, useMediaQuery } from '@substrat-run/ui';
-import type { SideNavSection } from '@substrat-run/ui';
+import { useEffect, useState } from 'react';
+import { AccountMenu, AppShell, EmptyState, SubIcon, SubIcons } from '@substrat-run/ui';
+import type { AppShellCrumb, AppShellNavGroup } from '@substrat-run/ui';
 import { discovery, type Discovery, type Session } from '../api';
 import { AccessPanel } from '../views/Access';
 import { AccountView } from '../views/Account';
@@ -14,10 +14,13 @@ import { SignInLogView } from '../views/SignInLog';
 import { UserDetailView } from '../views/UserDetail';
 import { UsersView } from '../views/Users';
 import { navigate, usePathname } from './router';
+import { useConsoleTheme } from './theme';
 import {
+  ACCOUNT_PATH,
   APPLICATIONS_PATH,
   BANKID_PATH,
   PROVIDERS_PATH,
+  ICON_ACCOUNT,
   ROUTES,
   USERS_PATH,
   applicationDetailId,
@@ -28,16 +31,16 @@ import {
 // (`console.css` is imported from main.tsx, not here: its load ORDER relative to tokens.css
 //  decides which set wins the property they share, and only main.tsx can guarantee it.)
 
-function sectionsFor(admin: boolean): SideNavSection[] {
+function groupsFor(admin: boolean): AppShellNavGroup[] {
   const visible = ROUTES.filter((r) => admin || !r.adminOnly);
-  const groups: SideNavSection[] = [];
+  const groups: AppShellNavGroup[] = [];
   for (const route of visible) {
-    let section = groups.find((g) => g.title === route.group);
-    if (!section) groups.push((section = { title: route.group, items: [] }));
-    // `href` as well as `value`: the screen HAS a URL, so the nav item should be a link a
-    // browser can copy, open in a tab, or middle-click. `onSelect` still handles the plain
+    let group = groups.find((g) => g.title === route.group);
+    if (!group) groups.push((group = { title: route.group, items: [] }));
+    // The key IS the path, and so is the href: the screen has a URL, so the nav item is a
+    // link a browser can copy, open in a tab or middle-click. AppShell handles only the plain
     // click, so a normal navigation stays same-document.
-    section.items.push({ value: route.path, href: route.path, label: route.label, icon: <SubIcon d={route.icon} /> });
+    group.items.push({ key: route.path, href: route.path, label: route.label, icon: <SubIcon d={route.icon} /> });
   }
   return groups;
 }
@@ -56,45 +59,13 @@ function sectionsFor(admin: boolean): SideNavSection[] {
 export function Console({ session, admin, onSignOut }: { session: Session; admin: boolean; onSignOut: () => void }) {
   const pathname = usePathname();
   const [disc, setDisc] = useState<Discovery | null>(null);
-  // Below this the sidebar becomes an overlay rather than a column — see console.css.
-  const compact = useMediaQuery('(max-width: 900px)');
-  const [navOpen, setNavOpen] = useState(false);
-  const navRef = useRef<HTMLElement>(null);
-  const menuRef = useRef<HTMLButtonElement>(null);
+  const [theme, toggleTheme] = useConsoleTheme();
 
   useEffect(() => {
     // The issuer's own metadata: `ProvidersPanel` shows the callback URL an upstream has to
     // be given, and `IssuerPanel` shows the document itself. One read, two screens.
     void discovery().then(setDisc);
   }, []);
-
-  // Never leave the drawer latched open when the layout goes back to a column — it would
-  // render on top of the content it is already beside.
-  useEffect(() => {
-    if (!compact) setNavOpen(false);
-  }, [compact]);
-
-  // An opened drawer takes focus, Escape closes it, and closing gives focus back to the
-  // trigger. Without the first of those the nav is visible but unreachable: it sits BEFORE
-  // the trigger in DOM order, so Tab from the hamburger walks into the page behind the scrim
-  // instead of into the navigation that just appeared. Without the last, focus is left on an
-  // element that closing has just made `visibility: hidden`, and the next Tab starts over at
-  // the top of the document.
-  useEffect(() => {
-    if (!compact || !navOpen) return;
-    navRef.current?.querySelector<HTMLElement>('a[href], button')?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setNavOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      // All three ways out — Escape, the scrim, picking a section — end with the drawer gone
-      // and the hamburger the thing on screen that opened it. `menuRef` is null once the
-      // layout is wide again, and then there is nothing to return to.
-      menuRef.current?.focus();
-    };
-  }, [compact, navOpen]);
 
   const visible = ROUTES.filter((r) => admin || !r.adminOnly);
   // `/account` is `adminOnly: false`, so this list is never empty for either audience — the
@@ -132,73 +103,42 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
     if (admin && pathname === BANKID_PATH) navigate(PROVIDERS_PATH, { replace: true });
   }, [pathname, home, admin]);
 
+  // Issuer › Section › Item. The issuer is the root because it is what this console is OF —
+  // the dashboard's crumbs start at the team for the same reason.
+  const issuerHost = disc ? new URL(disc.issuer).host : window.location.host;
+  const crumbs: AppShellCrumb[] = [{ label: issuerHost, href: home.path, onClick: () => navigate(home.path) }];
+  if (active) crumbs.push({ label: active.label, href: active.path, onClick: () => navigate(active.path) });
+  const detail = userId ?? clientId ?? providerId ?? (bankIdSettings ? 'Settings' : null);
+  if (detail) crumbs.push({ label: detail });
+  if (!active) crumbs.push({ label: 'Not found' });
+
   return (
-    // The dark stratum: the panels underneath are dark, so the branded tokens are asked for
-    // their dark values rather than being fought. `color-scheme` follows, or the browser
-    // draws light scrollbars and light native controls inside a dark page.
-    <div className="console-root" data-theme="dark" style={{ colorScheme: 'dark' }}>
-      {compact && navOpen && <div className="console-scrim" onClick={() => setNavOpen(false)} />}
-      <SideNav
-        ref={navRef}
-        sections={sectionsFor(admin)}
-        activeValue={active?.path}
-        onSelect={(path) => {
-          navigate(path);
-          setNavOpen(false);
-        }}
-        style={
-          compact
-            ? {
-                position: 'fixed',
-                insetBlock: 0,
-                left: 0,
-                zIndex: 31,
-                transform: navOpen ? 'translateX(0)' : 'translateX(-100%)',
-                // `visibility`, not the transform alone: an off-canvas nav that is merely
-                // translated is still in the tab order, so a keyboard user would tab into
-                // links they cannot see.
-                visibility: navOpen ? 'visible' : 'hidden',
-                transition: 'transform var(--duration-fast) var(--ease-out), visibility var(--duration-fast)',
-                boxShadow: navOpen ? 'var(--shadow-lg)' : 'none',
-              }
-            : undefined
-        }
-        header={
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px 12px' }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
-              <rect x="3" y="4.5" width="18" height="4.5" rx="2.25" fill="var(--brand-400)" />
-              <rect x="3" y="9.75" width="18" height="4.5" rx="2.25" fill="var(--brand-500)" />
-              <rect x="3" y="15" width="18" height="4.5" rx="2.25" fill="var(--brand-700)" />
-            </svg>
-            <span style={{ fontWeight: 'var(--weight-semibold)', letterSpacing: 'var(--tracking-tight)' }}>
-              Substrat Auth
-            </span>
-          </div>
-        }
-        footer={
-          <div style={{ marginTop: 'auto', padding: '10px', borderTop: '1px solid var(--border-subtle)' }}>
-            <div style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)', overflowWrap: 'anywhere' }}>
-              {session.email}
-            </div>
-            <button className="btn link" style={{ padding: '6px 0 0', textAlign: 'left' }} onClick={onSignOut}>
-              Sign out
-            </button>
-          </div>
-        }
-      />
-      <div className="console-main">
-        <header className="console-topbar">
-          {compact && (
-            <IconButton ref={menuRef} label="Open navigation" onClick={() => setNavOpen(true)}>
-              <SubIcon d={SubIcons.menu} />
-            </IconButton>
-          )}
-          <h1>{active?.label ?? 'Not found'}</h1>
-          <div className="spacer" />
-          {/* Who you are signed in as lives in the nav footer — which is off-canvas below
-              900px, so on a narrow screen the topbar carries it instead of nowhere. */}
-          {compact && <span className="who">{session.email}</span>}
-        </header>
+    // `data-theme` on the console root rather than on <html>: the hand-off screens share the
+    // document and are themed by the relying party, never by this toggle. `color-scheme`
+    // follows, or the browser draws light scrollbars and native controls inside a dark page.
+    <AppShell
+      className="console-root"
+      rootProps={{ 'data-theme': theme }}
+      style={{ colorScheme: theme }}
+      navLabel="Console"
+      drawerBelow={900}
+      groups={groupsFor(admin)}
+      active={active?.path ?? null}
+      onNav={(path) => navigate(path)}
+      crumbs={crumbs}
+      brand={<IssuerCard issuer={disc?.issuer ?? null} />}
+      footer={
+        <AccountMenu
+          name={session.name ?? ''}
+          email={session.email ?? session.sub}
+          items={[
+            { label: 'Your account', icon: <SubIcon d={ICON_ACCOUNT} size={15} />, onSelect: () => navigate(ACCOUNT_PATH) },
+            { label: theme === 'dark' ? 'Light theme' : 'Dark theme', icon: <SubIcon d={SubIcons.moon} size={15} />, onSelect: toggleTheme },
+            { label: 'Sign out', icon: <SubIcon d={SubIcons.close} size={15} />, onSelect: onSignOut, danger: true, separated: true },
+          ]}
+        />
+      }
+    >
         <div className="console-content">
           {active === null ? (
             // A URL that is not a screen. Saying so beats silently rewriting the address
@@ -248,7 +188,57 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
             <AccountView admin={admin} />
           )}
         </div>
+    </AppShell>
+  );
+}
+
+/**
+ * The top of the sidebar: what this is, and the one value every relying party is configured
+ * with. One issuer per install, so where the dashboard has a team switcher this has a copy
+ * button instead.
+ */
+function IssuerCard({ issuer }: { issuer: string | null }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 10px 0' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+          <rect x="3" y="4.5" width="18" height="4.5" rx="2.25" fill="var(--brand-400)" />
+          <rect x="3" y="9.75" width="18" height="4.5" rx="2.25" fill="var(--brand-500)" />
+          <rect x="3" y="15" width="18" height="4.5" rx="2.25" fill="var(--brand-700)" />
+        </svg>
+        <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>Substrat Auth</span>
       </div>
+      {issuer && (
+        <button
+          type="button"
+          title="Copy the issuer URL"
+          onClick={() => {
+            void navigator.clipboard?.writeText(issuer).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+          style={{
+            marginLeft: 26,
+            padding: '2px 6px',
+            alignSelf: 'flex-start',
+            maxWidth: 'calc(100% - 26px)',
+            border: 0,
+            borderRadius: 6,
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            fontSize: 12.5,
+            cursor: 'pointer',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            textAlign: 'left',
+          }}
+        >
+          {copied ? 'Copied' : new URL(issuer).host}
+        </button>
+      )}
     </div>
   );
 }

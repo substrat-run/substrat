@@ -102,7 +102,7 @@ be pasted into a support conversation. `src/console/router.ts` is the whole rout
 a `useSyncExternalStore` subscription over `popstate` plus one event `navigate()` dispatches,
 and no dependency.
 
-**Every nav item is a real link.** `SideNav` takes an `href` per item and only swallows the
+**Every nav item is a real link.** `AppShell` takes an `href` per item and only swallows the
 plain left click; ⌘/Ctrl-click, middle-click, Copy Link and Open in New Tab are handed to
 the browser. A URL that cannot be copied out of the chrome that shows it is not a URL.
 
@@ -136,22 +136,27 @@ the alternative is an open redirect with a round trip through Google attached. T
 
 ### The drawer below 900px
 
-The sidebar becomes an overlay, and an overlay has to answer for focus. It renders *before*
+The sidebar becomes an overlay, and an overlay has to answer for focus. This lives in
+`AppShell` (`drawerBelow={900}`), not in the console, so the next app that wants a drawer
+gets the same answers. It renders *before*
 the hamburger in DOM order, so opening it and leaving focus on the trigger would send the
 next Tab into the page behind the scrim. Opening moves focus to the first nav link, Escape
 closes, and closing — by Escape, by the scrim, or by picking a section — puts focus back on
-the hamburger rather than leaving it on an element that is now `visibility: hidden`.
+the hamburger rather than leaving it on an element that is now `visibility: hidden`. Visibility is transitioned
+on the way out only: the drawer has to be visible in the frame the effect focuses its first
+link, and `focus()` on an element still `visibility: hidden` does nothing — which is how the
+first version of this drawer left focus on the hamburger after all.
 
 ## Component inventory
 
 | Used for | From |
 |---|---|
-| Left nav, groups, active state, overlay behaviour | `SideNav` (`@substrat-run/ui`) |
-| The hamburger below 900px | `IconButton` + `SubIcons.menu` |
+| Sidebar, groups, active state, top bar, crumbs, drawer below 900px | `AppShell` (`@substrat-run/ui`) — the dashboard's shell, lifted out of `DashShell` with the console as its second caller |
+| The issuer card at the top of the sidebar | `IssuerCard` in `Console.tsx`: the wordmark, and a copy button for the issuer URL where the dashboard has its team switcher |
+| The account row and its menu (Your account · theme · sign out) | `AccountMenu` |
 | Nav icons | `SubIcons.users` / `layers` / `globe` / `box` / `sliders` / `scroll` / `cog` |
 | The 404 state | `EmptyState` |
-| The responsive breakpoint | `useMediaQuery` |
-| Panels, tables, buttons, fields inside a screen | still `tokens.css` classes, re-pointed at the Substrat ramp by `console.css` |
+| Panels, tables, buttons, fields inside a screen | still `tokens.css` classes; `console.css` redefines that vocabulary in terms of Substrat tokens under `.console-root`, so they follow the theme |
 | Card, Field, Centered on the hand-off screens | `src/primitives.tsx` — deliberately **not** the branded set |
 
 **What `@substrat-run/ui` does not have:** a single-person icon. `users` is a group, and
@@ -159,11 +164,18 @@ the hamburger rather than leaving it on an element that is now `visibility: hidd
 `circle-user` beside the route it belongs to. A shared icon set earns an entry from a second
 caller, not the first.
 
-Two additions were made to `@substrat-run/ui` rather than worked around here, because both
-are the component's business and not this app's: `SideNavItem.href` (above), and a forwarded
-ref on `SideNav` and `IconButton` — an off-canvas drawer cannot manage its own focus from
-outside the elements involved. Both are additive; `apps/console` passes neither and renders
-exactly as before.
+**The theme.** `data-theme` on the console root, from `console/theme.ts`: `?theme=` on load,
+then the operator's last choice, then the system's. On the root rather than `<html>`, because
+the hand-off screens share the document and are themed by the relying party. tokens.css's own
+custom properties (`--panel`, `--line`, `--muted`, …) are dark by construction, so
+`console.css` redefines each in terms of a Substrat token on `.console-root` — never `:root`,
+which is where a client's stored theme is applied — and everything tokens.css draws inside
+the console follows the toggle with no per-theme rule.
+
+**The console is its own chunk.** `App.tsx` imports it with `lazy()`: everyone a relying party
+sends to `/login` loads this SPA, and none of them needs the operator's screens. Every file in
+`app/dist` is inlined into the worker (`scripts/gen-assets.mjs`), so the chunk is served like
+the entry.
 
 ## Migration note
 
@@ -196,8 +208,5 @@ follow-up this document deferred, above.
 
 What is still deliberately absent:
 
-- **The light theme.** The console renders on the dark stratum because the panels it wraps
-  are dark; a light console needs the panel internals to be components rather than CSS
-  classes first, and only then is a theme toggle worth offering.
 - **`impersonate-user`.** Mounted, unused, and left that way on purpose: it needs a decision
   about what makes it visible and revocable before it earns a button.

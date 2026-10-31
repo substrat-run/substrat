@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import {
   clientOptions,
   currentSession,
@@ -20,9 +20,13 @@ import { SignUp } from './auth/SignUp';
 import { Invitation } from './auth/Invitation';
 import { GitHubEmail } from './auth/GitHubEmail';
 import { recoverInvitation, saveInvitation, type InvitationRecovery } from './auth/invitation-recovery';
-import { Console } from './console/Console';
 import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
+
+// The console is its own chunk. Everyone a relying party sends to /login downloads this
+// bundle, and none of them will ever see the operator's screens — so the shell, the views
+// and their API client load only once a session says there is a console to draw.
+const Console = lazy(() => import('./console/Console').then((m) => ({ default: m.Console })));
 import { IssuerUnreachable } from './wire';
 
 type Phase =
@@ -288,8 +292,16 @@ export default function App() {
       // Not a dead end any more, and no longer a lone card either: the same console renders,
       // with the one section this person may see. It is where they connect a second way of
       // signing in — and "account not linked" is precisely the wall that sends them looking.
-      return <Console session={phase.session} admin={false} onSignOut={signOutAndRefresh} />;
+      return (
+        <Suspense fallback={null}>
+          <Console session={phase.session} admin={false} onSignOut={signOutAndRefresh} />
+        </Suspense>
+      );
     case 'dashboard':
-      return <Console session={phase.session} admin onSignOut={signOutAndRefresh} />;
+      return (
+        <Suspense fallback={null}>
+          <Console session={phase.session} admin onSignOut={signOutAndRefresh} />
+        </Suspense>
+      );
   }
 }

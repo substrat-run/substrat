@@ -304,8 +304,8 @@ party's path, so it ships last and on its own.
 
 | Phase | Delivers | Touches `src/`? |
 |---|---|---|
-| 1. Shell | `AppShell` and friends in `@substrat-run/ui`; dashboard moved onto them with no visual change; console on the shell with light/dark, crumbs, ⌘K, lazy-loaded behind `auth/` | no |
-| 2. Regroup | The new nav (§3), tabbed detail screens with Raw, Connections as one list over today's three stores, APIs as a read view, log type codes, Overview | log codes only |
+| 1. Shell | `AppShell` and friends in `@substrat-run/ui`; dashboard moved onto them with no visual change; console on the shell with light/dark, crumbs, issuer card, account menu, lazy-loaded behind `auth/` | no |
+| 2. Regroup | The new nav (§3), ⌘K jump-to, tabbed detail screens with Raw, Connections as one list over today's three stores, APIs as a read view, log type codes, Overview | log codes only |
 | 3. `/api/v2` | The management API (§4), the console switched to it, OpenAPI gated, `/api/admin` aliased | yes |
 | 4. Branding | Issuer-level theme, live preview, `/emails` read-only | yes |
 | 5. Identifier-first | The `/login` sequence (§5) | yes, relying-party path |

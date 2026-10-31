@@ -23,8 +23,11 @@ export {
  * to the package: this app is the only caller so far, and a shared icon set earns an entry
  * from a second one.
  */
-const ICON_ACCOUNT =
+export const ICON_ACCOUNT =
   '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="10" r="3"/><path d="M7 20.7a8 8 0 0 1 10 0"/>';
+
+/** Where the account menu's "Your account" goes — the one screen everyone who signs in has. */
+export const ACCOUNT_PATH = '/account';
 
 export interface Route {
   path: string;
@@ -59,7 +62,7 @@ export const ROUTES: Route[] = [
   // same minute as the panel it sends an operator back to.
   { path: '/sign-in-log', label: 'Sign-in log', icon: SubIcons.scroll, group: 'Sign-in', adminOnly: true },
   { path: '/issuer', label: 'Issuer', icon: SubIcons.cog, group: 'Issuer', adminOnly: true },
-  { path: '/account', label: 'Your account', icon: ICON_ACCOUNT, group: 'You', adminOnly: false },
+  { path: ACCOUNT_PATH, label: 'Your account', icon: ICON_ACCOUNT, group: 'You', adminOnly: false },
 ];
 
 /**
