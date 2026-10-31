@@ -537,8 +537,13 @@ What the facet does not see:
 document, a vertical's own handler) has no `operation`, so no other facet can select it. The raw
 path cannot be a cube dimension: it has no bound. So the line carries `route`: the method and the
 pattern the answering route was registered under (`GET /api/lists/:id`), never what was called.
-Its values are the app's route table. vertical-host's `invocationLog` reads it from Hono after the
-chain has run, when the route index points at the handler that responded. That index, not the
+Its values are the app's route table times a fixed set of methods: `GET`, `HEAD`, `POST`, `PUT`,
+`PATCH`, `DELETE`, `OPTIONS`, and `OTHER` for any method outside them, since the method is the one
+part a caller chooses. vertical-host's `invocationLog` reads it off Hono's request instance
+(`matchedRoutes`, `routeIndex`) after the chain has run, when the route index points at the
+handler that responded. It does not use `hono/route`'s helper, whose module-local symbol a second
+copy of Hono in a bundle would not share. An app called from another that also mounts the
+middleware sets the route first, and the more specific route is kept. That index, not the
 last match, is the reason a catch-all middleware registered after a handler does not displace the
 handler's pattern. A request no route answered names the wildcard it fell through (`GET /*`).
 Only that middleware sees the Hono context, so it writes the route onto the record even when the
