@@ -278,8 +278,12 @@ export interface ConnectorCallsBucket {
  * its events were about (the line's `entityTypes`). A request is counted under each of them, so
  * that facet's counts may add up to more than the total; ticking two types still counts a
  * request touching both once.
+ *
+ * #2762: `path` is the line's `route` — the method and registered pattern of the route that
+ * answered (`GET /.well-known/*`), never the called path, so its values are the app's route
+ * table. It is what selects a request that reached no operation.
  */
-export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity'] as const;
+export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity', 'path'] as const;
 
 /**
  * #1901: the values of the `kind` facet. A line with no `kind` is a request's — every line

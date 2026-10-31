@@ -70,12 +70,14 @@ export interface InvocationRecordFields {
   principalKind?: string | null | undefined;
   /** #2762: {@link joinEntityTypes}' value. */
   entityTypes?: string | null | undefined;
+  /** #2762: the route that answered — method and registered pattern, never the called path. */
+  route?: string | null | undefined;
 }
 
 /** The longest value kept per field — an operation name, an error code, a subject kind. */
 export const INVOCATION_RECORD_FIELD_MAX = 128;
 
-const FIELDS = ['operation', 'problemCode', 'principalKind', 'entityTypes'] as const;
+const FIELDS = ['operation', 'problemCode', 'principalKind', 'entityTypes', 'route'] as const;
 type RecordField = (typeof FIELDS)[number];
 
 /**
@@ -110,7 +112,7 @@ export function encodeInvocationRecord(record: InvocationRecordFields): string |
  * capped, so a vertical cannot grow the router's datapoint.
  */
 export function decodeInvocationRecord(value: string | null | undefined): Record<RecordField, string | null> {
-  const out: Record<RecordField, string | null> = { operation: null, problemCode: null, principalKind: null, entityTypes: null };
+  const out: Record<RecordField, string | null> = { operation: null, problemCode: null, principalKind: null, entityTypes: null, route: null };
   if (!value) return out;
   let params: URLSearchParams;
   try {

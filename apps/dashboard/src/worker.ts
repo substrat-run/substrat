@@ -4315,7 +4315,7 @@ async function appObservabilityLogsIn(ctx: TeamContext, input: RouteInput<'dashb
  */
 const REQUEST_READ_KEYS = [
   'hours', 'since', 'until',
-  'level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity',
+  'level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity', 'path',
   'buckets', 'facet', 'limit',
 ] as const;
 

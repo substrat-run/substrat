@@ -62,6 +62,7 @@ import { AUTH_DIAGNOSTICS_KEY, tallyAuthCheck, type AuthDiagnosticsSink, type Au
 import {
   encodeInvocationRecord,
   FIELD_COVERAGE_HEADER,
+  INVOCATION_RECORD_FIELD_MAX,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
   parentRequestIdOf,
@@ -80,6 +81,7 @@ import {
   type StoreCallTally,
 } from '@substrat-run/kernel/invocation-line';
 import { ulid } from '@substrat-run/kernel/ulid';
+import { routePath } from 'hono/route';
 import { installOutboundRecorder, markRequestStart, type OutboundRecording } from './outbound-calls.js';
 import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
@@ -117,6 +119,8 @@ export interface InvocationRecord extends StoreCallTally, OutboundRecording, Aut
   principalKind?: string;
   /** What the operation itself emitted — `InvokeOptions.onEmitted`. */
   emitted?: EmittedReport;
+  /** #2762: the route that answered — written by the middleware itself ({@link routeOf}). */
+  route?: string | undefined;
   /**
    * #1331: which of the operation's DECLARED output fields its response carried. Filled
    * only on a request the router armed the walk for ({@link fieldCoverageArmed}), and absent
@@ -636,6 +640,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     surface: node.surface,
     method: done.request.method,
     path: pathOf(done.request.url),
+    route: record.route ?? null,
     status: done.status,
     threw: done.threw,
     durationMs: Date.now() - done.started,
@@ -757,7 +762,13 @@ export function invocationLog<Env = unknown>(
     if (existing) {
       c.set?.('substratInvocationId', existing.invocationId);
       c.set?.(INVOCATION_RECORD_KEY, existing.record);
-      await next();
+      try {
+        await next();
+      } finally {
+        // Only this middleware sees the Hono context; the platform's entry writes the line
+        // (and hands the record to the router) once this has returned.
+        existing.record.route = routeOf(c);
+      }
       return;
     }
     // Host code, so a real clock is correct here — `ctx.now()` is the module-code rule,
@@ -784,6 +795,7 @@ export function invocationLog<Env = unknown>(
       // the caller, and swallowing here would turn a fault into a silent 200.
       throw e;
     } finally {
+      stamp.record.route = routeOf(c);
       writeInvocationLine(
         stamp,
         { request: { method: c.req.method, url: c.req.raw.url, headers: c.req.raw.headers }, env: c.env, status: threw ? null : (c.res?.status ?? null), threw, started },
@@ -791,6 +803,26 @@ export function invocationLog<Env = unknown>(
       );
     }
   };
+}
+
+/**
+ * #2762: the route that answered — the method and the pattern its handler was registered
+ * under (`GET /api/lists/:id`), read after the chain has run, when Hono's route index points
+ * at the handler that responded. A request no route answered names the wildcard middleware
+ * it fell through (`GET /*`, or `GET /api/*` under a scoped one).
+ *
+ * The pattern is the app's code, never the request: no segment, parameter or query string
+ * of what was called reaches it, which is what keeps the `path` facet to the app's route
+ * table. Hono's helper rather than the structural context above, because only Hono knows
+ * which registration answered; a context that is not Hono's yields `undefined`.
+ */
+function routeOf(c: InvocationLogContext<unknown>): string | undefined {
+  try {
+    const pattern = routePath(c as unknown as Parameters<typeof routePath>[0]);
+    return pattern ? `${c.req.method} ${pattern}`.slice(0, INVOCATION_RECORD_FIELD_MAX) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The request a module worker's `fetch` receives, as far as the stamp reads it. */
