@@ -20928,7 +20928,7 @@
                     "root": {
                       "anyOf": [
                         {
-                          "$ref": "#/components/schemas/dashboard-read-app-effects.output.schema0"
+                          "$ref": "#/components/schemas/dashboard-read-app-effects.output.__schema0"
                         },
                         {
                           "type": "null"
@@ -26211,7 +26211,7 @@
         ],
         "additionalProperties": false
       },
-      "dashboard-read-app-effects.output.schema0": {
+      "dashboard-read-app-effects.output.__schema0": {
         "type": "object",
         "properties": {
           "event": {
@@ -26495,7 +26495,7 @@
           "effects": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/dashboard-read-app-effects.output.schema0"
+              "$ref": "#/components/schemas/dashboard-read-app-effects.output.__schema0"
             }
           }
         },
