@@ -1,5 +1,5 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { ApiError as GeneratedApiError, createClient, type AppEvent, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppEvent, type AppRow, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type InstallStep, type Member, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type TrafficSeries } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { RequestReadQuery } from './requests';
@@ -7,7 +7,8 @@ import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
-export type { AppEvent, BoundScopeRow, DeployFailureRow, FailureGroupRow, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView };
+export type { AppEvent, AppRow, BoundScopeRow, DeployFailureRow, FailureGroupRow, InstallStep, Member, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView, TrafficSeries };
+export type AuditEntry = AdminLogEntry;
 export type ChannelHistoryEntry = ChannelHistoryRow;
 export type VerticalPreview = PreviewRow;
 
@@ -116,29 +117,9 @@ export interface CatalogEntry {
   requires?: string[];
 }
 
-/** A team roster entry — an active member or an outstanding invite. Mirrors the worker's row. */
-export interface Member {
-  id: string;
-  /** The kernel principal once accepted; null while still 'invited'. */
-  principal: string | null;
-  email: string;
-  role_key: string;
-  /**
-   * 'joining' is an accepted invite whose access is still being set up; 'refused' one that
-   * never will be, with the reason in `refusal` (#1184).
-   */
-  status: 'active' | 'invited' | 'revoked' | 'joining' | 'refused';
-  refusal?: string;
-  invitation_id: string | null;
-  invited_by: string;
-  invited_at: string;
-  joined_at: string | null;
-}
-
 /** The role a new member can be invited at (owner is the un-invitable first member). */
 export type InviteRole = 'admin' | 'member' | 'viewer';
 
-/** One provisioned app — mirrors the worker's `DashboardAppRow` (module.ts). */
 /** The install form's Identity choice — which issuer the new app authenticates against.
  *  Absent ⇒ the vertical's builtin auth. `auth-server` names one of the team's own Auth
  *  Server apps (the client is registered there automatically); `external` is any OIDC
@@ -146,59 +127,6 @@ export type InviteRole = 'admin' | 'member' | 'viewer';
 export type AppAuthChoice =
   | { source: 'auth-server'; scopeId: string }
   | { source: 'external'; issuer: string; clientId: string; clientSecret?: string; audience?: string };
-
-export interface AppRow {
-  id: string;
-  app_scope_id: string;
-  vertical_slug: string;
-  name: string;
-  status: 'provisioning' | 'active' | 'failed';
-  hostname: string | null;
-  /** The vertical's non-secret provision result as JSON (#426); null for a bare ack. */
-  provision_result?: string | null;
-  created_by: string;
-  created_at: string;
-}
-
-/**
- * One step of an app's install sequence (#424) — the durable progress record.
- * `attempts` > 1 means Resume (or a retry) re-ran the step; a 'failed' step carries
- * the downstream error VERBATIM in `last_error`.
- */
-export interface InstallStep {
-  step: 'directory' | 'provision' | 'activate' | 'hostname' | 'identity' | string;
-  seq: number;
-  status: 'running' | 'done' | 'failed';
-  attempts: number;
-  last_error: string | null;
-  started_at: string;
-  settled_at: string | null;
-}
-
-/**
- * One entry in an app scope's control-plane audit log (#479) — an append-only admin
- * action (control-plane.md §4.4), mirrors the worker's `AdminLogEntry`. `before`/`after`
- * are the prior/applied state where cheaply captured; `causedBy` is the domain event id
- * that triggered the action, when one did.
- */
-export interface AuditEntry {
-  id: string;
-  actor: string;
-  action: string;
-  tenantId: string | null;
-  scopeId: string | null;
-  vertical: string | null;
-  before: unknown;
-  after: unknown;
-  causedBy: string | null;
-  /**
-   * The person the actor acted for (#977): a team member's principal, and the K-42 stamp
-   * when staff were acting as them. Null or absent when the actor acted for itself — a
-   * job, or a row written before the dashboard named who clicked.
-   */
-  onBehalfOf?: { principal: string; tenantId: string; impersonation?: { session: string; by: string } } | null;
-  at: string;
-}
 
 /** One version of a deployed vertical — mirrors the worker's DeploymentVersion. */
 export interface DeploymentVersion {
@@ -705,15 +633,6 @@ export interface ReleaseMarker {
   kind: 'pushed' | 'went-live';
   version: string;
   versionId: string;
-}
-
-export interface TrafficSeries {
-  window?: { since: string; until: string };
-  buckets: TrafficBucket[];
-  markers: ReleaseMarker[];
-  bucketMinutes: number;
-  /** False = the plane cannot bucket; the chart says so rather than drawing silence. */
-  available: boolean;
 }
 
 /** One instant drawn on an app's chart (#1447) — a declared fact, never an inferred anomaly. */
