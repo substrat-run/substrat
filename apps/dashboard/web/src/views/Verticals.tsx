@@ -802,6 +802,8 @@ export function VerticalDetail({
   // Bumped when installs are moved or retired: the Releases panel's adoption counts
   // (pinned / following prod) are read from the same scopes and would otherwise go stale.
   const [installsRevision, setInstallsRevision] = useState(0);
+  // Pressing Remove opens Bound scopes: whatever would refuse the removal is listed there.
+  const [manageInstalls, setManageInstalls] = useState(false);
   return (
     <Page>
       <div style={{ display: 'grid', gap: 20 }}>
@@ -839,7 +841,10 @@ export function VerticalDetail({
                   variant="ghost"
                   size="sm"
                   disabled={busy}
-                  onClick={onRemove}
+                  onClick={() => {
+                    setManageInstalls(true);
+                    onRemove();
+                  }}
                   style={{ color: 'var(--status-danger-fg)' }}
                 >
                   Remove
@@ -852,7 +857,15 @@ export function VerticalDetail({
             vertical with no versions can still back installs (the rename case). */}
         {/* Keyed by vertical: the section holds a selection, an open dialog and typed text, and
             a request still in flight must not land on the NEXT vertical's page. */}
-        <BoundScopes key={d.slug} teamId={teamId} d={d} all={deployments} onChanged={() => setInstallsRevision((n) => n + 1)} />
+        <BoundScopes
+          key={d.slug}
+          teamId={teamId}
+          d={d}
+          all={deployments}
+          expanded={manageInstalls}
+          onExpand={() => setManageInstalls(true)}
+          onChanged={() => setInstallsRevision((n) => n + 1)}
+        />
         {d.versions.length === 0 ? (
           <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 13 }}>
             No versions yet — <code>substrat push</code> one.
