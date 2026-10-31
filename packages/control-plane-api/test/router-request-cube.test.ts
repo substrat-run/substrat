@@ -58,8 +58,8 @@ const aeRow = (r: Partial<Record<string, unknown>>) => ({
 describe('the router request cube (#1904)', () => {
   it('reads one tenant from Analytics Engine, weighted by the sample interval, for one family', async () => {
     const { sqls, telemetry } = stub(() => [
-      aeRow({ requests: '3', status: 409, problemCode: 'conflict', level: 'warn' }),
-      aeRow({ requests: '40', maxInterval: 10, operation: 'acme/reply' }),
+      aeRow({ requests: '3', status: 409, problemCode: 'conflict', level: 'warn', entityTypes: 'assignment,ticket' }),
+      aeRow({ requests: '40', maxInterval: 10, operation: 'acme/reply', entityTypes: 'ticket' }),
       // Another vertical of the same tenant — a different family, not this read's.
       aeRow({ vertical: 'other-app', requests: '99' }),
       // A request that reached no operation: blobs 6–8 unwritten.
@@ -89,6 +89,12 @@ describe('the router request cube (#1904)', () => {
       ]),
     );
     expect(f.facets.status).toEqual(expect.arrayContaining([{ value: 409, count: 3 }]));
+    // #2762: blob 10 is the entity facet — a datapoint written before it, `''`, is on no value.
+    expect(sqls[0]).toContain('blob10 AS entityTypes');
+    expect(f.facets.entity).toEqual([
+      { value: 'ticket', count: 43 },
+      { value: 'assignment', count: 3 },
+    ]);
   });
 
   it('#1901: past the cut, adds the async lines the router never sees', async () => {

@@ -4,7 +4,14 @@ import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
-import { FIELD_COVERAGE_ID_FIELD, ROUTER_REQUEST_POINT, ROUTER_SCRIPT_NAMES, utcDay } from '@substrat-run/contracts';
+import {
+  ENTITY_TYPES_SEPARATOR,
+  FIELD_COVERAGE_ID_FIELD,
+  ROUTER_REQUEST_POINT,
+  ROUTER_SCRIPT_NAMES,
+  splitEntityTypes,
+  utcDay,
+} from '@substrat-run/contracts';
 import { RequestRollupSaturated, type RequestDayCount } from '@substrat-run/kernel';
 import { readFieldCoverage } from './field-coverage-read.js';
 import type {
@@ -60,7 +67,9 @@ type TelemetryFilter =
  *
  * The tenant predicate comes first and is not optional: it is the whole isolation boundary,
  * exactly as in `queryTenantLogs`. Several values under one key are one OR group, so the
- * values are compared one by one and never split on a separator.
+ * values are compared one by one and never split on a separator. #2762: `entity` is the one key
+ * whose LINE value is a set (`entityTypes`), so each selected type is matched as a whole member
+ * of it; the list re-checks that on every record (`facetsMatch`).
  */
 function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): TelemetryFilter[] {
   const filters: TelemetryFilter[] = [
@@ -84,6 +93,18 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
       filters.push(kinds.length === 1 ? kinds[0]! : { kind: 'group', filterCombination: 'or', filters: kinds });
       continue;
     }
+    // #2762: a type is one member of the line's `entityTypes` set, so it is matched between
+    // separators, with the type escaped: no type can widen the match past itself.
+    if (key === 'entity') {
+      const types: TelemetryFilter[] = values.map((v) => ({
+        key: 'entityTypes',
+        operation: 'regex',
+        type: 'string',
+        value: entityTypeRegex(v),
+      }));
+      filters.push(types.length === 1 ? types[0]! : { kind: 'group', filterCombination: 'or', filters: types });
+      continue;
+    }
     const leaves: TelemetryFilter[] = values.map((v) =>
       key === 'status'
         ? { key, operation: 'eq', type: 'number', value: Number(v) }
@@ -93,6 +114,13 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
   }
   if (scope.search !== undefined) filters.push(searchFilter(scope.search));
   return filters;
+}
+
+const REGEX_SPECIAL = /[\\^$.|?*+()[\]{}]/g;
+/** #2762: a pattern matching `entityTypes` values that hold `type` as a whole member. */
+function entityTypeRegex(type: string): string {
+  const escaped = type.replace(REGEX_SPECIAL, '\\$&');
+  return `(^|${ENTITY_TYPES_SEPARATOR})${escaped}(${ENTITY_TYPES_SEPARATOR}|$)`;
 }
 
 /** #2762: `search` as one OR group, read by `requestSearchOf` — the rule the list re-checks. */
@@ -198,11 +226,17 @@ function sampled(p: CalculationPoint): boolean {
   return typeof p.sampleInterval === 'number' && p.sampleInterval > 1;
 }
 
-/** #1901: does a raw line pass the scope's `kind` selection, a missing `kind` read as `request`? */
-function kindMatches(e: Record<string, unknown>, scope: TenantRequestScope): boolean {
-  const values = scope.where?.kind ?? [];
-  if (values.length === 0) return true;
-  return values.includes(invocationKindOf(((e['source'] ?? {}) as Record<string, unknown>)['kind']));
+/**
+ * Does a raw line pass the scope's `kind` selection (#1901: a missing `kind` read as
+ * `request`) and its `entity` selection (#2762: a type is a whole member of the set)?
+ */
+function facetsMatch(e: Record<string, unknown>, scope: TenantRequestScope): boolean {
+  const source = (e['source'] ?? {}) as Record<string, unknown>;
+  const kinds = scope.where?.kind ?? [];
+  if (kinds.length > 0 && !kinds.includes(invocationKindOf(source['kind']))) return false;
+  const types = scope.where?.entity ?? [];
+  const entityTypes = typeof source['entityTypes'] === 'string' ? splitEntityTypes(source['entityTypes']) : [];
+  return types.length === 0 || types.some((t) => entityTypes.includes(t));
 }
 
 /** The stamped line of a raw event, as the Requests view lists it. */
@@ -406,8 +440,8 @@ function moduleLineFilters(input: {
   search?: string;
   invocationId?: string;
   template?: string;
-}): Array<{ key: string; operation: string; type: string; value: string }> {
-  const filters = [
+}): TelemetryFilter[] {
+  const filters: TelemetryFilter[] = [
     { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
     { key: 'substrat', operation: 'eq', type: 'string', value: 'log' },
   ];
@@ -417,7 +451,14 @@ function moduleLineFilters(input: {
   }
   if (input.template !== undefined) filters.push({ key: 'template', operation: 'eq', type: 'string', value: input.template });
   if (input.level) filters.push({ key: 'level', operation: 'eq', type: 'string', value: input.level.toLowerCase() });
-  if (input.search) filters.push({ key: 'message', operation: 'includes', type: 'string', value: input.search });
+  // #2762: the message or the request id, as one OR group.
+  if (input.search) {
+    filters.push({
+      kind: 'group',
+      filterCombination: 'or',
+      filters: ['message', 'invocationId'].map((key) => ({ key, operation: 'includes', type: 'string', value: input.search! })),
+    });
+  }
   return filters;
 }
 
@@ -799,6 +840,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { type: 'string', value: 'surface' },
         { type: 'number', value: 'status' },
         { type: 'string', value: 'kind' },
+        { type: 'string', value: 'entityTypes' },
       ],
       extra,
     );
@@ -820,6 +862,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           surface: str(groups.get('surface')),
           status: typeof status === 'number' ? status : typeof status === 'string' && status !== '' ? Number(status) : null,
           kind: str(groups.get('kind')),
+          entity: str(groups.get('entityTypes')),
           count,
         }];
       }),
@@ -886,6 +929,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           principalKind: blank(r['principalKind']),
           surface: blank(r['surface']),
           status: status > 0 ? status : null,
+          entity: blank(r['entityTypes']),
           count: Math.round(aeNum(r['requests'])),
         },
       ];
@@ -916,6 +960,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         ${p.problemCode} AS problemCode,
         ${p.principalKind} AS principalKind,
         ${p.level} AS level,
+        ${p.entityTypes} AS entityTypes,
         toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
         sum(_sample_interval) AS requests,
         max(_sample_interval) AS maxInterval
@@ -923,7 +968,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       WHERE ${p.tenantId} = ${aeLiteral(tenantId)}
         AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
         AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
-      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, bucket
+      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, entityTypes, bucket
       ORDER BY bucket ASC
       LIMIT ${REQUEST_CUBE_ROW_LIMIT}
       FORMAT JSON`;
@@ -1220,7 +1265,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return events
         // #1901: the query narrowed on kind already; this holds the answer to the same
         // reading (a missing `kind` is a request) whatever the backend did with the filter.
-        .filter((e) => kindMatches(e, input))
+        // #2762: and on entity — a type is a whole member of the set, never a substring.
+        .filter((e) => facetsMatch(e, input))
         .sort((a, b) => rawTime(b) - rawTime(a))
         .map(requestRecordOf)
         // #2762: likewise for `search` — the answer is the rule `requestSearchOf` states.
@@ -1728,7 +1774,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
             phaseOneLimit,
           ),
         ])
-      : [await readTenant(base, phaseOneLimit), []];
+      : await Promise.all([
+          readTenant(base, phaseOneLimit),
+          // #2762: a request id older than the newest page is reached by asking for it, not by
+          // filtering that page afterwards. Its hits go first, below, so the correlation budget
+          // cannot be spent on a busy window's newest page before the invocation searched for.
+          input.search
+            ? readTenant([...base, { key: 'invocationId', operation: 'includes', type: 'string', value: input.search }], phaseOneLimit)
+            : [],
+        ]).then(([recent, hits]): [Array<Record<string, unknown>>, Array<Record<string, unknown>>] => [[...hits, ...recent], []]);
 
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);
@@ -1800,7 +1854,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // failing invocation that wrote no console.error of its own is exactly the row being
       // looked for, and phase one selected it BECAUSE it failed.
       .filter((e) => (level ? e.level?.toLowerCase() === level : true))
-      .filter((e) => (search ? (e.message ?? '').includes(search) : true))
+      .filter((e) => (search ? (e.message ?? '').includes(search) || (e.invocationId ?? '').includes(search) : true))
       .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
       .slice(0, input.limit);
     return { events, incomplete };
@@ -1958,7 +2012,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const to = Date.now();
     const from = to - hours * 3_600_000;
     const filtersFor = (service: string | undefined) => {
-      const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
+      const filters: TelemetryFilter[] = [];
       // `$metadata.service` is the script name in Workers Logs events — the field
       // Cloudflare's own query examples filter on.
       if (service) {
@@ -1968,7 +2022,17 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
       }
       if (search) {
-        filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
+        // #2762: the message or the request id, as one OR group.
+        filters.push({
+          kind: 'group',
+          filterCombination: 'or',
+          filters: ['$metadata.message', '$metadata.requestId', 'invocationId'].map((key) => ({
+            key,
+            operation: 'includes',
+            type: 'string',
+            value: search,
+          })),
+        });
       }
       return filters;
     };
@@ -2048,7 +2112,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     }
     const events = answer()
       .filter((e) => rawTime(e) >= floor)
-      .map((e) => projectEvent(e));
+      .map((e) => {
+        // #2762: a row matched by the stamped id shows the id searched for.
+        const invocationId = ((e['source'] ?? {}) as Record<string, unknown>)['invocationId'];
+        return typeof invocationId === 'string' ? { ...projectEvent(e), invocationId } : projectEvent(e);
+      });
     return { events, incomplete };
   }
 

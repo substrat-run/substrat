@@ -4,7 +4,7 @@
  * and accept the same things, and so the count, the histogram and the list beside it always
  * describe one set — which is why the two counting routes refuse `search` outright.
  */
-import { z, substratError, tenantId as tenantIdSchema } from '@substrat-run/contracts';
+import { z, substratError, tenantId as tenantIdSchema, ENTITY_TYPES_SEPARATOR, INVOCATION_RECORD_FIELD_MAX } from '@substrat-run/contracts';
 import {
   INVOCATION_KINDS,
   REQUEST_FACET_KEYS,
@@ -74,6 +74,12 @@ const facetValue: Record<RequestFacetKey, z.ZodType<string>> = {
   surface: z.string().min(1).max(80),
   // #1901: what kind of work a line is about; `request` matches the lines that carry none.
   kind: z.enum(INVOCATION_KINDS),
+  // #2762: ONE entity type — a value holding the separator is a set, never a type.
+  entity: z
+    .string()
+    .min(1)
+    .max(INVOCATION_RECORD_FIELD_MAX)
+    .refine((v) => !v.includes(ENTITY_TYPES_SEPARATOR), 'entity is one entity type'),
 };
 
 /** A query-string reader — Hono's `c.req.query` / `c.req.queries`, taken structurally. */

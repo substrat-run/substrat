@@ -308,6 +308,47 @@ describe('cf tenant logs', () => {
     expect(keyed(sent[0]!, 'invocationId')).toMatchObject({ value: '01JABCDEFGHJKMNPQRSTVWXYZ0', operation: 'eq' });
   });
 
+  it('a search matches the request id as well as the message (#2762)', async () => {
+    const { reader, sent } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ invocationId: '01JZREQID' })] : []));
+    const read = async (search: string) =>
+      (await reader.tenantLogs!({ tenantId: '01TENANT', services: ['acme-widgets'], search, hours: 24, limit: 10 })).events;
+    expect(await read('JZREQ')).toHaveLength(1);
+    expect(await read('/api/orders')).toHaveLength(1);
+    expect(await read('nothing')).toHaveLength(0);
+    // An id older than the newest page is asked for in phase one, not filtered out of it afterwards.
+    expect(sent.some((f) => f.some((x) => x['key'] === 'invocationId' && x['operation'] === 'includes' && x['value'] === 'JZREQ'))).toBe(true);
+    // Whatever it asks, every query is bound to the tenant and to the app's scripts.
+    const tenant = { key: 'tenantId', operation: 'eq', type: 'string', value: '01TENANT' };
+    // (A sibling read is by the request id, which is how a vertical's own lines are reached.)
+    const bound = sent.filter((f) => !keyed(f, '$metadata.requestId'));
+    expect(bound.length).toBeGreaterThan(2);
+    for (const f of bound) {
+      expect(f).toContainEqual(tenant);
+      expect(JSON.stringify(f)).toContain('acme-widgets');
+    }
+  });
+
+  it('the service-grain search is one query over message OR request id (#2762)', async () => {
+    const { reader, sent } = readerOver(() => [invocation({ invocationId: '01JZabc' })]);
+    const { events } = await reader.recentLogs({ services: ['acme-widgets'], search: 'abc', hours: 1, limit: 10 });
+    // The row matched by the stamped id shows the id searched for.
+    expect(events[0]!.invocationId).toBe('01JZabc');
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toEqual([
+      { key: '$metadata.service', operation: 'eq', type: 'string', value: 'acme-widgets' },
+      {
+        kind: 'group',
+        filterCombination: 'or',
+        filters: ['$metadata.message', '$metadata.requestId', 'invocationId'].map((key) => ({
+          key,
+          operation: 'includes',
+          type: 'string',
+          value: 'abc',
+        })),
+      },
+    ]);
+  });
+
   it('always binds the tenant, and passes within-tenant narrowing through', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', scopeId: '01SCOPE', hours: 24, limit: 10 });
@@ -926,7 +967,14 @@ describe('cf tenant logs — ctx.log lines', () => {
     expect(q[0]).toEqual({ key: 'tenantId', operation: 'eq', type: 'string', value: '01TENANT' });
     expect(keyed(q, 'scopeId')).toMatchObject({ value: '01SCOPE' });
     expect(keyed(q, 'level')).toMatchObject({ value: 'warn' });
-    expect(keyed(q, 'message')).toMatchObject({ operation: 'includes', value: 'bounced' });
+    // #2762: the message or the request id, one OR group.
+    expect(q.find((f) => f['kind'] === 'group')).toMatchObject({
+      filterCombination: 'or',
+      filters: [
+        { key: 'message', operation: 'includes', value: 'bounced' },
+        { key: 'invocationId', operation: 'includes', value: 'bounced' },
+      ],
+    });
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ message: 'reply to t1 bounced', level: 'warn', invocationId: '01INV', trigger: 'acme/reply' });
   });
@@ -1139,6 +1187,44 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect(both.filter((r) => r.kind === 'consumer')).toHaveLength(60);
     // The twin: a consumer selection pages consumers, never the request.
     expect((await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } })).every((r) => r.kind === 'consumer')).toBe(true);
+  });
+
+  it('#2762: an entity selection matches a whole member of the set, and a regex metacharacter in it matches only itself', async () => {
+    const lines = [
+      { ...invocation({ invocationId: 'both', entityTypes: 'repair,visit' }, '01RA'), timestamp: 5 },
+      { ...invocation({ invocationId: 'longer', entityTypes: 'repairs' }, '01RB'), timestamp: 4 },
+      { ...invocation({ invocationId: 'dotted', entityTypes: 'a.c' }, '01RC'), timestamp: 3 },
+      { ...invocation({ invocationId: 'any-char', entityTypes: 'abc' }, '01RD'), timestamp: 2 },
+      { ...invocation({ invocationId: 'plus', entityTypes: 'a+b' }, '01RF'), timestamp: 2 },
+      { ...invocation({ invocationId: 'repeated', entityTypes: 'aab' }, '01RG'), timestamp: 2 },
+      { ...invocation({ invocationId: 'none' }, '01RE'), timestamp: 1 },
+    ];
+    // What the QUERY selects, before the list re-checks it: a widened pattern would fill the
+    // page with lines the re-check then drops, and a short page reads as a quiet window.
+    let served: unknown[] = [];
+    const { reader } = readerOver((filters, limit) => {
+      served = lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit);
+      return served;
+    });
+    const ids = async (entity: string[]) => {
+      const listed = await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity } });
+      expect(served).toHaveLength(listed.length);
+      return listed.map((r) => r.invocationId);
+    };
+    expect(await ids(['repair'])).toEqual(['both']);
+    expect(await ids(['visit', 'repairs'])).toEqual(['both', 'longer']);
+    expect(await ids(['a.c'])).toEqual(['dotted']);
+    expect(await ids(['a+b'])).toEqual(['plus']);
+
+    // The twin: a backend that ignored the pattern answers every line, and the list's own
+    // re-check is what still keeps a type to itself.
+    const { reader: loose } = readerOver((filters, limit) =>
+      lines
+        .filter((e) => filters.every((f) => JSON.stringify(f).includes('entityTypes') || matches(e.source as Record<string, unknown>, f)))
+        .slice(0, limit),
+    );
+    const listed = await loose.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity: ['a.c', 'repair'] } });
+    expect(listed.map((r) => r.invocationId)).toEqual(['both', 'dotted']);
   });
 
   it('counts every RFC 9110 method as a request — a hyphen or a digit included — and nothing else', async () => {

@@ -79,15 +79,25 @@ describe('asyncInvocationLine', () => {
         ],
       } as never,
     });
-    expect(line).toMatchObject({ eventCount: 2, eventTypes: ['digest.sent'], entities: [] });
+    // #2762: the entity TYPE is a declared name, so the run's line carries it for the facet.
+    expect(line).toMatchObject({ eventCount: 2, eventTypes: ['digest.sent'], entities: [], entityTypes: 'customer' });
     expect(JSON.stringify(line)).not.toContain('@example.com');
-    // The twin: a request's line still names its entities, from the same builder.
+    // The twin: a request's line still names its entities, from the same builder — and its
+    // types as one sorted set, a type holding the separator left out.
     expect(
       invocationLine({
         tenantId: 'T1', scopeId: 'S1', invocationId: 'CALL1', threw: false, durationMs: 0, level: 'info',
-        emitted: { total: 1, events: [{ type: 'x.y', entity: 'thing:1' }] } as never,
-      }).entities,
-    ).toEqual(['thing:1']);
+        emitted: {
+          total: 4,
+          events: [
+            { type: 'x.y', entity: 'thing:1' },
+            { type: 'x.y', entity: 'a,b:2' },
+            { type: 'x.z', entity: 'note:3' },
+            { type: 'x.y', entity: 'thing:4' },
+          ],
+        } as never,
+      }),
+    ).toMatchObject({ entities: ['thing:1', 'a,b:2', 'note:3', 'thing:4'], entityTypes: 'note,thing' });
   });
 
   it('names store calls only when there were some, and the input is not a field (#2245)', () => {

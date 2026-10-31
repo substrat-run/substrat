@@ -64,7 +64,8 @@ export interface SourceArtifacts {
 /**
  * The head fields a request may be filtered and counted by. The same keys, in the same
  * order, as the hosted reader's request facets (`REQUEST_FACET_KEYS` in control-plane-api),
- * less `kind`, which the trace head does not carry.
+ * less `kind`, which the trace head does not carry, and `entity` (#2762), which no local view
+ * asks for yet.
  */
 export const FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status'] as const;
 export type FacetKey = (typeof FACET_KEYS)[number];

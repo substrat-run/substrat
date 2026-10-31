@@ -273,8 +273,13 @@ export interface ConnectorCallsBucket {
  * a facet panel would render as "no requests of that kind".
  *
  * `status` is the one numeric facet; the rest are strings.
+ *
+ * #2762: `entity` is the one facet a request can hold SEVERAL values of — one per entity type
+ * its events were about (the line's `entityTypes`). A request is counted under each of them, so
+ * that facet's counts may add up to more than the total; ticking two types still counts a
+ * request touching both once.
  */
-export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind'] as const;
+export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity'] as const;
 
 /**
  * #1901: the values of the `kind` facet. A line with no `kind` is a request's — every line
@@ -739,7 +744,8 @@ export interface ObservabilityReader {
    * and asking for them together is what makes one merged stream possible. Absent or
    * empty means "no service narrowing" (the fleet view); several means the backend
    * returns their events merged newest-first, capped at `limit` overall.
-   * `search` is a case-sensitive substring match on the event message — a contract
+   * `search` is a case-sensitive substring match on the event message, or on the request id: the stamped
+   * `invocationId`, and at service grain also the provider's request id — a contract
    * capability, so each backend maps it to its own query language (never a
    * provider-shaped filter passed through the seam).
    * A backend that may stop short of `limit` before the window is spent says so with

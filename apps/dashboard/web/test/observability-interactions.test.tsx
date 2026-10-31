@@ -213,7 +213,7 @@ it('Logs reads the URL window and filters; refresh and URL replay preserve them,
   });
   expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
   // The filters are chips, read back from the URL.
-  expect(container.querySelector('[data-chip="message"]')!.textContent).toContain('failure');
+  expect(container.querySelector('[data-chip="search"]')!.textContent).toContain('failure');
   expect(container.querySelector('[data-chip="level"]')!.textContent).toContain('error');
   // The traffic chart went with the shared header: Logs asks for lines, not traffic.
   expect(traffic).not.toHaveBeenCalled();
@@ -224,7 +224,7 @@ it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear r
   vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
   window.history.replaceState(null, '', obsPath({ app: 'app-a', view: 'logs', hours: '1' }));
   await act(async () => root.render(<UrlPage />));
-  const input = () => container.querySelector<HTMLInputElement>('[aria-label="Search messages"]')!;
+  const input = () => container.querySelector<HTMLInputElement>('[aria-label="Search logs"]')!;
   const type = async (text: string) => {
     await act(async () => {
       const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -239,7 +239,7 @@ it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear r
   await type('level:warn');
   expect(readObsQuery(window.location.search)).toMatchObject({ search: 'timeout', level: 'warn' });
   expect(container.querySelectorAll('[data-chip]')).toHaveLength(2);
-  await act(async () => click(container.querySelector('[aria-label="Remove message filter"]')!));
+  await act(async () => click(container.querySelector('[aria-label="Remove search filter"]')!));
   expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', level: 'warn' });
   expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ level: 'warn', search: undefined }));
   // A malformed filter is refused with its reason, and the URL does not move.

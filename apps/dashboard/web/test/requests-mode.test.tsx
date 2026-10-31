@@ -94,6 +94,13 @@ describe('request facets in the URL', () => {
     expect(rowLabel({ operation: null, method: 'GET', path: '/x' })).toBe('GET /x');
   });
 
+  it('#2762: carries the entity facet under `ent`, apart from the process map’s `entity`', () => {
+    const q = { ent: 'ticket,assignment', entity: 'ticket' };
+    expect(whereOf(q)).toEqual({ entity: ['ticket', 'assignment'] });
+    expect(requestReadQuery(q, { hours: 1 }).entity).toEqual(['ticket', 'assignment']);
+    expect(requestChips(q)).toEqual([{ key: 'entity', value: 'ticket or assignment', clears: ['ent'] }]);
+  });
+
   it('dates an axis end once the window is long enough for two clocks to collide', () => {
     const t = Date.parse('2026-09-26T13:06:52.000Z');
     expect(axisLabel(t, 3 * 3_600_000)).toBe('13:06:52');

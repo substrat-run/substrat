@@ -49,11 +49,23 @@ function runtimeImports(source: string): string[] {
   ];
 }
 
-/** A module's runtime imports that are NOT another subpath module of the same package. */
-function strayImports(file: string, siblings: readonly (readonly [string, string])[]): string[] {
+/**
+ * A module's runtime imports that are NOT another subpath module of the same package — or, for
+ * the kernel, one of contracts' subpaths below (#2762: the invocation line takes the entity-type
+ * grammar the router and the reader share). Those are held to importing nothing by this same
+ * file, and the entry bundles them already, so reaching one adds no schema and no zod.
+ */
+function strayImports(
+  file: string,
+  siblings: readonly (readonly [string, string])[],
+  contracts: readonly (readonly [string, string])[] = [],
+): string[] {
   const allowed = new Set(siblings.map(([, f]) => normalize(f)));
+  const fromContracts = new Set(contracts.map(([path]) => `@substrat-run/contracts${path.slice(1)}`));
   return runtimeImports(readFileSync(file, 'utf8')).filter(
-    (spec) => !(spec.startsWith('.') && allowed.has(normalize(join(dirname(file), spec.replace(/\.js$/, '.ts'))))),
+    (spec) =>
+      !fromContracts.has(spec) &&
+      !(spec.startsWith('.') && allowed.has(normalize(join(dirname(file), spec.replace(/\.js$/, '.ts'))))),
   );
 }
 
@@ -77,7 +89,7 @@ describe('zero-import subpaths (#1998)', () => {
   });
 
   it.each(KERNEL)('kernel %s imports nothing at run time', (_, file) => {
-    expect(strayImports(file, KERNEL)).toEqual([]);
+    expect(strayImports(file, KERNEL, CONTRACTS)).toEqual([]);
   });
 
   it.each(CONTRACTS)('contracts %s imports nothing at run time but a sibling subpath', (_, file) => {
@@ -88,6 +100,9 @@ describe('zero-import subpaths (#1998)', () => {
     const wireAuth = CONTRACTS.find(([path]) => path === './wire-auth')![1];
     expect(runtimeImports(readFileSync(wireAuth, 'utf8'))).toEqual(['./wire-headers.js']);
     const index = join(import.meta.dirname, '../src/index.ts');
-    expect(strayImports(index, KERNEL).length).toBeGreaterThan(0);
+    expect(strayImports(index, KERNEL, CONTRACTS).length).toBeGreaterThan(0);
+    // A contracts subpath is seen and admitted from the kernel's line.
+    const line = KERNEL.find(([path]) => path === './invocation-line')![1];
+    expect(runtimeImports(readFileSync(line, 'utf8'))).toContain('@substrat-run/contracts/invocation-record');
   });
 });

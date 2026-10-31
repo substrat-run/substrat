@@ -7,7 +7,7 @@ import { requestChips } from './requests';
  * The URL stays the one source of truth — a chip is a query key read back, and removing
  * it navigates without that key — so a chip can never show a filter the read did not use.
  *
- * Only the open mode's filters are chips: level, message and invocation narrow Lines; type
+ * Only the open mode's filters are chips: level, search and invocation narrow Lines; type
  * and grouping narrow Events. The others stay in the URL untouched, so switching modes
  * and back finds them where they were.
  */
@@ -41,7 +41,7 @@ export function logChips(q: ObsQuery, mode: LogMode): LogChip[] {
   }
   const out: LogChip[] = [];
   if (q.level) out.push({ key: 'level', value: q.level, clears: ['level'] });
-  if (q.search) out.push({ key: 'message', value: q.search, clears: ['search'] });
+  if (q.search) out.push({ key: 'search', value: q.search, clears: ['search'] });
   if (q.invocationId) out.push({ key: 'invocation', value: shortId(q.invocationId), clears: ['invocationId'] });
   if (q.tpl) out.push({ key: 'pattern', value: q.tpl, clears: ['tpl'] });
   return out;
@@ -79,9 +79,6 @@ export function windowLabel(from: string, to: string): string {
 export function parseBarText(text: string, mode: LogMode): { add: Partial<ObsQuery> } | { error: string } | null {
   const t = text.trim();
   if (!t) return null;
-  // #1746: requests are narrowed by their facets, which are exact values — typed text
-  // would have to guess which facet it meant, and a guess that matched nothing would read
-  // as "no such requests".
   if (mode === 'patterns') return { error: 'Click a pattern to see its lines; the list follows the time range.' };
   // Requests: facets are ticked in the sidebar; typed text is a free-text search (an id,
   // an operation or a path), whatever it looks like.
@@ -103,9 +100,9 @@ export function parseBarText(text: string, mode: LogMode): { add: Partial<ObsQue
     return ULID.test(value) ? { add: { invocationId: value } } : { error: 'An invocation ID is a 26-character ULID.' };
   }
   if (mode === 'events') return { add: { type: t } };
-  return searchPatch(t, 'A message search');
+  return searchPatch(t);
 }
 
 /** The read caps a search at 200 characters; a longer one would be refused there. */
-const searchPatch = (t: string, what = 'A search') =>
-  t.length <= 200 ? { add: { search: t } } : { error: `${what} is at most 200 characters.` };
+const searchPatch = (t: string) =>
+  t.length <= 200 ? { add: { search: t } } : { error: 'A search is at most 200 characters.' };

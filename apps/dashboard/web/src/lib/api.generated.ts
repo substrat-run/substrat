@@ -62,6 +62,20 @@ export interface AdminLogEntry {
   audited?: { operationId: string; outcome: string; superseded: boolean };
 }
 
+/** `appDeploymentsView` — a published schema, not a stored row. */
+export interface AppDeployments {
+  slug: string;
+  displaySlug: string;
+  name: string;
+  source: string;
+  listed: boolean;
+  versions: DeploymentVersion[];
+  channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[];
+  owned: boolean;
+  boundVersionId: string | null;
+  nextCursor: string | null;
+}
+
 /** `appEvent` — a published schema, not a stored row. */
 export interface AppEvent {
   id: string;
@@ -139,8 +153,20 @@ export interface DeploymentRow {
   name: string;
   source: string;
   listed: boolean;
-  versions: ({ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; schemaChange: boolean; origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null; createdAt: string })[];
+  versions: DeploymentVersion[];
   channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[];
+}
+
+/** `deploymentVersion` — a published schema, not a stored row. */
+export interface DeploymentVersion {
+  id: string;
+  version: string;
+  admission: string;
+  admissionNote: string | null;
+  deploymentRef: string | null;
+  schemaChange: boolean;
+  origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null;
+  createdAt: string;
 }
 
 /** `explanationView` — a published schema, not a stored row. */
@@ -444,21 +470,21 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/observability/requests/facets` — `dashboard/app-request-facets`
    */
-  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
+  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
 
   /**
    * Request histogram for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/requests/volume` — `dashboard/app-request-volume`
    */
-  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
+  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
 
   /**
    * Request records for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/requests/list` — `dashboard/app-requests`
    */
-  appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
+  appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string[]; operation?: string[]; principalKind?: string[]; problemCode?: string[]; surface?: string[]; status?: string[]; kind?: string[]; entity?: string[]; buckets?: string; facet?: string; limit?: string; search?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
 
   /**
    * The browsable scopes of this app's vertical
@@ -640,7 +666,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/deployments` — `dashboard/get-app-deployments`
    */
-  getAppDeployments(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ slug: string; displaySlug: string; name: string; source: string; listed: boolean; versions: ({ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; schemaChange: boolean; origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null; createdAt: string })[]; channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[]; owned: boolean; boundVersionId: string | null; nextCursor: string | null }>;
+  getAppDeployments(input: { scopeId: string; limit?: number; cursor?: string }): Promise<AppDeployments>;
 
   /**
    * One app's declared environment and its stored values; secrets are write-only
