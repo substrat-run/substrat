@@ -608,7 +608,7 @@ describe('router', () => {
 
       expect(points).toHaveLength(1);
       expect(points[0]!.indexes).toEqual([T]);
-      expect(points[0]!.blobs).toEqual(['fsm', S, 'app', '2xx', '8f2ab-ARN', '', '', '', 'info']);
+      expect(points[0]!.blobs).toEqual(['fsm', S, 'app', '2xx', '8f2ab-ARN', '', '', '', 'info', '']);
       const [durationMs, status] = points[0]!.doubles!;
       expect(status).toBe(200);
       expect(durationMs).toBeGreaterThanOrEqual(0);
