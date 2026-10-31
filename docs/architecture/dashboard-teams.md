@@ -183,8 +183,15 @@ assistant's values for those reach them. The other handlers still read the reque
 the request and pattern reads forward their filters from it, and every observability handler
 reads its scalar arguments (`hours`, `since`, `until`, `limit`, `level`, …) from it. On the
 assistant path that query is the `/ask` request's, so those filters and arguments are not applied
-there today, and such a call answers the unfiltered default window (#2759). What is still open under
-#2170: the declared surface does not yet emit an `openapi.json` with its `--check` gate.
+there today, and such a call answers the unfiltered default window (#2759).
+
+The declared surface also emits its OpenAPI document. `apps/dashboard/src/api.ts` builds it from
+`dashboardRoutes`, the object the mount and the generated client read, with each path under
+`/api/teams/{teamId}`. `pnpm lint:api` writes it to the checked-in `apps/dashboard/openapi.json`,
+and CI's `pnpm lint:api --check` fails when a route changes without it. The document states each
+route's declared success status and response headers, and no `Idempotency-Key`, because
+`mountRoutes` does not honour one. The team-less routes are not declared, so they are not in it.
+It is a review artifact; the worker does not serve it.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 
