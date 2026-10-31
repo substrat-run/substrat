@@ -56,7 +56,10 @@ the worker started and which the worker cannot write. The router checks that the
 the one in that policy and that the binding is declared on the version being served, signs
 the object name, and addresses `substrat-store-<driver>-<vertical>` in the dispatch
 namespace. The key is bound on the router and on the store script. This is the same shape
-as a call between verticals.
+as a call between verticals. The router hands the store's envelope back as the store answered it, a
+refusal included, cut by `clientSafeStoreError` to what a client may read, so the store's
+`code` reaches the vertical as `storeCode`. An answer outside the envelope is `bad_envelope`
+(502), as on the in-process path. A store it cannot reach is the platform's `unavailable` (503).
 
 A direct `durable_object_namespace` binding remains for local development and for tests.
 It is not an isolation boundary: code in that worker can address any name the binding

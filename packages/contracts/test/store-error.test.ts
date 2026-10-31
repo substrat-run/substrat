@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { errorCodeOf, scopeStoreObjectName, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem } from '../src/index.js';
+import { clientSafeStoreError, errorCodeOf, scopeStoreObjectName, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem } from '../src/index.js';
 
 describe('StoreError (#2209)', () => {
   it('derives the taxonomy code from the status and keeps the store’s own code', () => {
@@ -52,5 +52,27 @@ describe('StoreError (#2209)', () => {
     const name = scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH');
     expect(name).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
     expect(name).not.toContain('1.0.0');
+  });
+});
+
+describe('clientSafeStoreError (#2207)', () => {
+  it('keeps a 4xx body of at most 1024 bytes of JSON, counting multibyte characters as their bytes', () => {
+    const fits = 'a'.repeat(STORE_BODY_MAX_BYTES - 2);
+    expect(clientSafeStoreError({ code: 'c', status: 409, body: fits })).toEqual({ code: 'c', status: 409, body: fits });
+    expect(clientSafeStoreError({ code: 'c', status: 409, body: `${fits}a` })).toEqual({ code: 'c', status: 409 });
+    // 511 'é' is 1022 bytes plus two quotes: exactly 1024. One more is 1026.
+    const wide = 'é'.repeat(511);
+    expect(clientSafeStoreError({ code: 'c', status: 404, body: wide }).body).toBe(wide);
+    expect(clientSafeStoreError({ code: 'c', status: 404, body: `${wide}é` }).body).toBeUndefined();
+    expect(clientSafeStoreError({ code: 'c', status: 500, body: 'x' })).toEqual({ code: 'c', status: 500 });
+  });
+
+  it('caps the code at 64 UTF-16 units without splitting a surrogate pair', () => {
+    const exact = 'c'.repeat(64);
+    expect(clientSafeStoreError({ code: exact, status: 409 }).code).toBe(exact);
+    // 63 units, then a pair that would end at unit 65: the pair goes whole, not half.
+    const code = clientSafeStoreError({ code: `${'c'.repeat(63)}😀tail`, status: 409 }).code;
+    expect(code).toBe('c'.repeat(63));
+    expect(clientSafeStoreError({ code: '😀'.repeat(40), status: 409 }).code).toBe('😀'.repeat(32));
   });
 });

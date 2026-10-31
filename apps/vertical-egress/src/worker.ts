@@ -75,6 +75,7 @@ import {
   PARENT_REQUEST_ID_HEADER,
   parentRequestIdOf,
   RELAY_CALLER_HEADER,
+  type StoreResponse,
 } from '@substrat-run/contracts';
 
 /** What the router passes per dispatch (its `OutboundPolicy` — one shape, two ends). */
@@ -136,7 +137,7 @@ export interface Env {
    * The router's scope-store entrypoint (#2207). Same shape as `PEER_CALLS`: the
    * caller is this dispatch's parameters, and the body names only the call.
    */
-  STORE_CALLS?: { invoke(caller: unknown, request: unknown): Promise<{ ok: boolean; status: number; message?: string; body?: unknown }> };
+  STORE_CALLS?: { invoke(caller: unknown, request: unknown): Promise<StoreCallOutcome> };
   /**
    * The control plane's `RelayGateway` entrypoint — the relay, reached with the caller this
    * dispatch was made for (see `relay`). Absent (an environment deployed before it) ⇒ relay
@@ -334,6 +335,9 @@ function logRefusal(env: Env, verdict: 'refused' | 'inert' | 'peer', hostname: s
 /** What the router's peer entrypoint answers. */
 type PeerCallOutcome = { ok: true; result: unknown } | { ok: false; status: number; code: string; message: string };
 
+/** What the router's scope-store entrypoint answers: the store's envelope, or the platform's refusal. */
+type StoreCallOutcome = { ok: true; status: number; body: StoreResponse } | { ok: false; status: number; message: string };
+
 /** Where a subrequest ended up: the seven verdicts the meter distinguishes. `inert` is a
  *  third-party subrequest refused because the scope is not primary (#2005). */
 type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused' | 'peer' | 'store' | 'inert';
@@ -436,23 +440,26 @@ async function storeCall(request: Request, env: Env): Promise<Response> {
   if (parsed.data.operation.startsWith('substrat.')) {
     return problem(403, `store operation '${parsed.data.operation}' is reserved for the platform`);
   }
-  const outcome = await env.STORE_CALLS.invoke(
-    {
-      vertical: policy.slug,
-      tenantId: policy.tenant,
-      scopeId: policy.scope,
-      stores: policy.stores ?? null,
-    },
-    parsed.data,
-  );
-  if (!outcome.ok) {
-    return new Response(
-      JSON.stringify({ error: { code: 'unavailable', status: outcome.status, body: outcome.message } }),
-      { status: outcome.status, headers: { 'content-type': 'application/json' } },
+  let outcome: StoreCallOutcome;
+  try {
+    outcome = await env.STORE_CALLS.invoke(
+      {
+        vertical: policy.slug,
+        tenantId: policy.tenant,
+        scopeId: policy.scope,
+        stores: policy.stores ?? null,
+      },
+      parsed.data,
     );
+  } catch {
+    // Not logged: a failure inside the router can carry a store's text in its message.
+    return problem(503, 'the router could not be reached');
   }
-  return new Response(JSON.stringify(outcome.body ?? { result: null }), {
-    status: 200,
+  if (!outcome.ok) return problem(outcome.status, outcome.message);
+  // The store's envelope as the router cut it, its own refusal included: its code reaches
+  // the vertical as `storeCode`, beside the platform code its status maps to.
+  return new Response(JSON.stringify(outcome.body), {
+    status: outcome.status,
     headers: { 'content-type': 'application/json' },
   });
 }

@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   scopeId,
   scopeStoreObjectName,
@@ -88,5 +88,67 @@ describe('handleStoreCall without a usable key (#2287)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("handleStoreCall hands on the store's own answer", () => {
+  const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
+  const request = { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' };
+  const answering = (answer: () => Response) => ({ STORE_CALLER_KEY: KEY, DISPATCH: { get: () => ({ fetch: async () => answer() }) } });
+  const BAD_ENVELOPE = { ok: true, status: 502, body: { error: { code: 'bad_envelope', status: 502 } } };
+  const warnings: string[] = [];
+  beforeEach(() => {
+    warnings.length = 0;
+    vi.spyOn(console, 'warn').mockImplementation((message: unknown) => { warnings.push(String(message)); });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("passes a store's refusal on in its envelope at the envelope's status, whatever HTTP status carried it", async () => {
+    const refusal = { code: 'session.unknown', status: 404, body: { issues: [{ code: 'session.unknown', message: 'no session s1' }] } };
+    for (const http of [404, 200, 500]) {
+      const outcome = await handleStoreCall(answering(() => Response.json({ error: refusal }, { status: http })), caller, request);
+      expect(outcome, `HTTP ${http}`).toEqual({ ok: true, status: 404, body: { error: refusal } });
+    }
+  });
+
+  it("cuts the store's error to what a client may read: no 5xx body, a code of at most 64", async () => {
+    const long = await handleStoreCall(
+      answering(() => Response.json({ error: { code: `host_failed${'x'.repeat(80)}`, status: 500, body: 'Traceback (most recent call last)' } }, { status: 500 })),
+      caller,
+      request,
+    );
+    expect(long).toEqual({ ok: true, status: 500, body: { error: { code: `host_failed${'x'.repeat(53)}`, status: 500 } } });
+    const exact = 'c'.repeat(64);
+    const kept = await handleStoreCall(answering(() => Response.json({ error: { code: exact, status: 409 } }, { status: 409 })), caller, request);
+    expect(kept).toEqual({ ok: true, status: 409, body: { error: { code: exact, status: 409 } } });
+  });
+
+  it('answers bad_envelope for a store reached that answered outside the envelope, and logs no body', async () => {
+    const outside = [
+      () => new Response('unauthorized: script', { status: 401 }),
+      () => new Response('secret traceback', { status: 200 }),
+      () => Response.json({ result: 'secret traceback' }, { status: 500 }),
+      () => Response.json({ error: { code: 'odd', status: 200 } }, { status: 404 }),
+    ];
+    for (const answer of outside) {
+      expect(await handleStoreCall(answering(answer), caller, request)).toEqual(BAD_ENVELOPE);
+    }
+    expect(warnings).toHaveLength(4);
+    expect(warnings.join('\n')).not.toContain('secret');
+  });
+
+  it('answers 503 for a store it cannot reach, and logs no word of the error message', async () => {
+    const throwing = (error: unknown) => ({ STORE_CALLER_KEY: KEY, DISPATCH: { get: () => ({ fetch: () => Promise.reject(error) }) } });
+    const traceback = new Error('Traceback (most recent call last): secret row s1');
+    for (const error of [new Error('Worker not found.'), traceback, 'secret string']) {
+      expect(await handleStoreCall(throwing(error), caller, request)).toMatchObject({ ok: false, status: 503 });
+    }
+    expect(warnings).toEqual([
+      'scope store call to substrat-store-graph-docs failed: the script is not in the dispatch namespace',
+      'scope store call to substrat-store-graph-docs failed: Error',
+      'scope store call to substrat-store-graph-docs failed: a non-error was thrown',
+    ]);
   });
 });
