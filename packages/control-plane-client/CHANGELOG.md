@@ -1,5 +1,18 @@
 # @substrat-run/control-plane-client
 
+## 0.5.0
+
+### Minor Changes
+
+- d901b9a: `substrat entitlements list|grant|revoke` manages a workspace's entitlement keys (grant takes `--plan`, `--expires`, `--quota`); the client gains `revokeEntitlement` and path-encodes a key containing a slash.
+
+### Patch Changes
+
+- Updated dependencies [e8e51ba]
+- Updated dependencies [279c6f3]
+- Updated dependencies [06c306f]
+  - @substrat-run/contracts@0.172.0
+
 ## 0.4.2
 
 ### Patch Changes
