@@ -520,6 +520,21 @@ dimension bumped `REQUEST_CUBE_SHAPE`, which moves the cached request blocks to 
 block stored before the bump has no entity dimension, so it is recounted once, never served. A
 new request dimension does the same: a field on the row, a group key in both sources, a bump.
 
+**The `path` facet (#2762).** A request that reached no operation (a 404 probe, a discovery
+document, a vertical's own handler) has no `operation`, so no other facet can select it. The raw
+path cannot be a cube dimension: it has no bound. So the line carries `route`: the method and the
+pattern the answering route was registered under (`GET /api/lists/:id`), never what was called.
+Its values are the app's route table. vertical-host's `invocationLog` reads it from Hono after the
+chain has run, when the route index points at the handler that responded. That index, not the
+last match, is the reason a catch-all middleware registered after a handler does not displace the
+handler's pattern. A request no route answered names the wildcard it fell through (`GET /*`).
+Only that middleware sees the Hono context, so it writes the route onto the record even when the
+platform's entry stamped the request, before the entry writes the line and the header. The value
+is capped at 128 characters like every record field, rides the header as `route`, and becomes
+blob 11. The facet is `path`, but the line's own `path` is the called path, so the list read
+filters on `route`. A non-Hono worker and a vertical-host from before it write `null`. It bumped
+`REQUEST_CUBE_SHAPE` to 3.
+
 **4.6a Async work's lines (#1901).** A request's line is written around the worker's `fetch`,
 which trusts a tenant only from the router's assertion. Work that never arrives as a request
 used to write nothing: a consumer delivery, its retries and its dead-letter, and a schedule run
