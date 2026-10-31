@@ -1,5 +1,19 @@
 # @substrat-run/vertical-host
 
+## 0.171.0
+
+### Minor Changes
+
+- e3f11a8: A paged scope copy can now catch up on the writes its source takes while it is read, so a later release can copy a busy scope without needing a quiet moment. A dump page read with `capture` opens a capture on the source and names each row by its source rowid (`rowids`). `exportDumpChanges` (`/internal/export-changes`, `exportScopeChanges`) hands over what was written since, in batches, and the final batch ends the capture at the write revision the copy is true at. `stageDumpChanges` (`/internal/stage-changes`, `stageScopeChanges`) applies a batch to the destination's stage, and `endDumpCapture` (`/internal/capture/end`, `endScopeCapture`) ends a capture whose copy stopped. A capture nobody asks for within one copy lease ends before the next write. Nothing calls these yet, and copies behave as before.
+
+### Patch Changes
+
+- Updated dependencies [2c7b3a7]
+- Updated dependencies [e3f11a8]
+  - @substrat-run/contracts@0.171.0
+  - @substrat-run/kernel@0.171.0
+  - @substrat-run/model-providers@0.5.61
+
 ## 0.170.0
 
 ### Minor Changes
