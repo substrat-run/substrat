@@ -91,10 +91,14 @@ export class ControlPlaneClient extends ControlPlaneTransport {
     key: string,
     plan?: EntitlementGrantInput,
   ): Promise<EntitlementGrant[]> {
-    return this.call(`/tenants/${tenantId}/entitlements/${key}`, {
+    return this.call(`/tenants/${tenantId}/entitlements/${encodeURIComponent(key)}`, {
       method: 'PUT',
       body: plan === undefined ? undefined : JSON.stringify(plan),
     });
+  }
+
+  revokeEntitlement(tenantId: TenantId, key: string): Promise<EntitlementGrant[]> {
+    return this.call(`/tenants/${tenantId}/entitlements/${encodeURIComponent(key)}`, { method: 'DELETE' });
   }
 
   provisionScope(input: ClientProvisionScopeInput): Promise<Scope> {

@@ -1,4 +1,4 @@
-import type { Page } from '@substrat-run/contracts';
+import type { EntitlementGrant, EntitlementGrantInput, Page } from '@substrat-run/contracts';
 
 import type {
   ConnectionScopeBindingInput,
@@ -199,6 +199,23 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   /** Unbind one hostname. Reads the answer like every other call here: an empty body is not JSON. */
   unbindHostname(hostname: string): Promise<unknown> {
     return this.read(`/hostnames/${seg(hostname)}`, this.write('DELETE'));
+  }
+
+  // -- a tenant's entitlements (§4.3) -----------------------------------------
+  // Each write answers the tenant's resulting list. The key is one path segment, so a legacy
+  // `t-…/name` key travels as `t-…%2Fname` (#691).
+
+  listEntitlements(tenantId: string): Promise<EntitlementGrant[]> {
+    return this.read(`/tenants/${seg(tenantId)}/entitlements`);
+  }
+
+  grantEntitlement(tenantId: string, key: string, plan?: EntitlementGrantInput): Promise<EntitlementGrant[]> {
+    return this.read(`/tenants/${seg(tenantId)}/entitlements/${seg(key)}`, this.write('PUT', plan));
+  }
+
+  /** Staff-only on the server: a tenant credential is refused (`TENANT_ROUTES` carries GET and PUT). */
+  revokeEntitlement(tenantId: string, key: string): Promise<EntitlementGrant[]> {
+    return this.read(`/tenants/${seg(tenantId)}/entitlements/${seg(key)}`, this.write('DELETE'));
   }
 
   // -- one scope --------------------------------------------------------------
