@@ -496,15 +496,17 @@ export function currentInvocationId(): string | undefined {
   }
 }
 
-/** Distinct values, first occurrence wins — the order a reader expects to see them in. */
 /**
  * #2762: the line's `entityTypes` for what an invocation emitted — contracts' grammar
  * (`joinEntityTypes`). The request writer also hands it to the router on the record header.
+ * A type is the text of `<entityType>:<entityId>` before the FIRST `:`, so a type that itself
+ * holds a `:` is cut to its prefix; a ref with none names no type.
  */
 export function entityTypesOf(emitted: EmittedReport | undefined): string | null {
   return emitted ? joinEntityTypes(emitted.events.map((e) => e.entity.slice(0, Math.max(0, e.entity.indexOf(':'))))) : null;
 }
 
+/** Distinct values, first occurrence wins — the order a reader expects to see them in. */
 function distinct(values: readonly string[]): string[] {
   return [...new Set(values)];
 }

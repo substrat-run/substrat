@@ -67,7 +67,9 @@ type TelemetryFilter =
  *
  * The tenant predicate comes first and is not optional: it is the whole isolation boundary,
  * exactly as in `queryTenantLogs`. Several values under one key are one OR group, so the
- * values are compared one by one and never split on a separator.
+ * values are compared one by one and never split on a separator. #2762: `entity` is the one key
+ * whose LINE value is a set (`entityTypes`), so each selected type is matched as a whole member
+ * of it; the list re-checks that on every record (`facetsMatch`).
  */
 function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): TelemetryFilter[] {
   const filters: TelemetryFilter[] = [
