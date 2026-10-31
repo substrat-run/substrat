@@ -79,11 +79,10 @@ export function windowLabel(from: string, to: string): string {
 export function parseBarText(text: string, mode: LogMode): { add: Partial<ObsQuery> } | { error: string } | null {
   const t = text.trim();
   if (!t) return null;
-  // #1746: requests are narrowed by their facets, which are exact values — typed text
-  // would have to guess which facet it meant, and a guess that matched nothing would read
-  // as "no such requests".
-  if (mode === 'requests') return { error: 'Requests are filtered by ticking a value in the sidebar or dragging across the chart.' };
   if (mode === 'patterns') return { error: 'Click a pattern to see its lines; the list follows the time range.' };
+  // Requests: facets are ticked in the sidebar; typed text is a free-text search (an id,
+  // an operation or a path), whatever it looks like.
+  if (mode === 'requests') return searchPatch(t);
   const m = /^(level|invocation|type):\s*(.*)$/i.exec(t);
   if (m) {
     const key = m[1]!.toLowerCase();
@@ -101,6 +100,9 @@ export function parseBarText(text: string, mode: LogMode): { add: Partial<ObsQue
     return ULID.test(value) ? { add: { invocationId: value } } : { error: 'An invocation ID is a 26-character ULID.' };
   }
   if (mode === 'events') return { add: { type: t } };
-  // The read caps a search at 200 characters; a longer one would be refused there.
-  return t.length <= 200 ? { add: { search: t } } : { error: 'A search is at most 200 characters.' };
+  return searchPatch(t);
 }
+
+/** The read caps a search at 200 characters; a longer one would be refused there. */
+const searchPatch = (t: string) =>
+  t.length <= 200 ? { add: { search: t } } : { error: 'A search is at most 200 characters.' };

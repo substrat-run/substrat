@@ -114,6 +114,10 @@ describe('the app request reads (#1746)', () => {
           }
           if (path.startsWith('/observability/tenant-request') || path === '/observability/tenant-log-patterns' || path === '/observability/tenant-logs') {
             reads.push(u);
+            // The plane refuses to count a search (its `search_not_counted` problem).
+            if (u.searchParams.has('search') && path !== '/observability/tenant-requests') {
+              return Response.json({ code: 'validation_failed', reason: 'search_not_counted', status: 400 }, { status: 400, headers: { 'content-type': 'application/problem+json' } });
+            }
             if (u.searchParams.get('hours') === '501') return Response.json({ error: 'not configured' }, { status: 501 });
             // The log read answers a page of events; the aggregate reads an object.
             if (path === '/observability/tenant-logs' || path === '/observability/tenant-requests') return Response.json([]);
@@ -147,6 +151,16 @@ describe('the app request reads (#1746)', () => {
       expect(ask.searchParams.get('buckets')).toBe('120');
       expect(ask.searchParams.get('tenantId')).toBe(tenant);
       expect(ask.searchParams.get('scopeId')).toBe(appScope);
+    }
+  });
+
+  it('forwards a search to the list, and keeps the plane\'s reason when counts refuse it', async () => {
+    expect((await read(appScope, 'list', '?search=POST%20%2Forders')).status).toBe(200);
+    expect(reads.at(-1)!.searchParams.get('search')).toBe('POST /orders');
+    for (const kind of ['volume', 'facets']) {
+      const res = await read(appScope, kind, '?search=abc');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ reason: 'search_not_counted' });
     }
   });
 
