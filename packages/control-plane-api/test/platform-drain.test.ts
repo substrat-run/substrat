@@ -776,9 +776,9 @@ describe('provisionSiblingHandler — provisions a sibling of the drained scope'
   const parent = scopeId.parse(ulid());
   const owner = principalId.parse(ulid());
 
-  let captured: { scopeId?: string; owner?: string; entitlements?: EntitlementGrant[] } | undefined;
+  let captured: { scopeId?: string; owner?: string; parentScopeId?: string; entitlements?: EntitlementGrant[] } | undefined;
   const fakeVertical = {
-    provisionInstance: async (input: { scopeId: string; owner: string; entitlements?: EntitlementGrant[] }) => {
+    provisionInstance: async (input: { scopeId: string; owner: string; parentScopeId?: string; entitlements?: EntitlementGrant[] }) => {
       captured = input;
       return { tenantId: t, scopeId: input.scopeId, owner };
     },
@@ -816,6 +816,8 @@ describe('provisionSiblingHandler — provisions a sibling of the drained scope'
     // The vertical materialized the instance with the seated owner + the platform-gathered plan.
     expect(captured?.scopeId).toBe(newScopeId);
     expect(captured?.owner).toBe(owner);
+    // #2773: the vertical is told which scope asked, so it binds the seat to that login.
+    expect(captured?.parentScopeId).toBe(parent);
     expect(captured?.entitlements?.find((e) => e.entitlementKey === 'demo-vert')).toMatchObject({ quota: 5 });
   });
 

@@ -636,6 +636,7 @@ export async function provisionSiblingScope(
       tenantId: input.tenantId,
       scopeId: input.scopeId,
       owner: principalIdSchema.parse(input.owner),
+      parentScopeId: input.parentScopeId,
       slug: input.slug,
       name: input.name,
       entitlements,

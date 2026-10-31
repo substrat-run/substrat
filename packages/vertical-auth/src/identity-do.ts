@@ -12,6 +12,7 @@ import {
   OWNER_SEAT_DDL,
   migrateOwnerSeat,
   recordOwnerSeat,
+  recordSiblingOwnerSeat,
   ownerOfRecord as ownerOfRecordRow,
   needsSetup as needsSetupRow,
   ownerSeat as ownerSeatRow,
@@ -191,9 +192,14 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * first-sign-in window, and the durable `owner_of_record` (#332). Idempotent the way the
    * platform needs — a re-run (reconcile, retry) keeps the seat's existing window and never
    * re-opens a seat already claimed.
+   *
+   * `parentScopeId` is the provision body's, present when a running scope asked for this one
+   * (`provision-sibling`, #2773): the seat is then bound to the subjects the parent binds to
+   * `principal`, with no first-sign-in window (`recordSiblingOwnerSeat`).
    */
-  async setPendingOwner(scopeId: string, principal: string): Promise<void> {
-    recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
+  async setPendingOwner(scopeId: string, principal: string, parentScopeId?: string): Promise<void> {
+    if (parentScopeId) recordSiblingOwnerSeat(this.registrySql, scopeId, principal, parentScopeId, Date.now());
+    else recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
   }
 
   /**
@@ -383,7 +389,7 @@ export type IdentityStub = {
   forgetSite(scopeId: string): Promise<void>;
   listSites(): Promise<SiteRow[]>;
   resolveSiteScope(slug: string): Promise<string | null>;
-  setPendingOwner(scopeId: string, principal: string): Promise<void>;
+  setPendingOwner(scopeId: string, principal: string, parentScopeId?: string): Promise<void>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
   transferOwner(scopeId: string, from: string, to: string, toHoldsRole: boolean): Promise<OwnerTransfer>;
   completeOwnerTransfer(scopeId: string, from: string, to: string): Promise<boolean>;

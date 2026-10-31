@@ -783,6 +783,8 @@ const provisionBody = z.object({
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
   owner: principalIdOf,
+  /** #2773: the scope that asked for this one (`provision-sibling`), whose login `owner` already is. */
+  parentScopeId: scopeIdOf.optional(),
   slug: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   entitlements: z.array(entitlementGrant).optional(),

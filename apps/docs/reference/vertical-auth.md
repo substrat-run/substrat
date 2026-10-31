@@ -180,6 +180,10 @@ Its `sub → principal` mapping is **provider-agnostic** and used under both OID
   subject claims it — the install flow, where the installer opens the app seconds later. After
   that a plain sign-in binds nobody, so an instance nobody opened is not a seat anyone can
   take indefinitely. A re-provision keeps the window it has and never re-opens a claimed seat.
+  Pass the provision body's `parentScopeId` as the third argument. It is set when a running
+  scope asked for this one (`provision-sibling`), and then the seat is bound at once to the
+  login the parent scope binds to the owner, with no window. If the parent binds nobody to the
+  owner, the seat waits for a claim link.
 - `resolvePrincipal` — the per-request lookup that turns a verified `sub` into the
   `PrincipalId` the kernel checks permissions against (and performs the first-sign-in claim
   while the window is open).
