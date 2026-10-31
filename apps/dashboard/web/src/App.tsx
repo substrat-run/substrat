@@ -62,6 +62,14 @@ interface Route {
 
 const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'observability', 'audit', 'domains', 'team', 'integrations', 'billing', 'settings'];
 
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
 function parsePath(): Route {
   let parts = window.location.pathname.split('/').filter(Boolean);
   // The first segment is the team slug (`/acme-x1y2z3/apps`) unless it's a section
@@ -81,7 +89,9 @@ function parsePath(): Route {
   // A vertical's slug (acme-co/helpdesk) carries a slash. In-app links URI-encode it into one
   // segment, but a deep link or refresh is redirected by the asset layer with `%2F` decoded to
   // `/`, so the slug can arrive split across two parts: the rest of the path is the slug.
-  if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: parts.slice(1).map(decodeURIComponent).join('/'), team };
+  // A malformed escape (`%E0`) is kept as typed: it matches no vertical, so the page says
+  // not found instead of the whole app failing to start.
+  if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: parts.slice(1).map(decodeSegment).join('/'), team };
   // The audit page is team-level; an app narrows it, so the scope rides as a query
   // param rather than a path segment — `/audit` and `/audit?app=x` are one page.
   // `entry` opens one entry in place — the Overview's Recent activity rows link to it.
