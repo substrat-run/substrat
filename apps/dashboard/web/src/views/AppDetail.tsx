@@ -427,7 +427,7 @@ function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls, can
   // the Running tile is derived from this, so a scope change clears it — or the tile
   // would caption the previous app's version until the new read lands, and for ever if
   // it does not.
-  const [dep, setDep] = useState<Deployment | null | undefined>(undefined);
+  const [dep, setDep] = useState<AppDeployments | null | undefined>(undefined);
   // The owner seat, read ONCE here for both the status band's tile and the card below —
   // see OwnerSeatCard. `undefined` = still asking, `null` = the platform cannot answer.
   const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
@@ -1653,7 +1653,7 @@ const MOCK_TEST_ENV_HOSTS: AppHostnamesView = {
 };
 
 function TestEnvironment({ teamId, app, canClaimOwnerSeat }: { teamId: string; app: AppRow; canClaimOwnerSeat: boolean }) {
-  const [dep, setDep] = useState<Deployment | null>(null);
+  const [dep, setDep] = useState<AppDeployments | null>(null);
   const [envs, setEnvs] = useState<VerticalPreview[] | null>(null);
   const [hostView, setHostView] = useState<AppHostnamesView | null>(null);
   const [unavailable, setUnavailable] = useState(false); // 501 → no shared control plane

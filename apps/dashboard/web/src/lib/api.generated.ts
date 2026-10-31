@@ -62,6 +62,20 @@ export interface AdminLogEntry {
   audited?: { operationId: string; outcome: string; superseded: boolean };
 }
 
+/** `appDeploymentsView` — a published schema, not a stored row. */
+export interface AppDeployments {
+  slug: string;
+  displaySlug: string;
+  name: string;
+  source: string;
+  listed: boolean;
+  versions: DeploymentVersion[];
+  channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[];
+  owned: boolean;
+  boundVersionId: string | null;
+  nextCursor: string | null;
+}
+
 /** `appEvent` — a published schema, not a stored row. */
 export interface AppEvent {
   id: string;
@@ -139,8 +153,20 @@ export interface DeploymentRow {
   name: string;
   source: string;
   listed: boolean;
-  versions: ({ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; schemaChange: boolean; origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null; createdAt: string })[];
+  versions: DeploymentVersion[];
   channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[];
+}
+
+/** `deploymentVersion` — a published schema, not a stored row. */
+export interface DeploymentVersion {
+  id: string;
+  version: string;
+  admission: string;
+  admissionNote: string | null;
+  deploymentRef: string | null;
+  schemaChange: boolean;
+  origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null;
+  createdAt: string;
 }
 
 /** `explanationView` — a published schema, not a stored row. */
@@ -640,7 +666,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/deployments` — `dashboard/get-app-deployments`
    */
-  getAppDeployments(input: { scopeId: string; limit?: number; cursor?: string }): Promise<{ slug: string; displaySlug: string; name: string; source: string; listed: boolean; versions: ({ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; schemaChange: boolean; origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null; createdAt: string })[]; channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[]; owned: boolean; boundVersionId: string | null; nextCursor: string | null }>;
+  getAppDeployments(input: { scopeId: string; limit?: number; cursor?: string }): Promise<AppDeployments>;
 
   /**
    * One app's declared environment and its stored values; secrets are write-only
