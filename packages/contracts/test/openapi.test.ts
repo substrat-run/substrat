@@ -75,6 +75,12 @@ const doc = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
     output: z.object({ root: treeNode }),
     http: { method: 'GET', path: '/customers/tree' },
   },
+  // …and one whose output IS the recursive schema, which Zod refers back to as plain `#`.
+  'customer/subtree': {
+    summary: 'A subtree',
+    output: treeNode,
+    http: { method: 'GET', path: '/customers/subtree' },
+  },
   // A literal the ROUTE supplies (`mountOperations` pins it and overrides the caller).
   'customer/pinned': {
     summary: 'Pinned',

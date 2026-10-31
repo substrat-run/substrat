@@ -256,10 +256,11 @@ const ERROR_RESPONSE_COMPONENTS: Readonly<Record<string, unknown>> = Object.from
  * The per-schema `$schema` key is dropped: OpenAPI 3.1's document-wide dialect IS draft
  * 2020-12, so repeating it on every request body is pure noise.
  *
- * A recursive schema (`z.lazy`) comes back with local `$defs` and `#/$defs/…` refs. Inside an
- * OpenAPI document `#` is the document root, which has no `$defs`, so those refs resolve to
- * nothing. The definitions are hoisted into `components.schemas` (`sink`) under `owner`-scoped
- * names, and every ref is rewritten to point there.
+ * A recursive schema (`z.lazy`) refers to itself, and Zod writes that as `#/$defs/…` when the
+ * recursion sits inside the schema, or as `#` when the schema itself is the recursive one. Inside
+ * an OpenAPI document `#` is the document root, so either ref resolves to the wrong thing or to
+ * nothing. The definitions (and a self-referring root) are hoisted into `components.schemas`
+ * (`sink`) under `owner`-scoped names, and every ref is rewritten to point there.
  */
 const jsonSchema = (
   schema: z.ZodType,
@@ -271,21 +272,29 @@ const jsonSchema = (
     string,
     unknown
   > & { $defs?: Record<string, unknown> };
-  if (!$defs) return rest;
-  const nameOf = (key: string) => `${owner}.${io}.${key.replace(/^_+/, '')}`;
+  const root = `${owner}.${io}`;
+  let selfReferring = false;
   const rewrite = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(rewrite);
     if (!value || typeof value !== 'object') return value;
     return Object.fromEntries(
-      Object.entries(value).map(([key, inner]) =>
-        key === '$ref' && typeof inner === 'string' && inner.startsWith('#/$defs/')
-          ? [key, `#/components/schemas/${nameOf(inner.slice('#/$defs/'.length))}`]
-          : [key, rewrite(inner)],
-      ),
+      Object.entries(value).map(([key, inner]) => {
+        if (key !== '$ref' || typeof inner !== 'string') return [key, rewrite(inner)];
+        if (inner === '#') {
+          selfReferring = true;
+          return [key, `#/components/schemas/${root}`];
+        }
+        return inner.startsWith('#/$defs/')
+          ? [key, `#/components/schemas/${root}.${inner.slice('#/$defs/'.length)}`]
+          : [key, inner];
+      }),
     );
   };
-  for (const [key, def] of Object.entries($defs)) sink[nameOf(key)] = rewrite(def);
-  return rewrite(rest) as Record<string, unknown>;
+  for (const [key, def] of Object.entries($defs ?? {})) sink[`${root}.${key}`] = rewrite(def);
+  const body = rewrite(rest) as Record<string, unknown>;
+  if (!selfReferring) return body;
+  sink[root] = body;
+  return { $ref: `#/components/schemas/${root}` };
 };
 
 /**
