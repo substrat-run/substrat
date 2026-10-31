@@ -36,6 +36,7 @@ import { teamApi } from '../lib/api';
 /** The Logs range select — the plane's presets, capped at 72h. */
 const RANGE_OPTIONS = [
   { value: '1', label: 'Last hour' },
+  { value: '3', label: 'Last 3 hours' },
   { value: '24', label: 'Last 24 hours' },
   { value: '72', label: 'Last 3 days' },
 ];
@@ -47,6 +48,12 @@ const RANGE_OPTIONS = [
  * into the range control it exists to be different from.
  */
 const CURSOR_PAD_MS = 5 * 60_000;
+
+/**
+ * How often Live re-reads (#2762). Nothing streams yet, so Live is the Refresh button on a
+ * timer: the range slides forward with each tick and the open mode re-asks its reads.
+ */
+export const LIVE_INTERVAL_MS = 15_000;
 
 /** The window a cursor covers, as the two ISO instants every seam below it speaks in. */
 function windowAround(at: string, padMs = CURSOR_PAD_MS): { from: string; to: string } {
@@ -87,7 +94,7 @@ export function Observability({
       from: q.from, to: q.to, hours: q.hours, type: q.type, level: q.level, search: q.search, invocationId: q.invocationId, groupBy: q.groupBy, field: q.field,
       // #1746: the Requests mode's facet filters travel like the other modes' filters, so a
       // tab switch and back finds them where they were.
-      op: q.op, pk: q.pk, code: q.code, lvl: q.lvl, status: q.status, surface: q.surface, tpl: q.tpl,
+      op: q.op, pk: q.pk, code: q.code, lvl: q.lvl, status: q.status, surface: q.surface, tpl: q.tpl, live: q.live,
       ...next,
     });
   const [timeError, setTimeError] = useState('');
@@ -102,6 +109,16 @@ export function Observability({
   };
   // One nonce for the whole page: Refresh re-asks every question on it.
   const [nonce, setNonce] = useState(0);
+  // Live (#2762) only means something on a range that ends now; a brushed window is fixed.
+  const live = q.live === '1' && !cursor && sectionOf(view) === 'logs';
+  useEffect(() => {
+    if (!live) return;
+    const tick = setInterval(() => {
+      // A hidden tab asks nothing; the next tick after it is shown again catches up.
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') setNonce((n) => n + 1);
+    }, LIVE_INTERVAL_MS);
+    return () => clearInterval(tick);
+  }, [live]);
   const resolved = useMemo(() => {
     try { return { window: queryWindow(q), error: '' }; }
     catch (e) { return { window: queryWindow({}), error: (e as Error).message }; }
@@ -298,29 +315,64 @@ export function Observability({
           onChange={(e) => preset(Number(e.target.value))}
           style={{ width: 150 }}
         />
-        {/* No "Live" toggle: nothing streams yet, so the stream is re-read on demand. */}
+        {/* A native toggle: the kit's Button carries no pressed state, and a toggle a screen
+            reader cannot tell is on is half a control. Styled as the kit's sm primary/secondary. */}
+        <button
+          type="button"
+          aria-pressed={live}
+          disabled={!!cursor}
+          title={cursor ? 'Live follows a range that ends now — reset the custom window first' : `Re-read every ${LIVE_INTERVAL_MS / 1000} s`}
+          onClick={() => navigateQuery({ ...q, live: live ? undefined : '1' })}
+          style={{
+            height: 'var(--control-h-sm)',
+            padding: '0 10px',
+            borderRadius: 'var(--radius-sm)',
+            fontFamily: 'var(--font-sans)',
+            fontSize: 'var(--text-sm)',
+            fontWeight: 'var(--weight-medium)',
+            whiteSpace: 'nowrap',
+            boxShadow: 'var(--shadow-xs)',
+            border: '1px solid',
+            borderColor: live ? 'transparent' : 'var(--border-default)',
+            background: live ? 'var(--action-primary-bg)' : 'var(--surface-card)',
+            color: live ? 'var(--action-primary-text)' : 'var(--text-primary)',
+            cursor: cursor ? 'not-allowed' : 'pointer',
+            opacity: cursor ? 0.5 : 1,
+          }}
+        >
+          {live ? '● Live' : 'Live'}
+        </button>
         {refresh}
       </LogQueryBar>
       {timeError && <p role="alert" style={{ margin: 0, fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{timeError}</p>}
-      {scopeId ? (
+      {scopeId && logMode === 'requests' ? (
+        // #2762: Requests lays the page out as the design does — the histogram card on top,
+        // the facets beside the stream card — so it draws the card itself, as its `frame`.
+        <RequestsMode
+          teamId={teamId}
+          scopeId={scopeId}
+          q={q}
+          window={panelWindow}
+          nonce={nonce}
+          live={live}
+          onFilters={(filters) => navigateQuery({ ...q, ...filters })}
+          onRange={applyWindow}
+          zoomed={!!cursor}
+          onResetZoom={() => preset(null)}
+          // A request opens over the page, so closing it leaves the list as it was.
+          onOpenCall={openRequest}
+          frame={(body) => (
+            <LogStream mode={logMode} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
+              {body}
+            </LogStream>
+          )}
+        />
+      ) : scopeId ? (
         // One card, two modes. A tab switch is a sub-view switch — same URL key, and the
         // cursor comes along: "what was happening at 09:13" is one question asked of both.
         <LogStream mode={logMode} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
           {logMode === 'logs' && (
-            <LinesMode teamId={teamId} scopeId={scopeId} q={q} hours={hours} nonce={nonce} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
-          )}
-          {logMode === 'requests' && (
-            <RequestsMode
-              teamId={teamId}
-              scopeId={scopeId}
-              q={q}
-              window={panelWindow}
-              nonce={nonce}
-              onFilters={(filters) => navigateQuery({ ...q, ...filters })}
-              onRange={applyWindow}
-              // A request opens over the page, so closing it leaves the list as it was.
-              onOpenCall={openRequest}
-            />
+            <LinesMode teamId={teamId} scopeId={scopeId} q={q} hours={hours} nonce={nonce} live={live} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
           )}
           {logMode === 'patterns' && (
             <PatternsMode
@@ -373,6 +425,7 @@ function LinesMode({
   q,
   hours,
   nonce,
+  live,
   cursor,
   window,
   onFilters,
@@ -383,6 +436,7 @@ function LinesMode({
   q: ObsQuery;
   hours: number;
   nonce: number;
+  live: boolean;
   cursor: { from: string; to: string } | null;
   window: { from: string; to: string };
   onFilters: (filters: Partial<ObsQuery>) => void;
@@ -413,6 +467,7 @@ function LinesMode({
       onOpenRequest={onOpenRequest}
       hours={hours}
       nonce={nonce}
+      live={live}
       {...(typeof requests === 'number' ? { hadTraffic: requests > 0 } : {})}
       window={window}
     />
