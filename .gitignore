@@ -5,6 +5,8 @@ coverage/
 .DS_Store
 **/.vitepress/cache/
 **/.vitepress/.temp/
+# The bundled config Vite writes beside a `.mts` config while it loads it, and removes after.
+*.timestamp-*.mjs
 .data/
 
 # Design handoff bundles dropped in the repo root. The tokens, brand assets and
