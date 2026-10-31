@@ -372,6 +372,38 @@ describe('AI-written text in the dashboard (#1749)', () => {
       expect(planeCalls.some((p) => p.includes('/observability/tenant-metrics-series'))).toBe(false);
     });
 
+    /** The query of each plane call whose path holds `path`. */
+    const planeQueries = (path: string) =>
+      planeCalls.filter((p) => p.includes(`${path}?`)).map((p) => new URLSearchParams(p.split('?')[1]));
+
+    it('#2759: a tool call’s filters and window reach the request and log reads', async () => {
+      script(
+        { response: '', tool_calls: [{ id: 'reqs', name: 'app_requests', arguments: { scopeId: appScope, level: ['error', 'warn'], hours: '6' } }] },
+        { response: '', tool_calls: [{ id: 'logs', name: 'app_observability_logs', arguments: { scopeId: appScope, level: 'error', search: 'refused', hours: '6' } }] },
+        { response: 'Ok.' },
+      );
+      await events(ask('viewer', [{ role: 'user', text: 'Any errors in Desk in the last six hours?' }]));
+      const [reqs] = planeQueries('/observability/tenant-requests');
+      expect(reqs!.getAll('level')).toEqual(['error', 'warn']);
+      expect(reqs!.get('hours')).toBe('6');
+      expect(reqs!.get('scopeId')).toBe(appScope);
+      const [logs] = planeQueries('/observability/tenant-logs');
+      expect([logs!.get('level'), logs!.get('search'), logs!.get('hours')]).toEqual(['error', 'refused', '6']);
+    });
+
+    it('#2759: a request read naming another team’s app is refused before the plane is asked', async () => {
+      script({ response: '', tool_calls: [{ id: 'reqs', name: 'app_requests', arguments: { scopeId: ulid(), level: ['error'] } }] }, { response: 'Ok.' });
+      const evs = await events(ask('viewer', [{ role: 'user', text: 'Any errors in that app?' }]));
+      expect(evs.find((e) => e.t === 'tool-output')).toMatchObject({ output: { error: 'app not found' } });
+      expect(planeQueries('/observability/tenant-requests')).toEqual([]);
+    });
+
+    it('#2759: a team series takes its window from the tool call', async () => {
+      script({ response: '', tool_calls: [{ id: 'traffic', name: 'team_traffic', arguments: { hours: '6' } }] }, { response: 'Ok.' });
+      await events(ask('viewer', [{ role: 'user', text: 'How was traffic over six hours?' }]));
+      expect(planeQueries('/observability/tenant-metrics-series').map((q) => q.get('hours'))).toEqual(['6']);
+    });
+
     it('reads the team’s roster with the members’ addresses, as the Team page shows them', async () => {
       const owner = await host.getScope(people.owner, tenant, dashScope);
       const org = orgId.parse(ulid());
