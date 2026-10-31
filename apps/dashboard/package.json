@@ -9,6 +9,7 @@
       "operations": "dashboardRoutes",
       "schemas": {
         "AdminLogEntry": "adminLogRow",
+        "AppDeployments": "appDeploymentsView",
         "AppEvent": "appEvent",
         "AppRow": "appRow",
         "BoundScopeRow": "boundScopeRow",
@@ -16,6 +17,7 @@
         "ChannelHistoryRow": "channelHistoryRow",
         "DeployFailureRow": "deployFailureRow",
         "DeploymentRow": "deploymentRow",
+        "DeploymentVersion": "deploymentVersion",
         "ExplanationView": "explanationView",
         "EventEffects": "eventEffects",
         "FailureGroupRow": "failureGroupRow",

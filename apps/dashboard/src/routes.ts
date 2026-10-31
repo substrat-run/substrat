@@ -791,7 +791,7 @@ const appReleaseSide = z.object({
 const planeDocument = z.unknown();
 
 /** The per-app Deployments tab: one page of versions, plus what THIS scope runs and whether the team pushed it. */
-const appDeploymentsView = deploymentRow.extend({
+export const appDeploymentsView = deploymentRow.extend({
   owned: z.boolean(),
   boundVersionId: z.string().nullable(),
   nextCursor: z.string().nullable(),

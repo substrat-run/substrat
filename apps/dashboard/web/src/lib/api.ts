@@ -1,5 +1,5 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppEvent, type AppRow, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type InstallStep, type Member, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type TrafficSeries } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppRow, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion,type FailureGroupRow, type InstallStep, type Member, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type TrafficSeries } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { RequestReadQuery } from './requests';
@@ -7,7 +7,7 @@ import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
-export type { AppEvent, AppRow, BoundScopeRow, DeployFailureRow, FailureGroupRow, InstallStep, Member, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView, TrafficSeries };
+export type { AppDeployments, AppEvent, AppRow, BoundScopeRow, DeployFailureRow, DeploymentVersion,FailureGroupRow, InstallStep, Member, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView, TrafficSeries };
 export type AuditEntry = AdminLogEntry;
 export type ChannelHistoryEntry = ChannelHistoryRow;
 export type VerticalPreview = PreviewRow;
@@ -110,28 +110,6 @@ export type AppAuthChoice =
   | { source: 'auth-server'; scopeId: string }
   | { source: 'external'; issuer: string; clientId: string; clientSecret?: string; audience?: string };
 
-/** One version of a deployed vertical — mirrors the worker's DeploymentVersion. */
-export interface DeploymentVersion {
-  id: string;
-  version: string;
-  admission: 'pending' | 'admitted' | 'rejected' | string;
-  admissionNote: string | null;
-  deploymentRef: string | null;
-  /** Updating TO this version crosses a migration boundary (#286) — badged in the UI. */
-  schemaChange?: boolean;
-  /** Where the push came from: git CI (with repo/commit) vs a terminal. Null = pushed
-   *  before origin tracking. `gate` is the push-time layer-rule receipt (#955): absent =
-   *  no receipt rode the push, so nothing checked the layer rules. */
-  origin?: {
-    source: 'git' | 'cli';
-    gitRepo?: string;
-    gitCommit?: string;
-    gitRef?: string;
-    gate?: 'passed' | 'skipped' | 'none';
-  } | null;
-  createdAt: string;
-}
-
 /** One static file a version ships (#340), as the platform holds it: the served path, the
  *  bytes' size and MIME type, and the content address the runtime's asset store dedups on. */
 export interface AssetEntry {
@@ -220,37 +198,7 @@ export interface MigrationBookmark {
   pending: string[];
 }
 
-/** A vertical this tenant pushed — the Verticals view's row (builder-plane.md Phase 4). */
-export interface Deployment {
-  slug: string; // full registry id, e.g. `acme-co/helpdesk`
-  displaySlug: string; // bare name for display, `helpdesk`
-  name: string;
-  source: string;
-  /** Published to the public marketplace (vs private to this team). */
-  listed?: boolean;
-  /**
-   * Pushed by MY team — set on the per-app deployments read (the tenant-level Verticals
-   * list is owned by construction). Owned + private ⇒ prod promotion is self-serve on
-   * the Verticals page; otherwise it's a staff action.
-   */
-  owned?: boolean;
-  versions: DeploymentVersion[];
-  // `servingVersionId` is what prod's stable serving script actually runs (#321): when it
-  // differs from a prod channel's `versionId`, the promote moved the pointer but the
-  // in-place serve failed — scopes still run the old code.
-  channels: Array<{ channel: string; versionId: string; servingVersionId?: string | null }>;
-  /**
-   * The version THIS scope is actually pinned to (the router dispatches on it) — set on
-   * the per-app deployments read. It can lag the `prod` channel: an app installed when
-   * prod was 0.0.9 stays on 0.0.9 until updated. `null` ⇒ unpinned (static binding).
-   */
-  boundVersionId?: string | null;
-}
-
-/** The per-app deployments read: `versions` is ONE page (newest first); `nextCursor` walks older. */
-export interface AppDeployments extends Deployment {
-  nextCursor: string | null;
-}
+export type Deployment = DeploymentRow;
 
 
 
