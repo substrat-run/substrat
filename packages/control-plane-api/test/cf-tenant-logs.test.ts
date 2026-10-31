@@ -319,9 +319,10 @@ describe('cf tenant logs', () => {
     expect(sent.some((f) => f.some((x) => x['key'] === 'invocationId' && x['operation'] === 'includes' && x['value'] === 'JZREQ'))).toBe(true);
     // Whatever it asks, every query is bound to the tenant and to the app's scripts.
     const tenant = { key: 'tenantId', operation: 'eq', type: 'string', value: '01TENANT' };
-    const phaseOne = sent.filter((f) => keyed(f, 'substrat')?.['value'] === 'invocation');
-    expect(phaseOne.length).toBeGreaterThan(1);
-    for (const f of phaseOne) {
+    // (A sibling read is by the request id, which is how a vertical's own lines are reached.)
+    const bound = sent.filter((f) => !keyed(f, '$metadata.requestId'));
+    expect(bound.length).toBeGreaterThan(2);
+    for (const f of bound) {
       expect(f).toContainEqual(tenant);
       expect(JSON.stringify(f)).toContain('acme-widgets');
     }
