@@ -4,7 +4,14 @@ import { cachedSource, cutOverSource, type AggregateSource, type CubeQuery, type
 import { stableDeploymentRefFor } from './deploy.js';
 import { aggregateReads } from './aggregate-reads.js';
 import { serviceFamilyPattern } from './service-family.js';
-import { FIELD_COVERAGE_ID_FIELD, ROUTER_REQUEST_POINT, ROUTER_SCRIPT_NAMES, utcDay } from '@substrat-run/contracts';
+import {
+  ENTITY_TYPES_SEPARATOR,
+  FIELD_COVERAGE_ID_FIELD,
+  ROUTER_REQUEST_POINT,
+  ROUTER_SCRIPT_NAMES,
+  splitEntityTypes,
+  utcDay,
+} from '@substrat-run/contracts';
 import { RequestRollupSaturated, type RequestDayCount } from '@substrat-run/kernel';
 import { readFieldCoverage } from './field-coverage-read.js';
 import type {
@@ -84,6 +91,18 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
       filters.push(kinds.length === 1 ? kinds[0]! : { kind: 'group', filterCombination: 'or', filters: kinds });
       continue;
     }
+    // #2762: a type is one member of the line's `entityTypes` set, so it is matched between
+    // separators, with the type escaped: no type can widen the match past itself.
+    if (key === 'entity') {
+      const types: TelemetryFilter[] = values.map((v) => ({
+        key: 'entityTypes',
+        operation: 'regex',
+        type: 'string',
+        value: entityTypeRegex(v),
+      }));
+      filters.push(types.length === 1 ? types[0]! : { kind: 'group', filterCombination: 'or', filters: types });
+      continue;
+    }
     const leaves: TelemetryFilter[] = values.map((v) =>
       key === 'status'
         ? { key, operation: 'eq', type: 'number', value: Number(v) }
@@ -93,6 +112,13 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
   }
   if (scope.search !== undefined) filters.push(searchFilter(scope.search));
   return filters;
+}
+
+const REGEX_SPECIAL = /[\\^$.|?*+()[\]{}]/g;
+/** #2762: a pattern matching `entityTypes` values that hold `type` as a whole member. */
+function entityTypeRegex(type: string): string {
+  const escaped = type.replace(REGEX_SPECIAL, '\\$&');
+  return `(^|${ENTITY_TYPES_SEPARATOR})${escaped}(${ENTITY_TYPES_SEPARATOR}|$)`;
 }
 
 /** #2762: `search` as one OR group, read by `requestSearchOf` — the rule the list re-checks. */
@@ -198,11 +224,17 @@ function sampled(p: CalculationPoint): boolean {
   return typeof p.sampleInterval === 'number' && p.sampleInterval > 1;
 }
 
-/** #1901: does a raw line pass the scope's `kind` selection, a missing `kind` read as `request`? */
-function kindMatches(e: Record<string, unknown>, scope: TenantRequestScope): boolean {
-  const values = scope.where?.kind ?? [];
-  if (values.length === 0) return true;
-  return values.includes(invocationKindOf(((e['source'] ?? {}) as Record<string, unknown>)['kind']));
+/**
+ * Does a raw line pass the scope's `kind` selection (#1901: a missing `kind` read as
+ * `request`) and its `entity` selection (#2762: a type is a whole member of the set)?
+ */
+function facetsMatch(e: Record<string, unknown>, scope: TenantRequestScope): boolean {
+  const source = (e['source'] ?? {}) as Record<string, unknown>;
+  const kinds = scope.where?.kind ?? [];
+  if (kinds.length > 0 && !kinds.includes(invocationKindOf(source['kind']))) return false;
+  const types = scope.where?.entity ?? [];
+  const entityTypes = typeof source['entityTypes'] === 'string' ? splitEntityTypes(source['entityTypes']) : [];
+  return types.length === 0 || types.some((t) => entityTypes.includes(t));
 }
 
 /** The stamped line of a raw event, as the Requests view lists it. */
@@ -799,6 +831,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         { type: 'string', value: 'surface' },
         { type: 'number', value: 'status' },
         { type: 'string', value: 'kind' },
+        { type: 'string', value: 'entityTypes' },
       ],
       extra,
     );
@@ -820,6 +853,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           surface: str(groups.get('surface')),
           status: typeof status === 'number' ? status : typeof status === 'string' && status !== '' ? Number(status) : null,
           kind: str(groups.get('kind')),
+          entity: str(groups.get('entityTypes')),
           count,
         }];
       }),
@@ -886,6 +920,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           principalKind: blank(r['principalKind']),
           surface: blank(r['surface']),
           status: status > 0 ? status : null,
+          entity: blank(r['entityTypes']),
           count: Math.round(aeNum(r['requests'])),
         },
       ];
@@ -916,6 +951,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         ${p.problemCode} AS problemCode,
         ${p.principalKind} AS principalKind,
         ${p.level} AS level,
+        ${p.entityTypes} AS entityTypes,
         toStartOfInterval(timestamp, INTERVAL '${grainSeconds}' SECOND) AS bucket,
         sum(_sample_interval) AS requests,
         max(_sample_interval) AS maxInterval
@@ -923,7 +959,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       WHERE ${p.tenantId} = ${aeLiteral(tenantId)}
         AND timestamp >= toDateTime(${Math.floor(q.from / 1000)})
         AND timestamp < toDateTime(${Math.ceil(q.to / 1000)})
-      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, bucket
+      GROUP BY vertical, scopeId, surface, status, operation, problemCode, principalKind, level, entityTypes, bucket
       ORDER BY bucket ASC
       LIMIT ${REQUEST_CUBE_ROW_LIMIT}
       FORMAT JSON`;
@@ -1220,7 +1256,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return events
         // #1901: the query narrowed on kind already; this holds the answer to the same
         // reading (a missing `kind` is a request) whatever the backend did with the filter.
-        .filter((e) => kindMatches(e, input))
+        // #2762: and on entity — a type is a whole member of the set, never a substring.
+        .filter((e) => facetsMatch(e, input))
         .sort((a, b) => rawTime(b) - rawTime(a))
         .map(requestRecordOf)
         // #2762: likewise for `search` — the answer is the rule `requestSearchOf` states.

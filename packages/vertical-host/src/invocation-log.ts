@@ -70,6 +70,7 @@ import {
 import { forgetTraceStart, installedTraceSink, markTraceStart } from '@substrat-run/contracts/trace-sink';
 import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel';
 import {
+  entityTypesOf,
   invocationLine,
   STORE_CALL_LOG_CAP,
   STORE_CALL_SINK_KEY,
@@ -882,7 +883,7 @@ function handRecordToRouter<Env>(
   options: InvocationLogOptions<Env>,
 ): void {
   try {
-    const value = encodeInvocationRecord(record);
+    const value = encodeInvocationRecord({ ...record, entityTypes: entityTypesOf(record.emitted) });
     if (value === null || !routedNodeOrNull(request.headers, env, options)) return;
     (response as { headers?: { set?: (name: string, value: string) => void } }).headers?.set?.(
       INVOCATION_RECORD_HEADER,

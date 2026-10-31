@@ -1141,6 +1141,24 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect((await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } })).every((r) => r.kind === 'consumer')).toBe(true);
   });
 
+  it('#2762: an entity selection matches a whole member of the set, and a regex metacharacter in it matches only itself', async () => {
+    const lines = [
+      { ...invocation({ invocationId: 'both', entityTypes: 'repair,visit' }, '01RA'), timestamp: 5 },
+      { ...invocation({ invocationId: 'longer', entityTypes: 'repairs' }, '01RB'), timestamp: 4 },
+      { ...invocation({ invocationId: 'dotted', entityTypes: 'a.c' }, '01RC'), timestamp: 3 },
+      { ...invocation({ invocationId: 'any-char', entityTypes: 'abc' }, '01RD'), timestamp: 2 },
+      { ...invocation({ invocationId: 'none' }, '01RE'), timestamp: 1 },
+    ];
+    const { reader } = readerOver((filters, limit) =>
+      lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit),
+    );
+    const ids = async (entity: string[]) =>
+      (await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity } })).map((r) => r.invocationId);
+    expect(await ids(['repair'])).toEqual(['both']);
+    expect(await ids(['visit', 'repairs'])).toEqual(['both', 'longer']);
+    expect(await ids(['a.c'])).toEqual(['dotted']);
+  });
+
   it('counts every RFC 9110 method as a request — a hyphen or a digit included — and nothing else', async () => {
     const methods = ['M-SEARCH', 'X1', 'PROPFIND', 'get'];
     const lines = [

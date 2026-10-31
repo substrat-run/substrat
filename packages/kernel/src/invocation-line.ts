@@ -9,13 +9,14 @@
  * (`async-invocation-log.ts`), which is why the grammar stays here: both adapters run that
  * writer, and a field added to one line is a field added to both, in one order.
  *
- * Imports nothing at run time. The platform's entry (#1893) bundles this file in front of
- * every deployed vertical through the `./invocation-line` subpath, and a runtime import of
- * the contracts root would put every schema in the vocabulary — and zod — into that bundle.
+ * Imports nothing at run time but contracts' `./invocation-record` subpath, which itself
+ * imports nothing. The platform's entry (#1893) bundles this file in front of every deployed
+ * vertical through the `./invocation-line` subpath, and a runtime import of the contracts
+ * root would put every schema in the vocabulary — and zod — into that bundle.
  */
 import type { AuthRecording } from '@substrat-run/contracts/auth-diagnostics';
 
-import type { InvocationLevel } from '@substrat-run/contracts/invocation-record';
+import { joinEntityTypes, type InvocationLevel } from '@substrat-run/contracts/invocation-record';
 import type { EmittedReport } from './scope-host.js';
 
 /**
@@ -124,6 +125,13 @@ export interface InvocationLogLine extends AuthRecording {
    * `eventCount` says how many there were.
    */
   entities: string[];
+  /**
+   * #2762: the distinct entity TYPES among those events, sorted and joined with `,` — the
+   * request facet `entity`, as one value a log query can group by. Sorted, so one set of types
+   * is one value. A type containing `,` is left out. `null` when the operation emitted nothing,
+   * or nothing was recorded. Written on an async line too: a type is a declared name, not data.
+   */
+  entityTypes: string | null;
   /**
    * The registry id of the version that served the call — the platform's
    * `SUBSTRAT_VERSION_ID` binding, the same identity the spine stamps on events. `null`
@@ -308,6 +316,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     eventCount: emitted ? emitted.total : null,
     eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
     entities: emitted && f.withEntities !== false ? distinct(emitted.events.map((e) => e.entity)) : [],
+    entityTypes: entityTypesOf(emitted),
     versionId: f.versionId ?? null,
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
@@ -478,6 +487,14 @@ export function currentInvocationId(): string | undefined {
 }
 
 /** Distinct values, first occurrence wins — the order a reader expects to see them in. */
+/**
+ * #2762: the line's `entityTypes` for what an invocation emitted — contracts' grammar
+ * (`joinEntityTypes`). The request writer also hands it to the router on the record header.
+ */
+export function entityTypesOf(emitted: EmittedReport | undefined): string | null {
+  return emitted ? joinEntityTypes(emitted.events.map((e) => e.entity.slice(0, Math.max(0, e.entity.indexOf(':'))))) : null;
+}
+
 function distinct(values: readonly string[]): string[] {
   return [...new Set(values)];
 }

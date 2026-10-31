@@ -45,8 +45,9 @@ const req = (over: Partial<RequestCubeRow>): RequestCubeRow => ({
 });
 
 const REQUESTS: RequestCubeRow[] = [
-  req({ bucket: T0, count: 40 }),
-  req({ bucket: T0 + 5 * MIN, level: 'warn', operation: 'acme/assign', problemCode: 'conflict', status: 409, count: 9 }),
+  req({ bucket: T0, entity: 'ticket', count: 40 }),
+  // #2762: one request, two entity types.
+  req({ bucket: T0 + 5 * MIN, level: 'warn', operation: 'acme/assign', problemCode: 'conflict', status: 409, entity: 'assignment,ticket', count: 9 }),
   req({ bucket: T0 + 5 * MIN, level: 'error', operation: 'acme/assign', problemCode: 'unavailable', status: 502, count: 1 }),
   // Written before `level` existed: counted, as unrecorded, and on no facet value.
   req({ bucket: T0 + 10 * MIN, level: null, operation: null, principalKind: null, surface: null, count: 6 }),
@@ -151,6 +152,19 @@ describe.each(SOURCES)('aggregate reads over %s (#1877)', (_name, make) => {
     ]);
   });
 
+  it('#2762: counts a request under each entity type it touched, and once under a selection of several', async () => {
+    const reads = aggregateReads(make());
+    const assign = await reads.tenantRequestFacets({ ...scope, where: { operation: ['acme/assign'] } });
+    expect(assign.total).toBe(10);
+    // The same nine requests under both types, so the facet sums past the total.
+    expect(assign.facets.entity).toEqual([
+      { value: 'assignment', count: 9 },
+      { value: 'ticket', count: 9 },
+    ]);
+    // Ticking both types counts the nine once, beside the forty that touched only a ticket.
+    expect((await reads.tenantRequestFacets({ ...scope, where: { entity: ['assignment', 'ticket'] } })).total).toBe(49);
+  });
+
   it('groups patterns by template, with shares of every matching line', async () => {
     const p = await aggregateReads(make()).tenantLogPatterns({ ...scope, buckets: 12 });
     expect(p.total).toBe(40);
@@ -230,6 +244,24 @@ describe('the cube cache (#1877)', () => {
     await source.requests({ service: SERVICE, from: T0, to: T0 + 60 * MIN, grainMs: 5 * MIN });
     await source.requests({ service: SERVICE, from: T0, to: T0 + 12 * 60 * MIN, grainMs: 60 * MIN });
     expect(new Set(inner.asked.map((q) => q.grainMs))).toEqual(new Set([5 * MIN, 60 * MIN]));
+  });
+
+  it('#2762: never serves a block cached before the cube had an entity dimension', async () => {
+    const inner = fixedSource();
+    const store = memoryCubeStore();
+    const grainMs = grainFor(window.to - window.from);
+    const blockMs = blockMsFor(grainMs);
+    // Every closed block of the window, as the previous shape stored it: no entity, a count of 1.
+    for (let s = Math.floor(window.from / blockMs) * blockMs; s < window.to; s += blockMs) {
+      await store.put(`requests|${SERVICE}|${grainMs}|${s}`, { rows: [req({ bucket: s })], estimated: false }, s);
+    }
+    const f = await aggregateReads(cachedSource(inner, store, { now: () => T0 + 24 * 60 * MIN })).tenantRequestFacets({ ...scope });
+    expect(inner.asked.length).toBeGreaterThan(0);
+    expect(f.total).toBe(60);
+    expect(f.facets.entity).toEqual([
+      { value: 'ticket', count: 49 },
+      { value: 'assignment', count: 9 },
+    ]);
   });
 
   it('says a count is an estimate when any block was sampled', async () => {

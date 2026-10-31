@@ -68,12 +68,26 @@ export interface InvocationRecordFields {
   operation?: string | null | undefined;
   problemCode?: string | null | undefined;
   principalKind?: string | null | undefined;
+  /** #2762: {@link joinEntityTypes}' value. */
+  entityTypes?: string | null | undefined;
 }
 
 /** The longest value kept per field — an operation name, an error code, a subject kind. */
 export const INVOCATION_RECORD_FIELD_MAX = 128;
 
-const FIELDS = ['operation', 'problemCode', 'principalKind'] as const;
+const FIELDS = ['operation', 'problemCode', 'principalKind', 'entityTypes'] as const;
+type RecordField = (typeof FIELDS)[number];
+
+/**
+ * A field's value as the header keeps it: at most {@link INVOCATION_RECORD_FIELD_MAX}
+ * characters. `entityTypes` is cut at a type boundary, so no type is ever half a name.
+ */
+function capped(key: RecordField, v: string): string | null {
+  if (v.length <= INVOCATION_RECORD_FIELD_MAX) return v;
+  if (key !== 'entityTypes') return v.slice(0, INVOCATION_RECORD_FIELD_MAX);
+  const cut = v.lastIndexOf(ENTITY_TYPES_SEPARATOR, INVOCATION_RECORD_FIELD_MAX);
+  return cut > 0 ? v.slice(0, cut) : null;
+}
 
 /**
  * The header value for a record, or `null` when it names nothing. URL-encoded, so any
@@ -83,7 +97,8 @@ export function encodeInvocationRecord(record: InvocationRecordFields): string |
   const params = new URLSearchParams();
   for (const key of FIELDS) {
     const v = record[key];
-    if (typeof v === 'string' && v !== '') params.set(key, v.slice(0, INVOCATION_RECORD_FIELD_MAX));
+    const kept = typeof v === 'string' && v !== '' ? capped(key, v) : null;
+    if (kept) params.set(key, kept);
   }
   const value = params.toString();
   return value === '' ? null : value;
@@ -94,12 +109,8 @@ export function encodeInvocationRecord(record: InvocationRecordFields): string |
  * reader meters a request and must not fail it. Unknown keys are ignored and every value is
  * capped, so a vertical cannot grow the router's datapoint.
  */
-export function decodeInvocationRecord(value: string | null | undefined): {
-  operation: string | null;
-  problemCode: string | null;
-  principalKind: string | null;
-} {
-  const out = { operation: null as string | null, problemCode: null as string | null, principalKind: null as string | null };
+export function decodeInvocationRecord(value: string | null | undefined): Record<RecordField, string | null> {
+  const out: Record<RecordField, string | null> = { operation: null, problemCode: null, principalKind: null, entityTypes: null };
   if (!value) return out;
   let params: URLSearchParams;
   try {
@@ -109,9 +120,29 @@ export function decodeInvocationRecord(value: string | null | undefined): {
   }
   for (const key of FIELDS) {
     const v = params.get(key);
-    if (v !== null && v !== '') out[key] = v.slice(0, INVOCATION_RECORD_FIELD_MAX);
+    if (v !== null && v !== '') out[key] = capped(key, v);
   }
   return out;
+}
+
+/** #2762: what separates the types in an `entityTypes` value. */
+export const ENTITY_TYPES_SEPARATOR = ',';
+
+/**
+ * #2762: the `entity` request facet's value — the distinct entity types a request's events
+ * were about, sorted and joined with {@link ENTITY_TYPES_SEPARATOR}, as ONE value a log query
+ * can group by and an Analytics Engine blob can hold. Sorted, so one set of types is always
+ * one value and a cube has a row per set that occurs, not per order. A type containing the
+ * separator cannot be told apart from two, so it is left out. `null` when no type is left.
+ */
+export function joinEntityTypes(types: readonly string[]): string | null {
+  const kept = [...new Set(types)].filter((t) => t !== '' && !t.includes(ENTITY_TYPES_SEPARATOR)).sort();
+  return kept.length > 0 ? kept.join(ENTITY_TYPES_SEPARATOR) : null;
+}
+
+/** #2762: an `entityTypes` value read back into its types; absent or empty is none. */
+export function splitEntityTypes(value: string | null | undefined): string[] {
+  return value ? value.split(ENTITY_TYPES_SEPARATOR).filter((t) => t !== '') : [];
 }
 
 /**
