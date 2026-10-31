@@ -3200,7 +3200,18 @@ export function defineScopeDO(
        * Absent from an older DO, which the coordinator reads as "not recorded".
        */
       emitted?: EmittedReport;
+      /**
+       * #2762: the `ctx.log` lines the call wrote, when the caller asked (`onLogLines`) — on a
+       * failure's envelope too. Absent from an older DO, which the coordinator reads as "not
+       * recorded".
+       */
+      logLines?: number;
     }> {
+      // #2762: filled by `ctx.log` while the queued body runs. Only reported when asked, so the
+      // envelope of a caller that did not ask is what it was.
+      const logTally = { logLines: 0 };
+      const withLogLines = <T extends object>(envelope: T): T & { logLines?: number } =>
+        invokeOptions?.onLogLines !== undefined ? { ...envelope, logLines: logTally.logLines } : envelope;
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
         // ZodError, whose `message` is a getter) still arrives with its message.
@@ -3226,20 +3237,24 @@ export function defineScopeDO(
         }
       }
       try {
-        return await this.#invokeOrThrow(
-          operation,
-          input,
-          principal,
-          tenantId,
-          scopeId,
-          connectionId,
-          requiredEntitlement,
-          systemModuleId,
-          invokeOptions,
-          impersonation,
-          capabilitySession,
-          verticalCaller,
-          systemDoorInstance,
+        return withLogLines(
+          await this.#invokeOrThrow(
+            operation,
+            input,
+            principal,
+            tenantId,
+            scopeId,
+            connectionId,
+            requiredEntitlement,
+            systemModuleId,
+            invokeOptions,
+            impersonation,
+            capabilitySession,
+            verticalCaller,
+            systemDoorInstance,
+            undefined,
+            logTally,
+          ),
         );
       } catch (err) {
         // #1834: the pin missed — an answer, never a failure an operation could have produced.
@@ -3247,7 +3262,7 @@ export function defineScopeDO(
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
         // coordinator. `toRpcError` is not applied — that exists to make a throw
         // survivable, and this is not a throw.
-        return { result: undefined, platformRequests: 0, failure: toWireFailure(err) };
+        return withLogLines({ result: undefined, platformRequests: 0, failure: toWireFailure(err) });
       }
     }
 
@@ -3278,6 +3293,8 @@ export function defineScopeDO(
       systemDoorInstance?: string,
       /** #119: set only by `runPurgeSweep` on its own invokes — never an RPC argument. */
       purge?: boolean,
+      /** #2762: where this call's `ctx.log` lines are counted — `invoke`'s, never an RPC argument. */
+      logTally?: { logLines: number },
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -3407,6 +3424,8 @@ export function defineScopeDO(
         // stack: the bodies do not interleave, so set-and-clear here brackets exactly
         // one call. Same placement as the SQLite adapter's actor task, for this reason.
         this.invocationId = invokeOptions?.invocationId ?? null;
+        // #2762: counted for the same span, for the same reason.
+        this.logTally = logTally ?? null;
         try {
         // #1834: before anything opens. This instance is the storage the call meets, for the
         // whole call: a restore restarts the object, so it cannot move under a running body.
@@ -3704,6 +3723,7 @@ export function defineScopeDO(
           // and stamps its events with a call they had nothing to do with. A wrong
           // recorded fact, which is worse than the honest NULL this column uses.
           this.invocationId = null;
+          this.logTally = null;
         }
       });
     }
@@ -9054,6 +9074,12 @@ export function defineScopeDO(
      * passed into the consumer's context (`ConsumerDelivery`, #2055).
      */
     private invocationId: string | null = null;
+    /**
+     * #2762: the `ctx.log` lines written during the `invoke` now running, or null outside one —
+     * set and cleared beside `invocationId`, so a consumer its tail runs inline counts and an
+     * alarm-driven drain does not. Handed out through `invoke`'s tally, not read off here.
+     */
+    private logTally: { logLines: number } | null = null;
 
     private async dispatch(
       tenantId: TenantId,
@@ -9531,6 +9557,10 @@ export function defineScopeDO(
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
           // log's text is not JSON.
           redact: (text) => redactSecretText(text, minted),
+          // #2762: counted only inside an `invoke` (and the tail it runs inline).
+          onLine: () => {
+            if (this.logTally) this.logTally.logLines += 1;
+          },
         }),
         // #2192: the same id the log lines carry.
         get requestId() {

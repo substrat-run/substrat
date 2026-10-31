@@ -118,6 +118,8 @@ export interface InvocationRecord extends StoreCallTally, OutboundRecording, Aut
   principalKind?: string;
   /** What the operation itself emitted — `InvokeOptions.onEmitted`. */
   emitted?: EmittedReport;
+  /** #2762: the `ctx.log` lines the operation call wrote — `InvokeOptions.onLogLines`. */
+  logLines?: number;
   /** #2762: the route that answered — written by the middleware itself ({@link routeOf}). */
   route?: string | undefined;
   /**
@@ -649,6 +651,7 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     problemCode: record.problemCode,
     principalKind: record.principalKind,
     ...(record.emitted ? { emitted: record.emitted } : {}),
+    logLines: record.logLines,
     versionId: versionIdOf(done.env),
     ...(record.outputFields ? { outputFields: record.outputFields } : {}),
     ...(stamp.fieldCoverageId ? { fieldCoverageId: stamp.fieldCoverageId } : {}),
@@ -681,6 +684,7 @@ export interface PlatformCallLine {
   principalKind: string;
   operation: string;
   emitted: EmittedReport | undefined;
+  logLines: number | undefined;
   started: number;
 }
 
@@ -714,6 +718,7 @@ export function writePlatformCallLine(call: PlatformCallLine): void {
           problemCode: call.problemCode,
           principalKind: call.principalKind,
           ...(call.emitted ? { emitted: call.emitted } : {}),
+          logLines: call.logLines,
           versionId: versionIdOf(call.env),
           ...(parent ? { parentInvocationId: parent, ...(parentScope ? { parentScopeId: parentScope } : {}) } : {}),
         }),

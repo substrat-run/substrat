@@ -158,6 +158,11 @@ export interface ModuleLogContext {
    * rather than refused: refusing would fail the operation over a diagnostic.
    */
   redact?: (text: string) => string;
+  /**
+   * #2762: told once per line the sink took — how a host counts a request's `ctx.log` lines
+   * for its invocation line. Not told for a line the sink threw on, which was not written.
+   */
+  onLine?: () => void;
 }
 
 /** The line one call writes. Exported for the adapters' tests and for a sink that wants it. */
@@ -211,6 +216,7 @@ export function moduleLog(ctx: ModuleLogContext, sink: ModuleLogSink = consoleLo
   const write = (level: ModuleLogLevel) => (template: string, fields?: ModuleLogFields) => {
     try {
       sink(moduleLogLine(ctx, level, template, fields));
+      ctx.onLine?.();
     } catch {
       // A log line that could not be written is not the operation's failure.
     }

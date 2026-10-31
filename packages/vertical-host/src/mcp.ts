@@ -772,6 +772,11 @@ export function mountMcp(
               onEmitted: (report: NonNullable<InvocationRecord['emitted']>) => {
                 record.emitted = report;
               },
+              // #2762: summed, not reset with the tool: every call of a batch writes under the
+              // request's one id, so the count is the request's, as a reader of its lines sees it.
+              onLogLines: (count: number) => {
+                record.logLines = (record.logLines ?? 0) + count;
+              },
             }
           : {}),
       });

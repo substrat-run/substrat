@@ -459,6 +459,8 @@ export interface RequestRecord extends AuthRecording {
   problemCode: string | null;
   principalKind: string | null;
   eventCount: number | null;
+  /** #2762: the `ctx.log` lines the request wrote, its inline consumer tail included; `null` = not recorded. */
+  logLines: number | null;
   eventTypes: string[];
   entities: string[];
   versionId: string | null;

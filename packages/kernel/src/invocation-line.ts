@@ -126,6 +126,13 @@ export interface InvocationLogLine extends AuthRecording {
    * different from `0`: a read emits nothing, and that is a fact about it.
    */
   eventCount: number | null;
+  /**
+   * #2762: how many `ctx.log` lines the call wrote under this line's invocation id, including
+   * the consumers its post-commit tail ran inline (`InvokeOptions.onLogLines`); a runtime
+   * `console.log` is not counted. `null` when not recorded — a route that is not an operation, an
+   * older scope host, an async line — which is different from `0`.
+   */
+  logLines: number | null;
   /** The distinct types among those events, in emission order (capped, see `entities`). */
   eventTypes: string[];
   /**
@@ -270,6 +277,8 @@ export interface InvocationLineFields extends AuthRecording {
   problemCode?: string | null;
   principalKind?: string | null;
   emitted?: EmittedReport;
+  /** #2762: what `InvokeOptions.onLogLines` reported. */
+  logLines?: number | null;
   /**
    * #1901: write `entities` from `emitted` (the default). An async line passes `false`: an
    * entity id is data a vertical chose — an email, a customer number — and the async line
@@ -325,6 +334,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     problemCode: f.problemCode ?? null,
     principalKind: f.principalKind ?? null,
     eventCount: emitted ? emitted.total : null,
+    logLines: f.logLines ?? null,
     eventTypes: emitted ? distinct(emitted.events.map((e) => e.type)) : [],
     entities: emitted && f.withEntities !== false ? distinct(emitted.events.map((e) => e.entity)) : [],
     entityTypes: entityTypesOf(emitted),

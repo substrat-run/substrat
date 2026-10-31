@@ -1167,6 +1167,12 @@ interface ScopeRuntime {
    * cause is not kept here: it is passed into the consumer's context (#2055).
    */
   invocationId: string | null;
+  /**
+   * #2762: the `ctx.log` lines written during the `invoke` now running, or null outside one —
+   * set and cleared beside `invocationId`, so a consumer its tail runs inline counts and a later
+   * dispatch does not.
+   */
+  logLines: number | null;
 }
 
 /** One `_substrat_attachments` row (#473), as SELECTed. */
@@ -6903,6 +6909,11 @@ export class SqliteScopeHost implements ScopeHost {
         let emittedReport: EmittedReport | undefined;
         // #1184: what this call's executors did inline, for `onExecutorOutcomes`.
         const executorOutcomes: ExecutorOutcome[] | undefined = invokeOptions?.onExecutorOutcomes ? [] : undefined;
+        // #2762: this call's `ctx.log` lines, reported whether it committed or not.
+        let logLines: number | undefined;
+        const reportLogLines = () => {
+          if (logLines !== undefined) invokeOptions?.onLogLines?.(logLines);
+        };
         const invoked = await rt.actor.enqueue(async () => {
           // #1237: the invocation this call belongs to, for the duration of it. Set
           // INSIDE the actor task — the actor serializes invoke and dispatch alike, so
@@ -6910,6 +6921,8 @@ export class SqliteScopeHost implements ScopeHost {
           // `finally` so a later consumer carries none rather than the last caller's,
           // which is the leak `causedBy` had to be moved off the host to avoid.
           rt.invocationId = invokeOptions?.invocationId ?? null;
+          // #2762: counted for the same span, for the same reason.
+          rt.logLines = 0;
           // #2358: this call's trace, when `substrat dev` has installed a sink; undefined otherwise.
           const trace = invocationTrace(rt.invocationId);
           // #1672: the secrets this invocation mints — withheld from its idempotency recording,
@@ -7171,8 +7184,14 @@ export class SqliteScopeHost implements ScopeHost {
             // with a call they had nothing to do with. The same leak `causedBy` was
             // moved off the host to avoid.
             rt.invocationId = null;
+            logLines = rt.logLines ?? undefined;
+            rt.logLines = null;
           }
+        }).catch((err: unknown) => {
+          reportLogLines();
+          throw err;
         });
+        reportLogLines();
         if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
         if (exported > 0) options?.onExportedEvents?.(exported);
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
@@ -14722,6 +14741,10 @@ export class SqliteScopeHost implements ScopeHost {
           // The string-safe redaction: `redactSecrets` parses its serialization back, and a
           // log's text is not JSON.
           redact: (text) => redactSecretText(text, minted),
+          // #2762: counted only inside an `invoke` (and the tail it runs inline).
+          onLine: () => {
+            if (rt.logLines !== null) rt.logLines += 1;
+          },
         },
         trace
           ? (line) => {
@@ -15473,6 +15496,7 @@ export class SqliteScopeHost implements ScopeHost {
       derivedRepaired: false,
       mintEventId,
       invocationId: null,
+      logLines: null,
     };
     this.scopes.set(key, created);
     this.scopesById.set(scopeId, created);

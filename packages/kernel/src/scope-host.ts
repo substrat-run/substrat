@@ -980,6 +980,17 @@ export interface InvokeOptions {
    * idempotent replay. Absent from a host that predates it — read that as "not reported".
    */
   readonly onExecutorOutcomes?: (outcomes: readonly ExecutorOutcome[]) => void;
+  /**
+   * #2762: how many `ctx.log` lines the call wrote under its invocation id — the operation's
+   * own and those of the consumers its post-commit tail ran inline, which is what a reader
+   * opening the request's lines finds. A runtime `console.log` is not counted.
+   *
+   * Called when the call ENDS, committed or not: a log line is written even when the operation
+   * rolls back (`module-log.ts`), and a failure's lines are the ones a reader wants counted. Not
+   * called by a host that predates it, or when the call never reached the scope's queue (an
+   * entitlement refusal, say) — read that as "not recorded", where `0` is a fact.
+   */
+  readonly onLogLines?: (count: number) => void;
 }
 
 /** How many of an invocation's own events `onEmitted` names (#1746). `total` is uncapped. */

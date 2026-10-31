@@ -263,6 +263,7 @@ function requestRecordOf(e: Record<string, unknown>): RequestRecord {
     problemCode: str(source['problemCode']),
     principalKind: str(source['principalKind']),
     eventCount: num(source['eventCount']),
+    logLines: num(source['logLines']),
     eventTypes: strings(source['eventTypes']),
     entities: strings(source['entities']),
     versionId: str(source['versionId']),
