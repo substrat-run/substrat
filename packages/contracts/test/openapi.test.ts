@@ -257,11 +257,11 @@ describe('a write is untouched', () => {
 
     // A recursive schema's refs resolve from the document root, where OpenAPI reads `#`.
     const refs = JSON.stringify(doc).match(/"\$ref":"[^"]+"/g)!.map((r) => r.slice(8, -1));
-    expect(refs.some((r) => r.startsWith('#/components/schemas/customer-tree.'))).toBe(true);
     for (const ref of refs) {
       const target = ref.slice(2).split('/').reduce((at: any, key) => at?.[key], doc);
       expect(target, ref).toBeDefined();
     }
+    expect(refs.some((r) => r.startsWith('#/components/schemas/customer-tree.'))).toBe(true);
 
     // The security block is the vertical default unless the caller names its own.
     expect(doc.security).toEqual([{ session: [] }, { bearer: [] }]);

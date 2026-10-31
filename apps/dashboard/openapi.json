@@ -20928,7 +20928,7 @@
                     "root": {
                       "anyOf": [
                         {
-                          "$ref": "#/$defs/__schema0"
+                          "$ref": "#/components/schemas/dashboard-read-app-effects.output.schema0"
                         },
                         {
                           "type": "null"
@@ -20947,304 +20947,7 @@
                     "terminal",
                     "count"
                   ],
-                  "additionalProperties": false,
-                  "$defs": {
-                    "__schema0": {
-                      "type": "object",
-                      "properties": {
-                        "event": {
-                          "type": "object",
-                          "properties": {
-                            "id": {
-                              "type": "string",
-                              "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-                            },
-                            "type": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+\\.[a-z0-9-]+$"
-                            },
-                            "occurredAt": {
-                              "type": "string",
-                              "format": "date-time",
-                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
-                            },
-                            "actor": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "system": {
-                                      "type": "string",
-                                      "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*\\/)?[a-z0-9-~][a-z0-9-._~]*$"
-                                    }
-                                  },
-                                  "required": [
-                                    "system"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "connection": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    }
-                                  },
-                                  "required": [
-                                    "connection"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "capability": {
-                                      "type": "string",
-                                      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-                                    }
-                                  },
-                                  "required": [
-                                    "capability"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "vertical": {
-                                      "type": "string",
-                                      "pattern": "^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
-                                    },
-                                    "scope": {
-                                      "type": "string",
-                                      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-                                    }
-                                  },
-                                  "required": [
-                                    "vertical",
-                                    "scope"
-                                  ],
-                                  "additionalProperties": false
-                                }
-                              ]
-                            },
-                            "decodeError": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "payload": {},
-                            "authorization": {
-                              "anyOf": [
-                                {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "object",
-                                    "properties": {
-                                      "permission": {
-                                        "type": "string",
-                                        "maxLength": 41,
-                                        "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"
-                                      },
-                                      "grant": {
-                                        "type": "string",
-                                        "pattern": "^[A-Za-z0-9_-]+:[^\\s]+$"
-                                      }
-                                    },
-                                    "required": [
-                                      "permission"
-                                    ],
-                                    "additionalProperties": false
-                                  }
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "impersonation": {
-                              "anyOf": [
-                                {
-                                  "type": "object",
-                                  "properties": {
-                                    "session": {
-                                      "type": "string",
-                                      "minLength": 1
-                                    },
-                                    "by": {
-                                      "type": "string",
-                                      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-                                    }
-                                  },
-                                  "required": [
-                                    "session",
-                                    "by"
-                                  ],
-                                  "additionalProperties": false
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "piiClass": {
-                              "type": "string"
-                            },
-                            "subjectId": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "operation": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "version": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "causedBy": {
-                              "anyOf": [
-                                {
-                                  "type": "string",
-                                  "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            },
-                            "invocationId": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "id",
-                            "type",
-                            "occurredAt",
-                            "actor",
-                            "payload",
-                            "authorization",
-                            "impersonation",
-                            "piiClass",
-                            "subjectId",
-                            "operation",
-                            "version",
-                            "causedBy",
-                            "invocationId"
-                          ],
-                          "additionalProperties": false
-                        },
-                        "deliveries": {
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "consumer": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*\\/)?[a-z0-9-~][a-z0-9-._~]*$"
-                                  },
-                                  {
-                                    "type": "string",
-                                    "pattern": "^executor:.*"
-                                  }
-                                ]
-                              },
-                              "state": {
-                                "type": "string"
-                              },
-                              "at": {
-                                "type": "string",
-                                "format": "date-time",
-                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
-                              },
-                              "error": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "attempts": {
-                                "type": "integer",
-                                "minimum": 0,
-                                "maximum": 9007199254740991
-                              },
-                              "invocationId": {
-                                "anyOf": [
-                                  {
-                                    "type": "string"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "decodeError": {
-                                "type": "string",
-                                "minLength": 1
-                              }
-                            },
-                            "required": [
-                              "consumer",
-                              "state",
-                              "at",
-                              "error",
-                              "attempts",
-                              "invocationId"
-                            ],
-                            "additionalProperties": false
-                          }
-                        },
-                        "effects": {
-                          "type": "array",
-                          "items": {
-                            "$ref": "#/$defs/__schema0"
-                          }
-                        }
-                      },
-                      "required": [
-                        "event",
-                        "deliveries",
-                        "effects"
-                      ],
-                      "additionalProperties": false
-                    }
-                  }
+                  "additionalProperties": false
                 }
               }
             }
@@ -26507,6 +26210,301 @@
           "status"
         ],
         "additionalProperties": false
+      },
+      "dashboard-read-app-effects.output.schema0": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+              },
+              "type": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+\\.[a-z0-9-]+$"
+              },
+              "occurredAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "actor": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "system": {
+                        "type": "string",
+                        "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*\\/)?[a-z0-9-~][a-z0-9-._~]*$"
+                      }
+                    },
+                    "required": [
+                      "system"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "connection": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "connection"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "capability": {
+                        "type": "string",
+                        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                      }
+                    },
+                    "required": [
+                      "capability"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "vertical": {
+                        "type": "string",
+                        "pattern": "^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                      }
+                    },
+                    "required": [
+                      "vertical",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "decodeError": {
+                "type": "string",
+                "minLength": 1
+              },
+              "payload": {},
+              "authorization": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "permission": {
+                          "type": "string",
+                          "maxLength": 41,
+                          "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"
+                        },
+                        "grant": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+:[^\\s]+$"
+                        }
+                      },
+                      "required": [
+                        "permission"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "impersonation": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "session": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "by": {
+                        "type": "string",
+                        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                      }
+                    },
+                    "required": [
+                      "session",
+                      "by"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "piiClass": {
+                "type": "string"
+              },
+              "subjectId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "operation": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "version": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "causedBy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "invocationId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "occurredAt",
+              "actor",
+              "payload",
+              "authorization",
+              "impersonation",
+              "piiClass",
+              "subjectId",
+              "operation",
+              "version",
+              "causedBy",
+              "invocationId"
+            ],
+            "additionalProperties": false
+          },
+          "deliveries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "consumer": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(@[a-z0-9-~][a-z0-9-._~]*\\/)?[a-z0-9-~][a-z0-9-._~]*$"
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^executor:.*"
+                    }
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "error": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "attempts": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "invocationId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "decodeError": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "consumer",
+                "state",
+                "at",
+                "error",
+                "attempts",
+                "invocationId"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/dashboard-read-app-effects.output.schema0"
+            }
+          }
+        },
+        "required": [
+          "event",
+          "deliveries",
+          "effects"
+        ],
+        "additionalProperties": false
       }
     },
     "responses": {
@@ -26617,21 +26615,13 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "sb_session",
-        "description": "The vertical's session cookie. Instances on the Better-Auth provider use its cookie instead; same-origin requests carry either automatically."
-      },
-      "bearer": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT"
+        "description": "The dashboard's session cookie, set when you sign in. Same-origin requests carry it automatically."
       }
     }
   },
   "security": [
     {
       "session": []
-    },
-    {
-      "bearer": []
     }
   ]
 }

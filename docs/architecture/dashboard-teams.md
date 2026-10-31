@@ -190,7 +190,8 @@ The declared surface also emits its OpenAPI document. `apps/dashboard/src/api.ts
 `/api/teams/{teamId}`. `pnpm lint:api` writes it to the checked-in `apps/dashboard/openapi.json`,
 and CI's `pnpm lint:api --check` fails when a route changes without it. The document states each
 route's declared success status and response headers, and no `Idempotency-Key`, because
-`mountRoutes` does not honour one. The team-less routes are not declared, so they are not in it.
+`mountRoutes` does not honour one. Its only security scheme is the session cookie, because that
+is all `teamContext` reads; there is no bearer path. The team-less routes are not declared, so they are not in it.
 It is a review artifact; the worker does not serve it.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
