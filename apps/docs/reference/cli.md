@@ -587,6 +587,21 @@ A platform hostname (`--surface` with no `--domain`) is live immediately on the 
 `--domain` custom hostname walks DNS validation. To attach a custom domain to a bare scope id (a
 preview, a test env), reach for [`scope domain`](#scope-domain) instead.
 
+### `entitlements`
+
+```bash
+substrat entitlements list                                  # a workspace's entitlement keys
+substrat entitlements grant drive-vertical                  # grant a key
+substrat entitlements grant seats --plan pro --quota 10 --expires 2027-01-01T00:00:00Z
+substrat entitlements revoke drive-vertical                 # withdraw a key (staff)
+```
+
+`--tenant <id-or-slug>` picks the workspace (the default from `substrat login` otherwise). `grant`
+and `revoke` print the workspace's resulting keys, with plan, quota and expiry. The rules are the
+control plane's, and a refusal is printed as it words it: a workspace credential can grant only keys
+a vertical it can install declares and no plan fields (`--plan`, `--quota`, `--expires` are staff),
+and `revoke` is staff-only. A key containing a slash (a legacy `t-…/name` grant) is passed as written.
+
 ### `publish` / `unpublish`
 
 ```bash

@@ -81,6 +81,7 @@ import {
   formatHostnames,
   formatDnsRecords,
 } from './hostnames.js';
+import { formatEntitlements, grantEntitlement, listEntitlements, planOf, revokeEntitlement } from './entitlements.js';
 
 const argv = process.argv.slice(2);
 
@@ -290,6 +291,13 @@ Usage:
                                               and print any records still to publish
   substrat hostnames unbind <hostname>        remove a binding (the surface's canonical
                                               flag moves only when you bind a new one)
+  substrat entitlements list                  a workspace's entitlement keys
+  substrat entitlements grant <key> [--plan <name>] [--expires <iso>] [--quota <n>]
+                                              grant a key (a workspace credential may grant
+                                              only keys a vertical declares, without plan
+                                              fields; the plane's refusal is printed as-is)
+  substrat entitlements revoke <key>          withdraw a key (staff only). All three take
+                                              --tenant <id-or-slug> and print the key list
   substrat preview create [dir] --tag <tag>   push this tree and run it against a FORK of
                     [--source-scope <id>] [--empty] [--ttl 72h|none] [--surface app] [--refresh]
                                               prod on its own --<tag> URL (private
@@ -1082,6 +1090,36 @@ async function cmdScope(): Promise<void> {
   });
 }
 
+/** A workspace's entitlement keys (control-plane.md §4.3, #2778); the plane judges who may grant or revoke. */
+async function cmdEntitlements(): Promise<void> {
+  const sub = argv[1];
+  const key = argv[2];
+  const usage =
+    'usage: substrat entitlements list [--tenant <id-or-slug>]\n' +
+    '       substrat entitlements grant <key> [--plan <name>] [--expires <iso>] [--quota <n>] [--tenant <t>]\n' +
+    '       substrat entitlements revoke <key> [--tenant <t>]';
+  const needsKey = sub === 'grant' || sub === 'revoke';
+  if (!['list', 'grant', 'revoke'].includes(sub ?? '') || (needsKey && (!key || key.startsWith('--')))) {
+    console.error(usage);
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(`authenticating with ${as}`);
+  const tenantId = await resolveTenantId(
+    controlPlaneUrl,
+    header,
+    flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant,
+  );
+  const target = { controlPlaneUrl, header, tenantId };
+  const rows =
+    sub === 'list'
+      ? await listEntitlements(target)
+      : sub === 'grant'
+        ? await grantEntitlement(target, key!, planOf({ plan: flag('plan'), expires: flag('expires'), quota: flag('quota') }))
+        : await revokeEntitlement(target, key!);
+  console.log(formatEntitlements(rows));
+}
+
 /**
  * Surface hostname bindings (K-26 multi-surface — the CLI half of the dashboard's
  * Domains tab). Tenant-narrowed server-side: a builder session or push token reaches
@@ -1604,6 +1642,8 @@ async function main(): Promise<void> {
       return cmdScope();
     case 'hostnames':
       return cmdHostnames();
+    case 'entitlements':
+      return cmdEntitlements();
     case 'preview':
       return cmdPreview();
     case 'init':
