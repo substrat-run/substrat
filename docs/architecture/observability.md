@@ -547,7 +547,11 @@ middleware sets the route first, and the more specific route is kept. That index
 last match, is the reason a catch-all middleware registered after a handler does not displace the
 handler's pattern. A request no route answered names the wildcard it fell through (`GET /*`).
 Only that middleware sees the Hono context, so it writes the route onto the record even when the
-platform's entry stamped the request, before the entry writes the line and the header. The value
+platform's entry stamped the request, before the entry writes the line and the header. It assigns
+rather than fills in, so a value a handler wrote into the record is replaced and the facet stays
+bounded to the route table; the field is read-only to the type for the same reason. An upgrade
+(101) carries no record header, since the router answers one as it came and could not strip it,
+and the read refuses a `path` value that is not `<METHOD> <pattern>`. The value
 is capped at 128 characters like every record field, rides the header as `route`, and becomes
 blob 11. The facet is `path`, but the line's own `path` is the called path, so the list read
 filters on `route`. A non-Hono worker and a vertical-host from before it write `null`. It bumped
