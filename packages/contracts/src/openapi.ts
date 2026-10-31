@@ -84,6 +84,10 @@ export interface ApiOperationDoc {
    * client reads it and builds a retry it does not have.
    */
   idempotency?: false;
+  /** The success status, when it is not 200 — a declared route's `201` for a create (#2170). */
+  status?: 200 | 201 | 202;
+  /** Response headers the success carries beside its body (a declared route's `responseHeaders`). */
+  responseHeaders?: readonly string[];
   paged?: {
     /** Present on a handler-composed read: the ENTRY field the cursor walks. */
     sortKey?: string;
@@ -125,6 +129,35 @@ export interface ApiDocumentInfo {
   version: string;
   description?: string;
 }
+
+/**
+ * How a caller authenticates, when it is not a vertical's default (its session cookie, or the
+ * issuer's bearer token). `schemes` becomes `components.securitySchemes`, `requirement` the
+ * document-wide `security` — the dashboard, for one, takes its session cookie and nothing else.
+ */
+export interface ApiDocumentSecurity {
+  schemes: Record<string, unknown>;
+  requirement: Record<string, string[]>[];
+}
+
+const VERTICAL_SECURITY: ApiDocumentSecurity = {
+  schemes: {
+    // The primary path: the vertical's own session cookie. Same-origin
+    // try-it (the /api/docs page) rides it automatically — the browser
+    // attaches it, so there is nothing to paste.
+    session: {
+      type: 'apiKey',
+      in: 'cookie',
+      name: 'sb_session',
+      description:
+        "The vertical's session cookie. Instances on the Better-Auth provider use its cookie instead; same-origin requests carry either automatically.",
+    },
+    // The API-client path: OIDC-configured instances also accept the
+    // issuer's own bearer token (vertical-auth's resolve fallback).
+    bearer: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
+  },
+  requirement: [{ session: [] }, { bearer: [] }],
+};
 
 /** Where the one problem schema lives in the document, referenced from every failure. */
 const PROBLEM_SCHEMA_REF = '#/components/schemas/Problem';
@@ -217,11 +250,51 @@ const ERROR_RESPONSE_COMPONENTS: Readonly<Record<string, unknown>> = Object.from
   }),
 );
 
-// The per-schema `$schema` key is dropped: OpenAPI 3.1's document-wide dialect
-// IS draft 2020-12, so repeating it on every request body is pure noise.
-const jsonSchema = (schema: z.ZodType, io: 'input' | 'output') => {
-  const { $schema: _, ...rest } = z.toJSONSchema(schema, { io, target: 'draft-2020-12' });
-  return rest;
+/**
+ * A Zod schema as a document schema.
+ *
+ * The per-schema `$schema` key is dropped: OpenAPI 3.1's document-wide dialect IS draft
+ * 2020-12, so repeating it on every request body is pure noise.
+ *
+ * A recursive schema (`z.lazy`) refers to itself, and Zod writes that as `#/$defs/…` when the
+ * recursion sits inside the schema, or as `#` when the schema itself is the recursive one. Inside
+ * an OpenAPI document `#` is the document root, so either ref resolves to the wrong thing or to
+ * nothing. The definitions (and a self-referring root) are hoisted into `components.schemas`
+ * (`sink`) under `owner`-scoped names, and every ref is rewritten to point there.
+ */
+const jsonSchema = (
+  schema: z.ZodType,
+  io: 'input' | 'output',
+  owner: string,
+  sink: Record<string, unknown>,
+): Record<string, unknown> => {
+  const { $schema: _, $defs, ...rest } = z.toJSONSchema(schema, { io, target: 'draft-2020-12' }) as Record<
+    string,
+    unknown
+  > & { $defs?: Record<string, unknown> };
+  const root = `${owner}.${io}`;
+  let selfReferring = false;
+  const rewrite = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.entries(value).map(([key, inner]) => {
+        if (key !== '$ref' || typeof inner !== 'string') return [key, rewrite(inner)];
+        if (inner === '#') {
+          selfReferring = true;
+          return [key, `#/components/schemas/${root}`];
+        }
+        return inner.startsWith('#/$defs/')
+          ? [key, `#/components/schemas/${root}.${inner.slice('#/$defs/'.length)}`]
+          : [key, inner];
+      }),
+    );
+  };
+  for (const [key, def] of Object.entries($defs ?? {})) sink[`${root}.${key}`] = rewrite(def);
+  const body = rewrite(rest) as Record<string, unknown>;
+  if (!selfReferring) return body;
+  sink[root] = body;
+  return { $ref: `#/components/schemas/${root}` };
 };
 
 /**
@@ -284,13 +357,17 @@ function etagResponseHeader(): Record<string, unknown> {
 export function buildOpenApiDocument(
   info: ApiDocumentInfo,
   catalog: ApiCatalog,
+  security: ApiDocumentSecurity = VERTICAL_SECURITY,
 ): Record<string, unknown> {
   const paths: Record<string, unknown> = {};
+  /** The definitions recursive schemas hoist out of their operations (see `jsonSchema`). */
+  const hoisted: Record<string, unknown> = {};
   for (const [name, op] of Object.entries(catalog)) {
     const url = op.http ? `/api${op.http.path}` : `/api/op/${name}`;
     const verb = op.http ? op.http.method.toLowerCase() : 'post';
+    const operationId = name.replace(/[^a-zA-Z0-9]+/g, '-');
     const inputShape = op.input
-      ? (jsonSchema(op.input, 'input') as {
+      ? (jsonSchema(op.input, 'input', operationId, hoisted) as {
           properties?: Record<string, Record<string, unknown>>;
           required?: string[];
         })
@@ -449,7 +526,7 @@ export function buildOpenApiDocument(
     paths[url] = {
       ...existing,
       [verb]: {
-        operationId: name.replace(/[^a-zA-Z0-9]+/g, '-'),
+        operationId,
         summary: op.summary,
         ...(params.length > 0 ? { parameters: params } : {}),
         ...(op.description ? { description: op.description } : {}),
@@ -461,12 +538,12 @@ export function buildOpenApiDocument(
           ? {
               requestBody: {
                 required: !op.inputOptional,
-                content: { 'application/json': { schema: jsonSchema(op.input, 'input') } },
+                content: { 'application/json': { schema: jsonSchema(op.input, 'input', operationId, hoisted) } },
               },
             }
           : {}),
         responses: {
-          '200': {
+          [String(op.status ?? 200)]: {
             description: op.paged
               ? op.paged.total
                 ? 'One page of results. The walk is in the response headers.'
@@ -477,11 +554,14 @@ export function buildOpenApiDocument(
             // adopting paging a breaking change for consumers a vertical cannot see —
             // and could not be done at all for the list reads whose published shape
             // was a bare array. In headers the body is what it always was.
-            ...(op.paged || op.concurrency
+            ...(op.paged || op.concurrency || op.responseHeaders?.length
               ? {
                   headers: {
                     ...(op.paged ? pageResponseHeaders(op.paged.total === true) : {}),
                     ...(op.concurrency ? etagResponseHeader() : {}),
+                    ...Object.fromEntries(
+                      (op.responseHeaders ?? []).map((name) => [name, { schema: { type: 'string' } }]),
+                    ),
                   },
                 }
               : {}),
@@ -492,6 +572,8 @@ export function buildOpenApiDocument(
                       schema: jsonSchema(
                         op.paged ? z.array(op.output) : op.output,
                         'output',
+                        operationId,
+                        hoisted,
                       ),
                     },
                   },
@@ -524,25 +606,11 @@ export function buildOpenApiDocument(
       // One problem schema, referenced by every failure response above — the same
       // object `toProblem` builds and validates, so the documented failure shape
       // cannot drift from the emitted one.
-      schemas: { Problem: jsonSchema(problem, 'output') },
+      schemas: { Problem: jsonSchema(problem, 'output', 'Problem', hoisted), ...hoisted },
       responses: ERROR_RESPONSE_COMPONENTS,
-      securitySchemes: {
-        // The primary path: the vertical's own session cookie. Same-origin
-        // try-it (the /api/docs page) rides it automatically — the browser
-        // attaches it, so there is nothing to paste.
-        session: {
-          type: 'apiKey',
-          in: 'cookie',
-          name: 'sb_session',
-          description:
-            "The vertical's session cookie. Instances on the Better-Auth provider use its cookie instead; same-origin requests carry either automatically.",
-        },
-        // The API-client path: OIDC-configured instances also accept the
-        // issuer's own bearer token (vertical-auth's resolve fallback).
-        bearer: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
-      },
+      securitySchemes: security.schemes,
     },
-    security: [{ session: [] }, { bearer: [] }],
+    security: security.requirement,
   };
 }
 

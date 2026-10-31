@@ -183,8 +183,16 @@ handler the assistant can call reads every argument from the parsed input, never
 `level`, `search` and the rest, and the request and pattern reads build the plane's allowlisted
 parameters from the input, a list field once per value. A tool call's arguments therefore mean
 what the same values in a URL mean. The four app chart reads the assistant is not given (traffic,
-failures, overlays, field reads) still read the query. What is still open under #2170: the
-declared surface does not yet emit an `openapi.json` with its `--check` gate.
+failures, overlays, field reads) still read the query.
+
+The declared surface also emits its OpenAPI document. `apps/dashboard/src/api.ts` builds it from
+`dashboardRoutes`, the object the mount and the generated client read, with each path under
+`/api/teams/{teamId}`. `pnpm lint:api` writes it to the checked-in `apps/dashboard/openapi.json`,
+and CI's `pnpm lint:api --check` fails when a route changes without it. The document states each
+route's declared success status and response headers, and no `Idempotency-Key`, because
+`mountRoutes` does not honour one. Its only security scheme is the session cookie, because that
+is all `teamContext` reads; there is no bearer path. The team-less routes are not declared, so they are not in it.
+It is a review artifact; the worker does not serve it.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 
