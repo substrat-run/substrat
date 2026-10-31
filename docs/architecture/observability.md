@@ -507,6 +507,19 @@ dataset, behind the same seam:
 - Log patterns stay on the telemetry cube (a request writes many `ctx.log` lines), and so does
   the Lines list: sampling cannot find one request.
 
+**The `entity` facet (#2762).** A request's events can be about several entity types, and a cube
+groups by one value per line. So the line carries `entityTypes`: the distinct types, sorted and
+joined with `,` (`joinEntityTypes` in contracts), so one set of types is one cube value. The
+same value rides the record header and becomes blob 10. The reads split it back, and a request
+is counted under **each** of its types, so the facet's counts may add up to more than the total.
+Ticking two types still counts a request that touched both once, since the filter is per row.
+The list read matches a type as a whole member of the set, escaped, then re-checks each record.
+Datapoints from before the router change have an empty blob 10, and lines from before a
+vertical's re-push carry no `entityTypes`; both are counted, under no entity type. Adding the
+dimension bumped `REQUEST_CUBE_SHAPE`, which moves the cached request blocks to new keys. A
+block stored before the bump has no entity dimension, so it is recounted once, never served. A
+new request dimension does the same: a field on the row, a group key in both sources, a bump.
+
 **4.6a Async work's lines (#1901).** A request's line is written around the worker's `fetch`,
 which trusts a tenant only from the router's assertion. Work that never arrives as a request
 used to write nothing: a consumer delivery, its retries and its dead-letter, and a schedule run
