@@ -17,7 +17,6 @@ import {
   LOGS_INCOMPLETE_HEADER,
   REQUEST_SEARCH_NOT_COUNTED,
   TENANT_SERIES_SCOPE_CAP,
-  aggregateReads,
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
   deploymentRefFor,
@@ -7241,14 +7240,12 @@ describe('control-plane API — observability proxy', () => {
       // #2762: the list takes free text; the counts cannot honour it, and say so by a reason
       // a client keys on — never counts of every request under a filter they ignored.
       it('takes search on the list and refuses it on the counts, with a stable reason', async () => {
-        const counted: unknown[] = [];
-        const source = {
-          requests: async (q: unknown) => (counted.push(q), { rows: [], estimated: false }),
-          patterns: async () => ({ rows: [], estimated: false }),
-        };
-        const app = appWith({ ...requestReader, ...aggregateReads(source) });
+        const app = appWith(requestReader);
         await app.request('/observability/tenant-requests?search=%20POST%20%2Forders%20', { headers: asBuilder });
         expect(requestSeen['list']!.at(-1)).toMatchObject({ search: 'POST /orders' });
+        // Refused before the directory read and the reader: a refused count costs nothing.
+        const listScopes = vi.spyOn(host.admin, 'listScopes');
+        const counted = requestSeen['volume']!.length + requestSeen['facets']!.length;
         for (const r of ['tenant-request-volume', 'tenant-request-facets']) {
           const res = await app.request(`/observability/${r}?search=orders`, { headers: asBuilder });
           expect(res.status, r).toBe(400);
@@ -7259,7 +7256,9 @@ describe('control-plane API — observability proxy', () => {
             detail: expect.stringContaining('search applies to the request list'),
           });
         }
-        expect(counted).toEqual([]);
+        expect(listScopes).not.toHaveBeenCalled();
+        expect(requestSeen['volume']!.length + requestSeen['facets']!.length).toBe(counted);
+        listScopes.mockRestore();
       });
     });
   });

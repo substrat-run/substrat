@@ -326,8 +326,9 @@ export interface TenantRequestScope {
   /**
    * #2762: free text a request must contain — in its operation, its path or its id, or, spelled
    * `<METHOD> <path text>`, its method and path. The request LIST alone takes it: the counts
-   * are computed from cubes that hold no id and no path, so the aggregate reads refuse it
-   * (`REQUEST_SEARCH_NOT_COUNTED`) rather than count a different set than the list shows.
+   * are computed from cubes that hold no id and no path, so the counting routes refuse it
+   * (`REQUEST_SEARCH_NOT_COUNTED`) rather than count a different set than the list shows, and
+   * the aggregate reads never see it.
    */
   search?: string;
 }
@@ -358,12 +359,11 @@ export function requestSearchOf(search: string): { text: string; method?: { meth
     : { text: search };
 }
 
-/** Does a request record answer `search`, as `requestSearchOf` reads it? */
+/** Does a request record answer a search, as `requestSearchOf` read it? */
 export function requestMatchesSearch(
   r: { operation: string | null; path: string | null; invocationId: string | null; method: string | null },
-  search: string,
+  s: ReturnType<typeof requestSearchOf>,
 ): boolean {
-  const s = requestSearchOf(search);
   if ([r.operation, r.path, r.invocationId].some((v) => v !== null && v.includes(s.text))) return true;
   return s.method !== undefined && r.method === s.method.method && r.path !== null && r.path.includes(s.method.path);
 }

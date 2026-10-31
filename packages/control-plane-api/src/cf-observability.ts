@@ -1215,6 +1215,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // for its siblings until a row is opened (which `tenantLogs` with the invocation id
     // already answers).
     async tenantRequests(input) {
+      const search = input.search === undefined ? undefined : requestSearchOf(input.search);
       const events = await queryRaw(requestFilters(input), { from: input.from, to: input.to }, input.limit);
       return events
         // #1901: the query narrowed on kind already; this holds the answer to the same
@@ -1223,7 +1224,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         .sort((a, b) => rawTime(b) - rawTime(a))
         .map(requestRecordOf)
         // #2762: likewise for `search` — the answer is the rule `requestSearchOf` states.
-        .filter((r) => input.search === undefined || requestMatchesSearch(r, input.search))
+        .filter((r) => search === undefined || requestMatchesSearch(r, search))
         .slice(0, input.limit);
     },
 
