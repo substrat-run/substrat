@@ -301,6 +301,33 @@ describe('advanceCopyJob (#2450)', () => {
     expect({ discarded: h.discarded, ended: h.ended }).toEqual({ discarded: [state.stageId], ended: [state.stageId] });
   });
 
+  it('a catch-up spans steps: a step whose budget is spent after a batch leaves the next one to the next step', async () => {
+    const h = harness();
+    // Two captured pages, then a batch that is not final and one that is; each batch takes 1 s.
+    const asked: number[] = [];
+    const source = {
+      endScopeCapture: async () => undefined,
+      exportScopePage: async (_s: string, cursor: string | null, o: { capture?: string } = {}): Promise<ScopeDumpPage> => {
+        const n = cursor === null ? 0 : 1;
+        return { tables: PAGES[n]!, next: n === 0 ? '1' : null, loadStamp: null, revision: `r${n}`, ...(o.capture ? { captured: true as const } : {}) };
+      },
+      exportScopeChanges: async (_s: string, _c: string, seq: number) => {
+        asked.push(seq);
+        h.clock.now += 1_000;
+        return { tables: [{ ...rowsOf(`x${seq}`), rowids: [9], deleted: [] }], final: seq === 1, revision: seq === 1 ? 'final' : 'r9' };
+      },
+    } as unknown as VerticalClient;
+    const dest = { ...(await h.deps.clientForRef('dst'))!, stageScopeChanges: async () => ({ staged: true }) } as unknown as VerticalClient;
+    const deps = { ...h.deps, clientForRef: async (ref: string) => (ref === 'src' ? source : ref === 'dst' ? dest : undefined) };
+    const begun = (await beginTransfer({ source, dest }, { from: prod, to: preview }, { stamp: false, alwaysStage: true })) as { state: TransferState };
+    const first = await advanceCopyJob(deps, newCopyJob(h.spec(), begun.state, h.clock.now), { stepMs: 500 });
+    expect(first).toMatchObject({ status: 'copying', state: { cursor: null, capture: true, batch: 1 } });
+    expect(asked).toEqual([0]);
+    const second = await advanceCopyJob(deps, first, { stepMs: 500 });
+    expect(second).toMatchObject({ status: 'done', done: { revision: 'final' } });
+    expect(asked).toEqual([0, 1]);
+  });
+
   it('a stopped step moves no further page, and a copy it tears opens no new stage', async () => {
     // Stopped before it starts: nothing at all, not even the renewal.
     const idle = harness();

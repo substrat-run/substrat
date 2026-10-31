@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scopeId, type ScopeDumpChange, type ScopeDumpChanges, type ScopeDumpPage, type ScopeDumpTable } from '@substrat-run/contracts';
+import { CAPTURE_REFUSALS, scopeId, type ScopeDumpChange, type ScopeDumpChanges, type ScopeDumpPage, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { TRANSFER_ATTEMPTS, beginTransfer, transferScope, transferStep, type TransferState, type VerticalClient } from '../src/vertical-client.js';
@@ -97,6 +97,8 @@ function capturingSource(o: {
   refuseOpen?: boolean;
   echo?: boolean;
   lost?: number;
+  /** A batch answered with a 412 that is no capture refusal, on every attempt. */
+  fails?: number;
 }) {
   const reads: { cursor: string | null; capture?: string }[] = [];
   const asked: { copyId: string; seq: number }[] = [];
@@ -108,7 +110,7 @@ function capturingSource(o: {
     exportScopeStamped: async () => { throw new Error('whole export not expected'); },
     exportScopePage: async (_sid: string, cursor: string | null, opts: { capture?: string } = {}): Promise<ScopeDumpPage> => {
       reads.push({ cursor, ...(opts.capture ? { capture: opts.capture } : {}) });
-      if (cursor === null && opts.capture && o.refuseOpen) throw new ControlPlaneError(412, 'cannot capture');
+      if (cursor === null && opts.capture && o.refuseOpen) throw new ControlPlaneError(412, `${CAPTURE_REFUSALS.expressionIndex}: t_rows (i)`);
       if (cursor === null) attempt++;
       const n = cursor === null ? 0 : Number(cursor);
       const captured = opts.capture !== undefined && o.echo !== false;
@@ -125,7 +127,8 @@ function capturingSource(o: {
     },
     exportScopeChanges: async (_sid: string, copyId: string, seq: number): Promise<ScopeDumpChanges> => {
       asked.push({ copyId, seq });
-      if (attempt === 1 && seq === o.lost) throw new ControlPlaneError(412, 'the capture is gone');
+      if (attempt === 1 && seq === o.lost) throw new ControlPlaneError(412, CAPTURE_REFUSALS.gone);
+      if (seq === o.fails) throw new ControlPlaneError(412, 'some other precondition');
       const batch = o.batches[Math.min(seq, o.batches.length - 1)]!;
       return { tables: batch.tables, final: batch.final === true, revision: batch.final ? 'final' : `r${++revision}` };
     },
@@ -214,7 +217,8 @@ describe('transferScope (#2450)', () => {
     expect(refused).toBeInstanceOf(ControlPlaneError);
     expect((refused as ControlPlaneError).status).toBe(409);
     expect(calls.filter((c) => c.cursor === null)).toHaveLength(TRANSFER_ATTEMPTS);
-    expect(discarded).toHaveLength(TRANSFER_ATTEMPTS);
+    // Every attempt's stage is discarded (best effort, so one may be discarded twice).
+    expect(new Set(discarded).size).toBe(TRANSFER_ATTEMPTS);
   });
 
   describe('a busy source, caught up on its writes (#2450 step 3)', () => {
@@ -280,14 +284,44 @@ describe('transferScope (#2450)', () => {
       expect(out).toMatchObject({ revision: 'final' });
     });
 
+    it('a 412 that is no capture refusal fails the copy as it is, and its stage and capture are given up', async () => {
+      const { source, ended, asked } = capturingSource({ pages: 2, batches: [{ tables: [], final: true }], fails: 0 });
+      const { dest, staged, discarded } = stagingDest();
+      const refused = await transferScope(source, dest, { from, to }).catch((e: unknown) => e);
+      expect(refused).toMatchObject({ status: 412, message: 'some other precondition' });
+      // Not read as a lost capture: no second attempt.
+      expect(asked).toHaveLength(1);
+      expect({ ended, discarded }).toEqual({ ended: [staged[0]!.stageId], discarded: [staged[0]!.stageId] });
+    });
+
+    it('a first page the destination refuses to stage ends the capture it opened', async () => {
+      const { source, ended } = capturingSource({ pages: 2, batches: [] });
+      const dest = {
+        stageScopePage: async () => {
+          throw new ControlPlaneError(409, 'a different staged load is in progress; retry after its copy finishes');
+        },
+      } as unknown as VerticalClient;
+      const refused = await beginTransfer({ source, dest }, { from, to }, { alwaysStage: true }).catch((e: unknown) => e);
+      expect((refused as ControlPlaneError).status).toBe(409);
+      expect(ended).toHaveLength(1);
+    });
+
+    it('a one-page copy whose catch-up throws in its first request gives up its stage and capture', async () => {
+      const { source, ended } = capturingSource({ pages: 1, batches: [{ tables: [], final: true }], fails: 0 });
+      const { dest, staged, discarded } = stagingDest();
+      const refused = await beginTransfer({ source, dest }, { from, to }, { alwaysStage: true }).catch((e: unknown) => e);
+      expect((refused as ControlPlaneError).status).toBe(412);
+      expect({ ended, discarded }).toEqual({ ended: [staged[0]!.stageId], discarded: [staged[0]!.stageId] });
+    });
+
     it(`a catch-up that never reaches a final batch is bounded, then refused with 409 after ${TRANSFER_ATTEMPTS} attempts`, async () => {
       const { source, ended, asked } = capturingSource({ pages: 2, batches: [{ tables: [rowChange([[1, 'x']])] }] });
       const { dest, discarded } = stagingDest();
       const refused = await transferScope(source, dest, { from, to }, { catchUpBatches: 2 }).catch((e: unknown) => e);
       expect((refused as ControlPlaneError).status).toBe(409);
       expect(asked).toHaveLength(2 * TRANSFER_ATTEMPTS);
-      // Every attempt's capture ended beside its stage (an end is best effort, so one may be ended twice).
-      expect(discarded).toHaveLength(TRANSFER_ATTEMPTS);
+      // Every attempt's capture ended beside its stage (best effort, so one may be given up twice).
+      expect(new Set(discarded).size).toBe(TRANSFER_ATTEMPTS);
       expect(new Set(ended)).toEqual(new Set(discarded));
     });
   });

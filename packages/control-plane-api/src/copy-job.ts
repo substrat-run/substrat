@@ -1,7 +1,7 @@
 import type { PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { endCapture, transferStep, type TransferState, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { abandonCopy, transferStep, type TransferState, type TransferredScope, type VerticalClient } from './vertical-client.js';
 
 /**
  * A scope copy run in the background (#2450, step 2).
@@ -239,11 +239,8 @@ export async function advanceCopyJob(
    */
   const failed = async (status: number, message: string): Promise<CopyJobRecord> => {
     const dest = await deps.clientForRef(spec.destRef).catch(() => undefined);
-    await dest?.discardStagedScope(staged.into, staged.stageId).catch(() => undefined);
-    if (staged.capture) {
-      const source = await deps.clientForRef(spec.sourceRef).catch(() => undefined);
-      if (source) await endCapture({ source }, staged.from, staged.stageId);
-    }
+    const source = staged.capture ? await deps.clientForRef(spec.sourceRef).catch(() => undefined) : undefined;
+    await abandonCopy({ source, dest }, staged);
     return { ...job, status: 'failed', error: { status, message }, nextDelayMs: 0, updatedAt: now() };
   };
   if (now() > spec.deadline) {

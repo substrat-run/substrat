@@ -71,6 +71,7 @@ import type {
   Visibility,
 } from '@substrat-run/contracts';
 import {
+  CAPTURE_REFUSALS,
   PREVIEW_CLIENT_PATH,
   attachmentRecord,
   projectedConnectionGrant,
@@ -2727,9 +2728,9 @@ export async function transferScope(
     try {
       progress = await transferStep({ source, dest }, state, opts);
     } catch (e) {
-      // Nobody resumes a copy run in one request, so its capture goes with it. (A job's survives a
-      // fault, for the next step to resume.)
-      if (state.capture) await endCapture({ source }, state.from, state.stageId);
+      // Nobody resumes a copy run in one request, so its stage and capture go with it. (A job's
+      // survive a fault, for the next step to resume.)
+      await abandonCopy({ source, dest }, state);
       throw e;
     }
   }
@@ -2771,7 +2772,7 @@ export async function beginTransfer(
     ? ('predates' as const)
     : ask
       ? await retry(() => source.exportScopePage(from, null, { stamp, capture: stageId })).catch((e: unknown) => {
-        if (!(e instanceof ControlPlaneError) || e.status !== 412) throw e;
+        if (!captureRefusal(e, 'expressionIndex')) throw e;
         refused = true;
         return retry(() => source.exportScopePage(from, null, { stamp }));
       })
@@ -2809,7 +2810,16 @@ export async function beginTransfer(
   };
   if (opened !== 'predates') {
     if (state.cursor !== null) return { state };
-    return state.capture ? transferStep(ends, state, opts) : { done: doneOf(state) };
+    if (!state.capture) return { done: doneOf(state) };
+    // Caught up here, within a step's budget: a source still writing is left for the next step.
+    const until = Date.now() + BEGIN_CATCH_UP_MS;
+    try {
+      return await transferStep(ends, state, { ...opts, until: () => Date.now() >= until });
+    } catch (e) {
+      // Nothing names this copy yet, so nothing else would discard its stage or end its capture.
+      await abandonCopy(ends, state);
+      throw e;
+    }
   }
   // A destination that cannot stage takes the dump whole, so the pages are held here instead, read
   // at a quiet moment: it cannot take a change batch either.
@@ -2853,7 +2863,7 @@ export async function transferStep(
     const capture = next.capture ? { capture: next.stageId } : {};
     const page = await retry(() => source.exportScopePage(next.from, at, { stamp: next.stamp, ...capture })).catch((e: unknown) => {
       // A capture that is gone (ended, expired, its schema moved) cannot vouch for the pages.
-      if (next.capture && e instanceof ControlPlaneError && e.status === 412) return 'lost' as const;
+      if (next.capture && captureRefusal(e, 'gone', 'schemaMoved')) return 'lost' as const;
       throw e;
     });
     if (page === 'lost') return restart(ends, next, opts, true);
@@ -2876,6 +2886,8 @@ export async function transferStep(
   }
   while (next.capture) {
     const batch = next.batch ?? 0;
+    // Stopped: no batch more, the first one included. A budget spent still lets one batch through.
+    if (opts.stopped?.()) return { state: next };
     if (batch >= (opts.catchUpBatches ?? CATCH_UP_BATCHES)) return restart(ends, next, opts, true);
     if (batch > 0 && opts.until?.()) return { state: next };
     const at = next;
@@ -2883,7 +2895,7 @@ export async function transferStep(
       ? ('predates' as const)
       : await retry(() => source.exportScopeChanges!(at.from, at.stageId, batch)).catch((e: unknown) => {
         // Gone, or its schema moved: a final answer that was lost, asked again, is gone too.
-        if (e instanceof ControlPlaneError && e.status === 412) return 'lost' as const;
+        if (captureRefusal(e, 'gone', 'schemaMoved')) return 'lost' as const;
         throw e;
       });
     if (changes === 'lost') return restart(ends, next, opts, true);
@@ -2925,9 +2937,9 @@ async function restart(
   opts: TransferOptions & { stopped?: () => boolean; capture?: boolean },
   staged: boolean,
 ): Promise<TransferProgress> {
-  // Best effort: a stage nothing commits is replaced by the next one, and goes with a wipe.
-  if (staged) await ends.dest.discardStagedScope(state.into, state.stageId).catch(() => undefined);
-  if (state.capture) await endCapture(ends, state.from, state.stageId);
+  // Best effort: a stage nothing commits is replaced by the next one, and goes with a wipe. (An
+  // unstaged copy holds no capture: it was ended when the destination turned out unable to stage.)
+  if (staged) await abandonCopy(ends, state);
   // Stopped: a new stage would outlast whoever stopped this copy, so none is opened.
   if (opts.stopped?.()) return { state };
   const attempts = opts.attempts ?? TRANSFER_ATTEMPTS;
@@ -2945,9 +2957,33 @@ async function restart(
  * End the capture `copyId` at the source (#2450), best effort: one left open expires on its own once
  * nobody reads it. Every copy that stops (failed, cancelled, superseded or restarted) calls it.
  */
-export async function endCapture(ends: Pick<TransferEnds, 'source'>, from: ScopeId, copyId: string): Promise<void> {
+export async function endCapture(
+  ends: { source: Partial<Pick<VerticalClient, 'endScopeCapture'>> },
+  from: ScopeId,
+  copyId: string,
+): Promise<void> {
   await ends.source.endScopeCapture?.(from, copyId).catch(() => undefined);
 }
+
+/**
+ * Give a copy up (#2450), best effort: discard its stage at the destination and end its capture at
+ * the source, the two halves every copy that stops leaves behind. An end left out is skipped (one
+ * that could not be resolved); its half then waits for a wipe, or expires.
+ */
+export async function abandonCopy(
+  ends: { source?: Partial<Pick<VerticalClient, 'endScopeCapture'>>; dest?: Pick<VerticalClient, 'discardStagedScope'> },
+  state: Pick<TransferState, 'from' | 'into' | 'stageId' | 'capture'>,
+): Promise<void> {
+  await ends.dest?.discardStagedScope(state.into, state.stageId).catch(() => undefined);
+  if (state.capture && ends.source) await endCapture({ source: ends.source }, state.from, state.stageId);
+}
+
+/** How long a copy's first request catches up before it leaves the rest to a step, ms. */
+const BEGIN_CATCH_UP_MS = 20_000;
+
+/** Whether `e` is the source's capture refusing for one of `kinds` (`CAPTURE_REFUSALS`), not another 412. */
+const captureRefusal = (e: unknown, ...kinds: (keyof typeof CAPTURE_REFUSALS)[]): boolean =>
+  e instanceof ControlPlaneError && e.status === 412 && kinds.some((k) => e.message.includes(CAPTURE_REFUSALS[k]));
 
 const doneOf = (state: TransferState): TransferredScope =>
   ({ dump: { stageId: state.stageId }, loadStamp: state.loadStamp, revision: state.revision, meta: doneMeta(state.meta) });

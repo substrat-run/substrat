@@ -212,7 +212,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { beginTransfer, connectionGrantsForScope, endCapture, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { abandonCopy, beginTransfer, connectionGrantsForScope, transferScope, isScopeNotHeld, notHeldIsBenign, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
   COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
   type CopyJobRecord, type CopyJobs,
@@ -4465,16 +4465,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const discardJobStages = async (...records: [CopyJobRecord, ...CopyJobRecord[]]): Promise<void> => {
     const { spec } = records[0];
-    const staged = records.flatMap((r) => [r.state?.stageId, r.done && !Array.isArray(r.done.dump) ? r.done.dump.stageId : undefined]);
     const dest = await options.resolveVerticalRef?.(spec.destRef).catch(() => undefined);
-    for (const stageId of new Set(staged.filter((id): id is string => id !== undefined))) {
-      await dest?.discardStagedScope(spec.scopeId, stageId).catch(() => undefined);
+    const source = records.some((r) => r.state?.capture)
+      ? await options.resolveVerticalRef?.(spec.sourceRef).catch(() => undefined)
+      : undefined;
+    const seen = new Set<string>();
+    for (const r of records) {
+      const done = r.done && !Array.isArray(r.done.dump) ? r.done.dump.stageId : undefined;
+      for (const state of [r.state, done === undefined ? undefined : { from: spec.scopeId, stageId: done }]) {
+        if (!state || seen.has(state.stageId)) continue;
+        seen.add(state.stageId);
+        await abandonCopy({ source, dest }, { ...state, into: spec.scopeId });
+      }
     }
-    const captures = records.flatMap((r) => (r.state?.capture ? [r.state] : []));
-    if (captures.length === 0) return;
-    const source = await options.resolveVerticalRef?.(spec.sourceRef).catch(() => undefined);
-    if (!source) return;
-    for (const { from, stageId } of captures) await endCapture({ source }, from, stageId);
   };
 
   /**
@@ -11738,21 +11741,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               throw e;
             }
             if ('state' in begun) {
+              const staged = begun.state;
+              // A job that could not be started names nothing, so this call gives its copy up itself.
               const job = await jobs.start({
                 id: copyJobId('carry', preview.id), kind: 'carry', tenantId, vertical: slug, scopeId: preview.id,
                 versionId: opts.versionId, versionOrder: mine.order,
                 moveId: move.moveId, sourceRef: move.from, destRef: move.to, actor, leaseMs: copyLeaseMs,
                 erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp, expected: move.expected,
                 startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
-              }, begun.state);
+              }, staged).catch(async (e: unknown) => {
+                await abandonCopy(move, staged);
+                throw e;
+              });
               // Another call started this preview's job first: this call's move is not the job's, so
               // its entries settle and its own stage is discarded. The store checks that stage ID,
               // leaving the winner's stage alone. A newer push's job refuses this one now, as its
               // next call would; an older one's is replaced by that next call.
               if (job.spec.moveId !== move.moveId) {
                 await settleCarryRetained(c, preview, opts.versionId, move);
-                await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
-                if (begun.state.capture) await endCapture({ source: move.source }, preview.id, begun.state.stageId);
+                await abandonCopy(move, begun.state);
                 const superseded = supersededRefusal(job, mine, opts.tag);
                 if (superseded) throw superseded;
               }
@@ -11971,16 +11978,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             { retry: retryTransient, stamp: false, alwaysStage: true },
           );
           if ('state' in begun) {
+            const staged = begun.state;
+            const ends = { source: forkPaged.source, dest: target };
+            // A job that could not be started names nothing, so this call gives its copy up itself.
             const job = await jobs.start({
               id: copyJobId('fork', previewId), kind: 'fork', tenantId, vertical: slug, scopeId: previewId,
               versionId: opts.versionId, versionOrder: mine.order,
               moveId: move.moveId, sourceRef: forkPaged.sourceRef, destRef: targetRef, actor, leaseMs: copyLeaseMs,
               erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp,
               startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
-            }, begun.state);
+            }, staged).catch(async (e: unknown) => {
+              await abandonCopy(ends, staged);
+              throw e;
+            });
             // A job id names the preview, which this create just minted, so no other call can
             // hold it; a job answered for another move would be a defect, not a race.
             if (job.spec.moveId !== move.moveId) {
+              await abandonCopy(ends, staged);
               throw new ControlPlaneError(500, `preview ${previewId} already had a copy job for another move`);
             }
             return copyingAnswer(job);

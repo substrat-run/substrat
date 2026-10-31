@@ -372,7 +372,19 @@ export function mergeDumpPages(pages: readonly (readonly ScopeDumpPageTable[])[]
  * put in place (each by the rowid it has at the source) and the rowids to delete. Without them the
  * table is read by offset, has no rowid to name a row by, and `rows` replaces it whole.
  */
-export const scopeDumpChange = scopeDumpPageTable.extend({ deleted: z.array(z.number().int()) });
+/**
+ * The refusals a scope's capture answers (#2450), each a `precondition_failed` (412) whose message
+ * holds one of these sentences: what a copier tells apart from any other precondition. `gone` and
+ * `schemaMoved` mean the copy starts again; `expressionIndex`, that this source is copied at a
+ * quiet moment instead.
+ */
+export const CAPTURE_REFUSALS = {
+  gone: 'the copy\'s capture of this scope is gone (it ended, expired or a load replaced the store); start the copy again',
+  schemaMoved: 'the scope\'s schema changed while it was copied (a migration ran, or a table was rebuilt); start the copy again',
+  expressionIndex: 'a table with a unique index on an expression cannot be copied while it takes writes; copy it at a quiet moment',
+} as const;
+
+export const scopeDumpChange =scopeDumpPageTable.extend({ deleted: z.array(z.number().int()) });
 export type ScopeDumpChange = z.infer<typeof scopeDumpChange>;
 
 /**
