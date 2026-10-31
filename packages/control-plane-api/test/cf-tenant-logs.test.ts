@@ -310,17 +310,28 @@ describe('cf tenant logs', () => {
 
   it('a search matches the request id as well as the message (#2762)', async () => {
     const { reader, sent } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ invocationId: '01JZREQID' })] : []));
-    const read = async (search: string) => (await reader.tenantLogs!({ tenantId: '01TENANT', search, hours: 24, limit: 10 })).events;
+    const read = async (search: string) =>
+      (await reader.tenantLogs!({ tenantId: '01TENANT', services: ['acme-widgets'], search, hours: 24, limit: 10 })).events;
     expect(await read('JZREQ')).toHaveLength(1);
     expect(await read('/api/orders')).toHaveLength(1);
     expect(await read('nothing')).toHaveLength(0);
     // An id older than the newest page is asked for in phase one, not filtered out of it afterwards.
     expect(sent.some((f) => f.some((x) => x['key'] === 'invocationId' && x['operation'] === 'includes' && x['value'] === 'JZREQ'))).toBe(true);
+    // Whatever it asks, every query is bound to the tenant and to the app's scripts.
+    const tenant = { key: 'tenantId', operation: 'eq', type: 'string', value: '01TENANT' };
+    const phaseOne = sent.filter((f) => keyed(f, 'substrat')?.['value'] === 'invocation');
+    expect(phaseOne.length).toBeGreaterThan(1);
+    for (const f of phaseOne) {
+      expect(f).toContainEqual(tenant);
+      expect(JSON.stringify(f)).toContain('acme-widgets');
+    }
   });
 
   it('the service-grain search is one query over message OR request id (#2762)', async () => {
-    const { reader, sent } = readerOver(() => []);
-    await reader.recentLogs({ services: ['acme-widgets'], search: 'abc', hours: 1, limit: 10 });
+    const { reader, sent } = readerOver(() => [invocation({ invocationId: '01JZabc' })]);
+    const { events } = await reader.recentLogs({ services: ['acme-widgets'], search: 'abc', hours: 1, limit: 10 });
+    // The row matched by the stamped id shows the id searched for.
+    expect(events[0]!.invocationId).toBe('01JZabc');
     expect(sent).toHaveLength(1);
     expect(sent[0]).toEqual([
       { key: '$metadata.service', operation: 'eq', type: 'string', value: 'acme-widgets' },

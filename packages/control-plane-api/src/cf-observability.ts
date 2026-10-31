@@ -1735,20 +1735,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
             phaseOneLimit,
           ),
         ])
-      : [
-          [
-            ...(await readTenant(base, phaseOneLimit)),
-            // #2762: a request id older than the newest page is reached by asking for it,
-            // not by filtering that page afterwards.
-            ...(input.search
-              ? await readTenant(
-                  [...base, { key: 'invocationId', operation: 'includes', type: 'string', value: input.search }],
-                  phaseOneLimit,
-                )
-              : []),
-          ],
-          [],
-        ];
+      : await Promise.all([
+          readTenant(base, phaseOneLimit),
+          // #2762: a request id older than the newest page is reached by asking for it, not by
+          // filtering that page afterwards. Its hits go first, below, so the correlation budget
+          // cannot be spent on a busy window's newest page before the invocation searched for.
+          input.search
+            ? readTenant([...base, { key: 'invocationId', operation: 'includes', type: 'string', value: input.search }], phaseOneLimit)
+            : [],
+        ]).then(([recent, hits]) => [[...hits, ...recent], []]);
 
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);
@@ -2078,7 +2073,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     }
     const events = answer()
       .filter((e) => rawTime(e) >= floor)
-      .map((e) => projectEvent(e));
+      .map((e) => {
+        // #2762: a row matched by the stamped id shows the id searched for.
+        const invocationId = ((e['source'] ?? {}) as Record<string, unknown>)['invocationId'];
+        return typeof invocationId === 'string' ? { ...projectEvent(e), invocationId } : projectEvent(e);
+      });
     return { events, incomplete };
   }
 
