@@ -1,5 +1,28 @@
 # @substrat-run/control-plane-api
 
+## 0.172.0
+
+### Minor Changes
+
+- e8e51ba: Requests can be counted and filtered by entity type. The invocation line carries `entityTypes` (the sorted distinct entity types its events were about), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.entityTypes`, blob 10) carry it too, and the tenant request reads take an `entity` facet. A request touching several types is counted under each one.
+- 76a1de6: The tenant request list takes a free-text `search` (operation, path, request id, or `POST /path`); the request histogram and facet counts refuse it with a `validation_failed` problem whose `reason` is `search_not_counted`.
+- 279c6f3: Requests can be counted and filtered by the route that answered them, including requests that reached no operation. The invocation line carries `route` (the method and the registered route pattern, never the called path), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.route`, blob 11) carry it too, and the tenant request reads take a `path` facet.
+- 06c306f: control-plane-api: a scope copy of a busy source catches up on the writes it took while it was read, instead of waiting for a quiet moment
+  contracts: a dump page says when it was read under the capture it was asked for (`captured`), and the capture's refusals are named (`CAPTURE_REFUSALS`)
+  adapter-cloudflare: a dump page read under a capture says so
+- da655bf: A scope created by `provision-sibling` now gets its owner already signed in. The provision request carries `parentScopeId`, and `IdentityDO.setPendingOwner(scopeId, owner, parentScopeId)` binds the new scope's owner seat to the login the parent scope binds to that owner. Before this change, the seat opened the 15-minute first-sign-in window, so whichever login reached the new scope first became its owner. Pass `b.parentScopeId` from your `onProvision` hook to get this. If the parent binds no login to the owner, the seat waits for a claim link and no first sign-in can take it.
+
+### Patch Changes
+
+- 743f077: Log `search` also matches the request id, not only the message.
+- Updated dependencies [d901b9a]
+- Updated dependencies [e8e51ba]
+- Updated dependencies [279c6f3]
+- Updated dependencies [06c306f]
+  - @substrat-run/control-plane-client@0.5.0
+  - @substrat-run/contracts@0.172.0
+  - @substrat-run/kernel@0.172.0
+
 ## 0.171.0
 
 ### Minor Changes

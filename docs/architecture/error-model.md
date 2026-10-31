@@ -372,9 +372,11 @@ already answer their expected refusal as a value.
      `/api/session`'s `modelError` and a turn's fatal `error` event alike, any other answering a stable
      sentence. `test/refusals-problem.test.ts` holds the documents, the node writer's media type, and the
      three files to writing no bare `{ error` and reading no throw's `.message` again.
-   - **Still open, surface by surface:** those excluded relay, email and connection routes,
-     `dev-issuer`; a `requestId` on the control plane's
-     problems (#2192). A repo-wide source gate waits until a second surface is converted.
+   - **Still open, surface by surface:** those excluded relay, email and connection routes. A
+     repo-wide source gate waits until a second surface is converted. `dev-issuer` is done where
+     it applies (`/dev/token` answers `application/problem+json`); its `/authorize`, `/token` and
+     `/userinfo` stay OAuth 2.0 endpoints answering by RFC 6749 (JSON errors or a redirect), which
+     the clients of the protocol parse, so they are out of scope.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
      `problemDetail` (#971) and every surface answers `detail`. The members carried beside
      `error` are either declared per code in `PROBLEM_EXTENSIONS` or retired by then.

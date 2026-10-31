@@ -567,7 +567,7 @@ const flowNode = z.object({
   observed: z.number().nullable(), silent: z.boolean(), stale: z.boolean(), status: z.enum(['ok', 'warn', 'danger']),
   title: z.string(), x: z.number(), y: z.number(), w: z.number(), h: z.number(),
 });
-const appFlowView = z.object({
+export const appFlowView = z.object({
   findings: z.object({
     available: z.boolean(), observedComplete: z.boolean(), declaredComplete: z.boolean(),
     findings: z.array(z.object({ kind: z.enum(['unemitted', 'unconsumed', 'stale', 'unconnected-provider', 'unhealthy-provider']), subject: z.string(), moduleId: z.string().nullable(), detail: z.string() })),
@@ -591,7 +591,7 @@ const appFlowView = z.object({
   }),
 });
 const coverageField = z.object({ field: z.string(), returned: z.boolean(), erasable: z.boolean() });
-const fieldCoverageView = z.object({
+export const fieldCoverageView = z.object({
   available: z.boolean(), entities: z.array(z.object({ entity: z.string(), table: z.string(),
     fields: z.array(coverageField), neverReturned: z.array(coverageField) })),
   declared: z.number(), returned: z.number(), neverReturnedErasable: z.number(), operations: z.number(),
@@ -608,12 +608,12 @@ export const fieldReadsView = z.object({
     notObservedReturned: z.array(z.object({ operation: z.string(), field: z.string() })),
   })),
 });
-const appFailuresView = z.object({
+export const appFailuresView = z.object({
   entries: z.array(z.object({ id: z.string(), at: z.string(), kind: z.enum(['sweep', 'operation']), operation: z.string(),
     stage: z.string().nullable(), message: z.string().nullable(), code: z.string().nullable() })),
   unavailableSources: z.array(z.string()), incompleteSources: z.array(z.string()),
 });
-const appOverlaysView = z.object({
+export const appOverlaysView = z.object({
   unavailableSources: z.array(z.string()).optional(), incompleteSources: z.array(z.string()).optional(),
   markers: z.array(z.object({ at: z.string(), kind: z.enum(['migration', 'run-failed', 'failure']), label: z.string(), detail: z.string().nullable() })),
   spans: z.array(z.object({ from: z.string(), to: z.string(), kind: z.literal('stale'), label: z.string() })),
@@ -621,7 +621,7 @@ const appOverlaysView = z.object({
 });
 
 /** Read-only observability responses. Plane-owned labels stay strings across deploy skew. */
-const observabilityRow = z.object({
+export const observabilityRow = z.object({
   vertical: z.string(), version: z.string(), versionId: z.string().nullable(), service: z.string(),
   requests: z.number(), errors: z.number(), subrequests: z.number(), cpuTimeP50: z.number(), cpuTimeP99: z.number(),
 });
@@ -632,7 +632,7 @@ const observabilityLogEvent = z.object({
   invocationId: z.string().nullable().optional(), cpuTimeMs: z.number().nullable(), wallTimeMs: z.number().nullable(),
   raw: z.unknown().optional(),
 });
-const tenantMetricsRow = z.object({
+export const tenantMetricsRow = z.object({
   scopeId: z.string(), vertical: z.string().nullable(), surface: z.string().nullable(),
   requests: z.number(), errors: z.number(), durationP50: z.number(), durationP95: z.number(),
 });
@@ -641,7 +641,7 @@ const tenantMetricsBucket = z.object({
   class2xx: z.number().optional(), class3xx: z.number().optional(), class4xx: z.number().optional(),
   durationP50: z.number(), durationP95: z.number().optional(),
 });
-const connectorCallsView = z.object({
+export const connectorCallsView = z.object({
   available: z.boolean(),
   buckets: z.array(z.object({
     provider: z.string(), start: z.string(), bucketMinutes: z.number(), calls: z.number(), errors: z.number(),
@@ -649,7 +649,7 @@ const connectorCallsView = z.object({
     durationP50: z.number(), durationP95: z.number(),
   })),
 });
-const businessVolumesView = z.object({
+export const businessVolumesView = z.object({
   window: z.object({ since: z.string(), until: z.string() }), bucketMinutes: z.number(),
   rows: z.array(z.object({
     scopeId: z.string(), entityType: z.string(), state: z.string(), terminal: z.boolean(), fromInitial: z.boolean(),
@@ -658,21 +658,21 @@ const businessVolumesView = z.object({
   })),
   apps: z.array(z.object({ scopeId: z.string(), unavailable: z.enum(['no-version', 'no-moves', 'not-yet-available']).nullable() })),
 });
-const teamTrafficSeries = z.object({
+export const teamTrafficSeries = z.object({
   window: z.object({ since: z.string(), until: z.string() }).optional(),
   series: z.array(z.object({ scopeId: z.string(), buckets: z.array(trafficBucket) })),
   bucketMinutes: z.number(), available: z.boolean(),
 });
-const appMetricsView = z.object({
+export const appMetricsView = z.object({
   available: z.boolean(), cap: z.number().nullable(),
   rows: z.array(z.object({ scopeId: z.string(), requests: z.number().nullable(), errors: z.number().nullable(), p95: z.number().nullable() })),
 });
-const requestVolumeView = z.object({
+export const requestVolumeView = z.object({
   bucketMs: z.number(),
   buckets: z.array(z.object({ start: z.string(), info: z.number(), warn: z.number(), error: z.number(), unrecorded: z.number() })),
   estimated: z.boolean(),
 });
-const requestFacetsView = z.object({
+export const requestFacetsView = z.object({
   total: z.number(), facets: z.record(z.string(), z.array(z.object({ value: z.union([z.string(), z.number()]), count: z.number() }))),
   estimated: z.boolean(),
 });
@@ -702,7 +702,7 @@ const appRequestInput = z.object({
   kind: repeated, entity: repeated, path: repeated, buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
   search: z.string().optional(),
 });
-const logPatternsView = z.object({
+export const logPatternsView = z.object({
   total: z.number(), bucketMs: z.number(),
   patterns: z.array(z.object({
     template: z.string(), count: z.number(), share: z.number(),
