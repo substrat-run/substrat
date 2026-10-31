@@ -30,6 +30,11 @@ export interface RequestRecord extends AuthRecording {
   problemCode: string | null;
   principalKind: string | null;
   eventCount: number | null;
+  /**
+   * #2762: ctx.log lines under the request's id, including the inline consumer tail; not
+   * console.log. Optional: a plane older than #2762 sends none, which reads as not recorded.
+   */
+  logLines?: number | null;
   eventTypes: string[];
   entities: string[];
   versionId: string | null;
@@ -128,6 +133,7 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
       problemCode: str(source['problemCode']),
       principalKind: str(source['principalKind']),
       eventCount: num(source['eventCount']),
+      logLines: num(source['logLines']),
       eventTypes: strings(source['eventTypes']),
       entities: strings(source['entities']),
       versionId: str(source['versionId']),

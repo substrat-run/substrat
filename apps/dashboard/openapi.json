@@ -3975,6 +3975,16 @@
                           }
                         ]
                       },
+                      "logLines": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "eventTypes": {
                         "type": "array",
                         "items": {
