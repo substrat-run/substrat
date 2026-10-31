@@ -257,6 +257,13 @@ describe('the stored configuration', () => {
       { ok: false, stage: 'tls.handshake', detail: 'tls: invalid peer certificate: UnknownIssuer', stages: [{ stage: 'tls.config', ms: 3 }] },
     ],
     [
+      'a key that is not the certificate\'s',
+      async () => {
+        throw new Error('client auth: keys may not be consistent: KeyMismatch');
+      },
+      { ok: false, stage: 'transport', detail: expect.stringContaining('private key does not belong to this certificate') },
+    ],
+    [
       // Recorded as is, a malformed stage would fail every later read of the stored config.
       'the relay reporting a malformed stage',
       async () => {

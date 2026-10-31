@@ -103,6 +103,20 @@ describe('platform source releases', () => {
     expect(sent).toEqual([{ url: 'https://builder/internal/build', tenant, body: { slug: 'acme/demo', request: input } }]);
   });
 
+  it('answers 502 with a plain sentence when the build service drops the connection, and logs why', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const service = sourceBuildService({ fetch: async () => { throw new Error('Network connection lost.'); } }, 'token');
+    app = createControlPlaneApi({
+      host, authenticate: UNSAFE_devPlatformActorAuth(), authenticateBuilder: pushTokenBuilderAuth(secret),
+      sourceBuilds: service, deployVertical: deploy,
+    });
+    const response = await push({ version: '1.0.0', revision });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ detail: 'the build service connection failed before it answered' });
+    expect(log).toHaveBeenCalledWith('source-build.connection-failed', { tenantId: tenant, detail: 'Network connection lost.' });
+    log.mockRestore();
+  });
+
   it('gives builders only their own project catalogue', async () => {
     projects.mockResolvedValue(Response.json({ projects: [] }));
     const response = await app.request('/projects?tenant=foreign', { headers: builderHeaders });

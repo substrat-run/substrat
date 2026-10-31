@@ -519,6 +519,44 @@ describe('menu children (#1767)', () => {
     expect(next.invocationId).toBeUndefined();
   });
 
+  it('#2762: Requests puts the facets beside the stream card, and Live re-reads on a timer', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      vi.spyOn(api, 'appRequestVolume').mockResolvedValue({ bucketMs: 120_000, buckets: [], estimated: false });
+      vi.spyOn(api, 'appRequestFacets').mockResolvedValue({ total: 0, facets: { operation: [{ value: 'acme/assign', count: 1 }] }, estimated: false } as Awaited<ReturnType<typeof api.appRequestFacets>>);
+      const list = vi.spyOn(api, 'appRequests').mockResolvedValue([]);
+      vi.spyOn(api, 'appGoLives').mockResolvedValue([]);
+      const onNav = vi.fn();
+      await act(async () =>
+        root.render(
+          <Observability teamId="team-a"
+            apps={[{ app_scope_id: 'app-a', name: 'App A' } as AppRow]}
+            query="view=requests&app=app-a&live=1"
+            scopeId="app-a"
+            view="requests"
+            focusEventType={null}
+            cursor={null}
+            onNav={onNav}
+          />,
+        ),
+      );
+      const card = container.querySelector('[data-log-modes]')!.parentElement!;
+      const sidebar = container.querySelector('[aria-label="Request filters"]')!;
+      expect(card.contains(sidebar)).toBe(false);
+      expect(card.querySelector('input[aria-label="Find a request by id"]')).not.toBeNull();
+      expect(button('● Live').getAttribute('aria-pressed')).toBe('true');
+      const before = list.mock.calls.length;
+      await act(async () => vi.advanceTimersByTime(15_000));
+      expect(list.mock.calls.length).toBe(before + 1);
+      click(button('● Live'));
+      const next = onNav.mock.calls.at(-1)![0];
+      expect(next).toMatchObject({ app: 'app-a', view: 'requests' });
+      expect(next.live).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('asks for an app on Logs with All apps, instead of falling back to Pulse', async () => {
     const onNav = await render('logs', null);
     expect(heading()).toBe('Logs');

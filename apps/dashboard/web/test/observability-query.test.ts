@@ -20,6 +20,7 @@ describe('shared observability query', () => {
       level: 'error',
       search: 'a+b & c',
       invocationId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      live: '1',
     };
     expect(readObsQuery(obsPath(q).split('?')[1]!)).toEqual(q);
     expect(queryWindow(q)).toEqual(window);
@@ -91,6 +92,10 @@ describe('Logs query bar chips (#1767)', () => {
 });
 
 describe('switching Observability child (#1767)', () => {
+  it('#2762: accepts the 3-hour preset', () => {
+    const w = queryWindow({ hours: '3' }, Date.parse(window.until));
+    expect(Date.parse(w.until) - Date.parse(w.since)).toBe(3 * 3_600_000);
+  });
   it('keeps a relative preset, so a 1h view does not reset to 24h', () => {
     expect(sectionQuery('?app=a&view=traffic&hours=1&level=error', 'logs')).toEqual({ app: 'a', view: 'logs', hours: '1' });
   });

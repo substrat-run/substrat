@@ -110,6 +110,10 @@ export function BankIdEditor({
           bank issued to your organisation.
         </em>
       </label>
+      <p className="hint">
+        The bank sends the certificate as a .txt file. Open it and paste its text (it starts with{' '}
+        <code>-----BEGIN CERTIFICATE-----</code>) in the certificate box, and the matching private key in the key box.
+      </p>
       <label className="field">
         <span>{settings?.certSet ? 'Client certificate (stored — paste to replace)' : 'Client certificate (PEM)'}</span>
         <textarea rows={4} value={cert} onChange={(e) => setCert(e.target.value)} placeholder={'-----BEGIN CERTIFICATE-----'} />

@@ -36,6 +36,8 @@ export interface ObsQuery {
   recScope?: string;
   /** #1748: the Findings inbox's tab — a finding status. */
   tab?: string;
+  /** #2762: Logs re-reads on a timer while this is `1`. */
+  live?: string;
 }
 export const OBS_KEYS = [
   'app',
@@ -67,6 +69,7 @@ export const OBS_KEYS = [
   'rec',
   'recScope',
   'tab',
+  'live',
 ] as const;
 export function readObsQuery(search: string): ObsQuery {
   const p = new URLSearchParams(search);
@@ -98,7 +101,7 @@ export function queryWindow(q: ObsQuery, now = Date.now()): { since: string; unt
     return { since: new Date(start).toISOString(), until: new Date(end).toISOString() };
   }
   const hours = Number(q.hours ?? 24);
-  if (![1, 24, 72].includes(hours)) throw new Error('Choose a 1h, 24h or 3d range.');
+  if (![1, 3, 24, 72].includes(hours)) throw new Error('Choose a 1h, 3h, 24h or 3d range.');
   // Seconds are the telemetry store's timestamp precision.
   const end = Math.floor(now / 1000) * 1000;
   return { since: new Date(end - hours * 3_600_000).toISOString(), until: new Date(end).toISOString() };

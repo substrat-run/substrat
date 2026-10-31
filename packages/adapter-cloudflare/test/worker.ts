@@ -219,6 +219,33 @@ function withTestWrite(Base: ScopeDOClass): ScopeDOClass {
     testCountWrites(counted: boolean): void {
       (this as unknown as { revisionSuspended: boolean }).revisionSuspended = !counted;
     }
+
+    /** #2450: any statement through the object's own handle, as a module's write runs; answers its rows. */
+    testSql(query: string, ...bindings: unknown[]): Record<string, unknown>[] {
+      return (this as unknown as { sql: SqlStorage }).sql.exec(query, ...bindings).toArray();
+    }
+
+    /**
+     * #2450: the open captures as last asked for `ms` earlier, without waiting that long, and the
+     * object's clock of them read again, as a wake would.
+     */
+    testAgeCaptures(ms: number): void {
+      const self = this as unknown as { revision: { untracked<T>(run: () => T): T }; sql: SqlStorage; readCaptureClock(): void };
+      self.revision.untracked(() => self.sql.exec('UPDATE _substrat_capture SET touched_at = touched_at - ?', ms));
+      self.readCaptureClock();
+    }
+
+    /** #2450: the object's capture clock, as it holds it, moved `ms` earlier; its tables untouched. */
+    testElapseCaptureClock(ms: number): void {
+      const self = this as unknown as { captureIdleAt: number | null | undefined };
+      if (typeof self.captureIdleAt === 'number') self.captureIdleAt -= ms;
+    }
+
+    /** #2450: a module's iterate-and-write: `column` set to 'x' on each row, a row at a time, under the open read cursor. */
+    testCursorWrite(table: string, column: string): void {
+      const sql = (this as unknown as { sql: SqlStorage }).sql;
+      for (const row of sql.exec(`SELECT rowid AS r FROM ${table}`)) sql.exec(`UPDATE ${table} SET ${column} = 'x' WHERE rowid = ?`, row.r);
+    }
   };
 }
 

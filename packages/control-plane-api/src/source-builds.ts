@@ -10,8 +10,17 @@ export function sourceBuildService(service: { fetch(request: Request): Promise<R
       headers: { ...Object.fromEntries(new Headers(init?.headers)), 'x-service-token': token, 'x-substrat-tenant': tenantId },
     }));
   };
-  const release = async (sent: Promise<Response>, revision: string | undefined): Promise<BuiltSource> => {
-    const response = await sent;
+  const release = async (tenantId: string, sent: Promise<Response>, revision: string | undefined): Promise<BuiltSource> => {
+    let response: Response;
+    try {
+      response = await sent;
+    } catch (e) {
+      if (e instanceof ControlPlaneError) throw e;
+      // The service binding rejects when the builder's isolate dies mid-build. The caller reads the
+      // sentence; the underlying message stays in the log, as `deploy.upload.failed` keeps its own.
+      console.error('source-build.connection-failed', { tenantId, detail: e instanceof Error ? e.message : String(e) });
+      throw new ControlPlaneError(502, 'the build service connection failed before it answered');
+    }
     if (!response.ok) {
       const problem = await response.json().catch(() => null) as { detail?: string } | null;
       throw new ControlPlaneError(response.status, problem?.detail ?? 'platform build service failed');
@@ -36,7 +45,7 @@ export function sourceBuildService(service: { fetch(request: Request): Promise<R
       const sent = request(tenantId, 'build', {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slug, request: input }),
       });
-      return release(sent, input.revision);
+      return release(tenantId, sent, input.revision);
     },
     async projects(tenantId, input) {
       return request(tenantId, 'projects', {
