@@ -7256,7 +7256,7 @@ describe('control-plane API — observability proxy', () => {
           expect(await res.json()).toMatchObject({
             code: 'validation_failed',
             reason: REQUEST_SEARCH_NOT_COUNTED,
-            errors: [{ path: 'search', message: expect.stringContaining('request list') }],
+            detail: expect.stringContaining('search applies to the request list'),
           });
         }
         expect(counted).toEqual([]);

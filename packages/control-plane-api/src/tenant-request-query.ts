@@ -107,15 +107,16 @@ export function parseTenantRequestQuery(tenantId: string, q: QueryReader, now: n
  * #2762: refuse `search` on a read that counts. The histogram and the facets are computed from
  * cubes (#1877) holding neither a request id nor a path, so no count could honour the text the
  * list is filtered by. A refusal, never an ignored filter: counts of every request would read
- * as counts of the matching ones.
+ * as counts of the matching ones. A semantic refusal, so no `errors` list: one would make it
+ * read as a parse failure, which answers neither the `reason` nor this sentence.
  */
 export function refuseSearchOnCounts(scope: TenantRequestScope): void {
   if (scope.search === undefined) return;
-  const message = 'request counts cannot be narrowed by search; search applies to the request list';
-  throw substratError('validation_failed', message, {
-    reason: REQUEST_SEARCH_NOT_COUNTED,
-    errors: [{ path: 'search', message }],
-  });
+  throw substratError(
+    'validation_failed',
+    'request counts cannot be narrowed by search; search applies to the request list',
+    { reason: REQUEST_SEARCH_NOT_COUNTED },
+  );
 }
 
 /**
