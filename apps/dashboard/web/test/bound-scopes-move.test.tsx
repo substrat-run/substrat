@@ -71,7 +71,7 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
   const tick = (label: RegExp) => [...dialog().querySelectorAll('label')].find((l) => label.test(l.textContent ?? ''));
   const click = async (el: Element) => act(async () => (el as HTMLElement).click());
   const open = async () => {
-    await act(async () => root.render(<BoundScopes teamId="T1" d={FROM} all={[FROM, TO]} onChanged={() => {}} />));
+    await act(async () => root.render(<BoundScopes teamId="T1" d={FROM} all={[FROM, TO]} expanded onChanged={() => {}} />));
     await click([...container.querySelectorAll('label')].find((l) => /^HR/.test(l.textContent ?? ''))!);
     await click(button(/^Move… \(1\)$/));
   };

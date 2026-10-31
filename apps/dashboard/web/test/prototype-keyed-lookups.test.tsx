@@ -79,7 +79,7 @@ describe('plane-owned pill vocabularies (#2427)', () => {
       scopes: [{ id: 'S1', slug: 'hr', name: 'HR', status, fork: false, movable: true, verticalVersionId: 'V1', createdAt: '2026-10-01T00:00:00.000Z', hostnames: [] }],
     } as BoundScopesView;
     client.listBoundScopes.mockResolvedValue(view);
-    await act(async () => root.render(<BoundScopes teamId="T1" d={dep('prod')} all={[dep('prod')]} onChanged={() => {}} />));
+    await act(async () => root.render(<BoundScopes teamId="T1" d={dep('prod')} all={[dep('prod')]} expanded onChanged={() => {}} />));
     await act(async () => {
       await new Promise((r) => setTimeout(r, 0));
     });

@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
 import { teamApi, type BoundScopeRow, type BoundScopesView, type Deployment, type MoveReviewRow } from '../lib/api';
-import { hasBoundScopes, isRetireArmed, looksStrandedByRename, moveBindings, moveTargets, reviewMoved, reviewsToShow } from '../lib/bound-scopes';
+import {
+  boundScopesSummary,
+  hasBoundScopes,
+  isRetireArmed,
+  looksStrandedByRename,
+  moveBindings,
+  moveTargets,
+  partitionBoundScopes,
+  reviewMoved,
+  reviewsToShow,
+} from '../lib/bound-scopes';
 import { PromoteMigrations } from '../components/PromoteMigrations';
 import { DEV_MOCK, MOCK_BOUND_SCOPES } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
@@ -22,7 +32,11 @@ import { MonoTag, Pill, type PillKind } from '../components/ui';
  *   this dialog did, so the dialog is honesty about the rule and not the rule itself.
  *
  * Renders nothing when the vertical backs nothing: an empty section would be a list of
- * zero under a heading that promises work.
+ * zero under a heading that promises work. And it renders FOLDED — one summary line — unless
+ * there is a reason to act: the installs look stranded by a rename, or the person pressed
+ * Remove (`expanded`). A healthy vertical's installs are not a cleanup list, and showing them
+ * under "can't be removed while anything is bound" reads as a problem that isn't there.
+ * Snapshot forks fold again inside it, behind their own toggle.
  */
 
 // A Map, not an object literal: a status named like an Object.prototype key must not find one.
@@ -38,7 +52,22 @@ const COLUMNS = '2.2fr 0.9fr 1.1fr 2fr';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function BoundScopes({ teamId, d, all, onChanged }: { teamId: string; d: Deployment; all: readonly Deployment[]; onChanged: () => void }) {
+export function BoundScopes({
+  teamId,
+  d,
+  all,
+  expanded = false,
+  onExpand,
+  onChanged,
+}: {
+  teamId: string;
+  d: Deployment;
+  all: readonly Deployment[];
+  /** Open the section whatever the installs look like — the person pressed Remove. */
+  expanded?: boolean;
+  onExpand?: () => void;
+  onChanged: () => void;
+}) {
   const [view, setView] = useState<BoundScopesView | null>(DEV_MOCK ? mockView(d.slug) : null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -55,6 +84,7 @@ export function BoundScopes({ teamId, d, all, onChanged }: { teamId: string; d: 
   const [review, setReview] = useState<MoveReviewRow[] | null>(null);
   const [reviewChanged, setReviewChanged] = useState(false);
   const [typed, setTyped] = useState('');
+  const [showForks, setShowForks] = useState(false);
 
   // The caller keys this component by vertical, so a request still in flight when the person
   // moves to another vertical resolves into a component that is gone — it cannot paint the
@@ -203,18 +233,62 @@ export function BoundScopes({ teamId, d, all, onChanged }: { teamId: string; d: 
     ) : null;
   }
 
-  const allSelected = chosen.length === scopes.length;
+  const open = expanded || stranded;
+  const summary = boundScopesSummary(scopes);
+  if (!open) {
+    return (
+      <section id="bound-scopes" style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Bound scopes</h3>
+        <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{summary}</span>
+        <Button variant="ghost" size="sm" onClick={onExpand}>
+          Manage…
+        </Button>
+      </section>
+    );
+  }
+
+  const { installs, forks } = partitionBoundScopes(scopes);
+  const visible = showForks ? scopes : installs;
+  const allSelected = visible.length > 0 && visible.every((s) => selected.has(s.id));
   const versionLabel = (s: BoundScopeRow) =>
     s.verticalVersionId === null ? 'follows prod' : (d.versions.find((v) => v.id === s.verticalVersionId)?.version ?? 'another vertical’s version');
+
+  const row = (s: BoundScopeRow, i: number, list: readonly BoundScopeRow[]) => (
+    // Taller than the default row: the install cell is two lines and the names wrap.
+    <Row key={s.id} columns={COLUMNS} last={i === list.length - 1} style={{ height: 'auto', minHeight: 56, padding: '10px 16px' }}>
+      <Checkbox
+        label={s.name}
+        description={s.fork ? `${s.slug} · snapshot fork` : s.slug}
+        checked={selected.has(s.id)}
+        onChange={(on) =>
+          setSelected((sel) => {
+            const next = new Set(sel);
+            if (on) next.add(s.id);
+            else next.delete(s.id);
+            return next;
+          })
+        }
+      />
+      <span>
+        <Pill kind={STATUS_PILL.get(s.status) ?? 'neutral'}>{s.status}</Pill>
+      </span>
+      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{versionLabel(s)}</span>
+      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>
+        {s.hostnames.length === 0 ? (
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>none</span>
+        ) : (
+          s.hostnames.map((h) => <MonoTag key={h}>{h}</MonoTag>)
+        )}
+      </span>
+    </Row>
+  );
 
   return (
     <section id="bound-scopes" style={{ display: 'grid', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
         <h3 style={{ margin: 0, fontSize: 15 }}>Bound scopes</h3>
         <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-          {view.live > 0 && <>{plural(view.live, 'install')} still on this vertical</>}
-          {view.live > 0 && view.archived > 0 && ' · '}
-          {view.archived > 0 && <>{view.archived} archived, waiting to be wiped</>}
+          {summary}
         </span>
       </div>
       <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
@@ -228,7 +302,7 @@ export function BoundScopes({ teamId, d, all, onChanged }: { teamId: string; d: 
       {notice && <div style={{ fontSize: 12.5, color: 'var(--status-success-fg)' }}>{notice}</div>}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelected(allSelected ? new Set() : new Set(scopes.map((s) => s.id)))}>
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelected(allSelected ? new Set() : new Set(visible.map((s) => s.id)))}>
           {allSelected ? 'Clear selection' : 'Select all'}
         </Button>
         <span style={{ flex: 1 }} />
@@ -251,37 +325,34 @@ export function BoundScopes({ teamId, d, all, onChanged }: { teamId: string; d: 
         </span>
       )}
 
-      <GridTable columns={COLUMNS} header={['Install', 'Status', 'Pinned to', 'Names']}>
-        {scopes.map((s, i) => (
-          // Taller than the default row: the install cell is two lines and the names wrap.
-          <Row key={s.id} columns={COLUMNS} last={i === scopes.length - 1} style={{ height: 'auto', minHeight: 56, padding: '10px 16px' }}>
-            <Checkbox
-              label={s.name}
-              description={s.fork ? `${s.slug} · snapshot fork` : s.slug}
-              checked={selected.has(s.id)}
-              onChange={(on) =>
-                setSelected((sel) => {
-                  const next = new Set(sel);
-                  if (on) next.add(s.id);
-                  else next.delete(s.id);
-                  return next;
-                })
-              }
-            />
-            <span>
-              <Pill kind={STATUS_PILL.get(s.status) ?? 'neutral'}>{s.status}</Pill>
-            </span>
-            <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{versionLabel(s)}</span>
-            <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>
-              {s.hostnames.length === 0 ? (
-                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>none</span>
-              ) : (
-                s.hostnames.map((h) => <MonoTag key={h}>{h}</MonoTag>)
-              )}
-            </span>
-          </Row>
-        ))}
-      </GridTable>
+      {installs.length > 0 && (
+        <GridTable columns={COLUMNS} header={['Install', 'Status', 'Pinned to', 'Names']}>
+          {installs.map(row)}
+        </GridTable>
+      )}
+      {forks.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              // A hidden row must not stay selected: Retire would act on something off screen.
+              if (showForks) setSelected((sel) => new Set([...sel].filter((id) => !forks.some((f) => f.id === id))));
+              setShowForks(!showForks);
+            }}
+          >
+            {showForks ? 'Hide' : 'Show'} {plural(forks.length, 'snapshot fork')}
+          </Button>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            Copies a preview took of an install. They serve no names and can’t be moved — retiring one deletes it.
+          </span>
+        </div>
+      )}
+      {showForks && forks.length > 0 && (
+        <GridTable columns={COLUMNS} header={['Snapshot fork', 'Status', 'Pinned to', 'Names']}>
+          {forks.map(row)}
+        </GridTable>
+      )}
 
       <Dialog
         open={dialog === 'move'}

@@ -36,6 +36,32 @@ export function hasBoundScopes<V extends { scopes: readonly unknown[] }>(view: V
   return view !== null && view.scopes.length > 0;
 }
 
+interface BoundScopeLike {
+  status: string;
+  fork: boolean;
+}
+
+/**
+ * The bound list split the way the page shows it. A snapshot fork is a preview's copy of an
+ * install: it serves no names, cannot be moved, and on a vertical with busy previews it can
+ * outnumber the real installs many times over — so it gets its own folded group instead of
+ * reading as one more install.
+ */
+export function partitionBoundScopes<S extends BoundScopeLike>(scopes: readonly S[]): { installs: S[]; forks: S[] } {
+  return { installs: scopes.filter((s) => !s.fork), forks: scopes.filter((s) => s.fork) };
+}
+
+/** "4 installs · 13 snapshot forks · 1 archived" — each part only when there is one. */
+export function boundScopesSummary(scopes: readonly BoundScopeLike[]): string {
+  const n = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+  const archived = scopes.filter((s) => s.status === 'archived').length;
+  const installs = scopes.filter((s) => !s.fork && s.status !== 'archived').length;
+  const forks = scopes.filter((s) => s.fork && s.status !== 'archived').length;
+  return [installs > 0 && n(installs, 'install'), forks > 0 && n(forks, 'snapshot fork'), archived > 0 && `${archived} archived`]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 /** The newest push to a vertical, as an ISO instant — '' when it has none. */
 function newestPush(d: DeploymentLike): string {
   return d.versions[0]?.createdAt ?? '';
