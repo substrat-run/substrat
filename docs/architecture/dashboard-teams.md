@@ -177,14 +177,14 @@ array, sent as a repeated query key and parsed by the mount into a list. The two
 declare `responseHeaders: [x-substrat-logs-incomplete]`, so their client method answers the body
 and only that header. The browser's hand-written `call` reaches the team-less routes only.
 
-The assistant's tools run the same handlers with the `/ask` request as the Hono context. The
-team logs and the three team series take `service` and `scopeId` from the parsed input, so the
-assistant's values for those reach them. The other handlers still read the request's own query:
-the request and pattern reads forward their filters from it, and every observability handler
-reads its scalar arguments (`hours`, `since`, `until`, `limit`, `level`, …) from it. On the
-assistant path that query is the `/ask` request's, so those filters and arguments are not applied
-there today, and such a call answers the unfiltered default window (#2759). What is still open under
-#2170: the declared surface does not yet emit an `openapi.json` with its `--check` gate.
+The assistant's tools run the same handlers with the `/ask` request as the Hono context, so a
+handler the assistant can call reads every argument from the parsed input, never from `c.req`
+(#2759). Every observability read does: the window (`hours`, `since`, `until`), `limit`,
+`level`, `search` and the rest, and the request and pattern reads build the plane's allowlisted
+parameters from the input, a list field once per value. A tool call's arguments therefore mean
+what the same values in a URL mean. The four app chart reads the assistant is not given (traffic,
+failures, overlays, field reads) still read the query. What is still open under #2170: the
+declared surface does not yet emit an `openapi.json` with its `--check` gate.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 
