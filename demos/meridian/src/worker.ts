@@ -308,7 +308,7 @@ mountPlatformSurface<Env>(app, {
   // reviewed registry (`permissions.entityGrants`, declared `bootstrap`) and tops each employee up,
   // so a key added to it reaches the employees linked before the release that added it.
   onProvision: async (env, b) => {
-    await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner);
+    await identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setPendingOwner(b.scopeId, b.owner, b.parentScopeId);
     // Onto the sweep roster, so the scope's schedules run (#1646). This hook also runs on
     // `/internal/reconcile`, which is how a scope provisioned before the sweeper existed
     // joins. Meridian is a listed vertical, so a promote moves none of its installs'

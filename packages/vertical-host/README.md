@@ -32,7 +32,7 @@ mountPlatformSurface(app, {
   hostFor: (env) => new CloudflareScopeHost({ scope: env.SCOPE }),
   roles: ROLES,
   ownerRoleKey: 'hr-admin',
-  onProvision:  (env, b) => identityDo(env, b).setPendingOwner(b.scopeId, b.owner),
+  onProvision:  (env, b) => identityDo(env, b).setPendingOwner(b.scopeId, b.owner, b.parentScopeId),
   resolveOwner: (env, r) => identityDo(env, r).getOwnerOfRecord(r.scopeId),
   onConfigure:  (env, b) => identityDo(env, b).putConfig(b.scopeId, b.entries),
   ownerSeat:      (env, r) => identityDo(env, r).ownerSeat(r.scopeId),

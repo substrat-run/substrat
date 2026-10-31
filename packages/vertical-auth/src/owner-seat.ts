@@ -128,6 +128,37 @@ export function recordOwnerSeat(
   );
 }
 
+/**
+ * Record the seat of a SIBLING scope (#2773) — one a running scope asked for (`provision-sibling`)
+ * with its own principal as `owner`. That person has already signed in, at the parent, so the
+ * seat is bound at provision to every subject the parent binds to `owner`, and no first-sign-in
+ * window is opened: under `recordOwnerSeat` the new scope's seat went to whichever login reached
+ * it first, which on an install with open sign-up need not be the person who asked for it, and
+ * the asker who did not open it in time was locked out until a claim link. When the parent binds
+ * nobody to `owner`, the seat is left pending with its window already CLOSED, so only a claim
+ * link takes it. First write wins, as in `recordOwnerSeat`.
+ */
+export function recordSiblingOwnerSeat(
+  sql: RegistrySql,
+  scopeId: string,
+  principal: string,
+  parentScopeId: string,
+  now: number,
+): void {
+  if (ownerOfRecord(sql, scopeId) !== null) return;
+  sql.exec('INSERT INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
+  sql.exec(
+    'INSERT OR IGNORE INTO identity (scope_id, sub, principal) SELECT ?, sub, principal FROM identity WHERE scope_id = ? AND principal = ?',
+    scopeId,
+    parentScopeId,
+    principal,
+  );
+  const bound = [...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND principal = ? LIMIT 1', scopeId, principal)];
+  if (bound.length === 0) {
+    sql.exec('INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)', scopeId, principal, now);
+  }
+}
+
 /** The scope's durable owner of record, or null if never provisioned through this directory. */
 export function ownerOfRecord(sql: RegistrySql, scopeId: string): string | null {
   const row = [...sql.exec('SELECT principal FROM owner_of_record WHERE scope_id = ?', scopeId)][0] as
