@@ -975,7 +975,8 @@ describe('the invocation id (#1237)', () => {
  * who it ran as, how it failed and what it emitted — so the line can say it.
  */
 describe('the per-request record (#1746)', () => {
-  function recordHarness(invoke: (options?: { onEmitted?: (r: unknown) => void }) => Promise<unknown>) {
+  type Options = { onEmitted?: (r: unknown) => void; onLogLines?: (n: number) => void };
+  function recordHarness(invoke: (options?: Options) => Promise<unknown>) {
     const record: InvocationRecord = {};
     const app = new Hono();
     app.use('*', async (c, next) => {
@@ -988,7 +989,7 @@ describe('the per-request record (#1746)', () => {
       async () =>
         ({
           subjectKind: 'capability',
-          invoke: (_n: string, _i: unknown, options?: { onEmitted?: (r: unknown) => void }) => invoke(options),
+          invoke: (_n: string, _i: unknown, options?: Options) => invoke(options),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         }) as any,
     );
@@ -1007,12 +1008,14 @@ describe('the per-request record (#1746)', () => {
     expect(record).toEqual({ operation: 'acme/plain', principalKind: 'capability', emitted: report });
   });
 
-  it("records a refused call's code, and still who was refused", async () => {
-    const { record, call } = recordHarness(async () => {
+  it("records a refused call's code, and still who was refused and the lines it logged (#2762)", async () => {
+    const { record, call } = recordHarness(async (options) => {
+      // A scope host reports the count before the failure reaches the caller.
+      options?.onLogLines?.(2);
       throw substratError('conflict', 'already done');
     });
     expect((await call()).status).toBe(409);
-    expect(record).toMatchObject({ operation: 'acme/plain', principalKind: 'capability', problemCode: 'conflict' });
+    expect(record).toMatchObject({ operation: 'acme/plain', principalKind: 'capability', problemCode: 'conflict', logLines: 2 });
     expect(record.emitted).toBeUndefined();
   });
 });

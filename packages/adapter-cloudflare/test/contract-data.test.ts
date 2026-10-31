@@ -79,6 +79,7 @@ import {
   timelineContractSuite,
   concurrencyContractSuite,
   emittedReportContractSuite,
+  emittedMod,
   moduleLogContractSuite,
   checkTallyContractSuite,
   asyncLogContractSuite,
@@ -1798,6 +1799,50 @@ emittedReportContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
+});
+
+// #2762: a ScopeDO from before the line count — its envelope carries no `logLines`. The
+// coordinator must read that as not recorded and stay silent, never report a `0` it was not told.
+describe('a ScopeDO from before the line count (#2762)', () => {
+  it('reports no count at all', async () => {
+    const host = new CloudflareScopeHost({
+      scope: {
+        idFromName: (n: string) => env.SCOPE.idFromName(n),
+        get: (id: never) => {
+          const real = env.SCOPE.get(id);
+          // The live DO, except that `invoke`'s envelope loses the field, as an old DO's never had it.
+          // Every other method is called ON the real stub (workerd refuses a proxied `this`).
+          return new Proxy(real, {
+            get: (target, prop) => {
+              const call = (...a: unknown[]) => (target as unknown as Record<PropertyKey, (...x: unknown[]) => Promise<unknown>>)[prop]!(...a);
+              if (prop === 'invoke') {
+                return async (...a: unknown[]) => {
+                  const { logLines: _dropped, ...envelope } = (await call(...a)) as Record<string, unknown>;
+                  return envelope;
+                };
+              }
+              return typeof Reflect.get(target, prop) === 'function' ? call : Reflect.get(target, prop);
+            },
+          });
+        },
+      } as unknown as typeof env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    onTestFinished(() => host.close());
+    host.registerModule(emittedMod);
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    await host.admin.createTenant(staff, { id: t, slug: `old-do-${ulid().toLowerCase()}`, name: 'Old DO' });
+    await host.admin.grantEntitlement(staff, t, 'emitted');
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'emitted-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    const counts: number[] = [];
+    const stub = await host.getScope(principalId.parse(ulid()), t, s);
+    await stub.invoke('emitted/touch', { ids: [`o-${ulid()}`] }, { onLogLines: (n) => counts.push(n) });
+    expect(counts).toEqual([]);
+  });
 });
 
 // #1746/#1747: ctx.log inside the DO. There is no sink option to reach — workerd builds the

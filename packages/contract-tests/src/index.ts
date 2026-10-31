@@ -120,6 +120,7 @@ export {
   billedMod,
   brokenMod,
   connectorMod,
+  emittedMod,
   contractTestBareOps,
   contractTestInitialModules,
   contractTestModules,

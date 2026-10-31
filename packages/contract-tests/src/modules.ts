@@ -2882,9 +2882,13 @@ export const emittedModManifest = moduleManifest.parse({
   entitlementKey: 'emitted',
 });
 
-/** One `emitted.touched` per id, in order — the rows `onEmitted` should name. */
+/**
+ * One `emitted.touched` per id, in order — the rows `onEmitted` should name — and one `ctx.log`
+ * line per id, the lines `onLogLines` should count (#2762).
+ */
 const touchAll = (ctx: OperationContext, ids: readonly string[]): void => {
   for (const id of ids) {
+    ctx.log.info('touching {id}', { id });
     ctx.emit({
       type: 'emitted.touched',
       schemaVersion: 1,
@@ -2928,6 +2932,7 @@ export const emittedMod: ModuleRegistration = {
   }),
   consumers: {
     'emitted.touched': ((ctx, event) => {
+      ctx.log.info('echoing {id}', { id: event.entity.entityId });
       ctx.emit({
         type: 'emitted.echoed',
         schemaVersion: 1,

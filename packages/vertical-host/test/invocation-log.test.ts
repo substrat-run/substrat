@@ -716,9 +716,14 @@ describe('the line’s outputFields (#1331)', () => {
     }
   };
 
-  it('carries the report a mount filled in', async () => {
-    const line = await lineFor({ operation: 'acme/op', outputFields: { present: ['id'], empty: ['title'], absent: ['note'] } });
+  it('carries the report a mount filled in, and its line count (#2762)', async () => {
+    const line = await lineFor({
+      operation: 'acme/op',
+      outputFields: { present: ['id'], empty: ['title'], absent: ['note'] },
+      logLines: 3,
+    });
     expect(line.outputFields).toEqual({ present: ['id'], empty: ['title'], absent: ['note'] });
+    expect(line.logLines).toBe(3);
   });
 
   it('omits the key — not null — when nothing was walked, so an unarmed line is unchanged', async () => {
@@ -726,7 +731,7 @@ describe('the line’s outputFields (#1331)', () => {
     expect(Object.keys(line)).toEqual([
       'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'route', 'status', 'threw',
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
-      'eventTypes', 'entities', 'entityTypes', 'versionId',
+      'logLines', 'eventTypes', 'entities', 'entityTypes', 'versionId',
     ]);
   });
 });
