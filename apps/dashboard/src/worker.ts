@@ -4316,7 +4316,7 @@ async function appObservabilityLogsIn(ctx: TeamContext, input: RouteInput<'dashb
 const REQUEST_READ_KEYS = [
   'hours', 'since', 'until',
   'level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind',
-  'buckets', 'facet', 'limit',
+  'buckets', 'facet', 'limit', 'search',
 ] as const;
 
 /** The allowlisted keys of a parsed input as plane query pairs: a list field once per value. */
@@ -6025,6 +6025,16 @@ const problem = (c: Context, status: number, detail?: string, extra: object = {}
     'content-type': PROBLEM_CONTENT_TYPE,
   });
 
+/** The `reason` slug in a plane problem body (text), when it carries one. */
+function problemReasonOf(body: string | undefined): string | undefined {
+  try {
+    const reason = (JSON.parse(body ?? 'null') as { reason?: unknown } | null)?.reason;
+    return typeof reason === 'string' ? reason : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 app.onError((err, c) => {
   const m = err instanceof Error ? err.message : String(err);
   if (err instanceof IntegrationConnectRefused) {
@@ -6045,7 +6055,10 @@ app.onError((err, c) => {
   // fault (e.g. the CF observability token 403 that the plane surfaces as a 500 `internal error`)
   // as the caller's mistake. status 0 = plane unreachable → 502.
   if (err instanceof ControlPlaneError) {
-    return problem(c, err.status >= 400 ? err.status : 502, m);
+    // A 400 that names its `reason` (the plane's `search_not_counted`) keeps it: the page
+    // branches on that slug, not on the sentence.
+    const reason = err.status === 400 ? problemReasonOf(err.body) : undefined;
+    return problem(c, err.status >= 400 ? err.status : 502, m, reason ? { reason } : {});
   }
   // A throw that declared what it is renders from its own declaration, extensions and all.
   const declared = errorCodeOf(err);

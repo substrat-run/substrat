@@ -3267,6 +3267,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3499,6 +3507,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3725,6 +3741,14 @@
           },
           {
             "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
             "in": "query",
             "required": false,
             "schema": {

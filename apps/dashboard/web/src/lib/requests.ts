@@ -53,16 +53,27 @@ export const REQUEST_URL_KEYS: (keyof ObsQuery)[] = REQUEST_FACETS.map((f) => f.
 
 /** The query bar's chips for the Requests mode: one per facet, its values joined. */
 export function requestChips(q: ObsQuery): { key: string; value: string; clears: (keyof ObsQuery)[] }[] {
-  return REQUEST_FACETS.flatMap((f) => {
+  const search: { key: string; value: string; clears: (keyof ObsQuery)[] }[] = q.search ? [{ key: 'search', value: q.search, clears: ['search'] }] : [];
+  return search.concat(REQUEST_FACETS.flatMap((f) => {
     const values = selected(q, f.key);
     if (values.length === 0) return [];
     const shown = values.map((v) => facetValueLabel(f.key, v));
     return [{ key: f.label.toLowerCase(), value: shown.join(' or '), clears: [f.url] }];
-  });
+  }));
+}
+
+/**
+ * The search the plane is asked for. Matching is case-sensitive and request ids are
+ * upper-case ULIDs, so a ULID-shaped term is upper-cased; anything else goes as typed.
+ */
+export function requestSearchOf(q: ObsQuery): string | undefined {
+  const t = q.search?.trim();
+  if (!t) return undefined;
+  return /^[0-9a-hjkmnp-tv-z]{26}$/i.test(t) ? t.toUpperCase() : t;
 }
 
 /** One request read's query, as the declared routes name it: each facet a list, sent as repeated keys. */
-export type RequestReadQuery = { since?: string; until?: string; hours?: string; buckets?: string; limit?: string } &
+export type RequestReadQuery = { since?: string; until?: string; hours?: string; buckets?: string; limit?: string; search?: string } &
   Partial<Record<RequestFacetKey, string[]>>;
 
 /**
@@ -83,6 +94,8 @@ export function requestReadQuery(
     out.hours = String(window.hours);
   }
   Object.assign(out, whereOf(q));
+  const search = requestSearchOf(q);
+  if (search) out.search = search;
   if (extra.buckets !== undefined) out.buckets = String(extra.buckets);
   if (extra.limit !== undefined) out.limit = String(extra.limit);
   return out;

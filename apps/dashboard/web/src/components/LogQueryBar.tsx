@@ -44,7 +44,7 @@ export function LogQueryBar({
   };
   const placeholder =
     mode === 'requests'
-      ? 'Tick a value in the sidebar or drag across the chart to narrow down'
+      ? 'Search id, operation or path (case-sensitive), or tick a value in the sidebar'
       : mode === 'patterns'
         ? 'Click a pattern to see its lines'
       : mode === 'events'

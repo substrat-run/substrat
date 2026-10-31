@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
-import { api, isApiError, type ReleaseMarker, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
+import { api, ApiError, isApiError, type ReleaseMarker, type RequestFacets, type RequestRecord, type RequestVolume } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
 import { mockRequestFacets, mockRequestVolume, mockRequests } from '../lib/mock-requests';
 import { mockAppTraffic } from '../lib/mock-app-traffic';
@@ -14,6 +14,7 @@ import {
   facetValueLabel,
   principalKindLabel,
   requestReadQuery,
+  requestSearchOf,
   resultLabel,
   rowLabel,
   selected,
@@ -56,6 +57,10 @@ const isError = (v: unknown): v is { error: string } => typeof v === 'object' &&
 
 /** Why a read failed, in the page's words: 501 is "not on this platform", never an outage. */
 function failure(e: unknown): { error: string } {
+  // The plane counts the cubes, which cannot match free text: with a search set the chart and
+  // the facet counts are unavailable by design, not empty (their list still answers).
+  const reason = e instanceof ApiError ? e.reason : (e as { body?: { reason?: unknown } } | null)?.body?.reason;
+  if (reason === 'search_not_counted') return { error: 'Counts are unavailable while a search is set. The list below shows the matching requests; clear the search to see the chart and counts.' };
   if (isApiError(e) && e.status === 501) return { error: 'Request counts are not available on this platform yet.' };
   if (isApiError(e)) return { error: `Requests could not be read (${e.status}): ${e.message}` };
   return { error: 'Requests could not be read right now.' };
@@ -113,7 +118,8 @@ export function RequestsMode({
   // them — an old app's rows must never sit under a new app's name.
   const asked = useRef<string | null>(null);
   const where = whereOf(q);
-  const whereKey = JSON.stringify(where);
+  const search = requestSearchOf(q);
+  const whereKey = JSON.stringify([where, search]);
   const span = { from: Date.parse(window.from), to: Date.parse(window.to) };
 
   useEffect(() => {

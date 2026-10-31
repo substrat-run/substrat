@@ -15,6 +15,7 @@ import {
   whereOf,
 } from '../src/lib/requests';
 import { logChips, parseBarText } from '../src/lib/logs-chips';
+import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
 import { sectionOf } from '../src/lib/obs-sections';
 
 /** #1746: the Requests mode — its URL rules, and the three reads it makes and draws. */
@@ -52,8 +53,15 @@ describe('request facets in the URL', () => {
     expect(logChips({ level: 'error', op: 'a' }, 'logs').map((c) => c.key)).toEqual(['level']);
   });
 
-  it('refuses typed text in Requests rather than guessing which facet it meant', () => {
-    expect(parseBarText('acme', 'requests')).toMatchObject({ error: expect.stringContaining('ticking') });
+  it('#2762: typed text in Requests is a search chip, sent upper-cased when it is an id', () => {
+    expect(parseBarText('level:error', 'requests')).toEqual({ add: { search: 'level:error' } });
+    expect(parseBarText('x'.repeat(201), 'requests')).toMatchObject({ error: expect.stringContaining('200') });
+    expect(requestChips({ search: 'POST /orders', op: 'a' }).map((c) => [c.key, c.value, c.clears])).toEqual([
+      ['search', 'POST /orders', ['search']],
+      ['operation', 'a', ['op']],
+    ]);
+    expect(requestReadQuery({ search: '  /orders ' }, { hours: 1 }).search).toBe('/orders');
+    expect(requestReadQuery({ search: '01j8zq0abcdefghjkmnpqrstvw' }, { hours: 1 }).search).toBe('01J8ZQ0ABCDEFGHJKMNPQRSTVW');
   });
 
   it('is a Logs sub-view', () => {
@@ -297,6 +305,18 @@ describe('RequestsMode', () => {
     await render({ live: true, scopeId: 'app-b' });
     expect(container.textContent).not.toContain('409 conflict');
     expect(container.textContent).toContain('Loading requests');
+  });
+
+  it('#2762: says counts are unavailable while searching, not an empty chart, and still lists', async () => {
+    const refused = new GeneratedApiError(400, 'search is not counted', { reason: 'search_not_counted' });
+    vi.spyOn(api, 'appRequestVolume').mockRejectedValue(refused);
+    vi.spyOn(api, 'appRequestFacets').mockRejectedValue(refused);
+    vi.spyOn(api, 'appRequests').mockResolvedValue([row()]);
+    vi.spyOn(api, 'appGoLives').mockResolvedValue([]);
+    await render({ q: { search: 'conflict' } });
+    expect(container.textContent).toContain('Counts are unavailable while a search is set');
+    expect(container.textContent).toContain('409 conflict');
+    expect(container.textContent).not.toContain('could not be read');
   });
 
   it('says a 501 is "not on this platform", never an empty app', async () => {
