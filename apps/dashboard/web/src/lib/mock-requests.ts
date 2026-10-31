@@ -170,7 +170,7 @@ type Where = Partial<Record<RequestFacetKey, string[]>>;
 /** The row's values for a facet, as the plane would group it — `entity` one per type (#2762). */
 function valuesOf(r: RequestRecord, key: RequestFacetKey): string[] {
   if (key === 'kind') return [r.kind ?? 'request'];
-  if (key === 'entity') return [...new Set(r.entities.map((e) => e.slice(0, e.indexOf(':'))))];
+  if (key === 'entity') return [...new Set(r.entities.flatMap((e) => (e.indexOf(':') > 0 ? [e.slice(0, e.indexOf(':'))] : [])))];
   const v = r[key];
   return v === null || v === undefined ? [] : [String(v)];
 }
