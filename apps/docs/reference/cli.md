@@ -591,9 +591,9 @@ preview, a test env), reach for [`scope domain`](#scope-domain) instead.
 
 ```bash
 substrat entitlements list                                  # a workspace's entitlement keys
-substrat entitlements grant drive-vertical                  # grant a key
+substrat entitlements grant reports                                  # grant a key
 substrat entitlements grant seats --plan pro --quota 10 --expires 2027-01-01T00:00:00Z
-substrat entitlements revoke drive-vertical                 # withdraw a key (staff)
+substrat entitlements revoke reports                                 # withdraw a key (staff)
 ```
 
 `--tenant <id-or-slug>` picks the workspace (the default from `substrat login` otherwise). `grant`
