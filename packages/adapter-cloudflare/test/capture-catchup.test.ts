@@ -81,6 +81,8 @@ describe('a copy catches up on the writes its source took while it was read (#24
     let cursor: string | null = null;
     do {
       const page = await host.exportScopePageLocal(source, cursor, { capture: copyId, maxBytes: 600 });
+      // The echo a copy reads to know the capture is held, and not a host that ignored it.
+      expect(page.captured).toBe(true);
       expect(await host.stageScopePageLocal(dest, stageId, seq++, page.tables)).toEqual({ staged: true });
       if (seq === 1) await opts.betweenPages?.();
       cursor = page.next;
