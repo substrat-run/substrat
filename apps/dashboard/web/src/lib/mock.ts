@@ -56,8 +56,8 @@ export const MOCK_MEMBERS: Member[] = [
 ];
 
 /** The fields a sample leaves out: a private, owned vertical, unpinned, with versions that carry no schema change or origin. */
-const ver = (v: Omit<DeploymentVersion, "schemaChange" | "origin"> & Partial<DeploymentVersion>): DeploymentVersion => ({ schemaChange: false, origin: null, ...v });
-const dep = (d: Omit<AppDeployments, "listed" | "owned" | "boundVersionId" | "nextCursor" | "versions"> & Partial<AppDeployments> & { versions: DeploymentVersion[] }): AppDeployments => ({ listed: false, owned: true, boundVersionId: null, nextCursor: null, ...d });
+const ver = (v: Omit<DeploymentVersion, 'schemaChange' | 'origin'> & Partial<DeploymentVersion>): DeploymentVersion => ({ schemaChange: false, origin: null, ...v });
+const dep = (d: Omit<AppDeployments, 'listed' | 'owned' | 'boundVersionId' | 'nextCursor' | 'versions'> & Partial<AppDeployments> & { versions: DeploymentVersion[] }): AppDeployments => ({ listed: false, owned: true, boundVersionId: null, nextCursor: null, ...d });
 
 export const MOCK_DEPLOYMENTS: AppDeployments[] = [
   dep({

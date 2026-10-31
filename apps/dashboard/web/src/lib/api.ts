@@ -1,5 +1,5 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppRow, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion,type FailureGroupRow, type InstallStep, type Member, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type TrafficSeries } from './api.generated';
+import { ApiError as GeneratedApiError, createClient, type AdminLogEntry, type AppDeployments, type AppEvent, type AppRow, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type DeploymentRow, type DeploymentVersion, type FailureGroupRow, type InstallStep, type Member, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView, type TrafficSeries } from './api.generated';
 import { logsIncompleteOf } from '@substrat-run/control-plane-api/browser';
 import { tenantLogsQuery } from './logs-query';
 import type { RequestReadQuery } from './requests';
@@ -7,7 +7,7 @@ import { exportBreaksIn } from './bind-ack';
 import type { RebindReviewReason, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 // The shapes the declared Deployments routes answer (#2170) are the generated client's own.
-export type { AppDeployments, AppEvent, AppRow, BoundScopeRow, DeployFailureRow, DeploymentVersion,FailureGroupRow, InstallStep, Member, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView, TrafficSeries };
+export type { AppDeployments, AppEvent, AppRow, BoundScopeRow, DeployFailureRow, DeploymentVersion, FailureGroupRow, InstallStep, Member, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView, TrafficSeries };
 export type AuditEntry = AdminLogEntry;
 export type ChannelHistoryEntry = ChannelHistoryRow;
 export type VerticalPreview = PreviewRow;
