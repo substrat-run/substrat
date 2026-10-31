@@ -443,6 +443,16 @@ histogram's total still matches the traffic chart. A count the backend took from
 back with `estimated: true`. All three are optional on the seam and 501 when absent, never an
 empty answer that reads as "no traffic".
 
+**Free text (#2762).** The list also takes `search` (1–200 characters): a request matches when
+its operation, path or request id contains the text, or — spelled `POST /orders` — when its
+method is that method and its path contains the rest. A method word alone (`get`) is only ever
+the plain substring. The two counting routes **refuse** `search` with a `400`
+`validation_failed` whose `reason` is `search_not_counted` (`REQUEST_SEARCH_NOT_COUNTED`):
+their counts come from the cubes below, which hold no request id and no path, so no count
+could honour the text, and an ignored filter would read as counts of the matching requests.
+With a search set, the histogram and the facet counts are unavailable by design, and a client
+says so rather than drawing an empty chart.
+
 **How the counts are taken (#1877).** The first version aggregated raw log events at view time —
 one `calculations` query per read, filtered on fields inside our own JSON. On production, at
 demo volume, the grouped time series timed out after 30 s (a gateway 504), and a Lines page took
