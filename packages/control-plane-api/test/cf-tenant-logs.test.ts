@@ -1149,11 +1149,18 @@ describe('cf tenant logs — async work (#1901)', () => {
       { ...invocation({ invocationId: 'any-char', entityTypes: 'abc' }, '01RD'), timestamp: 2 },
       { ...invocation({ invocationId: 'none' }, '01RE'), timestamp: 1 },
     ];
-    const { reader } = readerOver((filters, limit) =>
-      lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit),
-    );
-    const ids = async (entity: string[]) =>
-      (await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity } })).map((r) => r.invocationId);
+    // What the QUERY selects, before the list re-checks it: a widened pattern would fill the
+    // page with lines the re-check then drops, and a short page reads as a quiet window.
+    let served: unknown[] = [];
+    const { reader } = readerOver((filters, limit) => {
+      served = lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit);
+      return served;
+    });
+    const ids = async (entity: string[]) => {
+      const listed = await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity } });
+      expect(served).toHaveLength(listed.length);
+      return listed.map((r) => r.invocationId);
+    };
     expect(await ids(['repair'])).toEqual(['both']);
     expect(await ids(['visit', 'repairs'])).toEqual(['both', 'longer']);
     expect(await ids(['a.c'])).toEqual(['dotted']);
