@@ -104,6 +104,19 @@ describe('PatternsMode', () => {
     expect(onOpenPattern).toHaveBeenCalledWith('reply to {ticketId} bounced');
   });
 
+  it('#2762: reports its pattern count for the mode tab, but not a cut-short one', async () => {
+    const read = vi.spyOn(api, 'appLogPatterns').mockResolvedValue({ ...answer, truncated: false });
+    const onCount = vi.fn();
+    const mount = () => act(async () => root.render(<PatternsMode teamId="team-a" scopeId="app-a" window={window} nonce={0} onOpenPattern={vi.fn()} onCount={onCount} />));
+    await mount();
+    expect(onCount.mock.calls.map((c) => c[0])).toEqual([null, 1]);
+    // `answer` is truncated: its length is a floor, so no number goes on the tab.
+    read.mockResolvedValue(answer);
+    onCount.mockClear();
+    await act(async () => root.render(<PatternsMode teamId="team-a" scopeId="app-a" window={window} nonce={1} onOpenPattern={vi.fn()} onCount={onCount} />));
+    expect(onCount.mock.calls.map((c) => c[0])).toEqual([null]);
+  });
+
   it('says why it is empty: console.log lines carry no template', async () => {
     vi.spyOn(api, 'appLogPatterns').mockResolvedValue({ ...answer, total: 0, patterns: [], truncated: false });
     await render();

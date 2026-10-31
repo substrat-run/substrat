@@ -98,6 +98,19 @@ export interface BoundScopeRow {
   hostnames: string[];
 }
 
+/** `catalogRow` — a published schema, not a stored row. */
+export interface CatalogEntry {
+  slug: string;
+  name: string;
+  owned: boolean;
+  listed: boolean;
+  source: string;
+  installable: boolean;
+  envSpec?: { key: string; label?: string; description: string; placeholder?: string; kind?: string; required: boolean; secret: boolean; previewCarry?: boolean; default?: string; group?: string }[];
+  provides?: string[];
+  requires?: string[];
+}
+
 /** `channelHistoryRow` — a published schema, not a stored row. */
 export interface ChannelHistoryRow {
   id: string;
@@ -903,6 +916,13 @@ export interface DashboardClient {
   listBoundScopes(input: { slug: string }): Promise<{ live: number; archived: number; scopes: BoundScopeRow[] }>;
 
   /**
+   * The verticals this team can install: published ones and its own, each saying whether it is installable yet
+   *
+   * `GET /catalog` — `dashboard/list-catalog`
+   */
+  listCatalog(): Promise<CatalogEntry[]>;
+
+  /**
    * One channel's promotion timeline, newest first: the rollback picker
    *
    * `GET /deployments/{slug}/channels/{channel}/history` — `dashboard/list-channel-history`
@@ -1549,6 +1569,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/apps", "GET", undefined, input),
     listBoundScopes: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes`, "GET", undefined, omit(input, ["slug"])),
+    listCatalog: () =>
+      send("/catalog", "GET", undefined, undefined),
     listChannelHistory: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/channels/${encodeURIComponent(String(input.channel))}/history`, "GET", undefined, omit(input, ["slug","channel"])),
     listDeploymentFailures: (input: Args) =>

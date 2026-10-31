@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dashboard",
-  "version": "0.48.5",
+  "version": "0.48.6",
   "private": true,
   "substrat": {
     "permissions": "src/provision.ts",
@@ -12,6 +12,7 @@
         "AppEvent": "appEvent",
         "AppRow": "appRow",
         "BoundScopeRow": "boundScopeRow",
+        "CatalogEntry": "catalogRow",
         "ChannelHistoryRow": "channelHistoryRow",
         "DeployFailureRow": "deployFailureRow",
         "DeploymentRow": "deploymentRow",

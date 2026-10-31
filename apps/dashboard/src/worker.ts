@@ -903,50 +903,54 @@ async function installSpecFor(
   };
 }
 
+// The anonymous catalog: this deployment's published verticals (installable for builtins), the same
+// for every caller. It reads no session and no team; a team's own verticals are
+// `dashboard/list-catalog`, under its path.
 app.get('/api/catalog', async (c) => {
   const host = hostFor(c.env);
-  // Registry-driven (marketplace-publish.md §3): show published verticals + the caller's own.
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   await ensureCatalogOnce(host);
-  // Pushed verticals live in the SHARED plane's registry, not this deployment's own —
-  // merge the caller's own + published ones in. Local wins on a shared slug: the builtin
-  // seed here is refreshed each boot, the plane's copy may lag. The seam is tenant-narrowed,
-  // so a caller with no session has none — they see the published builtins and no more.
-  const cp = node ? controlPlaneFor(c.env, node.tenantId, node.principal) : null;
+  const rows = availableCatalog(await host.admin.listVerticals(STAFF), { tenantId: null });
+  return c.json(rows.map((v) => ({ ...v, installable: v.source === 'builtin' })));
+});
+
+/**
+ * The New-app picker for the path's team — registry-driven (marketplace-publish.md §3): published
+ * verticals plus the team's own. Pushed verticals live in the SHARED plane's registry, not this
+ * deployment's own, so the plane's rows (published + this team's, tenant-narrowed) are merged in.
+ * Local wins on a shared slug: the builtin seed here is refreshed each boot, the plane's copy may lag.
+ */
+async function teamCatalogIn(ctx: TeamContext) {
+  const host = hostFor(ctx.c.env);
+  await ensureCatalogOnce(host);
+  const cp = teamPlane(ctx);
   // Two registries, two independent reads — asked together.
-  const [local, remote] = await Promise.all([host.admin.listVerticals(STAFF), cp ? cp.listCatalog() : []]);
-  const rows = availableCatalog(local, { tenantId: node?.tenantId ?? null });
-  if (cp) {
-    for (const v of remote) {
-      if (!rows.some((r) => r.slug === v.slug)) {
-        rows.push({
-          slug: v.slug,
-          name: v.name,
-          owned: v.owned,
-          listed: v.listed,
-          source: v.source,
-          ...(v.envSpec?.length ? { envSpec: v.envSpec as EnvVarSpec[] } : {}),
-          ...(v.provides?.length ? { provides: v.provides } : {}),
-          ...(v.requires?.length ? { requires: v.requires } : {}),
-        });
-      }
+  const [local, remote] = await Promise.all([host.admin.listVerticals(STAFF), cp.listCatalog()]);
+  const rows = availableCatalog(local, { tenantId: ctx.node.tenantId });
+  for (const v of remote) {
+    if (!rows.some((r) => r.slug === v.slug)) {
+      rows.push({
+        slug: v.slug,
+        name: v.name,
+        owned: v.owned,
+        listed: v.listed,
+        source: v.source,
+        ...(v.envSpec?.length ? { envSpec: v.envSpec as EnvVarSpec[] } : {}),
+        ...(v.provides?.length ? { provides: v.provides } : {}),
+        ...(v.requires?.length ? { requires: v.requires } : {}),
+      });
     }
   }
   // Installability: a builtin is statically bound or promoted on the plane; a pushed
   // vertical is installable only once a version is PROMOTED TO PROD — offering it earlier
   // would sell an install that fails at provision time. The UI shows a not-yet-promoted
-  // owned vertical disabled, pointing at the Verticals page. Without a session there is no
-  // plane seam to ask, and every row a sessionless caller sees is a published builtin.
-  const catalog = await Promise.all(
+  // owned vertical disabled, pointing at the Verticals page.
+  return Promise.all(
     rows.map(async (v) => ({
       ...v,
-      installable:
-        v.source === 'builtin' ||
-        (cp !== null && (await cp.listChannels(v.slug)).some((ch) => ch.channel === 'prod')),
+      installable: v.source === 'builtin' || (await cp.listChannels(v.slug)).some((ch) => ch.channel === 'prod'),
     })),
   );
-  return c.json(catalog);
-});
+}
 
 /**
  * Who am I — three states: no session ⇒ 401; a session with no team yet ⇒
@@ -5720,6 +5724,7 @@ const routeHandlers = {
   'dashboard/app-request-facets': async (ctx, input) => appRequestsIn(ctx, input, 'facets') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-request-facets']['output']>>,
   'dashboard/app-requests': async (ctx, input) => appRequestsIn(ctx, input, 'list') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-requests']['output']>>,
   'dashboard/app-log-patterns': async (ctx, input) => appLogPatternsIn(ctx, input) as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-patterns']['output']>>,
+  'dashboard/list-catalog': async (ctx) => teamCatalogIn(ctx),
   'dashboard/list-deployments': async (ctx) => listDeploymentsFromCp(teamPlane(ctx)),
   'dashboard/promote-deployment': async (ctx, body) => promoteDeploymentIn(ctx, body),
   'dashboard/get-promotion-review': async (ctx, { slug, versionId }) => promotionReviewIn(ctx, slug, versionId),

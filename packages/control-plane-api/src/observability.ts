@@ -323,6 +323,49 @@ export interface TenantRequestScope {
   /** Epoch milliseconds, exclusive. */
   to: number;
   where?: RequestWhere;
+  /**
+   * #2762: free text a request must contain — in its operation, its path or its id, or, spelled
+   * `<METHOD> <path text>`, its method and path. The request LIST alone takes it: the counts
+   * are computed from cubes that hold no id and no path, so the counting routes refuse it
+   * (`REQUEST_SEARCH_NOT_COUNTED`) rather than count a different set than the list shows, and
+   * the aggregate reads never see it.
+   */
+  search?: string;
+}
+
+/** The longest `search` a request read takes — the same cap as the Lines message search. */
+export const REQUEST_SEARCH_MAX = 200;
+
+/**
+ * #2762: the `reason` on the `validation_failed` problem the request histogram and facet
+ * reads answer when given `search`. Stable, so a client keys on it: with a search set, those
+ * counts are unavailable by design, and a client says so instead of drawing an empty chart.
+ */
+export const REQUEST_SEARCH_NOT_COUNTED = 'search_not_counted';
+
+const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const;
+
+/**
+ * What a `search` matches, read once for every backend: the text as a substring of the
+ * operation, the path or the request id, or — when it is a method followed by more text —
+ * that method exactly and the rest as a substring of the path. A method word alone (`get`) is
+ * only ever the plain substring: nothing after it, nothing to narrow a path by.
+ */
+export function requestSearchOf(search: string): { text: string; method?: { method: string; path: string } } {
+  const m = /^(\S+)\s+(\S.*)$/.exec(search);
+  const method = m?.[1]!.toUpperCase();
+  return method && (HTTP_METHODS as readonly string[]).includes(method)
+    ? { text: search, method: { method, path: m![2]! } }
+    : { text: search };
+}
+
+/** Does a request record answer a search, as `requestSearchOf` read it? */
+export function requestMatchesSearch(
+  r: { operation: string | null; path: string | null; invocationId: string | null; method: string | null },
+  s: ReturnType<typeof requestSearchOf>,
+): boolean {
+  if ([r.operation, r.path, r.invocationId].some((v) => v !== null && v.includes(s.text))) return true;
+  return s.method !== undefined && r.method === s.method.method && r.path !== null && r.path.includes(s.method.path);
 }
 
 /** The levels a request is filed under, plus the requests whose line predates `level`. */

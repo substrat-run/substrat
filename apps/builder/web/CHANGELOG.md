@@ -1,5 +1,11 @@
 # @substrat-run/builder-web
 
+## 0.3.65
+
+### Patch Changes
+
+- @substrat-run/model-view@0.6.19
+
 ## 0.3.64
 
 ### Patch Changes

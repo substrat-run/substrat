@@ -19,7 +19,15 @@ import type {
   RequestRecord,
   TenantRequestScope,
 } from './observability.js';
-import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, INVOCATION_KINDS, invocationKindOf, outboundCallsOf } from './observability.js';
+import {
+  TENANT_METRICS_LIMIT,
+  REQUEST_FACET_KEYS,
+  INVOCATION_KINDS,
+  invocationKindOf,
+  outboundCallsOf,
+  requestMatchesSearch,
+  requestSearchOf,
+} from './observability.js';
 
 /**
  * An HTTP method as RFC 9110 §9.1 defines it: a `token` (§5.6.2), one or more `tchar`.
@@ -83,7 +91,23 @@ function requestFilters(scope: TenantRequestScope, omit?: RequestFacetKey): Tele
     );
     filters.push(leaves.length === 1 ? leaves[0]! : { kind: 'group', filterCombination: 'or', filters: leaves });
   }
+  if (scope.search !== undefined) filters.push(searchFilter(scope.search));
   return filters;
+}
+
+/** #2762: `search` as one OR group, read by `requestSearchOf` — the rule the list re-checks. */
+function searchFilter(search: string): TelemetryFilter {
+  const s = requestSearchOf(search);
+  const includes = (key: string, value: string): TelemetryFilter => ({ key, operation: 'includes', type: 'string', value });
+  const either: TelemetryFilter[] = ['operation', 'path', 'invocationId'].map((key) => includes(key, s.text));
+  if (s.method) {
+    either.push({
+      kind: 'group',
+      filterCombination: 'and',
+      filters: [{ key: 'method', operation: 'eq', type: 'string', value: s.method.method }, includes('path', s.method.path)],
+    });
+  }
+  return { kind: 'group', filterCombination: 'or', filters: either };
 }
 
 /**
@@ -1191,14 +1215,17 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // for its siblings until a row is opened (which `tenantLogs` with the invocation id
     // already answers).
     async tenantRequests(input) {
+      const search = input.search === undefined ? undefined : requestSearchOf(input.search);
       const events = await queryRaw(requestFilters(input), { from: input.from, to: input.to }, input.limit);
       return events
         // #1901: the query narrowed on kind already; this holds the answer to the same
         // reading (a missing `kind` is a request) whatever the backend did with the filter.
         .filter((e) => kindMatches(e, input))
         .sort((a, b) => rawTime(b) - rawTime(a))
-        .slice(0, input.limit)
-        .map(requestRecordOf);
+        .map(requestRecordOf)
+        // #2762: likewise for `search` — the answer is the rule `requestSearchOf` states.
+        .filter((r) => search === undefined || requestMatchesSearch(r, search))
+        .slice(0, input.limit);
     },
 
     async observedEgress({ services, hours, limit }) {

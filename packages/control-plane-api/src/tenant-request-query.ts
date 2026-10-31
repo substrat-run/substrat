@@ -1,10 +1,19 @@
 /**
- * The query a tenant-grain request read takes (#1746): the tenant, the window, and the
- * facet filters. Shared by the three request routes so they refuse and accept the same
- * things, and so the count, the histogram and the list beside it always describe one set.
+ * The query a tenant-grain request read takes (#1746): the tenant, the window, the facet
+ * filters and the free-text search (#2762). Shared by the three request routes so they refuse
+ * and accept the same things, and so the count, the histogram and the list beside it always
+ * describe one set — which is why the two counting routes refuse `search` outright.
  */
-import { z, tenantId as tenantIdSchema } from '@substrat-run/contracts';
-import { INVOCATION_KINDS, REQUEST_FACET_KEYS, type RequestFacetKey, type RequestWhere, type TenantRequestScope } from './observability.js';
+import { z, substratError, tenantId as tenantIdSchema } from '@substrat-run/contracts';
+import {
+  INVOCATION_KINDS,
+  REQUEST_FACET_KEYS,
+  REQUEST_SEARCH_MAX,
+  REQUEST_SEARCH_NOT_COUNTED,
+  type RequestFacetKey,
+  type RequestWhere,
+  type TenantRequestScope,
+} from './observability.js';
 import { stableDeploymentRefFor } from './deploy.js';
 
 /** The widest window a tenant-grain read may cover — the same three days `hours` caps at. */
@@ -89,7 +98,25 @@ export function parseTenantRequestQuery(tenantId: string, q: QueryReader, now: n
       .max(REQUEST_WHERE_VALUES_MAX)
       .parse([...new Set(values)]);
   }
-  return { ...base, ...(Object.keys(where).length > 0 ? { where } : {}) };
+  // #2762: surrounding space is not part of what a reader looks for; an empty one is no filter.
+  const { search } = z.object({ search: z.string().max(REQUEST_SEARCH_MAX) }).parse({ search: q.one('search')?.trim() ?? '' });
+  return { ...base, ...(Object.keys(where).length > 0 ? { where } : {}), ...(search ? { search } : {}) };
+}
+
+/**
+ * #2762: refuse `search` on a read that counts. The histogram and the facets are computed from
+ * cubes (#1877) holding neither a request id nor a path, so no count could honour the text the
+ * list is filtered by. A refusal, never an ignored filter: counts of every request would read
+ * as counts of the matching ones. A semantic refusal, so no `errors` list: one would make it
+ * read as a parse failure, which answers neither the `reason` nor this sentence.
+ */
+export function refuseSearchOnCounts(scope: TenantRequestScope): void {
+  if (scope.search === undefined) return;
+  throw substratError(
+    'validation_failed',
+    'request counts cannot be narrowed by search; search applies to the request list',
+    { reason: REQUEST_SEARCH_NOT_COUNTED },
+  );
 }
 
 /**

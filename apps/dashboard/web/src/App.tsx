@@ -387,7 +387,7 @@ export function App() {
         const [a, mem, c, d] = await Promise.all([
           teamApi(m.currentTeamId).listApps({}),
           teamApi(m.currentTeamId).listMembers({}).catch(() => emptyPage),
-          api.catalog(),
+          teamApi(m.currentTeamId).listCatalog(),
           teamApi(m.currentTeamId).listDeployments().catch(() => []),
         ]);
         if (!live) return;
@@ -734,9 +734,9 @@ export function App() {
   // above stays — 5s is the right cadence for an install in flight). Catalog rides
   // along so a freshly pushed vertical version shows up too.
   const refreshAll = useCallback(async () => {
-    if (DEV_MOCK) return;
-    await Promise.all([reloadApps(), reloadMembers(), reloadDeployments(), api.catalog().then(setCatalog)]);
-  }, [reloadApps, reloadMembers, reloadDeployments]);
+    if (DEV_MOCK || !currentTeamId) return;
+    await Promise.all([reloadApps(), reloadMembers(), reloadDeployments(), teamApi(currentTeamId).listCatalog().then(setCatalog)]);
+  }, [reloadApps, reloadMembers, reloadDeployments, currentTeamId]);
   useAutoRefresh(refreshAll, { enabled: !DEV_MOCK && me != null && !needsOnboarding(me) && !inviteBlock });
 
   const membersMoreRef = useRef(false);

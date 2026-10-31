@@ -18,6 +18,18 @@ export const LOG_MODES: { value: LogMode; label: string }[] = [
   { value: 'events', label: 'Events' },
 ];
 
+/**
+ * The mode tabs, each carrying the count its own read already answered for this page. A mode
+ * the reader has not opened has no answer and gets no count — an absent count is "not asked",
+ * never 0.
+ */
+export function modeTabs(counts: Partial<Record<LogMode, number>>): { value: LogMode; label: string; count?: number }[] {
+  return LOG_MODES.map((m) => {
+    const count = counts[m.value];
+    return count === undefined ? m : { ...m, count };
+  });
+}
+
 /** The one line at the right of the tab strip: what this mode shows and what a click does. */
 export function modeHint(mode: LogMode): string {
   if (mode === 'events') return 'Events the app emitted, grouped · click an event type to narrow to it';

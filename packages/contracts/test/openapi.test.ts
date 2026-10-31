@@ -17,6 +17,12 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { buildOpenApiDocument } from '../src/openapi.js';
 
+interface TreeNode {
+  id: string;
+  children: TreeNode[];
+}
+const treeNode: z.ZodType<TreeNode> = z.lazy(() => z.object({ id: z.string(), children: z.array(treeNode) }));
+
 const doc = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
   // The shape #830 was filed from: a paged list whose filters are input fields.
   'customer/list': {
@@ -53,7 +59,27 @@ const doc = buildOpenApiDocument({ title: 'Test', version: '1.0.0' }, {
   'customer/create': {
     summary: 'Register a customer',
     input: z.object({ name: z.string() }),
+    status: 201,
     http: { method: 'POST', path: '/customers' },
+  },
+  // A declared route's response header (#2170): a log page's `incomplete` flag.
+  'customer/logs': {
+    summary: 'Log lines',
+    output: z.object({ lines: z.array(z.string()) }),
+    responseHeaders: ['x-incomplete'],
+    http: { method: 'GET', path: '/customers/logs' },
+  },
+  // A recursive output (#2170): the dashboard's effects tree.
+  'customer/tree': {
+    summary: 'A tree',
+    output: z.object({ root: treeNode }),
+    http: { method: 'GET', path: '/customers/tree' },
+  },
+  // …and one whose output IS the recursive schema, which Zod refers back to as plain `#`.
+  'customer/subtree': {
+    summary: 'A subtree',
+    output: treeNode,
+    http: { method: 'GET', path: '/customers/subtree' },
   },
   // A literal the ROUTE supplies (`mountOperations` pins it and overrides the caller).
   'customer/pinned': {
@@ -228,6 +254,29 @@ describe('a write is untouched', () => {
     // A header documented where it is refused is worse than one documented
     // nowhere: a client reads it and builds a retry it does not have.
     expect(names).not.toContain('Idempotency-Key');
+  });
+
+  it('documents a declared route surface truthfully: status, headers, recursive refs, security (#2170)', () => {
+    expect(Object.keys(op('/api/customers', 'post').responses)).toContain('201');
+    expect(op('/api/customers', 'post').responses['200']).toBeUndefined();
+    expect(Object.keys(op('/api/customers/logs', 'get').responses['200'].headers)).toEqual(['x-incomplete']);
+
+    // A recursive schema's refs resolve from the document root, where OpenAPI reads `#`.
+    const refs = JSON.stringify(doc).match(/"\$ref":"[^"]+"/g)!.map((r) => r.slice(8, -1));
+    for (const ref of refs) {
+      const target = ref.slice(2).split('/').reduce((at: any, key) => at?.[key], doc);
+      expect(target, ref).toBeDefined();
+    }
+    expect(refs.some((r) => r.startsWith('#/components/schemas/customer-tree.'))).toBe(true);
+
+    // The security block is the vertical default unless the caller names its own.
+    expect(doc.security).toEqual([{ session: [] }, { bearer: [] }]);
+    const cookieOnly = buildOpenApiDocument({ title: 'T', version: '1' }, {}, {
+      schemes: { session: { type: 'apiKey', in: 'cookie', name: 'sb_session' } },
+      requirement: [{ session: [] }],
+    }) as Record<string, any>;
+    expect(cookieOnly.security).toEqual([{ session: [] }]);
+    expect(Object.keys(cookieOnly.components.securitySchemes)).toEqual(['session']);
   });
 
   it('keeps the invoke convention a POST with a body', () => {

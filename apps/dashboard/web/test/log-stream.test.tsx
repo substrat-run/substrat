@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventExplorer } from '../src/views/ObservabilityPanels';
 import { api, type EventFacetAnswer, type EventFacetResult } from '../src/lib/api';
 import { ApiError as GeneratedApiError } from '../src/lib/api.generated';
-import { bucketNarrow, bucketRows, dimensionLabel, emptyGroupingText, withheldOf } from '../src/lib/log-stream';
+import { bucketNarrow, bucketRows, dimensionLabel, emptyGroupingText, modeTabs, withheldOf } from '../src/lib/log-stream';
 
 const cursor = { from: '2026-09-01T10:00:00.000Z', to: '2026-09-01T11:00:00.000Z' };
 const result = (over: Partial<EventFacetResult> = {}): EventFacetResult => ({
@@ -21,6 +21,12 @@ const result = (over: Partial<EventFacetResult> = {}): EventFacetResult => ({
 });
 
 describe('log-stream derivations', () => {
+  it('#2762: a mode tab carries a count only when its mode answered, and a 0 is kept', () => {
+    const tabs = modeTabs({ requests: 0, patterns: 12 });
+    expect(tabs.map((t) => [t.value, t.count])).toEqual([['logs', undefined], ['requests', 0], ['patterns', 12], ['events', undefined]]);
+    expect(tabs[0]).not.toHaveProperty('count');
+  });
+
   it('only an event type narrows, and narrowing regroups by operation', () => {
     expect(bucketNarrow('type', 'invoice.sent')).toEqual({ type: 'invoice.sent', groupBy: 'operation', field: undefined });
     expect(bucketNarrow('type', null)).toBeNull();

@@ -310,7 +310,14 @@ import {
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
 import { TENANT_SERIES_SCOPE_CAP, REQUEST_FACET_KEYS, LOGS_INCOMPLETE_HEADER, type ObservabilityReader } from './observability.js';
-import { parseTenantRequestQuery, parseTenantWindowQuery, refineTenantWindow, scriptFamiliesOfScopes, type QueryReader } from './tenant-request-query.js';
+import {
+  parseTenantRequestQuery,
+  parseTenantWindowQuery,
+  refineTenantWindow,
+  refuseSearchOnCounts,
+  scriptFamiliesOfScopes,
+  type QueryReader,
+} from './tenant-request-query.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
@@ -10592,6 +10599,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 501, 'request aggregation is not configured on this control plane');
     }
     const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
+    refuseSearchOnCounts(scope);
     // A bucket COUNT: zooming in keeps it and narrows the window, so the bucket shrinks.
     // 90 is the design's histogram; the bounds keep a chart drawable and a query cheap.
     const buckets = z.coerce.number().int().min(10).max(240).default(90).parse(c.req.query('buckets'));
@@ -10604,6 +10612,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 501, 'request aggregation is not configured on this control plane');
     }
     const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
+    refuseSearchOnCounts(scope);
     // `facet` repeats; absent means every facet. Each one is a backend query, so a panel
     // that shows three asks for three.
     const asked = (c.req.queries('facet') ?? []).filter((k) => k.length > 0);

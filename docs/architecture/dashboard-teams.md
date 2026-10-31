@@ -146,8 +146,11 @@ and Model tabs, its process map and its schedule health now take the team from t
 with the same answers they gave on the cookie. The registry, the model, a lifecycle with its
 replayed counts and a version's files are carried as the plane answered them, so a plane newer
 than the dashboard cannot empty a tab. The old cookie routes are gone. These reads stay outside
-the assistant's tools; its process-map tool is unchanged. The catalog keeps its anonymous
-contract. OAuth callbacks and other teamless or signed-state routes do not take their team
+the assistant's tools; its process-map tool is unchanged. The install catalog is split in two.
+The anonymous `/api/catalog` answers this deployment's published verticals (installable for
+builtins) and reads no session or team. The New-app picker reads `GET /api/teams/:teamId/catalog` through `teamApi(teamId)`, which
+lists published verticals, the path team's own, and whether each can be installed yet (a pushed
+vertical once a version is in prod). OAuth callbacks and other teamless or signed-state routes do not take their team
 from the cookie.
 
 The team-wide reads moved as well: the account-wide Integrations list, fleet health, the identity
@@ -168,8 +171,8 @@ and resolves an edge's producer through that tenant's directory. The old cookie 
 gone; the three new reads remain outside the assistant's tools.
 
 Every team-scoped route is now declared under the team path, and no handler takes its team
-from the cookie. `sb_team` is read by two team-less routes only, `/api/me` and `/api/catalog`,
-to pick the team the shell opens on; the team switch, create, invite accept, leave and the
+from the cookie. `sb_team` is read by one team-less route only, `/api/me`, to pick the team the
+shell opens on; the team switch, create, invite accept, leave and the
 GitHub callback write or clear it. It is "last team used", never the team a request acts on.
 The observability and logs reads go through the generated client like every other team route.
 A filter that names several values (`service`, `scopeId`, the request facets) is declared as an
@@ -183,8 +186,16 @@ handler the assistant can call reads every argument from the parsed input, never
 `level`, `search` and the rest, and the request and pattern reads build the plane's allowlisted
 parameters from the input, a list field once per value. A tool call's arguments therefore mean
 what the same values in a URL mean. The four app chart reads the assistant is not given (traffic,
-failures, overlays, field reads) still read the query. What is still open under #2170: the
-declared surface does not yet emit an `openapi.json` with its `--check` gate.
+failures, overlays, field reads) still read the query.
+
+The declared surface also emits its OpenAPI document. `apps/dashboard/src/api.ts` builds it from
+`dashboardRoutes`, the object the mount and the generated client read, with each path under
+`/api/teams/{teamId}`. `pnpm lint:api` writes it to the checked-in `apps/dashboard/openapi.json`,
+and CI's `pnpm lint:api --check` fails when a route changes without it. The document states each
+route's declared success status and response headers, and no `Idempotency-Key`, because
+`mountRoutes` does not honour one. Its only security scheme is the session cookie, because that
+is all `teamContext` reads; there is no bearer path. The team-less routes are not declared, so they are not in it.
+It is a review artifact; the worker does not serve it.
 
 Bootstrap-on-first-login is unchanged: a login with zero teams still gets one provisioned.
 
