@@ -167,19 +167,19 @@ function fixture(now = Date.now()): RequestRecord[] {
 
 type Where = Partial<Record<RequestFacetKey, string[]>>;
 
-/** The row's value for a facet, as the plane would group it. */
-function valueOf(r: RequestRecord, key: RequestFacetKey): string | null {
-  if (key === 'kind') return r.kind ?? 'request';
+/** The row's values for a facet, as the plane would group it — `entity` one per type (#2762). */
+function valuesOf(r: RequestRecord, key: RequestFacetKey): string[] {
+  if (key === 'kind') return [r.kind ?? 'request'];
+  if (key === 'entity') return [...new Set(r.entities.map((e) => e.slice(0, e.indexOf(':'))))];
   const v = r[key];
-  return v === null || v === undefined ? null : String(v);
+  return v === null || v === undefined ? [] : [String(v)];
 }
 
 function matches(r: RequestRecord, where: Where, window: { from: number; to: number }, omit?: RequestFacetKey): boolean {
   if (r.timestamp === null || r.timestamp < window.from || r.timestamp >= window.to) return false;
   for (const [key, values] of Object.entries(where) as [RequestFacetKey, string[]][]) {
     if (key === omit || values.length === 0) continue;
-    const v = valueOf(r, key);
-    if (v === null || !values.includes(v)) return false;
+    if (!valuesOf(r, key).some((v) => values.includes(v))) return false;
   }
   return true;
 }
@@ -205,8 +205,7 @@ export function mockRequestFacets(where: Where, window: { from: number; to: numb
     const counts = new Map<string, number>();
     for (const r of rows) {
       if (!matches(r, where, window, key)) continue;
-      const v = valueOf(r, key);
-      if (v !== null) counts.set(v, (counts.get(v) ?? 0) + 1);
+      for (const v of valuesOf(r, key)) counts.set(v, (counts.get(v) ?? 0) + 1);
     }
     facets[key] = [...counts.entries()]
       .map(([value, count]) => ({ value: key === 'status' ? Number(value) : value, count }))

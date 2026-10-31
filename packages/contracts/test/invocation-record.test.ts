@@ -8,8 +8,8 @@ import {
 } from '../src/invocation-record.js';
 
 describe('invocation record header (#1904)', () => {
-  it('round-trips the three fields, including names a raw header could not carry', () => {
-    const record = { operation: 'bokning/avboka – återbetala', problemCode: 'conflict', principalKind: 'user' };
+  it('round-trips the fields, including names a raw header could not carry', () => {
+    const record = { operation: 'bokning/avboka – återbetala', problemCode: 'conflict', principalKind: 'user', entityTypes: 'bokning,kund' };
     const value = encodeInvocationRecord(record)!;
     expect(value).toMatch(/^[\x20-\x7e]+$/);
     expect(decodeInvocationRecord(value)).toEqual(record);
@@ -21,12 +21,17 @@ describe('invocation record header (#1904)', () => {
   });
 
   it('reads a missing, malformed or oversized value without throwing, and ignores unknown keys', () => {
-    const empty = { operation: null, problemCode: null, principalKind: null };
+    const empty = { operation: null, problemCode: null, principalKind: null, entityTypes: null };
     expect(decodeInvocationRecord(null)).toEqual(empty);
     expect(decodeInvocationRecord('%%%')).toEqual(empty);
     expect(decodeInvocationRecord('tenantId=someone-else')).toEqual(empty);
     const long = decodeInvocationRecord(`operation=${'x'.repeat(1000)}`);
     expect(long.operation).toHaveLength(INVOCATION_RECORD_FIELD_MAX);
+    // #2762: a set of types is cut between two types, never inside one.
+    const types = Array.from({ length: 30 }, (_, i) => `type${String(i).padStart(2, '0')}`).join(',');
+    const cut = decodeInvocationRecord(`entityTypes=${types}`).entityTypes!;
+    expect(cut.length).toBeLessThanOrEqual(INVOCATION_RECORD_FIELD_MAX);
+    expect(types.startsWith(`${cut},`)).toBe(true);
   });
 
   it('files a level from status, throw and problem code', () => {
