@@ -10,8 +10,10 @@
  * - a facet is counted with every OTHER filter applied and its own left out;
  * - a line with no `level` is `unrecorded`, counted and never dropped;
  * - a pattern's share is of every matching `ctx.log` line, not only the listed ones;
- * - `estimated` is carried through from any sampled part of a cube.
+ * - `estimated` is carried through from any sampled part of a cube;
+ * - a free-text `search` is refused (#2762) — a cube holds no request id or path to match.
  */
+import { refuseSearchOnCounts } from './tenant-request-query.js';
 import { grainFor, type AggregateSource, type Cube, type PatternCubeRow, type RequestCubeRow } from './aggregate-source.js';
 import {
   LOG_PATTERN_TOP,
@@ -220,6 +222,7 @@ export function aggregateReads(
   source: AggregateSource,
 ): Required<Pick<ObservabilityReader, 'tenantRequestVolume' | 'tenantRequestFacets' | 'tenantLogPatterns'>> {
   const requestCube = async (input: TenantRequestScope) => {
+    refuseSearchOnCounts(input);
     const services = scriptsOf(input.services);
     const grainMs = grainFor(input.to - input.from);
     const window = alignWindow(input.from, input.to, grainMs);

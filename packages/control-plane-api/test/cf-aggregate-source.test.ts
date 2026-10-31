@@ -189,6 +189,44 @@ describe('raw reads are scoped to the app’s scripts (#1877)', () => {
     expect(bodies[0]!.parameters.filters).toContainEqual(family('acme-widgets'));
   });
 
+  it('#2762: narrows the list by search, in the query and again on the answer', async () => {
+    const line = (id: string, method: string, path: string, operation: string) => ({
+      timestamp: from + 1,
+      source: { substrat: 'invocation', tenantId: T, invocationId: id, method, path, operation },
+    });
+    const events = [
+      line('01ID-A', 'POST', '/api/orders', 'acme/create-order'),
+      line('01ID-B', 'GET', '/api/orders', 'acme/list-orders'),
+      line('01ID-C', 'GET', '/api/budget', 'acme/target'),
+    ];
+    const bodies = stub(() => ({ body: { events: { events } } }));
+    const ids = async (search: string) =>
+      (await reader().tenantRequests!({ tenantId: T, services: ['acme-widgets'], from, to, limit: 10, search })).map((r) => r.invocationId);
+    // The stub answers every line whatever the filter said; the reader holds the rule itself.
+    expect(await ids('post /api/ord')).toEqual(['01ID-A']);
+    expect(bodies[0]!.parameters.filters).toContainEqual({
+      kind: 'group',
+      filterCombination: 'or',
+      filters: [
+        { key: 'operation', operation: 'includes', type: 'string', value: 'post /api/ord' },
+        { key: 'path', operation: 'includes', type: 'string', value: 'post /api/ord' },
+        { key: 'invocationId', operation: 'includes', type: 'string', value: 'post /api/ord' },
+        {
+          kind: 'group',
+          filterCombination: 'and',
+          filters: [
+            { key: 'method', operation: 'eq', type: 'string', value: 'POST' },
+            { key: 'path', operation: 'includes', type: 'string', value: '/api/ord' },
+          ],
+        },
+      ],
+    });
+    expect(await ids('ID-B')).toEqual(['01ID-B']);
+    expect(await ids('list-orders')).toEqual(['01ID-B']);
+    // A method word alone is plain text: "get" is in /api/budget's path, not a GET match.
+    expect(await ids('get')).toEqual(['01ID-C']);
+  });
+
   it('puts them on every query of the log read, as alternatives when there are several', async () => {
     const bodies = stub(() => ({ body: { events: { events: [] } } }));
     await reader().tenantLogs!({ tenantId: T, services: ['a', 'b'], hours: 24, limit: 10 });
