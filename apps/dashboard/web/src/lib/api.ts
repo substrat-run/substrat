@@ -16,7 +16,7 @@ export type VerticalPreview = PreviewRow;
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
  *
  * The worker serves everything under `/api`: `/api/me` (who am I — and, on first
- * call, bootstraps my tenant), `/api/catalog`, and the team-scoped surface under `/api/teams/:teamId` (`teamApi`). Auth is an OIDC
+ * call, bootstraps my tenant), and the team-scoped surface under `/api/teams/:teamId` (`teamApi`). Auth is an OIDC
  * redirect to the platform's AuthHero instance — there is no password here, so
  * sign-in/out are full-page navigations, not fetches. `credentials: 'include'`
  * carries the same-origin session cookie the worker sets.
@@ -96,26 +96,8 @@ export interface Me {
   roleKey: string | null;
 }
 
-export interface CatalogEntry {
-  slug: string;
-  name: string;
-  /** Owned by my team — the New-app page's "Your verticals" group. */
-  owned: boolean;
-  /** Published to the public marketplace (the "Marketplace" group). */
-  listed: boolean;
-  source: string;
-  /** False until a pushed vertical has a prod-promoted version — shown but not installable. */
-  installable: boolean;
-  /** The vertical's declared env-spec (#426) — the New-app form renders these fields so
-   *  first-run config (an issuer's bootstrap admin, API keys) flows in WITH provisioning. */
-  envSpec?: EnvVarSpec[];
-  /** Capabilities this vertical provides (#427) — an `oidc-issuer` provider's instances
-   *  appear in other installs' Identity picker, and it gets no Identity section itself. */
-  provides?: string[];
-  /** Capabilities this vertical can consume at install (#427) — `oidc-issuer` marks the
-   *  Identity section as the vertical's declared delegation seam. */
-  requires?: string[];
-}
+/** One row of the New-app picker, read from the team's declared catalog route. */
+export type { CatalogEntry } from './api.generated';
 
 /** The role a new member can be invited at (owner is the un-invitable first member). */
 export type InviteRole = 'admin' | 'member' | 'viewer';
@@ -1592,7 +1574,6 @@ export const api = {
   /** Switch the active team; the server pins it in a cookie, so the caller reloads after. */
   switchTeam: (teamId: string) =>
     call<void>('/teams/switch', { method: 'POST', body: JSON.stringify({ teamId }) }),
-  catalog: () => call<CatalogEntry[]>('/catalog'),
   /** Preview an invite (unauthenticated): the team + invited email, for prefill + the accept screen. */
   previewInvite: (token: string) =>
     call<{ teamName: string; email: string; roleKey: InviteRole }>(

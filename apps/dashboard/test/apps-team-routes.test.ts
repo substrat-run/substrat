@@ -158,6 +158,21 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     }
   });
 
+  it("the install catalog lists the path team's own verticals, whatever the cookie pins", async () => {
+    await host.admin.registerVertical(staff, { slug: 'first/desk', name: 'Desk', source: 'cli', ownerTenant: tenant });
+    await host.admin.registerVertical(staff, { slug: 'second/shop', name: 'Shop', source: 'cli', ownerTenant: second });
+    const res = await get(`/api/teams/${second}/catalog`, tenant);
+    expect(res.status).toBe(200);
+    const rows = (await res.json()) as Array<{ slug: string; owned: boolean; installable: boolean }>;
+    // Owned by the path's team, and not installable until a version is in prod.
+    expect(rows.find((r) => r.slug === 'second/shop')).toMatchObject({ owned: true, installable: false });
+    expect(rows.some((r) => r.slug === 'first/desk')).toBe(false);
+    // The anonymous catalog reads no session or cookie: neither team's own vertical is in it.
+    const anon = (await (await get('/api/catalog', second)).json()) as Array<{ slug: string; owned: boolean }>;
+    expect(anon.length).toBeGreaterThan(0);
+    expect(anon.every((r) => !r.owned)).toBe(true);
+  });
+
   it('exposes the expected assistant read tool names exactly', () => {
     expect(exposedReads(dashboardRoutes).map(([name]) => name)).toEqual([
       'dashboard/list-apps', 'dashboard/get-app-install-steps', 'dashboard/get-app-concept',

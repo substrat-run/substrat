@@ -12,6 +12,7 @@
         "AppEvent": "appEvent",
         "AppRow": "appRow",
         "BoundScopeRow": "boundScopeRow",
+        "CatalogEntry": "catalogRow",
         "ChannelHistoryRow": "channelHistoryRow",
         "DeployFailureRow": "deployFailureRow",
         "DeploymentRow": "deploymentRow",
