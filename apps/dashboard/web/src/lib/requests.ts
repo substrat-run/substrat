@@ -72,7 +72,7 @@ export function requestChips(q: ObsQuery): { key: string; value: string; clears:
 export function requestSearchOf(q: ObsQuery): string | undefined {
   const t = q.search?.trim();
   if (!t) return undefined;
-  return /^[0-9a-hjkmnp-tv-z]{26}$/i.test(t) ? t.toUpperCase() : t;
+  return /^[0-7][0-9a-hjkmnp-tv-z]{25}$/i.test(t) ? t.toUpperCase() : t;
 }
 
 /** One request read's query, as the declared routes name it: each facet a list, sent as repeated keys. */

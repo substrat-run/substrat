@@ -62,6 +62,8 @@ describe('request facets in the URL', () => {
     ]);
     expect(requestReadQuery({ search: '  /orders ' }, { hours: 1 }).search).toBe('/orders');
     expect(requestReadQuery({ search: '01j8zq0abcdefghjkmnpqrstvw' }, { hours: 1 }).search).toBe('01J8ZQ0ABCDEFGHJKMNPQRSTVW');
+    // A 26-character lowercase path segment that cannot be a ULID (first char above 7) is left alone: path matching is case-sensitive.
+    expect(requestReadQuery({ search: '9abcdefghjkmnpqrstvwxyz012' }, { hours: 1 }).search).toBe('9abcdefghjkmnpqrstvwxyz012');
   });
 
   it('is a Logs sub-view', () => {
