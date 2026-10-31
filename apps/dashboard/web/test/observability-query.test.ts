@@ -51,7 +51,7 @@ describe('Logs query bar chips (#1767)', () => {
     const q = { app: 'a', view: 'logs', level: 'error', search: 'boom', invocationId: inv, type: 't.x', groupBy: 'operation' };
     expect(logChips(q, 'logs').map((c) => [c.key, c.value])).toEqual([
       ['level', 'error'],
-      ['message', 'boom'],
+      ['search', 'boom'],
       ['invocation', shortId(inv)],
     ]);
     expect(logChips(q, 'events').map((c) => [c.key, c.value])).toEqual([

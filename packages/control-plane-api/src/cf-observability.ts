@@ -1800,7 +1800,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // failing invocation that wrote no console.error of its own is exactly the row being
       // looked for, and phase one selected it BECAUSE it failed.
       .filter((e) => (level ? e.level?.toLowerCase() === level : true))
-      .filter((e) => (search ? (e.message ?? '').includes(search) : true))
+      .filter((e) => (search ? (e.message ?? '').includes(search) || (e.invocationId ?? '').includes(search) : true))
       .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
       .slice(0, input.limit);
     return { events, incomplete };
@@ -1958,7 +1958,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const to = Date.now();
     const from = to - hours * 3_600_000;
     const filtersFor = (service: string | undefined) => {
-      const filters: Array<{ key: string; operation: string; type: string; value: string }> = [];
+      const filters: TelemetryFilter[] = [];
       // `$metadata.service` is the script name in Workers Logs events — the field
       // Cloudflare's own query examples filter on.
       if (service) {
@@ -1968,7 +1968,17 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         filters.push({ key: '$metadata.level', operation: 'eq', type: 'string', value: level });
       }
       if (search) {
-        filters.push({ key: '$metadata.message', operation: 'includes', type: 'string', value: search });
+        // #2762: the message or the request id, as one OR group.
+        filters.push({
+          kind: 'group',
+          filterCombination: 'or',
+          filters: ['$metadata.message', '$metadata.requestId'].map((key) => ({
+            key,
+            operation: 'includes',
+            type: 'string',
+            value: search,
+          })),
+        });
       }
       return filters;
     };

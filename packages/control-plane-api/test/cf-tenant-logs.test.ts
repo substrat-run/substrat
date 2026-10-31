@@ -308,6 +308,28 @@ describe('cf tenant logs', () => {
     expect(keyed(sent[0]!, 'invocationId')).toMatchObject({ value: '01JABCDEFGHJKMNPQRSTVWXYZ0', operation: 'eq' });
   });
 
+  it('a search matches the request id as well as the message (#2762)', async () => {
+    const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ invocationId: '01JZREQID' })] : []));
+    const read = async (search: string) => (await reader.tenantLogs!({ tenantId: '01TENANT', search, hours: 24, limit: 10 })).events;
+    expect(await read('JZREQ')).toHaveLength(1);
+    expect(await read('/api/orders')).toHaveLength(1);
+    expect(await read('nothing')).toHaveLength(0);
+  });
+
+  it('the service-grain search is one query over message OR request id (#2762)', async () => {
+    const { reader, sent } = readerOver(() => []);
+    await reader.recentLogs({ services: ['acme-widgets'], search: 'abc', hours: 1, limit: 10 });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContainEqual({
+      kind: 'group',
+      filterCombination: 'or',
+      filters: [
+        { key: '$metadata.message', operation: 'includes', type: 'string', value: 'abc' },
+        { key: '$metadata.requestId', operation: 'includes', type: 'string', value: 'abc' },
+      ],
+    });
+  });
+
   it('always binds the tenant, and passes within-tenant narrowing through', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', scopeId: '01SCOPE', hours: 24, limit: 10 });
