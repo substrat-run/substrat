@@ -64,10 +64,10 @@ export function pnpmCommand(env = process.env, execPath = process.execPath) {
 }
 
 /** A missing pnpm, said with the way out: a bare ENOENT names nothing a person can act on. */
-function pnpmMissing(error) {
+export function pnpmMissing(error) {
   if (error?.code !== 'ENOENT') return error;
   return new Error(
-    'could not start pnpm: run this through pnpm (`pnpm lint:publish-manifests`), which tells it ' +
+    'could not start pnpm: run this through pnpm (`pnpm lint:publish-manifests`, `pnpm release`), which tells it ' +
       'where pnpm is. Started by node directly, only a pnpm executable on PATH is found, and on ' +
       'Windows pnpm is usually pnpm.cmd, which cannot be started without a shell.',
   );

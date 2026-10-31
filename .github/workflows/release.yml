@@ -49,9 +49,10 @@ jobs:
       # tools/publish-packages.mjs. When a publish still fails, the maintainer's move is
       # "Re-run failed jobs" on THIS run: the re-run resumes the publish (the skip above)
       # and the gate below still fires, since the commit message has not changed. Only do
-      # that if no LATER release run has succeeded since — a re-run deploys its own commit,
-      # so it would put an older release back on prod. Otherwise the next release, which
-      # publishes everything it bumps, is the recovery.
+      # that if no LATER release run has STARTED since, finished or not: a re-run deploys
+      # its own commit, and the concurrency group above queues it behind a later run still
+      # in progress, so it would put an older release back on prod after the newer one.
+      # Otherwise the next release, which publishes everything it bumps, is the recovery.
       #
       # The trailing `changeset tag` in `pnpm release` is what makes the action set
       # `outputs.published`: it decides that by parsing `New tag:` lines, which
