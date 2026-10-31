@@ -63,7 +63,7 @@ describe('the router request cube (#1904)', () => {
       // Another vertical of the same tenant — a different family, not this read's.
       aeRow({ vertical: 'other-app', requests: '99' }),
       // A request that reached no operation: blobs 6–8 unwritten.
-      aeRow({ operation: '', principalKind: '', requests: '2' }),
+      aeRow({ operation: '', principalKind: '', requests: '2', route: 'GET /.well-known/*' }),
     ]);
     const from = since + 60 * 60_000;
     const f = await reader({ requestsFromRouterSince: SINCE }).tenantRequestFacets!({
@@ -95,6 +95,9 @@ describe('the router request cube (#1904)', () => {
       { value: 'ticket', count: 43 },
       { value: 'assignment', count: 3 },
     ]);
+    // #2762: blob 11 is the `path` facet — what selects the request that reached no operation.
+    expect(sqls[0]).toContain('blob11 AS route');
+    expect(f.facets.path).toEqual([{ value: 'GET /.well-known/*', count: 2 }]);
   });
 
   it('#1901: past the cut, adds the async lines the router never sees', async () => {

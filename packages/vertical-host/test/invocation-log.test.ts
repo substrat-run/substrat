@@ -220,6 +220,36 @@ describe('invocationLog', () => {
   });
 
   /**
+   * #2762: the `path` facet groups by this, so it must be the app's route table and never
+   * the request: a catch-all middleware registered before AND after the handler does not
+   * displace the handler's pattern, a request no route answered names the wildcard, nothing
+   * the caller sent reaches it, and an over-long pattern is capped where the record caps.
+   */
+  it('names the route that answered by its registered pattern, never by what was called', async () => {
+    const cap = capture();
+    try {
+      const long = `/api/${'x'.repeat(200)}`;
+      const app = appWith((a) => {
+        a.use('/api/*', (_c, next) => next());
+        a.get('/api/lists/:id', (c) => c.text('ok'));
+        a.get(long, (c) => c.text('ok'));
+        a.use('*', (_c, next) => next());
+      });
+      for (const url of ['/api/lists/SECRET_ID?token=SECRET_QUERY', '/.well-known/oauth-protected-resource', long]) {
+        await app.request(url, { headers: routed }, ENV);
+      }
+      expect(cap.lines.map((l) => [l.status, l.route])).toEqual([
+        [200, 'GET /api/lists/:id'],
+        [404, 'GET /*'],
+        [200, `GET ${long}`.slice(0, 128)],
+      ]);
+      expect(JSON.stringify(cap.lines[0]?.route)).not.toMatch(/SECRET/);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  /**
    * A throw still produces a line — that invocation is exactly the one a tenant is
    * looking for — and it carries the status `onError` MAPPED the error to, because Hono
    * composes the error handler inside the chain rather than around it. Pinned as a test
@@ -585,6 +615,19 @@ describe('withInvocationLog — the record handed back to the router (#1904)', (
     }
   });
 
+  it('#2762: carries the route the vertical’s own middleware read, when the platform stamped the request', async () => {
+    const cap = quiet();
+    try {
+      const app = appWith((a) => a.get('/api/lists/:id', (c) => c.text('ok')));
+      const worker = withInvocationLog<Env>({ fetch: (req, env, ctx) => app.fetch(req as Request, env, ctx as never) }, options);
+      const res = (await worker.fetch!(new Request('https://acme.example/api/lists/7', { headers: routed }), ENV, {})) as Response;
+      expect(new URLSearchParams(res.headers.get(HEADER)!).get('route')).toBe('GET /api/lists/:id');
+      expect(cap.lines.map((l) => l.route)).toEqual(['GET /api/lists/:id']);
+    } finally {
+      cap.restore();
+    }
+  });
+
   it('never carries it to a caller the router did not vouch for', async () => {
     const cap = quiet();
     try {
@@ -654,7 +697,7 @@ describe('the line’s outputFields (#1331)', () => {
   it('omits the key — not null — when nothing was walked, so an unarmed line is unchanged', async () => {
     const line = await lineFor({ operation: 'acme/op' });
     expect(Object.keys(line)).toEqual([
-      'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'status', 'threw',
+      'substrat', 'tenantId', 'scopeId', 'vertical', 'surface', 'method', 'path', 'route', 'status', 'threw',
       'durationMs', 'invocationId', 'level', 'operation', 'problemCode', 'principalKind', 'eventCount',
       'eventTypes', 'entities', 'entityTypes', 'versionId',
     ]);
