@@ -273,8 +273,13 @@ export interface ConnectorCallsBucket {
  * a facet panel would render as "no requests of that kind".
  *
  * `status` is the one numeric facet; the rest are strings.
+ *
+ * #2762: `entity` is the one facet a request can hold SEVERAL values of — one per entity type
+ * its events were about (the line's `entityTypes`). A request is counted under each of them, so
+ * that facet's counts may add up to more than the total; ticking two types still counts a
+ * request touching both once.
  */
-export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind'] as const;
+export const REQUEST_FACET_KEYS = ['level', 'operation', 'principalKind', 'problemCode', 'surface', 'status', 'kind', 'entity'] as const;
 
 /**
  * #1901: the values of the `kind` facet. A line with no `kind` is a request's — every line

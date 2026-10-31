@@ -12,6 +12,7 @@
  * - a pattern's share is of every matching `ctx.log` line, not only the listed ones;
  * - `estimated` is carried through from any sampled part of a cube.
  */
+import { splitEntityTypes } from '@substrat-run/contracts';
 import { grainFor, type AggregateSource, type Cube, type PatternCubeRow, type RequestCubeRow } from './aggregate-source.js';
 import {
   LOG_PATTERN_TOP,
@@ -43,12 +44,16 @@ function own<R extends { tenantId: string; scopeId: string | null }>(rows: reado
   return rows.filter((r) => r.tenantId === scope.tenantId && (!scope.scopeId || r.scopeId === scope.scopeId));
 }
 
-/** A request row's value for a facet, as a filter compares it (status as text). */
-function facetValue(r: RequestCubeRow, key: RequestFacetKey): string | null {
+/**
+ * A request row's values for a facet, as a filter compares them (status as text). One value
+ * or none for every key but `entity`, whose row stands for each type the request touched.
+ */
+function facetValues(r: RequestCubeRow, key: RequestFacetKey): string[] {
   // #1901: a row with no kind is a request's.
-  if (key === 'kind') return invocationKindOf(r.kind);
+  if (key === 'kind') return [invocationKindOf(r.kind)];
+  if (key === 'entity') return splitEntityTypes(r.entity);
   const v = r[key];
-  return v === null || v === undefined ? null : String(v);
+  return v === null || v === undefined || v === '' ? [] : [String(v)];
 }
 
 /** Does a row pass every facet filter — except `omit`'s, when counting that facet? */
@@ -57,8 +62,7 @@ function passes(r: RequestCubeRow, where: RequestWhere | undefined, omit?: Reque
     if (key === omit) continue;
     const values = where?.[key];
     if (!values || values.length === 0) continue;
-    const v = facetValue(r, key);
-    if (v === null || !values.includes(v)) return false;
+    if (!facetValues(r, key).some((v) => values.includes(v))) return false;
   }
   return true;
 }
@@ -110,11 +114,10 @@ export function facetsFrom(
     const counts = new Map<string, number>();
     for (const r of rows) {
       if (!passes(r, scope.where, key)) continue;
-      const v = facetValue(r, key);
       // A line with no value for this key is not a value anybody can filter on; the total
-      // above still counts it.
-      if (v === null || v === '') continue;
-      counts.set(v, (counts.get(v) ?? 0) + r.count);
+      // above still counts it. A request touching two entity types counts under both, so the
+      // `entity` counts may sum past the total (#2762).
+      for (const v of facetValues(r, key)) counts.set(v, (counts.get(v) ?? 0) + r.count);
     }
     facets[key] = [...counts.entries()]
       .map(([v, count]) => ({ value: key === 'status' ? Number(v) : v, count }))

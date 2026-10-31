@@ -1189,6 +1189,44 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect((await reader.tenantRequests!({ ...scope, where: { kind: ['consumer'] } })).every((r) => r.kind === 'consumer')).toBe(true);
   });
 
+  it('#2762: an entity selection matches a whole member of the set, and a regex metacharacter in it matches only itself', async () => {
+    const lines = [
+      { ...invocation({ invocationId: 'both', entityTypes: 'repair,visit' }, '01RA'), timestamp: 5 },
+      { ...invocation({ invocationId: 'longer', entityTypes: 'repairs' }, '01RB'), timestamp: 4 },
+      { ...invocation({ invocationId: 'dotted', entityTypes: 'a.c' }, '01RC'), timestamp: 3 },
+      { ...invocation({ invocationId: 'any-char', entityTypes: 'abc' }, '01RD'), timestamp: 2 },
+      { ...invocation({ invocationId: 'plus', entityTypes: 'a+b' }, '01RF'), timestamp: 2 },
+      { ...invocation({ invocationId: 'repeated', entityTypes: 'aab' }, '01RG'), timestamp: 2 },
+      { ...invocation({ invocationId: 'none' }, '01RE'), timestamp: 1 },
+    ];
+    // What the QUERY selects, before the list re-checks it: a widened pattern would fill the
+    // page with lines the re-check then drops, and a short page reads as a quiet window.
+    let served: unknown[] = [];
+    const { reader } = readerOver((filters, limit) => {
+      served = lines.filter((e) => filters.every((f) => matches(e.source as Record<string, unknown>, f))).slice(0, limit);
+      return served;
+    });
+    const ids = async (entity: string[]) => {
+      const listed = await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity } });
+      expect(served).toHaveLength(listed.length);
+      return listed.map((r) => r.invocationId);
+    };
+    expect(await ids(['repair'])).toEqual(['both']);
+    expect(await ids(['visit', 'repairs'])).toEqual(['both', 'longer']);
+    expect(await ids(['a.c'])).toEqual(['dotted']);
+    expect(await ids(['a+b'])).toEqual(['plus']);
+
+    // The twin: a backend that ignored the pattern answers every line, and the list's own
+    // re-check is what still keeps a type to itself.
+    const { reader: loose } = readerOver((filters, limit) =>
+      lines
+        .filter((e) => filters.every((f) => JSON.stringify(f).includes('entityTypes') || matches(e.source as Record<string, unknown>, f)))
+        .slice(0, limit),
+    );
+    const listed = await loose.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10, limit: 10, where: { entity: ['a.c', 'repair'] } });
+    expect(listed.map((r) => r.invocationId)).toEqual(['both', 'dotted']);
+  });
+
   it('counts every RFC 9110 method as a request — a hyphen or a digit included — and nothing else', async () => {
     const methods = ['M-SEARCH', 'X1', 'PROPFIND', 'get'];
     const lines = [

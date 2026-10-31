@@ -62,7 +62,7 @@ describe('the telemetry source (#1877)', () => {
               {
                 time: '2026-09-27T10:05:00Z',
                 data: [
-                  point({ tenantId: T, scopeId: 'A', level: 'warn', operation: 'acme/assign', problemCode: 'conflict', principalKind: 'principal', surface: 'app', status: 409 }, 3),
+                  point({ tenantId: T, scopeId: 'A', level: 'warn', operation: 'acme/assign', problemCode: 'conflict', principalKind: 'principal', surface: 'app', status: 409, entityTypes: 'assignment,ticket' }, 3),
                   point({ tenantId: 'OTHER', scopeId: 'B', level: 'info', operation: 'acme/reply', status: 200 }, 50),
                 ],
               },
@@ -80,12 +80,17 @@ describe('the telemetry source (#1877)', () => {
       { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
     ]);
     expect(q.parameters.groupBys!.map((g) => g.value)).toEqual([
-      'tenantId', 'scopeId', 'level', 'operation', 'problemCode', 'principalKind', 'surface', 'status', 'kind',
+      'tenantId', 'scopeId', 'level', 'operation', 'problemCode', 'principalKind', 'surface', 'status', 'kind', 'entityTypes',
     ]);
     // An hour at the one-minute grain.
     expect(q.granularity).toBe(60);
     // …and only ours comes back.
     expect(v.buckets).toEqual([{ start: '2026-09-27T10:05:00.000Z', info: 0, warn: 3, error: 0, unrecorded: 0 }]);
+    // #2762: the line's `entityTypes` is the `entity` facet, one value per type.
+    expect((await reader().tenantRequestFacets!({ tenantId: T, services: ['acme-widgets'], from, to })).facets.entity).toEqual([
+      { value: 'assignment', count: 3 },
+      { value: 'ticket', count: 3 },
+    ]);
   });
 
   it('#1901: counts async work under its kind, and a line with none as a request', async () => {

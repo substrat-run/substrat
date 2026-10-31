@@ -49,6 +49,12 @@ export interface RequestCubeRow {
    * cached before the field existed and the router's datapoints (requests only) carry none.
    */
   kind?: string | null;
+  /**
+   * #2762: the line's `entityTypes` — every entity type the request touched, as contracts'
+   * `joinEntityTypes` wrote them, so ONE row stands for a request counted under each. Optional
+   * for `kind`'s reason; absent, `null` or `''` is none.
+   */
+  entity?: string | null;
   count: number;
 }
 
@@ -159,9 +165,24 @@ export function memoryCubeStore(): CubeStore & { size(): number } {
   };
 }
 
+/**
+ * The shape of a request cube's row, as a cached block holds it. Bumped whenever
+ * `RequestCubeRow` gains a dimension: a block stored before carries none of it and would
+ * answer every filter on the new dimension with nothing, for as long as it is kept. The
+ * bump moves the request blocks to new keys, so each closed block is recounted once and
+ * the old ones age out (`CUBE_RETENTION_MS`). Patterns are keyed apart and keep theirs.
+ *
+ * - 1: #1877/#1901 — level, operation, problemCode, principalKind, surface, status, kind.
+ * - 2: #2762 — entity.
+ */
+export const REQUEST_CUBE_SHAPE = 2;
+
 /** The cache key of one block. The grain is in it: a block at 5 min is not one at 1 h. */
 export function blockKey(kind: 'requests' | 'patterns' | 'async-requests', service: string, grainMs: number, start: number): string {
-  return `${kind}|${service}|${grainMs}|${start}`;
+  // Shape 1 was written with no suffix, so the patterns' keys — and every key from before
+  // the version existed — stay exactly what they were.
+  const shaped = kind === 'patterns' ? kind : `${kind}.v${REQUEST_CUBE_SHAPE}`;
+  return `${shaped}|${service}|${grainMs}|${start}`;
 }
 
 /** How many uncached blocks one read computes at once — a bound on the backend's load. */

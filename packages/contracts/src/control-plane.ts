@@ -2076,6 +2076,8 @@ export const ROUTER_REQUEST_POINT = {
   problemCode: 'blob7',
   principalKind: 'blob8',
   level: 'blob9',
+  /** #2762: `joinEntityTypes`' value from the record header; `''` before it, or for none. */
+  entityTypes: 'blob10',
   durationMs: 'double1',
   status: 'double2',
 } as const;
