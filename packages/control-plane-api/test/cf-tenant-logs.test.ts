@@ -322,14 +322,19 @@ describe('cf tenant logs', () => {
     const { reader, sent } = readerOver(() => []);
     await reader.recentLogs({ services: ['acme-widgets'], search: 'abc', hours: 1, limit: 10 });
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContainEqual({
-      kind: 'group',
-      filterCombination: 'or',
-      filters: [
-        { key: '$metadata.message', operation: 'includes', type: 'string', value: 'abc' },
-        { key: '$metadata.requestId', operation: 'includes', type: 'string', value: 'abc' },
-      ],
-    });
+    expect(sent[0]).toEqual([
+      { key: '$metadata.service', operation: 'eq', type: 'string', value: 'acme-widgets' },
+      {
+        kind: 'group',
+        filterCombination: 'or',
+        filters: ['$metadata.message', '$metadata.requestId', 'invocationId'].map((key) => ({
+          key,
+          operation: 'includes',
+          type: 'string',
+          value: 'abc',
+        })),
+      },
+    ]);
   });
 
   it('always binds the tenant, and passes within-tenant narrowing through', async () => {

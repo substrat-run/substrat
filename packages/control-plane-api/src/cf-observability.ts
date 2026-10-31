@@ -1992,7 +1992,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         filters.push({
           kind: 'group',
           filterCombination: 'or',
-          filters: ['$metadata.message', '$metadata.requestId'].map((key) => ({
+          filters: ['$metadata.message', '$metadata.requestId', 'invocationId'].map((key) => ({
             key,
             operation: 'includes',
             type: 'string',

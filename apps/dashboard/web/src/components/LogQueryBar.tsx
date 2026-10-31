@@ -52,8 +52,8 @@ export function LogQueryBar({
         ? 'Event type…'
         : 'Filter by event type, or click a bucket to narrow down'
       : chips.length
-        ? 'Filter messages…'
-        : 'Filter messages (case-sensitive), level:error, or click any value to narrow down';
+        ? 'Search…'
+        : 'Search messages or request ids (case-sensitive), level:error, or click any value to narrow down';
 
   return (
     <div style={{ display: 'grid', gap: 6 }}>
@@ -92,7 +92,7 @@ export function LogQueryBar({
             </span>
           ))}
           <input
-            aria-label={mode === 'events' ? 'Filter event type' : mode === 'requests' ? 'Filter requests' : 'Search messages'}
+            aria-label={mode === 'events' ? 'Filter event type' : mode === 'requests' ? 'Filter requests' : 'Search logs'}
             value={text}
             placeholder={placeholder}
             onChange={(e) => {

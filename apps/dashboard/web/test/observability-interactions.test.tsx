@@ -224,7 +224,7 @@ it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear r
   vi.spyOn(api, 'appMetrics').mockResolvedValue({ available: true, cap: null, rows: [] });
   window.history.replaceState(null, '', obsPath({ app: 'app-a', view: 'logs', hours: '1' }));
   await act(async () => root.render(<UrlPage />));
-  const input = () => container.querySelector<HTMLInputElement>('[aria-label="Search messages"]')!;
+  const input = () => container.querySelector<HTMLInputElement>('[aria-label="Search logs"]')!;
   const type = async (text: string) => {
     await act(async () => {
       const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;

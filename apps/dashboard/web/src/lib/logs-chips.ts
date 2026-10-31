@@ -102,5 +102,5 @@ export function parseBarText(text: string, mode: LogMode): { add: Partial<ObsQue
   }
   if (mode === 'events') return { add: { type: t } };
   // The read caps a search at 200 characters; a longer one would be refused there.
-  return t.length <= 200 ? { add: { search: t } } : { error: 'A message search is at most 200 characters.' };
+  return t.length <= 200 ? { add: { search: t } } : { error: 'A search is at most 200 characters.' };
 }
