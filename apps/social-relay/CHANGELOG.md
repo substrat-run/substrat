@@ -1,5 +1,12 @@
 # @substrat-run/social-relay
 
+## 0.2.18
+
+### Patch Changes
+
+- @substrat-run/contracts@0.172.0
+- @substrat-run/kernel@0.172.0
+
 ## 0.2.17
 
 ### Patch Changes

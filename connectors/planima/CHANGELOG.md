@@ -1,5 +1,12 @@
 # @substrat-run/connector-planima
 
+## 0.2.69
+
+### Patch Changes
+
+- @substrat-run/contracts@0.172.0
+- @substrat-run/kernel@0.172.0
+
 ## 0.2.68
 
 ### Patch Changes
