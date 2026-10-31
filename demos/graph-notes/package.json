@@ -1,0 +1,29 @@
+{
+  "name": "@substrat-run/demo-graph-notes",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Notes kept in a scope store: the first vertical that declares a graph store and calls it",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^"
+  },
+  "devDependencies": {
+    "@substrat-run/contract-tests": "workspace:^",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "substrat": {
+    "slug": "graph-notes",
+    "name": "Graph notes",
+    "permissions": "src/provision.ts",
+    "conformance": "test/conformance.ts"
+  }
+}
