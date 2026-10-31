@@ -1,5 +1,19 @@
 # @substrat-run/kernel
 
+## 0.172.0
+
+### Minor Changes
+
+- e8e51ba: Requests can be counted and filtered by entity type. The invocation line carries `entityTypes` (the sorted distinct entity types its events were about), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.entityTypes`, blob 10) carry it too, and the tenant request reads take an `entity` facet. A request touching several types is counted under each one.
+- 279c6f3: Requests can be counted and filtered by the route that answered them, including requests that reached no operation. The invocation line carries `route` (the method and the registered route pattern, never the called path), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.route`, blob 11) carry it too, and the tenant request reads take a `path` facet.
+
+### Patch Changes
+
+- Updated dependencies [e8e51ba]
+- Updated dependencies [279c6f3]
+- Updated dependencies [06c306f]
+  - @substrat-run/contracts@0.172.0
+
 ## 0.171.0
 
 ### Patch Changes
@@ -7230,7 +7244,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,5 +1,22 @@
 # @substrat-run/vertical-host
 
+## 0.172.0
+
+### Minor Changes
+
+- e8e51ba: Requests can be counted and filtered by entity type. The invocation line carries `entityTypes` (the sorted distinct entity types its events were about), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.entityTypes`, blob 10) carry it too, and the tenant request reads take an `entity` facet. A request touching several types is counted under each one.
+- 279c6f3: Requests can be counted and filtered by the route that answered them, including requests that reached no operation. The invocation line carries `route` (the method and the registered route pattern, never the called path), the invocation record header and the router's request datapoint (`ROUTER_REQUEST_POINT.route`, blob 11) carry it too, and the tenant request reads take a `path` facet.
+- da655bf: A scope created by `provision-sibling` now gets its owner already signed in. The provision request carries `parentScopeId`, and `IdentityDO.setPendingOwner(scopeId, owner, parentScopeId)` binds the new scope's owner seat to the login the parent scope binds to that owner. Before this change, the seat opened the 15-minute first-sign-in window, so whichever login reached the new scope first became its owner. Pass `b.parentScopeId` from your `onProvision` hook to get this. If the parent binds no login to the owner, the seat waits for a claim link and no first sign-in can take it.
+
+### Patch Changes
+
+- Updated dependencies [e8e51ba]
+- Updated dependencies [279c6f3]
+- Updated dependencies [06c306f]
+  - @substrat-run/contracts@0.172.0
+  - @substrat-run/kernel@0.172.0
+  - @substrat-run/model-providers@0.5.62
+
 ## 0.171.0
 
 ### Minor Changes

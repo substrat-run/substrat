@@ -1,5 +1,18 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.172.0
+
+### Patch Changes
+
+- 06c306f: control-plane-api: a scope copy of a busy source catches up on the writes it took while it was read, instead of waiting for a quiet moment
+  contracts: a dump page says when it was read under the capture it was asked for (`captured`), and the capture's refusals are named (`CAPTURE_REFUSALS`)
+  adapter-cloudflare: a dump page read under a capture says so
+- Updated dependencies [e8e51ba]
+- Updated dependencies [279c6f3]
+- Updated dependencies [06c306f]
+  - @substrat-run/contracts@0.172.0
+  - @substrat-run/kernel@0.172.0
+
 ## 0.171.0
 
 ### Minor Changes
@@ -7769,7 +7782,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
