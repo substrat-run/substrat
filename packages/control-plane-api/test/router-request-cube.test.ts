@@ -97,6 +97,8 @@ describe('the router request cube (#1904)', () => {
     ]);
     // #2762: blob 11 is the `path` facet — what selects the request that reached no operation.
     expect(sqls[0]).toContain('blob11 AS route');
+    // Grouped by it too: selected but not grouped, Analytics Engine would merge the routes.
+    expect(sqls[0]).toMatch(/GROUP BY [^\n]*\broute\b/);
     expect(f.facets.path).toEqual([{ value: 'GET /.well-known/*', count: 2 }]);
   });
 
