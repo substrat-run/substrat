@@ -71,6 +71,7 @@ import type {
   Visibility,
 } from '@substrat-run/contracts';
 import {
+  CAPTURE_REFUSALS,
   PREVIEW_CLIENT_PATH,
   attachmentRecord,
   projectedConnectionGrant,
@@ -2624,12 +2625,25 @@ export interface TransferredScope {
 export const TRANSFER_ATTEMPTS = 3;
 
 /**
+ * How many change batches one attempt's catch-up reads before it gives up (#2450): a source that
+ * writes faster than the copy drains its log never reaches a final batch, and the copy then starts
+ * again like one torn at a quiet moment, and is refused once the attempts are spent.
+ */
+export const CATCH_UP_BATCHES = 50;
+
+/**
  * A paged copy in flight (#2450): everything needed to resume it from another request or from a
  * background job, and nothing that is the scope's data. JSON, so a job can store it.
  *
- * `cursor` is the source's next page, `null` once every page is staged. `seq` is the last page the
- * destination staged under `stageId`. `revision` is the source's write revision as the first page
- * read it: the copy is one copy only while every later page reads the same.
+ * `cursor` is the source's next page, `null` once every page is staged. `seq` is the last page (or
+ * change batch) the destination staged under `stageId`. `revision` is the source's write revision
+ * as the first page read it.
+ *
+ * Without `capture` the copy is one copy only while every later page reads that same revision (a
+ * quiet moment). With it, the first page opened a capture at the source under the stage's id, every
+ * write since is logged there, and once the pages are staged the copy catches up on them in change
+ * batches (`batch`, the next to ask for) until a final one: the copy is then true at the moment
+ * that batch names, whatever the pages read.
  */
 export interface TransferState {
   from: ScopeId;
@@ -2644,7 +2658,10 @@ export interface TransferState {
   pages: number;
   rows: number;
   /** The `_substrat_meta` rows read so far, for `dumpMetaValue` once the copy is done. */
-  meta: ScopeDumpTable[];
+  meta: ScopeDumpPageTable[];
+  /** Absent from a copy read at a quiet moment, and from a record stored before captures. */
+  capture?: true;
+  batch?: number;
 }
 
 /** A copy finished (`done`), or one still to move (`state`). */
@@ -2652,13 +2669,17 @@ export type TransferProgress = { done: TransferredScope } | { state: TransferSta
 
 /** The two ends a copy reads and writes, as `transferScope` and the job use them. */
 export type TransferEnds = {
-  source: Pick<VerticalClient, 'exportScope' | 'exportScopeStamped' | 'exportScopePage'>;
-  dest: Pick<VerticalClient, 'stageScopePage' | 'discardStagedScope'>;
+  /** Without the capture verbs (a client assembled from part of one), a copy reads at a quiet moment. */
+  source: Pick<VerticalClient, 'exportScope' | 'exportScopeStamped' | 'exportScopePage'> &
+    Partial<Pick<VerticalClient, 'exportScopeChanges' | 'endScopeCapture'>>;
+  dest: Pick<VerticalClient, 'stageScopePage' | 'discardStagedScope'> & Partial<Pick<VerticalClient, 'stageScopeChanges'>>;
 };
 
 export interface TransferOptions {
   retry?: <T>(run: () => Promise<T>) => Promise<T>;
   attempts?: number;
+  /** Default `CATCH_UP_BATCHES`. */
+  catchUpBatches?: number;
   /** A carry's export: the source mints its load stamp (`exportScopeStamped`). A fork's is not. */
   stamp?: boolean;
   /**
@@ -2678,10 +2699,18 @@ export interface TransferOptions {
  * before. A destination that predates them gets the pages merged into one dump, which is the old
  * ceiling, and only there.
  *
- * Each page is read in one turn of the source, so it is consistent on its own; the pages are one
- * consistent read only while the source's write revision stays where the first page read it. When
- * it moves the copy starts again, up to `TRANSFER_ATTEMPTS` times, and is then refused (409) with
- * nothing moved: a carry's later fences assume a copy that was true at one moment.
+ * Each page is read in one turn of the source, so it is consistent on its own. A carry's later
+ * fences assume a copy that was true at one moment, and there are two ways to get one. A source
+ * that can capture (#2450 step 3) logs every write from its first page on, and once the pages are
+ * staged the copy catches up on them in change batches until a final batch, read in the same turn
+ * as the log ran empty, names that moment. A source that cannot (an older deployment, or a table
+ * with a unique expression index, which no row trigger can key) is copied at a quiet moment: the
+ * pages are one read only while its write revision stays where the first page read it.
+ *
+ * Either way a copy that does not come true starts again, up to `TRANSFER_ATTEMPTS` times, and is
+ * then refused (409) with nothing moved: a quiet-moment copy the source wrote under, or a catch-up
+ * whose capture was lost (it expired, a migration moved the schema, a load replaced the store) or
+ * that did not reach a final batch in `CATCH_UP_BATCHES`.
  *
  * `beginTransfer` and `transferStep` are the same copy in resumable steps, for one that outlasts a
  * request; this runs them to the end.
@@ -2694,7 +2723,17 @@ export async function transferScope(
   opts: TransferOptions = {},
 ): Promise<TransferredScope> {
   let progress = await beginTransfer({ source, dest }, scope, opts);
-  while ('state' in progress) progress = await transferStep({ source, dest }, progress.state, opts);
+  while ('state' in progress) {
+    const { state } = progress;
+    try {
+      progress = await transferStep({ source, dest }, state, opts);
+    } catch (e) {
+      // Nobody resumes a copy run in one request, so its stage and capture go with it. (A job's
+      // survive a fault, for the next step to resume.)
+      await abandonCopy({ source, dest }, state);
+      throw e;
+    }
+  }
   return progress.done;
 }
 
@@ -2702,53 +2741,99 @@ export async function transferScope(
  * Start a copy (#2450): read the source's first page and stage it. Finished at once when the scope
  * fits that page (unless `alwaysStage`), when the source predates the paged verbs, or when the
  * destination does (its pages are then merged here, as the whole dump it takes).
+ *
+ * The first page asks the source to capture under the stage's id. A source that refuses (412: a
+ * table it cannot capture) is read again without one, and one that answers a plain page (it does
+ * not echo `captured`) has its capture ended: either way the copy is read at a quiet moment. A copy
+ * that catches up and fits its first page catches up here, so it is still finished at once.
  */
 export async function beginTransfer(
-  { source, dest }: TransferEnds,
+  ends: TransferEnds,
   scope: { from: ScopeId; to?: ScopeId },
-  opts: TransferOptions & { attempt?: number } = {},
+  opts: TransferOptions & {
+    attempt?: number;
+    /** False: read at a quiet moment, asking for no capture (a copy that met an end unable to catch up). */
+    capture?: boolean;
+  } = {},
 ): Promise<TransferProgress> {
+  const { source, dest } = ends;
   const retry = opts.retry ?? (<T>(run: () => Promise<T>) => run());
   const stamp = opts.stamp ?? true;
   const from = scope.from;
   const into = scope.to ?? scope.from;
+  // The stage's id names the capture too, so whoever discards a stage ends the capture beside it.
+  const stageId = ulid();
+  const ask = opts.capture !== false && typeof source.exportScopeChanges === 'function';
+  /** The source refused to open the capture, so it holds none. */
+  let refused = false;
   // A client without the paged verbs (one a caller assembled from part of this one) is read as a
   // deployment that predates them.
-  const first = typeof source.exportScopePage === 'function'
-    ? await retry(() => source.exportScopePage(from, null, { stamp }))
-    : ('predates' as const);
+  const first = typeof source.exportScopePage !== 'function'
+    ? ('predates' as const)
+    : ask
+      ? await retry(() => source.exportScopePage(from, null, { stamp, capture: stageId })).catch((e: unknown) => {
+        if (!captureRefusal(e, 'expressionIndex')) throw e;
+        refused = true;
+        return retry(() => source.exportScopePage(from, null, { stamp }));
+      })
+      : await retry(() => source.exportScopePage(from, null, { stamp }));
   if (first === 'predates') {
     if (!stamp) {
       const tables = await retry(() => source.exportScope(from));
-      return { done: { dump: tables, loadStamp: null, revision: null, meta: metaOf([tables]) } };
+      return { done: { dump: tables, loadStamp: null, revision: null, meta: doneMeta(metaOf([tables])) } };
     }
     const whole = await retry(() => source.exportScopeStamped(from));
-    return { done: { dump: whole.tables, loadStamp: whole.loadStamp, revision: whole.revision, meta: metaOf([whole.tables]) } };
+    return { done: { dump: whole.tables, loadStamp: whole.loadStamp, revision: whole.revision, meta: doneMeta(metaOf([whole.tables])) } };
   }
+  const captured = ask && first.captured === true;
+  // A host that took the capture but predates the echo (#2761) still opened one: end it.
+  if (ask && !captured && !refused) await endCapture(ends, from, stageId);
   if (first.next === null && !opts.alwaysStage) {
-    return { done: { dump: first.tables, loadStamp: first.loadStamp, revision: first.revision, meta: metaOf([first.tables]) } };
+    // One page is one read whatever the source takes next, so its capture is not needed.
+    if (captured) await endCapture(ends, from, stageId);
+    return { done: { dump: first.tables, loadStamp: first.loadStamp, revision: first.revision, meta: doneMeta(metaOf([first.tables])) } };
   }
-  const stageId = ulid();
-  const opened = typeof dest.stageScopePage === 'function'
-    ? await retry(() => dest.stageScopePage(into, stageId, 0, first.tables))
-    : ('predates' as const);
+  let opened: { staged: boolean } | 'predates';
+  try {
+    opened = typeof dest.stageScopePage === 'function'
+      ? await retry(() => dest.stageScopePage(into, stageId, 0, first.tables))
+      : ('predates' as const);
+  } catch (e) {
+    if (captured) await endCapture(ends, from, stageId);
+    throw e;
+  }
   const state: TransferState = {
     from, into, stamp, stageId, seq: 0, cursor: first.next,
     revision: first.revision, loadStamp: first.loadStamp,
     attempt: opts.attempt ?? 1, pages: 1, rows: rowsIn(first.tables), meta: metaOf([first.tables]),
+    ...(captured && opened !== 'predates' ? { capture: true as const, batch: 0 } : {}),
   };
-  if (opened !== 'predates') return state.cursor === null ? { done: doneOf(state) } : { state };
-  // A destination that cannot stage takes the dump whole, so the pages are held here instead.
+  if (opened !== 'predates') {
+    if (state.cursor !== null) return { state };
+    if (!state.capture) return { done: doneOf(state) };
+    // Caught up here, within a step's budget: a source still writing is left for the next step.
+    const until = Date.now() + BEGIN_CATCH_UP_MS;
+    try {
+      return await transferStep(ends, state, { ...opts, until: () => Date.now() >= until });
+    } catch (e) {
+      // Nothing names this copy yet, so nothing else would discard its stage or end its capture.
+      await abandonCopy(ends, state);
+      throw e;
+    }
+  }
+  // A destination that cannot stage takes the dump whole, so the pages are held here instead, read
+  // at a quiet moment: it cannot take a change batch either.
+  if (captured) await endCapture(ends, from, stageId);
   const held: ScopeDumpTable[][] = [first.tables];
   for (let cursor = first.next; cursor !== null;) {
     const at: string = cursor;
     const page = await retry(() => source.exportScopePage(from, at, { stamp }));
     if (page === 'predates') throw stoppedPaging(from);
-    if (page.revision !== first.revision) return restart({ source, dest }, state, opts, false);
+    if (page.revision !== first.revision) return restart(ends, state, { ...opts, capture: false }, false);
     held.push(page.tables);
     cursor = page.next;
   }
-  return { done: { dump: mergeDumpPages(held), loadStamp: first.loadStamp, revision: first.revision, meta: metaOf(held) } };
+  return { done: { dump: mergeDumpPages(held), loadStamp: first.loadStamp, revision: first.revision, meta: doneMeta(metaOf(held)) } };
 }
 
 /**
@@ -2758,19 +2843,32 @@ export async function beginTransfer(
  *
  * `stopped` (a job being cancelled or forgotten): the copy starts nothing new. A torn copy then
  * discards its stage and answers where it was, opening no other: whoever stopped it settles it.
+ *
+ * Once a captured copy's pages are staged, the step catches up: each change batch the source
+ * serves is staged after the last page, until a final one. A batch is staged at the first number
+ * the stage has not taken (`staged: false` means it has), so a step resumed from a record older
+ * than the stage (a step that faulted after staging) applies the batch served now after the one
+ * staged then, and the newer rows win.
  */
 export async function transferStep(
-  { source, dest }: TransferEnds,
+  ends: TransferEnds,
   state: TransferState,
   opts: TransferOptions & { until?: () => boolean; stopped?: () => boolean } = {},
 ): Promise<TransferProgress> {
+  const { source, dest } = ends;
   const retry = opts.retry ?? (<T>(run: () => Promise<T>) => run());
   let next: TransferState = state;
   while (next.cursor !== null) {
     const at: string = next.cursor;
-    const page = await retry(() => source.exportScopePage(next.from, at, { stamp: next.stamp }));
+    const capture = next.capture ? { capture: next.stageId } : {};
+    const page = await retry(() => source.exportScopePage(next.from, at, { stamp: next.stamp, ...capture })).catch((e: unknown) => {
+      // A capture that is gone (ended, expired, its schema moved) cannot vouch for the pages.
+      if (next.capture && captureRefusal(e, 'gone', 'schemaMoved')) return 'lost' as const;
+      throw e;
+    });
+    if (page === 'lost') return restart(ends, next, opts, true);
     if (page === 'predates') throw stoppedPaging(next.from);
-    if (page.revision !== next.revision) return restart({ source, dest }, next, opts, true);
+    if (!next.capture && page.revision !== next.revision) return restart(ends, next, opts, true);
     const seq = next.seq + 1;
     const staged = await retry(() => dest.stageScopePage(next.into, next.stageId, seq, page.tables));
     if (staged === 'predates') {
@@ -2782,19 +2880,66 @@ export async function transferStep(
       cursor: page.next,
       pages: next.pages + 1,
       rows: next.rows + rowsIn(page.tables),
-      meta: mergeDumpPages([next.meta, metaOf([page.tables])]),
+      meta: metaOf([next.meta, page.tables]),
     };
     if (next.cursor !== null && opts.until?.()) return { state: next };
+  }
+  while (next.capture) {
+    const batch = next.batch ?? 0;
+    // Stopped: no batch more, the first one included. A budget spent still lets one batch through.
+    if (opts.stopped?.()) return { state: next };
+    if (batch >= (opts.catchUpBatches ?? CATCH_UP_BATCHES)) return restart(ends, next, opts, true);
+    if (batch > 0 && opts.until?.()) return { state: next };
+    const at = next;
+    const changes = typeof source.exportScopeChanges !== 'function'
+      ? ('predates' as const)
+      : await retry(() => source.exportScopeChanges!(at.from, at.stageId, batch)).catch((e: unknown) => {
+        // Gone, or its schema moved: a final answer that was lost, asked again, is gone too.
+        if (captureRefusal(e, 'gone', 'schemaMoved')) return 'lost' as const;
+        throw e;
+      });
+    if (changes === 'lost') return restart(ends, next, opts, true);
+    // An end that cannot catch up: the copy is one read only if the source took no write since.
+    if (changes === 'predates') return restart(ends, next, { ...opts, capture: false }, true);
+    let seq = next.seq + 1;
+    if (changes.tables.length > 0) {
+      for (;;) {
+        const staged = typeof dest.stageScopeChanges !== 'function'
+          ? ('predates' as const)
+          : await retry(() => dest.stageScopeChanges!(at.into, at.stageId, seq, changes.tables));
+        if (staged === 'predates') return restart(ends, next, { ...opts, capture: false }, true);
+        if (staged.staged) break;
+        seq++;
+      }
+    } else {
+      seq = next.seq;
+    }
+    next = {
+      ...next,
+      seq,
+      batch: batch + 1,
+      rows: next.rows + rowsIn(changes.tables),
+      meta: foldMeta(next.meta, changes.tables),
+    };
+    if (changes.final) {
+      // The source ended the capture with this batch: the copy is true at the moment it names.
+      const { capture: _, batch: __, ...caught } = next;
+      return { done: doneOf({ ...caught, revision: changes.revision }) };
+    }
   }
   return { done: doneOf(next) };
 }
 
 /** A torn copy: discard its stage and begin again, or refuse once the attempts are spent. */
 async function restart(
-  ends: TransferEnds, state: TransferState, opts: TransferOptions & { stopped?: () => boolean }, staged: boolean,
+  ends: TransferEnds,
+  state: TransferState,
+  opts: TransferOptions & { stopped?: () => boolean; capture?: boolean },
+  staged: boolean,
 ): Promise<TransferProgress> {
-  // Best effort: a stage nothing commits is replaced by the next one, and goes with a wipe.
-  if (staged) await ends.dest.discardStagedScope(state.into, state.stageId).catch(() => undefined);
+  // Best effort: a stage nothing commits is replaced by the next one, and goes with a wipe. (An
+  // unstaged copy holds no capture: it was ended when the destination turned out unable to stage.)
+  if (staged) await abandonCopy(ends, state);
   // Stopped: a new stage would outlast whoever stopped this copy, so none is opened.
   if (opts.stopped?.()) return { state };
   const attempts = opts.attempts ?? TRANSFER_ATTEMPTS;
@@ -2808,14 +2953,79 @@ async function restart(
   return beginTransfer(ends, { from: state.from, to: state.into }, { ...opts, stamp: state.stamp, attempt: state.attempt + 1 });
 }
 
+/**
+ * End the capture `copyId` at the source (#2450), best effort: one left open expires on its own once
+ * nobody reads it. Every copy that stops (failed, cancelled, superseded or restarted) calls it.
+ */
+export async function endCapture(
+  ends: { source: Partial<Pick<VerticalClient, 'endScopeCapture'>> },
+  from: ScopeId,
+  copyId: string,
+): Promise<void> {
+  await ends.source.endScopeCapture?.(from, copyId).catch(() => undefined);
+}
+
+/**
+ * Give a copy up (#2450), best effort: discard its stage at the destination and end its capture at
+ * the source, the two halves every copy that stops leaves behind. An end left out is skipped (one
+ * that could not be resolved); its half then waits for a wipe, or expires.
+ */
+export async function abandonCopy(
+  ends: { source?: Partial<Pick<VerticalClient, 'endScopeCapture'>>; dest?: Pick<VerticalClient, 'discardStagedScope'> },
+  state: Pick<TransferState, 'from' | 'into' | 'stageId' | 'capture'>,
+): Promise<void> {
+  await ends.dest?.discardStagedScope(state.into, state.stageId).catch(() => undefined);
+  if (state.capture && ends.source) await endCapture({ source: ends.source }, state.from, state.stageId);
+}
+
+/** How long a copy's first request catches up before it leaves the rest to a step, ms. */
+const BEGIN_CATCH_UP_MS = 20_000;
+
+/** Whether `e` is the source's capture refusing for one of `kinds` (`CAPTURE_REFUSALS`), not another 412. */
+const captureRefusal = (e: unknown, ...kinds: (keyof typeof CAPTURE_REFUSALS)[]): boolean =>
+  e instanceof ControlPlaneError && e.status === 412 && kinds.some((k) => e.message.includes(CAPTURE_REFUSALS[k]));
+
 const doneOf = (state: TransferState): TransferredScope =>
-  ({ dump: { stageId: state.stageId }, loadStamp: state.loadStamp, revision: state.revision, meta: state.meta });
+  ({ dump: { stageId: state.stageId }, loadStamp: state.loadStamp, revision: state.revision, meta: doneMeta(state.meta) });
 
 const rowsIn = (tables: readonly ScopeDumpTable[]): number => tables.reduce((n, t) => n + t.rows.length, 0);
 
 const stoppedPaging = (scopeId: ScopeId) =>
   new ControlPlaneError(502, `the source of scope ${scopeId} stopped answering dump pages part way; nothing was moved`);
 
-/** The `_substrat_meta` fragments of some dump pages, merged. */
-const metaOf = (pages: readonly (readonly ScopeDumpTable[])[]): ScopeDumpTable[] =>
-  mergeDumpPages(pages.map((page) => page.filter((t) => t.name === '_substrat_meta')));
+const META = '_substrat_meta';
+
+/**
+ * The `_substrat_meta` fragments of some dump pages, merged, each row still named by its rowid
+ * when every fragment carried them (a captured copy's), so a change batch can fold into it.
+ */
+const metaOf = (pages: readonly (readonly ScopeDumpPageTable[])[]): ScopeDumpPageTable[] => {
+  let held: ScopeDumpPageTable | undefined;
+  for (const t of pages.flat()) {
+    if (t.name !== META) continue;
+    if (!held) {
+      held = { ...t, rows: [...t.rows], ...(t.rowids ? { rowids: [...t.rowids] } : {}) };
+      continue;
+    }
+    held.rows.push(...t.rows);
+    if (held.rowids && t.rowids) held.rowids.push(...t.rowids);
+    else delete held.rowids;
+  }
+  return held ? [held] : [];
+};
+
+/** `meta` with a change batch's `_substrat_meta` change applied: by rowid, or whole when it came whole. */
+const foldMeta = (meta: ScopeDumpPageTable[], tables: readonly ScopeDumpChange[]): ScopeDumpPageTable[] => {
+  const change = tables.find((t) => t.name === META);
+  if (!change) return meta;
+  const { deleted, ...table } = change;
+  if (!change.rowids) return [table];
+  const held = meta[0];
+  const rows = new Map<number, unknown[]>(held?.rowids ? held.rowids.map((id, i) => [id, held.rows[i]!]) : []);
+  for (const id of deleted) rows.delete(id);
+  change.rowids.forEach((id, i) => rows.set(id, change.rows[i]!));
+  return [{ ...(held ?? table), rows: [...rows.values()], rowids: [...rows.keys()] }];
+};
+
+/** What a finished copy reports of `_substrat_meta`: its rows, the rowids left behind. */
+const doneMeta = (meta: readonly ScopeDumpPageTable[]): ScopeDumpTable[] => meta.map(({ rowids: _, ...t }) => t);

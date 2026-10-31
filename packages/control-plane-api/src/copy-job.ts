@@ -1,7 +1,7 @@
 import type { PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
 import type { HostAdmin } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { transferStep, type TransferState, type TransferredScope, type VerticalClient } from './vertical-client.js';
+import { abandonCopy, transferStep, type TransferState, type TransferredScope, type VerticalClient } from './vertical-client.js';
 
 /**
  * A scope copy run in the background (#2450, step 2).
@@ -234,11 +234,13 @@ export async function advanceCopyJob(
   /**
    * A failed job's stage is never loaded, so it goes here, best-effort: a job nobody calls again
    * (its caller gave up) would otherwise leave it until the scope is wiped there. The record keeps
-   * naming it (`state`), so the route's settle (`settleJobMove`) can discard it too.
+   * naming it (`state`), so the route's settle (`settleJobMove`) can discard it too. A capture the
+   * copy holds at the source is ended beside it, the same way.
    */
   const failed = async (status: number, message: string): Promise<CopyJobRecord> => {
     const dest = await deps.clientForRef(spec.destRef).catch(() => undefined);
-    await dest?.discardStagedScope(staged.into, staged.stageId).catch(() => undefined);
+    const source = staged.capture ? await deps.clientForRef(spec.sourceRef).catch(() => undefined) : undefined;
+    await abandonCopy({ source, dest }, staged);
     return { ...job, status: 'failed', error: { status, message }, nextDelayMs: 0, updatedAt: now() };
   };
   if (now() > spec.deadline) {

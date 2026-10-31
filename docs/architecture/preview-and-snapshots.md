@@ -67,9 +67,22 @@ Two adapter implementations behind one interface, mirroring the whole platform:
   - The control plane holds one page at a time (`transferScope`).
 
   "*Clean* because the DO is single-threaded" now holds per page only, since each page is read
-  in one turn. The pages are one consistent read only while the source's write revision stays
-  where the first page read it. A copy that it moves under is started again, and refused after
-  three attempts.
+  in one turn. A busy source does not need a quiet moment (#2450, step 3). The first page opens a
+  capture under the stage's id, and from that turn the source logs which rows it writes. Once
+  every page is staged, the copy reads those rows as they are now in change batches and stages
+  each one after the pages, until a final batch is read in the same turn as the log ran empty. The
+  copy is true at that batch's moment, and the carry's later fences count from it. The final batch
+  ends the capture. A copy that stops before it gets there (failed, cancelled, superseded or
+  restarted) ends its capture beside the stage it discards, and a capture nobody reads expires.
+
+  A copy falls back to a quiet moment when the source cannot capture: an older deployment, one
+  that does not echo `captured` on its page (its capture is ended anyway), or a table with a
+  unique expression index, which no row trigger can key (the capture's opening is refused). It
+  also falls back when the destination cannot stage a change batch. At a quiet moment the pages
+  are one consistent read only while the source's write revision stays where the first page read
+  it. A copy is started again, and refused after three attempts, when the revision moves under a
+  quiet-moment copy, or when a catch-up loses its capture (it expired, a migration moved the
+  schema, a load replaced the store) or reads 50 batches without a final one.
 
   A preview's copy that needs more than one page runs as a job (#2450, step 2):
   - The request reads and stages the first page and records the move in the copy ledger as
@@ -126,8 +139,9 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     so it is never a status a client retries as a gateway's. The fault still lands an ops-failure
     row.
 
-  Only previews run this way; a rebind or adopt of a live scope still copies in its request. One
-  step remains open in #2450: an online copy with catch-up, for a busy scope at GB scale.
+  Only previews run this way; a rebind or adopt of a live scope still copies in its request, and
+  catches up the same way. The self-host adapter has no capture, so a copy there is always read at
+  a quiet moment.
 
 Once a cloud export lands in a local file it's a real SQLite again — `cp`, `VACUUM INTO`,
 Datasette, a step debugger all return. **Pull once (logical, governed); branch freely after.**

@@ -5,6 +5,7 @@ import { DurableObject } from 'cloudflare:workers';
 import {
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
+  CAPTURE_REFUSALS,
   attachmentRecord,
   type AttachmentRecord,
   type UploadLinkPolicy,
@@ -1147,9 +1148,9 @@ const CAPTURE_IDLE_MS = SCOPE_COPY_LEASE_MS;
 const CAPTURE_BATCH_ROWS = 2_000;
 /** Rowids per `IN (…)`: a Durable Object's SQLite binds at most 100 parameters to a statement. */
 const CAPTURE_IN_CHUNK = 90;
-const CAPTURE_GONE = 'the copy\'s capture of this scope is gone (it ended, expired or a load replaced the store); start the copy again';
-const CAPTURE_SCHEMA_MOVED = 'the scope\'s schema changed while it was copied (a migration ran, or a table was rebuilt); start the copy again';
-const CAPTURE_EXPRESSION_INDEX = 'a table with a unique index on an expression cannot be copied while it takes writes; copy it at a quiet moment';
+const CAPTURE_GONE = CAPTURE_REFUSALS.gone;
+const CAPTURE_SCHEMA_MOVED = CAPTURE_REFUSALS.schemaMoved;
+const CAPTURE_EXPRESSION_INDEX = CAPTURE_REFUSALS.expressionIndex;
 /** A write the capture path takes: one whose target is a capture table or a capture trigger. */
 const CAPTURE_STATEMENT =
   /^\s*(?:CREATE TABLE IF NOT EXISTS|INSERT INTO|UPDATE|DELETE FROM|DROP TABLE IF EXISTS|CREATE TRIGGER|DROP TRIGGER IF EXISTS)\s+"?_substrat_capture(?:\b|_)/;
@@ -7529,7 +7530,7 @@ export function defineScopeDO(
           break;
         }
       }
-      return { tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY) };
+      return { tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY), ...(capture !== undefined ? { captured: true as const } : {}) };
     }
 
     /** A dumped table's columns, and whether its rows are read, and named, by rowid. */

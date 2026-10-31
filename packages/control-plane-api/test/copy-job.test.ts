@@ -34,7 +34,9 @@ const PAGES = [[rowsOf('a')], [rowsOf('b')], [rowsOf('c')], [rowsOf('d')], [rows
 function deployments(opts: { pageFails?: (n: number) => Error | null } = {}) {
   const staged: { stageId: string; seq: number }[] = [];
   const discarded: string[] = [];
+  const ended: string[] = [];
   const source = {
+    endScopeCapture: async (_s: string, copyId: string) => void ended.push(copyId),
     exportScope: async () => PAGES.flat(),
     exportScopeStamped: async () => ({ tables: PAGES.flat(), loadStamp: null, revision: null }),
     exportScopePage: async (_s: string, cursor: string | null): Promise<ScopeDumpPage> => {
@@ -53,11 +55,11 @@ function deployments(opts: { pageFails?: (n: number) => Error | null } = {}) {
       discarded.push(stageId);
     },
   } as unknown as VerticalClient;
-  return { source, dest, staged, discarded };
+  return { source, dest, staged, discarded, ended };
 }
 
 function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error | null; clock?: { now: number } } = {}) {
-  const { source, dest, staged, discarded } = deployments(opts);
+  const { source, dest, staged, discarded, ended } = deployments(opts);
   const renewals: string[] = [];
   const clock = opts.clock ?? { now: Date.parse('2026-10-20T10:00:00.000Z') };
   const deps: CopyJobDeps = {
@@ -94,7 +96,7 @@ function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error
     const begun = await beginTransfer({ source, dest }, { from: prod, to: preview }, { stamp: false, alwaysStage: true });
     return (begun as { state: TransferState }).state;
   };
-  return { deps, spec, begin, staged, discarded, renewals, clock };
+  return { deps, spec, begin, staged, discarded, ended, renewals, clock };
 }
 
 describe('advanceCopyJob (#2450)', () => {
@@ -289,6 +291,41 @@ describe('advanceCopyJob (#2450)', () => {
     const riding = await advanceCopyJob(blip.deps, newCopyJob(blip.spec(), await blip.begin(), blip.clock.now));
     expect(riding).toMatchObject({ status: 'copying', faults: 1, state: { stageId: blip.staged[0]!.stageId } });
     expect(blip.discarded).toEqual([]);
+  });
+
+  it('a job that fails holding a capture ends it at the source, beside its stage (#2450 step 3)', async () => {
+    const h = harness();
+    const state = { ...(await h.begin()), capture: true as const, batch: 0 };
+    const job = await advanceCopyJob(h.deps, newCopyJob(h.spec({ deadline: h.clock.now - 1 }), state, h.clock.now));
+    expect(job).toMatchObject({ status: 'failed' });
+    expect({ discarded: h.discarded, ended: h.ended }).toEqual({ discarded: [state.stageId], ended: [state.stageId] });
+  });
+
+  it('a catch-up spans steps: a step whose budget is spent after a batch leaves the next one to the next step', async () => {
+    const h = harness();
+    // Two captured pages, then a batch that is not final and one that is; each batch takes 1 s.
+    const asked: number[] = [];
+    const source = {
+      endScopeCapture: async () => undefined,
+      exportScopePage: async (_s: string, cursor: string | null, o: { capture?: string } = {}): Promise<ScopeDumpPage> => {
+        const n = cursor === null ? 0 : 1;
+        return { tables: PAGES[n]!, next: n === 0 ? '1' : null, loadStamp: null, revision: `r${n}`, ...(o.capture ? { captured: true as const } : {}) };
+      },
+      exportScopeChanges: async (_s: string, _c: string, seq: number) => {
+        asked.push(seq);
+        h.clock.now += 1_000;
+        return { tables: [{ ...rowsOf(`x${seq}`), rowids: [9], deleted: [] }], final: seq === 1, revision: seq === 1 ? 'final' : 'r9' };
+      },
+    } as unknown as VerticalClient;
+    const dest = { ...(await h.deps.clientForRef('dst'))!, stageScopeChanges: async () => ({ staged: true }) } as unknown as VerticalClient;
+    const deps = { ...h.deps, clientForRef: async (ref: string) => (ref === 'src' ? source : ref === 'dst' ? dest : undefined) };
+    const begun = (await beginTransfer({ source, dest }, { from: prod, to: preview }, { stamp: false, alwaysStage: true })) as { state: TransferState };
+    const first = await advanceCopyJob(deps, newCopyJob(h.spec(), begun.state, h.clock.now), { stepMs: 500 });
+    expect(first).toMatchObject({ status: 'copying', state: { cursor: null, capture: true, batch: 1 } });
+    expect(asked).toEqual([0]);
+    const second = await advanceCopyJob(deps, first, { stepMs: 500 });
+    expect(second).toMatchObject({ status: 'done', done: { revision: 'final' } });
+    expect(asked).toEqual([0, 1]);
   });
 
   it('a stopped step moves no further page, and a copy it tears opens no new stage', async () => {
